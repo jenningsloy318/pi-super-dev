@@ -30,9 +30,6 @@
       "./skills/super-dev"
     ]
   },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
   "devDependencies": {
     "typescript": "^5.4",
     "vitest": "^3.0"
