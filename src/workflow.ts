@@ -128,13 +128,13 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		status = "partial";
 	}
 
-	// Deduped list of stages that ended in `failed`.
+	// Deduped list of stages that ended in `failed` (with their error).
 	const seen = new Set<string>();
-	const failedStages: string[] = [];
+	const failedStages: { label: string; error?: string }[] = [];
 	for (const r of ctx.results) {
 		if (r.status === "failed" && !seen.has(r.id)) {
 			seen.add(r.id);
-			failedStages.push(r.label || r.id);
+			failedStages.push({ label: r.label || r.id, error: r.error });
 		}
 	}
 

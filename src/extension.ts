@@ -43,7 +43,13 @@ function formatSummary(s: RunSummary): string[] {
 		`  Review:   ${review?.verdict ?? (s.state.review ? "no verdict" : "skipped")}`,
 		`  Merged:   ${s.state.merge ? String((s.state.merge as { merged?: boolean }).merged ?? false) : "skipped"}`,
 	];
-	if (s.failedStages.length > 0) lines.push(`  Failed:   ${s.failedStages.join(", ")}`);
+	if (s.failedStages.length > 0) {
+		const fmt = (f: { label: string; error?: string }) => {
+			const e = f.error ? ` — ${f.error.length > 100 ? f.error.slice(0, 97) + "..." : f.error}` : "";
+			return `${f.label}${e}`;
+		};
+		lines.push(`  Failed:   ${s.failedStages.map(fmt).join("\n            ")}`);
+	}
 	if (s.error) lines.push(`  Error:    ${s.error}`);
 	return lines;
 }

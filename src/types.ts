@@ -200,8 +200,8 @@ export interface RunSummary {
 	state: PipelineState;
 	/** Derived overall outcome — never faked. */
 	status: RunStatus;
-	/** Stage labels that ended in `failed` (deduped). Empty on full success. */
-	failedStages: string[];
+	/** Stages that ended in `failed`, with their error message (deduped). */
+	failedStages: { label: string; error?: string }[];
 	/** Error message when the run aborted (e.g. a fatal gate threw). */
 	error?: string;
 }

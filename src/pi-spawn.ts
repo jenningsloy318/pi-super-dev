@@ -20,6 +20,9 @@ import type { SpawnResult } from "./types.ts";
 
 const AGENT_TOOLS = "read,bash,edit,write,ffgrep,fffind";
 
+/** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
+const DEFAULT_SPAWN_TIMEOUT_MS = 300_000;
+
 export interface SpawnAgentOptions {
 	agent: string;
 	prompt: string;
@@ -27,6 +30,7 @@ export interface SpawnAgentOptions {
 	model?: string;
 	signal?: AbortSignal;
 	id?: string;
+	timeoutMs?: number;
 }
 
 function resolvePiBinary(): { command: string; args: string[] } {
@@ -53,12 +57,12 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 	if (opts.model) args.push("--model", opts.model);
 	args.push(`Task: ${opts.prompt}`);
 
-	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent);
+	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS);
 	rmSync(tempDir, { recursive: true, force: true });
 	return result;
 }
 
-function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string): Promise<SpawnResult> {
+function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number): Promise<SpawnResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(args[0], args.slice(1), {
 			cwd,
@@ -69,28 +73,42 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		let stdoutBuf = "";
 		let stderrBuf = "";
 		let aborted = false;
+		let timedOut = false;
+		const cleanup = () => {
+			signal?.removeEventListener("abort", onAbort);
+			clearTimeout(timer);
+		};
 		const onAbort = () => {
 			aborted = true;
 			try { child.kill("SIGTERM"); } catch { /* ignore */ }
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
+		const timer = setTimeout(() => {
+			timedOut = true;
+			try { child.kill("SIGTERM"); } catch { /* ignore */ }
+		}, timeoutMs);
 
 		child.stdout.on("data", (c: Buffer) => { stdoutBuf += c.toString("utf8"); });
 		child.stderr.on("data", (c: Buffer) => { stderrBuf += c.toString("utf8"); });
 		child.on("error", (err) => {
-			signal?.removeEventListener("abort", onAbort);
+			cleanup();
 			reject(new Error(`super-dev [${label}]: failed to spawn pi: ${err.message}`));
 		});
 		child.on("close", (code) => {
-			signal?.removeEventListener("abort", onAbort);
+			cleanup();
 			if (aborted) { resolve({ text: "", control: null, error: "aborted" }); return; }
+			// Resilient capture: keep the LAST NON-EMPTY assistant text seen in any
+			// message_end. This recovers control JSON even when the agent ends on a
+			// trailing tool-call turn (final message_end has no text) or is killed
+			// mid-stream after already emitting its control block.
 			const { text, model } = extractFinalAssistant(stdoutBuf);
-			if (!text) {
-				const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
-				reject(new Error(`super-dev [${label}]: agent produced no output (exit ${code}).${tail ? ` stderr: ${tail}` : ""}`));
+			if (text) {
+				resolve({ text, control: extractControl(text), model, error: timedOut ? `timed out after ${timeoutMs}ms (used partial output)` : undefined });
 				return;
 			}
-			resolve({ text, control: extractControl(text), model });
+			const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
+			const reason = timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `produced no output (exit ${code})`;
+			reject(new Error(`super-dev [${label}]: agent ${reason}.${tail ? ` stderr: ${tail}` : ""}`));
 		});
 	});
 }
@@ -100,19 +118,26 @@ interface PiJsonEvent {
 	message?: { role?: string; content?: Array<{ type: string; text?: string }> };
 }
 
-function extractFinalAssistant(stdout: string): { text: string; model?: string } {
+export function extractFinalAssistant(stdout: string): { text: string; model?: string } {
 	let text = "";
+	let model: string | undefined;
 	for (const line of stdout.split("\n")) {
 		const trimmed = line.trim();
 		if (!trimmed) continue;
 		let event: PiJsonEvent;
 		try { event = JSON.parse(trimmed) as PiJsonEvent; } catch { continue; }
 		if (event.type === "message_end" && event.message?.role === "assistant") {
-			text = (event.message.content ?? [])
+			// Keep the LAST NON-EMPTY assistant text — never overwrite with empty,
+			// so a trailing tool-call-only turn doesn't discard the control block
+			// emitted in an earlier turn.
+			const t = (event.message.content ?? [])
 				.filter((p) => p.type === "text" && typeof p.text === "string")
 				.map((p) => p.text as string)
 				.join("");
+			if (t) text = t;
+			const m = (event.message as { model?: string }).model;
+			if (m) model = m;
 		}
 	}
-	return { text };
+	return { text, model };
 }

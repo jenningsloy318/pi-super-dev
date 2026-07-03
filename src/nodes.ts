@@ -306,6 +306,7 @@ export function gate(opts: GateOptions, node: Node): Node {
 				if (last.status === "cancelled") return last;
 				if (last.status === "failed") {
 					if (attempt < max) continue;
+					if (opts.fatal) throw new Error(opts.fatalMessage ?? `gate failed after ${max} attempt(s): ${last.error ?? "stage failed"}`);
 					return { ...last, attempts: max };
 				}
 				if (await opts.validate(state, ctx)) return { status: "ok", attempts: attempt };

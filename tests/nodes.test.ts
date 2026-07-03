@@ -200,6 +200,14 @@ describe("gate", () => {
 			gate({ validate: () => false, attempts: 2, fatal: true, fatalMessage: "boom-gate" }, node).run({}, mkCtx()),
 		).rejects.toThrow("boom-gate");
 	});
+	it("throws when fatal: true and the wrapped node itself fails", async () => {
+		// A task that throws -> returns {status:"failed"}. With fatal, the gate
+		// must abort (throw) instead of swallowing and continuing.
+		const node = task({ id: "g", label: "g", async run() { throw new Error("spawn died"); } });
+		await expect(
+			gate({ validate: () => true, attempts: 2, fatal: true, fatalMessage: "g-gate" }, node).run({}, mkCtx()),
+		).rejects.toThrow("g-gate");
+	});
 });
 
 describe("map", () => {
