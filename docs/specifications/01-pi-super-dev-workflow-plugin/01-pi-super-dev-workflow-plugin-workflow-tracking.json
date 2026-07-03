@@ -16,11 +16,11 @@
     { "id": 6.5, "name": "prototype", "status": "skipped", "startedAt": "2026-07-03T03:53:00Z", "completedAt": "2026-07-03T03:53:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
     { "id": 7, "name": "specification", "status": "complete", "startedAt": "2026-07-03T03:53:00Z", "completedAt": "2026-07-03T03:58:00Z", "docs": ["06-specification.md", "07-implementation-plan.md", "08-task-list.md"], "files": { "created": [], "modified": [], "deleted": [] } },
     { "id": 8, "name": "spec-review", "status": "complete", "startedAt": "2026-07-03T03:58:00Z", "completedAt": "2026-07-03T04:06:00Z", "docs": ["09-spec-review.md"], "files": { "created": [], "modified": [], "deleted": [] } },
-    { "id": 9, "name": "implementation", "status": "in_progress", "startedAt": "2026-07-03T04:06:00Z", "completedAt": null, "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
-    { "id": 10, "name": "code-review", "status": "pending", "startedAt": null, "completedAt": null, "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
-    { "id": 11, "name": "documentation", "status": "pending", "startedAt": null, "completedAt": null, "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
-    { "id": 12, "name": "cleanup", "status": "pending", "startedAt": null, "completedAt": null, "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
-    { "id": 13, "name": "merge", "status": "pending", "startedAt": null, "completedAt": null, "docs": [], "files": { "created": [], "modified": [], "deleted": [] } }
+    { "id": 9, "name": "implementation", "status": "complete", "startedAt": "2026-07-03T04:06:00Z", "completedAt": "2026-07-03T04:34:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 10, "name": "code-review", "status": "complete", "startedAt": "2026-07-03T04:34:00Z", "completedAt": "2026-07-03T04:38:00Z", "docs": ["10-code-review.md", "11-adversarial-review.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 11, "name": "documentation", "status": "complete", "startedAt": "2026-07-03T04:38:00Z", "completedAt": "2026-07-03T04:40:00Z", "docs": [], "files": { "created": ["CHANGELOG.md"], "modified": ["README.md", "docs/usage.md"], "deleted": [] } },
+    { "id": 12, "name": "cleanup", "status": "complete", "startedAt": "2026-07-03T04:40:00Z", "completedAt": "2026-07-03T04:41:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 13, "name": "merge", "status": "in_progress", "startedAt": "2026-07-03T04:41:00Z", "completedAt": null, "docs": [], "files": { "created": [], "modified": [], "deleted": [] } }
   ],
   "implementationPhases": []
 }
