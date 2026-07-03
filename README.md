@@ -17,15 +17,82 @@ A pi-workflow plugin that implements a structured 13-stage development pipeline.
 
 ## Installation
 
+### Prerequisites
+
+1. **Pi Coding Agent** — the runtime host (`@earendil-works/pi-coding-agent`)
+2. **pi-workflow** — the workflow engine (must be installed first):
+   ```bash
+   pi install npm:@agwab/pi-workflow
+   ```
+3. **Node.js >= 22.19.0**
+
+### Install from npm (when published)
+
 ```bash
-pi install @jenningsloy318/pi-super-dev
+pi install npm:@jenningsloy318/pi-super-dev
 ```
 
-### Requirements
+### Install from local path (for development)
 
-- Node.js >= 22.19.0
-- Pi Coding Agent runtime (`@earendil-works/pi-coding-agent`) — peer dependency
-- pi-workflow engine (`@agwab/pi-workflow`) — runtime dependency
+```bash
+# Clone the repo
+git clone https://github.com/jenningsloy318/pi-super-dev.git
+cd pi-super-dev
+npm install
+
+# Install as a local Pi package
+pi install /absolute/path/to/pi-super-dev
+```
+
+### Verify installation
+
+After installation, reload Pi and confirm the plugin is active:
+
+```bash
+# List available workflows — should show 'super-dev'
+/workflow list
+
+# List agents — should show 21 super-dev agents
+/workflow agents
+
+# Validate the workflow spec
+/workflow validate super-dev
+```
+
+### What gets registered
+
+When installed, the plugin provides:
+
+| Component | Description |
+|-----------|-------------|
+| **Extension** (`src/extension.ts`) | Registers the plugin with Pi's extension system |
+| **Skill** (`skills/super-dev/SKILL.md`) | Natural language trigger — intercepts "implement", "build", "fix bug", etc. and dispatches to `workflow_run` |
+| **Workflow** (`workflows/super-dev/spec.json`) | The 13-stage pipeline definition |
+| **Agents** (`agents/*.md`) | 21 specialist agent definitions with role-specific tool ceilings |
+
+### How it works
+
+```
+User: "implement OAuth2 authentication"
+  │
+  ▼
+SKILL.md detects dev intent (trigger keywords)
+  │
+  ▼
+Calls: workflow_run({ workflow: "super-dev", task: "implement OAuth2 authentication" })
+  │
+  ▼
+pi-workflow engine loads spec.json, runs setup stage,
+then hands control to implementation-controller.mjs
+  │
+  ▼
+Controller orchestrates 13 stages with 21 agents
+```
+
+> **Note**: The `skills/super-dev/SKILL.md` is required for proactive triggering.
+> Pi-workflow's bundled `execution-router` only auto-dispatches to bundled workflows
+> (deep-research, deep-review, etc.). Plugin workflows need their own skill to be
+> invoked from natural language without the user explicitly saying "use the super-dev workflow."
 
 ## Quick Start
 
