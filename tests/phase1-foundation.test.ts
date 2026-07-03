@@ -59,18 +59,16 @@ describe("Task 1.1: package.json", () => {
 		expect(keywords).toContain("pi");
 	});
 
-	it("declares @earendil-works/pi-coding-agent as peerDependency", () => {
+	it("has no runtime dependencies (self-contained)", () => {
 		const pkg = readJson("package.json") as Record<string, unknown>;
-		const peerDeps = pkg.peerDependencies as Record<string, string>;
-		expect(peerDeps).toBeDefined();
-		expect(peerDeps["@earendil-works/pi-coding-agent"]).toBeDefined();
+		expect(pkg.dependencies).toBeUndefined();
+		expect(pkg.peerDependencies).toBeUndefined();
 	});
 
-	it("declares @earendil-works/pi-coding-agent as peerDependency", () => {
+	it("has no runtime dependencies (self-contained)", () => {
 		const pkg = readJson("package.json") as Record<string, unknown>;
-		const peerDeps = pkg.peerDependencies as Record<string, string>;
-		expect(peerDeps).toBeDefined();
-		expect(peerDeps["@earendil-works/pi-coding-agent"]).toBeDefined();
+		expect(pkg.dependencies).toBeUndefined();
+		expect(pkg.peerDependencies).toBeUndefined();
 	});
 });
 

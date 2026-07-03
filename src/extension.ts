@@ -1,4 +1,13 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+/** Minimal Pi extension API surface we use. */
+interface ExtensionAPI {
+  registerCommand(
+    name: string,
+    opts: {
+      description: string;
+      handler: (args: string, ctx: any) => Promise<void> | void;
+    },
+  ): void;
+}
 
 export default function activate(pi: ExtensionAPI): void {
   // Register /super-dev command
@@ -20,7 +29,7 @@ export default function activate(pi: ExtensionAPI): void {
         return;
       }
 
-      // Delegate to workflow_run tool (provided by @agwab/pi-workflow)
+      // Delegate to workflow_run tool (provided by @agwab/pi-workflow if installed)
       const workflowRunTool = ctx.getTool?.("workflow_run");
       if (workflowRunTool) {
         await workflowRunTool.execute("", {
