@@ -15,10 +15,16 @@ Do NOT trigger on: simple questions, file searches, one-off commands, code expla
 
 ## Action
 
-Use the `workflow_run` tool:
+Use the `workflow_run` tool to start the pipeline:
 
 ```text
 workflow_run({ workflow: "super-dev", task: "<user's full request>" })
 ```
 
 Preserve the user's language, file references, and constraints in the task.
+
+The user can also invoke directly via the `/super-dev` command:
+
+```text
+/super-dev <task description>
+```

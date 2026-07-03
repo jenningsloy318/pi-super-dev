@@ -20,11 +20,7 @@ A pi-workflow plugin that implements a structured 13-stage development pipeline.
 ### Prerequisites
 
 1. **Pi Coding Agent** — the runtime host (`@earendil-works/pi-coding-agent`)
-2. **pi-workflow** — the workflow engine (must be installed first):
-   ```bash
-   pi install npm:@agwab/pi-workflow
-   ```
-3. **Node.js >= 22.19.0**
+2. **Node.js >= 22.19.0**
 
 ### Install from npm (when published)
 
@@ -49,14 +45,8 @@ pi install /absolute/path/to/pi-super-dev
 After installation, reload Pi and confirm the plugin is active:
 
 ```bash
-# List available workflows — should show 'super-dev'
-/workflow list
-
-# List agents — should show 21 super-dev agents
-/workflow agents
-
-# Validate the workflow spec
-/workflow validate super-dev
+# The /super-dev command should be available
+/super-dev
 ```
 
 ### What gets registered
@@ -96,23 +86,24 @@ Controller orchestrates 13 stages with 21 agents
 
 ## Quick Start
 
-Describe your task in natural language:
+Use the `/super-dev` command directly:
+
+```
+/super-dev implement user authentication with OAuth2
+/super-dev fix the crash when uploading large files
+/super-dev refactor the database layer to use connection pooling
+```
+
+Or just describe your task naturally — the skill auto-triggers on dev keywords:
 
 ```
 "implement user authentication with OAuth2"
-"fix the crash when uploading large files"
-"refactor the database layer to use connection pooling"
 ```
 
-Or invoke explicitly:
+With pi-workflow installed, you can also use:
 
 ```
 /workflow run super-dev "add a hello world endpoint"
-```
-
-Resume an interrupted workflow:
-
-```
 /workflow resume
 ```
 
