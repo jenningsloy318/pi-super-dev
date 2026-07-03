@@ -19,8 +19,16 @@ A pi-workflow plugin that implements a structured 13-stage development pipeline.
 
 ### Prerequisites
 
-1. **Pi Coding Agent** — the runtime host (`@earendil-works/pi-coding-agent`)
-2. **Node.js >= 22.19.0**
+1. **Pi Coding Agent** — the runtime host
+2. **@agwab/pi-workflow** — the workflow engine (required):
+   ```bash
+   pi install npm:@agwab/pi-workflow
+   ```
+3. **Node.js >= 22.19.0**
+
+> **Important**: This is a pi-workflow plugin. It requires `@agwab/pi-workflow` to be installed.
+> The workflow engine provides `workflow_run` (the execution tool) and consumes the `spec.json`
+> workflow definition. Without it, the `/super-dev` command will show an install prompt.
 
 ### Install from npm (when published)
 
@@ -42,11 +50,26 @@ pi install /absolute/path/to/pi-super-dev
 
 ### Verify installation
 
-After installation, reload Pi and confirm the plugin is active:
+After installation, reload Pi and confirm:
 
 ```bash
 # The /super-dev command should be available
 /super-dev
+
+# pi-workflow should discover the workflow
+/workflow list        # should show 'super-dev'
+/workflow validate super-dev
+```
+
+### How discovery works
+
+pi-workflow discovers workflows from `~/.pi/agent/workflows/`. On activation,
+this plugin symlinks `workflows/super-dev/` there automatically. If the symlink
+fails (permissions), you can create it manually:
+
+```bash
+mkdir -p ~/.pi/agent/workflows
+ln -s /path/to/pi-super-dev/workflows/super-dev ~/.pi/agent/workflows/super-dev
 ```
 
 ### What gets registered
