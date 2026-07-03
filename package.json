@@ -1,0 +1,46 @@
+{
+  "name": "@jenningsloy318/pi-super-dev",
+  "version": "0.1.0",
+  "description": "Pi workflow plugin for super-dev orchestration.",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "workflow",
+    "pi"
+  ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./extension": "./src/extension.ts",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills/super-dev"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "@agwab/pi-workflow": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.4",
+    "vitest": "^3.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
