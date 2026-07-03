@@ -47,8 +47,22 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 	const promptPath = join(tempDir, "agent.md");
 	writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
 
+	const args = buildSpawnArgs(opts, promptPath);
+	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS);
+	rmSync(tempDir, { recursive: true, force: true });
+	return result;
+}
+
+/**
+ * Build the full argv vector for a specialist spawn, INCLUDING the executable
+ * as element 0. (Extracted so the command resolution is unit-testable — a
+ * previous version dropped `command` and tried to exec "--mode", causing
+ * `spawn --mode ENOENT` on every single agent spawn.)
+ */
+export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string): string[] {
 	const { command, args: prefix } = resolvePiBinary();
 	const args = [
+		command, // ← the executable ("pi" on PATH, or `node` re-invoking the host entry)
 		...prefix,
 		"--mode", "json", "-p", "--no-session", "--no-skills", "--no-extensions",
 		"--tools", AGENT_TOOLS,
@@ -56,10 +70,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 	];
 	if (opts.model) args.push("--model", opts.model);
 	args.push(`Task: ${opts.prompt}`);
-
-	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS);
-	rmSync(tempDir, { recursive: true, force: true });
-	return result;
+	return args;
 }
 
 function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number): Promise<SpawnResult> {

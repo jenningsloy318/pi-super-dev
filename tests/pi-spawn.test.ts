@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractFinalAssistant } from "../src/pi-spawn.ts";
+import { extractFinalAssistant, buildSpawnArgs } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 
@@ -42,5 +42,37 @@ describe("extractFinalAssistant", () => {
 	it("captures the model from the final assistant message", () => {
 		const stdout = [line({ type: "message_end", message: { role: "assistant", model: "glm-5.2", content: [{ type: "text", text: "hi" }] } })].join("\n");
 		expect(extractFinalAssistant(stdout).model).toBe("glm-5.2");
+	});
+});
+
+describe("buildSpawnArgs", () => {
+	const base = { agent: "requirements-clarifier", prompt: "do X", cwd: "/tmp" };
+
+	it("element 0 is a real executable, never a flag (regression: spawn --mode ENOENT)", () => {
+		const args = buildSpawnArgs(base, "/tmp/agent.md");
+		// The bug dropped `command`, making args[0] === "--mode".
+		expect(args[0].startsWith("-")).toBe(false);
+		expect(args[0].length).toBeGreaterThan(0);
+	});
+
+	it("includes the required pi flags after the executable", () => {
+		const args = buildSpawnArgs(base, "/tmp/agent.md");
+		expect(args).toContain("--mode");
+		expect(args[args.indexOf("--mode") + 1]).toBe("json");
+		expect(args).toContain("-p");
+		expect(args).toContain("--no-session");
+		expect(args).toContain("--system-prompt");
+		expect(args[args.indexOf("--system-prompt") + 1]).toBe("/tmp/agent.md");
+	});
+
+	it("appends the task as the final positional 'Task: ...' arg", () => {
+		const args = buildSpawnArgs({ ...base, prompt: "hello world" }, "/tmp/agent.md");
+		expect(args[args.length - 1]).toBe("Task: hello world");
+	});
+
+	it("adds --model when a model override is provided", () => {
+		const args = buildSpawnArgs({ ...base, model: "openai/gpt-4o" }, "/tmp/agent.md");
+		expect(args).toContain("--model");
+		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
 });
