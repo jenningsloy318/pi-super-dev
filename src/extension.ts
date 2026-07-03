@@ -1,100 +1,96 @@
-import { existsSync, mkdirSync, symlinkSync, readlinkSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
-import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-
-/** Minimal Pi extension API surface we use. */
-interface ExtensionAPI {
-  registerCommand(
-    name: string,
-    opts: {
-      description: string;
-      handler: (args: string, ctx: any) => Promise<void> | void;
-    },
-  ): void;
-}
-
 /**
- * Ensure our workflow spec is discoverable by pi-workflow.
+ * Pi extension entry point.
  *
- * pi-workflow discovers workflows from `~/.pi/agent/workflows/`.
- * We symlink our `workflows/super-dev/` bundle there so it's
- * globally available regardless of cwd.
+ * Registers:
+ *   - `super_dev` tool — the LLM-callable entry that runs the 13-stage
+ *     pipeline by spawning `pi` child processes. Fully self-contained: no
+ *     dependency on @agwab/pi-workflow or any other workflow engine. The
+ *     pipeline is a tree of control-flow nodes (src/nodes.ts) composed in
+ *     src/stages/index.ts.
+ *   - `/super-dev <task>` command — dispatches the task to the agent, which
+ *     invokes the `super_dev` tool.
  */
-function ensureWorkflowSymlink(): void {
-  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const sourceDir = join(packageRoot, "workflows", "super-dev");
-  const targetParent = join(homedir(), ".pi", "agent", "workflows");
-  const targetLink = join(targetParent, "super-dev");
 
-  if (!existsSync(sourceDir)) return; // safety: don't link if source missing
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { runPipelineTask } from "./pipeline.ts";
+import type { ProgressSink } from "./types.ts";
 
-  // Create ~/.pi/agent/workflows/ if it doesn't exist
-  if (!existsSync(targetParent)) {
-    mkdirSync(targetParent, { recursive: true });
-  }
+export { runPipelineTask } from "./pipeline.ts";
+export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
+export * as nodes from "./nodes.ts";
+export { runWorkflow } from "./workflow.ts";
 
-  // Create or update symlink
-  if (existsSync(targetLink)) {
-    try {
-      const current = readlinkSync(targetLink);
-      if (resolve(current) === resolve(sourceDir)) return; // already correct
-    } catch {
-      // exists but not a symlink — don't overwrite
-      return;
-    }
-  }
-
-  try {
-    symlinkSync(sourceDir, targetLink);
-  } catch {
-    // Permission denied or other OS error — non-fatal
-  }
-}
+const SUPER_DEV_TOOL = "super_dev";
+const SUPER_DEV_COMMAND = "super-dev";
 
 export default function activate(pi: ExtensionAPI): void {
-  // Make workflow discoverable by pi-workflow
-  ensureWorkflowSymlink();
+	pi.registerTool({
+		name: SUPER_DEV_TOOL,
+		label: "Super Dev",
+		description:
+			"Run the self-contained 13-stage super-dev pipeline (requirements → research → design → spec → TDD implementation → code review → docs → merge). Spawns specialist `pi` subagents directly — no external workflow engine required.",
+		promptSnippet: "Run the full 13-stage super-dev development pipeline for a feature/bug/refactor task",
+		promptGuidelines: [
+			"Use super_dev when the user asks to implement a feature, fix a bug, or refactor code as a structured multi-stage workflow.",
+			"Pass the user's full task verbatim to super_dev; do not paraphrase constraints, file references, or acceptance criteria.",
+		],
+		parameters: Type.Object({
+			task: Type.String({ description: "The full development task, e.g. 'implement OAuth2 login' or 'fix the crash on large file upload'." }),
+			skipWorktree: Type.Optional(Type.Boolean({ description: "Skip git worktree creation and operate in the current directory. Default: false." })),
+			skipStages: Type.Optional(Type.Array(Type.String(), { description: "Stage output keys to skip (advanced). Default: none." })),
+			model: Type.Optional(Type.String({ description: "Model override for spawned specialist agents in provider/id form." })),
+			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
+		}),
+		async execute(_toolCallId, params, signal, onUpdate) {
+			const task = String(params.task ?? "").trim();
+			if (!task) {
+				return { content: [{ type: "text", text: "super_dev requires a non-empty `task`." }], isError: true, details: {} };
+			}
+			const sink: ProgressSink = {
+				phase: (label) => onUpdate?.({ content: [{ type: "text", text: `\n▶ ${label}` }], details: {} }),
+				log: (message) => onUpdate?.({ content: [{ type: "text", text: `  ${message}` }], details: {} }),
+			};
+			try {
+				const summary = await runPipelineTask(task, {
+					cwd: process.cwd(),
+					skipWorktree: params.skipWorktree === true,
+					skipStages: params.skipStages as string[] | undefined,
+					model: params.model as string | undefined,
+					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
+					progress: sink,
+					signal,
+				});
+				const lines = [
+					"✅ super-dev pipeline complete",
+					`  Spec:     ${summary.specIdentifier}`,
+					`  Worktree: ${summary.worktreePath}`,
+					`  Agents:   ${summary.agentsSpawned} spawned`,
+					`  Impl:     ${(summary.state.implementation as { summary?: string } | undefined)?.summary ?? "n/a"}`,
+					`  Review:   ${(summary.state.review as { verdict?: string } | undefined)?.verdict ?? "n/a"}`,
+					`  Merged:   ${summary.state.merge ? String((summary.state.merge as { merged?: boolean }).merged ?? false) : "skipped"}`,
+				];
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { summary } };
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
+			}
+		},
+	});
 
-  // Register /super-dev command
-  pi.registerCommand("super-dev", {
-    description:
-      "Run the 13-stage super-dev pipeline: requirements → research → design → spec → implement → review → merge",
-    handler: async (args: string, ctx: any) => {
-      if (!args.trim()) {
-        ctx.output(
-          "Usage: /super-dev <task description>\n\n" +
-            "Examples:\n" +
-            "  /super-dev implement user authentication with OAuth2\n" +
-            "  /super-dev fix the crash when uploading large files\n" +
-            "  /super-dev refactor database layer to use connection pooling\n\n" +
-            "This starts the full 13-stage pipeline: classify → requirements → BDD → research → " +
-            "assessment → design → spec → spec-review → implementation (TDD) → code-review → " +
-            "docs → cleanup → merge\n\n" +
-            "Requires: @agwab/pi-workflow (pi install npm:@agwab/pi-workflow)",
-        );
-        return;
-      }
-
-      // Delegate to workflow_run tool (provided by @agwab/pi-workflow)
-      const workflowRunTool = ctx.getTool?.("workflow_run");
-      if (workflowRunTool) {
-        await workflowRunTool.execute(
-          "",
-          { workflow: "super-dev", task: args.trim() },
-          ctx.signal,
-          undefined,
-          ctx,
-        );
-      } else {
-        ctx.output(
-          "Error: @agwab/pi-workflow is not installed.\n\n" +
-            "The super-dev pipeline requires the pi-workflow engine.\n" +
-            "Install it with:\n\n" +
-            "  pi install npm:@agwab/pi-workflow\n\n" +
-            "Then restart Pi and try again.",
-        );
-      }
-    },
-  });
+	pi.registerCommand(SUPER_DEV_COMMAND, {
+		description: "Run the 13-stage super-dev pipeline. Usage: /super-dev <task description>",
+		handler: async (args, ctx) => {
+			const task = String(args ?? "").trim();
+			if (!task) {
+				ctx.ui.notify(
+					"Usage: /super-dev <task description>\n\nExamples:\n  /super-dev implement user authentication with OAuth2\n  /super-dev fix the crash when uploading large files",
+					"info",
+				);
+				return;
+			}
+			// Dispatch to the agent so it runs interruptibly and the tool streams progress.
+			pi.sendUserMessage(`Use the ${SUPER_DEV_TOOL} tool to run the full super-dev pipeline for this task: ${task}`);
+		},
+	});
 }
