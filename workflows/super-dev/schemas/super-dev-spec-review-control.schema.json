@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "docPath": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["Approved", "Approved with Comments", "Changes Requested"] },
+    "findings": { "type": "array", "items": { "type": "object" } },
+    "dimensionsScored": { "type": "array", "items": { "type": "object" } },
+    "summary": { "type": "string" }
+  }
+}

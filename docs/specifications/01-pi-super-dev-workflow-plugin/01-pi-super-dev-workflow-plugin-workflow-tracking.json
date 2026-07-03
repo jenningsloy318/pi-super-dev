@@ -1,0 +1,26 @@
+{
+  "featureName": "pi-super-dev Workflow Plugin",
+  "specDirectory": "docs/specifications/01-pi-super-dev-workflow-plugin",
+  "worktreePath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/01-pi-super-dev-workflow-plugin",
+  "startedAt": "2026-07-03T03:31:00Z",
+  "team": {
+    "name": "pi-super-dev-impl"
+  },
+  "stages": [
+    { "id": 1, "name": "spec-setup", "status": "complete", "startedAt": "2026-07-03T03:31:00Z", "completedAt": "2026-07-03T03:32:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 2, "name": "requirements-bdd", "status": "complete", "startedAt": "2026-07-03T03:32:00Z", "completedAt": "2026-07-03T03:39:00Z", "docs": ["01-requirements.md", "02-bdd-scenarios.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 3, "name": "research", "status": "complete", "startedAt": "2026-07-03T03:39:00Z", "completedAt": "2026-07-03T03:44:00Z", "docs": ["03-research-report.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 4, "name": "debug-analysis", "status": "skipped", "startedAt": "2026-07-03T03:44:00Z", "completedAt": "2026-07-03T03:44:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 5, "name": "code-assessment", "status": "complete", "startedAt": "2026-07-03T03:44:00Z", "completedAt": "2026-07-03T03:48:00Z", "docs": ["04-code-assessment.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 6, "name": "design", "status": "complete", "startedAt": "2026-07-03T03:48:00Z", "completedAt": "2026-07-03T03:53:00Z", "docs": ["05-architecture.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 6.5, "name": "prototype", "status": "skipped", "startedAt": "2026-07-03T03:53:00Z", "completedAt": "2026-07-03T03:53:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 7, "name": "specification", "status": "complete", "startedAt": "2026-07-03T03:53:00Z", "completedAt": "2026-07-03T03:58:00Z", "docs": ["06-specification.md", "07-implementation-plan.md", "08-task-list.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 8, "name": "spec-review", "status": "complete", "startedAt": "2026-07-03T03:58:00Z", "completedAt": "2026-07-03T04:06:00Z", "docs": ["09-spec-review.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 9, "name": "implementation", "status": "complete", "startedAt": "2026-07-03T04:06:00Z", "completedAt": "2026-07-03T04:34:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 10, "name": "code-review", "status": "complete", "startedAt": "2026-07-03T04:34:00Z", "completedAt": "2026-07-03T04:38:00Z", "docs": ["10-code-review.md", "11-adversarial-review.md"], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 11, "name": "documentation", "status": "complete", "startedAt": "2026-07-03T04:38:00Z", "completedAt": "2026-07-03T04:40:00Z", "docs": [], "files": { "created": ["CHANGELOG.md"], "modified": ["README.md", "docs/usage.md"], "deleted": [] } },
+    { "id": 12, "name": "cleanup", "status": "complete", "startedAt": "2026-07-03T04:40:00Z", "completedAt": "2026-07-03T04:41:00Z", "docs": [], "files": { "created": [], "modified": [], "deleted": [] } },
+    { "id": 13, "name": "merge", "status": "in_progress", "startedAt": "2026-07-03T04:41:00Z", "completedAt": null, "docs": [], "files": { "created": [], "modified": [], "deleted": [] } }
+  ],
+  "implementationPhases": []
+}

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["docPath", "featureName", "acCount"],
+  "additionalProperties": false,
+  "properties": {
+    "docPath": { "type": "string", "minLength": 1 },
+    "featureName": { "type": "string", "minLength": 1 },
+    "acCount": { "type": "integer", "minimum": 1 },
+    "openQuestions": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "string" }
+  }
+}

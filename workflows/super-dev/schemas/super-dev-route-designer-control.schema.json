@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["designerAgent", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "designerAgent": { "type": ["string", "null"] },
+    "reason": { "type": "string", "minLength": 1 }
+  }
+}
