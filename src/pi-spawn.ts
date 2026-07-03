@@ -83,12 +83,20 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 			env: { ...process.env },
 			windowsHide: true,
 		});
-		let stdoutBuf = "";
-		let stderrBuf = "";
+		// Bounded capture ONLY: the spawned agent's stdout is a stream of NDJSON
+		// deltas where each message_update re-emits the FULL accumulated partial —
+		// gigabytes for a verbose/long agent (the design stage crashed pi with
+		// RangeError "Invalid string length" at >512MB). Never buffer the whole
+		// stdout; parse line-by-line and keep only the last assistant text.
 		let lineBuf = "";
+		let lastAssistantText = "";
+		let lastModel: string | undefined;
+		let stderrBuf = "";
 		let aborted = false;
 		let timedOut = false;
 		let turns = 0;
+		const STDERR_CAP = 16 * 1024;
+		const LINE_CAP = 16 * 1024 * 1024;
 		const cleanup = () => {
 			signal?.removeEventListener("abort", onAbort);
 			clearTimeout(timer);
@@ -104,20 +112,23 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		}, timeoutMs);
 
 		child.stdout.on("data", (c: Buffer) => {
-			const chunk = c.toString("utf8");
-			stdoutBuf += chunk;
-			// Parse complete NDJSON lines as they arrive to surface live progress.
-			if (onProgress) {
-				lineBuf += chunk;
-				let nl: number;
-				while ((nl = lineBuf.indexOf("\n")) >= 0) {
-					const line = lineBuf.slice(0, nl);
-					lineBuf = lineBuf.slice(nl + 1);
-					if (line.trim()) handleProgressLine(line, onProgress, () => ++turns);
+			lineBuf += c.toString("utf8");
+			let nl: number;
+			while ((nl = lineBuf.indexOf("\n")) >= 0) {
+				const line = lineBuf.slice(0, nl);
+				lineBuf = lineBuf.slice(nl + 1);
+				if (line.trim()) {
+					const r = processStreamLine(line, onProgress, () => ++turns);
+					if (r?.text) lastAssistantText = r.text;
+					if (r?.model) lastModel = r.model;
 				}
 			}
+			if (lineBuf.length > LINE_CAP) lineBuf = ""; // stay bounded on a runaway line
 		});
-		child.stderr.on("data", (c: Buffer) => { stderrBuf += c.toString("utf8"); });
+		child.stderr.on("data", (c: Buffer) => {
+			stderrBuf += c.toString("utf8");
+			if (stderrBuf.length > STDERR_CAP) stderrBuf = stderrBuf.slice(stderrBuf.length - STDERR_CAP);
+		});
 		child.on("error", (err) => {
 			cleanup();
 			reject(new Error(`super-dev [${label}]: failed to spawn pi: ${err.message}`));
@@ -125,13 +136,10 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		child.on("close", (code) => {
 			cleanup();
 			if (aborted) { resolve({ text: "", control: null, error: "aborted" }); return; }
-			// Resilient capture: keep the LAST NON-EMPTY assistant text seen in any
-			// message_end. This recovers control JSON even when the agent ends on a
-			// trailing tool-call turn (final message_end has no text) or is killed
-			// mid-stream after already emitting its control block.
-			const { text, model } = extractFinalAssistant(stdoutBuf);
-			if (text) {
-				resolve({ text, control: extractControl(text), model, error: timedOut ? `timed out after ${timeoutMs}ms (used partial output)` : undefined });
+			// lastAssistantText already holds the last non-empty assistant text
+			// (resilient to a trailing tool-call turn or a mid-stream kill).
+			if (lastAssistantText) {
+				resolve({ text: lastAssistantText, control: extractControl(lastAssistantText), model: lastModel, error: timedOut ? `timed out after ${timeoutMs}ms (used partial output)` : undefined });
 				return;
 			}
 			const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
@@ -143,7 +151,20 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 
 interface PiJsonEvent {
 	type?: string;
-	message?: { role?: string; content?: Array<{ type: string; text?: string }> };
+	toolName?: string;
+	args?: Record<string, unknown>;
+	message?: { role?: string; model?: string; content?: Array<{ type: string; text?: string }> };
+}
+
+/** If an event is an assistant message_end, return its text + model (shared by
+ *  the streaming capture and the batch extractFinalAssistant). */
+function assistantFromMessageEnd(ev: PiJsonEvent): { text: string; model?: string } | null {
+	if (ev.type !== "message_end" || ev.message?.role !== "assistant") return null;
+	const text = (ev.message.content ?? [])
+		.filter((p) => p.type === "text" && typeof p.text === "string")
+		.map((p) => p.text as string)
+		.join("");
+	return { text, model: ev.message.model };
 }
 
 /** Compact one-line summary of a tool call, for live progress. */
@@ -164,16 +185,18 @@ export function summarizeToolCall(name: string, args: Record<string, unknown> | 
 	}
 }
 
-/** Parse one streamed NDJSON line and surface meaningful progress. */
-function handleProgressLine(line: string, onProgress: (m: string) => void, nextTurn: () => number): void {
-	let ev: { type?: string; toolName?: string; args?: Record<string, unknown> };
-	try { ev = JSON.parse(line) as typeof ev; } catch { return; }
+/** Parse one streamed NDJSON line: surface live progress AND capture the
+ *  assistant text. Returns {text,model} if the line is an assistant message_end. */
+function processStreamLine(line: string, onProgress: ((m: string) => void) | undefined, nextTurn: () => number): { text: string; model?: string } | null {
+	let ev: PiJsonEvent;
+	try { ev = JSON.parse(line) as PiJsonEvent; } catch { return null; }
 	if (ev.type === "tool_execution_start" && ev.toolName) {
-		onProgress(`→ ${summarizeToolCall(ev.toolName, ev.args)}`);
+		onProgress?.(`→ ${summarizeToolCall(ev.toolName, ev.args)}`);
 	} else if (ev.type === "turn_start") {
 		const n = nextTurn();
-		if (n > 1) onProgress(`turn ${n}`);
+		if (n > 1) onProgress?.(`turn ${n}`);
 	}
+	return assistantFromMessageEnd(ev);
 }
 
 export function extractFinalAssistant(stdout: string): { text: string; model?: string } {
@@ -184,18 +207,12 @@ export function extractFinalAssistant(stdout: string): { text: string; model?: s
 		if (!trimmed) continue;
 		let event: PiJsonEvent;
 		try { event = JSON.parse(trimmed) as PiJsonEvent; } catch { continue; }
-		if (event.type === "message_end" && event.message?.role === "assistant") {
-			// Keep the LAST NON-EMPTY assistant text — never overwrite with empty,
-			// so a trailing tool-call-only turn doesn't discard the control block
-			// emitted in an earlier turn.
-			const t = (event.message.content ?? [])
-				.filter((p) => p.type === "text" && typeof p.text === "string")
-				.map((p) => p.text as string)
-				.join("");
-			if (t) text = t;
-			const m = (event.message as { model?: string }).model;
-			if (m) model = m;
-		}
+		// Keep the LAST NON-EMPTY assistant text — never overwrite with empty,
+		// so a trailing tool-call-only turn doesn't discard the control block
+		// emitted in an earlier turn.
+		const r = assistantFromMessageEnd(event);
+		if (r && r.text) { text = r.text; if (r.model) model = r.model; }
 	}
 	return { text, model };
 }
+
