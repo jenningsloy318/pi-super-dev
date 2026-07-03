@@ -57,6 +57,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			model,
 			signal,
 			id: call.id,
+			onProgress: (m) => log(m),
 		});
 	}
 	async function helper(call: HelperCall): Promise<HelperResult> {

@@ -17,7 +17,7 @@ function git(args: string[], cwd: string): string | null {
 	}
 }
 
-export function detectLanguage(cwd: string): { language: string; isWebUi: boolean } {
+export function detectLanguage(cwd: string, task = ""): { language: string; isWebUi: boolean } {
 	const has = (f: string) => existsSync(join(cwd, f));
 	if (has("Cargo.toml")) return { language: "rust", isWebUi: false };
 	if (has("go.mod")) return { language: "go", isWebUi: false };
@@ -33,6 +33,14 @@ export function detectLanguage(cwd: string): { language: string; isWebUi: boolea
 			return { language: "frontend", isWebUi: true };
 		}
 	}
+	// Greenfield (no manifest): infer the target stack from the task text so
+	// downstream prompts and the implementation know what to build.
+	const t = task.toLowerCase();
+	const mentions = (...kw: string[]) => kw.some((k) => t.includes(k));
+	if (mentions("node", "nodejs", "node.js", "express", "fastify", "npm", "deno", "bun")) return { language: "backend", isWebUi: false };
+	if (mentions("python", "django", "flask", "fastapi", "pip")) return { language: "python", isWebUi: false };
+	if (mentions("golang") || /\bgo\b/.test(t)) return { language: "go", isWebUi: false };
+	if (mentions("rust", "cargo")) return { language: "rust", isWebUi: false };
 	return { language: "mixed", isWebUi: false };
 }
 
@@ -60,6 +68,19 @@ function detectDefaultBranch(cwd: string): string {
 	return "main";
 }
 
+function isGitRepo(cwd: string): boolean {
+	return git(["rev-parse", "--is-inside-work-tree"], cwd) !== null;
+}
+
+function headExists(cwd: string): boolean {
+	return git(["rev-parse", "--verify", "HEAD"], cwd) !== null;
+}
+
+function ensureGitIdentity(cwd: string): void {
+	if (!git(["config", "user.email"], cwd)) git(["config", "user.email", "pi-super-dev@local"], cwd);
+	if (!git(["config", "user.name"], cwd)) git(["config", "user.name", "pi-super-dev"], cwd);
+}
+
 export interface SetupOptions {
 	cwd?: string;
 	skipWorktree?: boolean;
@@ -67,19 +88,39 @@ export interface SetupOptions {
 
 export function runSetup(task: string, options: SetupOptions = {}): SetupControl {
 	const cwd = resolve(options.cwd ?? process.cwd());
-	const { language, isWebUi } = detectLanguage(cwd);
+
+	// Ensure cwd is a git repo (worktree + later commits/merge require it).
+	let initializedRepo = false;
+	if (!isGitRepo(cwd)) {
+		git(["init"], cwd);
+		initializedRepo = true;
+	}
+	// A worktree (and later commits/merge) needs at least one commit on the
+	// base branch. Empty repos with an unborn HEAD break `git worktree add`
+	// ("fatal: invalid reference: main"), causing setup to silently fall back
+	// to operating in the cwd with no isolation.
+	if (!headExists(cwd)) {
+		ensureGitIdentity(cwd);
+		git(["commit", "--allow-empty", "-m", "chore: initial commit (pi-super-dev)"], cwd);
+	}
+
+	const { language, isWebUi } = detectLanguage(cwd, task);
 	const defaultBranch = detectDefaultBranch(cwd);
 	const specIdentifier = nextSpecIdentifier(cwd, task);
 
 	let worktreePath = cwd;
+	let worktreeCreated = false;
 	if (!options.skipWorktree) {
 		const wtPath = join(cwd, ".worktree", specIdentifier);
 		const created = git(["worktree", "add", "-b", specIdentifier, wtPath, defaultBranch], cwd);
-		if (created !== null || existsSync(wtPath)) worktreePath = wtPath;
+		if (created !== null || existsSync(wtPath)) {
+			worktreePath = wtPath;
+			worktreeCreated = true;
+		}
 	}
 
 	const specDirectory = join(worktreePath, "docs", "specifications", specIdentifier) + "/";
 	mkdirSync(specDirectory, { recursive: true });
 
-	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier };
+	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo };
 }

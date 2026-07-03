@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractFinalAssistant, buildSpawnArgs } from "../src/pi-spawn.ts";
+import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 
@@ -74,5 +74,22 @@ describe("buildSpawnArgs", () => {
 		const args = buildSpawnArgs({ ...base, model: "openai/gpt-4o" }, "/tmp/agent.md");
 		expect(args).toContain("--model");
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
+	});
+});
+
+describe("summarizeToolCall", () => {
+	it("summarizes a write/edit/read by path", () => {
+		expect(summarizeToolCall("write", { path: "docs/01-requirements.md" })).toBe("write docs/01-requirements.md");
+		expect(summarizeToolCall("read", { path: "src/index.ts" })).toBe("read src/index.ts");
+	});
+	it("summarizes bash by truncating the command", () => {
+		expect(summarizeToolCall("bash", { command: "npm test && npm run build" })).toBe("$ npm test && npm run build");
+		expect(summarizeToolCall("bash", { command: "x".repeat(200) }).length).toBeLessThan(70);
+	});
+	it("summarizes ffgrep/fffind by pattern", () => {
+		expect(summarizeToolCall("ffgrep", { pattern: "TODO" })).toBe('ffgrep "TODO"');
+	});
+	it("falls back to the tool name for unknown tools", () => {
+		expect(summarizeToolCall("mystery", { x: 1 })).toBe("mystery");
 	});
 });

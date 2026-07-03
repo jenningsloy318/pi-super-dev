@@ -5,10 +5,10 @@
  */
 
 import { writerTask, helperTask } from "../nodes.ts";
-import type { Stage } from "../types.ts";
+import type { Stage, SetupControl } from "../types.ts";
 import * as P from "../prompts.ts";
 
-const S = (s: { setup?: { worktreePath: string; specDirectory: string; defaultBranch: string; language: string; isWebUi: boolean; specIdentifier: string } }) => s.setup!;
+const S = (s: { setup?: SetupControl }) => s.setup!;
 
 export const requirementsWriter: Stage = writerTask({
 	id: "requirements",

@@ -13,8 +13,9 @@ export const setupStage: Stage = {
 	fatal: true,
 	async run(_state, ctx) {
 		const setup = runSetup(ctx.task, { cwd: ctx.options.cwd, skipWorktree: ctx.options.skipWorktree });
-		ctx.log(`Spec ${setup.specIdentifier} | ${setup.language} | Web UI ${setup.isWebUi} | Branch ${setup.defaultBranch}`);
-		ctx.log(`Worktree: ${setup.worktreePath}`);
+		ctx.log(`Setup: spec ${setup.specIdentifier} | ${setup.language}${setup.isWebUi ? " (Web UI)" : ""} | branch ${setup.defaultBranch}`);
+		ctx.log(`Worktree: ${setup.worktreePath} (${setup.worktreeCreated ? "created" : "in-place, no worktree"}${setup.initializedRepo ? "; git init'd" : ""})`);
+		ctx.log(`Spec dir: ${setup.specDirectory}`);
 		return setup;
 	},
 };

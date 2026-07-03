@@ -67,6 +67,10 @@ export interface SetupControl {
 	language: string;
 	isWebUi: boolean;
 	specIdentifier: string;
+	/** True when an isolated git worktree was created (vs. operating in cwd). */
+	worktreeCreated: boolean;
+	/** True when setup had to `git init` the directory first. */
+	initializedRepo: boolean;
 }
 
 export interface Classification {

@@ -34,10 +34,14 @@ function formatSummary(s: RunSummary): string[] {
 	};
 	const impl = s.state.implementation as { summary?: string; totalPhases?: number; allGreen?: boolean } | undefined;
 	const review = s.state.review as { verdict?: string } | undefined;
+	const setup = s.state.setup as { language?: string; isWebUi?: boolean; defaultBranch?: string; worktreeCreated?: boolean; initializedRepo?: boolean } | undefined;
+	const classify = s.state.classify as { taskType?: string; uiScope?: string } | undefined;
 	const lines = [
 		`${icon[s.status]} ${title[s.status]}`,
 		`  Spec:     ${s.specIdentifier || "(none)"}`,
-		`  Worktree: ${s.worktreePath}`,
+		`  Worktree: ${s.worktreePath}${setup?.worktreeCreated ? " (created)" : setup ? " (in-place)" : ""}`,
+		`  Stack:    ${setup ? `${setup.language}${setup.isWebUi ? " | Web UI" : ""}${setup.defaultBranch ? ` | branch ${setup.defaultBranch}` : ""}` : "n/a"}`,
+		`  Classify: ${classify ? `${classify.taskType}${classify.uiScope ? ` | ${classify.uiScope}` : ""}` : "n/a"}`,
 		`  Agents:   ${s.agentsSpawned} spawned`,
 		`  Impl:     ${impl?.summary ?? (impl ? `${impl.totalPhases ?? 0} phase(s), allGreen=${impl.allGreen ?? false}` : "none produced")}`,
 		`  Review:   ${review?.verdict ?? (s.state.review ? "no verdict" : "skipped")}`,
@@ -77,9 +81,12 @@ export default function activate(pi: ExtensionAPI): void {
 			if (!task) {
 				return { content: [{ type: "text", text: "super_dev requires a non-empty `task`." }], isError: true, details: {} };
 			}
+			const transcript: string[] = [];
+			const flush = () =>
+				onUpdate?.({ content: [{ type: "text", text: transcript.join("\n") }], details: {} });
 			const sink: ProgressSink = {
-				phase: (label) => onUpdate?.({ content: [{ type: "text", text: `\n▶ ${label}` }], details: {} }),
-				log: (message) => onUpdate?.({ content: [{ type: "text", text: `  ${message}` }], details: {} }),
+				phase: (label) => { transcript.push(`▶ ${label}`); flush(); },
+				log: (message) => { transcript.push(`  ${message}`); flush(); },
 			};
 			try {
 				const summary = await runPipelineTask(task, {

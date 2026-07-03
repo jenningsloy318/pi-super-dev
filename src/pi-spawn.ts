@@ -31,6 +31,8 @@ export interface SpawnAgentOptions {
 	signal?: AbortSignal;
 	id?: string;
 	timeoutMs?: number;
+	/** Live, compact progress from the spawned agent (e.g. tool calls). */
+	onProgress?: (message: string) => void;
 }
 
 function resolvePiBinary(): { command: string; args: string[] } {
@@ -48,7 +50,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 	writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
 
 	const args = buildSpawnArgs(opts, promptPath);
-	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS);
+	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS, opts.onProgress);
 	rmSync(tempDir, { recursive: true, force: true });
 	return result;
 }
@@ -73,7 +75,7 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string): str
 	return args;
 }
 
-function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number): Promise<SpawnResult> {
+function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: (m: string) => void): Promise<SpawnResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(args[0], args.slice(1), {
 			cwd,
@@ -83,8 +85,10 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		});
 		let stdoutBuf = "";
 		let stderrBuf = "";
+		let lineBuf = "";
 		let aborted = false;
 		let timedOut = false;
+		let turns = 0;
 		const cleanup = () => {
 			signal?.removeEventListener("abort", onAbort);
 			clearTimeout(timer);
@@ -99,7 +103,20 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 			try { child.kill("SIGTERM"); } catch { /* ignore */ }
 		}, timeoutMs);
 
-		child.stdout.on("data", (c: Buffer) => { stdoutBuf += c.toString("utf8"); });
+		child.stdout.on("data", (c: Buffer) => {
+			const chunk = c.toString("utf8");
+			stdoutBuf += chunk;
+			// Parse complete NDJSON lines as they arrive to surface live progress.
+			if (onProgress) {
+				lineBuf += chunk;
+				let nl: number;
+				while ((nl = lineBuf.indexOf("\n")) >= 0) {
+					const line = lineBuf.slice(0, nl);
+					lineBuf = lineBuf.slice(nl + 1);
+					if (line.trim()) handleProgressLine(line, onProgress, () => ++turns);
+				}
+			}
+		});
 		child.stderr.on("data", (c: Buffer) => { stderrBuf += c.toString("utf8"); });
 		child.on("error", (err) => {
 			cleanup();
@@ -127,6 +144,36 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 interface PiJsonEvent {
 	type?: string;
 	message?: { role?: string; content?: Array<{ type: string; text?: string }> };
+}
+
+/** Compact one-line summary of a tool call, for live progress. */
+export function summarizeToolCall(name: string, args: Record<string, unknown> | undefined): string {
+	const a = args ?? {};
+	switch (name) {
+		case "write":
+		case "edit":
+		case "read":
+			return `${name} ${a.path ?? a.file_path ?? ""}`;
+		case "bash":
+			return `$ ${String(a.command ?? "").split("\n")[0].slice(0, 60)}`;
+		case "ffgrep":
+		case "fffind":
+			return `${name} "${a.pattern ?? ""}"`;
+		default:
+			return name;
+	}
+}
+
+/** Parse one streamed NDJSON line and surface meaningful progress. */
+function handleProgressLine(line: string, onProgress: (m: string) => void, nextTurn: () => number): void {
+	let ev: { type?: string; toolName?: string; args?: Record<string, unknown> };
+	try { ev = JSON.parse(line) as typeof ev; } catch { return; }
+	if (ev.type === "tool_execution_start" && ev.toolName) {
+		onProgress(`→ ${summarizeToolCall(ev.toolName, ev.args)}`);
+	} else if (ev.type === "turn_start") {
+		const n = nextTurn();
+		if (n > 1) onProgress(`turn ${n}`);
+	}
 }
 
 export function extractFinalAssistant(stdout: string): { text: string; model?: string } {
