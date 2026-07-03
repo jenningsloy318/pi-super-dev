@@ -5,8 +5,8 @@
  * agent ends on a trailing tool-call turn or is killed mid-stream.
  */
 
-import { describe, it, expect } from "vitest";
-import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall } from "../src/pi-spawn.ts";
+import { describe, it, expect, beforeEach } from "vitest";
+import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, processStreamLine } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 
@@ -78,13 +78,13 @@ describe("buildSpawnArgs", () => {
 });
 
 describe("summarizeToolCall", () => {
-	it("summarizes a write/edit/read by path", () => {
+	it("summarizes a write/edit/read by path (full, no abbreviation)", () => {
 		expect(summarizeToolCall("write", { path: "docs/01-requirements.md" })).toBe("write docs/01-requirements.md");
 		expect(summarizeToolCall("read", { path: "src/index.ts" })).toBe("read src/index.ts");
 	});
-	it("summarizes bash by truncating the command", () => {
+	it("shows the full bash command (no artificial truncation)", () => {
 		expect(summarizeToolCall("bash", { command: "npm test && npm run build" })).toBe("$ npm test && npm run build");
-		expect(summarizeToolCall("bash", { command: "x".repeat(200) }).length).toBeLessThanOrEqual(74);
+		expect(summarizeToolCall("bash", { command: "x".repeat(200) })).toBe(`$ ${"x".repeat(200)}`);
 	});
 	it("summarizes ffgrep/fffind by pattern", () => {
 		expect(summarizeToolCall("ffgrep", { pattern: "TODO" })).toBe('ffgrep "TODO"');
@@ -92,13 +92,33 @@ describe("summarizeToolCall", () => {
 	it("falls back to the tool name for unknown tools", () => {
 		expect(summarizeToolCall("mystery", { x: 1 })).toBe("mystery");
 	});
-	it("abbreviates the agent cwd to '.' so paths fit (no more mid-path truncation)", () => {
-		const cwd = "/tmp/hello-word/.worktree/01-implement-a-simple-app-to-show-location";
-		expect(summarizeToolCall("bash", { command: `find ${cwd} -type f` }, cwd)).toBe("$ find . -type f");
-		expect(summarizeToolCall("read", { path: `${cwd}/docs/spec.md` }, cwd)).toBe("read ./docs/spec.md");
+});
+
+describe("processStreamLine (live progress + capture)", () => {
+	const calls: string[] = [];
+	const onProgress = (m: string) => calls.push(m);
+	const noTurn = () => 0;
+	const line = (obj: unknown) => JSON.stringify(obj);
+	beforeEach(() => calls.length = 0);
+
+	it("surfaces tool calls", () => {
+		processStreamLine(line({ type: "tool_execution_start", toolName: "write", args: { path: "docs/x.md" } }), onProgress, noTurn);
+		expect(calls).toEqual(["→ write docs/x.md"]);
 	});
-	it("collapses $HOME to ~", () => {
-		const home = process.env.HOME ?? "/home/user";
-		expect(summarizeToolCall("read", { path: `${home}/repo/src/x.ts` })).toBe(`read ~/repo/src/x.ts`);
+	it("surfaces the agent's text (control block stripped, capped)", () => {
+		processStreamLine(line({ type: "text_end", content: "I checked the APIs.\n<control>{\"done\":true}</control>" }), onProgress, noTurn);
+		expect(calls).toEqual(["I checked the APIs."]);
+	});
+	it("does not surface a text block that is only a control block", () => {
+		processStreamLine(line({ type: "text_end", content: "<control>{\"x\":1}</control>" }), onProgress, noTurn);
+		expect(calls).toEqual([]);
+	});
+	it("captures assistant text + model from message_end", () => {
+		const r = processStreamLine(line({ type: "message_end", message: { role: "assistant", model: "glm-5.2", content: [{ type: "text", text: "hi" }] } }), onProgress, noTurn);
+		expect(r).toEqual({ text: "hi", model: "glm-5.2" });
+	});
+	it("ignores malformed lines", () => {
+		expect(processStreamLine("not json", onProgress, noTurn)).toBeNull();
+		expect(calls).toEqual([]);
 	});
 });

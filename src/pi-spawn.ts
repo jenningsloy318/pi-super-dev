@@ -118,7 +118,7 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 				const line = lineBuf.slice(0, nl);
 				lineBuf = lineBuf.slice(nl + 1);
 				if (line.trim()) {
-					const r = processStreamLine(line, onProgress, () => ++turns, cwd);
+					const r = processStreamLine(line, onProgress, () => ++turns);
 					if (r?.text) lastAssistantText = r.text;
 					if (r?.model) lastModel = r.model;
 				}
@@ -153,6 +153,8 @@ interface PiJsonEvent {
 	type?: string;
 	toolName?: string;
 	args?: Record<string, unknown>;
+	/** Complete text of a text block (text_end event). */
+	content?: string;
 	message?: { role?: string; model?: string; content?: Array<{ type: string; text?: string }> };
 }
 
@@ -167,17 +169,18 @@ function assistantFromMessageEnd(ev: PiJsonEvent): { text: string; model?: strin
 	return { text, model: ev.message.model };
 }
 
-/** Compact one-line summary of a tool call, for live progress. */
-export function summarizeToolCall(name: string, args: Record<string, unknown> | undefined, cwd?: string): string {
+/** Compact one-line summary of a tool call, for live progress.
+ *  Paths/commands are shown IN FULL (no truncation, no abbreviation) — the
+ *  TUI wraps long lines, same as it does for read/write. */
+export function summarizeToolCall(name: string, args: Record<string, unknown> | undefined): string {
 	const a = args ?? {};
-	const abbr = (s: string) => abbreviatePath(s, cwd);
 	switch (name) {
 		case "write":
 		case "edit":
 		case "read":
-			return `${name} ${abbr(String(a.path ?? a.file_path ?? ""))}`;
+			return `${name} ${a.path ?? a.file_path ?? ""}`;
 		case "bash":
-			return `$ ${abbr(String(a.command ?? "").split("\n")[0]).slice(0, 72)}`;
+			return `$ ${String(a.command ?? "").split("\n")[0]}`;
 		case "ffgrep":
 		case "fffind":
 			return `${name} "${a.pattern ?? ""}"`;
@@ -199,14 +202,19 @@ export function abbreviatePath(p: string, cwd?: string): string {
 
 /** Parse one streamed NDJSON line: surface live progress AND capture the
  *  assistant text. Returns {text,model} if the line is an assistant message_end. */
-function processStreamLine(line: string, onProgress: ((m: string) => void) | undefined, nextTurn: () => number, cwd?: string): { text: string; model?: string } | null {
+export function processStreamLine(line: string, onProgress: ((m: string) => void) | undefined, nextTurn: () => number): { text: string; model?: string } | null {
 	let ev: PiJsonEvent;
 	try { ev = JSON.parse(line) as PiJsonEvent; } catch { return null; }
 	if (ev.type === "tool_execution_start" && ev.toolName) {
-		onProgress?.(`→ ${summarizeToolCall(ev.toolName, ev.args, cwd)}`);
+		onProgress?.(`→ ${summarizeToolCall(ev.toolName, ev.args)}`);
 	} else if (ev.type === "turn_start") {
 		const n = nextTurn();
 		if (n > 1) onProgress?.(`turn ${n}`);
+	} else if (ev.type === "text_end" && typeof ev.content === "string") {
+		// Surface the agent's own text (its reasoning/commentary), stripped of the
+		// machine <control> block, capped so one verbose agent can't flood the log.
+		const t = ev.content.replace(/<control>[\s\S]*?<\/control>/gi, "").trim();
+		if (t) onProgress?.(t.slice(0, 500) + (t.length > 500 ? " …" : ""));
 	}
 	return assistantFromMessageEnd(ev);
 }
