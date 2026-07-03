@@ -66,11 +66,11 @@ describe("Task 1.1: package.json", () => {
 		expect(peerDeps["@earendil-works/pi-coding-agent"]).toBeDefined();
 	});
 
-	it("declares @agwab/pi-workflow as dependency", () => {
+	it("declares @earendil-works/pi-coding-agent as peerDependency", () => {
 		const pkg = readJson("package.json") as Record<string, unknown>;
-		const deps = pkg.dependencies as Record<string, string>;
-		expect(deps).toBeDefined();
-		expect(deps["@agwab/pi-workflow"]).toBeDefined();
+		const peerDeps = pkg.peerDependencies as Record<string, string>;
+		expect(peerDeps).toBeDefined();
+		expect(peerDeps["@earendil-works/pi-coding-agent"]).toBeDefined();
 	});
 });
 
