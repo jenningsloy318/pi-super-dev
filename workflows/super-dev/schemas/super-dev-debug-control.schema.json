@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["docPath", "hypotheses"],
+  "additionalProperties": false,
+  "properties": {
+    "docPath": { "type": "string", "minLength": 1 },
+    "hypotheses": { "type": "array", "items": { "type": "object" }, "minItems": 1 },
+    "rootCause": { "type": "string" },
+    "reproductionSteps": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "string" }
+  }
+}

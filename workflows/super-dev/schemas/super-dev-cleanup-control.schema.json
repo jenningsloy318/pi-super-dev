@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["blocked"],
+  "additionalProperties": false,
+  "properties": {
+    "languagesDetected": { "type": "array", "items": { "type": "string" } },
+    "directoriesRemoved": { "type": "array", "items": { "type": "string" } },
+    "sensitiveDataFindings": { "type": "array", "items": { "type": "string" } },
+    "blocked": { "type": "boolean" },
+    "summary": { "type": "string" }
+  }
+}

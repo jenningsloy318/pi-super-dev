@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["designer", "modules"],
+  "additionalProperties": false,
+  "properties": {
+    "designer": { "type": "string" },
+    "docs": { "type": "array", "items": { "type": "string" } },
+    "modules": { "type": "array", "items": { "type": "object" }, "minItems": 1 },
+    "hasNumericConstants": { "type": "boolean" },
+    "summary": { "type": "string" }
+  }
+}

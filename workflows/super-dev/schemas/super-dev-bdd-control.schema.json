@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["docPath", "scenarioCount"],
+  "additionalProperties": false,
+  "properties": {
+    "docPath": { "type": "string", "minLength": 1 },
+    "scenarioCount": { "type": "integer", "minimum": 1 },
+    "edgeCasesCovered": { "type": "boolean" },
+    "coverageScore": { "type": "number", "minimum": 0, "maximum": 1 },
+    "summary": { "type": "string" }
+  }
+}

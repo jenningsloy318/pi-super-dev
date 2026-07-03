@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "required": ["worktreePath", "specDirectory", "language", "specIdentifier"],
+  "additionalProperties": false,
+  "properties": {
+    "worktreePath": { "type": "string", "minLength": 1 },
+    "specDirectory": { "type": "string", "minLength": 1 },
+    "defaultBranch": { "type": "string" },
+    "language": { "type": "string", "enum": ["rust", "go", "frontend", "backend", "mixed"] },
+    "isWebUi": { "type": "boolean" },
+    "specIdentifier": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["needed"],
+  "additionalProperties": false,
+  "properties": {
+    "needed": { "type": "boolean" },
+    "constants": { "type": "array", "items": { "type": "string" } }
+  }
+}
