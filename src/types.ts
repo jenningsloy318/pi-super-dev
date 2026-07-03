@@ -107,6 +107,14 @@ export interface PipelineState {
 
 // ─── Stage (leaf unit of work) ──────────────────────────────────────────────
 
+/** Outcome of one leaf-stage execution, recorded for honest run reporting. */
+export interface StageResult {
+	id: string;
+	label: string;
+	status: NodeStatus;
+	error?: string;
+}
+
 /**
  * Execution primitives handed to every stage. The runner builds one context
  * and passes the same reference around; `agent()` resolves its cwd from
@@ -123,6 +131,8 @@ export interface StageContext {
 	log(message: string): void;
 	events: EventEmitter;
 	signal?: AbortSignal;
+	/** Every leaf-stage outcome, appended by `task()`. Used for honest summaries. */
+	results: StageResult[];
 }
 
 /** A leaf unit of work. Its return value is stored under `state[id]`. */
@@ -178,6 +188,9 @@ export interface RunOptions {
 	signal?: AbortSignal;
 }
 
+/** Honest, derived overall outcome of a run. */
+export type RunStatus = "success" | "partial" | "failed";
+
 export interface RunSummary {
 	workflowId: string;
 	specIdentifier: string;
@@ -185,4 +198,10 @@ export interface RunSummary {
 	specDirectory: string;
 	agentsSpawned: number;
 	state: PipelineState;
+	/** Derived overall outcome — never faked. */
+	status: RunStatus;
+	/** Stage labels that ended in `failed` (deduped). Empty on full success. */
+	failedStages: string[];
+	/** Error message when the run aborted (e.g. a fatal gate threw). */
+	error?: string;
 }

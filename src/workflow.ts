@@ -21,6 +21,7 @@ import type {
 	HelperResult,
 	PipelineState,
 	RunOptions,
+	RunStatus,
 	RunSummary,
 	StageContext,
 	Workflow,
@@ -75,7 +76,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		return results;
 	}
 
-	return { task, options, state, agent, helper, parallel, budget, log, events: new EventEmitter(), signal };
+	return { task, options, state, agent, helper, parallel, budget, log, events: new EventEmitter(), signal, results: [] };
 }
 
 /** Run a workflow for a task. */
@@ -96,9 +97,46 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		ctx.events.on("phase", (label: unknown) => progress.phase(String(label)));
 	}
 
-	await workflow.root.run(state, ctx);
+	let aborted = false;
+	let abortError: string | undefined;
+	try {
+		await workflow.root.run(state, ctx);
+	} catch (err) {
+		// A fatal gate (or fatal task) threw to abort the run honestly.
+		aborted = true;
+		abortError = err instanceof Error ? err.message : String(err);
+		progress?.log(`Workflow "${workflow.id}" aborted: ${abortError}`);
+	}
 
-	progress?.log(`Workflow "${workflow.id}" complete`);
+	if (!aborted) progress?.log(`Workflow "${workflow.id}" complete`);
+
+	// Derive an honest overall status from the produced state — never faked.
+	const impl = state.implementation as { totalPhases?: number; allGreen?: boolean } | undefined;
+	const review = state.review as { verdict?: string } | undefined;
+	const phases = impl?.totalPhases ?? 0;
+	const green = impl?.allGreen === true;
+	const verdict = review?.verdict;
+	const approved = verdict === "Approved" || verdict === "Approved with Comments";
+	const reviewRan = review !== undefined;
+
+	let status: RunStatus;
+	if (phases === 0) {
+		status = "failed"; // no implementation produced (gate aborted, or spec had no phases)
+	} else if (green && (!reviewRan || approved)) {
+		status = "success";
+	} else {
+		status = "partial";
+	}
+
+	// Deduped list of stages that ended in `failed`.
+	const seen = new Set<string>();
+	const failedStages: string[] = [];
+	for (const r of ctx.results) {
+		if (r.status === "failed" && !seen.has(r.id)) {
+			seen.add(r.id);
+			failedStages.push(r.label || r.id);
+		}
+	}
 
 	return {
 		workflowId: workflow.id,
@@ -107,6 +145,9 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		specDirectory: state.setup?.specDirectory ?? "",
 		agentsSpawned: ctx.budget.count,
 		state,
+		status,
+		failedStages,
+		error: abortError,
 	};
 }
 

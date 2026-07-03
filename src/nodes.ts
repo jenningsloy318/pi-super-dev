@@ -32,6 +32,7 @@
 import type {
 	Node,
 	NodeResult,
+	NodeStatus,
 	PipelineState,
 	Stage,
 	StageContext,
@@ -84,6 +85,8 @@ const cancelled = (): NodeResult => ({ status: "cancelled" });
 
 /** Lift a `Stage` into a leaf node. Stores the return value under `state[id]`. */
 export function task(stage: Stage): Node {
+	const record = (ctx: StageContext, status: NodeStatus, error?: string) =>
+		ctx.results.push({ id: stage.id, label: stage.label, status, error });
 	return {
 		kind: "task",
 		label: stage.label,
@@ -91,19 +94,23 @@ export function task(stage: Stage): Node {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
 			if (stage.enabled && !stage.enabled(state)) {
 				ctx.log(`task "${stage.id}": skipped (disabled)`);
+				record(ctx, "skipped");
 				return { status: "skipped" };
 			}
 			if (!ctx.budget.check()) {
 				ctx.log(`task "${stage.id}": skipped (budget exhausted)`);
+				record(ctx, "skipped");
 				return { status: "skipped" };
 			}
 			try {
 				ctx.events.emit("phase", stage.label);
 				const result = await stage.run(state, ctx);
 				if (result !== undefined && result !== null) state[stage.id] = result;
+				record(ctx, "ok");
 				return { status: "ok", value: result };
 			} catch (err) {
 				const error = err instanceof Error ? err.message : String(err);
+				record(ctx, "failed", error);
 				if (stage.fatal) throw err;
 				return { status: "failed", error };
 			}
@@ -272,11 +279,19 @@ export interface GateOptions {
 	attempts?: number;
 	/** Remediation node run between failed validations (defaults to re-running `node`). */
 	fix?: Node;
+	/** If true, throw (aborting the pipeline) when validation is exhausted. */
+	fatal?: boolean;
+	/** Label included in the fatal error message for diagnosis. */
+	fatalMessage?: string;
 }
 
 /**
  * Run `node`, validate its output, and repeat (running `fix`, or `node` again)
  * until validation passes or attempts are exhausted. Models the quality gates.
+ *
+ * With `fatal: true`, exhaustion throws — used for gates whose failure makes
+ * every downstream stage meaningless (e.g. a spec with no phases), so the run
+ * aborts honestly instead of limping on to produce nothing.
  */
 export function gate(opts: GateOptions, node: Node): Node {
 	return {
@@ -295,6 +310,10 @@ export function gate(opts: GateOptions, node: Node): Node {
 				}
 				if (await opts.validate(state, ctx)) return { status: "ok", attempts: attempt };
 				ctx.log(`gate: validation FAIL attempt ${attempt}/${max}`);
+			}
+			if (opts.fatal) {
+				const msg = opts.fatalMessage ?? `gate validation exhausted after ${max} attempt(s)`;
+				throw new Error(msg);
 			}
 			return { status: "failed", error: "gate validation exhausted", attempts: max };
 		},

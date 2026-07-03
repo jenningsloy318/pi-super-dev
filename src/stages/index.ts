@@ -33,6 +33,10 @@ import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt } from ".
 const isBug = (s: PipelineState) => s.classify?.taskType === "bug";
 const notBlocked = (s: PipelineState) => s.cleanup?.blocked !== true;
 
+/** Only review when there is actually an implementation to review. */
+const hasImplementation = (s: PipelineState) =>
+	((s.implementation as { totalPhases?: number } | undefined)?.totalPhases ?? 0) > 0;
+
 /** Research is complete when it reports no open issues. */
 const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const open = (s.research?.openIssues as unknown[]) ?? [];
@@ -106,18 +110,22 @@ const pipeline = sequence(
 		task(setupStage),
 		task(classifyStage),
 		// Quality-gate loops: write → validate → re-write until the gate passes.
-		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), attempts: 3 }, task(requirementsWriter)),
-		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), attempts: 3 }, task(bddWriter)),
-		gate({ validate: researchComplete, attempts: 3 }, task(researchWriter)),
+		// All are fatal: if a gate can't pass in 3 tries, abort honestly rather
+		// than limp on to produce a broken/degenerate implementation.
+		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), attempts: 3, fatal: true, fatalMessage: "requirements gate failed after 3 attempts — cannot proceed without requirements" }, task(requirementsWriter)),
+		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), attempts: 3, fatal: true, fatalMessage: "BDD gate failed after 3 attempts — cannot proceed without behavior scenarios" }, task(bddWriter)),
+		gate({ validate: researchComplete, attempts: 3, fatal: true, fatalMessage: "research gate failed after 3 attempts — open issues remain" }, task(researchWriter)),
 		// Conditional branch: debug analysis only for bug fixes.
 		branch(isBug, { yes: task(debugWriter) }),
 		task(assessmentWriter),
 		task(designStage),
 		task(prototypeStage),
-		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), attempts: 3 }, task(specWriter)),
-		gate({ validate: gateValidator("gate-spec-review", "review-spec", "specReview"), attempts: 3 }, task(specReviewWriter)),
+		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), attempts: 3, fatal: true, fatalMessage: "spec gate failed after 3 attempts — no valid phased specification produced" }, task(specWriter)),
+		gate({ validate: gateValidator("gate-spec-review", "review-spec", "specReview"), attempts: 3, fatal: true, fatalMessage: "spec review gate failed after 3 attempts — specification rejected" }, task(specReviewWriter)),
 		task(implementationStage),
-		codeReviewNode,
+		// Code review only runs when implementation actually produced phases;
+		// otherwise we'd burn ~9 spawns reviewing nothing.
+		branch(hasImplementation, { yes: codeReviewNode }),
 		task(docsWriter),
 		task(cleanupTask),
 		// Conditional branch: merge only if cleanup found no sensitive data.

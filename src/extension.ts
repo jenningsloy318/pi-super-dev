@@ -14,7 +14,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { runPipelineTask } from "./pipeline.ts";
-import type { ProgressSink } from "./types.ts";
+import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
 
 export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
@@ -23,6 +23,30 @@ export { runWorkflow } from "./workflow.ts";
 
 const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
+
+/** Format a run summary honestly: success ✅ / partial ⚠️ / failed ❌. */
+function formatSummary(s: RunSummary): string[] {
+	const icon: Record<RunStatus, string> = { success: "✅", partial: "⚠️", failed: "❌" };
+	const title: Record<RunStatus, string> = {
+		success: "super-dev pipeline complete",
+		partial: "super-dev pipeline completed with issues",
+		failed: "super-dev pipeline did NOT complete",
+	};
+	const impl = s.state.implementation as { summary?: string; totalPhases?: number; allGreen?: boolean } | undefined;
+	const review = s.state.review as { verdict?: string } | undefined;
+	const lines = [
+		`${icon[s.status]} ${title[s.status]}`,
+		`  Spec:     ${s.specIdentifier || "(none)"}`,
+		`  Worktree: ${s.worktreePath}`,
+		`  Agents:   ${s.agentsSpawned} spawned`,
+		`  Impl:     ${impl?.summary ?? (impl ? `${impl.totalPhases ?? 0} phase(s), allGreen=${impl.allGreen ?? false}` : "none produced")}`,
+		`  Review:   ${review?.verdict ?? (s.state.review ? "no verdict" : "skipped")}`,
+		`  Merged:   ${s.state.merge ? String((s.state.merge as { merged?: boolean }).merged ?? false) : "skipped"}`,
+	];
+	if (s.failedStages.length > 0) lines.push(`  Failed:   ${s.failedStages.join(", ")}`);
+	if (s.error) lines.push(`  Error:    ${s.error}`);
+	return lines;
+}
 
 export default function activate(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -61,16 +85,9 @@ export default function activate(pi: ExtensionAPI): void {
 					progress: sink,
 					signal,
 				});
-				const lines = [
-					"✅ super-dev pipeline complete",
-					`  Spec:     ${summary.specIdentifier}`,
-					`  Worktree: ${summary.worktreePath}`,
-					`  Agents:   ${summary.agentsSpawned} spawned`,
-					`  Impl:     ${(summary.state.implementation as { summary?: string } | undefined)?.summary ?? "n/a"}`,
-					`  Review:   ${(summary.state.review as { verdict?: string } | undefined)?.verdict ?? "n/a"}`,
-					`  Merged:   ${summary.state.merge ? String((summary.state.merge as { merged?: boolean }).merged ?? false) : "skipped"}`,
-				];
-				return { content: [{ type: "text", text: lines.join("\n") }], details: { summary } };
+				const lines = formatSummary(summary);
+				const isError = summary.status === "failed";
+				return { content: [{ type: "text", text: lines.join("\n") }], isError, details: { summary } };
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };

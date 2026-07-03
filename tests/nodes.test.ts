@@ -47,6 +47,7 @@ function mkCtx(): StageContext {
 		budget,
 		log() {},
 		events: new EventEmitter(),
+		results: [],
 	};
 }
 
@@ -192,6 +193,12 @@ describe("gate", () => {
 		const node = task(mockTask("g", () => 1));
 		const r = await gate({ validate: () => false, attempts: 3 }, node).run({}, mkCtx());
 		expect(r.status).toBe("failed");
+	});
+	it("throws on exhaustion when fatal: true", async () => {
+		const node = task(mockTask("g", () => 1));
+		await expect(
+			gate({ validate: () => false, attempts: 2, fatal: true, fatalMessage: "boom-gate" }, node).run({}, mkCtx()),
+		).rejects.toThrow("boom-gate");
 	});
 });
 
