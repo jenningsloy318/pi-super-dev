@@ -84,12 +84,21 @@ describe("summarizeToolCall", () => {
 	});
 	it("summarizes bash by truncating the command", () => {
 		expect(summarizeToolCall("bash", { command: "npm test && npm run build" })).toBe("$ npm test && npm run build");
-		expect(summarizeToolCall("bash", { command: "x".repeat(200) }).length).toBeLessThan(70);
+		expect(summarizeToolCall("bash", { command: "x".repeat(200) }).length).toBeLessThanOrEqual(74);
 	});
 	it("summarizes ffgrep/fffind by pattern", () => {
 		expect(summarizeToolCall("ffgrep", { pattern: "TODO" })).toBe('ffgrep "TODO"');
 	});
 	it("falls back to the tool name for unknown tools", () => {
 		expect(summarizeToolCall("mystery", { x: 1 })).toBe("mystery");
+	});
+	it("abbreviates the agent cwd to '.' so paths fit (no more mid-path truncation)", () => {
+		const cwd = "/tmp/hello-word/.worktree/01-implement-a-simple-app-to-show-location";
+		expect(summarizeToolCall("bash", { command: `find ${cwd} -type f` }, cwd)).toBe("$ find . -type f");
+		expect(summarizeToolCall("read", { path: `${cwd}/docs/spec.md` }, cwd)).toBe("read ./docs/spec.md");
+	});
+	it("collapses $HOME to ~", () => {
+		const home = process.env.HOME ?? "/home/user";
+		expect(summarizeToolCall("read", { path: `${home}/repo/src/x.ts` })).toBe(`read ~/repo/src/x.ts`);
 	});
 });

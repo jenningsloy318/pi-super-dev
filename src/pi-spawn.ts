@@ -118,7 +118,7 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 				const line = lineBuf.slice(0, nl);
 				lineBuf = lineBuf.slice(nl + 1);
 				if (line.trim()) {
-					const r = processStreamLine(line, onProgress, () => ++turns);
+					const r = processStreamLine(line, onProgress, () => ++turns, cwd);
 					if (r?.text) lastAssistantText = r.text;
 					if (r?.model) lastModel = r.model;
 				}
@@ -168,15 +168,16 @@ function assistantFromMessageEnd(ev: PiJsonEvent): { text: string; model?: strin
 }
 
 /** Compact one-line summary of a tool call, for live progress. */
-export function summarizeToolCall(name: string, args: Record<string, unknown> | undefined): string {
+export function summarizeToolCall(name: string, args: Record<string, unknown> | undefined, cwd?: string): string {
 	const a = args ?? {};
+	const abbr = (s: string) => abbreviatePath(s, cwd);
 	switch (name) {
 		case "write":
 		case "edit":
 		case "read":
-			return `${name} ${a.path ?? a.file_path ?? ""}`;
+			return `${name} ${abbr(String(a.path ?? a.file_path ?? ""))}`;
 		case "bash":
-			return `$ ${String(a.command ?? "").split("\n")[0].slice(0, 60)}`;
+			return `$ ${abbr(String(a.command ?? "").split("\n")[0]).slice(0, 72)}`;
 		case "ffgrep":
 		case "fffind":
 			return `${name} "${a.pattern ?? ""}"`;
@@ -185,13 +186,24 @@ export function summarizeToolCall(name: string, args: Record<string, unknown> | 
 	}
 }
 
+/** Shorten a path/string for display: cwd => ".", $HOME => "~". Keeps live
+ *  progress readable instead of being truncated mid-path by the TUI. */
+export function abbreviatePath(p: string, cwd?: string): string {
+	if (!p) return p;
+	let out = p;
+	if (cwd && cwd.length > 1 && out.includes(cwd)) out = out.split(cwd).join(".");
+	const home = process.env.HOME;
+	if (home && out.startsWith(home)) out = "~" + out.slice(home.length);
+	return out;
+}
+
 /** Parse one streamed NDJSON line: surface live progress AND capture the
  *  assistant text. Returns {text,model} if the line is an assistant message_end. */
-function processStreamLine(line: string, onProgress: ((m: string) => void) | undefined, nextTurn: () => number): { text: string; model?: string } | null {
+function processStreamLine(line: string, onProgress: ((m: string) => void) | undefined, nextTurn: () => number, cwd?: string): { text: string; model?: string } | null {
 	let ev: PiJsonEvent;
 	try { ev = JSON.parse(line) as PiJsonEvent; } catch { return null; }
 	if (ev.type === "tool_execution_start" && ev.toolName) {
-		onProgress?.(`→ ${summarizeToolCall(ev.toolName, ev.args)}`);
+		onProgress?.(`→ ${summarizeToolCall(ev.toolName, ev.args, cwd)}`);
 	} else if (ev.type === "turn_start") {
 		const n = nextTurn();
 		if (n > 1) onProgress?.(`turn ${n}`);

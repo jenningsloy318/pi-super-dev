@@ -14,6 +14,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { runPipelineTask } from "./pipeline.ts";
+import { abbreviatePath } from "./pi-spawn.ts";
 import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
 
 export { runPipelineTask } from "./pipeline.ts";
@@ -25,7 +26,7 @@ const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
 
 /** Format a run summary honestly: success ✅ / partial ⚠️ / failed ❌. */
-function formatSummary(s: RunSummary): string[] {
+function formatSummary(s: RunSummary, cwd?: string): string[] {
 	const icon: Record<RunStatus, string> = { success: "✅", partial: "⚠️", failed: "❌" };
 	const title: Record<RunStatus, string> = {
 		success: "super-dev pipeline complete",
@@ -39,7 +40,7 @@ function formatSummary(s: RunSummary): string[] {
 	const lines = [
 		`${icon[s.status]} ${title[s.status]}`,
 		`  Spec:     ${s.specIdentifier || "(none)"}`,
-		`  Worktree: ${s.worktreePath}${setup?.worktreeCreated ? " (created)" : setup ? " (in-place)" : ""}`,
+		`  Worktree: ${abbreviatePath(s.worktreePath, cwd)}${setup?.worktreeCreated ? " (created)" : setup ? " (in-place)" : ""}`,
 		`  Stack:    ${setup ? `${setup.language}${setup.isWebUi ? " | Web UI" : ""}${setup.defaultBranch ? ` | branch ${setup.defaultBranch}` : ""}` : "n/a"}`,
 		`  Classify: ${classify ? `${classify.taskType}${classify.uiScope ? ` | ${classify.uiScope}` : ""}` : "n/a"}`,
 		`  Agents:   ${s.agentsSpawned} spawned`,
@@ -95,10 +96,10 @@ export default function activate(pi: ExtensionAPI): void {
 					skipStages: params.skipStages as string[] | undefined,
 					model: params.model as string | undefined,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
-					progress: sink,
+				progress: sink,
 					signal,
 				});
-				const lines = formatSummary(summary);
+				const lines = formatSummary(summary, process.cwd());
 				const isError = summary.status === "failed";
 				return { content: [{ type: "text", text: lines.join("\n") }], isError, details: { summary } };
 			} catch (err) {
