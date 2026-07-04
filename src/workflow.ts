@@ -12,6 +12,7 @@
 
 import { EventEmitter } from "node:events";
 import { spawnAgent } from "./pi-spawn.ts";
+import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
 import type {
 	AgentCall,
@@ -50,18 +51,23 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 
 	async function agent(call: AgentCall): Promise<AgentResult> {
 		budget.spent();
-		return spawnAgent({
+		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
+		const common = {
 			agent: call.agent,
 			prompt: call.prompt,
-			cwd: state.setup?.worktreePath ?? options.cwd ?? process.cwd(),
+			cwd: agentCwd,
 			model,
 			signal,
 			id: call.id,
 			onProgress: {
-				event: (m) => log(m),
-				text: (partial) => options.progress?.text(partial),
+				event: (m: string) => log(m),
+				text: (partial: string) => options.progress?.text(partial),
 			},
-		});
+		};
+		// Backend selectable: "session" = in-process createAgentSession (default for
+		// the prototype once verified), "subprocess" = raw pi spawn (the original).
+		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "subprocess";
+		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
 	}
 	async function helper(call: HelperCall): Promise<HelperResult> {
 		return runHelper(call);

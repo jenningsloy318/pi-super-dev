@@ -201,6 +201,10 @@ export interface RunOptions {
 	maxConcurrency?: number;
 	progress?: ProgressSink;
 	signal?: AbortSignal;
+	/** Specialist execution backend. "subprocess" (default) = raw `pi` spawn;
+	 *  "session" = in-process `createAgentSession`. Also set via
+	 *  SUPER_DEV_BACKEND env. */
+	backend?: "subprocess" | "session";
 }
 
 /** Honest, derived overall outcome of a run. */
