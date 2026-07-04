@@ -29,6 +29,7 @@ import {
 import { Type } from "typebox";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
+import { sanitizeSlug } from "./setup.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 export interface SessionAgentOptions {
@@ -82,18 +83,33 @@ function structuredOutputTool(capture: Capture): ToolDefinition {
 	});
 }
 
-/** Best-effort live progress forwarding from session events → the sink. */
+/** Live progress forwarding from session events → the sink. Session events
+ *  nest streaming under `message_update.assistantMessageEvent` (text_delta /
+ *  text_end carry `partial.content` with the accumulated block text); tool calls
+ *  arrive as top-level `tool_execution_start`. Text partials reset per message
+ *  block, so finalizing at each tool call doesn't duplicate prefixes. */
 function forwardProgress(session: { subscribe(listener: (e: unknown) => void): () => void }, onProgress: AgentProgress): () => void {
+	let turns = 0;
+	let lastText = ""; // dedup: only forward text when it changes; reset per tool block
 	return session.subscribe((event: unknown) => {
-		const e = event as { type?: string; toolName?: string; args?: Record<string, unknown>; text?: string };
-		if (!e || !e.type) return;
+		const e = event as { type?: string; toolName?: string; args?: Record<string, unknown>; assistantMessageEvent?: { type?: string; partial?: { content?: Array<{ type: string; text?: string }> } } };
+		if (!e?.type) return;
 		if (e.type === "tool_execution_start" && e.toolName) {
+			lastText = "";
 			onProgress.event(`→ ${summarize(e.toolName, e.args)}`);
-		} else if ((e.type === "text" || e.type === "text_end") && typeof e.text === "string") {
-			const t = e.text.replace(/<control>[\s\S]*?<\/control>/gi, "").trim();
-			if (t) onProgress.text(t.slice(0, 500));
+		} else if (e.type === "turn_start") {
+			if (++turns > 1) onProgress.event(`turn ${turns}`);
+		} else if (e.type === "message_update") {
+			const a = e.assistantMessageEvent;
+			if (a?.type === "text_delta" || a?.type === "text_end") {
+				const text = (a.partial?.content ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "").join("");
+				const clean = text.replace(/<control>[\s\S]*?<\/control>/gi, "").trim();
+				if (clean && clean !== lastText) {
+					lastText = clean;
+					onProgress.text(clean.slice(0, 600));
+				}
+			}
 		}
-		// other events (thinking, turn markers) ignored for now — refine after live test
 	});
 }
 
@@ -115,6 +131,47 @@ function lastAssistantText(messages: Array<{ role?: string; content?: Array<{ ty
 		if (t.trim()) return t;
 	}
 	return "";
+}
+
+/** Ask the model for a concise 2-5 word kebab-case slug summarizing the task.
+ *  Minimal session: no coding tools, only a structured_output tool — fast and
+ *  cheap. Returns "" on any failure/timeout so the caller can fall back to the
+ *  deterministic slugifyTask. */
+export async function summarizeSlug(task: string, cwd: string, opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<string> {
+	const timeoutMs = opts.timeoutMs ?? 20_000;
+	const capture: Capture = { called: false, value: undefined };
+	const agentDir = getAgentDir();
+	let session;
+	try {
+		({ session } = await createAgentSession({
+			cwd,
+			agentDir,
+			sessionManager: SessionManager.inMemory(cwd),
+			settingsManager: SettingsManager.create(cwd, agentDir),
+			customTools: [defineTool({
+				name: "structured_output",
+				label: "Slug",
+				description: "Return the summary slug.",
+				promptSnippet: "Return the slug",
+				promptGuidelines: ["Call structured_output once with the slug."],
+				parameters: Type.Object({ slug: Type.String() }),
+				async execute(_id, params) { capture.value = params; capture.called = true; return { content: [{ type: "text", text: "ok" }], details: params, terminate: true }; },
+			})],
+		}));
+	} catch {
+		return "";
+	}
+	const timer = setTimeout(() => { try { void session.abort(); } catch { /* ignore */ } }, timeoutMs);
+	const onAbort = () => void session.abort();
+	opts.signal?.addEventListener("abort", onAbort, { once: true });
+	try {
+		await session.prompt(`Summarize this software task into a concise 2-5 word kebab-case slug (lowercase, words joined by single hyphens, no articles or filler words like "implement/add/feature"). Task:\n"""${task}"""\nCall structured_output with {slug}.`);
+	} catch { /* timeout/abort → fallback */ }
+	clearTimeout(timer);
+	opts.signal?.removeEventListener("abort", onAbort);
+	session.dispose();
+	const raw = capture.called ? String((capture.value as { slug?: unknown })?.slug ?? "") : "";
+	return sanitizeSlug(raw);
 }
 
 /** Run a specialist in-process and return its result (SpawnResult contract). */

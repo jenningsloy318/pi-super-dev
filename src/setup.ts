@@ -44,11 +44,22 @@ export function detectLanguage(cwd: string, task = ""): { language: string; isWe
 	return { language: "mixed", isWebUi: false };
 }
 
-function slugify(task: string): string {
-	return task.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
+/** Sanitize any string (LLM output or raw) into a kebab-case slug, truncated at
+ *  a word boundary so it never cuts mid-word. */
+export function sanitizeSlug(raw: string): string {
+	let s = raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+	if (s.length > 40) { s = s.slice(0, 40); const c = s.lastIndexOf("-"); if (c > 8) s = s.slice(0, c); }
+	return s.replace(/-+$/g, "");
 }
 
-function nextSpecIdentifier(cwd: string, task: string): string {
+/** Deterministic fallback slug: drop filler words, keep up to ~5 content words. */
+const STOPWORDS = new Set("a an the to of for and or nor but in on at by with from into is are be as that this it its our your their we you they please need want implement add build create make new feature features simple app application page use using used based get one two three next".split(" "));
+export function slugifyTask(task: string): string {
+	const words = task.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w && !STOPWORDS.has(w));
+	return sanitizeSlug(words.slice(0, 5).join("-")) || "task";
+}
+
+function nextSpecNumber(cwd: string): number {
 	const specsDir = join(cwd, "docs", "specifications");
 	let max = 0;
 	try {
@@ -57,7 +68,7 @@ function nextSpecIdentifier(cwd: string, task: string): string {
 			if (m) max = Math.max(max, Number(m[1]));
 		}
 	} catch { /* no specs dir yet */ }
-	return `${String(max + 1).padStart(2, "0")}-${slugify(task) || "task"}`;
+	return max + 1;
 }
 
 function detectDefaultBranch(cwd: string): string {
@@ -84,6 +95,9 @@ function ensureGitIdentity(cwd: string): void {
 export interface SetupOptions {
 	cwd?: string;
 	skipWorktree?: boolean;
+	/** Descriptive slug for the spec id (e.g. LLM-summarized). Falls back to
+	 *  slugifyTask(task) when empty/invalid. */
+	slug?: string;
 }
 
 export function runSetup(task: string, options: SetupOptions = {}): SetupControl {
@@ -106,7 +120,8 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 
 	const { language, isWebUi } = detectLanguage(cwd, task);
 	const defaultBranch = detectDefaultBranch(cwd);
-	const specIdentifier = nextSpecIdentifier(cwd, task);
+	const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
+	const specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
 
 	let worktreePath = cwd;
 	let worktreeCreated = false;

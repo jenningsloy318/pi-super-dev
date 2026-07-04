@@ -66,7 +66,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		};
 		// Backend selectable: "session" = in-process createAgentSession (default for
 		// the prototype once verified), "subprocess" = raw pi spawn (the original).
-		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "subprocess";
+		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session";
 		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
 	}
 	async function helper(call: HelperCall): Promise<HelperResult> {
