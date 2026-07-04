@@ -42,7 +42,11 @@ import type {
 // ─── Shared helper types ────────────────────────────────────────────────────
 
 type Predicate = (state: PipelineState, ctx: StageContext) => boolean | Promise<boolean>;
-type Validator = Predicate;
+/** A gate validator returns structured errors, not just pass/fail — the gate feeds
+ *  those errors into the next retry's prompt so retries CONVERGE instead of
+ *  blind-resampling the same distribution (the root cause of "gate failed after
+ *  3 attempts" on a probabilistic agent). */
+type Validator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
 
 /** Run async functions with a concurrency cap, preserving order. */
 async function runConcurrent<T>(fns: Array<() => Promise<T>>, concurrency = Infinity): Promise<T[]> {
@@ -131,7 +135,19 @@ export function sequence(children: Node[], opts: SequenceOptions = {}): Node {
 		async run(state, ctx) {
 			for (const child of children) {
 				if (ctx.signal?.aborted) return { status: "cancelled" };
-				const r = await child.run(state, ctx);
+				let r: NodeResult;
+				try {
+					r = await child.run(state, ctx);
+				} catch (err) {
+					// A thrown exception must NOT bypass a tolerant sequence and abort the
+					// whole run (the original bug: gate({fatal:true}) threw through
+					// `tolerant` and discarded every prior stage's artifacts). Tolerant
+					// means tolerant — convert throws to failed and continue.
+					const error = err instanceof Error ? err.message : String(err);
+					if (!opts.tolerant) throw err;
+					ctx.log(`sequence: stage threw — ${error} (tolerant: continuing)`);
+					r = { status: "failed", error };
+				}
 				if (r.status === "cancelled") return r;
 				if (r.status === "failed" && !opts.tolerant) return r;
 			}
@@ -279,25 +295,31 @@ export interface GateOptions {
 	attempts?: number;
 	/** Remediation node run between failed validations (defaults to re-running `node`). */
 	fix?: Node;
-	/** If true, throw (aborting the pipeline) when validation is exhausted. */
-	fatal?: boolean;
-	/** Label included in the fatal error message for diagnosis. */
-	fatalMessage?: string;
+	/** Stage id; the gate stores the validator's errors under state.__feedback[feedbackKey]
+	 *  so the next retry's agent prompt includes them (see workflow.ts agent()). */
+	feedbackKey?: string;
 }
 
 /**
  * Run `node`, validate its output, and repeat (running `fix`, or `node` again)
- * until validation passes or attempts are exhausted. Models the quality gates.
+ * until validation passes or attempts are exhausted.
  *
- * With `fatal: true`, exhaustion throws — used for gates whose failure makes
- * every downstream stage meaningless (e.g. a spec with no phases), so the run
- * aborts honestly instead of limping on to produce nothing.
+ * First-principles behavior for a pipeline over PROBABILISTIC agents:
+ *  - Retries CONVERGE: the validator returns structured errors, which are fed
+ *    into the next attempt's prompt (via state.__feedback + workflow.ts), so the
+ *    agent fixes the specific failure instead of blind-resampling.
+ *  - Exhaustion NEVER throws/aborts. A thrown gate would bypass `tolerant`
+ *    sequences and discard every prior stage's artifacts. Exhaustion logs and
+ *    returns failed; the tolerant pipeline proceeds with the best-available
+ *    artifact. (Only the setup stage is truly fatal — it's not a gate.)
  */
 export function gate(opts: GateOptions, node: Node): Node {
 	return {
 		kind: "gate",
 		async run(state, ctx) {
 			const max = opts.attempts ?? 3;
+			const label = opts.feedbackKey ? ` gate ${opts.feedbackKey}` : "";
+			let lastErrors: string[] = [];
 			let last: NodeResult = OK;
 			for (let attempt = 1; attempt <= max; attempt++) {
 				if (ctx.signal?.aborted) return { status: "cancelled" };
@@ -306,17 +328,21 @@ export function gate(opts: GateOptions, node: Node): Node {
 				if (last.status === "cancelled") return last;
 				if (last.status === "failed") {
 					if (attempt < max) continue;
-					if (opts.fatal) throw new Error(opts.fatalMessage ?? `gate failed after ${max} attempt(s): ${last.error ?? "stage failed"}`);
-					return { ...last, attempts: max };
+					break; // exhausted → non-fatal return below
 				}
-				if (await opts.validate(state, ctx)) return { status: "ok", attempts: attempt };
-				ctx.log(`gate: validation FAIL attempt ${attempt}/${max}`);
+				const v = await opts.validate(state, ctx);
+				if (v.pass) return { status: "ok", attempts: attempt };
+				lastErrors = v.errors;
+				ctx.log(`gate${label}: validation FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
+				// Feed the errors forward so the next attempt's agent prompt names them.
+				if (opts.feedbackKey) {
+					const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
+					(state as Record<string, unknown>).__feedback = { ...(all ?? {}), [opts.feedbackKey]: v.errors };
+				}
 			}
-			if (opts.fatal) {
-				const msg = opts.fatalMessage ?? `gate validation exhausted after ${max} attempt(s)`;
-				throw new Error(msg);
-			}
-			return { status: "failed", error: "gate validation exhausted", attempts: max };
+			const msg = `gate${label} could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
+			ctx.log(`gate: EXHAUSTED (non-fatal) — proceeding with best-available artifact`);
+			return { status: "failed", error: msg, attempts: max };
 		},
 	};
 }
@@ -501,6 +527,7 @@ export function gateValidator(helperName: string, sourceKey: string, stateKey: s
 			// (the control object's docPath may be missing/misreported by the agent).
 			sources: { [sourceKey]: (state as Record<string, unknown>)[stateKey] ?? {}, setup: state.setup },
 		});
-		return Boolean(result.value.pass);
+		const value = result.value as { pass?: boolean; errors?: string[] };
+		return { pass: Boolean(value.pass), errors: value.errors ?? [] };
 	};
 }

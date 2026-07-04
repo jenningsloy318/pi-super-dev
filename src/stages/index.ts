@@ -46,19 +46,16 @@ const hasImplementation = (s: PipelineState) =>
 
 /** Research is complete once it has actually produced a report. Open issues
  *  are NORMAL research output (the prompt asks for them) — they flow forward
- *  to the spec/assessment stages, which already consume them, so they must NOT
- *  block the pipeline. The previous version treated any open issue as
- *  "incomplete", which fatal-failed after 3 retries because glm always lists
- *  some. The vacuous-pass guard (require a docPath) stays: no report = fail. */
+ *  to the spec/assessment stages, so they must NOT block the pipeline. */
 const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const r = s.research as { docPath?: string; openIssues?: unknown[] } | undefined;
 	if (!r || !r.docPath) {
 		ctx.log("Research: no report produced (agent returned nothing or timed out)");
-		return false;
+		return { pass: false, errors: ["no research report produced (agent returned nothing or timed out)"] };
 	}
 	const open = (r.openIssues as unknown[]) ?? [];
 	if (open.length > 0) ctx.log(`Research: ${open.length} open issue(s) noted — forwarded to spec/assessment`);
-	return true;
+	return { pass: true, errors: [] };
 };
 
 /** Code review is approved when the merged verdict is Approved (with or without comments). */
@@ -126,18 +123,23 @@ const pipeline = sequence(
 		task(setupStage),
 		task(classifyStage),
 		// Quality-gate loops: write → validate → re-write until the gate passes.
-		// All are fatal: if a gate can't pass in 3 tries, abort honestly rather
-		// than limp on to produce a broken/degenerate implementation.
-		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), attempts: 3, fatal: true, fatalMessage: "requirements gate failed after 3 attempts — cannot proceed without requirements" }, task(requirementsWriter)),
-		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), attempts: 3, fatal: true, fatalMessage: "BDD gate failed after 3 attempts — cannot proceed without behavior scenarios" }, task(bddWriter)),
-		gate({ validate: researchComplete, attempts: 3, fatal: true, fatalMessage: "research gate failed after 3 attempts — open issues remain" }, task(researchWriter)),
+		// Retries CONVERGE (the validator's errors are fed into the next attempt's
+		// prompt) and exhaustion is NON-FATAL (the pipeline proceeds with the
+		// best-available artifact rather than discarding every prior stage's work).
+		// Spec review is intentionally NOT gated — its verdict is signal, not a block.
+		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), feedbackKey: "requirements", attempts: 4 }, task(requirementsWriter)),
+		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), feedbackKey: "bdd", attempts: 4 }, task(bddWriter)),
+		gate({ validate: researchComplete, feedbackKey: "research", attempts: 4 }, task(researchWriter)),
 		// Conditional branch: debug analysis only for bug fixes.
 		branch(isBug, { yes: task(debugWriter) }),
 		task(assessmentWriter),
 		task(designStage),
 		task(prototypeStage),
-		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), attempts: 3, fatal: true, fatalMessage: "spec gate failed after 3 attempts — no valid phased specification produced" }, task(specWriter)),
-		gate({ validate: gateValidator("gate-spec-review", "review-spec", "specReview"), attempts: 3, fatal: true, fatalMessage: "spec review gate failed after 3 attempts — specification rejected" }, task(specReviewWriter)),
+		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), feedbackKey: "spec", attempts: 4 }, task(specWriter)),
+		// Spec review is SIGNAL, not a gate: a "Changes Requested" verdict is a
+		// judgment call whose findings flow forward to implementation/code-review.
+		// Blocking on it (the old fatal gate) aborted runs on a subjective verdict.
+		task(specReviewWriter),
 		task(implementationStage),
 		// Code review only runs when implementation actually produced phases;
 		// otherwise we'd burn ~9 spawns reviewing nothing.

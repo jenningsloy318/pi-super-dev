@@ -181,29 +181,51 @@ describe("gate", () => {
 	it("re-runs until validation passes", async () => {
 		let n = 0;
 		const node = task(mockTask("g", (s) => { n++; (s as Record<string, unknown>).v = n; return n; }));
-		const g = gate({ validate: (s) => (s.v as number) >= 2, attempts: 5 }, node);
+		const g = gate({ validate: (s) => ({ pass: (s.v as number) >= 2, errors: [] }), attempts: 5 }, node);
 		const r = await g.run({}, mkCtx());
 		expect(r.status).toBe("ok");
 		expect(n).toBe(2);
 	});
-	it("returns failed when validation never passes", async () => {
+	it("returns failed (NON-throwing) when validation never passes", async () => {
 		const node = task(mockTask("g", () => 1));
-		const r = await gate({ validate: () => false, attempts: 3 }, node).run({}, mkCtx());
+		const r = await gate({ validate: () => ({ pass: false, errors: ["nope"] }), attempts: 3 }, node).run({}, mkCtx());
+		expect(r.status).toBe("failed");
+		expect(r.error).toMatch(/nope/);
+	});
+	it("feeds validator errors forward into state.__feedback for the next retry", async () => {
+		const seen: string[] = [];
+		const node = task(mockTask("g", (s) => {
+			const fb = (s as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
+			if (fb?.g) seen.push(...fb.g);
+			return 1;
+		}));
+		await gate({ validate: () => ({ pass: false, errors: ["fix-X", "fix-Y"] }), feedbackKey: "g", attempts: 2 }, node).run({}, mkCtx());
+		// attempt 1 has no feedback; attempt 2 sees attempt 1's errors.
+		expect(seen).toEqual(["fix-X", "fix-Y"]);
+	});
+	it("exhaustion does not throw even if the wrapped node itself fails", async () => {
+		// A stage that throws returns {status:"failed"} from task(); the gate must
+		// NOT rethrow — it returns failed so a tolerant sequence can continue.
+		const node = task({ id: "g", label: "g", async run() { throw new Error("spawn died"); } });
+		const r = await gate({ validate: () => ({ pass: true, errors: [] }), attempts: 2 }, node).run({}, mkCtx());
 		expect(r.status).toBe("failed");
 	});
-	it("throws on exhaustion when fatal: true", async () => {
-		const node = task(mockTask("g", () => 1));
-		await expect(
-			gate({ validate: () => false, attempts: 2, fatal: true, fatalMessage: "boom-gate" }, node).run({}, mkCtx()),
-		).rejects.toThrow("boom-gate");
+});
+
+describe("sequence tolerant catches throws", () => {
+	// Use RAW nodes (not task()) — task() catches stage throws and returns failed,
+	// so only a raw throwing node actually exercises sequence's try/catch.
+	const thrower = { kind: "throw", run: async () => { throw new Error("kaboom"); } };
+	it("a tolerant sequence continues past a child that THROWS (does not abort the run)", async () => {
+		const order: string[] = [];
+		const t = { kind: "throw", run: async () => { order.push("boom"); throw new Error("kaboom"); } };
+		const next = task(mockTask("next", () => { order.push("next"); return 1; }));
+		const r = await sequence([t as any, next], { tolerant: true }).run({}, mkCtx());
+		expect(r.status).toBe("ok"); // tolerated — sequence completed
+		expect(order).toEqual(["boom", "next"]); // second stage still ran
 	});
-	it("throws when fatal: true and the wrapped node itself fails", async () => {
-		// A task that throws -> returns {status:"failed"}. With fatal, the gate
-		// must abort (throw) instead of swallowing and continuing.
-		const node = task({ id: "g", label: "g", async run() { throw new Error("spawn died"); } });
-		await expect(
-			gate({ validate: () => true, attempts: 2, fatal: true, fatalMessage: "g-gate" }, node).run({}, mkCtx()),
-		).rejects.toThrow("g-gate");
+	it("a non-tolerant sequence still propagates the throw", async () => {
+		await expect(sequence([thrower as any], {}).run({}, mkCtx())).rejects.toThrow("kaboom");
 	});
 });
 

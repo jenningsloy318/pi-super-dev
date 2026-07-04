@@ -53,9 +53,19 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	async function agent(call: AgentCall): Promise<AgentResult> {
 		budget.spent();
 		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
+		// First-principles retry convergence: if a gate rejected a prior attempt,
+		// it stored structured errors under state.__feedback[stageId]. Prepend them
+		// to this attempt's prompt so the agent fixes the specific failure instead
+		// of resampling the same distribution. The writer's call.id is `pipeline.<id>`.
+		const stageKey = (call.id ?? "").replace(/^pipeline\./, "");
+		const fb = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
+		const feedback = fb?.[stageKey];
+		const prompt = feedback?.length
+			? `${call.prompt}\n\n## Previous attempt rejected — fix these\nThe validator rejected the prior attempt for these specific reasons:\n${feedback.map((e) => `- ${e}`).join("\n")}\nAddress every point and re-produce the complete artifact, then call structured_output.`
+			: call.prompt;
 		const common = {
 			agent: call.agent,
-			prompt: call.prompt,
+			prompt,
 			cwd: agentCwd,
 			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
 			model,
