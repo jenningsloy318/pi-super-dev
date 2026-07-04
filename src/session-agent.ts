@@ -228,7 +228,19 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const finalOutputLine = keys.length
 		? `When the task is complete, call the \`structured_output\` tool exactly once with an object containing ALL of these keys: ${keys.join(", ")}. Do not omit any. Do not emit a prose final answer after that.`
 		: "When the task is complete, call the `structured_output` tool exactly once with an object containing the fields requested above. Do not emit a prose final answer after that.";
-	const task = [systemPrompt, "", "## Task", opts.prompt, "", "## Final output", finalOutputLine].join("\n");
+	// Delivery discipline — the systemic fix for the recurring "agent explores for
+	// 10-27 tool calls then times out before writing" pattern. The ported agent
+	// prompts demand Claude-grade exhaustive verification; glm is slower and runs
+	// out of time. This preamble overrides that: bound exploration, write early.
+	const deliveryDiscipline = [
+		"## Delivery discipline (OVERRIDES any contrary instruction above)",
+		"You have a LIMITED time budget. The ONLY deliverable that matters is the written document + your structured_output call.",
+		"- Explore with AT MOST ~6 tool calls total (read/bash/grep/web). You do NOT need to read every file, run the full test suite, or verify every claim independently.",
+		"- Never re-read a file you already read. Never loop on self-auditing, self-scoring, or revision.",
+		"- START WRITING the document once you have the gist — well before you feel 'done' exploring. Written-but-imperfect beats thorough-but-unfinished (a timeout produces NOTHING).",
+		"- After writing, immediately call structured_output and STOP.",
+	].join("\n");
+	const task = [systemPrompt, "", "## Task", opts.prompt, "", deliveryDiscipline, "", "## Final output", finalOutputLine].join("\n");
 
 	let correctiveNote = "";
 	try {

@@ -31,15 +31,29 @@ import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt } from ".
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
 const isBug = (s: PipelineState) => s.classify?.taskType === "bug";
-const notBlocked = (s: PipelineState) => s.cleanup?.blocked !== true;
+
+/** Merge only when cleanup actually ran AND found nothing blocking. Treating a
+ *  missing cleanup result as "safe to merge" is a vacuous pass — cleanup may
+ *  simply have failed to produce output. */
+const notBlocked = (s: PipelineState) => {
+	const c = s.cleanup as { blocked?: boolean } | undefined;
+	return !!c && c.blocked !== true;
+};
 
 /** Only review when there is actually an implementation to review. */
 const hasImplementation = (s: PipelineState) =>
 	((s.implementation as { totalPhases?: number } | undefined)?.totalPhases ?? 0) > 0;
 
-/** Research is complete when it reports no open issues. */
+/** Research is complete ONLY when it actually produced a report with no open
+ *  issues. Treating "no research output" as complete is a vacuous pass — the
+ *  agent may have timed out and written nothing (observed in real runs). */
 const researchComplete = async (s: PipelineState, ctx: StageContext) => {
-	const open = (s.research?.openIssues as unknown[]) ?? [];
+	const r = s.research as { docPath?: string; openIssues?: unknown[] } | undefined;
+	if (!r || !r.docPath) {
+		ctx.log("Research: no report produced (agent returned nothing or timed out)");
+		return false;
+	}
+	const open = (r.openIssues as unknown[]) ?? [];
 	if (open.length === 0) return true;
 	ctx.log(`Research: ${open.length} open issue(s) remain`);
 	return false;
