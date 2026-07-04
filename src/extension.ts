@@ -83,11 +83,26 @@ export default function activate(pi: ExtensionAPI): void {
 				return { content: [{ type: "text", text: "super_dev requires a non-empty `task`." }], isError: true, details: {} };
 			}
 			const transcript: string[] = [];
+			let live = "";
+			let lastFlush = 0;
+			const FLUSH_MS = 80;
+			const finalizeLive = () => {
+				if (live) {
+					const t = live.length > 600 ? live.slice(0, 600) + " …" : live;
+					transcript.push(t);
+					live = "";
+				}
+			};
 			const flush = () =>
-				onUpdate?.({ content: [{ type: "text", text: transcript.join("\n") }], details: {} });
+				onUpdate?.({ content: [{ type: "text", text: transcript.join("\n") + (live ? "\n" + live : "") }], details: {} });
 			const sink: ProgressSink = {
-				phase: (label) => { transcript.push(`▶ ${label}`); flush(); },
-				log: (message) => { transcript.push(`  ${message}`); flush(); },
+				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); flush(); },
+				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); flush(); },
+				text: (partial) => {
+					live = partial.length > 1500 ? partial.slice(-1500) : partial;
+					const now = Date.now();
+					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; }
+				},
 			};
 			try {
 				const summary = await runPipelineTask(task, {

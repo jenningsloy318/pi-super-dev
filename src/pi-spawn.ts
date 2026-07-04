@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
-import type { SpawnResult } from "./types.ts";
+import type { AgentProgress, SpawnResult } from "./types.ts";
 
 const AGENT_TOOLS = "read,bash,edit,write,ffgrep,fffind";
 
@@ -31,8 +31,8 @@ export interface SpawnAgentOptions {
 	signal?: AbortSignal;
 	id?: string;
 	timeoutMs?: number;
-	/** Live, compact progress from the spawned agent (e.g. tool calls). */
-	onProgress?: (message: string) => void;
+	/** Live progress from the spawned agent (tool calls + streaming text). */
+	onProgress?: AgentProgress;
 }
 
 function resolvePiBinary(): { command: string; args: string[] } {
@@ -75,7 +75,7 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string): str
 	return args;
 }
 
-function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: (m: string) => void): Promise<SpawnResult> {
+function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: AgentProgress): Promise<SpawnResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(args[0], args.slice(1), {
 			cwd,
@@ -95,6 +95,7 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		let aborted = false;
 		let timedOut = false;
 		let turns = 0;
+		let currentText = ""; // live streaming text of the current agent text block
 		const STDERR_CAP = 16 * 1024;
 		const LINE_CAP = 16 * 1024 * 1024;
 		const cleanup = () => {
@@ -115,12 +116,32 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 			lineBuf += c.toString("utf8");
 			let nl: number;
 			while ((nl = lineBuf.indexOf("\n")) >= 0) {
-				const line = lineBuf.slice(0, nl);
+				const raw = lineBuf.slice(0, nl);
 				lineBuf = lineBuf.slice(nl + 1);
-				if (line.trim()) {
-					const r = processStreamLine(line, onProgress, () => ++turns);
-					if (r?.text) lastAssistantText = r.text;
-					if (r?.model) lastModel = r.model;
+				const trimmed = raw.trim();
+				if (!trimmed) continue;
+				let ev: PiJsonEvent;
+				try { ev = JSON.parse(trimmed) as PiJsonEvent; } catch { continue; }
+				// capture the final assistant text (for <control> extraction)
+				const a = assistantFromMessageEnd(ev);
+				if (a) {
+					if (a.text) { lastAssistantText = a.text; if (a.model) lastModel = a.model; }
+					// a finished message finalizes any in-progress live text
+					if (onProgress && currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
+					continue;
+				}
+				if (!onProgress) continue;
+				const se = renderEvent(ev, () => ++turns);
+				if (!se) continue;
+				if (se.kind === "text") {
+					// live typing: update the mutable live line
+					currentText = se.text;
+					onProgress.text(stripControl(currentText));
+				} else {
+					// a permanent event finalizes any in-progress text first
+					if (currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
+					if (se.kind === "tool") onProgress.event(`→ ${se.summary}`);
+					else if (se.kind === "turn" && se.n > 1) onProgress.event(`turn ${se.n}`);
 				}
 			}
 			if (lineBuf.length > LINE_CAP) lineBuf = ""; // stay bounded on a runaway line
@@ -153,8 +174,6 @@ interface PiJsonEvent {
 	type?: string;
 	toolName?: string;
 	args?: Record<string, unknown>;
-	/** Complete text of a text block (text_end event). */
-	content?: string;
 	message?: { role?: string; model?: string; content?: Array<{ type: string; text?: string }> };
 }
 
@@ -202,21 +221,32 @@ export function abbreviatePath(p: string, cwd?: string): string {
 
 /** Parse one streamed NDJSON line: surface live progress AND capture the
  *  assistant text. Returns {text,model} if the line is an assistant message_end. */
-export function processStreamLine(line: string, onProgress: ((m: string) => void) | undefined, nextTurn: () => number): { text: string; model?: string } | null {
-	let ev: PiJsonEvent;
-	try { ev = JSON.parse(line) as PiJsonEvent; } catch { return null; }
-	if (ev.type === "tool_execution_start" && ev.toolName) {
-		onProgress?.(`→ ${summarizeToolCall(ev.toolName, ev.args)}`);
-	} else if (ev.type === "turn_start") {
-		const n = nextTurn();
-		if (n > 1) onProgress?.(`turn ${n}`);
-	} else if (ev.type === "text_end" && typeof ev.content === "string") {
-		// Surface the agent's own text (its reasoning/commentary), stripped of the
-		// machine <control> block, capped so one verbose agent can't flood the log.
-		const t = ev.content.replace(/<control>[\s\S]*?<\/control>/gi, "").trim();
-		if (t) onProgress?.(t.slice(0, 500) + (t.length > 500 ? " …" : ""));
+type StreamEvent =
+	| { kind: "text"; text: string }
+	| { kind: "tool"; summary: string }
+	| { kind: "turn"; n: number };
+
+/** Strip the machine <control> block from displayed text. */
+function stripControl(s: string): string {
+	return s.replace(/<control>[\s\S]*?<\/control>/gi, "");
+}
+
+/** Extract a renderable event from a parsed NDJSON line (pure).
+ *  pi streams assistant text inside `message_update` events whose `message.content`
+ *  holds the full accumulated text so far. */
+export function renderEvent(ev: PiJsonEvent, nextTurn: () => number): StreamEvent | null {
+	switch (ev.type) {
+		case "message_update": {
+			const text = (ev.message?.content ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "").join("");
+			return text ? { kind: "text", text } : null;
+		}
+		case "tool_execution_start":
+			return ev.toolName ? { kind: "tool", summary: summarizeToolCall(ev.toolName, ev.args) } : null;
+		case "turn_start":
+			return { kind: "turn", n: nextTurn() };
+		default:
+			return null;
 	}
-	return assistantFromMessageEnd(ev);
 }
 
 export function extractFinalAssistant(stdout: string): { text: string; model?: string } {

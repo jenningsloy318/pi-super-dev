@@ -56,6 +56,17 @@ export interface Budget {
 export interface ProgressSink {
 	phase(label: string): void;
 	log(message: string): void;
+	/** Live streaming text from the active agent (typing effect). `partial` is the
+	 *  full accumulated text of the current text block so far. */
+	text(partial: string): void;
+}
+
+/** Streaming callbacks from a spawned agent to the progress sink. */
+export interface AgentProgress {
+	/** A permanent log line (tool call, turn marker, finalized agent text). */
+	event(message: string): void;
+	/** Live partial text as the agent generates it (control block stripped). */
+	text(partial: string): void;
 }
 
 // ─── Domain shapes ──────────────────────────────────────────────────────────

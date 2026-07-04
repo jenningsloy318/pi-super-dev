@@ -57,7 +57,10 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			model,
 			signal,
 			id: call.id,
-			onProgress: (m) => log(m),
+			onProgress: {
+				event: (m) => log(m),
+				text: (partial) => options.progress?.text(partial),
+			},
 		});
 	}
 	async function helper(call: HelperCall): Promise<HelperResult> {
