@@ -126,7 +126,7 @@ function forwardProgress(session: { subscribe(listener: (e: unknown) => void): (
 				const clean = text.replace(/<control>[\s\S]*?<\/control>/gi, "").trim();
 				if (clean && clean !== lastText) {
 					lastText = clean;
-					onProgress.text(clean.slice(0, 600));
+					onProgress.text(clean);
 				}
 			}
 		}
@@ -137,7 +137,7 @@ function summarize(name: string, args: Record<string, unknown> | undefined): str
 	const a = args ?? {};
 	switch (name) {
 		case "write": case "edit": case "read": return `${name} ${a.path ?? a.file_path ?? ""}`;
-		case "bash": return `$ ${String(a.command ?? "").split("\n")[0].slice(0, 72)}`;
+		case "bash": return `$ ${String(a.command ?? "").split("\n")[0]}`;
 		case "ffgrep": case "fffind": return `${name} "${a.pattern ?? ""}"`;
 		default: return name === "structured_output" ? "structured_output ✓" : name;
 	}

@@ -460,7 +460,7 @@ export function writerTask(spec: {
 			});
 			if (result.error) ctx.log(`${spec.id}: agent error — ${result.error}`);
 			if (!result.control) {
-				const said = result.text ? ` (last text: ${result.text.slice(0, 160).replace(/\s+/g, " ")})` : "";
+				const said = result.text ? ` (last text: ${result.text.replace(/\s+/g, " ")})` : "";
 				ctx.log(`${spec.id}: agent produced no control object${said}`);
 			}
 			return result.control ?? {};

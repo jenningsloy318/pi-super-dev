@@ -50,7 +50,7 @@ function formatSummary(s: RunSummary, cwd?: string): string[] {
 	];
 	if (s.failedStages.length > 0) {
 		const fmt = (f: { label: string; error?: string }) => {
-			const e = f.error ? ` — ${f.error.length > 100 ? f.error.slice(0, 97) + "..." : f.error}` : "";
+			const e = f.error ? ` — ${f.error}` : "";
 			return `${f.label}${e}`;
 		};
 		lines.push(`  Failed:   ${s.failedStages.map(fmt).join("\n            ")}`);
@@ -88,8 +88,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const FLUSH_MS = 80;
 			const finalizeLive = () => {
 				if (live) {
-					const t = live.length > 600 ? live.slice(0, 600) + " …" : live;
-					transcript.push(t);
+					transcript.push(live);
 					live = "";
 				}
 			};
@@ -99,7 +98,7 @@ export default function activate(pi: ExtensionAPI): void {
 				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); flush(); },
 				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); flush(); },
 				text: (partial) => {
-					live = partial.length > 1500 ? partial.slice(-1500) : partial;
+					live = partial;
 					const now = Date.now();
 					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; }
 				},
