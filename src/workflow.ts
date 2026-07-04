@@ -14,6 +14,7 @@ import { EventEmitter } from "node:events";
 import { spawnAgent } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
+import { extractControlKeys } from "./control.ts";
 import type {
 	AgentCall,
 	AgentResult,
@@ -56,6 +57,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			agent: call.agent,
 			prompt: call.prompt,
 			cwd: agentCwd,
+			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
 			model,
 			signal,
 			id: call.id,
@@ -64,12 +66,14 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				text: (partial: string) => options.progress?.text(partial),
 			},
 		};
-		// Backend selectable. Default is 'subprocess' (raw pi spawn) — it inherits the
-		// host pi's full config (auth/model) naturally and is proven in-host. The
-		// 'session' backend (in-process createAgentSession) works in isolation but
-		// has been observed to silently produce no output inside the host pi
-		// runtime (auth/model/extension context differs), so it's opt-in via env.
-		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "subprocess";
+		// Backend selectable. Default is 'session' (in-process createAgentSession):
+		// same SDK we peer-depend on, structured output via a schema, no spawn/
+		// stdout-buffering/<control>-parse fragility. The earlier failure (requirements
+		// gate) was NOT a session-backend defect — it was an incomplete control
+		// object caused by a permissive structured_output schema; fixed in
+		// session-agent.ts (per-stage schema + corrective re-prompt). 'subprocess'
+		// remains available via SUPER_DEV_BACKEND=subprocess.
+		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session";
 		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
 	}
 	async function helper(call: HelperCall): Promise<HelperResult> {

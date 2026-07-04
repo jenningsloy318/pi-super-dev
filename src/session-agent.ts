@@ -27,6 +27,9 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
@@ -40,37 +43,54 @@ export interface SessionAgentOptions {
 	signal?: AbortSignal;
 	id?: string;
 	timeoutMs?: number;
+	/** Control keys the caller expects in structured_output (declares them in the
+	 *  tool schema so the model fills them). When omitted, a fully permissive
+	 *  schema is used. Derived from the prompt by workflow.ts. */
+	controlKeys?: string[];
 	onProgress?: AgentProgress;
 }
 
-/**
- * Permissive schema: the specialist's control object varies per stage
- * (docPath/featureName/acCount for requirements, verdict/findings for review,
- * etc.), so accept any object. Pi validates `params` is an object before the
- * tool runs; we trust the shape per stage.
- */
-const CONTROL_SCHEMA = Type.Object(
-	{ summary: Type.Optional(Type.String()) },
-	{ additionalProperties: true },
-);
+/** Build the structured_output schema. When `keys` is non-empty, each key is
+ *  DECLARED (Optional, Any) so the model treats it as part of the contract and
+ *  fills it — this is the fix for the requirements-gate failure, where a
+ *  schema that declared only `summary` made GLM return only `summary`. Keys
+ *  stay Optional so tool validation never rejects a partially-filled object;
+ *  completeness is enforced by the corrective re-prompt below. */
+function controlSchema(keys: string[]) {
+	const props: Record<string, ReturnType<typeof Type.Any>> = {};
+	for (const k of keys) props[k] = Type.Optional(Type.Any());
+	return Type.Object(props, { additionalProperties: true });
+}
+
+/** Which declared keys are missing/blank in the captured control object. */
+function missingKeys(captured: Record<string, unknown> | null | undefined, keys: string[]): string[] {
+	if (!captured) return keys;
+	return keys.filter((k) => {
+		const v = captured[k];
+		return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+	});
+}
 
 interface Capture {
 	called: boolean;
 	value: unknown;
 }
 
-/** Build the terminating structured_output tool that captures the result. */
-function structuredOutputTool(capture: Capture): ToolDefinition {
+/** Build the terminating structured_output tool that captures the result.
+ *  The schema DECLARES the expected keys (see controlSchema) so the model
+ *  fills them instead of dumping everything into one field. */
+function structuredOutputTool(capture: Capture, keys: string[]): ToolDefinition {
+	const fieldList = keys.length ? keys.join(", ") : "the fields the task requested";
 	return defineTool({
 		name: "structured_output",
 		label: "Structured Output",
-		description: "Return the final result object for this task — the fields the task requested.",
+		description: `Return the final result object. It MUST include every one of these keys: ${fieldList}.`,
 		promptSnippet: "Return final machine-readable result",
 		promptGuidelines: [
-			"structured_output is the final answer channel; call it exactly once when the task is complete.",
+			`structured_output is the final answer channel; call it exactly once when the task is complete. Your object MUST contain ALL of: ${fieldList}.`,
 			"Do not write a prose final answer after calling structured_output.",
 		],
-		parameters: CONTROL_SCHEMA,
+		parameters: controlSchema(keys),
 		async execute(_toolCallId, params) {
 			capture.value = params;
 			capture.called = true;
@@ -174,9 +194,16 @@ export async function summarizeSlug(task: string, cwd: string, opts: { signal?: 
 	return sanitizeSlug(raw);
 }
 
-/** Run a specialist in-process and return its result (SpawnResult contract). */
+/** Run a specialist in-process and return its result (SpawnResult contract).
+ *  Per-stage `controlKeys` are declared in the structured_output schema so the
+ *  model fills them. If the first turn omits any, a single corrective re-prompt
+ *  is sent IN THE SAME SESSION (context preserved) before giving up — this is
+ *  what turns the old "gate failed after 3 attempts" into a self-healing step.
+ *  Set SUPER_DEV_DEBUG=1 to dump the full per-agent message trace to a temp
+ *  file (sessions are otherwise in-memory and unobservable). */
 export async function runAgentViaSession(opts: SessionAgentOptions): Promise<SpawnResult> {
 	const systemPrompt = loadAgentPrompt(opts.agent);
+	const keys = opts.controlKeys ?? [];
 	const capture: Capture = { called: false, value: undefined };
 	const timeoutMs = opts.timeoutMs ?? 300_000;
 
@@ -186,7 +213,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		agentDir,
 		sessionManager: SessionManager.inMemory(opts.cwd),
 		settingsManager: SettingsManager.create(opts.cwd, agentDir),
-		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture)],
+		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys)],
 	});
 
 	const unsub = opts.onProgress ? forwardProgress(session, opts.onProgress) : undefined;
@@ -198,22 +225,38 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	}, timeoutMs);
 	opts.signal?.addEventListener("abort", onAbort, { once: true });
 
+	const finalOutputLine = keys.length
+		? `When the task is complete, call the \`structured_output\` tool exactly once with an object containing ALL of these keys: ${keys.join(", ")}. Do not omit any. Do not emit a prose final answer after that.`
+		: "When the task is complete, call the `structured_output` tool exactly once with an object containing the fields requested above. Do not emit a prose final answer after that.";
+	const task = [systemPrompt, "", "## Task", opts.prompt, "", "## Final output", finalOutputLine].join("\n");
+
+	let correctiveNote = "";
 	try {
-		const task = [
-			systemPrompt,
-			"",
-			"## Task",
-			opts.prompt,
-			"",
-			"## Final output",
-			"When the task is complete, call the `structured_output` tool exactly once with an object containing the fields requested above (docPath/featureName/..., verdict/findings/..., etc.). Do not emit a prose final answer after that.",
-		].join("\n");
 		try {
 			await session.prompt(task);
 		} catch (err) {
-			// abort (timeout or signal) rejects prompt; fall through to capture partial.
 			if (!timedOut && !opts.signal?.aborted) throw err;
 		}
+
+		// Self-heal: if the model called structured_output but omitted declared
+		// keys, send ONE corrective turn in the same session (same context, same
+		// files written) naming exactly what's missing. The evidence (see
+		// docs/findings) was that GLM returned only {summary} under the old
+		// permissive schema; declaring keys fixes the common case, this turn
+		// catches the residual.
+		const afterFirst = capture.called ? (capture.value as Record<string, unknown> | undefined) : undefined;
+		const missing = missingKeys(afterFirst, keys);
+		if (missing.length > 0 && !timedOut && !opts.signal?.aborted) {
+			correctiveNote = `corrective re-prompt (missing: ${missing.join(", ")})`;
+			opts.onProgress?.event(`↻ ${opts.id ?? opts.agent}: ${correctiveNote}`);
+			const fix = `Your previous structured_output was missing required keys: ${missing.join(", ")}. Call structured_output AGAIN, this time with ALL of these keys filled from the work you already did: ${keys.join(", ")}. Do not redo the work — just return the complete object.`;
+			try {
+				await session.prompt(fix);
+			} catch (err) {
+				if (!timedOut && !opts.signal?.aborted) throw err;
+			}
+		}
+
 		const text = lastAssistantText(session.messages as Parameters<typeof lastAssistantText>[0]);
 		const control = capture.called ? (capture.value as Record<string, unknown>) : extractControl(text);
 		return { text, control: control ?? null, error: timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s${capture.called ? " (structured_output captured before abort)" : ""}` : undefined };
@@ -223,6 +266,29 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		clearTimeout(timer);
 		opts.signal?.removeEventListener("abort", onAbort);
 		unsub?.();
+		if (process.env.SUPER_DEV_DEBUG) dumpTrace(opts, keys, capture, correctiveNote, session.messages);
 		session.dispose();
 	}
+}
+
+/** Write the full in-memory message trace to a temp file. The session backend
+ *  keeps everything in memory (SessionManager.inMemory), so without this there
+ *  are zero logs to debug a failed/garbled agent run. */
+function dumpTrace(opts: SessionAgentOptions, keys: string[], capture: Capture, correctiveNote: string, messages: unknown): void {
+	try {
+		const dir = join(tmpdir(), "super-dev-debug");
+		mkdirSync(dir, { recursive: true });
+		const safe = (opts.id ?? opts.agent).replace(/[^A-Za-z0-9_.-]+/g, "_");
+		const file = join(dir, `${Date.now()}-${safe}.json`);
+		writeFileSync(file, JSON.stringify({
+			agent: opts.agent,
+			id: opts.id,
+			cwd: opts.cwd,
+			controlKeys: keys,
+			structuredOutputCalled: capture.called,
+			structuredOutputValue: capture.value,
+			correctiveNote,
+			messages,
+		}, null, 2));
+	} catch { /* best-effort */ }
 }

@@ -47,6 +47,9 @@ export interface SpawnAgentOptions {
 	signal?: AbortSignal;
 	id?: string;
 	timeoutMs?: number;
+	/** Ignored by the subprocess backend (it uses <control> text, not a schema).
+	 *  Accepted so the same `common` options object can feed both backends. */
+	controlKeys?: string[];
 	/** Live progress from the spawned agent (tool calls + streaming text). */
 	onProgress?: AgentProgress;
 }

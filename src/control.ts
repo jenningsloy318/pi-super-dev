@@ -41,6 +41,24 @@ function tryParseJsonObject(raw: string): ControlObj | null {
 	return null;
 }
 
+/** The list of control keys a stage expects, parsed from its prompt.
+ *  Every `build*Prompt` ends with a line like:
+ *      Output <control> JSON with: docPath, featureName, acCount, openQuestions, summary.
+ *  We parse that comma-list (stripping inline `(type)` annotations) so the
+ *  session backend can declare those keys in its `structured_output` tool
+ *  schema — which is what actually makes the model fill them (see
+ *  docs/findings/session-backend-requirements-gate.md). Returns [] if the
+ *  prompt has no such line (e.g. commit tasks), which safely degrades to the
+ *  permissive schema. */
+export function extractControlKeys(prompt: string): string[] {
+	const m = prompt.match(/<control>\s*JSON\s*with:\s*([^\n.]+)/i);
+	if (!m) return [];
+	return m[1]
+		.split(",")
+		.map((s) => s.replace(/\([^)]*\)/g, "").trim())
+		.filter((s) => /^[A-Za-z_][\w]*$/.test(s));
+}
+
 /** Find the last balanced `{...}` substring via a brace scan. */
 export function findLastJsonObject(text: string): string | null {
 	const lastOpen = text.lastIndexOf("{");

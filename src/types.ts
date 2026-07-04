@@ -31,6 +31,9 @@ export interface AgentCall {
 	id: string;
 	agent: string;
 	prompt: string;
+	/** Control keys the caller expects back (for the session backend's
+	 *  structured_output schema). Optional; omitted for non-writer calls. */
+	controlKeys?: string[];
 }
 
 export interface AgentResult extends SpawnResult {}
