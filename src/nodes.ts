@@ -38,6 +38,7 @@ import type {
 	StageContext,
 	ControlObj,
 } from "./types.ts";
+import { specDocExists } from "./doc-validators.ts";
 
 // ─── Shared helper types ────────────────────────────────────────────────────
 
@@ -105,6 +106,16 @@ export function task(stage: Stage): Node {
 				ctx.log(`task "${stage.id}": skipped (budget exhausted)`);
 				record(ctx, "skipped");
 				return { status: "skipped" };
+			}
+			// Precondition: verify upstream artifact docs exist before running. Logs
+			// ✓/✗ per required glob so inter-stage dependencies are visible. Missing
+			// artifacts are NOT fatal — the tolerant pipeline proceeds (the prompt
+			// shows "N/A" for absent upstream) and the gap is logged.
+			const specDir = state.setup?.specDirectory ?? "";
+			if (stage.requires?.length && specDir) {
+				for (const glob of stage.requires) {
+					ctx.log(`precondition ${stage.id}: ${specDocExists(specDir, glob) ? "✓" : "✗ missing"} ${glob}`);
+				}
 			}
 			try {
 				ctx.events.emit("phase", stage.label);
@@ -331,9 +342,12 @@ export function gate(opts: GateOptions, node: Node): Node {
 					break; // exhausted → non-fatal return below
 				}
 				const v = await opts.validate(state, ctx);
-				if (v.pass) return { status: "ok", attempts: attempt };
+				if (v.pass) {
+					ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
+					return { status: "ok", attempts: attempt };
+				}
 				lastErrors = v.errors;
-				ctx.log(`gate${label}: validation FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
+				ctx.log(`gate${label}: ✗ FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
 				// Feed the errors forward so the next attempt's agent prompt names them.
 				if (opts.feedbackKey) {
 					const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
@@ -472,11 +486,14 @@ export function writerTask(spec: {
 	agent: string;
 	buildPrompt: (state: PipelineState, ctx: StageContext) => string;
 	fatal?: boolean;
+	/** Upstream artifact docs this writer needs (globs); checked by task() before run. */
+	requires?: string[];
 }): Stage {
 	return {
 		id: spec.id,
 		label: spec.label,
 		fatal: spec.fatal,
+		requires: spec.requires,
 		async run(state, ctx) {
 			if (!ctx.budget.check()) return undefined;
 			const result = await ctx.agent({

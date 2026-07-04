@@ -258,3 +258,28 @@ describe("wait / noop / tryCatch", () => {
 		expect(state.handled).toBe("recovered");
 	});
 });
+
+describe("task precondition check", () => {
+	it("logs ✓/✗ for each required upstream artifact before running", async () => {
+		const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "sd-pre-"));
+		const logs: string[] = [];
+		const ctx = { ...mkCtx(), setup: undefined, log: (m: string) => logs.push(m) } as any;
+		// a stage requiring two docs, only one of which exists
+		writeFileSync(join(dir, "01-requirements.md"), "x");
+		const stage = {
+			id: "bdd", label: "BDD", requires: ["*-requirements.md", "*-bdd-scenarios.md"],
+			async run() { return { done: true }; },
+		};
+		const state = { setup: { specDirectory: dir + "/" } } as any;
+		await (task as any)(stage).run(state, ctx);
+		const preLogs = logs.filter((l) => l.startsWith("precondition"));
+		expect(preLogs).toEqual([
+			"precondition bdd: ✓ *-requirements.md",
+			"precondition bdd: ✗ missing *-bdd-scenarios.md",
+		]);
+		rmSync(dir, { recursive: true, force: true });
+	});
+});

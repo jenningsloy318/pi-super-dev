@@ -161,6 +161,12 @@ export interface Stage {
 	enabled?: (state: PipelineState) => boolean;
 	run: (state: PipelineState, ctx: StageContext) => Promise<unknown>;
 	fatal?: boolean;
+	/** Upstream artifact docs this stage needs (filename globs in the spec dir,
+	 *  e.g. "*-requirements.md"). task() checks they exist before running and
+	 *  logs ✓/✗, making inter-stage dependencies visible. Missing artifacts are
+	 *  logged (not fatal) — the tolerant pipeline proceeds and the prompt shows
+	 *  "N/A" for absent upstream. */
+	requires?: string[];
 }
 
 // ─── Control-flow node algebra ──────────────────────────────────────────────

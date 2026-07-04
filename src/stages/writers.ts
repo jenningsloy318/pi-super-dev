@@ -21,6 +21,7 @@ export const bddWriter: Stage = writerTask({
 	id: "bdd",
 	label: "Stage 2C — BDD Scenarios",
 	agent: "bdd-scenario-writer",
+	requires: ["*-requirements.md"],
 	buildPrompt: (state, ctx) => P.buildBddPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null),
 });
 
@@ -28,6 +29,7 @@ export const researchWriter: Stage = writerTask({
 	id: "research",
 	label: "Stage 3 — Research",
 	agent: "research-agent",
+	requires: ["*-requirements.md"],
 	buildPrompt: (state, ctx) =>
 		P.buildResearchPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null),
 });
@@ -36,6 +38,7 @@ export const debugWriter: Stage = writerTask({
 	id: "debug",
 	label: "Stage 4 — Debug Analysis",
 	agent: "debug-analyzer",
+	requires: ["*-requirements.md"],
 	buildPrompt: (state, ctx) => P.buildDebugPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null),
 });
 
@@ -50,6 +53,7 @@ export const specWriter: Stage = writerTask({
 	id: "spec",
 	label: "Stage 7 — Specification",
 	agent: "spec-writer",
+	requires: ["*-requirements.md", "*-bdd-scenarios.md"],
 	buildPrompt: (state, ctx) =>
 		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null),
 });
@@ -58,6 +62,7 @@ export const specReviewWriter: Stage = writerTask({
 	id: "specReview",
 	label: "Stage 8 — Spec Review",
 	agent: "spec-reviewer",
+	requires: ["*-specification.md", "*-implementation-plan.md", "*-task-list.md"],
 	buildPrompt: (state) => P.buildSpecReviewPrompt(S(state), state.classify ?? null, state.spec ?? null),
 });
 
@@ -65,6 +70,7 @@ export const docsWriter: Stage = writerTask({
 	id: "docs",
 	label: "Stage 11 — Documentation",
 	agent: "docs-executor",
+	requires: ["*-specification.md"],
 	buildPrompt: (state, ctx) => P.buildDocsPrompt(S(state), state.classify ?? null, ctx.task, state.spec ?? null),
 });
 
