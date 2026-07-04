@@ -89,6 +89,28 @@ export function toBool(v: unknown): boolean {
 	return false;
 }
 
+/** Normalize a spec's `phases` field into a usable {name, description?} array.
+ *  Agents occasionally return phases as a string (newline/comma list) or an
+ *  object instead of an array; the implementation stage iterates it, so a
+ *  non-array must never reach `for...of phases.entries()` (which threw:
+ *  "phases.entries is not a function"). Array → keep valid entries; string →
+ *  best-effort split into names; anything else → []. */
+export function normalizePhases(raw: unknown): Array<{ name: string; description?: string }> {
+	if (Array.isArray(raw)) {
+		return raw.filter((p): p is { name: string; description?: string } =>
+			!!p && typeof p === "object" && typeof (p as { name?: unknown }).name === "string" && (p as { name: string }).name.trim() !== "",
+		);
+	}
+	if (typeof raw === "string" && raw.trim()) {
+		return raw
+			.split(/\r?\n|,|;|•/)
+			.map((x) => x.trim().replace(/^[-*\d.)\s]+/, "").trim())
+			.filter((x) => x.length > 0)
+			.map((name) => ({ name }));
+	}
+	return [];
+}
+
 /** Tolerant approved-verdict test. Accepts Approved / Approved with Comments /
  *  Approved with minor changes / PASS / Accepted (any case); rejects Changes
  *  Requested / Rejected / CONTEST / Blocked / FAIL. */

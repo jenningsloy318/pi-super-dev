@@ -137,20 +137,24 @@ function gateSpecTrace(s: Record<string, unknown>): HelperResult {
 	const errors: string[] = [];
 	if (!spec) errors.push("Missing upstream: write-spec");
 	else {
+		// The implementation stage reads spec.phases from the CONTROL object, so it
+		// MUST be a usable array — validate this ALWAYS, not only on the metadata
+		// fallback path. (A good doc content but malformed phases control crashed
+		// Stage 9 with "phases.entries is not a function".)
+		if (!Array.isArray(spec.phases) || spec.phases.length === 0) errors.push("spec.phases must be a non-empty array of {name, description} objects (the implementation stage iterates it)");
+		else {
+			const unnamed = (spec.phases as Array<{ name?: string }>).filter((p) => !p?.name);
+			if (unnamed.length > 0) errors.push(`${unnamed.length} phase(s) missing a name`);
+		}
+		if ((toNumber(spec.phaseCount) ?? 0) < 1) errors.push("Phase count must be at least 1");
 		const dir = setupSpecDir(s);
 		const doc = readSpecDoc(dir, spec, "*-specification.md", ["specificationPath", "docPath"]);
 		if (doc) {
 			errors.push(...specContentErrors(doc.content));
 			if (!specDocExists(dir, "*-task-list.md")) errors.push("Task list file (*-task-list.md) missing");
 			if (!specDocExists(dir, "*-implementation-plan.md")) errors.push("Implementation plan file (*-implementation-plan.md) missing");
-		} else {
-			if (!spec.specificationPath) errors.push("No specification path returned and no *-specification.md in the spec dir");
-			if ((toNumber(spec.phaseCount) ?? 0) < 1) errors.push("Phase count must be at least 1");
-			if (!Array.isArray(spec.phases) || spec.phases.length === 0) errors.push("No implementation phases defined");
-			else {
-				const unnamed = (spec.phases as Array<{ name?: string }>).filter((p) => !p.name);
-				if (unnamed.length > 0) errors.push(`${unnamed.length} phase(s) missing a name`);
-			}
+		} else if (!spec.specificationPath) {
+			errors.push("No specification path returned and no *-specification.md in the spec dir");
 		}
 	}
 	return fail("gate-spec-trace", errors);

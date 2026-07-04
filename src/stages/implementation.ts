@@ -6,6 +6,7 @@
 
 import type { ControlObj, Stage } from "../types.ts";
 import { buildTddPrompt, buildImplementPrompt, buildQaPrompt, buildCommitPrompt, buildImplementationSummaryPrompt } from "../prompts.ts";
+import { normalizePhases } from "../doc-validators.ts";
 
 const MAX_ATTEMPTS = 3;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -14,7 +15,13 @@ export const implementationStage: Stage = {
 	id: "implementation",
 	label: "Stage 9 — Implementation",
 	async run(state, ctx) {
-		const phases = (state.spec?.phases as Array<{ name: string; description?: string }>) ?? [];
+		// Defensively normalize: agents sometimes return `phases` as a string or
+		// object instead of an array, which crashed `phases.entries()` (Stage 9:
+		// "phases.entries is not a function"). Never trust the control shape.
+		const phases = normalizePhases(state.spec?.phases);
+		if (!Array.isArray(state.spec?.phases) && state.spec?.phases != null) {
+			ctx.log(`Implementation: spec.phases was ${typeof state.spec.phases}, expected an array — normalized to ${phases.length} phase(s)`);
+		}
 		if (phases.length === 0) {
 			ctx.log("Implementation: no phases defined in spec — skipping");
 			return { phasesCompleted: 0, totalPhases: 0, allGreen: false };

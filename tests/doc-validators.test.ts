@@ -15,6 +15,7 @@ import {
 	bddContentErrors,
 	specContentErrors,
 	specReviewContentErrors,
+	normalizePhases,
 	readSpecDoc,
 	toNumber,
 	toBool,
@@ -224,5 +225,46 @@ describe("readSpecDoc", () => {
 		expect(readSpecDoc(specDir, { docPath: "/nope.md" }, "*-bdd-scenarios.md")?.content).toBe("content");
 		// Nothing matches
 		expect(readSpecDoc(specDir, undefined, "*-nope.md")).toBeNull();
+	});
+});
+
+describe("normalizePhases (crash guard for Stage 9)", () => {
+	it("keeps a valid array of {name,description}", () => {
+		expect(normalizePhases([{ name: "Phase 1", description: "d" }, { name: "Phase 2" }])).toEqual([
+			{ name: "Phase 1", description: "d" }, { name: "Phase 2" },
+		]);
+	});
+	it("drops entries without a usable name", () => {
+		expect(normalizePhases([{ name: "ok" }, { description: "no name" }, { name: "" }])).toEqual([{ name: "ok" }]);
+	});
+	it("parses a string of phase names (the real crash case)", () => {
+		expect(normalizePhases("Phase 1: setup\nPhase 2: impl\nPhase 3: tests")).toEqual([
+			{ name: "Phase 1: setup" }, { name: "Phase 2: impl" }, { name: "Phase 3: tests" },
+		]);
+		expect(normalizePhases("a, b; c")).toEqual([{ name: "a" }, { name: "b" }, { name: "c" }]);
+	});
+	it("returns [] for null/undefined/number/object (never throws)", () => {
+		expect(normalizePhases(undefined)).toEqual([]);
+		expect(normalizePhases(null)).toEqual([]);
+		expect(normalizePhases(42)).toEqual([]);
+		expect(normalizePhases({ a: 1 })).toEqual([]);
+		expect(normalizePhases("")).toEqual([]);
+	});
+});
+
+describe("gate-spec-trace requires spec.phases array even with a good doc", () => {
+	it("fails when phases is a string (the Stage 9 crash case), despite a valid specification.md", async () => {
+		const { runHelper } = await import("../src/helpers.ts");
+		const specDir = `${dir}/docs/specifications/05-x/`;
+		mkdirSync(specDir, { recursive: true });
+		// a substantive spec doc (passes content checks)
+		writeFileSync(`${specDir}04-specification.md`, ("# Spec\nReferences SCENARIO-001.\n## Testing Strategy\nunit tests.\n" + "x".repeat(500)));
+		writeFileSync(`${specDir}05-implementation-plan.md`, "plan");
+		writeFileSync(`${specDir}06-task-list.md`, "tasks");
+		const setup = mkSetup(specDir);
+		// but the CONTROL's phases is a string (what crashed Stage 9)
+		const r = await runHelper({ name: "gate-spec-trace", sources: { "write-spec": { specificationPath: `${specDir}04-specification.md`, phaseCount: 3, phases: "Phase 1\nPhase 2" }, setup } });
+		expect(r.value.pass).toBe(false);
+		expect((r.value.errors as string[]).some((e) => /spec\.phases must be a non-empty array/.test(e))).toBe(true);
 	});
 });
