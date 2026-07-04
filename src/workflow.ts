@@ -64,9 +64,12 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				text: (partial: string) => options.progress?.text(partial),
 			},
 		};
-		// Backend selectable: "session" = in-process createAgentSession (default for
-		// the prototype once verified), "subprocess" = raw pi spawn (the original).
-		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session";
+		// Backend selectable. Default is 'subprocess' (raw pi spawn) — it inherits the
+		// host pi's full config (auth/model) naturally and is proven in-host. The
+		// 'session' backend (in-process createAgentSession) works in isolation but
+		// has been observed to silently produce no output inside the host pi
+		// runtime (auth/model/extension context differs), so it's opt-in via env.
+		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "subprocess";
 		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
 	}
 	async function helper(call: HelperCall): Promise<HelperResult> {

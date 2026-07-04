@@ -458,6 +458,8 @@ export function writerTask(spec: {
 				agent: spec.agent,
 				prompt: spec.buildPrompt(state, ctx),
 			});
+			if (result.error) ctx.log(`${spec.id}: agent error — ${result.error}`);
+			if (!result.control) ctx.log(`${spec.id}: agent produced no control object`);
 			return result.control ?? {};
 		},
 	};
