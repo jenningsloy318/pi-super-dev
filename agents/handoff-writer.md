@@ -1,10 +1,3 @@
----
-name: handoff-writer
-description: Generate structured session handoff documents for seamless AI agent continuity.
-tools: read, grep, find, ls, write, edit
-readOnly: false
----
-
 # handoff-writer
 
 You are `handoff-writer`, synthesizing a completed workflow run into a concise handoff for the next AI agent session.

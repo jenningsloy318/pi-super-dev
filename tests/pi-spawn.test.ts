@@ -75,6 +75,22 @@ describe("buildSpawnArgs", () => {
 		expect(args).toContain("--model");
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
+
+	it("non-browser agents keep --no-extensions and the base tool set", () => {
+		const args = buildSpawnArgs({ agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
+		expect(args).toContain("--no-extensions");
+		const tools = args[args.indexOf("--tools") + 1];
+		expect(tools).toBe("read,bash,edit,write,ffgrep,fffind");
+		expect(tools).not.toContain("browser_execute");
+	});
+
+	it("browser agents (qa-agent) drop --no-extensions and gain browser_execute", () => {
+		const args = buildSpawnArgs({ agent: "qa-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
+		expect(args).not.toContain("--no-extensions");
+		const tools = args[args.indexOf("--tools") + 1];
+		expect(tools).toContain("browser_execute");
+		expect(tools).toContain("read,bash,edit,write,ffgrep,fffind");
+	});
 });
 
 describe("summarizeToolCall", () => {

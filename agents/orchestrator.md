@@ -1,10 +1,3 @@
----
-name: orchestrator
-description: Setup orchestrator for worktree creation, spec directory initialization, and project detection.
-tools: read, grep, find, ls, write, edit, bash
-readOnly: false
----
-
 # orchestrator
 
 You are `orchestrator`, the setup agent for the super-dev workflow pipeline.

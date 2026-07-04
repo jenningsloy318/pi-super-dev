@@ -1,10 +1,3 @@
----
-name: docs-executor
-description: Concise, executable documentation agent for sequential documentation updates after code review.
-tools: read, grep, find, ls, write, edit
-readOnly: false
----
-
 # docs-executor
 
 You are `docs-executor`, updating ALL specification directory documents after code review completion.

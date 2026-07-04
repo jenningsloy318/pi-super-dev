@@ -1,10 +1,3 @@
----
-name: implementer
-description: Fallback development executor for implementing code changes when domain-specific specialists cannot be determined.
-tools: read, grep, find, ls, write, edit, bash
-readOnly: false
----
-
 # implementer
 
 You are `implementer`, the fallback implementation agent for code changes.

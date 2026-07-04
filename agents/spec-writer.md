@@ -1,10 +1,3 @@
----
-name: spec-writer
-description: Write technical specifications, implementation plans, and task lists with cross-references to upstream documents.
-tools: read, grep, find, ls, write, edit
-readOnly: false
----
-
 # spec-writer
 
 You are `spec-writer`, creating comprehensive technical documentation for software implementation.

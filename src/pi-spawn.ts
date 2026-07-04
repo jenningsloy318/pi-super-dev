@@ -2,7 +2,7 @@
  * Spawns `pi` child processes to run specialist agents — the single primitive
  * that replaces pi-workflow's agent engine. Verified invocation:
  *
- *   pi --mode json -p --no-session --no-skills --no-extensions \
+ *   pi --mode json -p --no-session --no-skills [--no-extensions] \
  *      --tools read,bash,edit,write,ffgrep,fffind \
  *      [--model <provider/id>] --system-prompt <temp-file> "Task: <prompt>"
  *
@@ -18,7 +18,23 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
-const AGENT_TOOLS = "read,bash,edit,write,ffgrep,fffind";
+const BASE_TOOLS = "read,bash,edit,write,ffgrep,fffind";
+
+/** Agents that drive a browser for UI testing. They receive the `browser_execute`
+ *  tool and load extensions (so pi-browser-cdp-extension is available). The
+ *  `--tools` allowlist still keeps every other extension tool (e.g. `subagent`)
+ *  disabled, so this stays isolated. Browser connection uses AUTO-DISCOVERY —
+ *  `await session.connect()` with no args finds any Chrome started with
+ *  `--remote-debugging-port`; see agents/qa-agent.md. */
+const BROWSER_AGENTS = new Set(["qa-agent"]);
+
+export function isBrowserAgent(agent: string): boolean {
+	return BROWSER_AGENTS.has(agent);
+}
+
+export function toolsForAgent(agent: string): string {
+	return BROWSER_AGENTS.has(agent) ? `${BASE_TOOLS},browser_execute` : BASE_TOOLS;
+}
 
 /** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
 const DEFAULT_SPAWN_TIMEOUT_MS = 300_000;
@@ -60,16 +76,25 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
  * as element 0. (Extracted so the command resolution is unit-testable — a
  * previous version dropped `command` and tried to exec "--mode", causing
  * `spawn --mode ENOENT` on every single agent spawn.)
+ *
+ * Browser-capable agents (see BROWSER_AGENTS) omit `--no-extensions` so the
+ * pi-browser-cdp-extension loads, and add `browser_execute` to the tool set.
+ * The `--tools` allowlist still restricts active tools to the declared set.
  */
 export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string): string[] {
 	const { command, args: prefix } = resolvePiBinary();
+	const browser = isBrowserAgent(opts.agent);
 	const args = [
 		command, // ← the executable ("pi" on PATH, or `node` re-invoking the host entry)
 		...prefix,
-		"--mode", "json", "-p", "--no-session", "--no-skills", "--no-extensions",
-		"--tools", AGENT_TOOLS,
-		"--system-prompt", promptPath,
+		"--mode", "json", "-p", "--no-session", "--no-skills",
 	];
+	// Browser agents need pi-browser-cdp-extension loaded, so they do NOT pass
+	// --no-extensions. The --tools allowlist below still restricts active tools
+	// to the declared set (so loading extensions doesn't enable e.g. `subagent`).
+	if (!browser) args.push("--no-extensions");
+	args.push("--tools", toolsForAgent(opts.agent));
+	args.push("--system-prompt", promptPath);
 	if (opts.model) args.push("--model", opts.model);
 	args.push(`Task: ${opts.prompt}`);
 	return args;
