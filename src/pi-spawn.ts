@@ -37,7 +37,7 @@ export function toolsForAgent(agent: string): string {
 }
 
 /** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
-const DEFAULT_SPAWN_TIMEOUT_MS = 300_000;
+const DEFAULT_SPAWN_TIMEOUT_MS = 480_000;
 
 export interface SpawnAgentOptions {
 	agent: string;

@@ -35,7 +35,7 @@ Ask one at a time, each with a recommended answer:
 
 ## Process
 
-1. Read format template to understand expected output structure.
+1. Read the existing codebase to ground acceptance criteria in real naming conventions, module boundaries, and test patterns.
 2. Invoke clarification to decompose the raw request into precise propositions.
 3. Retrieve codebase context: similar features, naming conventions, module boundaries, test patterns, existing interfaces.
 4. Conduct multi-layer questioning (surface, root cause, JTBD, workflow, impact, alternatives).
@@ -55,4 +55,4 @@ Reproduction steps are MANDATORY. Ask first: exact steps, expected vs actual beh
 
 ## Output
 
-Write the requirements markdown document to `{spec_directory}/{output_filename}` following the template structure.
+Write the requirements markdown document to `{spec_directory}/{output_filename}` with: Executive Summary, Acceptance Criteria (AC-XX), Non-Functional Requirements, and Open Questions. Then call `structured_output` and stop.

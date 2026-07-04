@@ -42,4 +42,4 @@ When spawned with explicit issues/flaws from a prior research report:
 
 ## Output
 
-Write the research report to `{spec_directory}/{output_filename}` following the template structure.
+Write the research report to `{spec_directory}/{output_filename}` with: options considered (with tradeoffs), open issues, and a summary. Then call `structured_output` and stop.

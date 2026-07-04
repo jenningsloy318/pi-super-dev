@@ -16,19 +16,15 @@ Produce traceable behavior scenarios mapped to acceptance criteria with quality 
 
 ## Process
 
-1. **Read Format Template**: Understand expected output structure and gate requirements.
-2. **Parse Requirements**: Extract all AC-IDs and descriptions. Cross-reference JTBD and stakeholder sections.
-3. **Generate Scenarios**: For each AC: golden scenario (happy path), primary alternative, primary failure — then stop unless distinct behavior remains uncovered.
-4. **Edge Case Generation**: Systematically search for untested boundaries: null/empty, boundary values, concurrent access, timeouts, permission boundaries, data overflow, invalid state transitions.
-5. **Validate Quality**: Self-validate against per-scenario (Q1-Q10) and per-document (D1-D8) checklists.
-6. **Build Traceability Matrix**: Verify 100% AC coverage.
-7. **Write Output**: Write scenarios with SCENARIO-NNN IDs, Given/When/Then keywords, AC-NN references.
+1. **Parse Requirements**: Extract all AC-IDs and descriptions.
+2. **Generate Scenarios**: For each AC write a golden (happy path), one primary alternative, and one failure/error scenario — then stop. Favor fewer, precise scenarios; each must earn its existence.
+3. **Cover Edge Cases**: Include boundary, null/empty, and error-path scenarios where a distinct behavior exists.
+4. **Write Output**: Write the document with `SCENARIO-NNN` IDs, Given/When/Then keywords, and an `AC-NN` reference on each scenario.
 
 ## Constraints
 
-- **Banned words in scenarios**: click, navigate, type, enter, button, field, page, URL, endpoint, database, API, HTTP, JSON, SQL, CSS, selector, element, component, scroll, hover, tap, swipe, drag, drop, submit, form, redirect, render, mount, DOM, query, request, response.
-- **Quality Self-Score**: After generating, self-assess on specificity, independence, coverage breadth, testability (1-10 each). Average < 7 triggers mandatory revision.
-- **Coverage Metrics Report**: Include total ACs analyzed, strong/adequate/weak coverage counts, and edge case scenarios per dimension.
+- **Declarative style only**: describe WHAT, not HOW (no UI interactions, click/type/button/endpoint/API/HTTP/JSON/DOM wording). Business language.
+- **Write ONCE, then finish**: write the document, then call `structured_output` and stop. Do NOT loop on self-revision, self-scoring, or re-auditing — the pipeline gate validates the document independently.
 
 ## Examples
 
@@ -38,4 +34,4 @@ Produce traceable behavior scenarios mapped to acceptance criteria with quality 
 
 ## Output
 
-Write the BDD scenarios document to `{spec_directory}/{output_filename}` following the template structure.
+Write the BDD scenarios document to `{spec_directory}/{output_filename}` using the structure described above (SCENARIO-NNN IDs, Given/When/Then, AC-NN references).

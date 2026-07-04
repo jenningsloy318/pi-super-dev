@@ -67,3 +67,19 @@ describe("node algebra exports", () => {
 		}
 	});
 });
+
+describe("agent prompts: no dead references (templates/Q1-Q10 self-audit)", () => {
+	const AGENTS = join(ROOT, "agents");
+	it("no writer prompt tells the agent to read a format template we don't ship", () => {
+		const writers = ["requirements-clarifier", "bdd-scenario-writer", "research-agent", "spec-writer", "spec-reviewer", "docs-executor"];
+		for (const w of writers) {
+			const md = readFileSync(join(AGENTS, `${w}.md`), "utf8");
+			expect(md, `${w}.md references a non-existent template`).not.toMatch(/read\s+(?:the\s+)?format\s+template/i);
+			expect(md, `${w}.md still references the old template structure`).not.toMatch(/following the template structure/i);
+		}
+	});
+	it("bdd prompt no longer demands the vestigial Q1-Q10/D1-D8 self-audit or mandatory-revision loop", () => {
+		const md = readFileSync(join(AGENTS, "bdd-scenario-writer.md"), "utf8");
+		expect(md).not.toMatch(/Q1-Q10|D1-D8|triggers mandatory revision|self-score/i);
+	});
+});

@@ -8,12 +8,11 @@ Produce three documents: technical specification, implementation plan, and task 
 
 ## Process
 
-1. **Read Format Templates**: Read ALL three format templates to understand expected structures.
-2. **Synthesize Inputs**: Read ALL input documents. Extract every AC-ID, SCENARIO-ID, architecture decision, and constraint. These form the coverage baseline.
-3. **Create Technical Specification**: Document all technical decisions. Every AC maps to a spec section. Every BDD scenario addressable by design. Architecture decisions reflected.
-4. **Create Implementation Plan**: Break into implementable milestones. Tag tasks with `domain`. Identify cross-domain dependencies. Structure as DAG with `depends_on` and `parallelizable_with`.
-5. **Create Task List**: Granular tasks from implementation plan with file change tracking.
-6. **Pre-Output Self-Check**: Verify SCENARIO-ID references, all AC-IDs addressed, architecture not contradicted, all three files produced.
+1. **Synthesize Inputs**: Read ALL input documents. Extract every AC-ID, SCENARIO-ID, architecture decision, and constraint. These form the coverage baseline.
+2. **Create Technical Specification**: Document all technical decisions. Every AC maps to a spec section. Every BDD scenario addressable by design. Architecture decisions reflected.
+3. **Create Implementation Plan**: Break into implementable milestones. Tag tasks with `domain`. Identify cross-domain dependencies. Structure as DAG with `depends_on` and `parallelizable_with`.
+4. **Create Task List**: Granular tasks from implementation plan with file change tracking.
+5. **Pre-Output Self-Check**: Verify SCENARIO-ID references, all AC-IDs addressed, architecture not contradicted, all three files produced.
 
 ## Constraints
 
@@ -30,4 +29,4 @@ Split when: 4+ functional areas, 15+ tasks, multiple independent components, mul
 
 ## Output
 
-Write documents to `{spec_directory}/{output_filenames[0]}`, `{spec_directory}/{output_filenames[1]}`, `{spec_directory}/{output_filenames[2]}` following the template structures.
+Write the three documents to `{spec_directory}/{output_filenames[0]}` (specification), `{spec_directory}/{output_filenames[1]}` (implementation plan), and `{spec_directory}/{output_filenames[2]}` (task list) using the structures described above. Write them one at a time, then call `structured_output` and stop.

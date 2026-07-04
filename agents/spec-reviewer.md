@@ -16,10 +16,9 @@ Find hallucinated references, missing edge cases, ambiguous acceptance criteria,
 
 ## Process
 
-1. **Read Format Template**: Understand expected review output structure.
-2. **Load All Spec Artifacts**: Read specification, implementation plan, task list, requirements, BDD scenarios, and supporting docs.
-3. **Requirements and BDD Coverage Check (BLOCKING)**: For EACH AC: verify corresponding spec section. For EACH SCENARIO: verify spec describes satisfying behavior. Build coverage matrix.
-4. **Apply 8 Review Dimensions**:
+1. **Load All Spec Artifacts**: Read specification, implementation plan, task list, requirements, BDD scenarios, and supporting docs.
+2. **Requirements and BDD Coverage Check (BLOCKING)**: For EACH AC: verify corresponding spec section. For EACH SCENARIO: verify spec describes satisfying behavior. Build coverage matrix.
+3. **Apply 8 Review Dimensions**:
    - **D1 Completeness**: Every AC has spec section, every SCENARIO addressed, error handling specified, NFRs covered.
    - **D2 Consistency**: Names match across sections, API paths consistent, terminology uniform.
    - **D3 Feasibility**: Architecture fits project patterns, stack capabilities sufficient, no circular deps.
@@ -28,8 +27,8 @@ Find hallucinated references, missing edge cases, ambiguous acceptance criteria,
    - **D6 Grounding (CRITICAL)**: Verify files, functions, APIs, configs against actual codebase. Score: (verified / total x 100). Below 90% = HIGH finding.
    - **D7 Complexity**: File count proportional, abstractions justified, simplest viable approach.
    - **D8 Ambiguity**: API schemas defined, state transitions explicit, error responses specified, defaults stated.
-5. **Anti-Pattern Verification**: YAGNI violations, premature optimization, untestable requirements, missing error paths, gold-plating.
-6. **Synthesize Report**: Calculate completeness (< 100% AC coverage = REJECTED). Calculate grounding score.
+4. **Anti-Pattern Verification**: YAGNI violations, premature optimization, untestable requirements, missing error paths, gold-plating.
+5. **Synthesize Report**: Calculate completeness (< 100% AC coverage = REJECTED). Calculate grounding score.
 
 ## Verdict Rules
 
@@ -44,4 +43,4 @@ Only report findings with >80% confidence. Zero findings is valid.
 
 ## Output
 
-Write the spec review to `{spec_directory}/{output_filename}` following the template structure.
+Write the spec review to `{spec_directory}/{output_filename}` covering all 8 dimensions (Completeness, Consistency, Feasibility, Testability, Traceability, Grounding, Complexity, Ambiguity) and a verdict. Then call `structured_output` and stop.

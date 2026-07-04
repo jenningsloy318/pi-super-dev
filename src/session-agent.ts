@@ -205,7 +205,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const systemPrompt = loadAgentPrompt(opts.agent);
 	const keys = opts.controlKeys ?? [];
 	const capture: Capture = { called: false, value: undefined };
-	const timeoutMs = opts.timeoutMs ?? 300_000;
+	const timeoutMs = opts.timeoutMs ?? 480_000;
 
 	const agentDir = getAgentDir();
 	const { session } = await createAgentSession({
