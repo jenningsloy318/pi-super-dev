@@ -44,9 +44,12 @@ const notBlocked = (s: PipelineState) => {
 const hasImplementation = (s: PipelineState) =>
 	((s.implementation as { totalPhases?: number } | undefined)?.totalPhases ?? 0) > 0;
 
-/** Research is complete ONLY when it actually produced a report with no open
- *  issues. Treating "no research output" as complete is a vacuous pass — the
- *  agent may have timed out and written nothing (observed in real runs). */
+/** Research is complete once it has actually produced a report. Open issues
+ *  are NORMAL research output (the prompt asks for them) — they flow forward
+ *  to the spec/assessment stages, which already consume them, so they must NOT
+ *  block the pipeline. The previous version treated any open issue as
+ *  "incomplete", which fatal-failed after 3 retries because glm always lists
+ *  some. The vacuous-pass guard (require a docPath) stays: no report = fail. */
 const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const r = s.research as { docPath?: string; openIssues?: unknown[] } | undefined;
 	if (!r || !r.docPath) {
@@ -54,9 +57,8 @@ const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 		return false;
 	}
 	const open = (r.openIssues as unknown[]) ?? [];
-	if (open.length === 0) return true;
-	ctx.log(`Research: ${open.length} open issue(s) remain`);
-	return false;
+	if (open.length > 0) ctx.log(`Research: ${open.length} open issue(s) noted — forwarded to spec/assessment`);
+	return true;
 };
 
 /** Code review is approved when the merged verdict is Approved (with or without comments). */
