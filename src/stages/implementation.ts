@@ -5,7 +5,7 @@
  */
 
 import type { ControlObj, Stage } from "../types.ts";
-import { buildTddPrompt, buildImplementPrompt, buildQaPrompt, buildCommitPrompt } from "../prompts.ts";
+import { buildTddPrompt, buildImplementPrompt, buildQaPrompt, buildCommitPrompt, buildImplementationSummaryPrompt } from "../prompts.ts";
 
 const MAX_ATTEMPTS = 3;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -62,6 +62,9 @@ export const implementationStage: Stage = {
 			filesModified,
 			summary: allGreen ? `All ${phases.length} phases completed successfully` : `${phasesCompleted}/${phases.length} phases completed`,
 		};
+		if (ctx.budget.check()) {
+			await ctx.agent({ id: "pipeline.implementation.summary", agent: "orchestrator", prompt: buildImplementationSummaryPrompt(setup, state.classify ?? null, control) });
+		}
 		return control;
 	},
 };
