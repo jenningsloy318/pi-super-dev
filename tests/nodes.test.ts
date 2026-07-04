@@ -51,9 +51,6 @@ function mkCtx(): StageContext {
 	};
 }
 
-const run = (node: ReturnType<typeof task>, state: PipelineState = {}) =>
-	node.run(state, mkCtx());
-
 describe("task", () => {
 	it("runs and stores its return value under state[id]", async () => {
 		const t = task(mockTask("foo", () => ({ ok: true })));

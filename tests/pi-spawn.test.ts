@@ -5,7 +5,7 @@
  * agent ends on a trailing tool-call turn or is killed mid-stream.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);

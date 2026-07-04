@@ -168,7 +168,7 @@ const LANG_MARKERS: Record<string, string[]> = {
 	rust: ["Cargo.toml", "Cargo.lock"], go: ["go.mod", "go.sum"], frontend: ["package.json", "tsconfig.json"], python: ["pyproject.toml", "setup.py", "requirements.txt"],
 };
 
-async function cleanup(s: Record<string, unknown>, context?: Record<string, unknown>): Promise<HelperResult> {
+async function cleanup(_s: Record<string, unknown>, context?: Record<string, unknown>): Promise<HelperResult> {
 	const cwd = context?.cwd as string | undefined;
 	if (!cwd) return ok("FAIL: no cwd in context", { languagesDetected: [], directoriesRemoved: [], sensitiveDataFindings: [], blocked: false, summary: "Could not scan — no working directory provided" });
 	const { readdir, stat } = await import("node:fs/promises");
