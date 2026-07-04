@@ -63,7 +63,7 @@ function controlSchema(keys: string[]) {
 }
 
 /** Which declared keys are missing/blank in the captured control object. */
-function missingKeys(captured: Record<string, unknown> | null | undefined, keys: string[]): string[] {
+export function missingKeys(captured: Record<string, unknown> | null | undefined, keys: string[]): string[] {
 	if (!captured) return keys;
 	return keys.filter((k) => {
 		const v = captured[k];
@@ -92,7 +92,7 @@ function structuredOutputTool(capture: Capture, keys: string[]): ToolDefinition 
 		],
 		parameters: controlSchema(keys),
 		async execute(_toolCallId, params) {
-			capture.value = params;
+			capture.value = { ...(capture.value as Record<string, unknown> | undefined), ...params };
 			capture.called = true;
 			return {
 				content: [{ type: "text", text: "Structured output received." }],
@@ -238,15 +238,14 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 			if (!timedOut && !opts.signal?.aborted) throw err;
 		}
 
-		// Self-heal: if the model called structured_output but omitted declared
-		// keys, send ONE corrective turn in the same session (same context, same
-		// files written) naming exactly what's missing. The evidence (see
-		// docs/findings) was that GLM returned only {summary} under the old
-		// permissive schema; declaring keys fixes the common case, this turn
-		// catches the residual.
+		// Self-heal: ONLY when the model actually called structured_output but
+		// omitted declared keys, send ONE corrective turn in the same session
+		// (same context, same files written) naming exactly what's missing. If it
+		// never called the tool, a "you omitted keys" message would be a false
+		// premise — leave that to the gate's cold retry instead.
 		const afterFirst = capture.called ? (capture.value as Record<string, unknown> | undefined) : undefined;
 		const missing = missingKeys(afterFirst, keys);
-		if (missing.length > 0 && !timedOut && !opts.signal?.aborted) {
+		if (capture.called && missing.length > 0 && !timedOut && !opts.signal?.aborted) {
 			correctiveNote = `corrective re-prompt (missing: ${missing.join(", ")})`;
 			opts.onProgress?.event(`↻ ${opts.id ?? opts.agent}: ${correctiveNote}`);
 			const fix = `Your previous structured_output was missing required keys: ${missing.join(", ")}. Call structured_output AGAIN, this time with ALL of these keys filled from the work you already did: ${keys.join(", ")}. Do not redo the work — just return the complete object.`;

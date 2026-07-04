@@ -459,7 +459,10 @@ export function writerTask(spec: {
 				prompt: spec.buildPrompt(state, ctx),
 			});
 			if (result.error) ctx.log(`${spec.id}: agent error — ${result.error}`);
-			if (!result.control) ctx.log(`${spec.id}: agent produced no control object`);
+			if (!result.control) {
+				const said = result.text ? ` (last text: ${result.text.slice(0, 160).replace(/\s+/g, " ")})` : "";
+				ctx.log(`${spec.id}: agent produced no control object${said}`);
+			}
 			return result.control ?? {};
 		},
 	};
@@ -494,7 +497,9 @@ export function gateValidator(helperName: string, sourceKey: string, stateKey: s
 	return async (state, ctx) => {
 		const result = await ctx.helper({
 			name: helperName,
-			sources: { [sourceKey]: (state as Record<string, unknown>)[stateKey] ?? {} },
+			// Include setup so content gates can read docs from the spec directory
+			// (the control object's docPath may be missing/misreported by the agent).
+			sources: { [sourceKey]: (state as Record<string, unknown>)[stateKey] ?? {}, setup: state.setup },
 		});
 		return Boolean(result.value.pass);
 	};

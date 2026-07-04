@@ -4,7 +4,18 @@
  * unchanged. `runHelper(name, sources, options, context)` dispatches.
  */
 
-import type { ControlObj, HelperCall, HelperResult } from "./types.ts";
+import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
+import {
+	readSpecDoc,
+	specDocExists,
+	toNumber,
+	toBool,
+	isApprovedVerdict,
+	requirementsContentErrors,
+	bddContentErrors,
+	specContentErrors,
+	specReviewContentErrors,
+} from "./doc-validators.ts";
 
 const ok = (digest: string, value: ControlObj): HelperResult => ({ value, digest });
 const fail = (gate: string, errors: string[]): HelperResult => ({
@@ -72,16 +83,31 @@ function routeSpecialist(s: Record<string, unknown>): HelperResult {
 }
 
 // ─── gates ──────────────────────────────────────────────────────────────────
+// Each spec-stage gate validates the ACTUAL .md file the agent wrote (via
+// doc-validators.ts), falling back to the agent's self-reported control JSON
+// only when no doc can be found on disk. Content checks are authoritative —
+// they catch false negatives where the doc is good but the control object is
+// misshapen (the BDD gate failure). Metadata gates (build, review) coerce
+// string↔number↔boolean so a model returning "13"/"true" doesn't trip them.
+
+function setupSpecDir(s: Record<string, unknown>): string {
+	return (s["setup"] as SetupControl | undefined)?.specDirectory ?? "";
+}
 
 function gateRequirements(s: Record<string, unknown>): HelperResult {
 	const req = s["write-requirements"] as ControlObj | undefined;
 	const errors: string[] = [];
 	if (!req) errors.push("Missing upstream: write-requirements");
 	else {
-		if (!req.docPath) errors.push("No document path returned");
-		if (!req.acCount || (req.acCount as number) < 1) errors.push("Missing acceptance criteria");
-		if (!req.summary) errors.push("Missing summary section");
-		if (!req.featureName) errors.push("Missing feature name");
+		const doc = readSpecDoc(setupSpecDir(s), req, "*-requirements.md");
+		if (doc) errors.push(...requirementsContentErrors(doc.content));
+		else {
+			// No doc on disk — fall back to self-reported metadata.
+			if (!req.docPath) errors.push("No requirements doc found (no docPath, and no *-requirements.md in the spec dir)");
+			if ((toNumber(req.acCount) ?? 0) < 1) errors.push("Missing acceptance criteria");
+			if (!req.summary) errors.push("Missing summary section");
+			if (!req.featureName) errors.push("Missing feature name");
+		}
 	}
 	return fail("gate-requirements", errors);
 }
@@ -91,10 +117,17 @@ function gateBdd(s: Record<string, unknown>): HelperResult {
 	const errors: string[] = [];
 	if (!bdd) errors.push("Missing upstream: write-bdd");
 	else {
-		if (!bdd.docPath) errors.push("No document path returned");
-		if (!bdd.scenarioCount || (bdd.scenarioCount as number) < 1) errors.push("No scenarios written");
-		const edgeOk = bdd.edgeCasesCovered === true || (typeof bdd.coverageScore === "number" && bdd.coverageScore >= 0.6);
-		if (!edgeOk) errors.push("Insufficient edge case coverage (need edgeCasesCovered or coverageScore >= 0.6)");
+		const doc = readSpecDoc(setupSpecDir(s), bdd, "*-bdd-scenarios.md");
+		if (doc) {
+			errors.push(...bddContentErrors(doc.content));
+		} else {
+			// No doc on disk — fall back to self-reported metadata (coerced).
+			if (!bdd.docPath) errors.push("No BDD doc found (no docPath, and no *-bdd-scenarios.md in the spec dir)");
+			if ((toNumber(bdd.scenarioCount) ?? 0) < 1) errors.push("No scenarios written");
+			const score = toNumber(bdd.coverageScore);
+			const edgeOk = toBool(bdd.edgeCasesCovered) || (score !== null && score >= 0.6);
+			if (!edgeOk) errors.push("Insufficient edge case coverage (need edgeCasesCovered or coverageScore >= 0.6)");
+		}
 	}
 	return fail("gate-bdd", errors);
 }
@@ -104,12 +137,20 @@ function gateSpecTrace(s: Record<string, unknown>): HelperResult {
 	const errors: string[] = [];
 	if (!spec) errors.push("Missing upstream: write-spec");
 	else {
-		if (!spec.specificationPath) errors.push("No specification path returned");
-		if (!spec.phaseCount || (spec.phaseCount as number) < 1) errors.push("Phase count must be at least 1");
-		if (!Array.isArray(spec.phases) || spec.phases.length === 0) errors.push("No implementation phases defined");
-		else {
-			const unnamed = (spec.phases as Array<{ name?: string }>).filter((p) => !p.name);
-			if (unnamed.length > 0) errors.push(`${unnamed.length} phase(s) missing a name`);
+		const dir = setupSpecDir(s);
+		const doc = readSpecDoc(dir, spec, "*-specification.md", ["specificationPath", "docPath"]);
+		if (doc) {
+			errors.push(...specContentErrors(doc.content));
+			if (!specDocExists(dir, "*-task-list.md")) errors.push("Task list file (*-task-list.md) missing");
+			if (!specDocExists(dir, "*-implementation-plan.md")) errors.push("Implementation plan file (*-implementation-plan.md) missing");
+		} else {
+			if (!spec.specificationPath) errors.push("No specification path returned and no *-specification.md in the spec dir");
+			if ((toNumber(spec.phaseCount) ?? 0) < 1) errors.push("Phase count must be at least 1");
+			if (!Array.isArray(spec.phases) || spec.phases.length === 0) errors.push("No implementation phases defined");
+			else {
+				const unnamed = (spec.phases as Array<{ name?: string }>).filter((p) => !p.name);
+				if (unnamed.length > 0) errors.push(`${unnamed.length} phase(s) missing a name`);
+			}
 		}
 	}
 	return fail("gate-spec-trace", errors);
@@ -119,8 +160,11 @@ function gateSpecReview(s: Record<string, unknown>): HelperResult {
 	const review = s["review-spec"] as ControlObj | undefined;
 	const errors: string[] = [];
 	if (!review) errors.push("Missing upstream: review-spec");
-	else if (!review.verdict) errors.push("No verdict present in spec review");
-	else if (review.verdict !== "Approved" && review.verdict !== "Approved with Comments") errors.push(`Verdict is "${review.verdict}" — changes requested`);
+	else {
+		const doc = readSpecDoc(setupSpecDir(s), review, "*-spec-review*.md");
+		if (doc) errors.push(...specReviewContentErrors(doc.content));
+		if (!isApprovedVerdict(review.verdict)) errors.push(`Verdict is "${review.verdict ?? ""}" — changes requested`);
+	}
 	return fail("gate-spec-review", errors);
 }
 
@@ -129,8 +173,8 @@ function gateBuild(s: Record<string, unknown>): HelperResult {
 	const errors: string[] = [];
 	if (!qa) errors.push("Missing upstream: qa-check");
 	else {
-		if (qa.buildSuccess !== true) errors.push("Build failed");
-		if (qa.allTestsPass !== true) errors.push("Tests failing");
+		if (!toBool(qa.buildSuccess)) errors.push("Build failed");
+		if (!toBool(qa.allTestsPass)) errors.push("Tests failing");
 	}
 	return fail("gate-build", errors);
 }
@@ -139,8 +183,7 @@ function gateReview(s: Record<string, unknown>): HelperResult {
 	const merged = s["merge-verdicts"] as ControlObj | undefined;
 	const errors: string[] = [];
 	if (!merged) errors.push("Missing upstream: merge-verdicts");
-	else if (!merged.verdict) errors.push("No verdict present in merged review");
-	else if (merged.verdict !== "Approved" && merged.verdict !== "Approved with Comments") errors.push(`Verdict is "${merged.verdict}" — changes requested`);
+	else if (!isApprovedVerdict(merged.verdict)) errors.push(`Verdict is "${merged.verdict ?? ""}" — changes requested`);
 	return fail("gate-review", errors);
 }
 

@@ -34,7 +34,10 @@ export const implementationStage: Stage = {
 				}
 				await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null) });
 				const specialist = await ctx.helper({ name: "route-specialist", sources: { "classify-task": state.classify }, options: { phase } });
-				await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null) });
+				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null) });
+				for (const f of ((impl.control as { filesModified?: unknown } | null)?.filesModified as string[] | undefined) ?? []) {
+					if (!filesModified.includes(f)) filesModified.push(f);
+				}
 				const qa = await ctx.agent({ id: `pipeline.implementation.${phaseId}.qa.a${attempt}`, agent: "qa-agent", prompt: buildQaPrompt(setup, state.classify ?? null, phase) });
 				const qaControl: ControlObj = qa.control ?? {};
 				const gate = await ctx.helper({ name: "gate-build", sources: { "qa-check": qaControl } });
