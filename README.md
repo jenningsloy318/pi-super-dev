@@ -13,13 +13,37 @@ or any other external workflow engine.**
 
 ## Install
 
+Install it from **npm** or **GitHub** (your choice):
+
 ```bash
+# 1) npm — published package
 pi install npm:pi-super-dev
-# or try it without installing:
+
+# 2) GitHub — latest on the default branch
+pi install git:github.com/jenningsloy318/pi-super-dev
+#    …or pinned to a release tag:
+pi install git:github.com/jenningsloy318/pi-super-dev@v0.1.2
+```
+
+Try it without installing (temporary, this run only):
+
+```bash
 pi -e npm:pi-super-dev
-# or, from a local checkout:
+pi -e git:github.com/jenningsloy318/pi-super-dev
+# from a local checkout:
 pi -e /path/to/pi-super-dev
 ```
+
+Project-scoped install (writes `.pi/settings.json` instead of user settings, so
+your team shares it):
+
+```bash
+pi install -l npm:pi-super-dev
+```
+
+Requires the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent).
+`pi install` runs `npm install`, but this package has only `peerDependencies`
+(pi bundles them), so there's nothing extra to download.
 
 ## Use
 
