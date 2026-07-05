@@ -19,6 +19,25 @@ import type { EventEmitter } from "node:events";
 
 export type ControlObj = Record<string, unknown>;
 
+/** A running service brought up by the verify-loop's `bringup` step. */
+export interface ServiceHandle {
+	role: "api" | "ui";
+	baseUrl: string;
+	pid: number;
+	port: number;
+	cmd: string;
+	/** True if `bringup` reused an already-running service (teardown won't kill it). */
+	external: boolean;
+	/** True only after the readiness poll succeeded. */
+	ready: boolean;
+}
+
+/** Services brought up for the verify-loop's test phase. */
+export interface ServiceMap {
+	api?: ServiceHandle;
+	ui?: ServiceHandle;
+}
+
 /** Result of parsing an agent's final assistant message. */
 export interface SpawnResult {
 	text: string;
@@ -114,9 +133,14 @@ export interface PipelineState {
 	spec?: ControlObj;
 	specReview?: ControlObj;
 	implementation?: ControlObj;
+	/** Running services brought up by the verify-loop's `bringup` step, so the
+	 *  api/ui test steps know where to hit and `teardown` knows what to kill. */
+	services?: ServiceMap;
 	review?: ControlObj;
 	codeReview?: ControlObj;
 	adversarialReview?: ControlObj;
+	apiTest?: ControlObj;
+	uiTest?: ControlObj;
 	docs?: ControlObj;
 	cleanup?: ControlObj;
 	merge?: ControlObj;
