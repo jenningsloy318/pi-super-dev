@@ -20,9 +20,9 @@
  */
 
 import { loop, sequence, parallel, branch, noop, task, tryCatch } from "../nodes.ts";
-import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt } from "../prompts.ts";
+import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
-import type { PipelineState } from "../types.ts";
+import type { Node, NodeResult, PipelineState, Stage } from "../types.ts";
 
 const setupOf = (s: PipelineState) => s.setup!;
 
@@ -36,11 +36,14 @@ const reviewApproved = (s: PipelineState) => {
 /** Coerce a model-returned pass value (often the string "true"/"false") to bool. */
 const passTrue = (v: unknown): boolean => typeof v === "boolean" ? v : /^(true|yes|1|pass)$/i.test(String(v ?? "").trim());
 
-/** Tests are green when no test ran (vacuously — non-server, or service not up)
- *  OR the latest api test passed. (ui-test folds in the same way once added.) */
+/** Tests are green when every test that RAN passed (api and/or ui). A test that
+ *  didn't run (non-server, standalone UI, or service not up) is not a failure. */
 const testsGreen = (s: PipelineState) => {
-	const t = s.apiTest as { pass?: unknown } | undefined;
-	return !t || passTrue(t.pass);
+	const api = s.apiTest as { pass?: unknown } | undefined;
+	const ui = s.uiTest as { pass?: unknown } | undefined;
+	if (api && !passTrue(api.pass)) return false;
+	if (ui && !passTrue(ui.pass)) return false;
+	return true;
 };
 
 /** Loop exits only once review is approved AND tests are green. */
@@ -99,13 +102,49 @@ export const apiTestStep = withServiceDeps(["api"],
 	}),
 );
 
-// ── TEST BLOCK (Phase 2c) ───────────────────────────────────────────────────
-// Runs only when review is APPROVED (no point starting servers / running suites
-// on un-reviewed code). bringup starts whatever the app has (api/ui); apiTestStep
-// is guarded by withServiceDeps(["api"]) so it self-skips if the api service didn't
-// come up. teardown always runs (tryCatch finally) even if a test throws.
+// ── UI TEST (Phase 2d) ─────────────────────────────────────────────────────
+// Drives the running UI (CDP via browser_execute, Playwright fallback) through
+// the BDD flows. Guarded: needs the ui service ready, AND — for a fullstack app
+// — the api service ready too (the UI is meaningless without its backend).
+const uiReady = (s: PipelineState): boolean => {
+	const svcs = s.services ?? {};
+	if (!svcs.ui?.ready) return false;
+	if (svcs.api && !svcs.api.ready) return false; // fullstack: api must be up too
+	return true;
+};
+const uiTestStage: Stage = {
+	id: "uiTest",
+	label: "Stage 10f — UI Test",
+	requires: ["*-specification.md"],
+	async run(s, ctx) {
+		if (!ctx.budget.check()) return undefined;
+		const ui = s.services?.ui;
+		if (!ui) return undefined;
+		const api = s.services?.api; // present for fullstack
+		const r = await ctx.agent({ id: "pipeline.verify.ui-test", agent: "ui-tester", prompt: buildUiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, ui, api) });
+		return r.control ?? {};
+	},
+};
+const uiTestTaskNode = task(uiTestStage);
+export const uiTestStep: Node = {
+	kind: "uiTestStep",
+	async run(s, ctx) {
+		if (ctx.signal?.aborted) return { status: "cancelled" };
+		if (!uiReady(s)) {
+			const why = !s.services?.ui?.ready ? "ui" : "api (fullstack backend)";
+			ctx.log(`verify: skip ui-test — service not ready: ${why}`);
+			return { status: "skipped" } satisfies NodeResult;
+		}
+		return uiTestTaskNode.run(s, ctx);
+	},
+};
+
+// ── TEST BLOCK (Phase 2c/2d) ────────────────────────────────────────────────
+// Runs only when review is APPROVED. bringup starts whatever the app has
+// (api/ui); apiTestStep self-skips without a ready api; uiTestStep self-skips
+// without a ready ui (+ api for fullstack). teardown always runs (finally).
 const testBlock = tryCatch(
-	sequence([task(bringupTask), apiTestStep]),
+	sequence([task(bringupTask), apiTestStep, uiTestStep]),
 	{ finally: teardownNode() },
 );
 
@@ -119,7 +158,10 @@ const fixStep = branch(needsFix, {
 		async run(s, ctx) {
 			if (!ctx.budget.check()) return undefined;
 			const findings = (s.review?.findings as unknown[]) ?? [];
-			const testFailures = ((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? [];
+			const testFailures = [
+				...(((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? []),
+				...(((s.uiTest as { failures?: unknown[] } | undefined)?.failures) ?? []),
+			];
 			const r = await ctx.agent({ id: "pipeline.verify.fix", agent: "implementer", prompt: buildFixPrompt(setupOf(s), s.classify ?? null, findings, testFailures) });
 			return r.control ?? {};
 		},

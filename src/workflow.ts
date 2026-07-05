@@ -11,7 +11,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { spawnAgent } from "./pi-spawn.ts";
+import { spawnAgent, isBrowserAgent } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
 import { extractControlKeys } from "./control.ts";
@@ -83,7 +83,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// object caused by a permissive structured_output schema; fixed in
 		// session-agent.ts (per-stage schema + corrective re-prompt). 'subprocess'
 		// remains available via SUPER_DEV_BACKEND=subprocess.
-		const backend = options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session";
+		// Browser agents (ui-tester, qa-agent) run via the SUBPROCESS backend even when
+		// the default is session — only the subprocess path loads pi-browser-cdp-extension
+		// (so they get the `browser_execute` tool: CDP with auto-discovery). The session
+		// backend's createCodingTools doesn't expose browser tooling.
+		const backend = isBrowserAgent(call.agent)
+			? "subprocess"
+			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
 		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
 	}
 	async function helper(call: HelperCall): Promise<HelperResult> {

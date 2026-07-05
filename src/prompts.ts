@@ -114,9 +114,19 @@ export function buildFixPrompt(s: SetupControl, c: Classification | null, findin
 	return parts.join("\n");
 }
 
+/** Build the ui-tester prompt. `ui.baseUrl` is the already-running UI dev server;
+ *  for a fullstack app `api.baseUrl` is the live API behind it (the UI calls it).
+ *  Secrets stay in .env / process.env — referenced by NAME, never printed. */
+export function buildUiTestPrompt(s: SetupControl, c: Classification | null, specControl: R, ui: { baseUrl: string }, api?: { baseUrl: string }): string {
+	const parts = [ctxBlock(s, c), "", "## Service under test", `- UI base URL: ${ui.baseUrl}`, "- The UI server is ALREADY RUNNING — do not start or stop it."];
+	if (api) parts.push(`- The backing API is also running at ${api.baseUrl} (fullstack) — the UI calls it; confirm end-to-end behavior.`);
+	parts.push("", "## Authentication", "If the UI requires login, credentials are in `.env` — load it and reference secrets ONLY as process.env.NAME (or type them into the login form from that variable). NEVER print a secret; redact tokens to `***`.", "", "## Upstream Artifacts", `- BDD Scenarios: ${(specControl?.planPath as string) ?? (specControl?.specificationPath as string) ?? "N/A"}`, "", "## Instructions", "Derive user flows from the BDD scenarios. Connect via `browser_execute` (CDP auto-discovery: `await session.connect()` then drive a page target) — or Playwright via bash as a fallback. For each flow: navigate, interact, and assert the visible page state. Screenshot any failure.", `Write the report to: ${specDoc(s, "ui-test")}`, "The report must include: flows tested, per-flow (flow/steps/expected/observed/pass), screenshot refs, overall pass, and a failures list. Redact all credentials.", "", "Output <control> JSON with: pass (boolean), flows (number), failures (array of {flow, reason}), summary.");
+	return parts.join("\n");
+}
+
 /** Build the api-tester prompt. `service.baseUrl` is the already-running API
- *  (bringup started it). Secrets stay in .env / process.env — the prompt tells
- *  the agent to reference them by NAME and redact them, never print them. */
+ *  (bringup started it). Secrets stay in .env / process.env — referenced by
+ *  NAME, redacted, never printed. */
 export function buildApiTestPrompt(s: SetupControl, c: Classification | null, specControl: R, service: { baseUrl: string }): string {
 	return [ctxBlock(s, c), "", "## Service under test", `- API base URL: ${service.baseUrl}`, "- The server is ALREADY RUNNING — do not start or stop it.", "", "## Authentication", "Determine the auth scheme from the spec and source. If a credential is required it is in `.env` — load it (`set -a; . ./.env; set +a`) and reference it in your test script ONLY as `process.env.NAME`. NEVER print a secret value; redact any Authorization to `***` in every output.", "", "## Upstream Artifacts", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, "", "## Instructions", "Exercise every endpoint from the spec: full CRUD where applicable, unauthorized attempts (expect 401/403), and edge/invalid bodies (missing fields, wrong types, empty/oversized). Write a node test script using `fetch`, run it, and collect status + a short response excerpt per case.", `Write the report to: ${specDoc(s, "api-test")}`, "The report must include: endpoints tested, a per-case table (method/path/body-summary/expected/actual/pass), an overall pass flag, and a failures list. Redact all credentials.", "", "Output <control> JSON with: pass (boolean), cases (number), failures (array of {method, path, reason}), summary."].join("\n");
 }

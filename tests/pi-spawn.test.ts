@@ -84,12 +84,14 @@ describe("buildSpawnArgs", () => {
 		expect(tools).not.toContain("browser_execute");
 	});
 
-	it("browser agents (qa-agent) drop --no-extensions and gain browser_execute", () => {
-		const args = buildSpawnArgs({ agent: "qa-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(args).not.toContain("--no-extensions");
-		const tools = args[args.indexOf("--tools") + 1];
-		expect(tools).toContain("browser_execute");
-		expect(tools).toContain("read,bash,edit,write,ffgrep,fffind");
+	it("browser agents (qa-agent, ui-tester) drop --no-extensions and gain browser_execute", () => {
+		for (const agent of ["qa-agent", "ui-tester"]) {
+			const args = buildSpawnArgs({ agent, prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
+			expect(args, agent).not.toContain("--no-extensions");
+			const tools = args[args.indexOf("--tools") + 1];
+			expect(tools, agent).toContain("browser_execute");
+			expect(tools, agent).toContain("read,bash,edit,write,ffgrep,fffind");
+		}
 	});
 });
 

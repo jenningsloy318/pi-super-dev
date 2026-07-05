@@ -26,7 +26,7 @@ const BASE_TOOLS = "read,bash,edit,write,ffgrep,fffind";
  *  disabled, so this stays isolated. Browser connection uses AUTO-DISCOVERY —
  *  `await session.connect()` with no args finds any Chrome started with
  *  `--remote-debugging-port`; see agents/qa-agent.md. */
-const BROWSER_AGENTS = new Set(["qa-agent"]);
+const BROWSER_AGENTS = new Set(["qa-agent", "ui-tester"]);
 
 export function isBrowserAgent(agent: string): boolean {
 	return BROWSER_AGENTS.has(agent);
