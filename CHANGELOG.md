@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-07-05
+
+### Fixed
+- Removed dead "Read Format Template" / "following the template structure" references from the remaining 10 agents (adversarial-reviewer, code-reviewer, debug-analyzer, architecture-designer, architecture-improver, product-designer, ui-ux-designer, prototype-runner, qa-agent, orchestrator). These pointed at `templates/*.md.j2` + `workflow-tracking-template.json` from the original plugin that were never ported, causing each agent to burn a turn hunting for non-existent files. The earlier 0.1.0 cleanup only covered the 5 writer agents.
+- Broadened the structure regression guard to scan every agent file (was 6 named writers).
+
 ## [0.1.1] - 2026-07-05
 
 ### Changed

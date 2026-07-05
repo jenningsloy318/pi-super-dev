@@ -1,15 +1,28 @@
 {
   "name": "pi-super-dev",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Self-contained, modular development pipeline for the Pi coding agent, built on a composable control-flow node algebra (branch/parallel/loop/retry/gate/map/wait). Spawns specialist pi subagents directly — no external workflow engine required.",
   "private": false,
   "type": "module",
   "license": "MIT",
   "author": "Jennings Liu",
-  "repository": { "type": "git", "url": "git+https://github.com/jenningsloy318/pi-super-dev.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jenningsloy318/pi-super-dev.git"
+  },
   "homepage": "https://github.com/jenningsloy318/pi-super-dev#readme",
-  "bugs": { "url": "https://github.com/jenningsloy318/pi-super-dev/issues" },
-  "keywords": ["pi-package", "pi-extension", "workflow", "pi", "pipeline", "tdd", "control-flow"],
+  "bugs": {
+    "url": "https://github.com/jenningsloy318/pi-super-dev/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "workflow",
+    "pi",
+    "pipeline",
+    "tdd",
+    "control-flow"
+  ],
   "exports": {
     "./extension": "./src/extension.ts",
     "./pipeline": "./src/pipeline.ts",
@@ -23,10 +36,21 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "files": ["src", "agents", "skills", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "src",
+    "agents",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "pi": {
-    "extensions": ["./src/extension.ts"],
-    "skills": ["./skills/super-dev"]
+    "extensions": [
+      "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills/super-dev"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -39,5 +63,7 @@
     "typescript": "^5.4",
     "vitest": "^3.0"
   },
-  "engines": { "node": ">=22.19.0" }
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }
