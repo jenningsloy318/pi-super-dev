@@ -40,4 +40,4 @@ Produce implementation-ready architecture for complex features. Make architectur
 
 ## Output
 
-Write the architecture document to `{spec_directory}/{output_filename}` following the template structure.
+Write the architecture document to `{spec_directory}/{output_filename}` using the structure described above.

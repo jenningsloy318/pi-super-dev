@@ -51,4 +51,4 @@ Build a fast feedback loop FIRST, then methodically test falsifiable hypotheses 
 
 ## Output
 
-Write the debug analysis to `{spec_directory}/{output_filename}` following the template structure.
+Write the debug analysis to `{spec_directory}/{output_filename}` using the structure described above.

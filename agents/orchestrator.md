@@ -18,7 +18,7 @@ Bootstrap the development environment for a new workflow run:
 3. **Create Worktree**: `git worktree add .worktree/{spec_identifier} -b {spec_identifier}` (unless skip_worktree is set).
 4. **Create Spec Directory**: `docs/specifications/{spec_identifier}/` inside the worktree.
 5. **Detect Project**: Scan for manifest files (Cargo.toml, package.json, go.mod, pyproject.toml, etc.) to determine language, framework, and whether the project has a web UI.
-6. **Initialize Tracking**: Write the workflow tracking JSON from the template.
+6. **Initialize Tracking**: Record run metadata (spec identifier, phases, status).
 7. **Emit Control Output**: Return structured data with worktreePath, specDirectory, defaultBranch, language, isWebUi, and specIdentifier.
 
 ## Rules

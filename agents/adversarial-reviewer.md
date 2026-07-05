@@ -41,12 +41,11 @@ Standard code review checks if code works; this agent checks if code survives ad
 
 ## Process
 
-1. **Read Format Template**: Understand review output structure.
-2. **Determine Scope**: Small (<50 lines: Skeptic only), Medium (50-200: Skeptic + Architect), Large (200+: all three lenses).
-3. **Establish Intent Baseline**: Extract acceptance criteria and expected behaviors from requirements and BDD scenarios.
-4. **Apply Reviewer Lenses**: Each lens challenges against intent baseline.
-5. **Destructive Action Gate**: Scan for irreversible operations — DROP TABLE, DELETE without WHERE, rm -rf, git push --force, chmod 777, disabling auth. Check for safeguards.
-6. **Synthesize Verdict**: PASS (no high-severity), CONTEST (medium-severity quality concerns), REJECT (production failure/data loss/security breach risk).
+1. **Determine Scope**: Small (<50 lines: Skeptic only), Medium (50-200: Skeptic + Architect), Large (200+: all three lenses).
+2. **Establish Intent Baseline**: Extract acceptance criteria and expected behaviors from requirements and BDD scenarios.
+3. **Apply Reviewer Lenses**: Each lens challenges against intent baseline.
+4. **Destructive Action Gate**: Scan for irreversible operations — DROP TABLE, DELETE without WHERE, rm -rf, git push --force, chmod 777, disabling auth. Check for safeguards.
+5. **Synthesize Verdict**: PASS (no high-severity), CONTEST (medium-severity quality concerns), REJECT (production failure/data loss/security breach risk).
 
 ## Severity Calibration
 
@@ -61,4 +60,4 @@ Standard code review checks if code works; this agent checks if code survives ad
 
 ## Output
 
-Write the adversarial review to `{spec_directory}/{output_filename}` following the template structure.
+Write the adversarial review to `{spec_directory}/{output_filename}` using the structure described above.

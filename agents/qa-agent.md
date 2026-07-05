@@ -73,4 +73,4 @@ await session._call("Page.captureScreenshot", {});            // returned as ima
 
 ## Output
 
-Write QA report to `{spec_directory}/{output_filename}` following the template structure.
+Write QA report to `{spec_directory}/{output_filename}` using the structure described above.

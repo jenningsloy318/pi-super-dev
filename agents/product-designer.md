@@ -39,4 +39,4 @@ Coordinate between architecture-designer and ui-ux-designer to ensure technical 
 
 ## Output
 
-Write all outputs to `{spec_directory}/{output_filenames}` following the template structures.
+Write all outputs to `{spec_directory}/{output_filenames}` using the structures described above.

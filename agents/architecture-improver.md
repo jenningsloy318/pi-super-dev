@@ -43,4 +43,4 @@ Use these terms exactly:
 
 ## Output
 
-Write the architecture improvement document to `{spec_directory}/{output_filename}` following the template structure. Use CAND-NNN IDs for deepening candidates.
+Write the architecture improvement document to `{spec_directory}/{output_filename}` using the structure described above. Use CAND-NNN IDs for deepening candidates.

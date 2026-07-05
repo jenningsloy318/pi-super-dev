@@ -70,12 +70,15 @@ describe("node algebra exports", () => {
 
 describe("agent prompts: no dead references (templates/Q1-Q10 self-audit)", () => {
 	const AGENTS = join(ROOT, "agents");
-	it("no writer prompt tells the agent to read a format template we don't ship", () => {
-		const writers = ["requirements-clarifier", "bdd-scenario-writer", "research-agent", "spec-writer", "spec-reviewer", "docs-executor"];
-		for (const w of writers) {
-			const md = readFileSync(join(AGENTS, `${w}.md`), "utf8");
-			expect(md, `${w}.md references a non-existent template`).not.toMatch(/read\s+(?:the\s+)?format\s+template/i);
-			expect(md, `${w}.md still references the old template structure`).not.toMatch(/following the template structure/i);
+	it("NO agent prompt tells the agent to read a format template we don't ship, or to 'follow the template structure'", () => {
+		// Checks EVERY agent file (a previous guard only covered 6 named writers, which
+		// let 9 other agents keep dead template refs — leftover from the original plugin).
+		const files = readdirSync(AGENTS).filter((f) => f.endsWith(".md"));
+		expect(files.length).toBeGreaterThan(0);
+		for (const f of files) {
+			const md = readFileSync(join(AGENTS, f), "utf8");
+			expect(md, `${f} references a non-existent template`).not.toMatch(/read\s+(?:the\s+)?format\s+template/i);
+			expect(md, `${f} still references the old template structure`).not.toMatch(/following the template structure/i);
 		}
 	});
 	it("bdd prompt no longer demands the vestigial Q1-Q10/D1-D8 self-audit or mandatory-revision loop", () => {

@@ -29,14 +29,13 @@ Validate implementations against specifications. Find race conditions, completen
 
 ## Process
 
-1. **Read Format Template**: Understand review output structure.
-2. **Validate Context**: Verify spec path readable, implementation summary present.
-3. **Parse Specification**: Extract acceptance criteria, contracts, validation rules. Build AC checklist.
-4. **Static Analysis**: Run linters/SAST on scoped files.
-5. **Dimension Reviews**: Score each dimension 1-5. For every finding: severity, confidence (0.0-1.0), file:line, failure scenario, suggested fix.
-6. **Validate Against Spec**: For each AC: Met/Not Met/Partial/N/A with evidence.
-7. **BDD Scenario Coverage**: Verify each SCENARIO-XXX has passing test.
-8. **Synthesize Report**: Verdict: Any Critical -> Blocked. Any High/Medium or AC not met -> Changes Requested. Zero Critical+High+Medium -> Approved.
+1. **Validate Context**: Verify spec path readable, implementation summary present.
+2. **Parse Specification**: Extract acceptance criteria, contracts, validation rules. Build AC checklist.
+3. **Static Analysis**: Run linters/SAST on scoped files.
+4. **Dimension Reviews**: Score each dimension 1-5. For every finding: severity, confidence (0.0-1.0), file:line, failure scenario, suggested fix.
+5. **Validate Against Spec**: For each AC: Met/Not Met/Partial/N/A with evidence.
+6. **BDD Scenario Coverage**: Verify each SCENARIO-XXX has passing test.
+7. **Synthesize Report**: Verdict: Any Critical -> Blocked. Any High/Medium or AC not met -> Changes Requested. Zero Critical+High+Medium -> Approved.
 
 ## Security Detection (OWASP Top 10)
 
@@ -56,4 +55,4 @@ Validate implementations against specifications. Find race conditions, completen
 
 ## Output
 
-Write the code review to `{spec_directory}/{output_filename}` following the template structure.
+Write the code review to `{spec_directory}/{output_filename}` using the structure described above.

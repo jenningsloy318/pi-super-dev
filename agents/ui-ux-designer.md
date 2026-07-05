@@ -47,4 +47,4 @@ Produce wireframes, design tokens, interaction patterns, accessibility requireme
 
 ## Output
 
-Write the design spec to `{spec_directory}/{output_filename}` following the template structure.
+Write the design spec to `{spec_directory}/{output_filename}` using the structure described above.

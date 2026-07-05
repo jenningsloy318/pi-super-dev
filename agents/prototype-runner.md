@@ -33,4 +33,4 @@ Run as Stage 6.5 (between Design and Specification Writing) when the spec contai
 
 ## Output
 
-Write the prototype report to `{spec_directory}/{output_filename}` following the template structure.
+Write the prototype report to `{spec_directory}/{output_filename}` using the structure described above.
