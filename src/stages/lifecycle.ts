@@ -30,7 +30,10 @@ export interface StartSpec {
 	cwd: string;
 	env?: Record<string, string>;
 	portEnv?: string;
+	/** Absolute URL polled for readiness (overrides readyPath). */
 	readyUrl?: string;
+	/** Path appended to the base URL for readiness (e.g. "/health"). Defaults to "/". */
+	readyPath?: string;
 	readinessTimeoutMs?: number;
 }
 
@@ -64,11 +67,12 @@ export async function waitForReady(url: string, timeoutMs = 20_000): Promise<boo
 }
 
 /** Start one service per `spec`, injecting the chosen port via `portEnv`, then
- *  readiness-poll it. On timeout the handle is returned with `ready:false`
+ *  readiness-poll it. `opts.port` lets a caller reuse a fixed port across a
+ *  try/fallback ladder. On timeout the handle is returned with `ready:false`
  *  (the pid is still recorded so teardown can clean it up). Never throws —
  *  bringup records not-ready services and `withServiceDeps` skips their tests. */
-export async function startService(spec: StartSpec): Promise<ServiceHandle> {
-	const port = await pickFreePort();
+export async function startService(spec: StartSpec, opts: { port?: number } = {}): Promise<ServiceHandle> {
+	const port = opts.port ?? (await pickFreePort());
 	const env: Record<string, string> = {
 		...(process.env as Record<string, string>),
 		...(spec.env ?? {}),
@@ -83,7 +87,7 @@ export async function startService(spec: StartSpec): Promise<ServiceHandle> {
 	});
 	child.unref();
 	const baseUrl = `http://127.0.0.1:${port}`;
-	const readyUrl = spec.readyUrl ?? baseUrl;
+	const readyUrl = spec.readyUrl ?? `${baseUrl}${spec.readyPath ?? "/"}`;
 	const ready = await waitForReady(readyUrl, spec.readinessTimeoutMs ?? 20_000);
 	return { role: spec.role, baseUrl, pid: child.pid ?? -1, port, cmd: spec.cmd, external: false, ready };
 }
@@ -129,24 +133,79 @@ export function detectServices(cwd: string): { api?: StartSpec; ui?: StartSpec }
 	return out;
 }
 
-/** Bring up the services needed for testing. `roles` selects what to start
- *  (e.g. ["api"] for server-only, ["api","ui"] for fullstack, ["ui"] for a
- *  standalone UI). Detection provides the StartSpecs; an optional `override`
- *  (e.g. from assessment) wins. Records `state.services`. */
+/** Normalize a model-discovered service spec (loose object from assessment's
+ *  control JSON) into a StartSpec. Returns null if there's no usable cmd. */
+function normalizeDiscovered(role: "api" | "ui", raw: unknown, cwd: string): StartSpec | null {
+	if (!raw || typeof raw !== "object") return null;
+	const r = raw as { cmd?: unknown; portEnv?: unknown; readyPath?: unknown };
+	const cmd = typeof r.cmd === "string" ? r.cmd.trim() : "";
+	if (!cmd) return null;
+	return {
+		role,
+		cmd,
+		cwd,
+		portEnv: typeof r.portEnv === "string" ? r.portEnv : "PORT",
+		readyPath: typeof r.readyPath === "string" ? r.readyPath : "/",
+	};
+}
+
+/** Ordered candidate commands to start a role: assessment's discovery first, then
+ *  the heuristic detection, then common fallbacks — deduped by cmd. bringup tries
+ *  them in order until one readiness-passes. */
+function candidatesFor(role: "api" | "ui", override: { api?: unknown; ui?: unknown } | undefined, detected: { api?: StartSpec; ui?: StartSpec }, cwd: string): StartSpec[] {
+	const list: StartSpec[] = [];
+	const disc = normalizeDiscovered(role, role === "api" ? override?.api : override?.ui, cwd);
+	if (disc) list.push(disc);
+	const det = role === "api" ? detected.api : detected.ui;
+	if (det) list.push(det);
+	const fallbacks = role === "api"
+		? ["npm start", "node src/server.js", "node server.js", "node src/app.js"]
+		: ["npm run dev", "vite", "next dev"];
+	for (const cmd of fallbacks) list.push({ role, cmd, cwd, portEnv: "PORT" });
+	const seen = new Set<string>();
+	return list.filter((s) => {
+		if (seen.has(s.cmd)) return false;
+		seen.add(s.cmd);
+		return true;
+	});
+}
+
+/** Try each candidate on the SAME port until one readiness-passes; kill the
+ *  failures. Returns the ready handle, or null if none came up. */
+async function tryStartService(role: "api" | "ui", candidates: StartSpec[], port: number, log: (m: string) => void, perAttemptMs = 12_000): Promise<ServiceHandle | null> {
+	for (const spec of candidates) {
+		const h = await startService({ ...spec, readinessTimeoutMs: perAttemptMs }, { port });
+		if (h.ready) return h;
+		stopService(h);
+		log(`bringup ${role}: "${spec.cmd}" did not become ready; trying next candidate…`);
+	}
+	return null;
+}
+
+/** Bring up the services needed for testing. For each needed role (api and/or
+ *  ui) it picks ONE free port and tries the candidate ladder on it: the
+ *  assessment-discovered command first, then the heuristic detection, then common
+ *  fallbacks. Records `state.services`. A role that no candidate can start is
+ *  omitted → `withServiceDeps` skips its test (no phantom failures). */
 export const bringupTask: Stage = {
 	id: "bringup",
 	label: "Stage 10d — Bring-Up",
 	async run(state, ctx) {
 		const cwd = state.setup?.worktreePath ?? process.cwd();
 		const detected = detectServices(cwd);
-		const override = (state.assessment as { services?: { api?: StartSpec; ui?: StartSpec } } | undefined)?.services;
-		const api = override?.api ?? detected.api;
-		const ui = override?.ui ?? detected.ui;
+		const override = (state.assessment as { services?: { api?: unknown; ui?: unknown } } | undefined)?.services;
+		const hasApi = !!normalizeDiscovered("api", override?.api, cwd) || !!detected.api;
+		const uiScope = (state.classify as { uiScope?: string } | undefined)?.uiScope;
+		const hasUi = (!!uiScope && uiScope !== "none") || !!normalizeDiscovered("ui", override?.ui, cwd) || !!detected.ui;
+		const roles: Array<"api" | "ui"> = [hasApi ? "api" : null, hasUi ? "ui" : null].filter((x): x is "api" | "ui" => x !== null);
 		const services: ServiceMap = {};
-		const roles = ((state.classify as { uiScope?: string } | undefined)?.uiScope && ui) ? ["api", "ui"] : (api ? ["api"] : ui ? ["ui"] : []);
-		// Start the needed services concurrently.
-		const handles = await Promise.all(roles.map((r) => startService((r === "api" ? api : ui)!)));
-		for (const h of handles) services[h.role] = h;
+		for (const role of roles) {
+			const port = await pickFreePort();
+			const candidates = candidatesFor(role, override, detected, cwd);
+			const h = await tryStartService(role, candidates, port, (m) => ctx.log(m));
+			if (h) services[role] = h;
+			else ctx.log(`bringup ${role}: could not start any candidate (tried ${candidates.map((c) => `"${c.cmd}"`).join(", ")})`);
+		}
 		(state as PipelineState).services = services;
 		const summary = Object.entries(services).map(([r, h]) => `${r}@${h.baseUrl}:${h.ready ? "ready" : "not-ready"}`).join(", ") || "no services";
 		ctx.log(`bringup: ${summary}`);

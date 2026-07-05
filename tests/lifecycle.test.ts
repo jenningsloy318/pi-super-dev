@@ -124,3 +124,35 @@ describe("withServiceDeps guard", () => {
 		expect(r.status).toBe("skipped");
 	});
 });
+
+describe("bringupTask try/fallback ladder", () => {
+	it("uses the assessment-discovered cmd, but falls back when it fails readiness", async () => {
+		const { bringupTask } = await import("../src/stages/lifecycle.ts");
+		const dir = mkdtempSync(join(tmpdir(), "sd-bringup-"));
+		// a real working server the fallback can start
+		writeFileSync(join(dir, "server.mjs"), TINY_SERVER);
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ scripts: { start: `node ${join(dir, "server.mjs")}` }, dependencies: { express: "1" } }),
+		);
+		const logs: string[] = [];
+		const ctx = { log: (m: string) => logs.push(m) } as unknown as Parameters<typeof bringupTask.run>[1];
+		// assessment "discovers" a command that does NOT come up → must fall back
+		const state = {
+			setup: { worktreePath: dir },
+			assessment: { services: { api: { cmd: "node -e 'setInterval(()=>{},9999)'", portEnv: "PORT", readyPath: "/" } } },
+			classify: { uiScope: "none" },
+		} as unknown as PipelineState;
+		const res = (await bringupTask.run(state, ctx)) as { services: { api?: { ready: boolean; baseUrl: string } }; summary: string };
+		expect(res.services.api?.ready).toBe(true);
+		// it logged that the bad cmd failed and tried the next candidate
+		expect(logs.some((l) => /did not become ready/.test(l))).toBe(true);
+		// and the server is actually up
+		const up = await fetch(res.services.api!.baseUrl);
+		expect(await up.text()).toBe("ok");
+		// teardown
+		const { stopService } = await import("../src/stages/lifecycle.ts");
+		stopService(state.services!.api!);
+		rmSync(dir, { recursive: true, force: true });
+	}, 30_000);
+});
