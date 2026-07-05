@@ -20,7 +20,8 @@
  */
 
 import { loop, sequence, parallel, branch, noop, task } from "../nodes.ts";
-import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt } from "../prompts.ts";
+import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt } from "../prompts.ts";
+import { withServiceDeps } from "./lifecycle.ts";
 import type { PipelineState } from "../types.ts";
 
 const setupOf = (s: PipelineState) => s.setup!;
@@ -62,11 +63,28 @@ const reviewStep = parallel(
 	},
 );
 
-// Phase 2 will define `testStep` here:
-//   branch(isServer, { yes: apiTestStep })  +  branch(isUi, { yes: uiTestStep })
-// running HTTP CRUD/edge suites against the live server, or Playwright against
-// the UI, and returning {pass, failures[]} into state. For now it is absent —
-// the sequence below inserts it as a single element when Phase 2 lands.
+// ── API TEST (Phase 2b) ────────────────────────────────────────────────────
+// Exercises the running API (CRUD + edge bodies) against the spec. Wrapped in
+// withServiceDeps(["api"]) so it SKIPS (with a log) if the api service didn't
+// come up — no phantom connection-refused failures. Will be wired into verifyNode
+// in Phase 2c inside the review-gated test block (ui-tester lands next).
+export const apiTestStep = withServiceDeps(["api"],
+	task({
+		id: "apiTest",
+		label: "Stage 10e — API Test",
+		requires: ["*-specification.md"],
+		async run(s, ctx) {
+			if (!ctx.budget.check()) return undefined;
+			const api = s.services?.api;
+			if (!api) return undefined;
+			const r = await ctx.agent({ id: "pipeline.verify.api-test", agent: "api-tester", prompt: buildApiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, api) });
+			return r.control ?? {};
+		},
+	}),
+);
+
+// Phase 2c will insert the test block here:
+//   branch(reviewApproved, { yes: tryCatch(sequence([bringupTask, branch(isServer,{yes:apiTestStep}), branch(isUi,{yes:uiTestStep})]), { finally: teardownNode() }), no: noop() })
 
 /** If not approved, address the merged findings before the next review round.
  *  (Phase 2 will also fold test failures into the findings passed here.) */

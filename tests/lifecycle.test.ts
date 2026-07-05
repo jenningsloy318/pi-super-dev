@@ -156,3 +156,18 @@ describe("bringupTask try/fallback ladder", () => {
 		rmSync(dir, { recursive: true, force: true });
 	}, 30_000);
 });
+
+describe("loadDotEnv", () => {
+	it("parses KEY=VALUE lines, comments, and quoted values; missing file → {}", async () => {
+		const { loadDotEnv } = await import("../src/stages/lifecycle.ts");
+		const dir = mkdtempSync(join(tmpdir(), "sd-env-"));
+		writeFileSync(join(dir, ".env"), "# comment\nFOO=bar\nTOKEN=\"secret with spaces\"\nEMPTY=\nQUOTED='q'\n");
+		const e = loadDotEnv(dir);
+		expect(e.FOO).toBe("bar");
+		expect(e.TOKEN).toBe("secret with spaces");
+		expect(e.EMPTY).toBe(""); // has '=', empty value
+		expect(e.QUOTED).toBe("q");
+		// missing file → empty object
+		expect(loadDotEnv(mkdtempSync(join(tmpdir(), "sd-env2-")))).toEqual({});
+	});
+});

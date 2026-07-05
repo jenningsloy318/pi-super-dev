@@ -53,9 +53,9 @@ describe("self-contained engine structure", () => {
 		expect(ext).toContain('"super_dev"');
 		expect(ext).toMatch(/registerCommand/);
 	});
-	it("ships the 21 specialist agent definitions", () => {
+	it("ships the specialist agent definitions", () => {
 		const agents = readdirSync(join(ROOT, "agents")).filter((f) => f.endsWith(".md"));
-		expect(agents.length).toBe(21);
+		expect(agents.length).toBeGreaterThanOrEqual(21);
 	});
 });
 

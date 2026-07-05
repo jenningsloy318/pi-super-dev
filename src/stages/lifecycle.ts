@@ -66,15 +66,38 @@ export async function waitForReady(url: string, timeoutMs = 20_000): Promise<boo
 	return false;
 }
 
+/** Parse a .env file (KEY=VALUE per line, # comments, optional quotes) into a
+ *  plain object. Missing file → {}. Used so the service inherits the app's own
+ *  config/secrets (auth tokens, DB urls, …) exactly as it would locally. */
+export function loadDotEnv(cwd: string): Record<string, string> {
+	const out: Record<string, string> = {};
+	try {
+		const raw = readFileSync(join(cwd, ".env"), "utf8");
+		for (const line of raw.split(/\r?\n/)) {
+			const t = line.trim();
+			if (!t || t.startsWith("#")) continue;
+			const i = t.indexOf("=");
+			if (i < 0) continue;
+			const k = t.slice(0, i).trim();
+			let v = t.slice(i + 1).trim();
+			if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+			if (k) out[k] = v;
+		}
+	} catch { /* no .env — fine */ }
+	return out;
+}
+
 /** Start one service per `spec`, injecting the chosen port via `portEnv`, then
- *  readiness-poll it. `opts.port` lets a caller reuse a fixed port across a
- *  try/fallback ladder. On timeout the handle is returned with `ready:false`
- *  (the pid is still recorded so teardown can clean it up). Never throws —
- *  bringup records not-ready services and `withServiceDeps` skips their tests. */
+ *  readiness-poll it. `.env` from the cwd is loaded into the spawned env (so the
+ *  app reads its own config/secrets). `opts.port` lets a caller reuse a fixed
+ *  port across a try/fallback ladder. On timeout the handle is returned with
+ *  `ready:false` (the pid is still recorded so teardown can clean it up). Never
+ *  throws — bringup records not-ready services and `withServiceDeps` skips. */
 export async function startService(spec: StartSpec, opts: { port?: number } = {}): Promise<ServiceHandle> {
 	const port = opts.port ?? (await pickFreePort());
 	const env: Record<string, string> = {
 		...(process.env as Record<string, string>),
+		...loadDotEnv(spec.cwd),
 		...(spec.env ?? {}),
 		...(spec.portEnv ? { [spec.portEnv]: String(port) } : {}),
 	};
