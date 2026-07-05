@@ -1,4 +1,4 @@
-# @jenningsloy318/pi-super-dev
+# pi-super-dev
 
 A **self-contained**, modular development pipeline for the [Pi coding
 agent](https://github.com/earendil-works/pi-coding-agent), built on a
@@ -14,7 +14,9 @@ or any other external workflow engine.**
 ## Install
 
 ```bash
-pi package add @jenningsloy318/pi-super-dev
+pi install npm:pi-super-dev
+# or try it without installing:
+pi -e npm:pi-super-dev
 # or, from a local checkout:
 pi -e /path/to/pi-super-dev
 ```
@@ -101,8 +103,8 @@ sequence([
 Compose your own pipeline by importing the node builders:
 
 ```ts
-import { runWorkflow, sequence, task, gate, gateValidator, /* ... */ } from "@jenningsloy318/pi-super-dev/pipeline";
-import { requirementsWriter, specWriter, implementationStage } from "@jenningsloy318/pi-super-dev/stages";
+import { runWorkflow, sequence, task, gate, gateValidator, /* ... */ } from "pi-super-dev/pipeline";
+import { requirementsWriter, specWriter, implementationStage } from "pi-super-dev/stages";
 
 const custom = {
   id: "quick",
