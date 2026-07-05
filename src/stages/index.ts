@@ -19,14 +19,14 @@
  *   docs ─► cleanup ─► branch[!blocked]→merge
  */
 
-import { task, sequence, branch, gate, loop, parallel, noop, gateValidator } from "../nodes.ts";
+import { task, sequence, branch, gate, gateValidator } from "../nodes.ts";
 import type { ControlObj, PipelineState, StageContext, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
 import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
 import { implementationStage } from "./implementation.ts";
-import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt } from "../prompts.ts";
+import { verifyNode } from "./verify.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -58,63 +58,18 @@ const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	return { pass: true, errors: [] };
 };
 
-/** Code review is approved when the merged verdict is Approved (with or without comments). */
+/** Code review is approved when the merged verdict is Approved (with or without comments).
+ *  (Predicate kept here for any pipeline-level checks; the verify-loop's own
+ *  until/fix logic lives in src/stages/verify.ts.) */
 const reviewApproved = (s: PipelineState) => {
 	const v = s.review?.verdict as string | undefined;
 	return v === "Approved" || v === "Approved with Comments";
 };
 
-// ─── Code review: parallel reviewers → merge, in a loop with fixes ──────────
-
-const setupOf = (s: PipelineState) => s.setup!;
-
-const codeReviewNode = loop(
-	{ until: reviewApproved, times: 3 },
-	sequence([
-		// Parallel split + synchronization: two reviewers converge into one merged verdict.
-		parallel(
-			[
-				task({
-					id: "codeReview",
-					label: "Stage 10a — Code Review",
-					async run(s, ctx) {
-						if (!ctx.budget.check()) return undefined;
-						const r = await ctx.agent({ id: "pipeline.code-review.review", agent: "code-reviewer", prompt: buildCodeReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}) });
-						return r.control ?? {};
-					},
-				}),
-				task({
-					id: "adversarialReview",
-					label: "Stage 10b — Adversarial Review",
-					async run(s, ctx) {
-						if (!ctx.budget.check()) return undefined;
-						const r = await ctx.agent({ id: "pipeline.code-review.adversarial", agent: "adversarial-reviewer", prompt: buildAdversarialPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}) });
-						return r.control ?? {};
-					},
-				}),
-			],
-			{
-				into: "review",
-				join: async (_results, s, ctx) =>
-					(await ctx.helper({ name: "merge-review-verdicts", sources: { "code-review": s.codeReview ?? {}, "adversarial-review": s.adversarialReview ?? {} } })).value,
-			},
-		),
-		// If not approved, address findings before the next review round.
-		branch(reviewApproved, {
-			yes: noop(),
-			no: task({
-				id: "reviewFix",
-				label: "Stage 10c — Address Review Findings",
-				async run(s, ctx) {
-					if (!ctx.budget.check()) return undefined;
-					const findings = (s.review?.findings as unknown[]) ?? [];
-					const r = await ctx.agent({ id: "pipeline.code-review.fix", agent: "implementer", prompt: buildFixPrompt(setupOf(s), s.classify ?? null, findings) });
-					return r.control ?? {};
-				},
-			}),
-		}),
-	]),
-);
+// ─── Verify (Stage 10): unified review + fix loop ───────────────────────────
+// Extracted to src/stages/verify.ts. BOTH reviewers (code-review + adversarial)
+// run in parallel → merged verdict → fix loop. Phase 2 adds the api/ui test step
+// inside that loop; Phase 3 makes its `until` require tests-green too.
 
 // ─── The pipeline ───────────────────────────────────────────────────────────
 
@@ -141,9 +96,10 @@ const pipeline = sequence(
 		// Blocking on it (the old fatal gate) aborted runs on a subjective verdict.
 		task(specReviewWriter),
 		task(implementationStage),
-		// Code review only runs when implementation actually produced phases;
-		// otherwise we'd burn ~9 spawns reviewing nothing.
-		branch(hasImplementation, { yes: codeReviewNode }),
+		// Verify (Stage 10) only runs when implementation actually produced phases;
+		// otherwise we'd burn spawns reviewing nothing. verifyNode = review (both
+		// code-review + adversarial reviewers → merge) → fix, looped until approved.
+		branch(hasImplementation, { yes: verifyNode }),
 		task(docsWriter),
 		task(cleanupTask),
 		// Conditional branch: merge only if cleanup found no sensitive data.
