@@ -13,6 +13,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath } from "./pi-spawn.ts";
 import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
@@ -86,14 +88,26 @@ export default function activate(pi: ExtensionAPI): void {
 			let live = "";
 			let lastFlush = 0;
 			const FLUSH_MS = 80;
+			// The live display is a ROLLING TAIL. A full run (100+ agents) produces
+			// thousands of transcript lines; sending the whole thing on every flush
+			// let pi truncate it, and since later stages append at the END, they were
+			// the first to fall off the visible window ("very little logs afterwards").
+			// The tail keeps the CURRENT activity visible; the full log is written to
+			// disk at run end so nothing is lost.
+			const TAIL_LINES = 400;
 			const finalizeLive = () => {
 				if (live) {
 					transcript.push(live);
 					live = "";
 				}
 			};
-			const flush = () =>
-				onUpdate?.({ content: [{ type: "text", text: transcript.join("\n") + (live ? "\n" + live : "") }], details: {} });
+			const flush = () => {
+				const all = live ? [...transcript, live] : transcript;
+				const body = all.length > TAIL_LINES
+					? `… ${all.length - TAIL_LINES} earlier lines trimmed (full log saved to .super-dev-logs/ at run end) …\n` + all.slice(-TAIL_LINES).join("\n")
+					: all.join("\n");
+				onUpdate?.({ content: [{ type: "text", text: body }], details: {} });
+			};
 			const sink: ProgressSink = {
 				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); flush(); },
 				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); flush(); },
@@ -114,6 +128,15 @@ export default function activate(pi: ExtensionAPI): void {
 					signal,
 				});
 				const lines = formatSummary(summary, process.cwd());
+				// Preserve the FULL run log to disk (the live display is a rolling tail).
+				let logPath = "";
+				try {
+					const logDir = join(process.cwd(), ".super-dev-logs");
+					mkdirSync(logDir, { recursive: true });
+					logPath = join(logDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${summary.specIdentifier || "run"}.log`);
+					writeFileSync(logPath, transcript.join("\n") + "\n");
+				} catch { /* best-effort; the live tail is the primary surface */ }
+				if (logPath) lines.push(`Full run log: ${logPath}`);
 				const isError = summary.status === "failed";
 				return { content: [{ type: "text", text: lines.join("\n") }], isError, details: { summary } };
 			} catch (err) {
