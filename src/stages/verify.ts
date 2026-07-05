@@ -19,9 +19,9 @@
  * convergence signal. This node expresses that loop in our control-flow algebra.
  */
 
-import { loop, sequence, parallel, branch, noop, task } from "../nodes.ts";
+import { loop, sequence, parallel, branch, noop, task, tryCatch } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt } from "../prompts.ts";
-import { withServiceDeps } from "./lifecycle.ts";
+import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import type { PipelineState } from "../types.ts";
 
 const setupOf = (s: PipelineState) => s.setup!;
@@ -32,6 +32,22 @@ const reviewApproved = (s: PipelineState) => {
 	const v = s.review?.verdict as string | undefined;
 	return v === "Approved" || v === "Approved with Comments";
 };
+
+/** Coerce a model-returned pass value (often the string "true"/"false") to bool. */
+const passTrue = (v: unknown): boolean => typeof v === "boolean" ? v : /^(true|yes|1|pass)$/i.test(String(v ?? "").trim());
+
+/** Tests are green when no test ran (vacuously — non-server, or service not up)
+ *  OR the latest api test passed. (ui-test folds in the same way once added.) */
+const testsGreen = (s: PipelineState) => {
+	const t = s.apiTest as { pass?: unknown } | undefined;
+	return !t || passTrue(t.pass);
+};
+
+/** Loop exits only once review is approved AND tests are green. */
+const approvedAndGreen = (s: PipelineState) => reviewApproved(s) && testsGreen(s);
+
+/** Fix whenever not done — either review rejected (findings) or a test failed. */
+const needsFix = (s: PipelineState) => !reviewApproved(s) || !testsGreen(s);
 
 /** Parallel split + sync: BOTH reviewers converge into one merged verdict under
  *  `state.review` (verdict + findings + dimensions). */
@@ -83,33 +99,44 @@ export const apiTestStep = withServiceDeps(["api"],
 	}),
 );
 
-// Phase 2c will insert the test block here:
-//   branch(reviewApproved, { yes: tryCatch(sequence([bringupTask, branch(isServer,{yes:apiTestStep}), branch(isUi,{yes:uiTestStep})]), { finally: teardownNode() }), no: noop() })
+// ── TEST BLOCK (Phase 2c) ───────────────────────────────────────────────────
+// Runs only when review is APPROVED (no point starting servers / running suites
+// on un-reviewed code). bringup starts whatever the app has (api/ui); apiTestStep
+// is guarded by withServiceDeps(["api"]) so it self-skips if the api service didn't
+// come up. teardown always runs (tryCatch finally) even if a test throws.
+const testBlock = tryCatch(
+	sequence([task(bringupTask), apiTestStep]),
+	{ finally: teardownNode() },
+);
 
-/** If not approved, address the merged findings before the next review round.
- *  (Phase 2 will also fold test failures into the findings passed here.) */
-const fixStep = branch(reviewApproved, {
-	yes: noop(),
-	no: task({
+/** Fix: implementer addresses review findings AND api-test failures, then
+ *  updates the implementation-summary doc (the review/test docs regenerate on
+ *  the next iteration). Gathered feedback keeps the loop converging. */
+const fixStep = branch(needsFix, {
+	yes: task({
 		id: "reviewFix",
-		label: "Stage 10c — Address Review Findings",
+		label: "Stage 10c — Address Findings",
 		async run(s, ctx) {
 			if (!ctx.budget.check()) return undefined;
 			const findings = (s.review?.findings as unknown[]) ?? [];
-			const r = await ctx.agent({ id: "pipeline.verify.fix", agent: "implementer", prompt: buildFixPrompt(setupOf(s), s.classify ?? null, findings) });
+			const testFailures = ((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? [];
+			const r = await ctx.agent({ id: "pipeline.verify.fix", agent: "implementer", prompt: buildFixPrompt(setupOf(s), s.classify ?? null, findings, testFailures) });
 			return r.control ?? {};
 		},
 	}),
+	no: noop(),
 });
 
-/** The unified verify-loop: review (both reviewers → merge) → fix, iterating
- *  until approved. `times: 4` gives convergence room (will also cover test
- *  iterations once Phase 2/3 land). Exhaustion is non-fatal. */
+/** The unified verify-loop:
+ *    REVIEW → (approved? → bringup+apiTest, teardown always) → (needsFix? → FIX)
+ *  iterating until approved AND testsGreen (max 4 rounds, non-fatal). This is the
+ *  tight, test-feedback-driven loop: observable test results are the convergence
+ *  signal alongside the merged review verdict. */
 export const verifyNode = loop(
-	{ until: reviewApproved, times: 4 },
+	{ until: approvedAndGreen, times: 4 },
 	sequence([
 		reviewStep,
-		// ── Phase 2 insertion point: add `testStep` here (api/ui testing) ──
+		branch(reviewApproved, { yes: testBlock, no: noop() }),
 		fixStep,
 	]),
 );

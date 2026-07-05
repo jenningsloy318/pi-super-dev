@@ -105,9 +105,13 @@ export function buildCodeReviewPrompt(s: SetupControl, c: Classification | null,
 export function buildAdversarialPrompt(s: SetupControl, c: Classification | null, task: string, specControl: R, implControl: R): string {
 	return [ctxBlock(s, c), "", "## Upstream Artifacts", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, `- Phases Completed: ${(implControl?.phasesCompleted as number) ?? 0}/${(implControl?.totalPhases as number) ?? 0}`, "", "## Task", task, "", "## Instructions", "Challenge the implementation from three critical lenses: Skeptic, Architect, Minimalist.", "Look for issues standard review misses: over-engineering, hidden complexity, missing error paths.", `Write the review to: ${specDoc(s, "adversarial-review")}`, "", "Output <control> JSON with: docPath, verdict ('Approved'|'Approved with Comments'|'Changes Requested'), findings (array), dimensionsCovered (array), summary."].join("\n");
 }
-export function buildFixPrompt(s: SetupControl, c: Classification | null, findings: unknown[]): string {
+export function buildFixPrompt(s: SetupControl, c: Classification | null, findings: unknown[], testFailures?: unknown[]): string {
 	const list = (findings ?? []).map((f) => { const o = f as { severity?: string; title?: string; message?: string }; return `- [${o.severity ?? "medium"}] ${o.title ?? o.message ?? JSON.stringify(f)}`; }).join("\n");
-	return [ctxBlock(s, c), "", "## Code Review Findings to Address", list || "- (no specific findings)", "", "## Instructions", "Fix the issues identified in code review. Make minimal, targeted changes.", "Run tests after each fix to ensure no regressions.", "", "Output <control> JSON with: filesModified (array), fixesApplied (number), summary."].join("\n");
+	const tlist = (testFailures ?? []).map((f) => { const o = f as { method?: string; path?: string; reason?: string }; return `- ${o.method ?? ""} ${o.path ?? ""} — ${o.reason ?? JSON.stringify(f)}`; }).join("\n");
+	const parts = [ctxBlock(s, c), "", "## Code Review Findings to Address", list || "- (no specific findings)"];
+	if (tlist) parts.push("", "## API Test Failures to Address", tlist, "");
+	parts.push("", "## Instructions", "Fix the issues above. Make minimal, targeted changes.", "Run tests after each fix to ensure no regressions.", "Then update the existing `*-implementation-summary.md` in the spec directory: append a short note of what this fix round changed.", "", "Output <control> JSON with: filesModified (array), fixesApplied (number), summary.");
+	return parts.join("\n");
 }
 
 /** Build the api-tester prompt. `service.baseUrl` is the already-running API
