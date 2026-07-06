@@ -33,4 +33,4 @@ Run as Stage 6.5 (between Design and Specification Writing) when the spec contai
 
 ## Output
 
-Write the prototype report to `{spec_directory}/{output_filename}` using the structure described above.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document from your data).

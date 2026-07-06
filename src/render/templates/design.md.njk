@@ -1,0 +1,22 @@
+# Design: {{ title }}
+
+- **Date**: {{ date }}
+- **Designer**: {{ designer }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Modules
+
+{% for m in modules %}
+### {{ m.name }}
+
+{{ m.description }}
+{% endfor %}
+
+## Numeric Constants
+
+- **Has numeric constants requiring validation**: {{ hasNumericConstants }}

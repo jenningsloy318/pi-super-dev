@@ -1,0 +1,25 @@
+# Debug Analysis: {{ title }}
+
+- **Date**: {{ date }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Hypotheses
+
+{% for h in hypotheses %}
+- {{ h }}
+{% endfor %}
+
+## Root Cause
+
+{{ rootCause }}
+
+## Reproduction Steps
+
+{% for step in reproductionSteps %}
+- {{ step }}
+{% endfor %}

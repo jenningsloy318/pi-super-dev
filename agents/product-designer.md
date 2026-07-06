@@ -39,4 +39,4 @@ Coordinate between architecture-designer and ui-ux-designer to ensure technical 
 
 ## Output
 
-Write all outputs to `{spec_directory}/{output_filenames}` using the structures described above.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document from your data).

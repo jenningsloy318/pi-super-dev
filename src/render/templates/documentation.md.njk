@@ -1,0 +1,21 @@
+# Documentation: {{ title }}
+
+- **Date**: {{ date }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Documentation Updates
+
+- **Docs Updated**: {{ docsUpdated }}
+{% if deviationsDocumented %}
+
+## Deviations Documented
+
+{% for d in deviationsDocumented %}
+- {{ d }}
+{% endfor %}
+{% endif %}

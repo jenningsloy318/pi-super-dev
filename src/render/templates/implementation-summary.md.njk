@@ -1,0 +1,20 @@
+# Implementation Summary: {{ title }}
+
+- **Date**: {{ date }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Phases
+
+- **Phases Completed**: {{ phasesCompleted }}
+- **All Green**: {{ allGreen }}
+
+## Files Modified
+
+{% for f in filesModified %}
+- {{ f }}
+{% endfor %}

@@ -1,0 +1,22 @@
+# Prototype Report: {{ title }}
+
+- **Date**: {{ date }}
+- **Verdict**: {{ verdict }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Measurements
+
+{% for m in measurements %}
+- {{ m }}
+{% endfor %}
+
+## Adjustments
+
+{% for a in adjustments %}
+- {{ a }}
+{% endfor %}

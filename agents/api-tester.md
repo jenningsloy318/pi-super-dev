@@ -24,4 +24,4 @@ Given an already-running API base URL and the spec, generate and run HTTP reques
 - A 401/403 on an unprotected attempt is a PASS for that case (it's the expected behavior), not a failure.
 
 ## Output
-Write the report to `{spec_directory}/{output_filename}` with: endpoints tested, a table of cases (method / path / body summary / expected / actual / pass), an overall pass flag, and a `failures` list (method, path, reason). Redact all credentials. Then call `structured_output` and stop.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document from your data).

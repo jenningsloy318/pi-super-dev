@@ -51,4 +51,4 @@ Build a fast feedback loop FIRST, then methodically test falsifiable hypotheses 
 
 ## Output
 
-Write the debug analysis to `{spec_directory}/{output_filename}` using the structure described above.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document from your data).

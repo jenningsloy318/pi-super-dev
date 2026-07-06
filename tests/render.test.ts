@@ -373,3 +373,36 @@ describe("render pipeline: adversarial-review", () => {
 		expect(result.markdown).toMatch(/Skeptic/);
 	});
 });
+
+// ─── 10. Remaining stages (batch 3) ──────────────────────────────────────────
+
+describe("render pipeline: implementation-summary + debug + design + prototype + docs + api-test + ui-test", () => {
+	it("implementation-summary → has phases + files", () => {
+		const r = renderStage("implementationSummary", { title: "Summary", date: "2026-01-01", summary: "Done.", phasesCompleted: "3/3", allGreen: "true", filesModified: ["a.ts", "b.ts"] });
+		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Files Modified/); expect(r.markdown).toMatch(/Phases Completed/);
+	});
+	it("debug-analysis → has root cause + hypotheses", () => {
+		const r = renderStage("debug", { title: "Debug", date: "2026-01-01", summary: "Found.", hypotheses: ["h1"], rootCause: "null deref", reproductionSteps: ["step1"] });
+		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Root Cause/); expect(r.markdown).toMatch(/Hypotheses/);
+	});
+	it("design → has modules + designer", () => {
+		const r = renderStage("design", { title: "Design", date: "2026-01-01", summary: "Arch.", designer: "architecture-designer", modules: [{name: "API", description: "REST"}], hasNumericConstants: "false" });
+		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Modules/); expect(r.markdown).toMatch(/architecture-designer/);
+	});
+	it("prototype-report → has verdict + measurements", () => {
+		const r = renderStage("prototype", { title: "Proto", date: "2026-01-01", summary: "Done.", verdict: "pass", measurements: ["m1"], adjustments: ["a1"] });
+		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Verdict/); expect(r.markdown).toMatch(/Measurements/);
+	});
+	it("documentation → has docs updated", () => {
+		const r = renderStage("docs", { title: "Docs", date: "2026-01-01", summary: "Updated.", docsUpdated: "true", deviationsDocumented: ["d1"] });
+		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Documentation Updates/);
+	});
+	it("api-test → has cases tested + pass flag", () => {
+		const r = renderStage("apiTest", { title: "API Test", date: "2026-01-01", summary: "All pass.", pass: "true", cases: "9", failures: [] });
+		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Cases Tested/);
+	});
+	it("ui-test → has flows tested + pass flag", () => {
+		const r = renderStage("uiTest", { title: "UI Test", date: "2026-01-01", summary: "All pass.", pass: "true", flows: "5", failures: [] });
+		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Flows Tested/);
+	});
+});

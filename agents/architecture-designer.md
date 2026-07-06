@@ -40,4 +40,4 @@ Produce implementation-ready architecture for complex features. Make architectur
 
 ## Output
 
-Write the architecture document to `{spec_directory}/{output_filename}` using the structure described above.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document from your data).

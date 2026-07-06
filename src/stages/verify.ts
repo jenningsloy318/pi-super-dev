@@ -100,7 +100,8 @@ export const apiTestStep = withServiceDeps(["api"],
 			if (!ctx.budget.check()) return undefined;
 			const api = s.services?.api;
 			if (!api) return undefined;
-			const r = await ctx.agent({ id: "pipeline.verify.api-test", agent: "api-tester", prompt: buildApiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, api) });
+			const r = await ctx.agent({ id: "pipeline.verify.api-test", agent: "api-tester", prompt: buildApiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, api), schema: STAGE_MODELS["apiTest"]?.schema });
+			renderAndWrite(s.setup!, (m) => ctx.log(m), "apiTest", r.control as Record<string, unknown>);
 			return r.control ?? {};
 		},
 	}),
@@ -125,7 +126,8 @@ const uiTestStage: Stage = {
 		const ui = s.services?.ui;
 		if (!ui) return undefined;
 		const api = s.services?.api; // present for fullstack
-		const r = await ctx.agent({ id: "pipeline.verify.ui-test", agent: "ui-tester", prompt: buildUiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, ui, api) });
+		const r = await ctx.agent({ id: "pipeline.verify.ui-test", agent: "ui-tester", prompt: buildUiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, ui, api), schema: STAGE_MODELS["uiTest"]?.schema });
+		renderAndWrite(s.setup!, (m) => ctx.log(m), "uiTest", r.control as Record<string, unknown>);
 		return r.control ?? {};
 	},
 };

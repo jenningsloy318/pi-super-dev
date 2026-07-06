@@ -131,6 +131,46 @@ export const AdversarialReviewData = Type.Object({
 });
 export type AdversarialReviewDataT = Static<typeof AdversarialReviewData>;
 
+// ─── Remaining stages (batch 3) ─────────────────────────────────────────────
+
+export const ImplementationSummaryData = Type.Object({
+	title: Type.String(), date: Type.String(), summary: Type.String(),
+	phasesCompleted: Type.String(), allGreen: Type.String(),
+	filesModified: Type.Array(Type.String()),
+});
+export const DebugData = Type.Object({
+	title: Type.String(), date: Type.String(), summary: Type.String(),
+	hypotheses: Type.Array(Type.String()), rootCause: Type.String(),
+	reproductionSteps: Type.Array(Type.String()),
+});
+export const DesignData = Type.Object({
+	title: Type.String(), date: Type.String(), summary: Type.String(),
+	designer: Type.String(),
+	modules: Type.Array(Type.Object({ name: Type.String(), description: Type.String() })),
+	hasNumericConstants: Type.String(),
+});
+export const PrototypeData = Type.Object({
+	title: Type.String(), date: Type.String(), summary: Type.String(),
+	verdict: Type.String(),
+	measurements: Type.Array(Type.String()),
+	adjustments: Type.Array(Type.String()),
+});
+export const DocumentationData = Type.Object({
+	title: Type.String(), date: Type.String(), summary: Type.String(),
+	docsUpdated: Type.String(),
+	deviationsDocumented: Type.Array(Type.String()),
+});
+export const ApiTestData = Type.Object({
+	title: Type.String(), date: Type.String(), summary: Type.String(),
+	pass: Type.String(), cases: Type.String(),
+	failures: Type.Array(Type.Object({ method: Type.String(), path: Type.String(), reason: Type.String() })),
+});
+export const UiTestData = Type.Object({
+	title: Type.String(), date: Type.String(), summary: Type.String(),
+	pass: Type.String(), flows: Type.String(),
+	failures: Type.Array(Type.Object({ flow: Type.String(), reason: Type.String() })),
+});
+
 // ─── Registry: stageId → { schema, template } ────────────────────────────────
 
 import { readFileSync } from "node:fs";
@@ -165,4 +205,11 @@ export const STAGE_MODELS: Record<string, StageModel> = {
 	specReview: { slug: "spec-review", schema: SpecReviewData, template: "spec-review.md.njk" },
 	codeReview: { slug: "code-review", schema: CodeReviewData, template: "code-review.md.njk" },
 	adversarialReview: { slug: "adversarial-review", schema: AdversarialReviewData, template: "adversarial-review.md.njk" },
+	implementationSummary: { slug: "implementation-summary", schema: ImplementationSummaryData, template: "implementation-summary.md.njk" },
+	debug: { slug: "debug-analysis", schema: DebugData, template: "debug-analysis.md.njk" },
+	design: { slug: "design", schema: DesignData, template: "design.md.njk" },
+	prototype: { slug: "prototype-report", schema: PrototypeData, template: "prototype-report.md.njk" },
+	docs: { slug: "documentation", schema: DocumentationData, template: "documentation.md.njk" },
+	apiTest: { slug: "api-test", schema: ApiTestData, template: "api-test-report.md.njk" },
+	uiTest: { slug: "ui-test", schema: UiTestData, template: "ui-test-report.md.njk" },
 };

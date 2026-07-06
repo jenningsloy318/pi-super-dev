@@ -47,4 +47,4 @@ Produce wireframes, design tokens, interaction patterns, accessibility requireme
 
 ## Output
 
-Write the design spec to `{spec_directory}/{output_filename}` using the structure described above.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document from your data).

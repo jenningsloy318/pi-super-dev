@@ -25,4 +25,4 @@ Given an already-running UI base URL (and, for a fullstack app, the live API beh
 - A flow that correctly shows an error state (e.g. validation message on invalid input) is a PASS, not a failure.
 
 ## Output
-Write the report to `{spec_directory}/{output_filename}` with: flows tested, a per-flow result (flow / steps / expected / observed / pass), screenshots references, an overall pass flag, and a `failures` list. Redact all credentials. Then call `structured_output` and stop.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document from your data).

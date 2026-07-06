@@ -1,0 +1,22 @@
+# UI Test Report: {{ title }}
+
+- **Date**: {{ date }}
+- **Overall**: {{ pass }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Results
+
+- **Flows Tested**: {{ flows }}
+{% if failures %}
+
+## Failures
+
+{% for f in failures %}
+- **{{ f.flow }}** — {{ f.reason }}
+{% endfor %}
+{% endif %}
