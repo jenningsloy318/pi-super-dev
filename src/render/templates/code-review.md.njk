@@ -1,0 +1,26 @@
+# Code Review: {{ title }}
+
+- **Date**: {{ date }}
+- **Author**: super-dev:code-reviewer
+- **Verdict**: {{ verdict }}
+
+---
+
+## Verdict: {{ verdict }}
+
+{{ summary }}
+
+## Findings
+
+{% for f in findings %}
+### {{ f.id }}: {{ f.title }}
+
+- **Severity**: {{ f.severity }}
+{% if f.file %}
+- **File**: `{{ f.file }}`
+{% endif %}
+{% if f.line %}
+- **Line**: {{ f.line }}
+{% endif %}
+{{ f.detail }}
+{% endfor %}

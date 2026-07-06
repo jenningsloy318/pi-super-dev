@@ -91,6 +91,46 @@ export const ResearchData = Type.Object({
 });
 export type ResearchData = Static<typeof ResearchData>;
 
+// ─── Reviews (spec-review, code-review, adversarial-review) ───────────────────
+
+const Finding = Type.Object({
+	id: Type.String(),
+	severity: Type.String(),
+	title: Type.String(),
+	detail: Type.String(),
+	lens: Type.Optional(Type.String()),
+	file: Type.Optional(Type.String()),
+	line: Type.Optional(Type.String()),
+});
+
+export const SpecReviewData = Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	verdict: Type.String(),
+	summary: Type.String(),
+	findings: Type.Array(Finding),
+	dimensions: Type.Array(Type.Object({ name: Type.String(), status: Type.String(), notes: Type.String() })),
+});
+export type SpecReviewDataT = Static<typeof SpecReviewData>;
+
+export const CodeReviewData = Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	verdict: Type.String(),
+	summary: Type.String(),
+	findings: Type.Array(Finding),
+});
+export type CodeReviewDataT = Static<typeof CodeReviewData>;
+
+export const AdversarialReviewData = Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	verdict: Type.String(),
+	summary: Type.String(),
+	findings: Type.Array(Finding),
+});
+export type AdversarialReviewDataT = Static<typeof AdversarialReviewData>;
+
 // ─── Registry: stageId → { schema, template } ────────────────────────────────
 
 import { readFileSync } from "node:fs";
@@ -122,4 +162,7 @@ export const STAGE_MODELS: Record<string, StageModel> = {
 	requirements: { slug: "requirements", schema: RequirementsData, template: "requirements.md.njk" },
 	assessment: { slug: "code-assessment", schema: CodeAssessmentData, template: "code-assessment.md.njk" },
 	research: { slug: "research-report", schema: ResearchData, template: "research-report.md.njk" },
+	specReview: { slug: "spec-review", schema: SpecReviewData, template: "spec-review.md.njk" },
+	codeReview: { slug: "code-review", schema: CodeReviewData, template: "code-review.md.njk" },
+	adversarialReview: { slug: "adversarial-review", schema: AdversarialReviewData, template: "adversarial-review.md.njk" },
 };

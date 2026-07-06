@@ -306,3 +306,70 @@ describe("render pipeline: code-assessment", () => {
 		expect(result.markdown).toContain(titleMatch?.[1]?.trim() ?? "T");
 	});
 });
+
+// ─── 7. Spec Review render pipeline ──────────────────────────────────────────
+
+describe("render pipeline: spec-review", () => {
+	it("valid data → rendered doc has verdict + dimensions", () => {
+		const result = renderStage("specReview", {
+			title: "Feature Spec", date: "2026-01-01", verdict: "Approved with Comments",
+			summary: "Well-structured spec with minor findings.",
+			findings: [{ id: "F-01", severity: "Medium", title: "Under-specified", detail: "Env var override unclear" }],
+			dimensions: [
+				{ name: "Completeness", status: "Pass", notes: "All ACs covered" },
+				{ name: "Consistency", status: "Pass", notes: "Names match" },
+			],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Verdict: Approved with Comments/);
+		expect(result.markdown).toMatch(/Findings/);
+		expect(result.markdown).toMatch(/F-01/);
+		expect(result.markdown).toMatch(/Dimension Reviews/);
+		expect(result.markdown).toMatch(/Completeness/);
+	});
+});
+
+// ─── 8. Code Review render pipeline ──────────────────────────────────────────
+
+describe("render pipeline: code-review", () => {
+	it("valid data → rendered doc has verdict + findings", () => {
+		const result = renderStage("codeReview", {
+			title: "Code Review", date: "2026-01-01", verdict: "Approved",
+			summary: "Clean implementation.",
+			findings: [{ id: "F-01", severity: "Low", title: "Minor naming", detail: "Variable could be clearer", file: "src/server.js", line: "42" }],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Verdict: Approved/);
+		expect(result.markdown).toMatch(/F-01/);
+		expect(result.markdown).toMatch(/server\.js/);
+	});
+	it("real-doc round-trip: stockfan code-review → render → verdict + findings preserved", () => {
+		const doc = readFileSync("/home/jenningsl/development/personal/stock-analysis/stockfan-server/docs/specifications/01-core-foundation/09-code-review.md", "utf8");
+		const titleMatch = doc.match(/^# Code Review:\s*(.+)$/m);
+		const verdictMatch = doc.match(/## Verdict:\s*(.+)/);
+		const data = { title: titleMatch?.[1]?.trim() ?? "T", date: "2026-01-01", verdict: verdictMatch?.[1]?.trim() ?? "Approved", summary: "Extracted.", findings: [{ id: "F-01", severity: "Low", title: "Test finding", detail: "Detail" }] };
+		const result = renderStage("codeReview", data);
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Verdict:/);
+		expect(result.markdown).toContain(verdictMatch?.[1]?.trim() ?? "Approved");
+	});
+});
+
+// ─── 9. Adversarial Review render pipeline ───────────────────────────────────
+
+describe("render pipeline: adversarial-review", () => {
+	it("valid data → rendered doc has verdict + lens findings", () => {
+		const result = renderStage("adversarialReview", {
+			title: "Adversarial Review", date: "2026-01-01", verdict: "PASS",
+			summary: "No critical issues found.",
+			findings: [
+				{ id: "S-01", severity: "Low", title: "Info discarded", detail: "Error info lost", lens: "Skeptic" },
+				{ id: "A-01", severity: "Informational", title: "Over-abstraction", detail: "Unnecessary layer", lens: "Architect" },
+			],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/PASS/);
+		expect(result.markdown).toMatch(/S-01/);
+		expect(result.markdown).toMatch(/Skeptic/);
+	});
+});

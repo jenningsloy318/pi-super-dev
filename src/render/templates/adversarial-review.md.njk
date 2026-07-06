@@ -1,0 +1,19 @@
+# Adversarial Review: {{ title }}
+
+- **Date**: {{ date }}
+- **Reviewer**: super-dev:adversarial-reviewer
+- **Verdict**: {{ verdict }}
+
+---
+
+{{ summary }}
+
+{% for f in findings %}
+### {{ f.id }}: {{ f.title }}
+
+- **Severity**: {{ f.severity }}
+{% if f.lens %}
+- **Lens**: {{ f.lens }}
+{% endif %}
+{{ f.detail }}
+{% endfor %}

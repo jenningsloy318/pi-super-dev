@@ -22,6 +22,8 @@
 import { loop, sequence, parallel, branch, noop, task, tryCatch } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
+import { renderAndWrite } from "../render/render.ts";
+import { STAGE_MODELS } from "../render/schemas.ts";
 import type { Node, NodeResult, PipelineState, Stage } from "../types.ts";
 
 const setupOf = (s: PipelineState) => s.setup!;
@@ -61,7 +63,8 @@ const reviewStep = parallel(
 			label: "Stage 10a — Code Review",
 			async run(s, ctx) {
 				if (!ctx.budget.check()) return undefined;
-				const r = await ctx.agent({ id: "pipeline.verify.code-review", agent: "code-reviewer", prompt: buildCodeReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}) });
+				const r = await ctx.agent({ id: "pipeline.verify.code-review", agent: "code-reviewer", prompt: buildCodeReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["codeReview"]?.schema });
+				renderAndWrite(s.setup!, (m) => ctx.log(m), "codeReview", r.control as Record<string, unknown>);
 				return r.control ?? {};
 			},
 		}),
@@ -70,7 +73,8 @@ const reviewStep = parallel(
 			label: "Stage 10b — Adversarial Review",
 			async run(s, ctx) {
 				if (!ctx.budget.check()) return undefined;
-				const r = await ctx.agent({ id: "pipeline.verify.adversarial", agent: "adversarial-reviewer", prompt: buildAdversarialPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}) });
+				const r = await ctx.agent({ id: "pipeline.verify.adversarial", agent: "adversarial-reviewer", prompt: buildAdversarialPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["adversarialReview"]?.schema });
+				renderAndWrite(s.setup!, (m) => ctx.log(m), "adversarialReview", r.control as Record<string, unknown>);
 				return r.control ?? {};
 			},
 		}),

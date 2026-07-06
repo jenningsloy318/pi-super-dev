@@ -11,9 +11,11 @@
 import { render } from "./template-engine.ts";
 import { STAGE_MODELS, type StageModel } from "./schemas.ts";
 import { Value } from "typebox/value";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { specDoc } from "../prompts.ts";
+import type { SetupControl } from "../types.ts";
 
 const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "templates");
 const templateCache = new Map<string, string>();
@@ -67,4 +69,31 @@ export function renderStage(stageId: string, data: unknown): RenderResult {
 	const template = loadTemplate(model.template);
 	const markdown = render(template, augmented);
 	return { markdown, errors: [] };
+}
+
+/** Validate the agent's data against the stage's schema, render the doc, and write
+ *  it to the spec dir. Returns the doc path (or null on validation/render failure).
+ *  Reusable by both writerTask (spec-review) and inline verify tasks (code-review,
+ *  adversarial-review) so any task can use the render pipeline. */
+export function renderAndWrite(
+	setup: SetupControl,
+	log: (m: string) => void,
+	stageId: string,
+	control: Record<string, unknown> | null,
+): string | null {
+	const model = STAGE_MODELS[stageId];
+	if (!model || !control) return null;
+	const docPath = specDoc(setup, model.slug);
+	const rendered = renderStage(stageId, control);
+	if (rendered.errors.length > 0) {
+		log(`${stageId}: render validation errors — ${rendered.errors.join("; ")}`);
+		return null;
+	}
+	if (rendered.markdown) {
+		writeFileSync(docPath, rendered.markdown);
+		control.docPath = docPath;
+		log(`${stageId}: rendered ${docPath} (${rendered.markdown.length} bytes)`);
+		return docPath;
+	}
+	return null;
 }

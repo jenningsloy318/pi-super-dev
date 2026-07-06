@@ -55,4 +55,4 @@ Validate implementations against specifications. Find race conditions, completen
 
 ## Output
 
-Write the code review to `{spec_directory}/{output_filename}` using the structure described above.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document deterministically from your data).

@@ -1,0 +1,29 @@
+# Specification Review: {{ title }}
+
+- **Date**: {{ date }}
+- **Author**: super-dev:spec-reviewer
+
+---
+
+## Verdict: {{ verdict }}
+
+{{ summary }}
+
+## Findings
+
+{% for f in findings %}
+### {{ f.id }}: {{ f.title }}
+
+- **Severity**: {{ f.severity }}
+{{ f.detail }}
+{% endfor %}
+
+## Dimension Reviews
+
+{% for d in dimensions %}
+### {{ d.name }}
+
+- **Status**: {{ d.status }}
+
+{{ d.notes }}
+{% endfor %}

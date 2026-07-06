@@ -60,4 +60,4 @@ Standard code review checks if code works; this agent checks if code survives ad
 
 ## Output
 
-Write the adversarial review to `{spec_directory}/{output_filename}` using the structure described above.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document deterministically from your data).

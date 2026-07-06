@@ -43,4 +43,4 @@ Only report findings with >80% confidence. Zero findings is valid.
 
 ## Output
 
-Write the spec review to `{spec_directory}/{output_filename}` covering all 8 dimensions (Completeness, Consistency, Feasibility, Testability, Traceability, Grounding, Complexity, Ambiguity) and a verdict. Then call `structured_output` and stop.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document deterministically from your data).
