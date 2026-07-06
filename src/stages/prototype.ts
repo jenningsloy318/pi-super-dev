@@ -6,6 +6,8 @@
 
 import type { ControlObj, Stage } from "../types.ts";
 import { buildPrototypePrompt } from "../prompts.ts";
+import { renderAndWrite } from "../render/render.ts";
+import { STAGE_MODELS } from "../render/schemas.ts";
 
 const MAX_ROUNDS = 3;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -30,7 +32,9 @@ export const prototypeStage: Stage = {
 				id: `pipeline.prototype.r${pad(round)}`,
 				agent: "prototype-runner",
 				prompt: buildPrototypePrompt(setup, state.classify ?? null, ctx.task, design, constants, round),
+				schema: STAGE_MODELS["prototype"]?.schema,
 			});
+			renderAndWrite(setup, (m) => ctx.log(m), "prototype", result.control as Record<string, unknown> | null);
 			last = result.control ?? null;
 			if (last?.verdict === "pass") {
 				ctx.log(`Prototype validation PASS on round ${round}`);

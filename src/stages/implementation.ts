@@ -6,6 +6,8 @@
 
 import type { ControlObj, Stage } from "../types.ts";
 import { buildTddPrompt, buildImplementPrompt, buildQaPrompt, buildCommitPrompt, buildImplementationSummaryPrompt } from "../prompts.ts";
+import { renderAndWrite } from "../render/render.ts";
+import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
 
 const MAX_ATTEMPTS = 3;
@@ -73,7 +75,8 @@ export const implementationStage: Stage = {
 			summary: allGreen ? `All ${phases.length} phases completed successfully` : `${phasesCompleted}/${phases.length} phases completed`,
 		};
 		if (ctx.budget.check()) {
-			await ctx.agent({ id: "pipeline.implementation.summary", agent: "orchestrator", prompt: buildImplementationSummaryPrompt(setup, state.classify ?? null, control) });
+			const summaryResult = await ctx.agent({ id: "pipeline.implementation.summary", agent: "orchestrator", prompt: buildImplementationSummaryPrompt(setup, state.classify ?? null, control), schema: STAGE_MODELS["implementationSummary"]?.schema });
+			renderAndWrite(setup, (m) => ctx.log(m), "implementationSummary", summaryResult.control as Record<string, unknown> | null);
 		}
 		return control;
 	},

@@ -6,6 +6,8 @@
 
 import type { Stage } from "../types.ts";
 import { buildDesignPrompt } from "../prompts.ts";
+import { renderAndWrite } from "../render/render.ts";
+import { STAGE_MODELS } from "../render/schemas.ts";
 
 export const designStage: Stage = {
 	id: "design",
@@ -26,7 +28,9 @@ export const designStage: Stage = {
 			id: "pipeline.design",
 			agent: designerAgent,
 			prompt: buildDesignPrompt(setup, state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null, state.assessment ?? null, designerAgent),
+			schema: STAGE_MODELS["design"]?.schema,
 		});
+		renderAndWrite(setup, (m) => ctx.log(m), "design", result.control as Record<string, unknown> | null);
 		ctx.log(`Design complete (agent: ${designerAgent})`);
 		return result.control ?? null;
 	},

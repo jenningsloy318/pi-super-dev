@@ -20,8 +20,10 @@ import {
 	getReflectionPath,
 	getSuperDevDir,
 	getConfig,
+	auditAppend,
 } from "./super-dev-dir.ts";
 import { existsSync } from "node:fs";
+import { cleanupOldRuns, updateStats } from "./cleanup.ts";
 
 /** Spawn the reflection agent asynchronously (fire-and-forget). Non-blocking. */
 export function runReflectionAsync(): void {
@@ -32,7 +34,7 @@ export function runReflectionAsync(): void {
 	if (!auditPath || !existsSync(auditPath)) return;
 
 	// Fire-and-forget — never blocks the user's result.
-	void runReflection().catch(() => {
+	void runReflection().catch((err) => { auditAppend({ stage: "reflection", error: String(err instanceof Error ? err.message : err) });
 		// Silent failure — reflection is best-effort.
 	});
 }
@@ -73,4 +75,8 @@ export async function runReflection(): Promise<void> {
 			text: () => {},
 		},
 	});
+
+	// Phase 6: cleanup old runs/traces + update aggregate stats
+	try { updateStats(); } catch { /* best-effort */ }
+	try { cleanupOldRuns(); } catch { /* best-effort */ }
 }
