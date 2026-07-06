@@ -15,6 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ensureSuperDevDirs, startRun, getRunLogPath } from "./render/super-dev-dir.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath } from "./pi-spawn.ts";
 import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
@@ -104,7 +105,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const flush = () => {
 				const all = live ? [...transcript, live] : transcript;
 				const body = all.length > TAIL_LINES
-					? `… ${all.length - TAIL_LINES} earlier lines trimmed (full log saved to .super-dev-logs/ at run end) …\n` + all.slice(-TAIL_LINES).join("\n")
+					? `… ${all.length - TAIL_LINES} earlier lines trimmed (full log saved at run end) …\n` + all.slice(-TAIL_LINES).join("\n")
 					: all.join("\n");
 				onUpdate?.({ content: [{ type: "text", text: body }], details: {} });
 			};
@@ -118,6 +119,8 @@ export default function activate(pi: ExtensionAPI): void {
 				},
 			};
 			try {
+				ensureSuperDevDirs();
+				startRun();
 				const summary = await runPipelineTask(task, {
 					cwd: process.cwd(),
 					skipWorktree: params.skipWorktree === true,
@@ -131,9 +134,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// Preserve the FULL run log to disk (the live display is a rolling tail).
 				let logPath = "";
 				try {
-					const logDir = join(process.cwd(), ".super-dev-logs");
-					mkdirSync(logDir, { recursive: true });
-					logPath = join(logDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${summary.specIdentifier || "run"}.log`);
+					logPath = getRunLogPath();
 					writeFileSync(logPath, transcript.join("\n") + "\n");
 				} catch { /* best-effort; the live tail is the primary surface */ }
 				if (logPath) lines.push(`Full run log: ${logPath}`);

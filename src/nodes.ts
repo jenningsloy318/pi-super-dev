@@ -41,6 +41,7 @@ import type {
 import { specDocExists } from "./doc-validators.ts";
 import { STAGE_MODELS } from "./render/schemas.ts";
 import { renderAndWrite } from "./render/render.ts";
+import { auditAppend } from "./render/super-dev-dir.ts";
 
 // ─── Shared helper types ────────────────────────────────────────────────────
 
@@ -121,13 +122,17 @@ export function task(stage: Stage): Node {
 			}
 			try {
 				ctx.events.emit("phase", stage.label);
+				const startMs = Date.now();
 				const result = await stage.run(state, ctx);
+				const durationMs = Date.now() - startMs;
 				if (result !== undefined && result !== null) state[stage.id] = result;
 				record(ctx, "ok");
+				auditAppend({ stage: stage.id, durationMs, control: result });
 				return { status: "ok", value: result };
 			} catch (err) {
 				const error = err instanceof Error ? err.message : String(err);
 				record(ctx, "failed", error);
+				auditAppend({ stage: stage.id, error });
 				if (stage.fatal) throw err;
 				return { status: "failed", error };
 			}
@@ -347,8 +352,10 @@ export function gate(opts: GateOptions, node: Node): Node {
 				if (v.pass) {
 					ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
 					return { status: "ok", attempts: attempt };
+					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
 				}
 				lastErrors = v.errors;
+				auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: false, errors: v.errors } });
 				ctx.log(`gate${label}: ✗ FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
 				// Feed the errors forward so the next attempt's agent prompt names them.
 				if (opts.feedbackKey) {

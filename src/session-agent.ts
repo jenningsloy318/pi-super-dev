@@ -30,6 +30,7 @@ import { Type, type TSchema } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { getTracesDir } from "./render/super-dev-dir.ts";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
@@ -288,7 +289,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
  *  are zero logs to debug a failed/garbled agent run. */
 function dumpTrace(opts: SessionAgentOptions, keys: string[], capture: Capture, correctiveNote: string, messages: unknown): void {
 	try {
-		const dir = join(tmpdir(), "super-dev-debug");
+		const dir = getTracesDir();
 		mkdirSync(dir, { recursive: true });
 		const safe = (opts.id ?? opts.agent).replace(/[^A-Za-z0-9_.-]+/g, "_");
 		const file = join(dir, `${Date.now()}-${safe}.json`);
