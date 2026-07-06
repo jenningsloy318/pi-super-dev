@@ -1,0 +1,96 @@
+/**
+ * Per-stage DATA schemas (TypeBox). One definition → three uses:
+ *   1. a TS type (Static<typeof X>) for compile-time safety,
+ *   2. a JSON-schema-shaped object the template engine + validator consume,
+ *   3. (forthcoming) the structured_output tool schema the agent returns against.
+ *
+ * The agent produces CONTENT conforming to these; the doc is rendered from it,
+ * so the agent never wrestles with markdown format.
+ */
+
+import { Type, type Static } from "typebox";
+
+const Priority = Type.String({ description: "priority: high, medium, low, critical, etc." });
+
+// ─── BDD scenarios ───────────────────────────────────────────────────────────
+
+export const BddScenario = Type.Object({
+	id: Type.String({ description: "zero-padded, e.g. '001'" }),
+	title: Type.String(),
+	acRef: Type.String({ description: "e.g. 'AC-02'" }),
+	priority: Priority,
+	given: Type.String(),
+	when: Type.String(),
+	then: Type.String(),
+	andClauses: Type.Optional(Type.Array(Type.String())),
+});
+
+export const BddFeature = Type.Object({
+	name: Type.String(),
+	scenarios: Type.Array(BddScenario, { minItems: 1 }),
+});
+
+export const BddData = Type.Object({
+	title: Type.String({ description: "feature/spec title, e.g. 'Core Types & Configuration'" }),
+	date: Type.String(),
+	source: Type.String({ description: "requirements doc path, e.g. './01-requirements.md'" }),
+	features: Type.Array(BddFeature, { minItems: 1 }),
+	traceability: Type.Optional(
+		Type.Array(Type.Object({
+			acId: Type.String(),
+			description: Type.String(),
+			scenarios: Type.Array(Type.String()),
+		})),
+	),
+});
+export type BddData = Static<typeof BddData>;
+
+// ─── Requirements ────────────────────────────────────────────────────────────
+
+export const AcceptanceCriterion = Type.Object({
+	id: Type.String({ description: "e.g. 'AC-01'" }),
+	statement: Type.String(),
+});
+
+export const RequirementsData = Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	type: Type.String(),
+	priority: Priority,
+	executiveSummary: Type.String(),
+	acceptanceCriteria: Type.Array(AcceptanceCriterion, { minItems: 2 }),
+	nonFunctional: Type.Array(Type.String(), { description: "performance / security / accessibility notes" }),
+	openQuestions: Type.Optional(Type.Array(Type.String())),
+});
+export type RequirementsData = Static<typeof RequirementsData>;
+
+// ─── Registry: stageId → { schema, template } ────────────────────────────────
+
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { TSchema } from "typebox";
+
+const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "templates");
+const templateCache = new Map<string, string>();
+function loadTemplate(name: string): string {
+	const cached = templateCache.get(name);
+	if (cached !== undefined) return cached;
+	const body = readFileSync(join(TEMPLATES_DIR, name), "utf8");
+	templateCache.set(name, body);
+	return body;
+}
+
+export interface StageModel {
+	/** The output filename slug, e.g. "bdd-scenarios". */
+	slug: string;
+	/** TypeBox schema for the agent's content data. */
+	schema: TSchema;
+	/** Template filename under src/render/templates/. */
+	template: string;
+}
+
+export const STAGE_MODELS: Record<string, StageModel> = {
+	bdd: { slug: "bdd-scenarios", schema: BddData, template: "bdd-scenarios.md.njk" },
+	requirements: { slug: "requirements", schema: RequirementsData, template: "requirements.md.njk" },
+};

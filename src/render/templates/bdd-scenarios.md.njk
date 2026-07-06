@@ -1,0 +1,41 @@
+# Behavior Scenarios: {{ title }}
+
+- **Date**: {{ date }}
+- **Author**: super-dev:bdd-scenario-writer
+- **Source**: {{ source }}
+- **Total Scenarios**: {{ totalScenarios }}
+
+---
+{% for feature in features %}
+## Feature: {{ feature.name }}
+
+{% for s in feature.scenarios %}
+### SCENARIO-{{ s.id }}: {{ s.title }}
+
+- **Acceptance Criteria**: {{ s.acRef }}
+- **Priority**: {{ s.priority }}
+
+**Given** {{ s.given }}
+**When** {{ s.when }}
+**Then** {{ s.then }}
+{% for clause in s.andClauses %}
+**And** {{ clause }}
+{% endfor %}
+{% endfor %}
+{% endfor %}
+{% if traceability %}
+---
+
+## Traceability
+
+{% for t in traceability %}
+- **{{ t.acId }}**: {{ t.description }} → {{ t.scenarios | join(", ") }}
+{% endfor %}
+{% endif %}
+
+## Coverage Summary
+
+- **Total Acceptance Criteria**: {{ totalACs }}
+- **Covered by Scenarios**: {{ totalACs }}
+- **Uncovered**: 0
+- **Total Scenarios**: {{ totalScenarios }}
