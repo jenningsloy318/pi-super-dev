@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-07-05
+
+### Added
+- Render pipeline: typed TS template engine + TypeBox schemas + Jinja-subset templates for all 15 stages. Agent returns structured data; doc is rendered deterministically. Format is solved — agent focuses on content.
+- Unified verify-loop: review-gated bringup → api/ui test → teardown, converging on approved ∧ testsGreen.
+- Service lifecycle (bringup/teardown/withServiceDeps): concurrent multi-service start, .env loading, readiness poll, try/final teardown.
+- api-tester + ui-tester agents: HTTP CRUD/edge testing (CDP/Playwright for UI).
+- Feedback-driven gate retries; non-fatal exhaustion; tolerant sequences.
+- Doc-content gates (validate the real .md file, not self-report).
+- Delivery-discipline preamble (bounds exploration; prevents timeouts).
+- Super-dev-debug traces (SUPER_DEV_DEBUG=1).
+
+### Fixed
+- Stage 9 crash on malformed spec.phases (normalizePhases coercion).
+- Service lifecycle .env loading (startService now loads .env).
+- Agent output truncation (rolling-tail display + full log on disk).
+- Dead template references removed from all 22 agents.
+- Vacuous-pass gates fixed (researchComplete, notBlocked).
+
+
 ## [0.1.2] - 2026-07-05
 
 ### Fixed
