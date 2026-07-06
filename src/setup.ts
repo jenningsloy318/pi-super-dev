@@ -6,6 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { clearKnowledge } from "./render/knowledge.ts";
 import { join, resolve } from "node:path";
 import type { SetupControl } from "./types.ts";
 
@@ -136,6 +137,7 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 
 	const specDirectory = join(worktreePath, "docs", "specifications", specIdentifier) + "/";
 	mkdirSync(specDirectory, { recursive: true });
+	clearKnowledge(specDirectory); // fresh .knowledge.md for this run
 
 	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo };
 }

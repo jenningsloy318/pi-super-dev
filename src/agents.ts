@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadLearnedLessons } from "./render/learned.ts";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(MODULE_DIR, "..", "agents");
@@ -19,7 +20,8 @@ function stripFrontmatter(md: string): string {
 	return md.slice(end + 4).replace(/^\s*\n/, "");
 }
 
-export function loadAgentPrompt(name: string): string {
+// Internal: load the base agent .md body (cached).
+function loadAgentPromptBase(name: string): string {
 	const cached = cache.get(name);
 	if (cached !== undefined) return cached;
 	const path = join(AGENTS_DIR, `${name}.md`);
@@ -31,6 +33,14 @@ export function loadAgentPrompt(name: string): string {
 	}
 	cache.set(name, body);
 	return body;
+}
+
+// Public: load the agent .md body + inject learned lessons (fresh each call,
+// not cached — learned-index.json can change between runs via reflection).
+export function loadAgentPrompt(name: string): string {
+	const base = loadAgentPromptBase(name);
+	const learned = loadLearnedLessons(name);
+	return learned ? `${base}\n\n${learned}` : base;
 }
 
 export function agentsDirectory(): string {

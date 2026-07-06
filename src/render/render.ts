@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { specDoc } from "../prompts.ts";
 import type { SetupControl } from "../types.ts";
+import { appendToKnowledge } from "./knowledge.ts";
 
 const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "templates");
 const templateCache = new Map<string, string>();
@@ -109,6 +110,8 @@ export function renderAndWrite(
 			control.specificationPath = docPath;
 			control.phaseCount = String((control.phases as unknown[])?.length ?? 0);
 		}
+		// Auto-accumulate this stage's raw data to .knowledge.md
+		appendToKnowledge(setup.specDirectory, stageId, control);
 		return docPath;
 	}
 	return null;
