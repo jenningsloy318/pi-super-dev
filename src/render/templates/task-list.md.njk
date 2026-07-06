@@ -1,0 +1,9 @@
+# Task List: {{ title }}
+
+- **Date**: {{ date }}
+
+---
+
+{% for task in tasks %}
+- [ ] **{{ task.phase }}**: {{ task.description }}
+{% endfor %}

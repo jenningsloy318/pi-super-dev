@@ -45,17 +45,16 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 
 	it("debug takes 04 when it runs (bug), pushing code-assessment to 05", () => {
 		put(dir, "01-requirements.md"); put(dir, "02-bdd-scenarios.md"); put(dir, "03-research-report.md");
-		expect(buildDebugPrompt(s, null, "t", null, null)).toContain("04-debug-analysis.md");
+		expect(buildDebugPrompt(s, null, "t", null, null)).toContain("RENDERED FOR YOU");
 		put(dir, "04-debug-analysis.md");
 		expect(buildAssessmentPrompt(s, null, "t", null, null)).toContain("structured data");
 	});
 
-	it("spec writes three consecutive docs (base, base+1, base+2)", () => {
+	it("spec asks for structured data (render pipeline, 3 docs)", () => {
 		put(dir, "01-requirements.md"); put(dir, "02-bdd-scenarios.md"); put(dir, "03-research-report.md");
 		put(dir, "04-code-assessment.md"); put(dir, "05-design.md");
 		const p = buildSpecPrompt(s, null, "t", null, null, null, null, null);
-		expect(p).toContain("06-specification.md");
-		expect(p).toContain("07-implementation-plan.md");
-		expect(p).toContain("08-task-list.md");
+		expect(p).toContain("phases");
+		expect(p).toContain("RENDERED FOR YOU");
 	});
 });

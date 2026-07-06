@@ -406,3 +406,30 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Flows Tested/);
 	});
 });
+
+// ─── 11. Specification (multi-doc) render pipeline ───────────────────────────
+
+describe("render pipeline: specification (multi-doc)", () => {
+	it("valid data → primary doc has architecture + testing strategy + scenario refs", () => {
+		const result = renderStage("spec", {
+			title: "Feature Spec", date: "2026-01-01", summary: "A spec.",
+			architecture: "REST API with Express.",
+			testingStrategy: "Unit + integration tests.",
+			scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+			phases: [{ name: "Phase 1: Setup", description: "Initial setup" }, { name: "Phase 2: Implement", description: "Core logic" }],
+			tasks: [{ phase: "Phase 1", description: "Create structure" }, { phase: "Phase 2", description: "Implement endpoints" }],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Architecture/);
+		expect(result.markdown).toMatch(/Testing Strategy/);
+		expect(result.markdown).toMatch(/SCENARIO-001/);
+	});
+	it("schema requires at least 1 phase", async () => {
+		const errors = validateData(
+			// access the spec schema via STAGE_MODELS
+			(await import("../src/render/schemas.ts")).STAGE_MODELS["spec"].schema,
+			{ title: "T", date: "d", summary: "s", architecture: "a", testingStrategy: "t", scenarioRefs: [], phases: [], tasks: [] },
+		);
+		expect(errors.length).toBeGreaterThan(0);
+	});
+});

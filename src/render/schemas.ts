@@ -195,6 +195,8 @@ export interface StageModel {
 	schema: TSchema;
 	/** Template filename under src/render/templates/. */
 	template: string;
+	/** Additional docs rendered from the same data (multi-doc stages like spec). */
+	additionalDocs?: Array<{ slug: string; template: string }>;
 }
 
 export const STAGE_MODELS: Record<string, StageModel> = {
@@ -212,4 +214,28 @@ export const STAGE_MODELS: Record<string, StageModel> = {
 	docs: { slug: "documentation", schema: DocumentationData, template: "documentation.md.njk" },
 	apiTest: { slug: "api-test", schema: ApiTestData, template: "api-test-report.md.njk" },
 	uiTest: { slug: "ui-test", schema: UiTestData, template: "ui-test-report.md.njk" },
+};
+
+// ─── Specification (multi-doc: specification + implementation-plan + task-list) ─
+
+export const SpecificationData = Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	summary: Type.String(),
+	architecture: Type.String(),
+	testingStrategy: Type.String(),
+	scenarioRefs: Type.Array(Type.String()),
+	phases: Type.Array(Type.Object({ name: Type.String(), description: Type.String() }), { minItems: 1 }),
+	tasks: Type.Array(Type.Object({ phase: Type.String(), description: Type.String() })),
+});
+
+// Register the multi-doc specification stage
+STAGE_MODELS["spec"] = {
+	slug: "specification",
+	schema: SpecificationData,
+	template: "specification.md.njk",
+	additionalDocs: [
+		{ slug: "implementation-plan", template: "implementation-plan.md.njk" },
+		{ slug: "task-list", template: "task-list.md.njk" },
+	],
 };

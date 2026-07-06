@@ -1,0 +1,23 @@
+# Specification: {{ title }}
+
+- **Date**: {{ date }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Architecture
+
+{{ architecture }}
+
+## Testing Strategy
+
+{{ testingStrategy }}
+
+## BDD Scenario References
+
+{% for ref in scenarioRefs %}
+- {{ ref }}
+{% endfor %}

@@ -93,6 +93,22 @@ export function renderAndWrite(
 		writeFileSync(docPath, rendered.markdown);
 		control.docPath = docPath;
 		log(`${stageId}: rendered ${docPath} (${rendered.markdown.length} bytes)`);
+		// Multi-doc: render additional docs from the same data (e.g. spec → 3 docs)
+		if (model.additionalDocs) {
+			for (const extra of model.additionalDocs) {
+				const extraPath = specDoc(setup, extra.slug);
+				const extraMd = render(loadTemplate(extra.template), augmentData(stageId, control));
+				writeFileSync(extraPath, extraMd);
+				const key = extra.slug.replace(/-([a-z])/g, (_, c) => c.toUpperCase()) + "Path";
+				control[key] = extraPath;
+				log(`${stageId}: rendered ${extraPath} (${extraMd.length} bytes)`);
+			}
+		}
+		// Spec-specific gate compatibility
+		if (stageId === "spec") {
+			control.specificationPath = docPath;
+			control.phaseCount = String((control.phases as unknown[])?.length ?? 0);
+		}
 		return docPath;
 	}
 	return null;

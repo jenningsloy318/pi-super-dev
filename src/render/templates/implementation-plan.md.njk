@@ -1,0 +1,11 @@
+# Implementation Plan: {{ title }}
+
+- **Date**: {{ date }}
+
+---
+
+{% for phase in phases %}
+## Phase {{ loop.index }}: {{ phase.name }}
+
+{{ phase.description }}
+{% endfor %}
