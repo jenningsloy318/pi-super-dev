@@ -44,9 +44,11 @@ const notBlocked = (s: PipelineState) => {
 const hasImplementation = (s: PipelineState) =>
 	((s.implementation as { totalPhases?: number } | undefined)?.totalPhases ?? 0) > 0;
 
-/** Research is complete once it has actually produced a report. Open issues
- *  are NORMAL research output (the prompt asks for them) — they flow forward
- *  to the spec/assessment stages, so they must NOT block the pipeline. */
+/** Research is complete ONLY when a report exists AND all open issues are
+ *  resolved. The gate retries (attempts:4, feedback-driven) loop the unresolved
+ *  issues back into the next research attempt (Deep Research Mode), so the
+ *  agent targets each one. Non-fatal exhaustion: if truly unresolvable after 4
+ *  attempts, the pipeline proceeds with them documented. */
 const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const r = s.research as { docPath?: string; openIssues?: unknown[] } | undefined;
 	if (!r || !r.docPath) {
@@ -54,7 +56,11 @@ const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 		return { pass: false, errors: ["no research report produced (agent returned nothing or timed out)"] };
 	}
 	const open = (r.openIssues as unknown[]) ?? [];
-	if (open.length > 0) ctx.log(`Research: ${open.length} open issue(s) noted — forwarded to spec/assessment`);
+	if (open.length > 0) {
+		const preview = open.slice(0, 3).map((o) => String(o).slice(0, 80)).join("; ");
+		ctx.log(`Research: ${open.length} open issue(s) unresolved — retrying to resolve: ${preview}`);
+		return { pass: false, errors: [`${open.length} open issue(s) must be resolved before proceeding: ${open.map((o) => String(o)).join("; ")}`] };
+	}
 	return { pass: true, errors: [] };
 };
 

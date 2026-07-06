@@ -12,8 +12,8 @@ const researchComplete = async (s: any, ctx: any) => {
 	const r = s.research;
 	if (!r || !r.docPath) { ctx.log("no report"); return { pass: false, errors: ["no report"] }; }
 	const open = r.openIssues ?? [];
-	if (open.length > 0) ctx.log(`${open.length} forwarded`);
-	return { pass: true, errors: [] }; // a report exists → complete; open issues are informational
+	if (open.length > 0) { ctx.log(`${open.length} unresolved`); return { pass: false, errors: [`${open.length} open issue(s) must be resolved`] }; }
+	return { pass: true, errors: [] }; // report exists AND all issues resolved
 };
 const notBlocked = (s: any) => { const c = s.cleanup; return !!c && c.blocked !== true; };
 
@@ -25,9 +25,11 @@ describe("researchComplete (vacuous-pass fix)", () => {
 		expect((await researchComplete({ research: {} }, ctx)).pass).toBe(false);
 		expect((await researchComplete({ research: { openIssues: [] } }, ctx)).pass).toBe(false); // no docPath
 	});
-	it("PASSES when a report exists (open issues are informational, not blocking)", async () => {
+	it("PASSES only when a report exists AND open issues are empty", async () => {
 		expect((await researchComplete({ research: { docPath: "/x.md", openIssues: [] } }, ctx)).pass).toBe(true);
-		expect((await researchComplete({ research: { docPath: "/x.md", openIssues: ["a", "b"] } }, ctx)).pass).toBe(true);
+	});
+	it("FAILS when a report exists but open issues remain — research must resolve them", async () => {
+		expect((await researchComplete({ research: { docPath: "/x.md", openIssues: ["a", "b"] } }, ctx)).pass).toBe(false);
 	});
 });
 
