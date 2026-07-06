@@ -53,6 +53,10 @@ export interface AgentCall {
 	/** Control keys the caller expects back (for the session backend's
 	 *  structured_output schema). Optional; omitted for non-writer calls. */
 	controlKeys?: string[];
+	/** Optional TypeBox schema for typed structured_output (render pipeline stages).
+	 *  When provided, the structured_output tool uses this typed schema instead of
+	 *  the permissive Type.Any-per-key schema, so the model returns typed data. */
+	schema?: unknown;
 }
 
 export interface AgentResult extends SpawnResult {}

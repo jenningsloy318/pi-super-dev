@@ -28,7 +28,9 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 
 	it("next doc counts existing + 1", () => {
 		put(dir, "01-requirements.md");
-		expect(buildBddPrompt(s, null, "t", null)).toContain("02-bdd-scenarios.md");
+		// BDD now returns structured data (render pipeline); check for data-shape guidance, not a doc path
+		expect(buildBddPrompt(s, null, "t", null)).toContain("features");
+		expect(buildBddPrompt(s, null, "t", null)).toContain("structured output");
 	});
 
 	it("excludes the stage's own slug so gate retries don't inflate the number", () => {

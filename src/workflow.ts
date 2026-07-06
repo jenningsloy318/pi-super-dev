@@ -68,6 +68,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			prompt,
 			cwd: agentCwd,
 			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
+			schema: call.schema,
 			model,
 			signal,
 			id: call.id,

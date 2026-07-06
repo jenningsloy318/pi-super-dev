@@ -34,4 +34,7 @@ Produce traceable behavior scenarios mapped to acceptance criteria with quality 
 
 ## Output
 
-Write the BDD scenarios document to `{spec_directory}/{output_filename}` using the structure described above (SCENARIO-NNN IDs, Given/When/Then, AC-NN references).
+Do NOT write the document yourself. Return the scenarios as structured data (the pipeline renders the document deterministically from your data). Call `structured_output` with:
+- title, date, source
+- features: array of { name, scenarios: [{ id, title, acRef, priority, given, when, then, andClauses? }] }
+- traceability (optional): array of { acId, description, scenarios }

@@ -39,6 +39,10 @@ import type {
 	ControlObj,
 } from "./types.ts";
 import { specDocExists } from "./doc-validators.ts";
+import { STAGE_MODELS } from "./render/schemas.ts";
+import { renderStage } from "./render/render.ts";
+import { specDoc } from "./prompts.ts";
+import { writeFileSync } from "node:fs";
 
 // ─── Shared helper types ────────────────────────────────────────────────────
 
@@ -496,15 +500,35 @@ export function writerTask(spec: {
 		requires: spec.requires,
 		async run(state, ctx) {
 			if (!ctx.budget.check()) return undefined;
+			const model = STAGE_MODELS[spec.id];
 			const result = await ctx.agent({
 				id: `pipeline.${spec.id}`,
 				agent: spec.agent,
 				prompt: spec.buildPrompt(state, ctx),
+				schema: model?.schema,
 			});
 			if (result.error) ctx.log(`${spec.id}: agent error — ${result.error}`);
 			if (!result.control) {
 				const said = result.text ? ` (last text: ${result.text.replace(/\s+/g, " ")})` : "";
 				ctx.log(`${spec.id}: agent produced no control object${said}`);
+			}
+			// Render pipeline: if this stage has a render model and the agent returned
+			// data, render the doc deterministically (the agent focuses on CONTENT;
+			// format is handled by the template + schema validation).
+			if (model && result.control) {
+				const setup = state.setup!;
+				const docPath = specDoc(setup, model.slug);
+				const rendered = renderStage(spec.id, result.control);
+				if (rendered.errors.length > 0) {
+					ctx.log(`${spec.id}: render validation errors — ${rendered.errors.join("; ")}`);
+				} else if (rendered.markdown) {
+					writeFileSync(docPath, rendered.markdown);
+					const ctrl = result.control as Record<string, unknown>;
+					ctrl.docPath = docPath;
+					const features = ctrl.features as Array<{ scenarios: unknown[] }> | undefined;
+					ctrl.scenarioCount = features?.reduce((sum, f) => sum + (f.scenarios?.length ?? 0), 0) ?? 0;
+					ctx.log(`${spec.id}: rendered ${docPath} (${rendered.markdown.length} bytes, ${ctrl.scenarioCount} scenarios)`);
+				}
 			}
 			return result.control ?? {};
 		},

@@ -26,7 +26,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -47,6 +47,7 @@ export interface SessionAgentOptions {
 	 *  tool schema so the model fills them). When omitted, a fully permissive
 	 *  schema is used. Derived from the prompt by workflow.ts. */
 	controlKeys?: string[];
+	schema?: unknown;
 	onProgress?: AgentProgress;
 }
 
@@ -79,7 +80,7 @@ interface Capture {
 /** Build the terminating structured_output tool that captures the result.
  *  The schema DECLARES the expected keys (see controlSchema) so the model
  *  fills them instead of dumping everything into one field. */
-function structuredOutputTool(capture: Capture, keys: string[]): ToolDefinition {
+function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown): ToolDefinition {
 	const fieldList = keys.length ? keys.join(", ") : "the fields the task requested";
 	return defineTool({
 		name: "structured_output",
@@ -90,9 +91,9 @@ function structuredOutputTool(capture: Capture, keys: string[]): ToolDefinition 
 			`structured_output is the final answer channel; call it exactly once when the task is complete. Your object MUST contain ALL of: ${fieldList}.`,
 			"Do not write a prose final answer after calling structured_output.",
 		],
-		parameters: controlSchema(keys),
+		parameters: (schema as TSchema | undefined) ?? controlSchema(keys),
 		async execute(_toolCallId, params) {
-			capture.value = { ...(capture.value as Record<string, unknown> | undefined), ...params };
+			capture.value = { ...((capture.value ?? {}) as Record<string, unknown>), ...(params as Record<string, unknown>) };
 			capture.called = true;
 			return {
 				content: [{ type: "text", text: "Structured output received." }],
@@ -213,7 +214,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		agentDir,
 		sessionManager: SessionManager.inMemory(opts.cwd),
 		settingsManager: SettingsManager.create(opts.cwd, agentDir),
-		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys)],
+		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
 	});
 
 	const unsub = opts.onProgress ? forwardProgress(session, opts.onProgress) : undefined;

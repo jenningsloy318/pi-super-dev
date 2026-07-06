@@ -33,7 +33,7 @@ function nextDocNumber(specDir: string, excludeSlugs: string[] = []): number {
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** A single stage's doc path: next free number + the slug. */
-function specDoc(s: SetupControl, slug: string): string {
+export function specDoc(s: SetupControl, slug: string): string {
 	return `${s.specDirectory}${pad(nextDocNumber(s.specDirectory, [slug]))}-${slug}.md`;
 }
 
@@ -52,7 +52,7 @@ export function buildRequirementsPrompt(s: SetupControl, c: Classification | nul
 	return [ctxBlock(s, c), "", "## Task", task, "", "## Instructions", "Produce an implementation-ready requirements document.", `Write the document to: ${specDoc(s, "requirements")}`, "Include: feature name, acceptance criteria (numbered AC-XX), open questions, and a summary.", "", "Output <control> JSON with: docPath, featureName, acCount, openQuestions, summary."].join("\n");
 }
 export function buildBddPrompt(s: SetupControl, c: Classification | null, task: string, requirements: R): string {
-	return [ctxBlock(s, c), "", "## Upstream Artifacts", `- Requirements: ${(requirements?.docPath as string) ?? "N/A"}`, "", "## Task", task, "", "## Instructions", "Write BDD behavior scenarios in Gherkin-like markdown from the requirements acceptance criteria.", `Write to: ${specDoc(s, "bdd-scenarios")}`, "Cover happy paths, edge cases, and error scenarios.", "", "Output <control> JSON with: docPath, scenarioCount, edgeCasesCovered, coverageScore, summary."].join("\n");
+	return [ctxBlock(s, c), "", "## Upstream Artifacts", `- Requirements: ${(requirements?.docPath as string) ?? "N/A"}`, "", "## Task", task, "", "## Instructions", "Write BDD behavior scenarios from the requirements acceptance criteria.", "Cover happy paths, edge cases, and error scenarios.", "The document will be RENDERED FOR YOU from your structured output — focus on CONTENT, not markdown format. Do NOT write the document yourself.", "", "## Data to return", "Return the scenarios as structured data:", "- title: the feature/spec title", "- date: today's date (YYYY-MM-DD)", "- source: the requirements doc path", "- features: array of { name: string, scenarios: [{ id: '001', title, acRef: 'AC-01', priority: 'high'|'medium'|'low', given, when, then, andClauses?: string[] }] }", "- traceability (optional): array of { acId, description, scenarios: ['SCENARIO-001', ...] }", "", "Output <control> JSON with: title, date, source, features, traceability."].join("\n");
 }
 export function buildResearchPrompt(s: SetupControl, c: Classification | null, task: string, requirements: R, bdd: R, prev: R): string {
 	const parts = [ctxBlock(s, c), "", "## Upstream Artifacts", `- Requirements: ${(requirements?.docPath as string) ?? "N/A"}`, `- BDD Scenarios: ${(bdd?.docPath as string) ?? "N/A"}`];
