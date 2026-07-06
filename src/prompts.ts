@@ -11,7 +11,8 @@
  * retries don't inflate it; spec's three docs take base, base+1, base+2.
  */
 
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SetupControl, Classification, ControlObj } from "./types.ts";
 
 type R = ControlObj | null | undefined;
@@ -45,8 +46,7 @@ function specDocRange(s: SetupControl, slugs: string[]): string[] {
 }
 
 function ctxBlock(setup: SetupControl, c: Classification | null): string {
-	return ["## Context", `- Worktree: ${setup.worktreePath}`, `- Spec Directory: ${setup.specDirectory}`, `- Language: ${c?.language ?? setup.language}`, `- Task Type: ${c?.taskType ?? "unknown"}`, `- UI Scope: ${c?.uiScope ?? "none"}`, `- Default Branch: ${setup.defaultBranch ?? "main"}`,
-	`- Knowledge Base: ${setup.specDirectory}.knowledge.md (auto-accumulated raw data from prior stages — read for cross-stage context)`].join("\n");
+	return ["## Context", `- Worktree: ${setup.worktreePath}`, `- Spec Directory: ${setup.specDirectory}`, `- Language: ${c?.language ?? setup.language}`, `- Task Type: ${c?.taskType ?? "unknown"}`, `- UI Scope: ${c?.uiScope ?? "none"}`, `- Default Branch: ${setup.defaultBranch ?? "main"}`].join("\n");
 }
 
 export function buildRequirementsPrompt(s: SetupControl, c: Classification | null, task: string): string {

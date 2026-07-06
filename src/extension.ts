@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureSuperDevDirs, startRun, getRunLogPath } from "./render/super-dev-dir.ts";
+import { runReflectionAsync } from "./render/reflection.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath } from "./pi-spawn.ts";
 import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
@@ -139,6 +140,9 @@ export default function activate(pi: ExtensionAPI): void {
 				} catch { /* best-effort; the live tail is the primary surface */ }
 				if (logPath) lines.push(`Full run log: ${logPath}`);
 				const isError = summary.status === "failed";
+				// Async reflection ("dreaming") — non-blocking, best-effort.
+				// Updates learned.md + learned-index.json for future runs.
+				runReflectionAsync();
 				return { content: [{ type: "text", text: lines.join("\n") }], isError, details: { summary } };
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);

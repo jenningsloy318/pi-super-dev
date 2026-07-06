@@ -15,6 +15,7 @@ import { spawnAgent, isBrowserAgent } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
 import { extractControlKeys } from "./control.ts";
+import { knowledgeForAgent } from "./render/knowledge.ts";
 import type {
 	AgentCall,
 	AgentResult,
@@ -63,9 +64,15 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const prompt = feedback?.length
 			? `${call.prompt}\n\n## Previous attempt rejected — fix these\nThe validator rejected the prior attempt for these specific reasons:\n${feedback.map((e) => `- ${e}`).join("\n")}\nAddress every point and re-produce the complete artifact, then call structured_output.`
 			: call.prompt;
+		// Option C: inject ONLY the fields this agent needs from prior stages'
+		// structured_output (control objects), extracted from .knowledge.json.
+		const knowledge = knowledgeForAgent(state.setup?.specDirectory ?? "", call.agent);
+		const promptWithKnowledge = knowledge
+			? `${prompt}\n\n## Prior-stage data (auto-injected)\n${knowledge}`
+			: prompt;
 		const common = {
 			agent: call.agent,
-			prompt,
+			prompt: promptWithKnowledge,
 			cwd: agentCwd,
 			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
 			schema: call.schema,
