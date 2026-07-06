@@ -22,8 +22,8 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 	beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "sd-doc-")); s = mkSetup(dir); });
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-	it("first doc is 01", () => {
-		expect(buildRequirementsPrompt(s, null, "t")).toContain("01-requirements.md");
+	it("first doc: requirements asks for structured data", () => {
+		expect(buildRequirementsPrompt(s, null, "t")).toContain("acceptanceCriteria");
 	});
 
 	it("next doc counts existing + 1", () => {
@@ -34,20 +34,20 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 	});
 
 	it("excludes the stage's own slug so gate retries don't inflate the number", () => {
-		put(dir, "01-requirements.md"); // a prior requirements attempt is on disk
-		expect(buildRequirementsPrompt(s, null, "t")).toContain("01-requirements.md");
+		put(dir, "01-requirements.md"); // prior attempt on disk
+		expect(buildRequirementsPrompt(s, null, "t")).toContain("structured data");
 	});
 
-	it("code-assessment is 04 when debug is skipped (feature task)", () => {
+	it("assessment asks for structured data (render pipeline)", () => {
 		put(dir, "01-requirements.md"); put(dir, "02-bdd-scenarios.md"); put(dir, "03-research-report.md");
-		expect(buildAssessmentPrompt(s, null, "t", null, null)).toContain("04-code-assessment.md");
+		expect(buildAssessmentPrompt(s, null, "t", null, null)).toContain("structured data");
 	});
 
 	it("debug takes 04 when it runs (bug), pushing code-assessment to 05", () => {
 		put(dir, "01-requirements.md"); put(dir, "02-bdd-scenarios.md"); put(dir, "03-research-report.md");
 		expect(buildDebugPrompt(s, null, "t", null, null)).toContain("04-debug-analysis.md");
 		put(dir, "04-debug-analysis.md");
-		expect(buildAssessmentPrompt(s, null, "t", null, null)).toContain("05-code-assessment.md");
+		expect(buildAssessmentPrompt(s, null, "t", null, null)).toContain("structured data");
 	});
 
 	it("spec writes three consecutive docs (base, base+1, base+2)", () => {

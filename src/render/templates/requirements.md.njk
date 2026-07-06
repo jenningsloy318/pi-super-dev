@@ -1,0 +1,33 @@
+# Requirements: {{ title }}
+
+- **Date**: {{ date }}
+- **Author**: super-dev:requirements-clarifier
+- **Type**: {{ type }}
+- **Priority**: {{ priority }}
+- **Status**: draft
+
+---
+
+## Executive Summary
+
+{{ executiveSummary }}
+
+## Acceptance Criteria
+
+{% for ac in acceptanceCriteria %}
+- **{{ ac.id }}**: {{ ac.statement }}
+{% endfor %}
+
+## Non-Functional Requirements
+
+{% for nfr in nonFunctional %}
+- {{ nfr }}
+{% endfor %}
+{% if openQuestions %}
+
+## Open Questions
+
+{% for q in openQuestions %}
+- {{ q }}
+{% endfor %}
+{% endif %}

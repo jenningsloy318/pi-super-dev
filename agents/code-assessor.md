@@ -22,4 +22,4 @@ Identify the patterns, conventions, dependencies, and file structure a new chang
 
 ## Output
 
-Write the code assessment to `{spec_directory}/{output_filename}` with: files assessed, patterns (with examples), recommendations, `services` (how to start the api/ui for testing — `{api?, ui?}` each `{cmd, portEnv, readyPath}`), and a summary. Use prefixed finding IDs where useful (ARCH-NNN, STD-NNN, DEP-NNN, PAT-NNN, REC-NNN). Then call `structured_output` and stop.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document deterministically from your data).

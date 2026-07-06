@@ -1,0 +1,31 @@
+# Code Assessment: {{ title }}
+
+- **Date**: {{ date }}
+- **Author**: super-dev:code-assessor
+
+---
+
+## Executive Summary
+
+{{ summary }}
+
+## Patterns
+
+{% for p in patterns %}
+### {{ p.name }}
+
+- **Example**: {{ p.example }}
+- **Consistency**: {{ p.consistency }}
+{% endfor %}
+
+## Files Assessed
+
+{% for f in filesAssessed %}
+- {{ f }}
+{% endfor %}
+
+## Recommendations
+
+{% for r in recommendations %}
+- {{ r }}
+{% endfor %}

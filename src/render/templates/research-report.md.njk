@@ -1,0 +1,26 @@
+# Research Report: {{ title }}
+
+- **Date**: {{ date }}
+- **Author**: super-dev:research-agent
+
+---
+
+## Summary
+
+{{ summary }}
+
+## Options Considered
+
+{% for o in options %}
+### {{ o.name }}
+
+{{ o.tradeoffs }}
+{% endfor %}
+{% if openIssues %}
+
+## Open Issues
+
+{% for issue in openIssues %}
+- {{ issue }}
+{% endfor %}
+{% endif %}

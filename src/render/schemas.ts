@@ -64,6 +64,33 @@ export const RequirementsData = Type.Object({
 });
 export type RequirementsData = Static<typeof RequirementsData>;
 
+// ─── Code Assessment ──────────────────────────────────────────────────────────
+
+export const CodeAssessmentData = Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	summary: Type.String(),
+	patterns: Type.Array(Type.Object({ name: Type.String(), example: Type.String(), consistency: Type.String() })),
+	recommendations: Type.Array(Type.String()),
+	filesAssessed: Type.Array(Type.String()),
+	services: Type.Optional(Type.Object({
+		api: Type.Optional(Type.Object({ cmd: Type.String(), portEnv: Type.String(), readyPath: Type.String() })),
+		ui: Type.Optional(Type.Object({ cmd: Type.String(), portEnv: Type.String(), readyPath: Type.String() })),
+	})),
+});
+export type CodeAssessmentData = Static<typeof CodeAssessmentData>;
+
+// ─── Research Report ──────────────────────────────────────────────────────────
+
+export const ResearchData = Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	summary: Type.String(),
+	options: Type.Array(Type.Object({ name: Type.String(), tradeoffs: Type.String() }), { minItems: 1 }),
+	openIssues: Type.Array(Type.String()),
+});
+export type ResearchData = Static<typeof ResearchData>;
+
 // ─── Registry: stageId → { schema, template } ────────────────────────────────
 
 import { readFileSync } from "node:fs";
@@ -93,4 +120,6 @@ export interface StageModel {
 export const STAGE_MODELS: Record<string, StageModel> = {
 	bdd: { slug: "bdd-scenarios", schema: BddData, template: "bdd-scenarios.md.njk" },
 	requirements: { slug: "requirements", schema: RequirementsData, template: "requirements.md.njk" },
+	assessment: { slug: "code-assessment", schema: CodeAssessmentData, template: "code-assessment.md.njk" },
+	research: { slug: "research-report", schema: ResearchData, template: "research-report.md.njk" },
 };

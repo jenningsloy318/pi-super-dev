@@ -55,4 +55,4 @@ Reproduction steps are MANDATORY. Ask first: exact steps, expected vs actual beh
 
 ## Output
 
-Write the requirements markdown document to `{spec_directory}/{output_filename}` with: Executive Summary, Acceptance Criteria (AC-XX), Non-Functional Requirements, and Open Questions. Then call `structured_output` and stop.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document deterministically from your data).

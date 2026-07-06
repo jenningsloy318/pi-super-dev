@@ -30,4 +30,4 @@ When spawned with explicit open issues from a prior research report, run ONE tar
 
 ## Output
 
-Write the research report to `{spec_directory}/{output_filename}` with: options considered (with tradeoffs), open issues, and a summary. Then call `structured_output` and stop.
+Do NOT write the document yourself. Return the content as structured data (the pipeline renders the document deterministically from your data).

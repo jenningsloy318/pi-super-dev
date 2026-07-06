@@ -231,3 +231,78 @@ describe("real-case round-trip: stockfan BDD docs → render → structural fide
 		});
 	}
 });
+
+// ─── 4. Requirements render pipeline ─────────────────────────────────────────
+
+describe("render pipeline: requirements", () => {
+	it("valid data → rendered doc passes gate patterns", () => {
+		const result = renderStage("requirements", {
+			title: "Test Feature", date: "2026-01-01", type: "feature", priority: "high",
+			executiveSummary: "A summary of the feature.",
+			acceptanceCriteria: [{ id: "AC-01", statement: "must work" }, { id: "AC-02", statement: "must be fast" }],
+			nonFunctional: ["Performance: under 100ms"],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Acceptance Criteria/);
+		expect(result.markdown).toMatch(/AC-01/);
+		expect(result.markdown).toMatch(/AC-02/);
+		expect(result.markdown).toMatch(/Executive Summary/);
+		expect(result.markdown).toMatch(/Non-Functional/);
+		expect(result.markdown).toMatch(/Performance/);
+	});
+	it("real-doc round-trip: stockfan requirements → render → ACs preserved", () => {
+		const doc = readFileSync("/home/jenningsl/development/personal/stock-analysis/stockfan-server/docs/specifications/01-core-foundation/01-requirements.md", "utf8");
+		const titleMatch = doc.match(/^# Requirements:\s*(.+)$/m);
+		const acs = [...doc.matchAll(/- \*\*(AC-\d+)\*\*:\s*(.+)/g)].map((m) => ({ id: m[1], statement: m[2].trim() }));
+		const data = { title: titleMatch?.[1]?.trim() ?? "T", date: "2026-01-01", type: "feature", priority: "high", executiveSummary: "Extracted from real doc.", acceptanceCriteria: acs.length >= 2 ? acs : [...acs, { id: "AC-FILL", statement: "filler" }], nonFunctional: ["Security: validated"] };
+		const result = renderStage("requirements", data);
+		expect(result.errors).toEqual([]);
+		for (const ac of acs) expect(result.markdown).toContain(ac.id);
+		expect(result.markdown).toMatch(/Acceptance Criteria/);
+	});
+});
+
+// ─── 5. Research render pipeline ─────────────────────────────────────────────
+
+describe("render pipeline: research-report", () => {
+	it("valid data → rendered doc has options + summary", () => {
+		const result = renderStage("research", {
+			title: "API Design", date: "2026-01-01", summary: "Researched API patterns.",
+			options: [{ name: "REST", tradeoffs: "Simple, widely understood" }, { name: "GraphQL", tradeoffs: "Flexible, but complex" }],
+			openIssues: ["Which auth scheme?"],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Options Considered/);
+		expect(result.markdown).toMatch(/REST/);
+		expect(result.markdown).toMatch(/GraphQL/);
+		expect(result.markdown).toMatch(/Open Issues/);
+	});
+});
+
+// ─── 6. Code Assessment render pipeline ──────────────────────────────────────
+
+describe("render pipeline: code-assessment", () => {
+	it("valid data → rendered doc has patterns + recommendations", () => {
+		const result = renderStage("assessment", {
+			title: "Codebase Assessment", date: "2026-01-01", summary: "Assessed the codebase.",
+			patterns: [{ name: "Result types", example: "src/lib/weather.js:42", consistency: "Consistent" }],
+			recommendations: ["Follow Result pattern for new endpoints"],
+			filesAssessed: ["src/server.js", "src/lib/weather.js"],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Patterns/);
+		expect(result.markdown).toMatch(/Result types/);
+		expect(result.markdown).toMatch(/Recommendations/);
+		expect(result.markdown).toMatch(/Files Assessed/);
+	});
+	it("real-doc round-trip: stockfan code-assessment → render → summary preserved", () => {
+		const doc = readFileSync("/home/jenningsl/development/personal/stock-analysis/stockfan-server/docs/specifications/01-core-foundation/03-code-assessment.md", "utf8");
+		const titleMatch = doc.match(/^# Code Assessment:\s*(.+)$/m);
+		const summaryMatch = doc.match(/## Executive Summary\s*\n\s*\n([\s\S]*?)(?:\n---|\n## )/);
+		const data = { title: titleMatch?.[1]?.trim() ?? "T", date: "2026-01-01", summary: summaryMatch?.[1]?.trim() ?? "Assessed.", patterns: [{ name: "P1", example: "f:1", consistency: "ok" }], recommendations: ["R1"], filesAssessed: ["f.js"] };
+		const result = renderStage("assessment", data);
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toMatch(/Executive Summary/);
+		expect(result.markdown).toContain(titleMatch?.[1]?.trim() ?? "T");
+	});
+});
