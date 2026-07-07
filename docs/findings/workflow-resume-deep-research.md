@@ -3,7 +3,7 @@
 **Date:** 2026-07-06
 **Predecessor:** `workflow-resume-research.md` (feasibility). This doc goes
 deeper: compares two solutions, picks the best, and lays out a concrete plan.
-**Status:** research + plan, **pending discussion/confirmation before implementing.**
+**Status:** research + plan, **IMPLEMENTED 2026-07-06** (awaiting a live run to confirm end-to-end fast-forward; wrapper logic + cache are unit-tested).
 
 ## TL;DR — best solution = memoized agent-call replay (Temporal-style)
 
@@ -138,6 +138,8 @@ validators). Resume replay will hit the same branches → same call sequence.
 ## Effort
 ~1.5–2 days: resume.ts (cache) + workflow.ts wrapper + setup.ts reuse + trigger
 + tests. Low risk (graceful degradation; the workflow code is unchanged).
+
+**Implemented (2026-07-06):** `src/resume.ts` (append-only `.resume-cache.jsonl`, last-wins load, `isResumable`/`findResumableSpec`/`specDirFor`, `createMemoizingAgent` with lazy `getSpecDir` + monotonic `callId#seq` key); `workflow.ts` `agent()` wrapped (captures always, memoizes when cache pre-loaded); `setup.ts` resume path reuses worktree + spec id and preserves `.knowledge`; `pipeline.ts` resolves the resume target (auto-pick or named), always sets a cache Map, and clears+marks-`.complete` on success; `extension.ts` gains `resume` + `resumeSpecId` params. 12 unit tests (cache round-trip, last-wins, partial-line, resumability, find, and the seq-disambiguation for repeated verify-loop call.ids). Full suite 288/288, tsc clean. **Caveat:** end-to-end "interrupt + resume + fast-forward" needs a live run to confirm (the wrapper logic is unit-tested); the determinism contract is documented and holds today.
 
 ## Prior art / why this pattern
 Temporal, DBOS, Restate, Inngest all use **event-sourced replay**: the workflow

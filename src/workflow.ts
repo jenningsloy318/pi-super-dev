@@ -14,6 +14,7 @@ import { EventEmitter } from "node:events";
 import { spawnAgent, isBrowserAgent } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
+import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
 import { extractControlKeys } from "./control.ts";
 import { knowledgeForAgent } from "./render/knowledge.ts";
 import type {
@@ -52,7 +53,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	const model = options.model;
 	const signal = options.signal;
 
-	async function agent(call: AgentCall): Promise<AgentResult> {
+	async function realAgent(call: AgentCall): Promise<AgentResult> {
 		budget.spent();
 		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
 		// First-principles retry convergence: if a gate rejected a prior attempt,
@@ -101,6 +102,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
 		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
 	}
+	// Resume (v0.3.0): always CAPTURE agent results so any interrupted run is
+	// resumable; MEMOIZE (return cached) when options.resumeCache was pre-loaded.
+	// The lazy getSpecDir is because state.setup is populated only after the setup
+	// stage runs (the first node).
+	const agent = options.resumeCache
+		? createMemoizingAgent(realAgent, options.resumeCache, () => state.setup?.specDirectory ?? "", log)
+		: realAgent;
 	async function helper(call: HelperCall): Promise<HelperResult> {
 		return runHelper(call);
 	}

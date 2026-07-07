@@ -253,6 +253,13 @@ export interface RunOptions {
 	 *  "session" = in-process `createAgentSession`. Also set via
 	 *  SUPER_DEV_BACKEND env. */
 	backend?: "subprocess" | "session";
+	/** Resume an interrupted run: `true` = auto-pick the most-recent resumable
+	 *  spec; a string = a specific spec identifier (e.g. "07-foo-bar"). */
+	resume?: boolean | string;
+	/** @internal resolved by pipeline.ts — the spec identifier to resume. */
+	resumeSpecIdentifier?: string;
+	/** @internal loaded resume cache; when present, ctx.agent memoizes. */
+	resumeCache?: Map<string, AgentResult>;
 }
 
 /** Honest, derived overall outcome of a run. */

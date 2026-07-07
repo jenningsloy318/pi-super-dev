@@ -151,6 +151,8 @@ export default function activate(pi: ExtensionAPI): void {
 			skipStages: Type.Optional(Type.Array(Type.String(), { description: "Stage output keys to skip (advanced). Default: none." })),
 			model: Type.Optional(Type.String({ description: "Model override for spawned specialist agents in provider/id form." })),
 			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
+			resume: Type.Optional(Type.Boolean({ description: "Resume the most-recent interrupted run from where it left off (memoized replay). Default: false." })),
+			resumeSpecId: Type.Optional(Type.String({ description: "Resume a specific run by spec identifier (e.g. '07-foo-bar'). Overrides auto-pick." })),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const task = String(params.task ?? "").trim();
@@ -225,6 +227,7 @@ export default function activate(pi: ExtensionAPI): void {
 					skipStages: params.skipStages as string[] | undefined,
 					model: params.model as string | undefined,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
+					resume: typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined),
 				progress: sink,
 					signal,
 				});

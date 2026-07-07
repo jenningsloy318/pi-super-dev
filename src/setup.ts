@@ -99,6 +99,9 @@ export interface SetupOptions {
 	/** Descriptive slug for the spec id (e.g. LLM-summarized). Falls back to
 	 *  slugifyTask(task) when empty/invalid. */
 	slug?: string;
+	/** Resume: reuse this existing spec identifier + worktree instead of
+	 *  allocating a new spec number / branch. */
+	resumeSpecIdentifier?: string;
 }
 
 export function runSetup(task: string, options: SetupOptions = {}): SetupControl {
@@ -121,23 +124,38 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 
 	const { language, isWebUi } = detectLanguage(cwd, task);
 	const defaultBranch = detectDefaultBranch(cwd);
-	const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
-	const specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
 
+	let specIdentifier: string;
 	let worktreePath = cwd;
 	let worktreeCreated = false;
-	if (!options.skipWorktree) {
+	if (options.resumeSpecIdentifier) {
+		// Resume: reuse the existing spec id + worktree (do NOT allocate new).
+		specIdentifier = options.resumeSpecIdentifier;
 		const wtPath = join(cwd, ".worktree", specIdentifier);
-		const created = git(["worktree", "add", "-b", specIdentifier, wtPath, defaultBranch], cwd);
-		if (created !== null || existsSync(wtPath)) {
+		if (existsSync(wtPath)) {
 			worktreePath = wtPath;
 			worktreeCreated = true;
+		}
+		// else: worktree gone → fall back to in-place in cwd (worktreePath stays cwd).
+	} else {
+		const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
+		specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
+		if (!options.skipWorktree) {
+			const wtPath = join(cwd, ".worktree", specIdentifier);
+			const created = git(["worktree", "add", "-b", specIdentifier, wtPath, defaultBranch], cwd);
+			if (created !== null || existsSync(wtPath)) {
+				worktreePath = wtPath;
+				worktreeCreated = true;
+			}
 		}
 	}
 
 	const specDirectory = join(worktreePath, "docs", "specifications", specIdentifier) + "/";
 	mkdirSync(specDirectory, { recursive: true });
-	clearKnowledge(specDirectory); // fresh .knowledge.md for this run
+	// Fresh run: clear accumulated knowledge. Resume: PRESERVE it (the memoizing
+	// replay overwrites keyed entries as stages re-run, so no duplication; and the
+	// resumed call's knowledge-injection needs prior-stage data intact).
+	if (!options.resumeSpecIdentifier) clearKnowledge(specDirectory);
 
 	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo };
 }
