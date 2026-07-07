@@ -115,13 +115,23 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 	}
 }
 
-/** Format the workflow dashboard widget lines (Gap Dashboard v1). Pure/testable:
- *  the TUI widget renders these via ctx.ui.setWidget. Icon per status, plus a
- *  done/total header. */
-export function formatDashboardLines(entries: Array<{ id: string; label: string; status: string }>): string[] {
+/** Truncate to a single line of at most `max` visible chars (for the activity row). */
+export function truncateActivity(s: string, max = 100): string {
+	const oneLine = s.replace(/\s+/g, " ").trim();
+	return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
+/** Format the workflow dashboard widget lines (Gap Dashboard). Pure/testable:
+ *  the TUI widget renders these via ctx.ui.setWidget. Icon per status, a
+ *  done/total header, and an optional live-activity row (what the current
+ *  agent is doing right now — the v2 "right panel" data via the safe channel). */
+export function formatDashboardLines(entries: Array<{ id: string; label: string; status: string }>, activity?: string): string[] {
 	const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
 	const done = entries.filter((e) => e.status !== "running").length;
-	return [`super-dev · ${done}/${entries.length} stages`, ...entries.map((e) => `  ${icon(e.status)} ${e.label}`)];
+	const lines = [`super-dev · ${done}/${entries.length} stages`, ...entries.map((e) => `  ${icon(e.status)} ${e.label}`)];
+	const a = truncateActivity(activity ?? "");
+	if (a) lines.push(`  ▶ ${a}`);
+	return lines;
 }
 
 export default function activate(pi: ExtensionAPI): void {
@@ -178,18 +188,24 @@ export default function activate(pi: ExtensionAPI): void {
 			const DASHBOARD_KEY = "super-dev";
 			const dashboardStages = new Map<string, { label: string; status: string }>();
 			const dashboardOrder: string[] = [];
+			let dashboardActivity = "";
+			let lastWidget = 0;
+			const WIDGET_MS = 200;
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // no-op in print/json/rpc/headless
 				const entries = dashboardOrder.map((id) => ({ id, ...dashboardStages.get(id)! }));
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, formatDashboardLines(entries)); } catch { /* best-effort */ }
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, formatDashboardLines(entries, dashboardActivity)); } catch { /* best-effort */ }
 			};
+			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
+			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
 			const sink: ProgressSink = {
-				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); flush(); },
-				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); flush(); },
+				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); dashboardActivity = label; renderDashboard(); flush(); },
+				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); dashboardActivity = message; renderDashboardThrottled(); flush(); },
 				text: (partial) => {
 					live = partial;
+					dashboardActivity = partial;
 					const now = Date.now();
-					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; }
+					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; renderDashboardThrottled(); }
 				},
 				stage: (info) => {
 					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.

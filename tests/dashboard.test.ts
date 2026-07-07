@@ -7,7 +7,7 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { task } from "../src/nodes.ts";
-import { formatDashboardLines } from "../src/extension.ts";
+import { formatDashboardLines, truncateActivity } from "../src/extension.ts";
 import type { NodeResult, PipelineState, Stage, StageContext } from "../src/types.ts";
 
 function fakeCtx(): { ctx: StageContext; events: EventEmitter } {
@@ -84,5 +84,38 @@ describe("formatDashboardLines", () => {
 
 	it("is empty-ish for no stages", () => {
 		expect(formatDashboardLines([])).toEqual(["super-dev · 0/0 stages"]);
+	});
+});
+
+describe("formatDashboardLines: live-activity row (v2)", () => {
+	it("appends an activity row when activity is non-empty", () => {
+		const lines = formatDashboardLines([{ id: "1", label: "Stage 1", status: "running" }], "writing src/auth.ts");
+		expect(lines.at(-1)).toBe("  ▶ writing src/auth.ts");
+	});
+
+	it("omits the activity row when activity is blank", () => {
+		const lines = formatDashboardLines([{ id: "1", label: "Stage 1", status: "ok" }], "   ");
+		expect(lines.at(-1)).toBe("  ✔ Stage 1");
+	});
+
+	it("does not break when activity is undefined", () => {
+		const lines = formatDashboardLines([{ id: "1", label: "Stage 1", status: "ok" }]);
+		expect(lines).toHaveLength(2);
+	});
+});
+
+describe("truncateActivity", () => {
+	it("collapses whitespace and trims", () => {
+		expect(truncateActivity("  foo\n  bar  ")).toBe("foo bar");
+	});
+	it("truncates with an ellipsis when over the limit", () => {
+		const long = "x".repeat(150);
+		const out = truncateActivity(long, 100);
+		expect(out.length).toBeLessThanOrEqual(100);
+		expect(out.endsWith("…")).toBe(true);
+	});
+	it("returns empty for blank input", () => {
+		expect(truncateActivity("")).toBe("");
+		expect(truncateActivity("   \n  ")).toBe("");
 	});
 });
