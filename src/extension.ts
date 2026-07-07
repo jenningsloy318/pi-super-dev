@@ -143,7 +143,7 @@ export function packDashboardLines(entries: Array<{ id: string; label: string; s
 	const a = truncateActivity(activity ?? "");
 	if (a) lines.push(`▶ ${a}`);
 	const CELL = 36;
-	const cols = Math.max(1, Math.floor(Math.max(20, width - 2) / CELL));
+	const cols = 2; // always 2 columns — fits ~14 stages in ~8 rows under Pi's widget cap
 	const cell = (e: { label: string; status: string }) => padTruncate(`${icon(e.status)} ${e.label}`, CELL - 2);
 	for (let i = 0; i < entries.length; i += cols) {
 		lines.push("  " + entries.slice(i, i + cols).map(cell).join(""));
@@ -212,7 +212,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const WIDGET_MS = 200;
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return;
-				const entries = dashboardOrder.map((id) => dashboardStages.get(id)).filter(Boolean) as Array<{ label: string; status: string }>;
+				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} })); } catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
