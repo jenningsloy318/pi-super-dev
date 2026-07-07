@@ -54,14 +54,16 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "typebox": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@types/node": "^22.0.0",
     "typebox": "*",
     "typescript": "^5.4",
-    "vitest": "^3.0"
+    "vitest": "^3.0",
+    "@earendil-works/pi-tui": "*"
   },
   "engines": {
     "node": ">=22.19.0"

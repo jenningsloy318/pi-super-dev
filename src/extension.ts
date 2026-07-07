@@ -11,7 +11,8 @@
  *     invokes the `super_dev` tool.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -250,21 +251,30 @@ export default function activate(pi: ExtensionAPI): void {
 				progress: sink,
 					signal,
 				});
-				const lines = formatSummary(summary, process.cwd());
+				const summaryLines = formatSummary(summary, process.cwd());
+				finalizeLive(); // flush any pending live text into the transcript
 				// Preserve the FULL run log to disk (the live display is a rolling tail).
 				let logPath = "";
 				try {
 					logPath = getRunLogPath();
 					writeFileSync(logPath, transcript.join("\n") + "\n");
 				} catch { /* best-effort; the live tail is the primary surface */ }
-				if (logPath) lines.push(`Full run log: ${logPath}`);
 				const escalationChoice = await handleStagnation(summary, ctx);
-				if (escalationChoice) lines.push(`  Escalation: user chose "${escalationChoice}".`);
 				const isError = summary.status === "failed";
 				// Async reflection ("dreaming") — non-blocking, best-effort.
-				// Updates learned.md + learned-index.json for future runs.
 				runReflectionAsync();
-				return { content: [{ type: "text", text: lines.join("\n") }], isError, details: { summary } };
+				// Stages for the result's stage-progress section, from the live tracker.
+				const stages = dashboardOrder.map((id) => ({ id, ...(dashboardStages.get(id) ?? { label: id, status: "·" }) }));
+				// `content` is the text fallback (print/json/headless); in TUI, renderResult
+				// below builds a themed 3-section view (dimmed logs / normal stages / summary).
+				const fallback = [...summaryLines];
+				if (logPath) fallback.push(`Full run log: ${logPath}`);
+				if (escalationChoice) fallback.push(`  Escalation: user chose "${escalationChoice}".`);
+				return {
+					content: [{ type: "text", text: fallback.join("\n") }],
+					isError,
+					details: { summary, summaryLines, transcriptTail: transcript.slice(-50), stages, logPath },
+				};
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
@@ -272,6 +282,32 @@ export default function activate(pi: ExtensionAPI): void {
 				// Always clear the dashboard widget when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 			}
+		},
+		// Pi-native result rendering: 3 sections. §1 detail logs DIMMED (thought-like,
+		// kept — not suppressed); §2 stage progress NORMAL (answer-like); §3 summary.
+		renderResult(result, _opts: any, theme: Theme) {
+			const d = (result.details ?? {}) as {
+				summaryLines?: string[];
+				transcriptTail?: string[];
+				stages?: Array<{ label: string; status: string }>;
+				logPath?: string;
+			};
+			const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
+			const parts: string[] = [];
+			// §1 detail log — DIMMED (like agent thought progress; persisted, not transient)
+			parts.push(theme.fg("dim", "── detail log (last 50 lines) ──"));
+			for (const line of (d.transcriptTail ?? [])) parts.push(theme.fg("dim", line));
+			if (d.logPath) parts.push(theme.fg("dim", `(full log: ${d.logPath})`));
+			// §2 stage progress — NORMAL (like the real answer)
+			parts.push("");
+			parts.push(theme.bold("── stage progress ──"));
+			for (const s of (d.stages ?? [])) parts.push(`  ${icon(s.status)} ${s.label}`);
+			// §3 summary — NORMAL/bold
+			if (d.summaryLines?.length) {
+				parts.push("");
+				parts.push(...d.summaryLines);
+			}
+			return new Text(parts.join("\n"), 0, 0);
 		},
 	});
 
