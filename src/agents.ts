@@ -11,7 +11,9 @@ import { loadLearnedLessons } from "./render/learned.ts";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(MODULE_DIR, "..", "agents");
+const LANG_DIR = join(AGENTS_DIR, "lang");
 const cache = new Map<string, string>();
+const langCache = new Map<string, string>();
 
 function stripFrontmatter(md: string): string {
 	if (!md.startsWith("---")) return md;
@@ -45,4 +47,25 @@ export function loadAgentPrompt(name: string): string {
 
 export function agentsDirectory(): string {
 	return AGENTS_DIR;
+}
+
+/** Load a per-language specialist profile from `agents/lang/<lang>.md` (cached).
+ *  Returns "" for `mixed` or a missing profile so callers always get a string.
+ *  Prose-only (no code samples): build/test/lint commands, coverage threshold,
+ *  file-organization rule, and a few top idioms — injected into the implementer
+ *  and tdd-guide prompts so a generic agent gets language-specific guardrails
+ *  without needing a per-language agent file. */
+export function loadLangProfile(language: string): string {
+	const lang = (language ?? "mixed").trim();
+	if (!lang || lang === "mixed") return "";
+	const cached = langCache.get(lang);
+	if (cached !== undefined) return cached;
+	let body = "";
+	try {
+		body = stripFrontmatter(readFileSync(join(LANG_DIR, `${lang}.md`), "utf8")).trim();
+	} catch {
+		/* no profile for this language → empty (caller falls back gracefully) */
+	}
+	langCache.set(lang, body);
+	return body;
 }

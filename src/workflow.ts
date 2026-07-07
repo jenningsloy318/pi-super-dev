@@ -27,6 +27,7 @@ import type {
 	RunStatus,
 	RunSummary,
 	StageContext,
+	StageProgressEvent,
 	Workflow,
 } from "./types.ts";
 
@@ -136,6 +137,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// emitted by the top-level sequence via a wrapping node (see stages/index.ts).
 	if (progress) {
 		ctx.events.on("phase", (label: unknown) => progress.phase(String(label)));
+		ctx.events.on("stage", (info: unknown) => progress.stage?.(info as StageProgressEvent));
 	}
 
 	let aborted = false;

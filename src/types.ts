@@ -85,6 +85,17 @@ export interface ProgressSink {
 	/** Live streaming text from the active agent (typing effect). `partial` is the
 	 *  full accumulated text of the current text block so far. */
 	text(partial: string): void;
+	/** Per-stage lifecycle for the workflow dashboard (v1): "running" on enter,
+	 *  a terminal NodeStatus on exit. Optional — headless callers omit it. */
+	stage?(info: StageProgressEvent): void;
+}
+
+/** One stage lifecycle event for dashboard subscribers. */
+export interface StageProgressEvent {
+	id: string;
+	label: string;
+	status: NodeStatus | "running";
+	error?: string;
 }
 
 /** Streaming callbacks from a spawned agent to the progress sink. */

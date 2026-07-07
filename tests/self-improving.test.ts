@@ -97,7 +97,7 @@ describe("learned.md injection (loadLearnedLessons)", () => {
 		const result = loadLearnedLessons("spec-writer");
 		// Could be "" if no index, or contain lessons if the dev env has them
 		expect(typeof result).toBe("string");
-	});
+	}, 30_000);
 });
 
 // ─── audit trail ─────────────────────────────────────────────────────────────

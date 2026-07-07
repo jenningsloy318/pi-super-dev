@@ -21,10 +21,11 @@
 
 import { loop, sequence, parallel, branch, noop, task, tryCatch } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
+import { runBuildGate } from "../build-runner.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
-import type { Node, NodeResult, PipelineState, Stage } from "../types.ts";
+import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
 const setupOf = (s: PipelineState) => s.setup!;
 
@@ -49,10 +50,20 @@ const testsGreen = (s: PipelineState) => {
 };
 
 /** Loop exits only once review is approved AND tests are green. */
-const approvedAndGreen = (s: PipelineState) => reviewApproved(s) && testsGreen(s);
+const approvedAndGreen = (s: PipelineState) => reviewApproved(s) && testsGreen(s) && buildGreen(s);
 
-/** Fix whenever not done — either review rejected (findings) or a test failed. */
-const needsFix = (s: PipelineState) => !reviewApproved(s) || !testsGreen(s);
+/** Build gate: non-service apps have no api/ui tests, so `testsGreen` alone is
+ *  vacuously true. The deterministic build/test/typecheck gate gives them a
+ *  real convergence signal. A missing result (skipped, e.g. budget) is not a
+ *  failure — only an explicit FAIL blocks. */
+const buildGreen = (s: PipelineState) => {
+	const b = s.buildGate as { pass?: boolean } | undefined;
+	return b ? b.pass !== false : true;
+};
+
+/** Fix whenever not done — review rejected (findings), a test failed, or the
+ *  build gate failed. */
+const needsFix = (s: PipelineState) => !reviewApproved(s) || !testsGreen(s) || !buildGreen(s);
 
 /** Parallel split + sync: BOTH reviewers converge into one merged verdict under
  *  `state.review` (verdict + findings + dimensions). */
@@ -168,7 +179,12 @@ const fixStep = branch(needsFix, {
 				...(((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? []),
 				...(((s.uiTest as { failures?: unknown[] } | undefined)?.failures) ?? []),
 			];
-			const r = await ctx.agent({ id: "pipeline.verify.fix", agent: "implementer", prompt: buildFixPrompt(setupOf(s), s.classify ?? null, findings, testFailures) });
+			const buildErrors = ((s.buildGate as { errors?: string[] } | undefined)?.errors) ?? [];
+			const baseFix = buildFixPrompt(setupOf(s), s.classify ?? null, findings, testFailures);
+			const fixPrompt = buildErrors.length
+				? `${baseFix}\n\n## Build/test gate failures (make these pass)\n${buildErrors.map((e) => `- ${e}`).join("\n")}`
+				: baseFix;
+			const r = await ctx.agent({ id: "pipeline.verify.fix", agent: "implementer", prompt: fixPrompt });
 			return r.control ?? {};
 		},
 	}),
@@ -176,15 +192,65 @@ const fixStep = branch(needsFix, {
 });
 
 /** The unified verify-loop:
- *    REVIEW → (approved? → bringup+apiTest, teardown always) → (needsFix? → FIX)
- *  iterating until approved AND testsGreen (max 4 rounds, non-fatal). This is the
- *  tight, test-feedback-driven loop: observable test results are the convergence
+ *    REVIEW → (approved? → bringup+apiTest, teardown always) → (needsFix? → FIX) → BUILD-GATE
+ *  iterating until approved AND testsGreen AND buildGreen (max 4 rounds, non-fatal). This is the
+ *  tight, test-feedback-driven loop: observable test/build results are the convergence
  *  signal alongside the merged review verdict. */
+const buildGateStep = task({
+	id: "buildGate",
+	label: "Stage 10d — Build gate",
+	requires: ["*-specification.md"],
+	async run(s, ctx) {
+		if (!ctx.budget.check()) return undefined;
+		const r = runBuildGate(setupOf(s).worktreePath, { signal: ctx.signal });
+		if (!r.pass && r.ran.length) ctx.log(`verify build-gate FAIL (ran: ${r.ran.join(", ")}): ${r.errors.join("; ")}`);
+		return { pass: r.pass, ran: r.ran, errors: r.errors };
+	},
+});
+
+// ── STAGNATION DETECTION (Gap 4.6) ───────────────────────────────────────────
+// Track the merged review-findings signature across loop iterations. The `loop`
+// node evaluates `until` at the TOP of each iteration (against the previous
+// body's state), so each until-check records that round's signature and then
+// compares: if the SAME non-empty findings set recurs on two consecutive
+// checks, the fix step didn't move the needle → break early (non-fatal) instead
+// of burning all 4 rounds re-fixing the same thing. Exact-set equality (v1).
+export const findingsSignature = (s: PipelineState): string => {
+	const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
+	if (findings.length === 0) return "";
+	const tuples = findings
+		.map((f) => `${String(f.file ?? "")}|${String(f.severity ?? "")}|${String(f.title ?? "")}`)
+		.sort();
+	return tuples.join("\n");
+};
+
+export const loopUntil = async (s: PipelineState, ctx: StageContext): Promise<boolean> => {
+	const hist = ((s as Record<string, unknown>).__reviewSignatures as string[] | undefined) ?? [];
+	const sig = findingsSignature(s);
+	hist.push(sig);
+	(s as Record<string, unknown>).__reviewSignatures = hist;
+	const stagnant = sig !== "" && hist.length >= 2 && hist[hist.length - 1] === hist[hist.length - 2];
+	if (stagnant) {
+		const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
+		// Surface a structured stagnation record so the post-run escalation (Gap 4.6′-lite)
+		// can write a report and, in interactive mode, ask the user how to proceed.
+		(s as Record<string, unknown>).__stagnated = {
+			rounds: hist.length,
+			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
+			findings: findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })),
+		};
+		ctx.log(`verify-loop: review findings stagnant across 2 consecutive rounds — breaking early (non-fatal; ${hist.length} review rounds run)`);
+		return true;
+	}
+	return approvedAndGreen(s);
+};
+
 export const verifyNode = loop(
-	{ until: approvedAndGreen, times: 4 },
+	{ until: loopUntil, times: 4 },
 	sequence([
 		reviewStep,
 		branch(reviewApproved, { yes: testBlock, no: noop() }),
 		fixStep,
+		buildGateStep,
 	]),
 );

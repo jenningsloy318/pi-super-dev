@@ -15,7 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ensureSuperDevDirs, startRun, getRunLogPath } from "./render/super-dev-dir.ts";
+import { ensureSuperDevDirs, startRun, getRunLogPath, getConfig } from "./render/super-dev-dir.ts";
 import { runReflectionAsync } from "./render/reflection.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath } from "./pi-spawn.ts";
@@ -60,7 +60,68 @@ function formatSummary(s: RunSummary, cwd?: string): string[] {
 		lines.push(`  Failed:   ${s.failedStages.map(fmt).join("\n            ")}`);
 	}
 	if (s.error) lines.push(`  Error:    ${s.error}`);
+	const stagnant = (s.state as Record<string, unknown>).__stagnated as { rounds?: number } | undefined;
+	if (stagnant) lines.push(`  ⚠ Verify-loop stagnant after ${stagnant.rounds} round(s) — see stagnation-report.md in the spec dir. More fixing won't help; consider revising the spec design.`);
 	return lines;
+}
+
+/** Gap 4.6′-lite — stagnation escalation (scheme C: informative by default, interactive opt-in).
+ *  Always writes a stagnation-report.md to the spec dir (baseline, all modes).
+ *  When the run is interactive (ctx.hasUI) AND config.escalation === "interactive",
+ *  additionally prompts a 3-option select. Returns the chosen option (or undefined
+ *  if not interactive / dismissed). For Tier-2 all options just finish the run —
+ *  "revise spec" only surfaces the recommendation; auto-replay is deferred (Tier-3). */
+interface StagnationRecord {
+	rounds?: number;
+	verdict?: string;
+	findings?: Array<{ file?: string | null; severity?: string | null; title?: string | null }>;
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { escalation?: "informative" | "interactive" }): Promise<string | undefined> {
+	const st = (summary.state as Record<string, unknown>).__stagnated as StagnationRecord | undefined;
+	if (!st) return undefined;
+
+	// Baseline (all modes): write the report.
+	try {
+		const findings = (st.findings ?? []).map((f) => `- [${f.severity ?? "?"}] ${f.file ? "`" + f.file + "` " : ""}${f.title ?? ""}`);
+		const body = [
+			"# Stagnation report",
+			"",
+			`The verify-loop broke early after **${st.rounds}** review round(s): the same findings recurred across two consecutive iterations.`,
+			"",
+			`Merged review verdict at stagnation: **${st.verdict ?? "unknown"}**.`,
+			"",
+			"This usually means the implementation is faithful to a spec that produces the wrong outcome — more fixing will not help. Consider revising the specification's design (constants/algorithm/architecture), or accept these findings as known limitations.",
+			"",
+			"## Recurring findings",
+			...(findings.length ? findings : ["_(no structured findings captured)_"]),
+		].join("\n");
+		writeFileSync(join(summary.specDirectory, "stagnation-report.md"), body);
+	} catch { /* best-effort */ }
+
+	// Opt-in interactive escalation (TUI/RPC only).
+	const mode = opts?.escalation ?? getConfig().escalation;
+	const interactive = ctx?.hasUI === true && mode === "interactive";
+	if (!interactive) return undefined;
+	try {
+		const choice = await ctx.ui?.select?.(
+			"Review loop stagnant — how to proceed?",
+			["Revise spec & re-run from design", "Accept findings as known limitations", "Abandon worktree"],
+			{ timeout: 120_000 },
+		);
+		return choice ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Format the workflow dashboard widget lines (Gap Dashboard v1). Pure/testable:
+ *  the TUI widget renders these via ctx.ui.setWidget. Icon per status, plus a
+ *  done/total header. */
+export function formatDashboardLines(entries: Array<{ id: string; label: string; status: string }>): string[] {
+	const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
+	const done = entries.filter((e) => e.status !== "running").length;
+	return [`super-dev · ${done}/${entries.length} stages`, ...entries.map((e) => `  ${icon(e.status)} ${e.label}`)];
 }
 
 export default function activate(pi: ExtensionAPI): void {
@@ -81,7 +142,7 @@ export default function activate(pi: ExtensionAPI): void {
 			model: Type.Optional(Type.String({ description: "Model override for spawned specialist agents in provider/id form." })),
 			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
 		}),
-		async execute(_toolCallId, params, signal, onUpdate) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const task = String(params.task ?? "").trim();
 			if (!task) {
 				return { content: [{ type: "text", text: "super_dev requires a non-empty `task`." }], isError: true, details: {} };
@@ -110,6 +171,18 @@ export default function activate(pi: ExtensionAPI): void {
 					: all.join("\n");
 				onUpdate?.({ content: [{ type: "text", text: body }], details: {} });
 			};
+			// Workflow dashboard v1 (Gap Dashboard): always-on phase-tracker widget,
+			// TUI-only. Updated from the structured `stage` events emitted by task()
+			// nodes (running → terminal). v2 will grow this into a full two-panel
+			// interactive ctx.ui.custom() with stop/pause/save keybindings.
+			const DASHBOARD_KEY = "super-dev";
+			const dashboardStages = new Map<string, { label: string; status: string }>();
+			const dashboardOrder: string[] = [];
+			const renderDashboard = () => {
+				if (ctx?.mode !== "tui") return; // no-op in print/json/rpc/headless
+				const entries = dashboardOrder.map((id) => ({ id, ...dashboardStages.get(id)! }));
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, formatDashboardLines(entries)); } catch { /* best-effort */ }
+			};
 			const sink: ProgressSink = {
 				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); flush(); },
 				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); flush(); },
@@ -117,6 +190,12 @@ export default function activate(pi: ExtensionAPI): void {
 					live = partial;
 					const now = Date.now();
 					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; }
+				},
+				stage: (info) => {
+					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.
+					if (!dashboardOrder.includes(info.id)) dashboardOrder.push(info.id);
+					dashboardStages.set(info.id, { label: info.label, status: info.status });
+					renderDashboard();
 				},
 			};
 			try {
@@ -139,6 +218,8 @@ export default function activate(pi: ExtensionAPI): void {
 					writeFileSync(logPath, transcript.join("\n") + "\n");
 				} catch { /* best-effort; the live tail is the primary surface */ }
 				if (logPath) lines.push(`Full run log: ${logPath}`);
+				const escalationChoice = await handleStagnation(summary, ctx);
+				if (escalationChoice) lines.push(`  Escalation: user chose "${escalationChoice}".`);
 				const isError = summary.status === "failed";
 				// Async reflection ("dreaming") — non-blocking, best-effort.
 				// Updates learned.md + learned-index.json for future runs.
@@ -147,6 +228,9 @@ export default function activate(pi: ExtensionAPI): void {
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
+			} finally {
+				// Always clear the dashboard widget when the run ends (success or failure).
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 			}
 		},
 	});

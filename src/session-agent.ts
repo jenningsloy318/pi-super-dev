@@ -22,6 +22,7 @@ import {
 	createCodingTools,
 	defineTool,
 	getAgentDir,
+	DefaultResourceLoader,
 	type ToolDefinition,
 	SessionManager,
 	SettingsManager,
@@ -34,6 +35,7 @@ import { getTracesDir } from "./render/super-dev-dir.ts";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
+import { createSafetyExtensionFactory } from "./safety.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 export interface SessionAgentOptions {
@@ -210,11 +212,25 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const timeoutMs = opts.timeoutMs ?? 480_000;
 
 	const agentDir = getAgentDir();
+	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
+	// Safety (Gap 4.3): inject a `tool_call` hook that hard-blockks dangerous
+	// commands + secret-file overwrites, and suppress ambient global-extension
+	// discovery (noExtensions:true). Inline factories still load (verified C9),
+	// so the child is both guarded AND deterministic (no user global extensions).
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: opts.cwd,
+		agentDir,
+		settingsManager,
+		noExtensions: true,
+		extensionFactories: [createSafetyExtensionFactory()],
+	});
+	await resourceLoader.reload();
 	const { session } = await createAgentSession({
 		cwd: opts.cwd,
 		agentDir,
 		sessionManager: SessionManager.inMemory(opts.cwd),
-		settingsManager: SettingsManager.create(opts.cwd, agentDir),
+		settingsManager,
+		resourceLoader,
 		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
 	});
 

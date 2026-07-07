@@ -1,14 +1,17 @@
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
- * up to 3 attempts of TDD-write → implement → QA → build-gate; commits on green.
+ * up to 3 attempts of TDD-write → implement → build-gate; commits on green.
+ * The build-gate is the DETERMINISTIC hard oracle (build-runner.ts) that
+ * replaces the old QA self-report — no more vacuous pass on "agent said green".
  */
 
 import type { ControlObj, Stage } from "../types.ts";
-import { buildTddPrompt, buildImplementPrompt, buildQaPrompt, buildCommitPrompt, buildImplementationSummaryPrompt } from "../prompts.ts";
+import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
+import { runBuildGate } from "../build-runner.ts";
 
 const MAX_ATTEMPTS = 3;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -36,26 +39,37 @@ export const implementationStage: Stage = {
 		for (const [idx, phase] of phases.entries()) {
 			const phaseId = `phase-${pad(idx + 1)}`;
 			let green = false;
+			let attemptErrors: string[] = [];
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 				if (!ctx.budget.check()) {
 					allGreen = false;
 					return { phasesCompleted, totalPhases: phases.length, allGreen, filesModified, summary: "Budget exhausted" };
 				}
-				await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null) });
 				const specialist = await ctx.helper({ name: "route-specialist", sources: { "classify-task": state.classify }, options: { phase } });
-				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null) });
+				const lang = (specialist.value.languageInstructions as string) ?? "";
+				await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, lang) });
+				// Feed the previous attempt's REAL build/test errors into this attempt
+				// so the implementer fixes the specific failures instead of resampling.
+				const basePrompt = buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null);
+				const implPrompt = attemptErrors.length
+					? `${basePrompt}\n\n## Previous attempt failed the build/test gate — fix these\n${attemptErrors.map((e) => `- ${e}`).join("\n")}`
+					: basePrompt;
+				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
 				for (const f of ((impl.control as { filesModified?: unknown } | null)?.filesModified as string[] | undefined) ?? []) {
 					if (!filesModified.includes(f)) filesModified.push(f);
 				}
-				const qa = await ctx.agent({ id: `pipeline.implementation.${phaseId}.qa.a${attempt}`, agent: "qa-agent", prompt: buildQaPrompt(setup, state.classify ?? null, phase) });
-				const qaControl: ControlObj = qa.control ?? {};
-				const gate = await ctx.helper({ name: "gate-build", sources: { "qa-check": qaControl } });
-				if (gate.value.pass) {
+				// HARD test oracle: actually run build/test/typecheck instead of trusting
+				// a QA agent's self-report (vacuous-pass risk). Non-fatal when nothing
+				// is detectable (greenfield): ran is empty and pass is true.
+				const gate = runBuildGate(setup.worktreePath, { signal: ctx.signal });
+				attemptErrors = gate.errors;
+				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
+				if (gate.pass) {
 					green = true;
 					ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
 					break;
 				}
-				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${((gate.value.errors as string[]) ?? []).join(", ")}`);
+				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${gate.errors.join("; ")}`);
 			}
 			if (!green) {
 				ctx.log(`Implementation ${phaseId} failed after ${MAX_ATTEMPTS} attempts — terminating early`);

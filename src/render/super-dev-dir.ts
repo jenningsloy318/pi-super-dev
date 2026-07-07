@@ -22,6 +22,13 @@ export interface SuperDevConfig {
 	archiveAfterDays: number;
 	runRetentionDays: number;
 	traceRetentionDays: number;
+	/** How verify-loop stagnation is surfaced (Gap 4.6′-lite):
+	 *  - "informative" (default): non-blocking — diagnostic in the run summary +
+	 *    a stagnation-report.md in the spec dir. Never prompts; headless-safe.
+	 *  - "interactive": additionally prompt with a 3-option select when
+	 *    stagnation fires AND the run is in TUI/RPC mode (ctx.hasUI). Headless
+	 *    runs always fall back to "informative". */
+	escalation: "informative" | "interactive";
 }
 
 const DEFAULT_CONFIG: SuperDevConfig = {
@@ -33,6 +40,7 @@ const DEFAULT_CONFIG: SuperDevConfig = {
 	archiveAfterDays: 90,
 	runRetentionDays: 30,
 	traceRetentionDays: 7,
+	escalation: "informative",
 };
 
 // ─── paths ──────────────────────────────────────────────────────────────────

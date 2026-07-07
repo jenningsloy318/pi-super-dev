@@ -66,19 +66,16 @@ function checkPrototypeNeeded(s: Record<string, unknown>): HelperResult {
 }
 
 // ─── route-specialist ────────────────────────────────────────────────────────
-
-const LANG_INSTRUCTIONS: Record<string, string> = {
-	rust: "Follow Rust Edition 2024 idioms. Use thiserror for errors, tokio for async. Prefer zero-copy and ownership patterns. Run cargo clippy and cargo test.",
-	go: "Follow Go 1.24+ idioms. Use structured errors with fmt.Errorf and %w. Prefer table-driven tests. Run go vet and go test ./...",
-	frontend: "Use React 19+ patterns with TypeScript strict mode. Prefer server components where applicable. Follow existing component patterns and design tokens.",
-	backend: "Follow existing backend patterns. Use dependency injection. Write integration tests alongside unit tests. Validate error handling paths.",
-	mixed: "Respect the dominant language patterns in each file. Match surrounding code style. Test both frontend and backend changes.",
-};
+// Per-language specialist guidance lives in `agents/lang/<lang>.md` (prose
+// profiles: commands, coverage, file-organization, idioms) and is injected into
+// the implementer + tdd-guide prompts. This keeps a single generic implementer
+// agent but gives it language-specific guardrails (Gap 4.1).
+import { loadLangProfile } from "./agents.ts";
 
 function routeSpecialist(s: Record<string, unknown>): HelperResult {
 	const c = s["classify-task"] as { language?: string } | undefined;
 	if (!c) return ok("FAIL: missing classify-task source", { specialistAgent: "implementer", languageInstructions: "", reason: "Missing upstream: classify-task" });
-	const languageInstructions = LANG_INSTRUCTIONS[c.language ?? "mixed"] ?? LANG_INSTRUCTIONS.mixed;
+	const languageInstructions = loadLangProfile(c.language ?? "mixed");
 	return ok(`Specialist: implementer (${c.language ?? "mixed"})`, { specialistAgent: "implementer", languageInstructions, reason: `Generic implementer with ${c.language ?? "mixed"}-specific prompt augmentation` });
 }
 

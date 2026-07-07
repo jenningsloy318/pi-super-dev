@@ -20,11 +20,12 @@
  */
 
 import { task, sequence, branch, gate, gateValidator } from "../nodes.ts";
-import type { ControlObj, PipelineState, StageContext, Workflow } from "../types.ts";
+import type { ControlObj, PipelineState, Stage, StageContext, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
 import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
+import { runBuildGate } from "../build-runner.ts";
 import { implementationStage } from "./implementation.ts";
 import { verifyNode } from "./verify.ts";
 
@@ -38,6 +39,26 @@ const isBug = (s: PipelineState) => s.classify?.taskType === "bug";
 const notBlocked = (s: PipelineState) => {
 	const c = s.cleanup as { blocked?: boolean } | undefined;
 	return !!c && c.blocked !== true;
+};
+
+/** Pre-merge hard build gate: block merge when the deterministic build/test
+ *  gate ran and FAILED. A missing result (tolerant skip, or greenfield with no
+ *  manifest → `pass` is true anyway) does not block — we only refuse to merge
+ *  code we could actually verify and that failed verification. */
+const preMergeBuildStage: Stage = {
+	id: "preMergeBuild",
+	label: "Pre-merge build gate",
+	async run(state, ctx) {
+		const setup = state.setup!;
+		const r = runBuildGate(setup.worktreePath, { signal: ctx.signal });
+		ctx.log(`Pre-merge build-gate ${r.pass ? "PASS" : "FAIL"} (ran: ${r.ran.join(", ") || "no commands"})${r.pass ? "" : " — merge will be skipped"}`);
+		return { pass: r.pass, ran: r.ran, errors: r.errors };
+	},
+};
+const canMerge = (s: PipelineState) => {
+	if (!notBlocked(s)) return false;
+	const b = s.preMergeBuild as { pass?: boolean } | undefined;
+	return b?.pass !== false;
 };
 
 /** Only review when there is actually an implementation to review. */
@@ -108,8 +129,12 @@ const pipeline = sequence(
 		branch(hasImplementation, { yes: verifyNode }),
 		task(docsWriter),
 		task(cleanupTask),
-		// Conditional branch: merge only if cleanup found no sensitive data.
-		branch(notBlocked, { yes: task(mergeWriter) }),
+		// Pre-merge hard build gate (Gap A): don't merge broken code. Best-effort —
+		// a failure here skips merge but does not abort (tolerant sequence).
+		task(preMergeBuildStage),
+		// Conditional branch: merge only if cleanup found no sensitive data AND
+		// the pre-merge build gate did not fail.
+		branch(canMerge, { yes: task(mergeWriter) }),
 	],
 	{ tolerant: true }, // best-effort: a non-setup stage failure is logged, not fatal
 );

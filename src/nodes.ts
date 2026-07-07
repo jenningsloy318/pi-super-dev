@@ -93,8 +93,10 @@ const cancelled = (): NodeResult => ({ status: "cancelled" });
 
 /** Lift a `Stage` into a leaf node. Stores the return value under `state[id]`. */
 export function task(stage: Stage): Node {
-	const record = (ctx: StageContext, status: NodeStatus, error?: string) =>
+	const record = (ctx: StageContext, status: NodeStatus, error?: string) => {
 		ctx.results.push({ id: stage.id, label: stage.label, status, error });
+		ctx.events.emit("stage", { id: stage.id, label: stage.label, status, error });
+	};
 	return {
 		kind: "task",
 		label: stage.label,
@@ -122,6 +124,7 @@ export function task(stage: Stage): Node {
 			}
 			try {
 				ctx.events.emit("phase", stage.label);
+			ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" });
 				const startMs = Date.now();
 				const result = await stage.run(state, ctx);
 				const durationMs = Date.now() - startMs;

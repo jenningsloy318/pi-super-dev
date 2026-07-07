@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
+import { safetyPreamble } from "./safety.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 const BASE_TOOLS = "read,bash,edit,write,ffgrep,fffind";
@@ -63,7 +64,7 @@ function resolvePiBinary(): { command: string; args: string[] } {
 }
 
 export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> {
-	const systemPrompt = loadAgentPrompt(opts.agent);
+	const systemPrompt = `${safetyPreamble()}\n\n---\n\n${loadAgentPrompt(opts.agent)}`;
 	const tempDir = mkdtempSync(join(tmpdir(), "super-dev-agent-"));
 	const promptPath = join(tempDir, "agent.md");
 	writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
