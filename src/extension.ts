@@ -121,16 +121,35 @@ export function truncateActivity(s: string, max = 100): string {
 	return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
-/** Format the workflow dashboard widget lines (Gap Dashboard). Pure/testable:
- *  the TUI widget renders these via ctx.ui.setWidget. Icon per status, a
- *  done/total header, and an optional live-activity row (what the current
- *  agent is doing right now — the v2 "right panel" data via the safe channel). */
+/** Format the workflow dashboard widget lines (Gap Dashboard). Pure/testable.
+ *
+ *  Pi caps persistent-widget height (~10 lines) and truncates the BOTTOM. Since
+ *  stages arrive in order, the CURRENT (running) stage would land at the bottom
+ *  and get truncated off — so we render CURRENT-FIRST: header carries the
+ *  running stage + esc hint; the detail block lists the running stage and the
+ *  most recent at the top; older completed stages collapse into one summary
+ *  line ("… +N earlier (all ✔)"). This way the current stage is always visible
+ *  and ALL progress is represented (recent in detail, older as a count), with
+ *  no silent truncation of the live stage. */
 export function formatDashboardLines(entries: Array<{ id: string; label: string; status: string }>, activity?: string): string[] {
 	const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
 	const done = entries.filter((e) => e.status !== "running").length;
-	const lines = [`super-dev · ${done}/${entries.length} stages`, ...entries.map((e) => `  ${icon(e.status)} ${e.label}`)];
+	const running = entries.find((e) => e.status === "running");
+	const head = `super-dev · ${done}/${entries.length}${running ? ` · ${icon(running.status)} ${running.label}` : ""}  (esc to abort)`;
+	const lines = [head];
 	const a = truncateActivity(activity ?? "");
-	if (a) lines.push(`  ▶ ${a}`);
+	if (a) lines.push(`▶ ${a}`);
+	// Current-first window: running stage + recent at top; older summarized.
+	const DETAIL = 6;
+	const rev = [...entries].reverse(); // newest/current first
+	const shown = rev.slice(0, DETAIL);
+	const omitted = rev.slice(DETAIL);
+	if (omitted.length > 0) {
+		const okCount = omitted.filter((e) => e.status === "ok").length;
+		const tag = okCount === omitted.length ? "all ✔" : `${okCount}/${omitted.length} ✔`;
+		lines.push(`  … +${omitted.length} earlier (${tag})`);
+	}
+	for (const e of shown) lines.push(`  ${icon(e.status)} ${e.label}`);
 	return lines;
 }
 
@@ -196,9 +215,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // no-op in print/json/rpc/headless
 				const entries = dashboardOrder.map((id) => ({ id, ...dashboardStages.get(id)! }));
-				const lines = formatDashboardLines(entries, dashboardActivity);
-				lines.push("  esc to abort"); // app.interrupt (keybindings.md) is the idiomatic stop
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, lines); } catch { /* best-effort */ }
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, formatDashboardLines(entries, dashboardActivity)); } catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
