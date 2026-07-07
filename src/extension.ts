@@ -144,9 +144,14 @@ export function packDashboardLines(entries: Array<{ id: string; label: string; s
 	if (a) lines.push(`▶ ${a}`);
 	const CELL = 36;
 	const cols = 2; // always 2 columns — fits ~14 stages in ~8 rows under Pi's widget cap
+	// Column-first fill: first column = first half, second column = second half.
+	// (reads down the first column, then the second — chronological, not row-by-row)
+	const half = Math.ceil(entries.length / cols);
 	const cell = (e: { label: string; status: string }) => padTruncate(`${icon(e.status)} ${e.label}`, CELL - 2);
-	for (let i = 0; i < entries.length; i += cols) {
-		lines.push("  " + entries.slice(i, i + cols).map(cell).join(""));
+	for (let row = 0; row < half; row++) {
+		const left = entries[row];
+		const right = entries[row + half];
+		lines.push("  " + (right ? cell(left) + cell(right) : cell(left)));
 	}
 	return lines;
 }
@@ -213,7 +218,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return;
 				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} })); } catch { /* best-effort */ }
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} }), { placement: "belowEditor" }); } catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };

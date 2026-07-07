@@ -73,13 +73,11 @@ describe("packDashboardLines", () => {
 		expect(lines[0]).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
 	});
 
-	it("packs 2 per row on 80-col, 3 per row on 120-col (fewer rows = fits cap)", () => {
+	it("packs into 2 columns always (column-first: first half left, second half right)", () => {
 		const w80 = packDashboardLines(stages(6), undefined, 80);
-		const w120 = packDashboardLines(stages(6), undefined, 120);
-		// count stage rows (exclude header + activity)
-		const rows = (l: string[]) => l.filter((x) => x.startsWith("  ")).length;
-		expect(rows(w80)).toBe(3); // 6 / 2
-		expect(rows(w120)).toBe(2); // 6 / 3
+		const rows = w80.filter((x) => x.startsWith("  "));
+		expect(rows.length).toBe(3); // ceil(6/2) = 3 rows
+		for (let i = 0; i < 6; i++) expect(w80.some((l) => l.includes(`Stage ${i + 1} —`))).toBe(true);
 	});
 
 	it("includes the activity row when activity is non-empty", () => {
@@ -92,10 +90,10 @@ describe("packDashboardLines", () => {
 		expect(lines.some((l) => l.startsWith("▶"))).toBe(false);
 	});
 
-	it("falls back to 1 per row on very narrow terminals (still shows all)", () => {
+	it("shows all stages even with odd count (column-first)", () => {
 		const lines = packDashboardLines(stages(3), undefined, 40);
-		const rows = lines.filter((x) => x.startsWith("  ")).length;
-		expect(rows).toBe(3);
+		// 3 stages: half=2, rows=2. Left: stages 1,2. Right: stage 3.
+		expect(lines.filter((x) => x.startsWith("  ")).length).toBe(2);
 		for (let i = 0; i < 3; i++) expect(lines.some((l) => l.includes(`Stage ${i + 1} —`))).toBe(true);
 	});
 });
