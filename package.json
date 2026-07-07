@@ -1,6 +1,6 @@
 {
   "name": "pi-super-dev",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Self-contained, modular development pipeline for the Pi coding agent, built on a composable control-flow node algebra (branch/parallel/loop/retry/gate/map/wait). Spawns specialist pi subagents directly — no external workflow engine required.",
   "private": false,
   "type": "module",

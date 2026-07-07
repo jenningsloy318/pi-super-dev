@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-07-06
 
 ### Added
 - **Workflow resume (memoized replay).** An interrupted `super_dev` run (crash, abort, timeout, closed terminal) can now resume from where it left off instead of re-running from scratch. Uses the durable-execution replay pattern (Temporal-style): every run captures its agent-call results to `<specDir>/.resume-cache.jsonl`; on resume (`super_dev({ resume: true })` or `resumeSpecId: "07-foo"`), the cache is loaded and `ctx.agent` memoizes — completed calls return their cached result, the first uncached call re-runs, and the workflow continues. Agent-call granularity (resumes mid-verify-loop / mid-phase) via a deterministic `callId#seq` key. The worktree is reused (it's git ground truth). A fully-successful run clears its cache + writes a `.complete` marker so it isn't re-resumed. Design + decisions in `docs/findings/workflow-resume-deep-research.md`.
