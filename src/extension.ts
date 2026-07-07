@@ -210,9 +210,11 @@ export default function activate(pi: ExtensionAPI): void {
 			let dashboardActivity = "";
 			let lastWidget = 0;
 			const WIDGET_MS = 200;
-			// Widget removed — stage progress now renders via renderResult (the 3-section
-			// result at run end). dashboardStages/dashboardOrder are still collected for it.
-			const renderDashboard = () => {};
+			const renderDashboard = () => {
+				if (ctx?.mode !== "tui") return;
+				const entries = dashboardOrder.map((id) => ({ id, ...dashboardStages.get(id)! }));
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, dashboardActivity, w), invalidate: () => {} })); } catch { /* best-effort */ }
+			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
 			const sink: ProgressSink = {
