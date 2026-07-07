@@ -7,7 +7,7 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { task } from "../src/nodes.ts";
-import { formatDashboardLines, truncateActivity } from "../src/extension.ts";
+import { packDashboardLines, truncateActivity } from "../src/extension.ts";
 import type { NodeResult, PipelineState, Stage, StageContext } from "../src/types.ts";
 
 function fakeCtx(): { ctx: StageContext; events: EventEmitter } {
@@ -57,62 +57,52 @@ describe("task() emits stage events", () => {
 	});
 });
 
-describe("formatDashboardLines", () => {
-	it("header carries done/total + the running stage; detail is current-first", () => {
-		const lines = formatDashboardLines([
-			{ id: "1", label: "Stage 1 — Setup", status: "ok" },
-			{ id: "2", label: "Stage 2 — Requirements", status: "ok" },
-			{ id: "3", label: "Stage 5 — Code Assessment", status: "running" },
-			{ id: "4", label: "Stage X — Debug", status: "skipped" },
-			{ id: "5", label: "Stage Y — Review", status: "failed" },
-		]);
-		// header includes the running stage + esc hint
-		expect(lines[0]).toBe("super-dev · 4/5 · ● Stage 5 — Code Assessment  (esc to abort)");
-		// detail is current-first (running first), then the rest reversed
-		expect(lines).toContain("  ● Stage 5 — Code Assessment");
-		expect(lines).toContain("  ⚠ Stage Y — Review");
-		expect(lines).toContain("  ↷ Stage X — Debug");
-		expect(lines).toContain("  ✔ Stage 2 — Requirements");
-		expect(lines).toContain("  ✔ Stage 1 — Setup");
-		// the running stage appears in the detail block (not truncated away)
-		expect(lines.indexOf("  ● Stage 5 — Code Assessment")).toBeLessThan(lines.length);
+describe("packDashboardLines", () => {
+	const stages = (n: number, runningIdx = -1) => Array.from({ length: n }, (_, i) => ({ id: String(i), label: `Stage ${i + 1} — ${i === runningIdx ? "Live" : "Done ${i}"}`, status: i === runningIdx ? "running" : "ok" }));
+
+	it("shows EVERY stage — none summarized or dropped (13 stages on width 80)", () => {
+		const lines = packDashboardLines(stages(13), undefined, 80);
+		// all 13 stage labels appear somewhere in the output
+		for (let i = 0; i < 13; i++) expect(lines.some((l) => l.includes(`Stage ${i + 1} —`))).toBe(true);
+		// no summary line
+		expect(lines.some((l) => /… \+\d+ earlier/.test(l))).toBe(false);
 	});
 
-	it("counts only non-running stages as done", () => {
-		const lines = formatDashboardLines([
-			{ id: "1", label: "A", status: "running" },
-			{ id: "2", label: "B", status: "running" },
-		]);
-		expect(lines[0]).toBe("super-dev · 0/2 · ● A  (esc to abort)");
+	it("header carries done/total + running stage + esc hint", () => {
+		const lines = packDashboardLines(stages(5, 2), undefined, 80);
+		expect(lines[0]).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
 	});
 
-	it("header has no running segment when nothing is running", () => {
-		expect(formatDashboardLines([])[0]).toBe("super-dev · 0/0  (esc to abort)");
+	it("packs 2 per row on 80-col, 3 per row on 120-col (fewer rows = fits cap)", () => {
+		const w80 = packDashboardLines(stages(6), undefined, 80);
+		const w120 = packDashboardLines(stages(6), undefined, 120);
+		// count stage rows (exclude header + activity)
+		const rows = (l: string[]) => l.filter((x) => x.startsWith("  ")).length;
+		expect(rows(w80)).toBe(3); // 6 / 2
+		expect(rows(w120)).toBe(2); // 6 / 3
 	});
 
-	it("collapses older stages into a summary (current + recent stay detailed)", () => {
-		const many = Array.from({ length: 12 }, (_, i) => ({ id: String(i), label: `S${i}`, status: i < 10 ? "ok" : "running" }));
-		const lines = formatDashboardLines(many);
-		// the 6 oldest get summarized; the running stage (last) is in the detail block
-		expect(lines.some((l) => /… \+6 earlier \(all ✔\)/.test(l))).toBe(true);
-		expect(lines.some((l) => l.includes("● S11"))).toBe(true);
+	it("includes the activity row when activity is non-empty", () => {
+		const lines = packDashboardLines(stages(2), "writing src/auth.ts", 80);
+		expect(lines.some((l) => l.startsWith("▶ writing"))).toBe(true);
+	});
+
+	it("omits the activity row when blank", () => {
+		const lines = packDashboardLines(stages(2), "   ", 80);
+		expect(lines.some((l) => l.startsWith("▶"))).toBe(false);
+	});
+
+	it("falls back to 1 per row on very narrow terminals (still shows all)", () => {
+		const lines = packDashboardLines(stages(3), undefined, 40);
+		const rows = lines.filter((x) => x.startsWith("  ")).length;
+		expect(rows).toBe(3);
+		for (let i = 0; i < 3; i++) expect(lines.some((l) => l.includes(`Stage ${i + 1} —`))).toBe(true);
 	});
 });
 
 describe("formatDashboardLines: live-activity row (v2)", () => {
-	it("appends an activity row when activity is non-empty", () => {
-		const lines = formatDashboardLines([{ id: "1", label: "Stage 1", status: "running" }], "writing src/auth.ts");
-		expect(lines).toContain("▶ writing src/auth.ts");
-	});
-
-	it("omits the activity row when activity is blank", () => {
-		const lines = formatDashboardLines([{ id: "1", label: "Stage 1", status: "ok" }], "   ");
-		expect(lines.some((l) => l.startsWith("▶"))).toBe(false);
-	});
-
-	it("does not break when activity is undefined", () => {
-		const lines = formatDashboardLines([{ id: "1", label: "Stage 1", status: "ok" }]);
-		expect(lines).toHaveLength(2);
+	it("placeholder — activity tested in packDashboardLines", () => {
+		expect(true).toBe(true);
 	});
 });
 

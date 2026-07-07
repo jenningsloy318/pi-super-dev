@@ -121,17 +121,19 @@ export function truncateActivity(s: string, max = 100): string {
 	return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
-/** Format the workflow dashboard widget lines (Gap Dashboard). Pure/testable.
- *
- *  Pi caps persistent-widget height (~10 lines) and truncates the BOTTOM. Since
- *  stages arrive in order, the CURRENT (running) stage would land at the bottom
- *  and get truncated off — so we render CURRENT-FIRST: header carries the
- *  running stage + esc hint; the detail block lists the running stage and the
- *  most recent at the top; older completed stages collapse into one summary
- *  line ("… +N earlier (all ✔)"). This way the current stage is always visible
- *  and ALL progress is represented (recent in detail, older as a count), with
- *  no silent truncation of the live stage. */
-export function formatDashboardLines(entries: Array<{ id: string; label: string; status: string }>, activity?: string): string[] {
+/** Pad `s` with spaces to `w`, or truncate with an ellipsis if longer. */
+export function padTruncate(s: string, w: number): string {
+	return s.length >= w ? `${s.slice(0, Math.max(1, w - 1))}…` : s + " ".repeat(w - s.length);
+}
+
+/** Format the dashboard widget lines, packing ALL stages into width-adaptive
+ *  columns so EVERY stage is shown — no summary, no stage dropped. Pi caps
+ *  widget height (~10 lines) and truncates the bottom; one-stage-per-line would
+ *  overflow for a 13-stage pipeline, so we pack `floor(width/36)` stages per
+ *  row. On a typical 80-col terminal that's 2/row → ~7 rows + header +
+ *  activity ≤ Pi's cap. The header carries the running stage + esc hint so the
+ *  live stage is always visible even at the top. */
+export function packDashboardLines(entries: Array<{ id: string; label: string; status: string }>, activity: string | undefined, width: number): string[] {
 	const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
 	const done = entries.filter((e) => e.status !== "running").length;
 	const running = entries.find((e) => e.status === "running");
@@ -139,17 +141,12 @@ export function formatDashboardLines(entries: Array<{ id: string; label: string;
 	const lines = [head];
 	const a = truncateActivity(activity ?? "");
 	if (a) lines.push(`▶ ${a}`);
-	// Current-first window: running stage + recent at top; older summarized.
-	const DETAIL = 6;
-	const rev = [...entries].reverse(); // newest/current first
-	const shown = rev.slice(0, DETAIL);
-	const omitted = rev.slice(DETAIL);
-	if (omitted.length > 0) {
-		const okCount = omitted.filter((e) => e.status === "ok").length;
-		const tag = okCount === omitted.length ? "all ✔" : `${okCount}/${omitted.length} ✔`;
-		lines.push(`  … +${omitted.length} earlier (${tag})`);
+	const CELL = 36;
+	const cols = Math.max(1, Math.floor(Math.max(20, width - 2) / CELL));
+	const cell = (e: { label: string; status: string }) => padTruncate(`${icon(e.status)} ${e.label}`, CELL - 2);
+	for (let i = 0; i < entries.length; i += cols) {
+		lines.push("  " + entries.slice(i, i + cols).map(cell).join(""));
 	}
-	for (const e of shown) lines.push(`  ${icon(e.status)} ${e.label}`);
 	return lines;
 }
 
@@ -215,7 +212,12 @@ export default function activate(pi: ExtensionAPI): void {
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // no-op in print/json/rpc/headless
 				const entries = dashboardOrder.map((id) => ({ id, ...dashboardStages.get(id)! }));
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, formatDashboardLines(entries, dashboardActivity)); } catch { /* best-effort */ }
+				const activity = dashboardActivity;
+				// Function form: Pi calls render(width) with the real terminal width, so
+				// packDashboardLines can fit ALL stages (no summary/drop) into columns.
+				try {
+					ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, activity, w), invalidate: () => {} }));
+				} catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
