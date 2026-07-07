@@ -212,15 +212,8 @@ export default function activate(pi: ExtensionAPI): void {
 			const WIDGET_MS = 200;
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return;
-				const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
 				const entries = dashboardOrder.map((id) => dashboardStages.get(id)).filter(Boolean) as Array<{ label: string; status: string }>;
-				const done = entries.filter((e) => e.status !== "running").length;
-				const running = entries.find((e) => e.status === "running");
-				const lines = [
-					`super-dev · ${done}/${entries.length}${running ? ` · ${icon(running.status)} ${running.label}` : ""}  (esc to abort)`,
-					...entries.map((e) => `  ${icon(e.status)} ${e.label}`),
-				];
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, lines); } catch { /* best-effort */ }
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} })); } catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
