@@ -170,7 +170,6 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 					// a permanent event finalizes any in-progress text first
 					if (currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
 					if (se.kind === "tool") onProgress.event(`→ ${se.summary}`);
-					else if (se.kind === "turn" && se.n > 1) onProgress.event(`turn ${se.n}`);
 				}
 			}
 			if (lineBuf.length > LINE_CAP) lineBuf = ""; // stay bounded on a runaway line
@@ -228,7 +227,7 @@ export function summarizeToolCall(name: string, args: Record<string, unknown> | 
 		case "read":
 			return `${name} ${a.path ?? a.file_path ?? ""}`;
 		case "bash":
-			return `$ ${String(a.command ?? "").split("\n")[0]}`;
+			return `$ ${String(a.command ?? "")}`;
 		case "ffgrep":
 		case "fffind":
 			return `${name} "${a.pattern ?? ""}"`;

@@ -104,6 +104,10 @@ describe("summarizeToolCall", () => {
 		expect(summarizeToolCall("bash", { command: "npm test && npm run build" })).toBe("$ npm test && npm run build");
 		expect(summarizeToolCall("bash", { command: "x".repeat(200) })).toBe(`$ ${"x".repeat(200)}`);
 	});
+	it("shows the FULL multi-line bash/python command (not just the first line)", () => {
+		const cmd = "python3 -c \"\nimport sys\nprint(sys.version)\n\"";
+		expect(summarizeToolCall("bash", { command: cmd })).toBe(`$ ${cmd}`);
+	});
 	it("summarizes ffgrep/fffind by pattern", () => {
 		expect(summarizeToolCall("ffgrep", { pattern: "TODO" })).toBe('ffgrep "TODO"');
 	});

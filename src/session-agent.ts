@@ -113,7 +113,6 @@ function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown
  *  arrive as top-level `tool_execution_start`. Text partials reset per message
  *  block, so finalizing at each tool call doesn't duplicate prefixes. */
 function forwardProgress(session: { subscribe(listener: (e: unknown) => void): () => void }, onProgress: AgentProgress): () => void {
-	let turns = 0;
 	let lastText = ""; // dedup: only forward text when it changes; reset per tool block
 	return session.subscribe((event: unknown) => {
 		const e = event as { type?: string; toolName?: string; args?: Record<string, unknown>; assistantMessageEvent?: { type?: string; partial?: { content?: Array<{ type: string; text?: string }> } } };
@@ -121,8 +120,6 @@ function forwardProgress(session: { subscribe(listener: (e: unknown) => void): (
 		if (e.type === "tool_execution_start" && e.toolName) {
 			lastText = "";
 			onProgress.event(`→ ${summarize(e.toolName, e.args)}`);
-		} else if (e.type === "turn_start") {
-			if (++turns > 1) onProgress.event(`turn ${turns}`);
 		} else if (e.type === "message_update") {
 			const a = e.assistantMessageEvent;
 			if (a?.type === "text_delta" || a?.type === "text_end") {
