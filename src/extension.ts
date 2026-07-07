@@ -194,7 +194,9 @@ export default function activate(pi: ExtensionAPI): void {
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // no-op in print/json/rpc/headless
 				const entries = dashboardOrder.map((id) => ({ id, ...dashboardStages.get(id)! }));
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, formatDashboardLines(entries, dashboardActivity)); } catch { /* best-effort */ }
+				const lines = formatDashboardLines(entries, dashboardActivity);
+				lines.push("  esc to abort"); // app.interrupt (keybindings.md) is the idiomatic stop
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, lines); } catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
