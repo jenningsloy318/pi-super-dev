@@ -21,8 +21,8 @@ Use the `super_dev` tool to start the pipeline. It spawns 21 specialist `pi` sub
 super_dev({ task: "<user's full request>" })
 ```
 
-Optional flags:
-- `skipWorktree: true` — operate in the current directory instead of a git worktree.
+Optional flags (defaults shown — only change a flag when the user explicitly asks):
+- `skipWorktree: false` — DEFAULT `false`: the pipeline creates an isolated git worktree + branch. Set `true` ONLY if the user explicitly requests working in-place in the current directory. Do NOT enable this on your own.
 - `model: "provider/id"` — override the model used by spawned specialists.
 - `maxAgents: 200` — cap total specialist spawns.
 
