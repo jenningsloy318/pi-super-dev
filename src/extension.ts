@@ -210,16 +210,9 @@ export default function activate(pi: ExtensionAPI): void {
 			let dashboardActivity = "";
 			let lastWidget = 0;
 			const WIDGET_MS = 200;
-			const renderDashboard = () => {
-				if (ctx?.mode !== "tui") return; // no-op in print/json/rpc/headless
-				const entries = dashboardOrder.map((id) => ({ id, ...dashboardStages.get(id)! }));
-				const activity = dashboardActivity;
-				// Function form: Pi calls render(width) with the real terminal width, so
-				// packDashboardLines can fit ALL stages (no summary/drop) into columns.
-				try {
-					ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, activity, w), invalidate: () => {} }));
-				} catch { /* best-effort */ }
-			};
+			// Widget removed — stage progress now renders via renderResult (the 3-section
+			// result at run end). dashboardStages/dashboardOrder are still collected for it.
+			const renderDashboard = () => {};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
 			const sink: ProgressSink = {
@@ -292,6 +285,12 @@ export default function activate(pi: ExtensionAPI): void {
 				stages?: Array<{ label: string; status: string }>;
 				logPath?: string;
 			};
+			// During streaming (onUpdate), details are empty — fall back to plain content
+			// text so the live log shows normally instead of empty sections.
+			if (!d.stages?.length) {
+				const text = result.content[0];
+				return new Text(text?.type === "text" ? text.text : "", 0, 0);
+			}
 			const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
 			const parts: string[] = [];
 			// §1 detail log — DIMMED (like agent thought progress; persisted, not transient)
