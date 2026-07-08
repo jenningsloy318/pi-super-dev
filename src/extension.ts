@@ -200,9 +200,9 @@ export default function activate(pi: ExtensionAPI): void {
 			};
 			const flush = () => {
 				const all = live ? [...transcript, live] : transcript;
-				const body = (all.length > TAIL_LINES
+				const body = all.length > TAIL_LINES
 					? `… ${all.length - TAIL_LINES} earlier lines trimmed (full log saved at run end) …\n` + all.slice(-TAIL_LINES).join("\n")
-					: all.join("\n")) + buildStageBlock();
+					: all.join("\n");
 				onUpdate?.({ content: [{ type: "text", text: body }], details: {} });
 			};
 			// Workflow dashboard v1 (Gap Dashboard): always-on phase-tracker widget,
@@ -215,18 +215,10 @@ export default function activate(pi: ExtensionAPI): void {
 			let dashboardActivity = "";
 			let lastWidget = 0;
 			const WIDGET_MS = 200;
-			const renderDashboard = () => {}; // widget removed — stage progress now in the streaming content (flush)
-
-			// Build a compact stage-progress block appended at the BOTTOM of the streaming
-			// output — visible just above the working spinner (the widget couldn't go there).
-			const buildStageBlock = (): string => {
-				const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
-				const entries = dashboardOrder.map((id) => dashboardStages.get(id)).filter(Boolean) as Array<{ label: string; status: string }>;
-				if (!entries.length) return "";
-				const done = entries.filter((e) => e.status !== "running").length;
-				const running = entries.find((e) => e.status === "running");
-				const chips = entries.map((e) => `${icon(e.status)}${e.label.replace(/^Stage /, "")}`).join("  ");
-				return `\n─── super-dev · ${done}/${entries.length}${running ? ` · ● ${running.label}` : ""} ───\n  ${chips}`;
+			const renderDashboard = () => {
+				if (ctx?.mode !== "tui") return;
+				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} }), { placement: "belowEditor" }); } catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
@@ -243,7 +235,7 @@ export default function activate(pi: ExtensionAPI): void {
 					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.
 					if (!dashboardOrder.includes(info.id)) dashboardOrder.push(info.id);
 					dashboardStages.set(info.id, { label: info.label, status: info.status });
-					flush(); // stage status changed → update the stage block at the bottom
+					renderDashboard(); // widget update
 				},
 			};
 			try {
