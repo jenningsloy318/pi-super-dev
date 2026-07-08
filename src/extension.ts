@@ -218,7 +218,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return;
 				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} }), { placement: "belowEditor" }); } catch { /* best-effort */ }
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} }), { placement: "aboveEditor" }); } catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
