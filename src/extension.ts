@@ -12,7 +12,7 @@
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -138,20 +138,21 @@ export function packDashboardLines(entries: Array<{ id: string; label: string; s
 	const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
 	const done = entries.filter((e) => e.status !== "running").length;
 	const running = entries.find((e) => e.status === "running");
-	const head = `super-dev · ${done}/${entries.length}${running ? ` · ${icon(running.status)} ${running.label}` : ""}  (esc to abort)`;
+	const head = truncateToWidth(`super-dev · ${done}/${entries.length}${running ? ` · ${icon(running.status)} ${running.label}` : ""}  (esc to abort)`, width);
 	const lines = [head];
 	const a = truncateActivity(activity ?? "");
-	if (a) lines.push(`▶ ${a}`);
-	const CELL = 36;
-	const cols = 2; // always 2 columns — fits ~14 stages in ~8 rows under Pi's widget cap
+	if (a) lines.push(truncateToWidth(`▶ ${a}`, width));
+	const cols = 2;
+	// Adapt cell width to the actual terminal width — prevents overflow on narrow terminals.
+	const indent = 2;
+	const cellW = Math.max(10, Math.floor((width - indent) / cols));
 	// Column-first fill: first column = first half, second column = second half.
-	// (reads down the first column, then the second — chronological, not row-by-row)
 	const half = Math.ceil(entries.length / cols);
-	const cell = (e: { label: string; status: string }) => padTruncate(`${icon(e.status)} ${e.label}`, CELL - 2);
+	const cell = (e: { label: string; status: string }) => padTruncate(`${icon(e.status)} ${e.label}`, cellW);
 	for (let row = 0; row < half; row++) {
 		const left = entries[row];
 		const right = entries[row + half];
-		lines.push("  " + (right ? cell(left) + cell(right) : cell(left)));
+		lines.push(truncateToWidth(" ".repeat(indent) + (right ? cell(left) + cell(right) : cell(left)), width));
 	}
 	return lines;
 }
