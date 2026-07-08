@@ -19,7 +19,7 @@
  *   docs ─► cleanup ─► branch[!blocked]→merge
  */
 
-import { task, sequence, branch, gate, gateValidator } from "../nodes.ts";
+import { task, sequence, branch, gate, gateValidator, noop } from "../nodes.ts";
 import type { ControlObj, PipelineState, Stage, StageContext, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
 import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
@@ -27,7 +27,7 @@ import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
 import { runBuildGate } from "../build-runner.ts";
 import { implementationStage } from "./implementation.ts";
-import { verifyNode } from "./verify.ts";
+import { reviewLoopNode, integrationLoopNode, reviewApproved } from "./verify.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -88,10 +88,6 @@ const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 /** Code review is approved when the merged verdict is Approved (with or without comments).
  *  (Predicate kept here for any pipeline-level checks; the verify-loop's own
  *  until/fix logic lives in src/stages/verify.ts.) */
-const reviewApproved = (s: PipelineState) => {
-	const v = s.review?.verdict as string | undefined;
-	return v === "Approved" || v === "Approved with Comments";
-};
 
 // ─── Verify (Stage 10): unified review + fix loop ───────────────────────────
 // Extracted to src/stages/verify.ts. BOTH reviewers (code-review + adversarial)
@@ -126,7 +122,7 @@ const pipeline = sequence(
 		// Verify (Stage 10) only runs when implementation actually produced phases;
 		// otherwise we'd burn spawns reviewing nothing. verifyNode = review (both
 		// code-review + adversarial reviewers → merge) → fix, looped until approved.
-		branch(hasImplementation, { yes: verifyNode }),
+		branch(hasImplementation, { yes: sequence([reviewLoopNode, branch(reviewApproved, { yes: integrationLoopNode, no: noop() })]) }),
 		task(docsWriter),
 		task(cleanupTask),
 		// Pre-merge hard build gate (Gap A): don't merge broken code. Best-effort —

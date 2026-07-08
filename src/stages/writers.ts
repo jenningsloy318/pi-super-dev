@@ -68,7 +68,7 @@ export const specReviewWriter: Stage = writerTask({
 
 export const docsWriter: Stage = writerTask({
 	id: "docs",
-	label: "Stage 11 — Documentation",
+	label: "Stage 12 — Documentation",
 	agent: "docs-executor",
 	requires: ["*-specification.md"],
 	buildPrompt: (state, ctx) => P.buildDocsPrompt(S(state), state.classify ?? null, ctx.task, state.spec ?? null),
@@ -76,7 +76,7 @@ export const docsWriter: Stage = writerTask({
 
 export const mergeWriter: Stage = writerTask({
 	id: "merge",
-	label: "Stage 13 — Merge",
+	label: "Stage 14 — Merge",
 	agent: "orchestrator",
 	buildPrompt: (state) => P.buildMergePrompt(S(state)),
 });
@@ -98,7 +98,7 @@ export const classifyStage: Stage = {
 /** Scan the worktree for build artifacts + sensitive data; decide merge blocking. */
 export const cleanupTask: Stage = helperTask({
 	id: "cleanup",
-	label: "Stage 12 — Cleanup",
+	label: "Stage 13 — Cleanup",
 	helper: "cleanup",
 	sources: (state) => ({ docs: state.docs ?? {} }),
 	context: (state) => ({ cwd: state.setup?.worktreePath ?? "" }),

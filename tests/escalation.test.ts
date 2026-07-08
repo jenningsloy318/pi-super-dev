@@ -1,6 +1,6 @@
 /**
  * Unit tests for stagnation escalation (Gap 4.6′-lite).
- * Covers: the __stagnated flag set by loopUntil, the always-on report write,
+ * Covers: the __stagnated flag set by reviewLoopUntil, the always-on report write,
  * and the opt-in interactive select path (via the test-only escalation override).
  */
 
@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loopUntil } from "../src/stages/verify.ts";
+import { reviewLoopUntil } from "../src/stages/verify.ts";
 import { handleStagnation } from "../src/extension.ts";
 import type { PipelineState, RunSummary, StageContext } from "../src/types.ts";
 
@@ -29,12 +29,12 @@ function summaryWith(stagnated: unknown, specDirectory: string): RunSummary {
 	} as RunSummary;
 }
 
-describe("loopUntil records __stagnated", () => {
+describe("reviewLoopUntil records __stagnated", () => {
 	it("sets a structured stagnation record on the second identical round", async () => {
 		const s1 = stateWith({ verdict: "Changes Requested", findings: [finding("a.ts", "high", "T")] });
-		await loopUntil(s1, fakeCtx());
+		await reviewLoopUntil(s1, fakeCtx());
 		const s2 = stateWith({ verdict: "Changes Requested", findings: [finding("a.ts", "high", "T")] }, (s1 as unknown as Record<string, unknown>).__reviewSignatures as string[]);
-		await loopUntil(s2, fakeCtx());
+		await reviewLoopUntil(s2, fakeCtx());
 		const st = (s2 as Record<string, unknown>).__stagnated as { rounds?: number; verdict?: string; findings?: unknown[] } | undefined;
 		expect(st).toBeDefined();
 		expect(st?.rounds).toBe(2);
@@ -44,9 +44,9 @@ describe("loopUntil records __stagnated", () => {
 
 	it("does NOT set __stagnated when findings change", async () => {
 		const s1 = stateWith({ verdict: "Changes Requested", findings: [finding("a.ts", "high", "T")] });
-		await loopUntil(s1, fakeCtx());
+		await reviewLoopUntil(s1, fakeCtx());
 		const s2 = stateWith({ verdict: "Changes Requested", findings: [finding("b.ts", "low", "U")] }, (s1 as unknown as Record<string, unknown>).__reviewSignatures as string[]);
-		await loopUntil(s2, fakeCtx());
+		await reviewLoopUntil(s2, fakeCtx());
 		expect((s2 as Record<string, unknown>).__stagnated).toBeUndefined();
 	});
 });

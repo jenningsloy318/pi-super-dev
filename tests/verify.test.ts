@@ -5,11 +5,11 @@
  * drop a reviewer or break the loop shape.
  */
 import { describe, it, expect } from "vitest";
-import { verifyNode } from "../src/stages/verify.ts";
+import { reviewLoopNode } from "../src/stages/verify.ts";
 
-describe("verifyNode (Phase 1)", () => {
+describe("reviewLoopNode (Phase 1)", () => {
 	it("is a loop node (review → fix, iterating until approved)", () => {
-		expect(verifyNode.kind).toBe("loop");
-		expect(typeof verifyNode.run).toBe("function");
+		expect(reviewLoopNode.kind).toBe("loop");
+		expect(typeof reviewLoopNode.run).toBe("function");
 	});
 });
