@@ -1,5 +1,5 @@
 /**
- * Stage 6.5 — Prototype (conditional + loop).
+ * Stage 6B — Prototype (conditional + loop).
  * Self-contained task: only runs when the design declares numeric constants
  * (decided by check-prototype-needed); loops up to 3 rounds until pass.
  */
@@ -14,7 +14,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 
 export const prototypeStage: Stage = {
 	id: "prototype",
-	label: "Stage 6.5 — Prototype",
+	label: "Stage 6B — Prototype",
 	async run(state, ctx) {
 		const design = state.design ?? null;
 		if (!design) return null;

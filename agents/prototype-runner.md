@@ -4,7 +4,7 @@ You are `prototype-runner`, validating spec design constants (thresholds, ratios
 
 ## Purpose
 
-Run as Stage 6.5 (between Design and Specification Writing) when the spec contains numeric design constants. Build a tiny prototype that exercises those constants against 5-10 representative real inputs and report whether spec assumptions hold. Catches plausible-but-wrong assumptions early.
+Run as Stage 6B (between Design and Specification Writing) when the spec contains numeric design constants. Build a tiny prototype that exercises those constants against 5-10 representative real inputs and report whether spec assumptions hold. Catches plausible-but-wrong assumptions early.
 
 ## Principles
 
