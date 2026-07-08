@@ -8,6 +8,30 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { clearKnowledge } from "./render/knowledge.ts";
 import { join, resolve } from "node:path";
+
+/** Load KEY=VALUE pairs from a `.env` file into `process.env` so spawned
+ *  specialist agents (api-tester, etc.) inherit them. Only sets vars that
+ *  aren't already defined (existing env wins). This is how TEST_API_KEY and
+ *  other test credentials become available during Stage 11 Integration Testing. */
+function loadDotEnv(dir: string): void {
+	const envPath = join(dir, ".env");
+	if (!existsSync(envPath)) return;
+	try {
+		for (const line of readFileSync(envPath, "utf8").split("\n")) {
+			const trimmed = line.trim();
+			if (!trimmed || trimmed.startsWith("#")) continue;
+			const eq = trimmed.indexOf("=");
+			if (eq < 1) continue;
+			const key = trimmed.slice(0, eq).trim();
+			let val = trimmed.slice(eq + 1).trim();
+			// strip surrounding quotes
+			if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+				val = val.slice(1, -1);
+			}
+			if (key && !(key in process.env)) process.env[key] = val;
+		}
+	} catch { /* best-effort */ }
+}
 import type { SetupControl } from "./types.ts";
 
 function git(args: string[], cwd: string): string | null {
@@ -149,6 +173,9 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 			}
 		}
 	}
+
+	// Load .env (TEST_API_KEY etc.) from the worktree so spawned agents inherit it.
+	loadDotEnv(worktreePath);
 
 	const specDirectory = join(worktreePath, "docs", "specifications", specIdentifier) + "/";
 	mkdirSync(specDirectory, { recursive: true });
