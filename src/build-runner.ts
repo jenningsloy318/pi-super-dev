@@ -19,7 +19,131 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * Default per-command timeout for the build gate, in milliseconds (10 min).
+ *
+ * The previous 120_000ms hardcode caused false FAILs on slow first-time
+ * compiles (e.g. clean Rust workspaces) before the build finished, aborting
+ * Stage 9 (verify). 10 minutes comfortably covers a cold cargo build/test/
+ * clippy on a moderately-sized workspace without masking a genuine hang.
+ *
+ * Exported so the value is unit-testable and forward-compatible.
+ *
+ * # Configuration via environment variables
+ *
+ * The deterministic build gate (`runBuildGate`, consumed by Stage 9 verify,
+ * Stage 9.2 implementation, and Stage 11 merge) reads TWO optional env vars
+ * to tune timeout and test scope WITHOUT editing any stage call site (all
+ * three callers still pass only `{ signal }`):
+ *
+ *   1. `SUPER_DEV_BUILD_TIMEOUT_MS` — per-command timeout override in
+ *      milliseconds, parsed base-10. Falls back to {@link DEFAULT_TIMEOUT_MS}
+ *      (600_000 / 10 min) when unset, empty, NaN, or `<= 0`. Resolved by
+ *      {@link resolveTimeoutMs}, which threads into every `spawnSync({ timeout })`
+ *      in the `exec` closure (build / test / typecheck / clippy).
+ *      Precedence: explicit `opts.timeoutMs` (positive finite) > env var >
+ *      default. Example: `SUPER_DEV_BUILD_TIMEOUT_MS=900000` gives 15 min.
+ *
+ *   2. `SUPER_DEV_BUILD_TEST_PACKAGES` — comma-separated cargo crate list to
+ *      scope the `cargo test` invocation (`-p <pkg>` per entry) instead of
+ *      running workspace-wide. Empty/missing → workspace-wide (unchanged).
+ *      Parsed by {@link parseTestPackages} and applied by
+ *      {@link scopedCargoTestArgs} ONLY when `detectProjectCommands` reports
+ *      `language === "rust"` AND the list is non-empty, on a shallow copy of
+ *      the detected commands so the pure detector is byte-identical.
+ *      Precedence: `opts.testPackages` (provided, incl. explicit `[]` to force
+ *      workspace-wide) > env var > workspace-wide.
+ *      Example: `SUPER_DEV_BUILD_TEST_PACKAGES="crates/api,crates/store"`.
+ *
+ * Non-rust stacks (go/python/node/mixed) ignore the scoping var entirely,
+ * and greenfield repos (no manifest) still return `pass:true, ran:[]`. The
+ * target repository is never mutated — only the harness argv + timeout change.
+ */
+export const DEFAULT_TIMEOUT_MS = 600_000;
+
+/**
+ * Resolve the per-command build-gate timeout in milliseconds.
+ *
+ * Precedence (highest wins):
+ *   1. an explicit finite positive `opt` (preserves the opts.timeoutMs unit-test
+ *      override; 0/NaN/-x/Infinity are NOT honored and fall through);
+ *   2. `process.env.SUPER_DEV_BUILD_TIMEOUT_MS` parsed base-10 — NaN, <=0,
+ *      empty, or missing falls through;
+ *   3. {@link DEFAULT_TIMEOUT_MS} (600_000 / 10 min).
+ *
+ * Pure & side-effect-free (only READS process.env) so it is fully unit-
+ * testable without spawning any command.
+ *
+ * @param explicit An optional finite positive millisecond override.
+ * @returns The resolved timeout in milliseconds.
+ */
+export function resolveTimeoutMs(explicit?: number): number {
+	if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+		return explicit;
+	}
+	const raw = process.env.SUPER_DEV_BUILD_TIMEOUT_MS;
+	if (raw !== undefined && raw !== "") {
+		const parsed = Number.parseInt(raw, 10);
+		if (Number.isFinite(parsed) && parsed > 0) {
+			return parsed;
+		}
+	}
+	return DEFAULT_TIMEOUT_MS;
+}
+
+/** Dedupe a list of package names, preserving first-seen order. */
+function dedupePreservingOrder(items: string[]): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const it of items) {
+		if (seen.has(it)) continue;
+		seen.add(it);
+		out.push(it);
+	}
+	return out;
+}
+
+/**
+ * Parse a comma-separated list of cargo package names into a clean array.
+ *
+ * Used to read `process.env.SUPER_DEV_BUILD_TEST_PACKAGES`. Splits on commas,
+ * trims each entry (spaces/tabs/newlines), drops empties, and dedupes while
+ * preserving first-seen order. Returns `[]` for undefined/empty/whitespace-only
+ * input. Pure & side-effect-free so it is fully unit-testable.
+ *
+ * @param raw The raw comma-list (typically an env-var value).
+ * @returns A de-duplicated, trimmed list of package names.
+ */
+export function parseTestPackages(raw?: string): string[] {
+	if (raw === undefined || raw === "") return [];
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const part of raw.split(",")) {
+		const trimmed = part.trim();
+		if (trimmed === "" || seen.has(trimmed)) continue;
+		seen.add(trimmed);
+		out.push(trimmed);
+	}
+	return out;
+}
+
+/**
+ * Build the scoped `cargo test` argv for a list of packages.
+ *
+ * Non-empty → `["cargo","test", ...packages.flatMap(p => ["-p", p]), "--quiet"]`
+ * (one `-p` flag per package, `--quiet` retained). Empty → `["cargo","test",
+ * "--quiet"]` (byte-identical to the unscoped workspace argv). Package names are
+ * emitted as discrete argv elements so they never pass through a shell (no
+ * `shell:true` is ever used) — see SCENARIO-014.
+ *
+ * @param packages Resolved (de-duplicated) package names.
+ * @returns The cargo test argv, scoped or unscoped.
+ */
+export function scopedCargoTestArgs(packages: string[]): string[] {
+	if (packages.length === 0) return ["cargo", "test", "--quiet"];
+	return ["cargo", "test", ...packages.flatMap((p) => ["-p", p]), "--quiet"];
+}
+
 const STDERR_TAIL_LINES = 12;
 
 export type CmdKey = "build" | "test" | "typecheck";
@@ -155,9 +279,27 @@ export function detectProjectCommands(cwd: string): ProjectCommands {
  * detected (`pass` true, `ran` empty). Respects an AbortSignal: a signal that is
  * already aborted skips remaining commands; one that fires mid-run is honored.
  */
-export function runBuildGate(cwd: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): BuildGateResult {
-	const cmds = detectProjectCommands(cwd);
-	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+export function runBuildGate(
+	cwd: string,
+	opts: { timeoutMs?: number; testPackages?: string[]; signal?: AbortSignal } = {},
+): BuildGateResult {
+	const cmds0 = detectProjectCommands(cwd);
+	const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
+	// Resolve rust test-package scope with explicit precedence (AC-04):
+	//   1. opts.testPackages provided (incl. explicit [] = force workspace-wide);
+	//   2. process.env.SUPER_DEV_BUILD_TEST_PACKAGES (de-duplicated);
+	//   3. workspace-wide (no scoping).
+	const testPackages =
+		opts.testPackages !== undefined
+			? dedupePreservingOrder(opts.testPackages)
+			: parseTestPackages(process.env.SUPER_DEV_BUILD_TEST_PACKAGES);
+	// AC-03/AC-06: apply scoping ONLY when rust + non-empty packages exist, on a
+	// SHALLOW COPY so detectProjectCommands stays pure/byte-identical (the
+	// detector regression assertion still passes).
+	const cmds =
+		cmds0.language === "rust" && testPackages.length > 0 && cmds0.test
+			? { ...cmds0, test: scopedCargoTestArgs(testPackages) }
+			: cmds0;
 	const errors: string[] = [];
 	const ran: string[] = [];
 	const flag = { build: true, test: true, typecheck: true };

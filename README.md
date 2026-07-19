@@ -57,6 +57,55 @@ super_dev({ task: "fix the crash on large file upload" })
 
 Tool options: `skipWorktree`, `skipStages`, `model`, `maxAgents`.
 
+## Configuration
+
+The deterministic build gate (Stage 9 verify / 9.2 implementation / 11 merge)
+runs `build`, `test`, and `typecheck` (and Rust `clippy`) against your
+worktree. Two **optional environment variables** tune its timeout and test
+scope **without editing any stage call site** — the harness resolves them
+internally, so the three callers keep passing only `{ signal }`.
+
+**`SUPER_DEV_BUILD_TIMEOUT_MS`** — per-command timeout override in
+milliseconds (base-10 integer). The default is 600_000 ms (10 minutes); a
+too-short timeout previously caused false FAILs on slow first-time Rust
+compiles before the build finished. Falls back to the default when the var is
+unset, empty, not-a-number, or `<= 0`. This is the per-package test scoping
+companion to the timeout var. Give every cargo / build / typecheck command up
+to 15 minutes:
+
+```bash
+SUPER_DEV_BUILD_TIMEOUT_MS=900000 pi super-dev fix ...
+```
+
+**`SUPER_DEV_BUILD_TEST_PACKAGES`** — a comma-separated list of Cargo crate
+names that scopes the gate's `cargo test` invocation to those packages
+(`cargo test -p <pkg> ...`) instead of running workspace-wide. This lets the
+gate reach green on a Rust workspace whose other crates carry pre-existing,
+unrelated failing tests — **without mutating the target repo** (no `#[ignore]`,
+no quarantine, no file writes). Applied **only when the detected language is
+`rust`** and the list is non-empty; go/python/node/mixed stacks ignore it
+entirely, and empty/missing falls back to a workspace-wide
+`cargo test --quiet`. Scope the gate's `cargo test` to two crates, ignoring
+the rest of the workspace:
+
+```bash
+SUPER_DEV_BUILD_TEST_PACKAGES="crates/api,crates/store" pi super-dev fix ...
+```
+
+Both variables can be combined on a Rust workspace:
+
+```bash
+SUPER_DEV_BUILD_TIMEOUT_MS=900000 \
+SUPER_DEV_BUILD_TEST_PACKAGES="crates/api,crates/store" \
+  pi super-dev fix "add OAuth2 login"
+```
+
+Internals: timeout resolution lives in `resolveTimeoutMs()` and package
+scoping in `parseTestPackages()` / `scopedCargoTestArgs()` (all in
+`src/build-runner.ts`). Precedence for each is: explicit `opts` argument > env
+var > built-in default. See the JSDoc on `DEFAULT_TIMEOUT_MS` for the full
+fallback matrix.
+
 ## Architecture
 
 ```
