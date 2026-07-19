@@ -13,7 +13,7 @@
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory } from "./render/dashboard.ts";
+import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -192,6 +192,11 @@ export default function activate(pi: ExtensionAPI): void {
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // TUI-only widget (AC-09 no-regression guard)
 				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
+			// Phase 4 (AC-07): footer status pill — done/total stages. TUI-only
+			// (guard above already ensured ctx.mode === "tui").
+			const TERMINAL = new Set(["ok", "failed", "skipped"]);
+			const doneCount = entries.filter((e) => TERMINAL.has(e.status)).length;
+			try { ctx?.ui?.setStatus?.("super-dev", `${doneCount}/${entries.length} stages`); } catch { /* best-effort */ }
 				// SCENARIO-001 / SCENARIO-002 — register the dashboard via pi's native
 				// Component-factory overload `setWidget(key, (tui, theme) => Component,
 				// opts)`. The previous zero-arg object-returning factory never received
@@ -220,7 +225,7 @@ export default function activate(pi: ExtensionAPI): void {
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
 			const sink: ProgressSink = {
-				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); dashboardActivity = label; renderDashboard(); flush(); },
+				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); dashboardActivity = label; if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flush(); },
 				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); dashboardActivity = message; renderDashboardThrottled(); flush(); },
 				text: (partial) => {
 					live = partial;
@@ -276,8 +281,10 @@ export default function activate(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
 			} finally {
-				// Always clear the dashboard widget when the run ends (success or failure).
+				// Always clear the dashboard widget + footer state when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
+				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
+				try { ctx?.ui?.setStatus?.("super-dev", undefined); } catch { /* best-effort */ }
 			}
 		},
 		// Pi-native result rendering: 3 sections. §1 detail logs DIMMED (thought-like,
@@ -295,22 +302,11 @@ export default function activate(pi: ExtensionAPI): void {
 				const text = result.content[0];
 				return new Text(text?.type === "text" ? text.text : "", 0, 0);
 			}
-			const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
-			const parts: string[] = [];
-			// §1 detail log — DIMMED (like agent thought progress; persisted, not transient)
-			parts.push(theme.fg("dim", "── detail log (last 50 lines) ──"));
-			for (const line of (d.transcriptTail ?? [])) parts.push(theme.fg("dim", line));
-			if (d.logPath) parts.push(theme.fg("dim", `(full log: ${d.logPath})`));
-			// §2 stage progress — NORMAL (like the real answer)
-			parts.push("");
-			parts.push(theme.bold("── stage progress ──"));
-			for (const s of (d.stages ?? [])) parts.push(`  ${icon(s.status)} ${s.label}`);
-			// §3 summary — NORMAL/bold
-			if (d.summaryLines?.length) {
-				parts.push("");
-				parts.push(...d.summaryLines);
-			}
-			return new Text(parts.join("\n"), 0, 0);
+			// §1 dim detail log + §2 bold stage progress + §3 Markdown summary are
+			// composed by the pure, unit-tested builder (single source of truth —
+			// mirrors the widget extraction; AC-06 root-cause fix). The streaming
+			// fallback above is unchanged so print/json/headless/RPC modes regress.
+			return buildResultComponent(d, theme);
 		},
 	});
 

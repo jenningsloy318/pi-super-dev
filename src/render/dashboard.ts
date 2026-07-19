@@ -16,7 +16,8 @@
  * (relocated truncators), SCENARIO-010 (ANSI-safe truncation).
  */
 
-import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 
 /**
  * Structural subset of pi's `Theme` that the dashboard presentation layer
@@ -200,7 +201,11 @@ export function packDashboardLines(
 	width: number,
 	theme?: DashboardTheme,
 ): string[] {
-	const done = entries.filter((e) => e.status !== "running").length;
+	// F5: count only TERMINAL stages (ok/failed/skipped). The prior
+	// `!== "running"` rule counted never-started (pending/"·") stages as done,
+	// so the header over-reported progress (e.g. "8/11" with only 2 finished).
+	const TERMINAL = new Set(["ok", "failed", "skipped"]);
+	const done = entries.filter((e) => TERMINAL.has(e.status)).length;
 	const running = entries.find((e) => e.status === "running");
 	const head = truncLine(
 		`super-dev · ${done}/${entries.length}${
@@ -270,4 +275,88 @@ export function createDashboardWidgetFactory(
 ): (tui: unknown, theme: DashboardTheme) => Container {
 	return (_tui, theme) =>
 		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — RESULT rendering (AC-06): the COMPLETED-run §1/§2/§3 view.
+// ---------------------------------------------------------------------------
+
+/**
+ * Result-rendering details shape (the COMPLETED-run path). The streaming path
+ * (empty stages) short-circuits in `extension.ts#renderResult` before this
+ * builder is ever reached, so every field here is optional and the builder
+ * graceful-degrades on any absence (SCENARIO-010 / SCENARIO-016).
+ */
+export interface ResultDetails {
+	summaryLines?: string[];
+	transcriptTail?: string[];
+	stages?: Array<{ label: string; status: string }>;
+	logPath?: string;
+}
+
+/** Status → icon for §2 stage rows (mirrors the renderResult icon mapper). */
+export function stageIcon(st: string): string {
+	return st === "ok"
+		? "✔"
+		: st === "failed"
+			? "⚠"
+			: st === "skipped"
+				? "↷"
+				: st === "running"
+					? "●"
+					: "·";
+}
+
+/**
+ * Build the pi-native result view as a `Container` of [§1 dim Text, §2 bold
+ * Text, §3 Markdown] — the AC-06 (SCENARIO-006) composition contract.
+ *
+ *   §1 — DIMMED detail log (thought-like, persisted; not transient). Header +
+ *        the rolling transcript tail + a `(full log: …)` footnote when present.
+ *   §2 — NORMAL stage-progress block. A BOLD `── stage progress ──` header
+ *        followed by one icon-prefixed row per stage (status → glyph via
+ *        `stageIcon`).
+ *   §3 — the run summary rendered through the pi-tui `Markdown` component so
+ *        headings, bold, code, and lists parse (NOT flattened to plain text —
+ *        the AC-06 root-cause fix). Omitted entirely when `summaryLines` is
+ *        empty/undefined (graceful-degrade: no blank Markdown block).
+ *
+ * Pure & TUI-context-free: threads the display `theme` into every styled
+ * string and derives the MarkdownTheme from it, so the Container composition is
+ * unit-testable with a structural theme mock (mirrors `buildDashboardWidget`
+ * for the widget path). Input-resilient: empty `transcriptTail`, missing
+ * `logPath`, undefined/empty `summaryLines`, and single-stage pipelines all
+ * render without throwing and leave the remaining sections intact
+ * (SCENARIO-006 / SCENARIO-010 / SCENARIO-015 / SCENARIO-016).
+ */
+export function buildResultComponent(details: ResultDetails, theme?: DashboardTheme): Container {
+	const fg = theme?.fg ?? ((_token: string, text: string) => text);
+	const bold = theme?.bold ?? ((text: string) => text);
+	const container = new Container();
+
+	// §1 detail log — DIMMED (like agent thought progress; persisted, not transient).
+	container.addChild(new Text(fg("dim", "── detail log (last 50 lines) ──"), 0, 0));
+	for (const line of details.transcriptTail ?? []) {
+		container.addChild(new Text(fg("dim", line), 0, 0));
+	}
+	if (details.logPath) {
+		container.addChild(new Text(fg("dim", `(full log: ${details.logPath})`), 0, 0));
+	}
+
+	// §2 stage progress — NORMAL (the answer-like block). Header is BOLD; each
+	// stage renders its status icon + label.
+	container.addChild(new Text(bold("── stage progress ──"), 0, 0));
+	for (const s of details.stages ?? []) {
+		container.addChild(new Text(`  ${stageIcon(s.status)} ${s.label}`, 0, 0));
+	}
+
+	// §3 summary — Markdown-rendered (AC-06). Omitted entirely when there are no
+	// summary lines so no empty Markdown block is ever emitted.
+	if (details.summaryLines?.length) {
+		container.addChild(
+			new Markdown(details.summaryLines.join("\n"), 0, 0, getMarkdownTheme()),
+		);
+	}
+
+	return container;
 }
