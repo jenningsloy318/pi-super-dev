@@ -664,6 +664,133 @@
         ],
         "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/02-build-gate-timeout-package-scoping/docs/specifications/02-build-gate-timeout-package-scoping/09-spec-review.md"
       }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-19T15:54:13.674Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "Build-gate: configurable timeout + per-package test scoping",
+        "date": "2026-07-19",
+        "summary": "## What was built\n\nA pure-TypeScript, backward-compatible fix for two harness-side defects in pi-super-dev's deterministic build-gate (`src/build-runner.ts`) that caused false FAILs on Rust and other slow-compiling workspaces, aborting Stage 9 (verify) and blocking Stage 11 (merge). The fix changes only HOW the harness *invokes* commands (argv + timeout) — the target repo is never mutated.\n\n### Phase 1 — Configurable per-command timeout (Fix 1)\n- Raised exported `DEFAULT_TIMEOUT_MS` from `120_000` → `600_000` (10 min) so a clean `cargo build+test+clippy` no longer ETIMEDOUTs.\n- Added exported pure helper `resolveTimeoutMs(explicit?: number): number` with precedence: explicit finite-positive opt → `parseInt(process.env.SUPER_DEV_BUILD_TIMEOUT_MS)` → `DEFAULT_TIMEOUT_MS`. Missing/empty/NaN/`<=0` env values fall back to the default.\n- `runBuildGate` now resolves its timeout via `resolveTimeoutMs(opts.timeoutMs)`; the value threads unchanged into every `spawnSync(..., { timeout })` in the `exec` closure, so build/test/typecheck each inherit it.\n- All three stage call sites (`verify.ts:87`, `implementation.ts:64`, `index.ts:53`) remain `runBuildGate(path, { signal: ctx.signal })` — they inherit the higher default + env override automatically with zero edits.\n\n### Phase 2 — Per-package Cargo test scoping (Fix 2)\n- Added two exported pure helpers: `parseTestPackages(raw?: string): string[]` (split/trim/filter-empty/dedupe-preserving-order) and `scopedCargoTestArgs(packages: string[]): string[]` (non-empty → `[\"cargo\",\"test\",\"-p\",a,\"-p\",b,\"--quiet\"]`; empty → unchanged `[\"cargo\",\"test\",\"--quiet\"]`).\n- Added optional `opts.testPackages?: string[]` to `runBuildGate`'s options type (interface widening, safe). Precedence (AC-04): explicit `opts.testPackages` (even `[]`, which forces workspace-wide) wins over env; else `SUPER_DEV_BUILD_TEST_PACKAGES` is consulted; else workspace-wide.\n- Scoping is applied only when `language === \"rust\"` AND the resolved packages array is non-empty, on a **shallow copy** of the detected commands — so `detectProjectCommands` stays byte-for-byte pure (its existing `expect(c.test).toEqual([\"cargo\",\"test\",\"--quiet\"])` regression test still passes) and go/python/mixed/greenfield stacks are unaffected. argv is always a `string[]` handed to `spawnSync` with no `shell:true`, so package names are never shell-interpolated.\n\n### Phase 3 — Documentation + contract tests\n- New README \"Configuration\" section documenting both env vars with Rust-workspace examples; JSDoc at the resolution site.\n- Added 3 focused test files asserting on argv construction / pure-resolver outputs (no real cargo spawned): `resolveTimeoutMs` fallback matrix, `parseTestPackages`, `scopedCargoTestArgs`, explicit-vs-env precedence, non-rust non-regression, shell-safety, and the unchanged-detector regression guard.\n\n## Files changed (vs main)\n- `src/build-runner.ts` — core fix (+150/-4): new exports + scoping/timeout resolution.\n- `tests/build-runner-timeout.test.ts` (new, 19 tests) — AC-01/AC-02/AC-05.\n- `tests/build-runner-packages.test.ts` (new, 28 tests) — AC-03/AC-04/AC-06 + SCENARIO-006..011/014.\n- `tests/build-runner-docs.test.ts` (new, 16 tests) — README/JSDoc + call-site-non-mutation contract (AC-05/AC-10/SCENARIO-012).\n- `README.md` — new Configuration section (AC-10/SCENARIO-017).\n- `docs/specifications/02-build-gate-timeout-package-scoping/` — requirements, BDD scenarios, research, debug analysis, code assessment, spec, plan, task list, review (workflow artifacts).\n\n## Test results — ALL GREEN\n- `vitest run` on the 3 new test files: **63/63 passed** (1.45s, hermetic).\n- `tsc --noEmit` (strict): **exit 0**, zero type errors.\n- `git diff main -- package.json`: **empty** — no new runtime dependencies.\n- All 3 stage call sites confirmed unchanged (SCENARIO-012).\n\n## Deviations from spec\nNone. All acceptance criteria AC-01..AC-10 and scenarios SCENARIO-001..017 are satisfied exactly as specified. `detectProjectCommands` purity preserved (key invariant). The open question re: generic non-rust scoping (npm/pnpm/go) was intentionally deferred per the spec's recommendation to keep the fix surgical — the env-var + `opts.testPackages` plumbing is generic enough to extend later without an API change.",
+        "phasesCompleted": "3/3",
+        "allGreen": "true",
+        "filesModified": [
+          "src/build-runner.ts",
+          "tests/build-runner-timeout.test.ts",
+          "tests/build-runner-packages.test.ts",
+          "tests/build-runner-docs.test.ts",
+          "README.md"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/02-build-gate-timeout-package-scoping/docs/specifications/02-build-gate-timeout-package-scoping/10-implementation-summary.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-19T15:56:26.342Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review — build-gate timeout & package scoping (Fix 1 + Fix 2)",
+        "date": "2025-11-21",
+        "verdict": "PASS",
+        "summary": "The implementation correctly fixes both stated blockers and meets all six acceptance criteria. Fix 1 raises DEFAULT_TIMEOUT_MS to 600_000 and adds a pure, well-tested resolveTimeoutMs(explicit?) that honors SUPER_DEV_BUILD_TIMEOUT_MS (defensive parseInt with NaN/<=0/empty/missing fallback) and threads into the existing spawnSync({timeout}) closure — zero call-site edits, exactly as the task recommended. Fix 2 adds pure parseTestPackages() + scopedCargoTestArgs() helpers and applies -p scoping only when language==='rust' and the list is non-empty, on a shallow copy so detectProjectCommands stays byte-identical. All three call sites (verify.ts:87, implementation.ts:64, index.ts:53) are confirmed unchanged and pass only { signal }; backward compatibility for non-Cargo repos is intact (workspace-wide fallback). Verified locally: `npm run typecheck` clean, 63/63 new unit tests green (timeout + packages + docs). Destructive-action gate: clean — no DROP/rm -rf/force-push/auth-disable; the target repo is explicitly never mutated (scoping is argv-only). No high-severity findings. The issues below are low-to-medium quality concerns that do not risk production, hence PASS rather than CONTEST. Severity inflation is avoided by design.",
+        "findings": [
+          {
+            "id": "ADV-1",
+            "severity": "medium",
+            "title": "Scoping is test-only: cargo build and cargo clippy still run workspace-wide, so the gate stays red on workspaces with a non-compiling/unlinted sibling crate",
+            "detail": "Fix 2 scopes only the `cargo test` argv (build-runner.ts scopedCargoTestArgs → runBuildGate replaces cmds.test on the shallow copy). The `cargo build --quiet` and `cargo clippy --all-targets --quiet` commands are never scoped, so a workspace where an unrelated crate fails to compile or trips clippy will keep the gate permanently red regardless of SUPER_DEV_BUILD_TEST_PACKAGES. This precisely resolves the *stated* blocker (pre-existing DB-integration *tests*) and satisfies AC-02/AC-03 verbatim, but it is a narrower fix than the prose goal 'so it stays permanently red → review can never reach Approved.' Recommendation: document this boundary explicitly in the JSDoc/README (e.g. 'scopes test only; build/clippy remain workspace-wide') so users don't expect the env var to green a half-broken workspace, or add parallel SUPER_DEV_BUILD_PACKAGES / SUPER_DEV_BUILD_SCOPE that also narrows build+clippy when desired. File: src/build-runner.ts (runBuildGate scoping block ~lines 245-265).",
+            "lens": "Architect",
+            "file": "src/build-runner.ts"
+          },
+          {
+            "id": "ADV-2",
+            "severity": "low",
+            "title": "Duplicate de-duplication logic: parseTestPackages reimplements the module-level dedupePreservingOrder helper",
+            "detail": "dedupePreservingOrder() is defined at module scope and used by runBuildGate for the opts.testPackages path, but parseTestPackages() contains its OWN inline Set-based dedupe (the `seen`/`out` loop). Two implementations of the same order-preserving dedupe algorithm now coexist. parseTestPackages could be a one-liner: `return dedupePreservingOrder(raw.split(',').map(s => s.trim()).filter(Boolean))`. Harmless (results agree, both tested) but it is the kind of drift that bites later when one path gets a tweak (e.g. case-folding) and the other doesn't. Recommendation: collapse parseTestPackages onto dedupePreservingOrder. File: src/build-runner.ts.",
+            "lens": "Minimalist",
+            "file": "src/build-runner.ts"
+          },
+          {
+            "id": "ADV-3",
+            "severity": "low",
+            "title": "Override params opts.timeoutMs / opts.testPackages are exercised only by tests — no production caller passes them",
+            "detail": "All three call sites pass { signal } only (confirmed via grep), so opts.timeoutMs and opts.testPackages are dead in the production path and exist purely for unit-testability / hypothetical future use. The task explicitly sanctioned this ('call sites need no change OR can override explicitly'), so it is in-spec, but it is opt-in surface area with a single real consumer (tests). If the 'override explicitly' branch is never wired by a stage, consider dropping the opts and resolving purely from env, or add a one-line call-site note that env is the intended channel. Low because it is sanctioned and tested; flagged for the Minimalist record.",
+            "lens": "Minimalist",
+            "file": "src/build-runner.ts"
+          },
+          {
+            "id": "ADV-4",
+            "severity": "low",
+            "title": "Lenient parseInt silently accepts malformed env values (e.g. '900abc' → 900, '300s' → 300)",
+            "detail": "resolveTimeoutMs uses Number.parseInt(raw, 10), which stops at the first non-digit. So SUPER_DEV_BUILD_TIMEOUT_MS='900abc' resolves to 900ms (not the default) and '300s' (a plausible '300 seconds' typo) resolves to 300ms — both dangerously short and indistinguishable from a valid value. The whitespace-trim case is tested and documented, but trailing-garbage acceptance is not. Recommendation: either validate the full string with Number(raw) / a strict integer regex and fall back on any mismatch, or at minimum add a test asserting '900abc'→default so the behavior is pinned rather than incidental. File: src/build-runner.ts resolveTimeoutMs.",
+            "lens": "Skeptic",
+            "file": "src/build-runner.ts"
+          },
+          {
+            "id": "ADV-5",
+            "severity": "low",
+            "title": "Pre-existing: flag[key] stays true for commands the detector didn't emit (buildSuccess/allTestsPass reported true when nothing ran)",
+            "detail": "Not introduced by this change (it predates Fix 1/2 and is out of the stated scope), but a Skeptic pass through the file notices it: `flag` initializes all three keys to true and is only flipped to false inside exec(). If detectProjectCommands omits cmds.build (e.g. a python repo with no build script), buildSuccess is returned as true even though no build ran. runBuildGate.pass is still correct (driven by errors[]), but the per-field booleans can over-report. The 'greenfield → pass:true, ran:[]' contract documents the empty case; the partial case does not. No action required for this PR; flagging so it is a conscious omission, not an oversight.",
+            "lens": "Skeptic",
+            "file": "src/build-runner.ts"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/02-build-gate-timeout-package-scoping/docs/specifications/02-build-gate-timeout-package-scoping/11-adversarial-review.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-19T15:56:30.957Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Build-gate: configurable timeout + per-package test scoping — Code Review",
+        "date": "2026-07-19",
+        "verdict": "Approved",
+        "summary": "The implementation faithfully realizes the spec's two harness-side fixes in src/build-runner.ts and is fully verified green. (1) Timeout: DEFAULT_TIMEOUT_MS raised to 600_000; exported pure resolveTimeoutMs(explicit?) implements the precedence explicit-finite-positive opt > SUPER_DEV_BUILD_TIMEOUT_MS (parseInt base-10, NaN/<=0/empty/missing fall through) > default, and the resolved value threads into spawnSync({ timeout: timeoutMs }) inside the exec closure (build/test/typecheck/clippy). (2) Scoping: pure parseTestPackages (split/trim/filter-empty/dedupe-order-preserving) + scopedCargoTestArgs (one -p per package, --quiet retained, empty = byte-identical to today) are applied inside runBuildGate on a SHALLOW COPY only when language==='rust' && packages non-empty && cmds.test exists, so detectProjectCommands stays pure. Precedence is exactly as specified: provided opts.testPackages (incl. explicit [] = force workspace-wide) > env > workspace-wide. All 10 acceptance criteria are met: env vars honored (AC-01/02), scoped cargo test (AC-03/04), three call sites unchanged yet inherit new behavior (AC-05 — confirmed verify.ts:87, implementation.ts:64, index.ts:53 all pass { signal: ctx.signal }), non-rust non-regression (AC-06/SCENARIO-010/011), no target-repo mutation (AC-09), and both env vars documented in JSDoc + README 'Configuration' section (AC-10). npm run typecheck is clean; npm test passes 496/496 including 63 new focused unit tests across build-runner-timeout/packages/docs suites covering the fallback matrix, explicit-override, precedence, non-rust non-regression, detector-purity regression guard, and shell-safety (SCENARIO-014). git diff package.json is empty (no new deps). Security: package names are emitted as discrete argv elements to spawnSync with no shell:true anywhere, so no injection surface. The only findings are one pre-existing/amplified concurrency observation (Medium, explicitly out of spec scope) and one trivial maintainability note. This is a correct, complete, backward-compatible fix; no blockers.",
+        "findings": [
+          {
+            "id": "CR-01",
+            "severity": "Medium",
+            "title": "AbortSignal is not passed to spawnSync — the higher 10-min default widens the worst-case window for an ignored mid-command abort",
+            "detail": "PRE-EXISTING, AMPLIFIED BY THIS CHANGE — NOT A BLOCKER, all ACs remain met. The exec closure only checks opts.signal?.aborted before and AFTER spawnSync returns; it never passes the signal into the spawn. spawnSync accepts a `signal: AbortSignal` option (Node 16+ / undici) that aborts and kills the child immediately. Previously, with the 2-min default, a build that ignored an in-flight abort wasted at most ~2 min; now that the default is 10 min (and user overrides can be 15+ min), a legitimately-aborted long cargo build will run to its full timeout before the post-spawn abort check fires. The spec/constraints did not ask to fix abort behavior and explicitly forbid touching the control-flow engine, so this is an out-of-scope improvement, not a defect introduced by the diff. Failure scenario: Stage 9 verify with a 10-min timeout + a user/cancel signal mid-compile keeps the cargo child alive up to the full budget instead of ~instantly honoring the abort. Suggested follow-up (low-risk, one line, preserves the before/after checks): pass the signal through — `spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: 'utf8', signal: opts.signal })` — and let spawnSync's own abort return { error } / signal, which the existing r.error branch already reports as 'aborted'. Verify Node version floor in package.json engines supports AbortSignal-on-spawnSync (Node >=16) before landing.",
+            "file": "src/build-runner.ts",
+            "line": "~222",
+            "lens": "Concurrency"
+          },
+          {
+            "id": "CR-02",
+            "severity": "Low",
+            "title": "Two dedupe paths exist — module-level dedupePreservingOrder duplicates logic inside parseTestPackages",
+            "detail": "dedupePreservingOrder() is defined for the opts.testPackages branch, while parseTestPackages() re-implements the same trim/filter/dedupe-order-preserving logic inline for the env branch. They are behaviorally equivalent (verified by tests: 'a, a, b' and opts ['a','a','b'] both yield ['a','b']), so this is purely a DRY nit. Suggested cleanup: have parseTestPackages call dedupePreservingOrder on its filtered list, or have the opts branch reuse parseTestPackages by joining — but either is optional. No correctness impact.",
+            "file": "src/build-runner.ts",
+            "line": "~78 / ~103",
+            "lens": "Maintainability"
+          },
+          {
+            "id": "CR-03",
+            "severity": "Info",
+            "title": "No direct assertion that the resolved timeout reaches spawnSync (only indirect coverage)",
+            "detail": "The new timeout tests assert resolveTimeoutMs() outputs and the packages tests assert runBuildGate's argv via result.ran, but nothing directly proves spawnSync received { timeout: <resolved> }. The data path is a single visual line (const timeoutMs = resolveTimeoutMs(opts.timeoutMs) → spawnSync({ timeout: timeoutMs })) and is correct on inspection, so this is informational. If desired, a future test could stub/spy spawnSync (vi.spyOn(child_process,'spawnSync')) to assert the options.timeout equals the resolved value for an env override — but the spec's testing strategy did not require it and the current indirect coverage is adequate.",
+            "file": "tests/build-runner-timeout.test.ts",
+            "lens": "Testability"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/02-build-gate-timeout-package-scoping/docs/specifications/02-build-gate-timeout-package-scoping/12-code-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-19T15:59:26.720Z",
+      "agent": "docs",
+      "data": {
+        "title": "Build-gate: configurable timeout + per-package test scoping — docs execution (Stage 11)",
+        "date": "2026-07-19",
+        "summary": "Updated all spec-directory documents to reflect the implementation, which is complete with Code Review verdict Approved (no blockers). The fix (src/build-runner.ts) makes the deterministic build-gate's per-command timeout env-configurable via SUPER_DEV_BUILD_TIMEOUT_MS with a raised 600_000ms (10 min) default and adds rust-only per-package Cargo test scoping via SUPER_DEV_BUILD_TEST_PACKAGES (plus an optional opts.testPackages override), all backward-compatible with zero stage call-site edits, no new runtime deps, and no target-repo mutation. Quality gate is fully green: npm run typecheck clean (tsc strict exit 0), npm test green (496/496 incl. 63 new focused unit tests across build-runner-timeout/packages/docs suites), git diff main -- package.json empty, and all three call sites (verify.ts:87, implementation.ts:64, index.ts:53) unchanged. Marked all 14 task-list items complete, all 3 implementation-plan phases complete, added a Post-Implementation Deviations section (DEV-01..DEV-03) to the specification, finalized the implementation summary with the approved verdict, and added a 'docs' stage (DOCS_COMPLETE) to the workflow tracking .knowledge.json. README's Configuration section was already added in Phase 3 (commit 50b7b8b4).",
+        "docsUpdated": "docs/specifications/02-build-gate-timeout-package-scoping/08-task-list.md (all 14 tasks marked [x] complete, added completion summary + final quality-gate status); docs/specifications/02-build-gate-timeout-package-scoping/07-implementation-plan.md (all 3 phases marked ✅ COMPLETE with result notes + commit hashes 1b84fe55/0c56ace0/50b7b8b4, added final quality-gate block); docs/specifications/02-build-gate-timeout-package-scoping/06-specification.md (added 'Post-Implementation Deviations' section documenting DEV-01/DEV-02/DEV-03 with original-text/changed-behavior/reason/impact/recommended-follow-up); docs/specifications/02-build-gate-timeout-package-scoping/10-implementation-summary.md (refined deviations to record 3 out-of-scope follow-ups + added Approved/DOCS_COMPLETE status lines); docs/specifications/02-build-gate-timeout-package-scoping/.knowledge.json (added 'docs' stage: status DOCS_COMPLETE, timestamp, docsUpdated list, deviationsDocumented, codeReviewVerdict Approved, qualityGate summary). README.md Configuration section was authored during Phase 3 implementation (commit 50b7b8b4) and required no further docs-executor edits.",
+        "deviationsDocumented": [
+          "DEV-01 — AbortSignal not threaded into spawnSync (Severity: Medium; pre-existing, amplified by the raised 10-min default). Original spec assumed the timeout threads into spawnSync and 'no further change is needed there'; actual exec closure checks opts.signal?.aborted before/after spawnSync but does not pass the signal into spawnSync. Reason: constraints forbade touching the control-flow engine and did not request abort changes. Impact: a mid-compile abort on a 10+ min budget runs to full timeout before the post-spawn check fires. Recommended follow-up: pass signal: opts.signal into spawnSync options (verify Node>=16 engines first). Maps to CR-01.",
+          "DEV-02 — Two dedupe paths (Severity: Low; DRY/maintainability, no behavior change). A module-level dedupePreservingOrder() handles the opts.testPackages branch while parseTestPackages() re-implements the same trim/filter/dedupe-order-preserving logic inline for the env branch. Verified behaviorally equivalent by tests. Recommended optional follow-up: have parseTestPackages call dedupePreservingOrder. Maps to CR-02.",
+          "DEV-03 — Generic non-rust scoping intentionally deferred (Severity: Info). Spec allowed generic build-system detection 'where possible' with Cargo as the minimum. Actual implementation guards scoping on language==='rust' only; go/python/node/mixed stacks produce byte-identical argv regardless of SUPER_DEV_BUILD_TEST_PACKAGES. Reason: spec's surgical-fix recommendation; the env-var + opts.testPackages plumbing is generic enough to extend to npm/pnpm/go later without an API change. Impact: none for backward compatibility (non-rust repos behave exactly as before per AC-06); Rust was the only slow-compiling workspace class that triggered the false FAILs that killed specs 54/55."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/02-build-gate-timeout-package-scoping/docs/specifications/02-build-gate-timeout-package-scoping/13-documentation.md"
+      }
     }
   }
 }

@@ -42,6 +42,34 @@ DETERMINISTIC UNIT TESTS (tests/build-runner.test.ts, vitest, mirroring the exis
 
 INTEGRATION / GATE VERIFICATION (AC-08/SCENARIO-016): `npm run typecheck` (tsc --noEmit under strict mode) passes with zero errors; `npm test` (vitest run) passes including the new tests; `git diff package.json` is empty (no new runtime deps). Confirm via grep that the three stage call sites remain `runBuildGate(path, { signal: ctx.signal })` (SCENARIO-012). NON-MUTATION CHECK (SCENARIO-013): review the final diff to confirm only argv + timeout logic changed and no target-repo writes/quarantine exist. DOCUMENTATION (AC-10/SCENARIO-017): JSDoc at the resolution site plus a new README "Configuration" section with Rust-workspace examples.
 
+## Post-Implementation Deviations
+
+This section records deviations from the original spec text identified during/after implementation. Code Review verdict: **Approved** — no spec-blocking deviations; the items below are explicitly out-of-scope follow-ups, not unmet acceptance criteria. All AC-01..AC-10 and SCENARIO-001..017 are satisfied exactly as specified.
+
+### DEV-01 — AbortSignal not threaded into `spawnSync` (out-of-scope follow-up)
+- **Severity**: Medium (pre-existing, amplified by this change).
+- **Original spec text**: "The value already threads into `spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" })` inside the `exec` closure (~line 173), so no further change is needed there."
+- **Actual behavior**: The `exec` closure checks `opts.signal?.aborted` before and after `spawnSync` returns but does NOT pass the AbortSignal into `spawnSync` itself. Node's `spawnSync` supports a `signal` option (>=16) that would abort/kill the child immediately.
+- **Reason**: The constraints explicitly forbid touching the control-flow engine and did not request abort-behavior changes. Raising the default to 10 min (and allowing user overrides of 15+ min) widens the worst-case window where an ignored mid-command abort wastes up to the full budget instead of ~instantly honoring it.
+- **Impact**: No correctness or AC impact. A Stage-9 verify with a 10-min timeout + a cancel signal mid-compile keeps the cargo child alive up to the full budget before the post-spawn abort check fires.
+- **Recommended follow-up (not in this change)**: pass the signal through — `spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8", signal: opts.signal })` — preserving the existing before/after checks. Verify `package.json` `engines` Node floor (>=16) first. See CR-01 in `12-code-review.md`.
+
+### DEV-02 — Two dedupe paths (DRY observation, no behavior change)
+- **Severity**: Low (maintainability).
+- **Original spec text**: `parseTestPackages` is specified as "splits the comma-list, trims each entry, filters empties, dedupes preserving first-seen order".
+- **Actual behavior**: A module-level `dedupePreservingOrder()` is used for the `opts.testPackages` branch, while `parseTestPackages()` re-implements the same trim/filter/dedupe-order-preserving logic inline for the env branch.
+- **Reason**: Convenience during incremental authoring of the two precedence branches.
+- **Impact**: None. Verified behaviorally equivalent by tests (both `"a, a, b"` and `opts ["a","a","b"]` yield `["a","b"]`).
+- **Recommended follow-up (optional)**: have `parseTestPackages` call `dedupePreservingOrder`, or have the opts branch reuse `parseTestPackages` by joining. See CR-02.
+
+### DEV-03 — Generic non-rust scoping intentionally deferred
+- **Severity**: Info.
+- **Original spec text**: "Detect the build system generically where possible, but at minimum support a Cargo `-p <crate>` (or `--package`) scoping mechanism."
+- **Actual behavior**: Scoping is guarded on `language === "rust"` only. Go/python/node/mixed stacks produce byte-identical argv regardless of `SUPER_DEV_BUILD_TEST_PACKAGES`.
+- **Reason**: The spec's recommendation to keep the fix surgical; the env-var + `opts.testPackages` plumbing is generic enough to extend to npm/pnpm/go later without an API change. Non-rust stacks were not the blocker that killed specs 54/55.
+- **Impact**: None for backward compatibility (non-rust repos behave exactly as before per AC-06). Rust is the only slow-compiling workspace class that triggered the false FAILs.
+- **Recommended follow-up (optional)**: add `language`-dispatched `scopedTestArgs` helpers (npm `--workspace`, go package list, etc.) reusing the existing precedence plumbing.
+
 ## BDD Scenario References
 
 - SCENARIO-001
