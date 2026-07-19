@@ -28,6 +28,36 @@ import { join } from "node:path";
  * clippy on a moderately-sized workspace without masking a genuine hang.
  *
  * Exported so the value is unit-testable and forward-compatible.
+ *
+ * # Configuration via environment variables
+ *
+ * The deterministic build gate (`runBuildGate`, consumed by Stage 9 verify,
+ * Stage 9.2 implementation, and Stage 11 merge) reads TWO optional env vars
+ * to tune timeout and test scope WITHOUT editing any stage call site (all
+ * three callers still pass only `{ signal }`):
+ *
+ *   1. `SUPER_DEV_BUILD_TIMEOUT_MS` — per-command timeout override in
+ *      milliseconds, parsed base-10. Falls back to {@link DEFAULT_TIMEOUT_MS}
+ *      (600_000 / 10 min) when unset, empty, NaN, or `<= 0`. Resolved by
+ *      {@link resolveTimeoutMs}, which threads into every `spawnSync({ timeout })`
+ *      in the `exec` closure (build / test / typecheck / clippy).
+ *      Precedence: explicit `opts.timeoutMs` (positive finite) > env var >
+ *      default. Example: `SUPER_DEV_BUILD_TIMEOUT_MS=900000` gives 15 min.
+ *
+ *   2. `SUPER_DEV_BUILD_TEST_PACKAGES` — comma-separated cargo crate list to
+ *      scope the `cargo test` invocation (`-p <pkg>` per entry) instead of
+ *      running workspace-wide. Empty/missing → workspace-wide (unchanged).
+ *      Parsed by {@link parseTestPackages} and applied by
+ *      {@link scopedCargoTestArgs} ONLY when `detectProjectCommands` reports
+ *      `language === "rust"` AND the list is non-empty, on a shallow copy of
+ *      the detected commands so the pure detector is byte-identical.
+ *      Precedence: `opts.testPackages` (provided, incl. explicit `[]` to force
+ *      workspace-wide) > env var > workspace-wide.
+ *      Example: `SUPER_DEV_BUILD_TEST_PACKAGES="crates/api,crates/store"`.
+ *
+ * Non-rust stacks (go/python/node/mixed) ignore the scoping var entirely,
+ * and greenfield repos (no manifest) still return `pass:true, ran:[]`. The
+ * target repository is never mutated — only the harness argv + timeout change.
  */
 export const DEFAULT_TIMEOUT_MS = 600_000;
 
