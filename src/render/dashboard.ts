@@ -16,8 +16,21 @@
  * (relocated truncators), SCENARIO-010 (ANSI-safe truncation).
  */
 
-import { visibleWidth } from "@earendil-works/pi-tui";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
+
+/**
+ * Structural subset of pi's `Theme` that the dashboard presentation layer
+ * depends on. Declared with METHOD syntax so it is satisfied bivariantly by
+ * BOTH the real pi-coding-agent `Theme` (whose `fg`/`bold` are methods) and by
+ * lightweight unit-test mocks that supply just an `fg`/`bold` function pair —
+ * keeping the pure helpers free of the full `Theme` shape. Making `theme`
+ * optional everywhere also realizes the graceful-degrade contract: with no
+ * theme the strings render uncolored (and the running glyph is the static `●`).
+ */
+export interface DashboardTheme {
+	fg(token: string, text: string): string;
+	bold?(text: string): string;
+}
 
 /**
  * The 10-frame braille spinner set used for animated "running" glyphs.
@@ -76,18 +89,27 @@ export function runningGlyph(seed?: number): string {
  *   running → accent   <animated braille frame, time-derived seed>
  *   *       → dim      ·
  *
- * The running seed is `Math.floor(Date.now() / 100)`, so each ~200 ms
- * throttled widget re-render (WIDGET_MS) advances the RUNNING_FRAMES index
- * and produces visible animation (SCENARIO-004 / SCENARIO-005).
+ * `theme` is OPTIONAL so the presentation helpers stay pure and unit-testable
+ * with no TUI context: when omitted, the glyphs are returned uncolored and the
+ * running stage renders the static filled-circle `●` (no animation, since the
+ * throttled re-render loop only exists in the live TUI). This is the
+ * graceful-degrade contract from the spec — the real TUI factory always
+ * threads a `theme`, so the running seed `Math.floor(Date.now() / 100)` still
+ * advances the RUNNING_FRAMES index there and produces visible animation
+ * (SCENARIO-003 / SCENARIO-004 / SCENARIO-005).
  */
-export function statusGlyph(status: string, theme: Theme): string {
-	if (status === "ok") return theme.fg("success", "✓");
-	if (status === "failed") return theme.fg("error", "✗");
-	if (status === "skipped") return theme.fg("warning", "↷");
+export function statusGlyph(status: string, theme?: DashboardTheme): string {
+	if (status === "ok") return theme ? theme.fg("success", "✓") : "✓";
+	if (status === "failed") return theme ? theme.fg("error", "✗") : "✗";
+	if (status === "skipped") return theme ? theme.fg("warning", "↷") : "↷";
 	if (status === "running") {
-		return theme.fg("accent", runningGlyph(Math.floor(Date.now() / 100)));
+		// With theme: animated braille frame (time-derived seed). Without theme:
+		// the stable static glyph `●` (anti-hardcoding: seed undefined → static).
+		return theme
+			? theme.fg("accent", runningGlyph(Math.floor(Date.now() / 100)))
+			: runningGlyph();
 	}
-	return theme.fg("dim", "·");
+	return theme ? theme.fg("dim", "·") : "·";
 }
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -176,7 +198,7 @@ export function packDashboardLines(
 	entries: Array<{ id: string; label: string; status: string }>,
 	activity: string | undefined,
 	width: number,
-	theme: Theme,
+	theme?: DashboardTheme,
 ): string[] {
 	const done = entries.filter((e) => e.status !== "running").length;
 	const running = entries.find((e) => e.status === "running");
@@ -208,4 +230,44 @@ export function packDashboardLines(
 		);
 	}
 	return lines;
+}
+
+/**
+ * Build the dashboard widget as a pi-tui `Container` of `Text` children — the
+ * Component shape pi's native Component-factory `setWidget(key, factory, opts)`
+ * overload consumes. Pure: no TUI side effects, no reads of process state except
+ * the explicit `width` arg. Each rendered line becomes one `Text` child, so the
+ * 2-column adaptive layout, themed glyphs, animated running frame, and abort
+ * hint all flow straight through from `packDashboardLines`
+ * (SCENARIO-001 / SCENARIO-002 — AC-01 / AC-02 / AC-04).
+ */
+export function buildDashboardWidget(
+	entries: Array<{ id: string; label: string; status: string }>,
+	activity: string | undefined,
+	width: number,
+	theme?: DashboardTheme,
+): Container {
+	const container = new Container();
+	for (const line of packDashboardLines(entries, activity, width, theme)) {
+		container.addChild(new Text(line, 1, 0));
+	}
+	return container;
+}
+
+/**
+ * Return the `(tui, theme) => Component` closure that pi's native
+ * Component-factory `setWidget` overload consumes. Terminal width is read INSIDE
+ * the returned closure on every render so the 2-column layout adapts to a
+ * resized terminal rather than freezing at creation-time width. The factory
+ * arity is exactly 2 (`tui`, `theme`); passing a function — not a string[] — to
+ * `setWidget` selects the Component overload and ensures `theme` reaches the
+ * strings, which is the AC-01 root-cause fix (AC-08: the string[] overload is
+ * never produced) (SCENARIO-001 / SCENARIO-002).
+ */
+export function createDashboardWidgetFactory(
+	entries: Array<{ id: string; label: string; status: string }>,
+	activity: string | undefined,
+): (tui: unknown, theme: DashboardTheme) => Container {
+	return (_tui, theme) =>
+		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme);
 }

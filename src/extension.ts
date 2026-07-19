@@ -12,7 +12,8 @@
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
+import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory } from "./render/dashboard.ts";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -116,46 +117,18 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 	}
 }
 
-/** Truncate to a single line of at most `max` visible chars (for the activity row). */
-export function truncateActivity(s: string, max = 100): string {
-	const oneLine = s.replace(/\s+/g, " ").trim();
-	return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
-}
-
-/** Pad `s` with spaces to `w`, or truncate with an ellipsis if longer. */
-export function padTruncate(s: string, w: number): string {
-	return s.length >= w ? `${s.slice(0, Math.max(1, w - 1))}…` : s + " ".repeat(w - s.length);
-}
-
-/** Format the dashboard widget lines, packing ALL stages into width-adaptive
- *  columns so EVERY stage is shown — no summary, no stage dropped. Pi caps
- *  widget height (~10 lines) and truncates the bottom; one-stage-per-line would
- *  overflow for a 13-stage pipeline, so we pack `floor(width/36)` stages per
- *  row. On a typical 80-col terminal that's 2/row → ~7 rows + header +
- *  activity ≤ Pi's cap. The header carries the running stage + esc hint so the
- *  live stage is always visible even at the top. */
-export function packDashboardLines(entries: Array<{ id: string; label: string; status: string }>, activity: string | undefined, width: number): string[] {
-	const icon = (st: string) => (st === "ok" ? "✔" : st === "failed" ? "⚠" : st === "skipped" ? "↷" : st === "running" ? "●" : "·");
-	const done = entries.filter((e) => e.status !== "running").length;
-	const running = entries.find((e) => e.status === "running");
-	const head = truncateToWidth(`super-dev · ${done}/${entries.length}${running ? ` · ${icon(running.status)} ${running.label}` : ""}  (esc to abort)`, width);
-	const lines = [head];
-	const a = truncateActivity(activity ?? "");
-	if (a) lines.push(truncateToWidth(`▶ ${a}`, width));
-	const cols = 2;
-	// Adapt cell width to the actual terminal width — prevents overflow on narrow terminals.
-	const indent = 2;
-	const cellW = Math.max(10, Math.floor((width - indent) / cols));
-	// Column-first fill: first column = first half, second column = second half.
-	const half = Math.ceil(entries.length / cols);
-	const cell = (e: { label: string; status: string }) => padTruncate(`${icon(e.status)} ${e.label}`, cellW);
-	for (let row = 0; row < half; row++) {
-		const left = entries[row];
-		const right = entries[row + half];
-		lines.push(truncateToWidth(" ".repeat(indent) + (right ? cell(left) + cell(right) : cell(left)), width));
-	}
-	return lines;
-}
+// Re-export the extracted dashboard presentation helpers so existing
+// importers (tests, downstream consumers) keep resolving unchanged (AC-08).
+// The upgraded, theme-aware implementations live in src/render/dashboard.ts;
+// `buildDashboardWidget` / `createDashboardWidgetFactory` expose the Phase 2
+// Component-factory builders consumed by renderDashboard()'s setWidget call.
+export {
+	packDashboardLines,
+	padTruncate,
+	truncateActivity,
+	buildDashboardWidget,
+	createDashboardWidgetFactory,
+};
 
 export default function activate(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -217,9 +190,32 @@ export default function activate(pi: ExtensionAPI): void {
 			let lastWidget = 0;
 			const WIDGET_MS = 200;
 			const renderDashboard = () => {
-				if (ctx?.mode !== "tui") return;
+				if (ctx?.mode !== "tui") return; // TUI-only widget (AC-09 no-regression guard)
 				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, () => ({ render: (w: number) => packDashboardLines(entries, undefined, w), invalidate: () => {} }), { placement: "aboveEditor" }); } catch { /* best-effort */ }
+				// SCENARIO-001 / SCENARIO-002 — register the dashboard via pi's native
+				// Component-factory overload `setWidget(key, (tui, theme) => Component,
+				// opts)`. The previous zero-arg object-returning factory never received
+				// `theme`, so the dashboard rendered as uncolored ASCII (AC-01 root
+				// cause). The factory now builds a Container of Text children using the
+				// theme-aware packDashboardLines (AC-02 theming, AC-03 animated running
+				// glyph via a time-derived seed, AC-04 preserved 2-column layout). The
+				// string[] setWidget overload is intentionally NOT used (AC-08).
+				try {
+					// SCENARIO-001 / SCENARIO-002 — register the dashboard via pi's native
+					// Component-factory overload `setWidget(key, (tui, theme) => Component,
+					// opts)`. The factory is the pure, unit-tested
+					// `createDashboardWidgetFactory`, so `theme` threads into a Container of
+					// Text children (AC-01 root-cause fix; AC-02 theming; AC-03 animated
+					// running glyph via a time-derived seed; AC-04 preserved 2-column
+					// layout). The string[] setWidget overload is intentionally NOT used
+					// (AC-08); the `ctx.mode === 'tui'` guard above guarantees no call fires
+					// in print/json/headless/RPC modes (AC-09 / AC-10).
+					ctx?.ui?.setWidget?.(
+						DASHBOARD_KEY,
+						createDashboardWidgetFactory(entries, dashboardActivity),
+						{ placement: "aboveEditor" },
+					);
+				} catch { /* best-effort */ }
 			};
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
