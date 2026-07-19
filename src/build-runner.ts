@@ -61,6 +61,59 @@ export function resolveTimeoutMs(explicit?: number): number {
 	return DEFAULT_TIMEOUT_MS;
 }
 
+/** Dedupe a list of package names, preserving first-seen order. */
+function dedupePreservingOrder(items: string[]): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const it of items) {
+		if (seen.has(it)) continue;
+		seen.add(it);
+		out.push(it);
+	}
+	return out;
+}
+
+/**
+ * Parse a comma-separated list of cargo package names into a clean array.
+ *
+ * Used to read `process.env.SUPER_DEV_BUILD_TEST_PACKAGES`. Splits on commas,
+ * trims each entry (spaces/tabs/newlines), drops empties, and dedupes while
+ * preserving first-seen order. Returns `[]` for undefined/empty/whitespace-only
+ * input. Pure & side-effect-free so it is fully unit-testable.
+ *
+ * @param raw The raw comma-list (typically an env-var value).
+ * @returns A de-duplicated, trimmed list of package names.
+ */
+export function parseTestPackages(raw?: string): string[] {
+	if (raw === undefined || raw === "") return [];
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const part of raw.split(",")) {
+		const trimmed = part.trim();
+		if (trimmed === "" || seen.has(trimmed)) continue;
+		seen.add(trimmed);
+		out.push(trimmed);
+	}
+	return out;
+}
+
+/**
+ * Build the scoped `cargo test` argv for a list of packages.
+ *
+ * Non-empty → `["cargo","test", ...packages.flatMap(p => ["-p", p]), "--quiet"]`
+ * (one `-p` flag per package, `--quiet` retained). Empty → `["cargo","test",
+ * "--quiet"]` (byte-identical to the unscoped workspace argv). Package names are
+ * emitted as discrete argv elements so they never pass through a shell (no
+ * `shell:true` is ever used) — see SCENARIO-014.
+ *
+ * @param packages Resolved (de-duplicated) package names.
+ * @returns The cargo test argv, scoped or unscoped.
+ */
+export function scopedCargoTestArgs(packages: string[]): string[] {
+	if (packages.length === 0) return ["cargo", "test", "--quiet"];
+	return ["cargo", "test", ...packages.flatMap((p) => ["-p", p]), "--quiet"];
+}
+
 const STDERR_TAIL_LINES = 12;
 
 export type CmdKey = "build" | "test" | "typecheck";
@@ -196,9 +249,27 @@ export function detectProjectCommands(cwd: string): ProjectCommands {
  * detected (`pass` true, `ran` empty). Respects an AbortSignal: a signal that is
  * already aborted skips remaining commands; one that fires mid-run is honored.
  */
-export function runBuildGate(cwd: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): BuildGateResult {
-	const cmds = detectProjectCommands(cwd);
+export function runBuildGate(
+	cwd: string,
+	opts: { timeoutMs?: number; testPackages?: string[]; signal?: AbortSignal } = {},
+): BuildGateResult {
+	const cmds0 = detectProjectCommands(cwd);
 	const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
+	// Resolve rust test-package scope with explicit precedence (AC-04):
+	//   1. opts.testPackages provided (incl. explicit [] = force workspace-wide);
+	//   2. process.env.SUPER_DEV_BUILD_TEST_PACKAGES (de-duplicated);
+	//   3. workspace-wide (no scoping).
+	const testPackages =
+		opts.testPackages !== undefined
+			? dedupePreservingOrder(opts.testPackages)
+			: parseTestPackages(process.env.SUPER_DEV_BUILD_TEST_PACKAGES);
+	// AC-03/AC-06: apply scoping ONLY when rust + non-empty packages exist, on a
+	// SHALLOW COPY so detectProjectCommands stays pure/byte-identical (the
+	// detector regression assertion still passes).
+	const cmds =
+		cmds0.language === "rust" && testPackages.length > 0 && cmds0.test
+			? { ...cmds0, test: scopedCargoTestArgs(testPackages) }
+			: cmds0;
 	const errors: string[] = [];
 	const ran: string[] = [];
 	const flag = { build: true, test: true, typecheck: true };
