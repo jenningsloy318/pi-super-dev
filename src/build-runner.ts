@@ -19,7 +19,48 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * Default per-command timeout for the build gate, in milliseconds (10 min).
+ *
+ * The previous 120_000ms hardcode caused false FAILs on slow first-time
+ * compiles (e.g. clean Rust workspaces) before the build finished, aborting
+ * Stage 9 (verify). 10 minutes comfortably covers a cold cargo build/test/
+ * clippy on a moderately-sized workspace without masking a genuine hang.
+ *
+ * Exported so the value is unit-testable and forward-compatible.
+ */
+export const DEFAULT_TIMEOUT_MS = 600_000;
+
+/**
+ * Resolve the per-command build-gate timeout in milliseconds.
+ *
+ * Precedence (highest wins):
+ *   1. an explicit finite positive `opt` (preserves the opts.timeoutMs unit-test
+ *      override; 0/NaN/-x/Infinity are NOT honored and fall through);
+ *   2. `process.env.SUPER_DEV_BUILD_TIMEOUT_MS` parsed base-10 — NaN, <=0,
+ *      empty, or missing falls through;
+ *   3. {@link DEFAULT_TIMEOUT_MS} (600_000 / 10 min).
+ *
+ * Pure & side-effect-free (only READS process.env) so it is fully unit-
+ * testable without spawning any command.
+ *
+ * @param explicit An optional finite positive millisecond override.
+ * @returns The resolved timeout in milliseconds.
+ */
+export function resolveTimeoutMs(explicit?: number): number {
+	if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+		return explicit;
+	}
+	const raw = process.env.SUPER_DEV_BUILD_TIMEOUT_MS;
+	if (raw !== undefined && raw !== "") {
+		const parsed = Number.parseInt(raw, 10);
+		if (Number.isFinite(parsed) && parsed > 0) {
+			return parsed;
+		}
+	}
+	return DEFAULT_TIMEOUT_MS;
+}
+
 const STDERR_TAIL_LINES = 12;
 
 export type CmdKey = "build" | "test" | "typecheck";
@@ -157,7 +198,7 @@ export function detectProjectCommands(cwd: string): ProjectCommands {
  */
 export function runBuildGate(cwd: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): BuildGateResult {
 	const cmds = detectProjectCommands(cwd);
-	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
 	const errors: string[] = [];
 	const ran: string[] = [];
 	const flag = { build: true, test: true, typecheck: true };
