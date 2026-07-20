@@ -16,6 +16,26 @@ import { runBuildGate } from "../build-runner.ts";
 const MAX_ATTEMPTS = 3;
 const pad = (n: number) => String(n).padStart(2, "0");
 
+/**
+ * Extract referenced crate names from error blocks for the IN-SCOPE GREEN log
+ * (AC-05 → SCENARIO-012/025). Reuses the same two markers as the build-gate's
+ * `classifyOutOfScopeErrors`: (a) `crates/<pkg>/` path markers and (b) cargo
+ * `-p <pkg>` markers. De-duplicates while preserving first-seen order.
+ */
+function cratesFromErrors(errors: string[]): string[] {
+	const crates: string[] = [];
+	const pathRe = /crates\/([^/]+)\//g;
+	const pkgRe = /(?:^|\s)-p\s+(\S+)/g;
+	for (const block of errors) {
+		let m: RegExpExecArray | null;
+		pathRe.lastIndex = 0;
+		while ((m = pathRe.exec(block))) crates.push(m[1]);
+		pkgRe.lastIndex = 0;
+		while ((m = pkgRe.exec(block))) crates.push(m[1]);
+	}
+	return Array.from(new Set(crates));
+}
+
 export const implementationStage: Stage = {
 	id: "implementation",
 	label: "Stage 9 — Implementation",
@@ -64,9 +84,19 @@ export const implementationStage: Stage = {
 				const gate = runBuildGate(setup.worktreePath, { signal: ctx.signal });
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
-				if (gate.pass) {
+				// In-scope verdict (AC-05 → SCENARIO-012/013/014/025/027): the phase is GREEN
+				// when the gate fully passed OR when every failure is a pre-existing
+				// out-of-scope crate the branch never touched (gate.inScopePass). The
+				// `if (!green)` branch below therefore fires ONLY on genuine in-scope
+				// failures — neither pass nor inScopePass after MAX_ATTEMPTS — so
+				// pre-existing breakage elsewhere can no longer abort green in-scope work.
+				if (gate.pass || gate.inScopePass) {
 					green = true;
-					ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
+					if (gate.pass) {
+						ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
+					} else {
+						ctx.log(`Implementation ${phaseId} IN-SCOPE GREEN on attempt ${attempt} — ${gate.outOfScopeErrors.length} pre-existing out-of-scope failure(s) ignored (crates: ${cratesFromErrors(gate.outOfScopeErrors).join(",")})`);
+					}
 					break;
 				}
 				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${gate.errors.join("; ")}`);
