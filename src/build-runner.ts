@@ -128,6 +128,57 @@ export function parseTestPackages(raw?: string): string[] {
 }
 
 /**
+ * Detect the cargo crates touched on the current branch vs a base ref.
+ *
+ * AC-01 — spawns `git -C <cwd> diff --merge-base <baseRef> --name-only` once,
+ * maps each `crates/<pkg>/…` line to `<pkg>` (first `crates/` segment wins), and
+ * de-duplicates the result via {@link dedupePreservingOrder} preserving
+ * first-seen order. Non-crate paths (root `Cargo.toml`, `README`, `docs/…`) are
+ * ignored.
+ *
+ * Base-ref precedence (highest → lowest): an explicit {@link baseRef} arg > the
+ * `SUPER_DEV_GATE_BASE_REF` env var > `"main"`.
+ *
+ * Safe degradation (NEVER throws — the entire body is try/caught): returns `[]`
+ * on a non-zero git exit (missing base ref / non-git dir), an `r.error` (git
+ * not installed), empty or whitespace-only diff output, a diff with no crate
+ * paths, a non-string stdout, or any thrown exception. An empty `[]` return is
+ * exactly the value `runBuildGate` relies on to fall back to workspace-wide
+ * scoping (no `-p` flags anywhere). See SCENARIO-001/002/003/020/022/023.
+ *
+ * Side-effecting (spawns git + reads env) like the rest of the module, but pure
+ * wrt argv construction: it spawns `git` as a single discrete-argv call with no
+ * `shell:true`, so package/path data never reaches a shell.
+ *
+ * @param cwd Absolute worktree path to run git in (`-C <cwd>`).
+ * @param baseRef Optional base ref override (`--merge-base <baseRef>`).
+ * @returns De-duplicated touched crate names (first-seen order), or `[]`.
+ */
+export function detectTouchedCargoPackages(cwd: string, baseRef?: string): string[] {
+	try {
+		const ref = baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF ?? "main";
+		const r = spawnSync("git", ["-C", cwd, "diff", "--merge-base", ref, "--name-only"], {
+			encoding: "utf8",
+		});
+		// Non-zero exit (bad ref / non-git dir) or spawn error → safe [] return.
+		if (r.error || r.status !== 0) return [];
+		const out: string = r.stdout;
+		if (typeof out !== "string" || out.trim() === "") return [];
+		// Match the FIRST `crates/<pkg>/` segment of each line; ignore non-crate
+		// paths entirely. `(?:^|\/)crates\/` tolerates nested-`crates/` prefixes.
+		const re = /(?:^|\/)crates\/([^/]+)\//;
+		const pkgs: string[] = [];
+		for (const line of out.split("\n")) {
+			const m = re.exec(line);
+			if (m) pkgs.push(m[1]);
+		}
+		return dedupePreservingOrder(pkgs);
+	} catch {
+		return [];
+	}
+}
+
+/**
  * Build the scoped `cargo test` argv for a list of packages.
  *
  * Non-empty → `["cargo","test", ...packages.flatMap(p => ["-p", p]), "--quiet"]`
