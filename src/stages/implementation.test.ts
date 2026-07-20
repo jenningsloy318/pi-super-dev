@@ -26,6 +26,13 @@ const mock = vi.hoisted(() => ({
 }));
 
 vi.mock("../build-runner.ts", () => ({
+	// RED oracle (Gap 1b/AC-02): the stage now calls runRedCheck on the
+	// tdd-guide result's `testFiles`. Stub it to "unknown" — the greenfield-safe
+	// status — so the RED loop issues ZERO re-prompts and proceeds immediately,
+	// keeping these in-scope-verdict assertions (gate call counts, log lines)
+	// exactly as before the RED loop was wired. See tests/implementation-red-loop*.test.ts
+	// for the RED-loop-specific runRedCheck scripting.
+	runRedCheck: (_cwd: string, _targets?: unknown, _opts?: unknown): string => "unknown",
 	runBuildGate: (_cwd: string, _opts?: unknown) => {
 		mock.calls++;
 		if (mock.results && mock.results.length) return mock.results.shift();
