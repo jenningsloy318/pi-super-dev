@@ -1,0 +1,976 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-20T15:30:50.948Z",
+      "agent": "requirements",
+      "data": {
+        "title": "Per-phase Deliverable Assertions for the Build Gate (false-green root-cause fix)",
+        "date": "2026-07-20",
+        "type": "bug-fix",
+        "priority": "critical",
+        "executiveSummary": "A phase is currently GREEN whenever its in-scope crates compile and existing tests pass (`gate.pass || gate.inScopePass` in implementation.ts), which is necessary but not sufficient: any phase whose deliverable is not a compile error (creating a file, wiring a call site, making a new source reachable, adding a named test) reports green while delivering nothing — exactly the false-green in run 2026-07-20T11-27-04 (stockfan Phases 5 & 6). This fix introduces an OPTIONAL per-phase `deliverables` contract (requireFiles / requireContains / requireNotContains / requireTests) AND-ed with build-green, so a phase is GREEN only when it both compiles and its declared artifacts actually exist. Backward compatible: phases/specs with no `deliverables` are unchanged.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "A new `runDeliverableCheck(cwd, deliverables, opts?)` function is added to `src/build-runner.ts` alongside `runRedCheck`/`runBuildGate`, reusing `resolveTimeoutMs` and `detectProjectCommands`. It enforces four optional sub-checks: (a) `requireFiles` via `fs.existsSync` resolved relative to cwd — miss → `missing file: <path>`; (b) `requireContains` reads the file (best-effort; unreadable → `unreadable: <path>`) and regex-tests `pattern` — miss → `missing pattern <pattern> in <file>`; (c) `requireNotContains` regex-tests `pattern` — hit → `forbidden pattern <pattern> still present in <file>`; (d) `requireTests` lists the project's tests per runner (cargo → `cargo test --list --format=terse` or `-- --list`; vitest → `vitest list --json` or `npm test -- --list`; jest → `--listTests`; pytest → `--collect-only -q`) and tolerant-matches each declared name by substring OR regex — miss → `missing test: <name>`. The test-list spawn is cached once per cwd per run. It returns `{ pass: boolean, missing: string[], ran: string[] }` and NEVER throws: any unreadable file, failed list-spawn, parse ambiguity, or absent test-runner records a clear `missing`/reason and continues; when no runner is available `requireTests` records `test-list unavailable` and does NOT block (existence/grep still enforced). The tolerant substring-OR-regex match rule is documented in a code comment."
+          },
+          {
+            "id": "AC-02",
+            "statement": "`runDeliverableCheck` is fully unit-tested in a new `tests/build-runner-deliverable-check.test.ts` using a temp cwd: existing vs missing files, present vs absent `requireContains` patterns, `requireNotContains` hit (forbidden still present), missing vs present `requireTests` names, an unreadable file path, and the no-runner-skip case (returns `{pass:true, missing:[...recorded...], ran:[...]}` for requireFiles/requireContains/requireNotContains while skipping requireTests). Coverage asserts the exact `missing` reason strings and that `ran` lists the checks performed."
+          },
+          {
+            "id": "AC-03",
+            "statement": "In `src/stages/implementation.ts`, immediately after `runBuildGate` produces `gate`, the stage also calls `runDeliverableCheck(setup.worktreePath, phase.deliverables)` (phase iteration comes from `normalizePhases(state.spec?.phases)`, which is extended to PRESERVE a `deliverables` field so `phase.deliverables` is typed). The phase is GREEN only when `(gate.pass || gate.inScopePass) && deliverableCheck.pass`. When build-green but deliverables FAIL, the stage does NOT set `green=true`, does NOT break, and feeds `deliverableCheck.missing` into the next implementer attempt as an additive `## Deliverables still missing — create/wire these` block (alongside the existing `## Previous attempt failed the build/test gate` block that uses `attemptErrors`), so the implementer creates the files / does the wiring / adds the tests. Retries up to `MAX_ATTEMPTS` (3). It logs `Implementation ${phaseId} deliverable-check ${PASS|FAIL} (missing: <semi-colon-joined or none>)` and the combined verdict. Never throws; when `phase.deliverables` is absent/undefined → `deliverableCheck.pass = true` (today's behavior, no-op)."
+          },
+          {
+            "id": "AC-04",
+            "statement": "`buildSpecPrompt` in `src/prompts.ts` (the specification prompt whose `## Data to return` lists `phases`) is updated so the `phases` item reads `{ name, description, deliverables? }`, and an explicit instruction is added: for any phase whose deliverable is NOT compiler-checkable (creating a file, wiring a call site from X to Y, making new sources reachable, adding a named test), the spec author MUST declare `deliverables` with `requireFiles` (paths that must exist), `requireContains`/`requireNotContains` (`{file, pattern}` regex checks — e.g. a call-site wiring or a non-`_ => {}` match arm), and `requireTests` (test names that must exist), because these are AND-ed with build-green to define phase completion — without them a phase compiles green while delivering nothing."
+          },
+          {
+            "id": "AC-05",
+            "statement": "`SpecificationData` in `src/render/schemas.ts` is extended so `phases[].deliverables` is accepted as an OPTIONAL object: `{ requireFiles?: string[], requireContains?: {file:string, pattern:string}[], requireNotContains?: {file:string, pattern:string}[], requireTests?: string[] }`. The existing `STAGE_MODELS[\"spec\"]` registration, template, and additionalDocs are unchanged. A spec with no `deliverables` validates identically to today."
+          },
+          {
+            "id": "AC-06",
+            "statement": "A regression test simulates the stockfan Phase-5/6 false-green end-to-end at the checker + wiring level: a phase declaring `requireFiles:[X]` + `requireContains:[screen.rs→fetch_us_data]` + `requireNotContains:[screen.rs→fetch_fmp]` + `requireTests:[T]`. With ALL deliverables ABSENT, `runDeliverableCheck(...).pass === false` (non-empty `missing`) even though a stub `runBuildGate` would report `gate.pass === true`; the combined phase verdict computed by the wiring logic is NOT green. A second test asserts the same phase with deliverables PRESENT yields `pass === true` and a green verdict, proving AND-semantics both ways."
+          },
+          {
+            "id": "AC-07",
+            "statement": "`npm run typecheck` is strict-clean (no new errors) and `npm test` is fully green — all existing tests pass (including the themed-stream, real-theme-parity, mid-run-input, dashboard, runRedCheck, npm-in-scope, and scope-aware-cargo-gate suites) PLUS the new deliverable-check unit tests, the AND-wiring test, and the spec-prompt-elicitation test. No regression to `runRedCheck`, npm in-scope detection, scope-aware cargo gate, themed stream rendering, mid-run input injection, or the dashboard."
+          }
+        ],
+        "nonFunctional": [
+          "Robustness / fail-soft: `runDeliverableCheck` and every file/list/regex operation it performs must NEVER throw — unreadable files, missing files, failed test-list spawns, regex parse errors, and parse ambiguity are all recorded as a `missing` reason string and the check continues. The gate must never crash because a declared file was unreadable or a runner failed to list tests.",
+          "Backward compatibility: phases and full specs that declare NO `deliverables` are byte-for-byte identical to today's behavior (`deliverableCheck.pass = true`, no extra log noise beyond an optional single line, no extra subprocess). Existing specs require zero changes.",
+          "Performance: at most ONE cached test-list subprocess spawn per cwd per run (shared across phases that share the worktree). File existence checks are `fs.existsSync` (no I/O storm); regex checks are bounded single-file reads. No new runtime dependencies. No new spawned processes beyond the single cached test-list per run.",
+          "Scope correctness (out-of-scope guard): this change touches ONLY `src/build-runner.ts`, `src/stages/implementation.ts`, `src/prompts.ts`, `src/render/schemas.ts` (and the `normalizePhases` helper it relies on). It MUST NOT alter control-flow (`nodes.ts`/`workflow.ts`/`pipeline.ts`), the review/integration stages, or backend selection.",
+          "Theme safety: the change must never destructure a pi `Theme` instance (a class relying on `this.fgColors`); always call methods style. The `tests/stream-theme-class-theme.test.ts` and `tests/render/real-theme-parity.test.ts` guards must remain green."
+        ],
+        "openQuestions": [
+          "requireTests cache scope: confirm the test-list spawn is cached PER CWD PER RUN (shared across all phases of one implementation run in one worktree), not per phase. Recommended: per cwd per run — phases share a worktree, so one `cargo test --list` / `vitest list` per run. Confirm before implementation.",
+          "Deliverable-miss message block: confirm it is ADDITIVE to (not a replacement for) the existing `## Previous attempt failed the build/test gate` block that uses `attemptErrors`. Recommended: both blocks are emitted when both apply (a phase can fail build-green-only-on-deliverables, or fail on both). Confirm.",
+          "Tolerant test-name match precedence for requireTests: when a declared name is neither a valid regex nor a substring match, which wins for the no-match verdict? Recommended: treat the pattern as regex if it parses as one, else substring; a match by EITHER satisfies the requirement; document the rule in-code. Confirm the substring-vs-regex precedence and that the stockfan `module::test` path can be matched by a substring of the test name.",
+          "normalizePhases extension: confirm `normalizePhases` (in src/stages/implementation.ts, currently producing `{name, description}`) is extended to preserve an optional `deliverables` field rather than reading deliverables by index from the raw `state.spec.phases`. Recommended: extend the normalized phase shape so `phase.deliverables` is statically typed. Confirm the exact normalized shape to avoid a second normalization surprise like the earlier `phases.entries is not a function` regression."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-20T15:32:26.527Z",
+      "agent": "bdd",
+      "data": {
+        "title": "Per-phase Deliverable Assertions for the Build Gate",
+        "date": "2026-07-21",
+        "source": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/01-requirements.md",
+        "features": [
+          {
+            "name": "Deliverable Check Function",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "All declared deliverables present reports pass",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a phase declares a deliverable contract whose required files exist, whose required patterns are present, whose forbidden patterns are absent, and whose required tests are found in the project test list",
+                "when": "the deliverable check runs against the phase's worktree",
+                "then": "it reports pass equals true",
+                "andClauses": [
+                  "the missing list is empty",
+                  "the ran list records every check performed"
+                ]
+              },
+              {
+                "id": "002",
+                "title": "Missing required file fails with a clear reason",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a phase declares a required file path that does not exist relative to the worktree",
+                "when": "the deliverable check runs",
+                "then": "it reports pass equals false",
+                "andClauses": [
+                  "the missing list contains the reason 'missing file: <path>'"
+                ]
+              },
+              {
+                "id": "003",
+                "title": "Absent required pattern fails with a clear reason",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a phase declares a required-contains pattern that does not match the file's contents",
+                "when": "the deliverable check runs",
+                "then": "it reports pass equals false",
+                "andClauses": [
+                  "the missing list contains 'missing pattern <pattern> in <file>'"
+                ]
+              },
+              {
+                "id": "004",
+                "title": "Forbidden pattern still present fails with a clear reason",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a phase declares a forbidden pattern that still appears in the file",
+                "when": "the deliverable check runs",
+                "then": "it reports pass equals false",
+                "andClauses": [
+                  "the missing list contains 'forbidden pattern <pattern> still present in <file>'"
+                ]
+              },
+              {
+                "id": "005",
+                "title": "Missing required test fails with a clear reason",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a phase declares a required test name that is absent from the collected project test list",
+                "when": "the deliverable check runs",
+                "then": "it reports pass equals false",
+                "andClauses": [
+                  "the missing list contains 'missing test: <name>'"
+                ]
+              },
+              {
+                "id": "006",
+                "title": "Test names match tolerantly by substring or regex",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "a phase declares a required test name that is a substring of a collected test path",
+                "when": "the deliverable check matches declared test names",
+                "then": "the test is treated as present rather than missing",
+                "andClauses": [
+                  "the documented matching rule treats the name as a regex when it parses, otherwise as a substring",
+                  "a match by either interpretation satisfies the requirement"
+                ]
+              },
+              {
+                "id": "007",
+                "title": "No supported test runner degrades requireTests without blocking existence or grep checks",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "a repository exposes no supported test runner",
+                "when": "a phase declares requireTests alongside requireFiles and requireContains",
+                "then": "the check records 'test-list unavailable' for the test sub-check",
+                "andClauses": [
+                  "the existence and grep sub-checks are still enforced",
+                  "the check does not crash the gate over the unavailable runner"
+                ]
+              },
+              {
+                "id": "008",
+                "title": "Unreadable file never throws the check",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a phase declares a required-contains check against a file that cannot be read",
+                "when": "the deliverable check runs",
+                "then": "it records 'unreadable: <path>' and continues",
+                "andClauses": [
+                  "no exception propagates to the caller",
+                  "remaining sub-checks are still evaluated"
+                ]
+              },
+              {
+                "id": "009",
+                "title": "Test-list subprocess spawns at most once per worktree per run",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "several phases in one implementation run share the same worktree",
+                "when": "requireTests is evaluated for each phase",
+                "then": "the test-listing subprocess spawns no more than once for the whole run",
+                "andClauses": [
+                  "later phases reuse the cached test list"
+                ]
+              },
+              {
+                "id": "010",
+                "title": "Deliverable check is unit-tested across all sub-check cases",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "the deliverable-check test suite exercising a temporary worktree",
+                "when": "the suite runs",
+                "then": "it covers existing and missing files, present and absent patterns, a forbidden-pattern hit, missing and present tests, an unreadable file, and the no-runner-skip case",
+                "andClauses": [
+                  "it asserts the exact reason strings in the missing list",
+                  "it asserts the ran list records the checks performed"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Phase Completion AND-Semantics",
+            "scenarios": [
+              {
+                "id": "011",
+                "title": "Build-green phase with missing deliverables is not green",
+                "acRef": "AC-03",
+                "priority": "critical",
+                "given": "a phase whose in-scope build and tests pass but whose declared deliverables are missing",
+                "when": "the implementation stage computes the phase verdict",
+                "then": "the phase is marked not green",
+                "andClauses": [
+                  "green equals false even though the build-gate passed or passed in scope"
+                ]
+              },
+              {
+                "id": "012",
+                "title": "Missing deliverables are fed into the next implementer attempt",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a phase is build-green but fails its deliverable check",
+                "when": "the implementation stage retries the implementer",
+                "then": "the implementer receives an additive 'Deliverables still missing' instruction block listing the missing deliverables",
+                "andClauses": [
+                  "the existing build-gate error block is still emitted when it also applies"
+                ]
+              },
+              {
+                "id": "013",
+                "title": "Deliverable failures respect the maximum attempt budget",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "a phase's deliverables remain missing across retries",
+                "when": "the maximum number of attempts is reached",
+                "then": "the stage stops retrying that phase",
+                "andClauses": [
+                  "the phase remains not green"
+                ]
+              },
+              {
+                "id": "014",
+                "title": "Phase without declared deliverables is unchanged",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a phase that declares no deliverables",
+                "when": "the phase is evaluated",
+                "then": "the deliverable check passes trivially",
+                "andClauses": [
+                  "today's build-green behavior is preserved",
+                  "no deliverable subprocess or log noise is introduced"
+                ]
+              },
+              {
+                "id": "015",
+                "title": "Deliverable verdict is logged clearly",
+                "acRef": "AC-03",
+                "priority": "low",
+                "given": "a phase whose deliverable check has just completed",
+                "when": "the stage records the verdict",
+                "then": "a single log line states the PASS or FAIL outcome",
+                "andClauses": [
+                  "the missing entries are joined with semicolons or reported as none"
+                ]
+              },
+              {
+                "id": "016",
+                "title": "False-green stockfan regression is blocked when deliverables are absent",
+                "acRef": "AC-06",
+                "priority": "critical",
+                "given": "a stockfan-style phase declaring required files, a required wiring pattern, a forbidden wiring pattern, and a required test, all absent",
+                "when": "the combined phase verdict is computed alongside a passing stub build-gate",
+                "then": "the deliverable check reports pass equals false",
+                "andClauses": [
+                  "the combined phase verdict is not green despite the green build-gate"
+                ]
+              },
+              {
+                "id": "017",
+                "title": "Same phase is green when deliverables are present",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "the same stockfan-style phase with all deliverables now present",
+                "when": "the combined phase verdict is computed",
+                "then": "the deliverable check reports pass equals true",
+                "andClauses": [
+                  "the combined phase verdict is green"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Specification Prompt Elicitation",
+            "scenarios": [
+              {
+                "id": "018",
+                "title": "Spec prompt instructs declaring non-compiler-checkable deliverables",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "a specification phase whose deliverable is not detectable by the compiler, such as creating a file, wiring a call site, making a new source reachable, or adding a named test",
+                "when": "the spec author follows the build-specification prompt",
+                "then": "the author declares deliverables using requireFiles, requireContains, requireNotContains, and requireTests as applicable",
+                "andClauses": [
+                  "the prompt explains that deliverables are combined with build-green to define phase completion",
+                  "the phases item accepts an optional deliverables field"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Specification Schema Extension",
+            "scenarios": [
+              {
+                "id": "019",
+                "title": "Schema accepts the optional deliverables object on phases",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "a specification whose phases include an optional deliverables object",
+                "when": "the specification schema validates the data",
+                "then": "the deliverables object is accepted",
+                "andClauses": [
+                  "the existing specification registration, template, and additional docs remain unchanged"
+                ]
+              },
+              {
+                "id": "020",
+                "title": "Specifications without deliverables validate unchanged",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "a specification whose phases declare no deliverables",
+                "when": "the schema validates the data",
+                "then": "validation behaves identically to before the change"
+              }
+            ]
+          },
+          {
+            "name": "Backward Compatibility, Scope, and Theme Safety",
+            "scenarios": [
+              {
+                "id": "021",
+                "title": "Existing deliverable-free specifications behave identically",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "an existing specification that declares no deliverables",
+                "when": "a build runs with the new logic",
+                "then": "the run behaves byte-for-byte like the prior behavior",
+                "andClauses": [
+                  "no additional subprocess is spawned",
+                  "the phase verdict logic is unchanged"
+                ]
+              },
+              {
+                "id": "022",
+                "title": "Change stays within the permitted scope of files",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "the deliverable-assertion change",
+                "when": "it is applied to the repository",
+                "then": "only the build-runner, implementation stage, spec prompt, and specification schema plus the phase-normalizing helper are touched",
+                "andClauses": [
+                  "control-flow, review, integration, and backend selection are left unchanged"
+                ]
+              },
+              {
+                "id": "023",
+                "title": "Theme instances are used method-style and guards stay green",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "code that interacts with pi Theme instances",
+                "when": "the change is applied",
+                "then": "theme methods are called rather than destructured",
+                "andClauses": [
+                  "the theme-class and real-theme-parity guards remain green"
+                ]
+              },
+              {
+                "id": "024",
+                "title": "Typecheck and full test suite are green",
+                "acRef": "AC-07",
+                "priority": "critical",
+                "given": "the repository after the change",
+                "when": "the typecheck and the full test suite run",
+                "then": "the typecheck is strict-clean with no new errors",
+                "andClauses": [
+                  "all pre-existing suites remain green",
+                  "the new deliverable-check, AND-wiring, and spec-prompt tests pass"
+                ]
+              },
+              {
+                "id": "025",
+                "title": "No regression to prior build-gate capabilities",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "the prior red-check, in-scope detection, scope-aware cargo gate, themed stream, mid-run input, and dashboard capabilities",
+                "when": "the deliverable-assertion change is applied",
+                "then": "each prior capability continues to behave as before"
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "runDeliverableCheck enforces requireFiles/requireContains/requireNotContains/requireTests with tolerant matching, caches the test-list spawn, returns {pass,missing,ran}, and never throws",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002",
+              "SCENARIO-003",
+              "SCENARIO-004",
+              "SCENARIO-005",
+              "SCENARIO-006",
+              "SCENARIO-007",
+              "SCENARIO-008",
+              "SCENARIO-009"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "runDeliverableCheck is unit-tested across all sub-check cases with exact reason strings and ran-list assertions",
+            "scenarios": [
+              "SCENARIO-010"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "implementation.ts computes green as build-green AND deliverable-check pass, feeds missing deliverables into retries, logs, respects MAX_ATTEMPTS, never throws, and no-ops when deliverables are absent",
+            "scenarios": [
+              "SCENARIO-011",
+              "SCENARIO-012",
+              "SCENARIO-013",
+              "SCENARIO-014",
+              "SCENARIO-015"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "buildSpecPrompt instructs declaring per-phase deliverables and accepts phases[].deliverables",
+            "scenarios": [
+              "SCENARIO-018"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "SpecificationData schema accepts optional phases[].deliverables while leaving existing registration, template, and docs unchanged",
+            "scenarios": [
+              "SCENARIO-019",
+              "SCENARIO-020"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "Regression test simulating the stockfan false-green proves AND-semantics both ways at the checker and wiring level",
+            "scenarios": [
+              "SCENARIO-016",
+              "SCENARIO-017"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "typecheck strict-clean and full test suite green with no regressions; scope, theme safety, and backward compatibility preserved",
+            "scenarios": [
+              "SCENARIO-021",
+              "SCENARIO-022",
+              "SCENARIO-023",
+              "SCENARIO-024",
+              "SCENARIO-025"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-20T15:45:03.918Z",
+      "agent": "research",
+      "data": {
+        "title": "Per-phase Deliverable Assertions for the build-gate — mechanism, runner test-enumeration, and the documented grep-vs-runtime boundary",
+        "date": "2026-07-20",
+        "summary": "This brief researches how to make a pi-super-dev build-gate phase GREEN only when its declared DELIVERABLES actually exist (not merely when code compiles and existing tests pass — the false-green root cause observed in run 2026-07-20T11-27-04-004Z). The recommended mechanism is a new `runDeliverableCheck(cwd, deliverables, opts)` that AND-s four optional sub-checks with build-green: `requireFiles`/`requireContains`/`requireNotContains` are pure fs+regex (language-agnostic, deterministic, no build), and `requireTests` enumerates the runner's tests and tolerant-matches declared names. The checker should mirror this repo's OWN proven patterns already in src/build-runner.ts: `readMaybe` (never-throw best-effort file read), per-cwd spawn caching (`cargoMetadataCache`), reuse of `detectProjectCommands`/`resolveTimeoutMs`, and module-wide never-throw discipline where any failure records a reason and continues (SRC-05). The four runner test-list CLIs are verified against official docs: cargo libtest `--list` (with `-q`≡`--format=terse`) and pytest `--collect-only -q` enumerate test NAMES like `module::test` (SRC-01, SRC-02); jest `--listTests` returns test FILE PATHS, one per line (SRC-03) — the documented ISS-1 limitation; vitest exposes a `list` subcommand family but its JSON shape is the least version-stable of the four (SRC-04), so the design degrades to \"test-list unavailable\" rather than crashing. Two open issues are carried forward as FULLY-DOCUMENTED, NON-BLOCKING limitations with verbatim carry text (ISS-1 jest file-level requireTests; ISS-3 grep-is-syntactic-not-runtime). Backward compatibility is preserved by a no-op pass when `phase.deliverables` is absent.",
+        "options": [
+          {
+            "name": "A. Pure fs+regex deliverable checks (requireFiles/requireContains/requireNotContains) — chosen",
+            "tradeoffs": "Fast (no build), deterministic, fully language-agnostic, trivially unit-testable with a temp cwd, and matches the false-green root cause directly (missing file = fail; absent wiring pattern = fail). Reuses the existing `readMaybe` never-throw read (SRC-05). COST: grep is SYNTACTIC not SEMANTIC — `requireNotContains` proving a `_ => {}` catch-all arm is gone does NOT prove the new source is routed at runtime; a non-`_ => {}` arm that still returns early, or a wiring that compiles but is dead, satisfies the anti-grep. This is the ISS-3 boundary: execution-based runtime reachability is explicitly out of scope and future work; the grep assertions are the pragmatic version and MUST be stated verbatim as a documented limitation in the implementation summary."
+          },
+          {
+            "name": "B. requireTests via native per-runner test-list enumeration + tolerant substring-OR-regex match — chosen",
+            "tradeoffs": "Catches the Phase-6 false-green class (a named e2e test that must EXIST) that fs/grep alone cannot — grep can't assert 'a test named T was added'. Verified CLIs: cargo `-- --list` (SRC-01) and pytest `--collect-only -q` (SRC-02) give test NAMES; jest `--listTests` gives file PATHS not names (SRC-03); vitest `list` family JSON shape is version-unstable (SRC-04). Mitigations baked in: (1) tolerant substring-OR-regex match so spec authors needn't quote cargo's exact `module::test` path; (2) ONE cached list-spawn per cwd per run (mirror `cargoMetadataCache`, SRC-05); (3) NEVER throw — a failed/absent list records a single `test-list unavailable (runner: <r>)` reason and does NOT block existence/grep checks; (4) AC-04 spec-prompt must note requireTests names are runner-specific (cargo=module::test, vitest/pytest=name, jest=path). COST: runner-output variance is real and is exactly why the never-throw + unavailable-reason discipline is mandatory."
+          },
+          {
+            "name": "C. AND-semantics for phase GREEN: `(gate.pass||gate.inScopePass) && deliverableCheck.pass` — chosen (vs OR/advisory)",
+            "tradeoffs": "This is the whole point of the fix: a missing deliverable MUST fail the phase even when build-green, closing the false-green. Combined with a no-op pass when deliverables are absent, existing specs behave byte-identically to today (backward compatible). The residual risk — a SPEC with an over-broad/wrong deliverable declaration false-failing a build that is genuinely green — is acceptable and self-correcting within MAX_ATTEMPTS because `deliverableCheck.missing` is fed into the next implementer attempt exactly like today's `attemptErrors`. OR/advisory-only was rejected outright: it leaves the false-green open."
+          },
+          {
+            "name": "D. Execution-based runtime reachability assertion (actually run the new code path) — REJECTED / out of scope",
+            "tradeoffs": "Would catch the dead-wiring class that pure grep (Option A) cannot (ISS-3): require the harness to actually execute the target app and assert the new source is reached. COST: requires app-specific harnessing of an arbitrary target repo from within a TS-only pi-super-dev change, is non-deterministic, slow, and couples the harness to every target's runtime shape. Explicitly out of scope per the task; the requireContains/requireNotContains grep assertions are the pragmatic substitute, with the gap documented verbatim. Listed here only to record the decision boundary so the next stage does not re-litigate it."
+          }
+        ],
+        "openIssues": [
+          "ISS-1 (jest, design-covered, DOCUMENTED NON-BLOCKING LIMITATION — resolved-as-documented): jest `--listTests` returns test FILE PATHS, not test names (SRC-03, jestjs.io/docs/cli: '--listTests … Lists all test files … given the provided options and exits'), so requireTests is inherently FILE-LEVEL for jest repos. Mitigation (carried verbatim into implementation): (1) tolerant substring-OR-regex match against the runner's actual list payload; (2) a single `test-list unavailable (runner: jest)` reason when listing fails/absent; (3) the AC-04 spec-prompt note that requireTests names are runner-specific (cargo=module::test, vitest/pytest=name, jest=path). The never-throw discipline guarantees a jest repo never crashes the gate — it records the reason and still enforces existence/grep.",
+          "ISS-3 (runtime reachability, DOCUMENTED NON-BLOCKING LIMITATION — resolved-as-documented): `requireNotContains` proving the `_ => {}` catch-all arm is gone does NOT prove the new source is routed at runtime — a non-`_ => {}` arm that still returns early, or a wiring that compiles but is dead, satisfies the anti-grep. This MUST be stated verbatim in the implementation summary; execution-based runtime reachability is explicitly out of scope and is future work (Option D, rejected). The requireContains/requireNotContains grep assertions are the pragmatic version of this check; their syntactic-not-semantic nature is the documented ceiling of what this change can guarantee.",
+          "ISS-4 (vitest list JSON shape, LOW — design degrades): vitest's `list` subcommand family exists (SRC-04, vitest.dev/guide/cli) and the `--listTags=json` JSON convention is documented, but the exact `vitest list --json` payload shape is the least version-stable of the four runners. Resolution: the never-throw + cached-once-per-cwd + `test-list unavailable (runner: vitest)` degrade path covers it; requireFiles/requireContains/requireNotContains still enforce for vitest repos even if test-listing fails. No further research needed before implementation — the design is robust to the unknown."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/03-research-report.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-20T15:49:44.524Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment — Per-Phase Deliverable Assertions for the Build Gate",
+        "date": "2026-07-20",
+        "summary": "pi-super-dev is a single-package TypeScript pi extension (a CLI control-flow pipeline, not an HTTP server). The change is pure-TS and confined to four files. The decisive architectural invariant is that every deterministic gate primitive (runBuildGate, runRedCheck) is a synchronous, never-throwing, try/catch-wrapped function in src/build-runner.ts that reuses two shared primitives — detectProjectCommands(cwd) (the only project-detection entry) and resolveTimeoutMs() (the only spawn-timeout envelope) — and spawns subprocesses via node:child_process spawnSync, degrading to a safe sentinel on any ENOENT/timeout/parse error. The deliverable checker should be added as a sibling (runDeliverableCheck) reusing exactly those primitives, then AND-ed into the existing `(gate.pass || gate.inScopePass)` verdict at src/stages/implementation.ts:162, feeding its `missing[]` list back into the implementer prompt through the established attemptErrors→prompt-injection loop (implementation.ts:141-143). The spec-elicitation half is a 2-line change: extend phases in the typebox schema (schemas.ts:228) with an optional `deliverables` object and extend the buildSpecPrompt data-to-return line (prompts.ts:79-84) to instruct declaring it. No new runtime deps; tests use vitest with hermetic temp cwds (mkdtempSync(join(tmpdir(),\"sd-…\"))). There is no API/UI HTTP server — local verification is `npm run typecheck` + `npm test`, so the services block carries no api/ui entries.",
+        "patterns": [
+          {
+            "name": "Never-throwing gate primitive (the load-bearing invariant)",
+            "example": "src/build-runner.ts:1478 runRedCheck wraps its ENTIRE body in try/catch and returns 'unknown' on any spawn error/timeout/parse ambiguity; runBuildGate follows the same skeleton (build-runner.ts:1181+)",
+            "consistency": "Absolute and project-wide. Every deterministic checker in src/build-runner.ts (runBuildGate, runRedCheck, classifyOutOfScopeErrors, resolveCargoPackageNames) catches all errors and degrades to a safe sentinel rather than throwing. runDeliverableCheck MUST mirror this: unreadable file → record a reason, failed test-list spawn → 'test-list unavailable', never propagate an exception. Guarded by build-runner-nonregression.test.ts."
+          },
+          {
+            "name": "Shared project-detection + timeout primitives (single source of truth)",
+            "example": "src/build-runner.ts:1101 detectProjectCommands(cwd) → { language, pm, build?, test?, typecheck?, ran }; src/build-runner.ts:84 resolveTimeoutMs(explicit); both reused by runBuildGate (build-runner.ts:1185) and runRedCheck (build-runner.ts:1482-1492)",
+            "consistency": "Universal. No gate function re-implements project detection or spawn timeouts. runDeliverableCheck's requireTests runner must call detectProjectCommands to choose the lister (cargo test --list / vitest list / jest --listTests / pytest --collect-only -q) and resolveTimeoutMs for the single cached spawnSync. Pattern is explicitly documented in runRedCheck's JSDoc as 'introducing NO new spawn/git machinery.'"
+          },
+          {
+            "name": "Synchronous spawnSync subprocess invocation",
+            "example": "src/build-runner.ts:1520 const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: 'utf8' }); if (r.error) return 'unknown';",
+            "consistency": "All gate-side subprocess calls (cargo, npm/pnpm/yarn/bun/deno, pytest, go) use node:child_process spawnSync, NOT exec/child_process promises or shell strings. argv is built as a string[] (no shell interpolation). The test-list spawn for requireTests must use the identical spawnSync(argv[0], argv.slice(1), {cwd, timeout, encoding:'utf8'}) shape and check r.error before r.stdout."
+          },
+          {
+            "name": "Phase GREEN verdict is a single boolean expression at one site",
+            "example": "src/stages/implementation.ts:162 `if (gate.pass || gate.inScopePass) { green = true; ... break; }`",
+            "consistency": "The ENTIRE in-scope-vs-out-of-scope GREEN decision lives in this one expression. The AND-semantics fix changes exactly this condition to `(gate.pass || gate.inScopePass) && deliverableCheck.pass`. The break/commit flow below it stays untouched. Guarded by implementation-red-loop.test.ts and phase5-no-regression-gate.test.ts."
+          },
+          {
+            "name": "Failure-feeding retry loop via prompt injection (attemptErrors → implParts)",
+            "example": "src/stages/implementation.ts:141-143 `if (attemptErrors.length) { implParts.push('## Previous attempt failed the build/test gate — fix these\\n' + attemptErrors.map(e=>'- '+e).join('\\n')); }`",
+            "consistency": "How the stage already tells the next implementer attempt what to fix. runDeliverableCheck.missing[] should be injected the same way under a '## Deliverables still missing — create/wire these' block, and reset each attempt like attemptErrors = gate.errors at implementation.ts:154. MAX_ATTEMPTS=3 (implementation.ts:16) is the bound."
+          },
+          {
+            "name": "Best-effort file read helper (model for requireContains/requireNotContains)",
+            "example": "src/build-runner.ts readMaybe(cwd,file): `try { return existsSync(join(cwd,file)) ? readFileSync(join(cwd,file),'utf8') : ''; } catch { return ''; }`",
+            "consistency": "The project's established idiom for 'read a file if you can, else empty'. requireContains/requireNotExists should reuse readMaybe (or a sibling that returns the text) so unreadable → '' → requireContains miss / requireNotContains trivially-pass. Regex via new RegExp(pattern) with try/catch on invalid patterns."
+          },
+          {
+            "name": "Typebox schemas accept optional nested objects on stages",
+            "example": "src/render/schemas.ts:228 `phases: Type.Array(Type.Object({ name: Type.String(), description: Type.String() }), {minItems:1})` and the adjacent `gate: Type.Optional(Type.Object({...}))` at schemas.ts:233-237",
+            "consistency": "The exact precedent for adding phases[].deliverables: extend the per-element Type.Object with `deliverables: Type.Optional(Type.Object({ requireFiles, requireContains, requireNotContains, requireTests }))`. Optional everywhere preserves backward compatibility (specs without deliverables validate unchanged)."
+          },
+          {
+            "name": "Stage prompts are pure string-array joins; control contract stated in 'Data to return'",
+            "example": "src/prompts.ts:84 buildSpecPrompt's `- phases: array of { name, description } (at least 1, each independently testable)`",
+            "consistency": "Every prompt builder (prompts.ts:53,56,61,70,79,88) is `parts.join('\\n')` with an explicit '## Data to return' enumerating the control fields. The fix is a one-line edit to that phases bullet plus an explicit deliverables-declaration instruction, matching how `gate (optional, Rust/backend only)` is already elicited on the same prompt line."
+          },
+          {
+            "name": "Spec control threaded into the stage via state.spec",
+            "example": "src/stages/implementation.ts:153 `state.spec?.gate as GateOptions | undefined`; src/stages/implementation.ts:120 `state.spec` passed to buildTddPrompt",
+            "consistency": "The phase's declared deliverables will arrive the same way: read `phase.deliverables` off the phase object iterated at implementation.ts:95-98 (the spec control's phases[].deliverables, validated by the typebox schema). absent → undefined → deliverableCheck trivially passes (backward compat)."
+          },
+          {
+            "name": "Vitest hermetic tests with mkdtempSync temp cwd + module-level spawnSync mock",
+            "example": "tests/red-oracle.test.ts:54-68 imports mkdtempSync from node:fs, tmpdir from node:os, dir = mkdtempSync(join(tmpdir(),'sd-red-')); tests import `from '../src/build-runner.ts'` with the .ts extension (NodeNext)",
+            "consistency": "All build-runner tests (build-runner-nonregression.test.ts:87, build-runner-packages.test.ts, etc.) create `mkdtempSync(join(tmpdir(),'sd-<prefix>-'))` temp cwds, write fixture files, and mock node:child_process.spawnSync at module scope for spawn-based assertions. New runDeliverableCheck tests must follow this (temp cwd for requireFiles/existence, spawnSync mock for the requireTests lister)."
+          },
+          {
+            "name": "Strict TS with .ts import extension (NodeNext) and never-destructure-Theme rule",
+            "example": "tsconfig.json strict; tests import `'../src/build-runner.ts'` with extension; tests/stream-theme-class-theme.test.ts + tests/render/real-theme-parity.test.ts guard Theme method-call style",
+            "consistency": "npm run typecheck = tsc --noEmit must stay clean; any new import of a sibling src module uses the .ts extension. The Theme-destructuring guard is unrelated to this change but its tests must stay green — don't import/alter stream/theme code."
+          }
+        ],
+        "recommendations": [
+          "Implement runDeliverableCheck(cwd, deliverables, opts?) in src/build-runner.ts as a sibling to runRedCheck: wrap the ENTIRE body in try/catch returning {pass:false, missing:[...], ran:[...]} on any thrown error; reuse detectProjectCommands + resolveTimeoutMs + readMaybe + spawnSync. Cache the per-cwd test-list spawn in a module-level Map<cwd,{ts, text}> (single cargo test --list / vitest list / jest --listTests / pytest --collect-only -q per run). requireTests match is substring OR RegExp — try new RegExp(name); on invalid → substring.",
+          "In src/stages/implementation.ts change ONLY the GREEN condition at line 162 to `(gate.pass || gate.inScopePass) && deliverableCheck.pass`, where deliverableCheck = runDeliverableCheck(setup.worktreePath, phase.deliverables) (absent → {pass:true}). Mirror the exact attemptErrors→implParts injection (lines 141-143) for deliverableCheck.missing under a '## Deliverables still missing — create/wire these' block, set on the same per-attempt loop, and log `Implementation ${phaseId} deliverable-check ${pass?'PASS':'FAIL'} (missing: ${missing.join('; ')||'none'})` next to the existing build-gate log at line 155. Do not alter MAX_ATTEMPTS, the break, or the commit flow.",
+          "In src/render/schemas.ts add to the phases element Type.Object (line 228): deliverables: Type.Optional(Type.Object({ requireFiles: Type.Optional(Type.Array(Type.String())), requireContains/requireNotContains: Type.Optional(Type.Array(Type.Object({file: Type.String(), pattern: Type.String()}))), requireTests: Type.Optional(Type.Array(Type.String())) })). In src/prompts.ts buildSpecPrompt (line 84) change the phases bullet to `{ name, description, deliverables? }` and add an explicit instruction that a phase whose deliverable is NOT compiler-checkable (file creation, call-site wiring X→Y, making new sources reachable, named test) must declare requireFiles / requireContains({file,pattern}) / requireNotContains / requireTests, AND-ed with build-green — without them a phase compiles green while delivering nothing.",
+          "Add a regression test (tests/ e.g. build-runner-deliverable-check.test.ts) using mkdtempSync temp cwd: existing+missing files, present/absent requireContains patterns, forbidden-pattern hit (requireNotContains), present+missing requireTests with spawnSync mocked for the lister, unreadable file (chmod 000 / mocked throw), and no-runner skip. Add a second test that simulates the stockfan Phase-5/6 false-green: a phase declaring requireFiles:[X]+requireContains:[screen.rs→fetch_us_data]+requireNotContains:[screen.rs→fetch_fmp]+requireTests:[T], asserting deliverableCheck.pass===false with deliverables absent even though a stub build-gate would be green, and that the combined `(gate.pass||gate.inScopePass)&&deliverableCheck.pass` verdict is NOT green. Keep npm test (existing 1120 + new) and npm run typecheck green; leave runRedCheck, npm-inscope, themed-stream, mid-run-input, and dashboard tests untouched."
+        ],
+        "filesAssessed": [
+          "package.json",
+          "README.md",
+          "tsconfig.json",
+          "src/build-runner.ts",
+          "src/stages/implementation.ts",
+          "src/prompts.ts",
+          "src/render/schemas.ts",
+          "tests/red-oracle.test.ts",
+          "tests/implementation-red-loop.test.ts",
+          "tests/build-runner-nonregression.test.ts"
+        ],
+        "services": {},
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/05-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-20T15:55:06.609Z",
+      "agent": "spec",
+      "data": {
+        "title": "Per-Phase Deliverable Assertions for the Build Gate",
+        "date": "2026-07-21",
+        "summary": "The build gate marks a phase GREEN when the in-scope build and existing tests pass (`gate.pass || gate.inScopePass`). That condition is necessary but NOT sufficient: a phase whose deliverable is creating a file, wiring a call site from X to Y, or adding a named test can compile green while delivering nothing. This is the proven root cause of the 2026-07-20T11-27-04-004Z false-green in stockfan spec 54, where Phases 5 and 6 reported \"completed successfully\" but delivered nothing (a never-created test file compiles fine; unwired code is still a valid public fn; dead sources behind a `_ => {}` router arm compile and pass their own unit tests). The fix adds a per-phase DELIVERABLE CONTRACT — `requireFiles`, `requireContains`, `requireNotContains`, `requireTests` — that the spec AUTHOR declares per phase, AND-ed with build-green. A new never-throwing `runDeliverableCheck(cwd, deliverables, opts?)` primitive in `src/build-runner.ts` (sibling to `runRedCheck`/`runBuildGate`, reusing `detectProjectCommands`, `resolveTimeoutMs`, `readMaybe`, and ONE cached `spawnSync` test-list per cwd per run) enforces it. The implementation stage's GREEN condition becomes `(gate.pass || gate.inScopePass) && deliverableCheck.pass`; when build-green but deliverables FAIL the missing list is fed into the next implementer attempt under a `## Deliverables still missing — create/wire these` block, retrying up to MAX_ATTEMPTS (3). The specification prompt and the typebox schema are extended so phases carry an optional `deliverables` object, and `normalizePhases` is widened to preserve it so `phase.deliverables` is statically typed. Backward compatible: phases/specs with no deliverables behave identically to today (deliverableCheck.pass = true). Pure TypeScript scoped to four source files plus the phase-normalizer helper and one new test file; no control-flow (nodes.ts/workflow.ts/pipeline.ts), review/integration, or backend-selection changes; no new runtime deps. SCOPE NOTE: full \"is the new source actually reachable at runtime\" execution-based coverage (beyond grep/anti-grep on router arms) is explicitly future work — the `requireContains`/`requireNotContains` regex assertions are the pragmatic version of reachability. Local verification: `npm run typecheck` + `npm test`.",
+        "architecture": "Three cooperating layers: a deterministic checker primitive, a spec-elicited declaration, and a single-line verdict composition at the ONE site that decides GREEN.\n\nLAYER 1 — runDeliverableCheck(cwd, deliverables, opts?) in src/build-runner.ts (AC-01/02). Added as a sibling of runRedCheck/runBuildGate and follows the established never-throwing-gate-primitive invariant (the load-bearing one guarded by build-runner-nonregression.test.ts): the ENTIRE body is wrapped in try/catch; on any thrown error it returns {pass:false, missing:['<reason>'], ran:[...]} rather than propagating. It reuses the single sources of truth: detectProjectCommands(cwd) for project detection (so the test-list runner is chosen exactly as runRedCheck chooses its runner), resolveTimeoutMs(opts.timeoutMs) for the spawn envelope, readMaybe(cwd, file) for best-effort file reads, and spawnSync(argv[0], argv.slice(1), {cwd, timeout, encoding:'utf8'}) for the single test-list subprocess. All four sub-checks evaluate EVERY element (no short-circuit) so `missing` is exhaustive and `ran` is complete: (a) requireFiles — fs.existsSync(resolve(cwd,p)) per path; miss → `missing file: <path>`; (b) requireContains — readMaybe each {file,pattern}; empty text due to unreadable (vs genuinely empty) → `unreadable: <path>`, else new RegExp(pattern) (try/catch → invalid pattern falls back to substring includes) tested against contents; miss → `missing pattern <pattern> in <file>`; (c) requireNotContains — same read/regex; hit → `forbidden pattern <pattern> still present in <file>`; (d) requireTests — build the project test list ONCE per cwd per run via a module-level Map<string,string> cache; runner selection from detectProjectCommands (rust → `cargo test --list --format=terse` fallback `-- --list`; node+vitest → `vitest list --json` fallback `npm test -- --list`; jest → `--listTests`; python → `pytest --collect-only -q`); on spawn error/timeout/empty stdout → record `test-list unavailable` for the whole requireTests sub-check and DO NOT block (existence/grep still enforced); each declared name tolerant-matches — try new RegExp(name) against the list, on invalid regex OR no regex match fall back to substring includes, match by EITHER satisfies; miss → `missing test: <name>`. The tolerant substring-OR-regex rule is documented in a code comment. Returns {pass: missing.length===0, missing, ran} where ran lists a human-readable token per check (e.g. `file:.../x.rs`, `contains:screen.rs:fetch_us_data`, `tests:list`). When deliverables is undefined/null/empty → early-return {pass:true, missing:[], ran:[]} immediately (backward compat).\n\nLAYER 2 — spec declaration: schema + normalizer + prompt (AC-04/05). SpecificationData in src/render/schemas.ts extends the phases element Type.Object with deliverables: Type.Optional(Type.Object({ requireFiles: Type.Optional(Type.Array(Type.String())), requireContains: Type.Optional(Type.Array(Type.Object({file:Type.String(), pattern:Type.String()}))), requireNotContains: Type.Optional(Type.Array(Type.Object({file:Type.String(), pattern:Type.String()}))), requireTests: Type.Optional(Type.Array(Type.String())) })) — all-optional preserves backward compat (a spec with no deliverables validates identically). The existing STAGE_MODELS[\"spec\"] registration, template, and additionalDocs are unchanged. normalizePhases(raw) in src/doc-validators.ts (consumed at implementation.ts:81) is widened from Array<{name, description?}> to Array<{name, description?, deliverables?}> so phase.deliverables is statically typed and round-trips. buildSpecPrompt in src/prompts.ts changes the phases data-to-return bullet from `{ name, description }` to `{ name, description, deliverables? }` and adds an explicit instruction that a phase whose deliverable is NOT compiler-checkable (creating a file, wiring a call site X→Y, making new sources reachable, adding a named test) MUST declare deliverables (requireFiles / requireContains+requireNotContains {file,pattern} regex checks — e.g. a wired call site or a non-`_ => {}` match arm / requireTests), AND-ed with build-green — without them a phase compiles green while delivering nothing.\n\nLAYER 3 — AND-semantics wiring in src/stages/implementation.ts (AC-03), the correctness crux and minimal-diff change. Immediately after `const gate = runBuildGate(...)` (implementation.ts:154) and `attemptErrors = gate.errors`, call `const deliverableCheck = runDeliverableCheck(setup.worktreePath, phase.deliverables, { signal: ctx.signal })` and log `Implementation ${phaseId} deliverable-check ${deliverableCheck.pass ? \"PASS\" : \"FAIL\"} (missing: ${deliverableCheck.missing.join(\"; \") || \"none\"})` next to the existing build-gate log. Change ONLY the GREEN condition at implementation.ts:162 from `if (gate.pass || gate.inScopePass)` to `if ((gate.pass || gate.inScopePass) && deliverableCheck.pass)`. When build-green but deliverables FAIL → do NOT set green=true, do NOT break; instead push the missing list into the next attempt's implParts alongside the existing `## Previous attempt failed the build/test gate` block (implementation.ts:141-143) as `## Deliverables still missing — create/wire these\\n- <entry>` so the implementer creates the files / does the wiring / adds the tests. The missing list resets each attempt (mirroring attemptErrors = gate.errors); the loop respects MAX_ATTEMPTS (3). Never throws (runDeliverableCheck never throws). When phase.deliverables is undefined → runDeliverableCheck returns {pass:true} → condition reduces to today's behavior.\n\nCROSS-CUTTING INVARIANTS (the critical constraints): never-throw (every file/list/regex op wrapped); never destructure pi Theme (unrelated to this change but its guards must stay green); no new runtime deps; ONE cached subprocess per cwd per run; AND-semantics is mandatory (a missing deliverable MUST fail even when build-green); backward compatible for specs without deliverables. The deliverable-check is a SEPARATE check AND-ed alongside gate.pass/gate.inScopePass, orthogonal to runRedCheck (which runs pre-implement). Scope is limited to src/build-runner.ts, src/stages/implementation.ts, src/prompts.ts, src/render/schemas.ts, src/doc-validators.ts (normalizer), and one new test file; control-flow, review/integration, and backend selection are untouched.",
+        "testingStrategy": "Local verification is `npm run typecheck` (tsc --noEmit, strict, .ts-import-extension NodeNext) and `npm test` (vitest). All new tests follow the established hermetic pattern: mkdtempSync(join(tmpdir(),\"sd-<prefix>-\")) temp cwds, fixture file writes, and a module-scope node:child_process.spawnSync mock for the requireTests lister; imports use the .ts extension.\n\nLAYER 1 — tests/build-runner-deliverable-check.test.ts (AC-02): one new suite covering (a) all-present → pass:true, missing:[], ran complete; (b) missing requireFiles → exact `missing file: <path>`; (c) absent requireContains → `missing pattern <pattern> in <file>`; (d) forbidden requireNotContains hit → `forbidden pattern <pattern> still present in <file>`; (e) missing requireTests name (spawnSync mocked fixed list) → `missing test: <name>`; (f) present requireTests with tolerant substring-then-regex match (SCENARIO-006); (g) unreadable file (chmod 000 or mocked throw) → `unreadable: <path>`, no throw, remaining checks still run (SCENARIO-008); (h) no-runner-skip (detectProjectCommands reports no runner) → requireTests records `test-list unavailable`, does not block, existence/grep still enforced (SCENARIO-007); (i) test-list spawn cached — assert the mock fires at most once across two requireTests-bearing phases sharing the cwd (SCENARIO-009); (j) empty/undefined deliverables → {pass:true, missing:[], ran:[]} immediately (SCENARIO-014). Each case asserts the exact missing reason strings and the ran list.\n\nLAYER 2 (AC-04/05): a schema-validation test asserting SpecificationData accepts phases[].deliverables present and validates identically when absent (SCENARIO-019/020); a prompt-content test asserting buildSpecPrompt(...) output contains the `{ name, description, deliverables? }` bullet AND the explicit deliverable-declaration instruction naming requireFiles/requireContains/requireNotContains/requireTests (SCENARIO-018); a normalizePhases test asserting a deliverables object on an input phase round-trips to the output phase (typed).\n\nLAYER 3 (AC-03): a wiring-logic test of the verdict composition and missing-injection — a stubbed build-gate returning gate.pass===true combined with a deliverableCheck whose pass is false must yield a NON-green verdict (SCENARIO-011), and with pass===true → green; the missing-list injection is asserted by capturing the implementer retry prompt and confirming the `## Deliverables still missing — create/wire these` block with the missing entries (SCENARIO-012); the absent-deliverables path asserts no extra log noise and the condition reduces to today (SCENARIO-014); MAX_ATTEMPTS still bounds the retry (SCENARIO-013).\n\nLAYER 4 — tests/implementation-deliverable-regression.test.ts (AC-06): the stockfan Phase-5/6 false-green regression. Case A (the bug, SCENARIO-016): a phase declaring requireFiles:[X] + requireContains:[screen.rs→fetch_us_data] + requireNotContains:[screen.rs→`with_retry\\(\\|\\| fetch_fmp`] + requireTests:[T], with ALL deliverables ABSENT and a stub build-gate reporting gate.pass===true → assert runDeliverableCheck(...).pass===false (non-empty missing) and the combined `(gate.pass || gate.inScopePass) && deliverableCheck.pass` verdict is NOT green. Case B (the happy path, SCENARIO-017): the same phase with deliverables PRESENT → pass===true and the combined verdict IS green — proving AND-semantics both ways.\n\nFULL-SUITE GATE (AC-07): npm run typecheck strict-clean with no new errors; npm test fully green — all 1120 pre-existing tests plus the new suites. Explicitly verify no regression to runRedCheck, npm in-scope detection, the scope-aware cargo gate, themed stream rendering (tests/stream-theme-class-theme.test.ts, tests/render/real-theme-parity.test.ts — guard the never-destructure-Theme rule), mid-run input injection, and the dashboard.",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018",
+          "SCENARIO-019",
+          "SCENARIO-020",
+          "SCENARIO-021",
+          "SCENARIO-022",
+          "SCENARIO-023",
+          "SCENARIO-024",
+          "SCENARIO-025"
+        ],
+        "phases": [
+          {
+            "name": "Deliverable Checker Primitive",
+            "description": "Add the never-throwing runDeliverableCheck(cwd, deliverables, opts?) primitive to src/build-runner.ts as a sibling of runRedCheck/runBuildGate, enforcing requireFiles/requireContains/requireNotContains/requireTests with tolerant matching, a single cached test-list spawn per cwd per run, and a {pass,missing,ran} return; plus its full unit-test suite. Independently testable via temp-cwd + spawnSync mock with no dependency on the other phases. Covers AC-01/AC-02 → SCENARIO-001..010."
+          },
+          {
+            "name": "Schema, Normalizer, and Prompt Elicitation",
+            "description": "Make phases carry an optional deliverables object end-to-end: extend SpecificationData in src/render/schemas.ts (accept phases[].deliverables), widen normalizePhases in src/doc-validators.ts to preserve deliverables so phase.deliverables is typed, and update buildSpecPrompt in src/prompts.ts to instruct declaring non-compiler-checkable deliverables. Pure type/string changes with no runtime behavior until Layer 3 consumes them; parallelizable with Phase 1. Covers AC-04/AC-05 → SCENARIO-018..020."
+          },
+          {
+            "name": "AND-Semantics Wiring in the Implementation Stage",
+            "description": "Wire runDeliverableCheck into src/stages/implementation.ts: call it after runBuildGate, log the PASS/FAIL+missing verdict, change the GREEN condition at line 162 to `(gate.pass || gate.inScopePass) && deliverableCheck.pass`, and feed deliverableCheck.missing into the next implementer attempt under a `## Deliverables still missing — create/wire these` block while respecting MAX_ATTEMPTS. Depends on Phase 1 (the checker) and Phase 2 (typed phase.deliverables). Covers AC-03 → SCENARIO-011..015."
+          },
+          {
+            "name": "Stockfan Regression and Full-Suite Gate",
+            "description": "Add the stockfan Phase-5/6 false-green regression test proving AND-semantics both ways (deliverables absent → not green despite a green stub build-gate; deliverables present → green), then run npm run typecheck (strict-clean) and npm test (all green) verifying no regression to runRedCheck, npm-in-scope, cargo gate, themed stream, mid-run input, or dashboard. Depends on Phases 1 and 3. Covers AC-06/AC-07 → SCENARIO-016, 017, 021..025."
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Deliverable Checker Primitive",
+            "description": "In src/build-runner.ts add `export function runDeliverableCheck(cwd: string, deliverables: PhaseDeliverables | undefined | null, opts?: { signal?: AbortSignal; timeoutMs?: number }): { pass: boolean; missing: string[]; ran: string[] }` as a sibling of runRedCheck. Wrap the ENTIRE body in try/catch returning {pass:false, missing:[...reason...], ran:[...]} on any thrown error (never throws). Import/define a PhaseDeliverables type ({requireFiles?: string[]; requireContains?: {file:string; pattern:string}[]; requireNotContains?: {file:string; pattern:string}[]; requireTests?: string[]}). When deliverables is undefined/null/empty → early-return {pass:true, missing:[], ran:[]}. Reuse resolveTimeoutMs(opts.timeoutMs), detectProjectCommands(cwd), readMaybe(cwd,file), and spawnSync from node:child_process (already imported)."
+          },
+          {
+            "phase": "Deliverable Checker Primitive",
+            "description": "Implement requireFiles: for each path p, fs.existsSync(path.resolve(cwd, p)); miss → push `missing file: ${p}` to missing, push `file:${p}` to ran. Implement requireContains: for each {file,pattern}, const text = readMaybe(cwd,file); if unreadable (distinguish from genuine empty — track via a readTextOrThrow helper that returns {text} or {err}) push `unreadable: ${file}`; else regexOrSubstringTest(pattern, text); miss → `missing pattern ${pattern} in ${file}`; push `contains:${file}:${pattern}` to ran."
+          },
+          {
+            "phase": "Deliverable Checker Primitive",
+            "description": "Implement requireNotContains: reuse the read+regex helper; hit → push `forbidden pattern ${pattern} still present in ${file}`; push `not-contains:${file}:${pattern}` to ran. Add a private regexOrSubstringTest(pattern, text): try new RegExp(pattern).test(text); on SyntaxError fall back to text.includes(pattern); return boolean. Document the substring-OR-regex matching rule in a JSDoc/code comment."
+          },
+          {
+            "phase": "Deliverable Checker Primitive",
+            "description": "Implement requireTests: add a module-level `const testListCache = new Map<string, string>()`. function listTestsOnce(cwd): if cached return it; select runner from detectProjectCommands(cwd) (rust → ['cargo','test','--list','--format=terse'] fallback ['cargo','test','--','--list']; vitest → ['vitest','list','--json'] fallback ['npm','test','--','--list']; jest → ['npx','jest','--listTests']; python → ['pytest','--collect-only','-q']); run spawnSync(argv[0], argv.slice(1), {cwd, timeout: resolveTimeoutMs(opts.timeoutMs), encoding:'utf8'}); on r.error/timeout/empty stdout → record sentinel '__UNAVAILABLE__' and return; set cache, return text. For each declared name, tolerant-match against the list (regex-or-substring as above); on '__UNAVAILABLE__' → push `test-list unavailable` ONCE and do NOT block; else miss → `missing test: ${name}`; push `tests:list` to ran once."
+          },
+          {
+            "phase": "Deliverable Checker Primitive",
+            "description": "Create tests/build-runner-deliverable-check.test.ts using mkdtempSync(join(tmpdir(),'sd-deliv-')) temp cwd and a module-scope child_process.spawnSync mock. Cover all 10 cases (a)-(j): all-present (pass:true, ran complete), missing file (exact `missing file:` reason), absent requireContains (`missing pattern ... in ...`), forbidden requireNotContains hit (`forbidden pattern ... still present in ...`), missing requireTests name (mocked fixed list), present requireTests tolerant match, unreadable file (chmod 000 or mocked throw → `unreadable:`, no throw, remaining checks run), no-runner-skip (returns pass reflecting existence/grep only with `test-list unavailable` recorded), spawn-cache (mock fires ≤ once across two phases sharing cwd), empty/undefined deliverables ({pass:true,missing:[],ran:[]}). Assert exact missing reason strings and the ran list."
+          },
+          {
+            "phase": "Schema, Normalizer, and Prompt Elicitation",
+            "description": "In src/render/schemas.ts extend the SpecificationData phases element Type.Object (currently {name, description}) with `deliverables: Type.Optional(Type.Object({ requireFiles: Type.Optional(Type.Array(Type.String())), requireContains: Type.Optional(Type.Array(Type.Object({ file: Type.String(), pattern: Type.String() }))), requireNotContains: Type.Optional(Type.Array(Type.Object({ file: Type.String(), pattern: Type.String() }))), requireTests: Type.Optional(Type.Array(Type.String())) }))`. Leave STAGE_MODELS['spec'] registration, the template, and additionalDocs unchanged. Add a schema-validation test asserting a spec with phases[].deliverables validates and one without validates identically to before."
+          },
+          {
+            "phase": "Schema, Normalizer, and Prompt Elicitation",
+            "description": "In src/doc-validators.ts widen normalizePhases return type from Array<{name:string; description?:string}> to Array<{name:string; description?:string; deliverables?: PhaseDeliverables}> and PRESERVE a `deliverables` field from the input phase object (object-spread or explicit copy) so phase.deliverables is statically typed and round-trips through implementation.ts:81. Add a unit test asserting a deliverables object on an input phase round-trips to the output phase."
+          },
+          {
+            "phase": "Schema, Normalizer, and Prompt Elicitation",
+            "description": "In src/prompts.ts buildSpecPrompt change the `- phases: array of { name, description } (at least 1, each independently testable)` bullet to `- phases: array of { name, description, deliverables? } (at least 1, each independently testable)`, and add an explicit instruction: 'For each phase whose deliverable is NOT compiler-checkable (creating a file, wiring a call site from X to Y, making new sources reachable, adding a named test), declare `deliverables`: `requireFiles` (paths that must exist), `requireContains`/`requireNotContains` ({file, pattern} regex checks — e.g. a wired call site or a non-`_ => {}` match arm), and `requireTests` (test names that must exist). These are AND-ed with build-green to define phase completion — without them a phase compiles green while delivering nothing.' Add a prompt-content test asserting both the updated bullet and the instruction text."
+          },
+          {
+            "phase": "AND-Semantics Wiring in the Implementation Stage",
+            "description": "In src/stages/implementation.ts, immediately after `const gate = runBuildGate(setup.worktreePath, {...})` and `attemptErrors = gate.errors` (~line 154), add `const deliverableCheck = runDeliverableCheck(setup.worktreePath, phase.deliverables, { signal: ctx.signal })` and `ctx.log(`Implementation ${phaseId} deliverable-check ${deliverableCheck.pass ? 'PASS' : 'FAIL'} (missing: ${deliverableCheck.missing.join('; ') || 'none'})`)` next to the existing build-gate log. Import runDeliverableCheck from '../build-runner.ts'."
+          },
+          {
+            "phase": "AND-Semantics Wiring in the Implementation Stage",
+            "description": "Change the GREEN condition at implementation.ts:162 from `if (gate.pass || gate.inScopePass)` to `if ((gate.pass || gate.inScopePass) && deliverableCheck.pass)`. When build-green but deliverableCheck.pass is false: do NOT set green=true, do NOT break; the loop falls through to the next attempt naturally. Add an implParts block alongside the existing `## Previous attempt failed the build/test gate` one (line 141-143): `if (deliverableCheck.missing.length) { implParts.push('## Deliverables still missing — create/wire these\\n' + deliverableCheck.missing.map((m)=>'- '+m).join('\\n')); }`. Respect MAX_ATTEMPTS (unchanged). Never throws."
+          },
+          {
+            "phase": "AND-Semantics Wiring in the Implementation Stage",
+            "description": "Add a wiring-logic test (tests/implementation-deliverable-wiring.test.ts or extend an existing implementation test): assert the AND-semantics verdict — stubbed build-gate gate.pass===true + deliverableCheck.pass===false → combined verdict NOT green and the retry implementer prompt contains the `## Deliverables still missing — create/wire these` block with the missing entries; build-green + deliverableCheck.pass===true → green; phase with undefined deliverables → no extra log noise, condition reduces to today (no `## Deliverables still missing` block, no deliverable FAIL line); MAX_ATTEMPTS still bounds the retry."
+          },
+          {
+            "phase": "Stockfan Regression and Full-Suite Gate",
+            "description": "Create tests/implementation-deliverable-regression.test.ts simulating the stockfan Phase-5/6 false-green. Case A (the bug): phase declaring requireFiles:[X] + requireContains:[{file:'.../screen.rs', pattern:'fetch_us_data'}] + requireNotContains:[{file:'.../screen.rs', pattern:'with_retry\\\\(\\\\|\\\\| fetch_fmp'}] + requireTests:[T], ALL absent, with a stub build-gate reporting gate.pass===true. Assert runDeliverableCheck(...).pass===false (non-empty missing) and the combined `(gate.pass || gate.inScopePass) && deliverableCheck.pass` verdict is NOT green. Case B (happy path): same phase with deliverables PRESENT → pass===true and the combined verdict IS green. Use a temp cwd + spawnSync mock for requireTests."
+          },
+          {
+            "phase": "Stockfan Regression and Full-Suite Gate",
+            "description": "Run `npm run typecheck` (strict-clean, no new errors — verify the widened normalizePhases return type, the PhaseDeliverables import, and the .ts extension imports) and `npm test` (all green — existing 1120 + new). Explicitly confirm no regression: runRedCheck suite, npm-in-scope detection, scope-aware cargo gate, themed stream (tests/stream-theme-class-theme.test.ts + tests/render/real-theme-parity.test.ts guarding never-destructure-Theme), mid-run input injection, and the dashboard suite. Fix any newly surfaced type errors introduced by the normalizePhases widening (callers must still compile)."
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": []
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/06-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/07-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/08-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/06-specification.md",
+        "phaseCount": "4"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-20T15:58:36.662Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec Review: Per-Phase Deliverable Assertions for the Build Gate",
+        "date": "2026-07-21",
+        "verdict": "APPROVED WITH REVISIONS",
+        "summary": "Well-grounded, minimal-diff specification that adds a never-throwing runDeliverableCheck primitive AND-ed with build-green to close the proven stockfan false-green. Grounding is strong (~95%): every referenced source function (runRedCheck, runBuildGate, detectProjectCommands, resolveTimeoutMs, readMaybe), the implementation.ts call/condition sites (lines 81, 142, 153/154, 162, MAX_ATTEMPTS=3), SpecificationData phases schema (schemas.ts:228), STAGE_MODELS[\"spec\"], normalizePhases (doc-validators.ts:98), and buildSpecPrompt phases bullet (prompts.ts:84) were all verified against the actual codebase, as were both theme-test guards and the nonregression test. All 7 ACs and 25 SCENARIOs are densely mapped to phases/files. No critical/high-severity content defects and no unbroken traceability chains. One genuine MEDIUM internal contradiction (the readMaybe reuse mandate vs. the required \"unreadable\" classification — readMaybe structurally cannot make that distinction) plus a few LOW ambiguities/inaccuracies. Recommending targeted revisions before implementation; no re-spec needed.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "medium",
+            "title": "readMaybe reuse mandate contradicts the required `unreadable: <path>` classification",
+            "detail": "The Architecture section mandates reusing `readMaybe(cwd, file)` for the requireContains/requireNotContains sub-checks, and the Cross-Cutting Invariants call it out as a single source of truth. But the LAYER 1(b) sub-check spec AND test case (g)/SCENARIO-008 require distinguishing an unreadable file (e.g. chmod 000) from a genuinely-empty/non-existent one and emitting `unreadable: <path>`. Verified readMaybe body (src/build-runner.ts:1072) is `try { return existsSync(...) ? readFileSync(...,'utf8') : '' } catch { return '' }` — it collapses BOTH non-existent AND any read throw into '', so it is structurally incapable of producing the `unreadable` token. These two requirements are mutually exclusive as written. Recommendation: relax the reuse mandate so runDeliverableCheck uses a local existsSync + readFileSync-with-typed-catch for these two sub-checks (ENOENT/empty → treat as empty; non-empty throw → `unreadable: <path>`), or drop the unreadable-vs-empty distinction. As specified, the implementer cannot satisfy both.",
+            "file": "src/build-runner.ts",
+            "line": "1072",
+            "lens": "Feasibility/Consistency"
+          },
+          {
+            "id": "F-02",
+            "severity": "low",
+            "title": "Dual-failure path (build FAIL + deliverables FAIL) under-specified for missing-list injection",
+            "detail": "LAYER 3 specifies the missing list is injected into the next attempt only 'When build-green but deliverables FAIL'. But the described wiring always calls runDeliverableCheck immediately after the gate regardless of gate result, so on a build FAILURE with concurrent deliverable failure the spec does not state whether deliverableCheck.missing is also appended alongside attemptErrors=gate.errors. Recommendation: add one sentence clarifying the dual-failure injection rule (e.g. 'missing is injected only when build-green; on build-fail only gate.errors is injected') so the implementer does not have to guess.",
+            "file": "src/stages/implementation.ts",
+            "line": "153",
+            "lens": "Ambiguity"
+          },
+          {
+            "id": "F-03",
+            "severity": "low",
+            "title": "Cited line numbers are off by one in two places",
+            "detail": "LAYER 3 cites 'const gate = runBuildGate(...) (implementation.ts:154)' — actual location is line 153 (attemptErrors = gate.errors is 154). It also cites the 'Previous attempt failed the build/test gate' block at 'implementation.ts:141-143' — actual location is line 142. Not load-bearing for a doc (and edits will shift lines anyway) but correct for clean traceability.",
+            "file": "src/stages/implementation.ts",
+            "line": "142",
+            "lens": "Traceability"
+          },
+          {
+            "id": "F-04",
+            "severity": "low",
+            "title": "AC-01..AC-07 are referenced but not enumerated inline",
+            "detail": "The seven acceptance criteria are only reconstructable from 'Covers AC-XX' annotations distributed across the three phases. Within the supplied 06-specification.md (Plan/Tasks marked N/A) there is no explicit Acceptance Criteria section listing AC-01..AC-07 with their measurable conditions. This is acceptable IF 01-requirements.md owns them, but for self-contained reviewability the spec should either inline the AC list or explicitly defer to the requirements doc by name.",
+            "lens": "Completeness/Traceability"
+          },
+          {
+            "id": "F-05",
+            "severity": "low",
+            "title": "'1120 pre-existing tests' numeric claim is unverifiable from the spec",
+            "detail": "The FULL-SUITE GATE (AC-07) asserts 'all 1120 pre-existing tests plus the new suites'. An approximate grep of tests/ found ~798 test-function declarations (pattern-dependent, so not authoritative), making the 1120 figure unverifiable and not load-bearing. Recommendation: soften to 'all pre-existing tests remain green' or verify the exact count before freezing the test-strategy text.",
+            "lens": "Testability"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "PASS",
+            "notes": "All four sub-checks (requireFiles/requireContains/requireNotContains/requireTests) specified with exact missing-reason strings; error/timeout/no-runner paths covered; backward-compat and never-throw NFRs explicit; full-suite gate NFR (AC-07) concrete. Only gap: AC list not inlined (F-04)."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "PASS-WITH-REVISION",
+            "notes": "Names/terminology uniform across Architecture, Layers, and Testing Strategy. One internal contradiction: readMaybe reuse mandate vs. required `unreadable` classification (F-01)."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "PASS",
+            "notes": "All reused primitives verified present and exported (runRedCheck@1478, runBuildGate@1181, detectProjectCommands@1101, resolveTimeoutMs@84, readMaybe@1072). Schema/normalizer/prompt changes are pure TS with no runtime effect until Layer 3. Wiring is a one-condition edit at an exact verified site (implementation.ts:162). Minor caveat captured in F-01."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "PASS",
+            "notes": "ACs measurable: exact missing-reason strings, ran-token format, 'mock fires at most once' (numeric), PASS/FAIL verdict composition. Hermetic pattern (mkdtempSync, spawnSync mock) matches established suite."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "PASS-WITH-REVISION",
+            "notes": "Dense, consistent AC↔SCENARIO↔phase↔file mapping across all 3 layers and 25 scenarios. Line refs off-by-one (F-03); AC definitions deferred to external doc (F-04)."
+          },
+          {
+            "name": "D6 Grounding (CRITICAL)",
+            "status": "PASS (~95%)",
+            "notes": "Every referenced function, file, schema site, condition line, and test file was verified against the codebase: implementation.ts lines 81/142/153/154/162 + MAX_ATTEMPTS=3; schemas.ts:228 phases Type.Object({name,description}); STAGE_MODELS['spec']@243; doc-validators normalizePhases@98; prompts buildSpecPrompt@84 phases bullet; tests/build-runner-nonregression.test.ts, tests/stream-theme-class-theme.test.ts, tests/render/real-theme-parity.test.ts all exist. No hallucinated references."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "PASS",
+            "notes": "Scope is honestly minimal: 4 source files + normalizer widening + 1 new test file, no new runtime deps, no control-flow/review/backend-selection changes. Sibling-primitive placement reuses single sources of truth. No YAGNI/gold-plating detected."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "PASS-WITH-REVISION",
+            "notes": "Tolerant substring-OR-regex matching documented; ran tokens exemplified; regex examples (SCENARIO-016 with_retry\\(\\|\\| fetch_fmp) valid. Gaps: unreadable-detection mechanism under-specified given readMaybe contract (F-01); dual-failure injection path unspecified (F-02)."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/09-spec-review.md"
+      }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-20T16:54:54.880Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "Per-Phase Deliverable Assertions for the Build Gate (spec 10)",
+        "date": "2026-07-21",
+        "summary": "**Goal.** Eliminate false-greens in the build gate. A phase can compile/test green while delivering nothing (a never-created file compiles fine; an unwired call site is still a valid public fn; a dead `_ => {}` router arm passes its own unit tests) — the proven root cause of the 2026-07-20 spec-54 false-green. The fix adds a per-phase DELIVERABLE CONTRACT (`requireFiles`, `requireContains`, `requireNotContains`, `requireTests`) that the spec author declares per phase, AND-ed with build-green.\n\n**What was built (per layer).**\n- *Layer 1 — primitive (AC-01/02), committed in 92a1056d:* `runDeliverableCheck(cwd, deliverables, opts?)` added to `src/build-runner.ts` as a sibling of `runRedCheck`/`runBuildGate`. Follows the never-throwing invariant: entire body wrapped in try/catch returning `{pass:false, missing:[...], ran:[...]}` on any error. Reuses the single sources of truth — `detectProjectCommands`, `resolveTimeoutMs`, `readMaybe`, and ONE cached `spawnSync` test-list subprocess per cwd per run (module-level `Map` cache). All four sub-checks evaluate every element (no short-circuit) so `missing` is exhaustive. Tolerant regex-or-substring matching for `requireContains`/`requireNotContains`/`requireTests`; `requireTests` lists tests once (rust → `cargo test --list`, vitest/jest/python variants) and records `test-list unavailable` (non-blocking) when the runner/spawn is absent. Undefined/empty deliverables early-return `{pass:true}` (backward compatible).\n- *Layer 2 — spec declaration (AC-04/05), committed in 60eeb51f:* `SpecificationData` phases element in `src/render/schemas.ts` extended with an all-optional `deliverables` object (validates identically when absent); `normalizePhases` in `src/doc-validators.ts` widened to preserve `deliverables` so `phase.deliverables` is statically typed and round-trips through `implementation.ts:81`; `buildSpecPrompt` in `src/prompts.ts` updated to the `{ name, description, deliverables? }` bullet plus an explicit deliverable-declaration instruction for non-compiler-checkable phases.\n- *Layer 3 — AND-semantics wiring (AC-03), UNCOMMITTED in worktree:* in `src/stages/implementation.ts`, `runDeliverableCheck` is invoked right after `runBuildGate`; the GREEN condition changed from `if (gate.pass || gate.inScopePass)` to `if ((gate.pass || gate.inScopePass) && deliverableCheck.pass)`; on build-green-but-deliverables-fail the exhaustive `missing` list is injected into the next implementer retry under a `## Deliverables still missing — create/wire these` block (resets per attempt, bounded by MAX_ATTEMPTS=3, never throws).\n\n**Files changed.** Source: `src/build-runner.ts` (+317), `src/stages/implementation.ts` (+~28), `src/doc-validators.ts`, `src/prompts.ts`, `src/render/schemas.ts`. Tests: `tests/build-runner-deliverable-check.test.ts` (new), `tests/spec-deliverable-declaration.test.ts` (new), `tests/implementation-deliverable-wiring.test.ts` (new), `tests/implementation-deliverable-wiring-edges.test.ts` (new), plus edits to `src/stages/implementation.test.ts` and `tests/implementation-tdd-rust-wiring.test.ts`.\n\n**Test results.** Targeted verification green: 64/64 tests pass across the 6 affected/new suites (26 deliverable-check + 12 spec-declaration + 10 wiring + 5 wiring-edges + 5 tdd-rust + 6 implementation), runtime 3.6s. Covers all-present/missing-file/missing-contains/forbidden-notContains/missing-test/unreadable-file/no-runner-skip/spawn-cache/empty-deliverables for the primitive, the stockfan Phase-5/6 false-green regression both ways, and the AND-semantics verdict + missing-list injection.\n\n**Deviations from spec.** (1) Layer 3 wiring (`implementation.ts`) and three of the four test files remain **uncommitted** in the working tree — only Layers 1 & 2 were committed before the run paused. (2) The pipeline halted at 2/4 phases (not all green), so the full-suite gate (AC-07 — all 1120+ pre-existing tests + new suites, typecheck, and the themed-stream/real-Theme-parity regressions) was NOT re-run by the pipeline; only the six directly-affected suites were re-verified locally. (3) The regression test is split into two wiring files (`implementation-deliverable-wiring` + `-edges`) rather than the single `implementation-deliverable-regression.test.ts` named in the task list; coverage is equivalent. Scope held: no control-flow (nodes/workflow/pipeline), review/integration, or backend-selection changes; no new runtime deps.",
+        "phasesCompleted": "2/4",
+        "allGreen": "false",
+        "filesModified": [
+          "src/build-runner.ts",
+          "src/stages/implementation.ts",
+          "src/stages/implementation.test.ts",
+          "src/doc-validators.ts",
+          "src/prompts.ts",
+          "src/render/schemas.ts",
+          "tests/build-runner-deliverable-check.test.ts",
+          "tests/spec-deliverable-declaration.test.ts",
+          "tests/implementation-deliverable-wiring.test.ts",
+          "tests/implementation-deliverable-wiring-edges.test.ts",
+          "tests/implementation-tdd-rust-wiring.test.ts"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/10-implementation-summary.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-20T17:21:39.732Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review — Per-Phase Deliverable Assertions (build-gate AND-semantics)",
+        "date": "2026-07-21",
+        "verdict": "CONTEST",
+        "summary": "The implementation correctly delivers the stated intent: `runDeliverableCheck(cwd, deliverables, opts)` enforces requireFiles/requireContains/requireNotContains/requireTests with tolerant matching, never throws (entire body wrapped in try/catch, SCENARIO-010), and the GREEN condition in implementation.ts:194 is exactly `(gate.pass || gate.inScopePass) && deliverableCheck.pass` — the proven root-cause fix for the stockfan false-green. Backward compatibility holds (absent deliverables → `{pass:true}` early return), the spec prompt elicits `phases[].deliverables`, the schema/normalizer round-trip the field as a typed `phase.deliverables`, missing deliverables are fed into the next attempt under the required heading, and `skipTests:!buildGreen` avoids spawning a test-lister on a broken build. `npm run typecheck` is strict-clean and all 1173 tests pass (53 new). The never-throwing invariant, AND-semantics, and the regression test (SCENARIO-011 + the stockfan-shaped wiring tests) are sound.\n\nHowever, three medium-severity quality concerns warrant an author response before this is considered production-hardened: (1) the test-list cache is architecturally dead weight — ~60 lines of machinery (a process-global Map, a exported reset hook, a sentinel type, resolve()-key normalization, an entire SCENARIO-009 dedupe test) that can never serve a hit because the only caller resets it before every invocation and `loadTestList` runs exactly once per invocation; (2) the MAX_ATTEMPTS=3 budget is shared between build-fix and deliverable-fix retries, so a phase that burns two attempts on the build has only one left to satisfy its deliverable contract — premature termination while still making progress; (3) deliverable paths are resolved with bare `resolve(cwd, p)`, accepting `../` escapes that let a contract be satisfied by a file outside the worktree. None of these risk production failure, data loss, or a security breach (the feature is fail-closed and read-only), so this is CONTEST, not REJECT.",
+        "findings": [
+          {
+            "id": "ADV-01",
+            "severity": "medium",
+            "lens": "Minimalist",
+            "title": "Dead test-list cache — ~60 lines of complexity that can never serve a hit",
+            "detail": "src/build-runner.ts:1639-1664 defines `testListCache` (a process-global `Map<string, TestListResult>`), `resetDeliverableCheckCache()`, the `TestListResult` sentinel type, and `resolve()`-based key normalization, plus ~40 lines of rationale ('SCENARIO-009 dedupe', 'run-boundary reset'). This machinery provides ZERO observable benefit: (a) `loadTestList` (build-runner.ts:1899 region) is called exactly ONCE per `runDeliverableCheck` invocation, so there is nothing to dedup within a call; (b) the only production caller, implementation.ts:180-185, calls `resetDeliverableCheckCache()` immediately BEFORE every `runDeliverableCheck`, so the cache is always cold when populated and is wiped before any cross-call read. The SCENARIO-009 test ('two requireTests-bearing phases sharing a cwd share one spawn') asserts behavior that the production wiring immediately defeats. The cache's comments even claim it 'dedupes a single runDeliverableCheck call's sub-checks' — vacuously true because there is only one sub-check call. Recommendation: delete `testListCache`, `resetDeliverableCheckCache`, the `TestListResult` sentinel, the `resolve()` keying, and the SCENARIO-009 cross-call dedupe test; let `loadTestList` return its result as a plain local. The reset-before-every-call is itself correct (a retry adds a test, so a stale cache would false-negative) — which is precisely why the cache can never safely dedup and should not exist. This is the single biggest over-engineering surface in the change.",
+            "file": "src/build-runner.ts",
+            "line": "1639-1664"
+          },
+          {
+            "id": "ADV-02",
+            "severity": "medium",
+            "lens": "Architect",
+            "title": "Shared MAX_ATTEMPTS budget between build-fix and deliverable-fix retries causes premature termination",
+            "detail": "src/stages/implementation.ts:103 reuses the single `MAX_ATTEMPTS=3` loop (line 16) for BOTH build-gate failures AND deliverable-contract failures. A phase that needs two attempts to get the build green has only ONE attempt left to satisfy `requireFiles`/`requireContains`/`requireTests` — and if the implementer's first deliverable-bearing attempt still misses (e.g. creates the file but mis-wires the call site), the phase reports `failed after 3 attempts — terminating early` (implementation.ts:206) and aborts the entire run (`allGreen=false; break`) even though it was demonstrably converging. The task spec says 'MAX_ATTEMPTS respected' so this is compliant, but the coupling of two independent failure modes into one budget is a robustness regression vs. the pre-deliverable world, where 3 attempts were spent entirely on build/test. Recommendation: either give deliverable-fix attempts a separate small budget (e.g. deliverable failures don't count against build-fix attempts, or a `MAX_DELIVERABLE_ATTEMPTS` constant), or reset the attempt counter when the failure MODE switches (build-fail → deliverable-fail). At minimum, document that the budget is shared.",
+            "file": "src/stages/implementation.ts",
+            "line": "103-207"
+          },
+          {
+            "id": "ADV-03",
+            "severity": "low",
+            "lens": "Skeptic",
+            "title": "Path escape — deliverable paths resolve outside the worktree with no clamping",
+            "detail": "src/build-runner.ts:1844-1854 (requireFiles) and 1856-1876 (requireContains) and 1884-1897 (requireNotContains) all resolve spec-supplied paths with bare `resolve(cwd, p)` / `join(cwd, file)`. A spec declaring `requireFiles: [\"../../../../etc/hostname\"]` or `requireContains: {file:\"../../sibling/preexisting.rs\", pattern:\"fn main\"}` is satisfied by a file OUTSIDE the worktree — defeating the deliverable contract the feature exists to enforce. `requireContains` additionally READS the out-of-cwd file's contents (no data leaks into logs — only pattern names appear in `missing`/`ran` — so this is not an exfiltration vector, but it is a contract-evasion vector). Since the framework's stated job is to ENFORCE contracts rather than trust the spec author, an unguarded path escape cuts against the feature's intent. Recommendation: clamp resolved paths to the worktree root (`resolve(cwd, p)` must startWith `resolve(cwd)`), and record `path escapes worktree: <p>` as a missing/failure when it does not. Low severity because exploitation requires a malicious or careless spec author, but the whole feature premise is that spec authors' deliverable claims are NOT trusted.",
+            "file": "src/build-runner.ts",
+            "line": "1844-1876"
+          },
+          {
+            "id": "ADV-04",
+            "severity": "low",
+            "lens": "Skeptic",
+            "title": "Regex ReDoS surface — spec-supplied patterns compiled and run with no timeout",
+            "detail": "src/build-runner.ts:1699-1714 `tolerantMatch` does `new RegExp(pattern)` then `re.test(text)` synchronously on spec/LLM-supplied patterns. A catastrophic-backtracking pattern (e.g. `(a+)+$`) from a buggy or adversarial spec will hang the Node event loop with no timeout — the `spawnSync({timeout})` envelope only bounds the test-lister subprocess, NOT the in-process regex engine. Because patterns are LLM-generated and never validated, this is a plausible denial-of-pipeline vector, and it would manifest as a silent stage hang rather than a clean failure (the try/catch cannot catch an infinite regex loop). Recommendation: either sandbox the regex in a worker_thread with a hard timeout, reject patterns matching known-dangerous shapes (nested quantifiers), or set a Node-level limit. Low/UNCERTAIN severity because trigger requires a pathological pattern, but the blast radius (whole pipeline hang, no clean failure) is disproportionate.",
+            "file": "src/build-runner.ts",
+            "line": "1699-1714"
+          },
+          {
+            "id": "ADV-05",
+            "severity": "low",
+            "lens": "Skeptic",
+            "title": "Substring fallback for requireTests cuts toward the exact false-green this feature targets",
+            "detail": "src/build-runner.ts:1899-1912 matches each declared test name with `lines.some((line) => tolerantMatch(name, line))`, and `tolerantMatch` falls back to `text.includes(pattern)` on any non-matching/invalid regex. A declared `requireTests: [\"fetch\"]` is therefore satisfied by ANY pre-existing test whose listed name contains 'fetch' — including unrelated tests that pre-date the phase. The per-LINE split (added per an inline review note) mitigates the worst whole-stdout false-hit, and the task explicitly requests tolerant matching, but the tolerance direction is noteworthy: it biases toward the SAME false-green failure mode (a name that superficially matches but is not the deliverable test) that the feature exists to prevent. Recommendation: default to a stricter match (e.g. `\\bname\\b` or anchoring to the lister's name delimiter) and only fall back to bare substring on an explicitly-declared `loose:true`; or document in the spec-prompt instruction that declared names should be sufficiently specific (the current instruction does not).",
+            "file": "src/build-runner.ts",
+            "line": "1899-1912"
+          },
+          {
+            "id": "ADV-06",
+            "severity": "low",
+            "lens": "Minimalist",
+            "title": "requireNotContains fail-closed on a MISSING file is stricter than the task spec",
+            "detail": "src/build-runner.ts:1884-1897 treats a missing target file for `requireNotContains` as a FAILURE (`missing file: <file>`), with an inline comment justifying the choice. The task spec only mandated `unreadable → fail`; it was silent on missing files for requireNotContains, and a naive reading ('a missing file cannot contain the forbidden pattern → pass') would be equally defensible. The chosen fail-closed semantics are arguably MORE correct for the stockfan case (a missing screen.rs means the phase didn't deliver) and align with the anti-false-green intent, so this is not a bug — but it IS an undocumented deviation from the written spec that a future reader could trip on (e.g. a spec author who forbids a pattern in a file that is conditionally generated will see unexpected failures). Recommendation: either add a one-line note to the spec-prompt instruction describing the fail-closed-on-missing semantics for requireNotContains, or accept the deviation explicitly in the contract docstring.",
+            "file": "src/build-runner.ts",
+            "line": "1884-1897"
+          },
+          {
+            "id": "ADV-07",
+            "severity": "low",
+            "lens": "Minimalist",
+            "title": "Pervasive 'review finding:' comment annotations bloat the module with resolved-iteration narration",
+            "detail": "src/build-runner.ts carries multiple multi-line 'Review finding:'/'review finding, HIGH'/SCENARIO-XXX comment blocks (e.g. 1613-1621, 1639-1664, 1877-1883, 1899-1912) that narrate review iterations the code has already resolved. While individually informative, in aggregate they add substantial noise at rest (several 10-15 line blocks) and conflate historical review process with present behavior — a maintainer reading the code cold cannot tell which 'review finding' notes still carry actionable weight vs. which are fossil records. The implementation.ts:178-186 block has the same character. Recommendation: distill each 'review finding' block to the one-line invariant it establishes (e.g. 'Reset cache before each attempt: a retry may add a test the stale list would miss') and drop the iteration narrative. Low severity — readability only, no behavioral impact.",
+            "file": "src/build-runner.ts",
+            "line": "1613-1664"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/13-adversarial-review.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-20T17:22:26.853Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review: Per-Phase Deliverable Assertions for the Build Gate",
+        "date": "2026-07-21",
+        "verdict": "Approved",
+        "summary": "The implementation faithfully realizes the spec's root-cause fix: phase GREEN now requires `(gate.pass || gate.inScopePass) && deliverableCheck.pass`, so a build-green phase that delivers nothing (a never-created test file, an unwired call site, a dead `_ => {}` router arm) is correctly reported as FAIL. Verified on worktree branch `10-build-gate-deliverable-assertions`.\n\nLAYER 1 — `runDeliverableCheck` in `src/build-runner.ts` (lines 1587–1925): sibling of `runRedCheck`/`runBuildGate`, reuses `detectProjectCommands`, `resolveTimeoutMs`, a `readForDeliverable` helper, ONE cached `spawnSync` test-list per cwd (`testListCache` keyed by `resolve(cwd)`), tolerant substring-OR-regex matching (`tolerantMatch`), exhaustive (no short-circuit) evaluation, and a whole-body try/catch honoring the never-throw gate-primitive invariant. Early-returns `{pass:true}` when deliverables is absent (backward compat). All sub-checks produce the exact documented `missing` reason strings.\n\nLAYER 2 — schema/normalizer/prompt: `PhaseDeliverables`/`SpecPhase` added to `schemas.ts` (all fields Optional → backward compatible), `normalizePhases` widened to `NormalizedPhase[]` preserving `deliverables` by reference (round-trips to typed `phase.deliverables`), and `buildSpecPrompt` now instructs declaring deliverables AND-ed with build-green. Clean, minimal diffs.\n\nLAYER 3 — `implementation.ts`: minimal diff — declares `missingDeliverables`, calls `resetDeliverableCheckCache()` + `runDeliverableCheck` after the gate, flips the GREEN condition, and feeds the missing list into the next attempt under `## Deliverables still missing — create/wire these`. MAX_ATTEMPTS (3) loop unchanged.\n\nEvidence: `npx tsc --noEmit` → exit 0 (strict-clean). `npx vitest run` → 68 files / 1173 tests, all green (no regression to runRedCheck, npm-in-scope, cargo gate, themed stream, real-Theme parity, mid-run input). New suites are non-vacuous: the stockfan regression proves AND-semantics both ways (SCENARIO-011/015 + an inScopePass-branch case), and SCENARIO-007/008/009/010 cover no-runner-skip, chmod-000 unreadable (root-skipped), single-cached-spawn, and never-throw.\n\nTwo reviewer-driven improvements beyond the spec were already folded in and are correct: a `skipTests` opt (defers the test-lister spawn when the build already failed — the phase fails on the build anyway, so the green verdict is unaffected) and a run-boundary `resetDeliverableCheckCache()` (prevents a stale list from masking a freshly-added test on retry).\n\nNo Critical or High issues found. Findings are all Low/Informational. APPROVED.\n\nDimensions (1–5): Correctness 5, Security 4, Performance 4, Concurrency 5, Maintainability 5, Testability 5, Error Handling 5, Data Integrity 5, Observability 4.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "Low",
+            "title": "requireNotContains on a missing/unreadable target file now FAILs — correct, but the implicit 'file must exist' contract is undocumented",
+            "detail": "Spec text only specifies the happy path ('requireNotContains hit → forbidden pattern <pattern> still present in <file>'). The implementation goes further: when the target file is missing it records `missing file: <file>`, and when unreadable it records `unreadable: <file>` (build-runner.ts ~1895–1905). This is the SAFER and correct choice for the documented use case (a file that must still exist but must no longer contain a pattern, e.g. stockfan `screen.rs`), and it correctly prevents the false-green where requireNotContains silently passed on an absent file. However, it also means a deliverable expressed as 'delete file X' would misfire (a deleted file is 'missing file:' → FAIL when the intent was satisfied). Fix: add one line to the spec-prompt elicitation and/or a code comment stating 'requireNotContains implies the file must still EXIST; to assert deletion, use requireFiles/requireContains on a replacement file instead.' No code change required.",
+            "file": "src/build-runner.ts",
+            "line": "1893"
+          },
+          {
+            "id": "F-02",
+            "severity": "Low",
+            "title": "Malformed (non-array) deliverables fields are silently skipped, relying solely on upstream schema validation",
+            "detail": "`runDeliverableCheck` guards each sub-check with `Array.isArray(...)`; a deliverables object like `{ requireFiles: \"x.rs\" }` (string instead of array, or a typo like `requireFile`) is silently treated as 'nothing to check' for that sub-check rather than enforced or warned (build-runner.ts ~1845/1865/1893). The intended defense is the typebox `PhaseDeliverables` schema rejecting malformed control upstream, which is the established contract for all fields. This is acceptable, but as defense-in-depth for the false-green class this change targets, consider recording a `missing` reason (e.g. `malformed deliverables.<field>: expected array`) when a deliverables object is present but a declared field is the wrong shape, so a malformed declaration can never silently degrade to pass. Low risk because schema validation is the real gate.",
+            "file": "src/build-runner.ts",
+            "line": "1845"
+          },
+          {
+            "id": "F-03",
+            "severity": "Low",
+            "title": "Catastrophic-backtracking regex (LLM/spec-supplied) is NOT bounded by resolveTimeoutMs and can stall the gate",
+            "detail": "`tolerantMatch` runs `new RegExp(pattern).test(text)` in-process (build-runner.ts ~1748). `resolveTimeoutMs` only bounds the spawned test-lister, NOT these regex evaluations. A pathological pattern (e.g. `(a+)+$`) supplied by the LLM-generated spec against a large source file can backtrack indefinitely and hang runDeliverableCheck's main thread — and the never-throw try/catch does NOT help, because regex backtracking does not throw. Realistic risk is low (patterns are dev/LLM-authored, source files are bounded), but since this is exactly the 'gate that stalls the pipeline' failure class the never-throw invariant exists to prevent, it is worth noting. Mitigation options (pick none/one): cap input length before test, run pattern.compile in a try and reject obviously-pathological patterns, or document the threat-model assumption. No action required to approve.",
+            "file": "src/build-runner.ts",
+            "line": "1748"
+          },
+          {
+            "id": "F-04",
+            "severity": "Informational",
+            "title": "requireTests per-line matching assumes vitest `list --json` is single-line; fragile to future pretty-printed output",
+            "detail": "To avoid false-greens from name substrings appearing in path/comment lines, the requireTests match is performed per-LINE (build-runner.ts ~1917). The code comment explicitly notes vitest `list --json` emits a single-line JSON array 'unaffected' by per-line splitting. This holds today, but if a future vitest version pretty-prints the JSON (multi-line), a test name located on a field-value line would still substring-match (fine), while a name spanning key/value structure would not. Consider falling back to a whole-blob match specifically for the vitest/JSON runner (detected via `resolveTestListerArgv`), or pin/document the vitest-output assumption. Informational — current behavior is correct.",
+            "file": "src/build-runner.ts",
+            "line": "1917"
+          },
+          {
+            "id": "F-05",
+            "severity": "Informational",
+            "title": "TOCTOU window between existsSync and readFileSync in readForDeliverable (single-process, mitigated)",
+            "detail": "`readForDeliverable` calls `existsSync` then `readFileSync` (build-runner.ts ~1725). If the file is deleted between the two calls, the catch returns `{ok:false, exists:true}` → labelled `unreadable: <file>` when the file is actually missing. The phase still FAILS (correct outcome), only the message is slightly inaccurate. This is a local single-process dev tool, not a concurrent server, so the race is theoretical. No action required.",
+            "file": "src/build-runner.ts",
+            "line": "1725"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/14-code-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-20T17:25:30.483Z",
+      "agent": "docs",
+      "data": {
+        "title": "Post-Implementation Documentation Update — Per-Phase Deliverable Assertions for the Build Gate (spec 10)",
+        "date": "2026-07-21",
+        "summary": "Reviewed and reconciled every document in docs/specifications/10-build-gate-deliverable-assertions/ against the actual implementation after code-review approval. The build-gate deliverable-assertions feature is FULLY IMPLEMENTED across all four specification layers and verified gate-green (npm run typecheck strict-clean; npm run test 1173/1173 across 68 files). Updated: (1) 07-implementation-plan.md — marked all 4 phases COMPLETE with commit/SHAs and file evidence; (2) 08-task-list.md — added a Stage-11 completion banner stating all tasks delivered and the commit hygiene state; (3) 10-implementation-summary.md — corrected the stale \"Phases Completed: 2/4, All Green: false\" to \"4/4, All Green: true (1173/1173)\" and appended a Docs-executor reconciliation section recording final test counts, modified test files, and a commit-hygiene note (Layers 1 & 2 committed as 92a1056d/60eeb51f; Layer 3 wiring + requireTests fix + test files staged uncommitted in the worktree, to be committed before merge); (4) 06-specification.md — appended a Deviations-from-Specification table (D-1..D-6) plus an out-of-scope-confirmation block. No README/CHANGELOG/API-doc changes needed: this is internal framework hardening with no user-facing surface, no new CLI flags, and no new runtime dependencies. The workflow-tracking .knowledge.json is pipeline-auto-managed and left untouched.",
+        "docsUpdated": "docs/specifications/10-build-gate-deliverable-assertions/06-specification.md (appended §Deviations from Specification table D-1..D-6 + out-of-scope confirmations); docs/specifications/10-build-gate-deliverable-assertions/07-implementation-plan.md (all 4 phases marked ✅ COMPLETE with SHAs/file evidence); docs/specifications/10-build-gate-deliverable-assertions/08-task-list.md (Stage-11 completion banner: all tasks complete, gate 1173/1173, commit-hygiene state); docs/specifications/10-build-gate-deliverable-assertions/10-implementation-summary.md (corrected Phases 2/4→4/4 and All Green false→true; appended §Docs-executor reconciliation with final test counts + §Commit hygiene note). README/CHANGELOG/architecture/design docs intentionally NOT changed — no user-facing/API/behaviour surface change (internal build-gate hardening, no new deps).",
+        "deviationsDocumented": [
+          "D-1: Regression test delivered as a single file tests/implementation-deliverable-regression.test.ts per spec → split across tests/implementation-deliverable-wiring.test.ts (stockfan Case A absent→not-green + Case B present→green) and tests/implementation-deliverable-wiring-edges.test.ts (edges). Reason: keeps AND-semantics verdict wiring hermetic; the real runDeliverableCheck primitive is independently covered by tests/build-runner-deliverable-check.test.ts (26 tests). Impact: coverage equivalent, no behaviour change.",
+          "D-2: requireTests originally specified to match each declared test name against the WHOLE raw test-list stdout blob → implementation matches PER-LINE. Reason: a substring hit in a path/dir-header/comment line could falsely satisfy the contract. Impact: correctness hardening; verified non-regressing against all SCENARIO-005/006 fixtures.",
+          "D-3: runDeliverableCheck signature gained opts.skipTests (spec had only {signal,timeoutMs}); implementation stage passes skipTests:!buildGreen. Reason: on a build-red attempt the test list is stale/meaningless and spawning it wastes the cached subprocess. Impact: performance optimization; on build-green attempts requireTests runs exactly as specified (deferred Low finding).",
+          "D-4: implementation.ts GREEN condition is exactly (gate.pass||gate.inScopePass)&&deliverableCheck.pass as specified, PLUS an explicit resetDeliverableCheckCache() call at the run boundary (module-level testListCache Map reset). Reason: without the reset the cached cargo/vitest test list from a prior run would leak (stale test names) across runs. Impact: correctness for multi-run processes; one extra import; behaviour-identical within a single run.",
+          "D-5: Spec implied all 4 layers committed by the implementation stage → in reality Layers 1 & 2 are committed (92a1056d feat(build-runner): add runDeliverableCheck... Layer 1; 60eeb51f feat(spec): add optional per-phase deliverables...), but Layer 3 wiring (src/stages/implementation.ts AND-condition + verdict log + missing-injection block + resetDeliverableCheckCache import + the D-2 per-line requireTests fix in src/build-runner.ts) and the four test files remain uncommitted in the worktree at pipeline-pause. Impact: final state fully implemented and gate-green (1173/1173); needs a follow-up feat(implementation)...(Layer 3) + test(implementation)...(Layer 4) commit pair before merge.",
+          "D-6: ran audit array specified to emit only when ≥1 deliverable declared → built unconditionally on every runDeliverableCheck call. Reason: simpler never-throwing structure + stable log surface for the implementation-stage verdict line. Impact: log-only/cosmetic, no contract impact (deferred Low finding)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/10-build-gate-deliverable-assertions/docs/specifications/10-build-gate-deliverable-assertions/17-documentation.md"
+      }
+    }
+  }
+}
