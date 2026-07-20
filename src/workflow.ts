@@ -72,9 +72,21 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const promptWithKnowledge = knowledge
 			? `${prompt}\n\n## Prior-stage data (auto-injected)\n${knowledge}`
 			: prompt;
+		// Phase 3 (AC-05 / AC-06 / SCENARIO-013..016): drain mid-run user input
+		// captured live during execution ONCE per spawn, and when non-empty
+		// prepend a `## Mid-run user guidance` block AFTER feedback AND knowledge
+		// so it remains the most-visible tail of the prompt. Draining here (inside
+		// `realAgent`, NOT the memoizing wrapper at the bottom of makeContext)
+		// means a cached/replayed spawn during resume does NOT re-drain — each
+		// captured input is injected exactly once. An empty drain is byte-identical
+		// to the no-feature baseline.
+		const midRun = options.userSteerProvider ? options.userSteerProvider() : [];
+		const promptWithGuidance = midRun.length
+			? `${promptWithKnowledge}\n\n## Mid-run user guidance (added during execution)\n${midRun.map((t, i) => `(${i + 1}) ${t}`).join("\n")}\n\nIncorporate this into your work.`
+			: promptWithKnowledge;
 		const common = {
 			agent: call.agent,
-			prompt: promptWithKnowledge,
+			prompt: promptWithGuidance,
 			cwd: agentCwd,
 			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
 			schema: call.schema,

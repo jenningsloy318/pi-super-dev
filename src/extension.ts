@@ -364,6 +364,11 @@ export default function activate(pi: ExtensionAPI): void {
 					model: params.model as string | undefined,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
 					resume: typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined),
+				// Phase 3 (AC-05 / SCENARIO-013..016): wire the mid-run input drain to
+				// the activeRun singleton. workflow.ts realAgent drains this ONCE per
+				// specialist spawn; empty while idle/after drain so non-TUI/idle runs
+				// inject nothing (byte-identical baseline).
+				userSteerProvider: () => activeRun?.drain() ?? [],
 				progress: sink,
 					signal,
 				});

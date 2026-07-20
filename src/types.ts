@@ -260,6 +260,13 @@ export interface RunOptions {
 	resumeSpecIdentifier?: string;
 	/** @internal loaded resume cache; when present, ctx.agent memoizes. */
 	resumeCache?: Map<string, AgentResult>;
+	/** Phase 3 (AC-05 / SCENARIO-013..016): drains mid-run user input captured
+	 *  live during execution, atomically, ONCE per specialist spawn inside
+	 *  `workflow.ts` `realAgent`. Each captured input is injected exactly once
+	 *  (memoized resume replays do not re-drain — draining lives inside
+	 *  `realAgent`, NOT the memoizing wrapper). Optional — omitting it disables
+	 *  the feature and prompts stay byte-identical to the no-feature baseline. */
+	userSteerProvider?: () => string[];
 }
 
 /** Honest, derived overall outcome of a run. */
