@@ -7,7 +7,7 @@
  */
 
 import type { ControlObj, Stage } from "../types.ts";
-import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt } from "../prompts.ts";
+import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
@@ -102,6 +102,12 @@ export const implementationStage: Stage = {
 				}
 				const specialist = await ctx.helper({ name: "route-specialist", sources: { "classify-task": state.classify }, options: { phase } });
 				const lang = (specialist.value.languageInstructions as string) ?? "";
+				// Gap 3 (AC-03 → SCENARIO-010): the RED-phase prompt carries the no-`--lib`
+				// Rust verification discipline via the shared `langInstructions` slot so
+				// `buildTddPrompt` and `buildImplementPrompt` reference the IDENTICAL
+				// `RUST_SELF_VERIFY_DISCIPLINE` source string (single source of truth).
+				// For non-rust setups `rustDiscipline(setup)` is "" and the specialist's
+				// languageInstructions still flow through (no regression).
 				// RED phase (Gap 1b, AC-02 → SCENARIO-006/007/008/009/010): author the
 				// tests via tdd-guide and VERIFY they actually fail against the
 				// unimplemented behavior. The tdd-guide result is NO LONGER discarded —
@@ -110,14 +116,14 @@ export const implementationStage: Stage = {
 				// hint) up to MAX_RED_RETRIES so "TDD" is genuinely red-then-green. On
 				// red/unknown we proceed immediately (greenfield cannot stall). Never
 				// throws (runRedCheck degrades to `unknown`); never exceeds the cap.
-				const tdd = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, lang) });
+				const tdd = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) });
 				let testFiles = (tdd.control as { testFiles?: string[] } | null)?.testFiles ?? [];
 				let redStatus: RedStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
 				let retries = 0;
 				ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 				while ((redStatus === "green" || redStatus === "broken") && retries < MAX_RED_RETRIES) {
 					retries++;
-					const retry = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, lang) + redRePromptHint(redStatus) });
+					const retry = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) + redRePromptHint(redStatus) });
 					testFiles = (retry.control as { testFiles?: string[] } | null)?.testFiles ?? testFiles;
 					redStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
 					ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);

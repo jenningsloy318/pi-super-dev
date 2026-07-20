@@ -101,8 +101,16 @@ const RUST_SELF_VERIFY_DISCIPLINE = "When verifying a Rust crate, run `cargo tes
 /** Return the Rust verification discipline ONLY for Rust projects (review
  *  finding: it was previously broadcast to ALL languages). Uses the
  *  SETUP-detected language (`s.language`, derived from repo manifests) so it is
- *  reliable even when the per-task classification is null at prompt-build time. */
-function rustDiscipline(s: SetupControl): string {
+ *  reliable even when the per-task classification is null at prompt-build time.
+ *
+ *  Exported so `src/stages/implementation.ts` can pass it as the
+ *  `langInstructions` arg of `buildTddPrompt` (Gap 3 / P4, AC-03 →
+ *  SCENARIO-010) — the RED-phase prompt then carries the IDENTICAL
+ *  `RUST_SELF_VERIFY_DISCIPLINE` source string that `buildImplementPrompt` and
+ *  `buildQaPrompt` already embed, closing the no-`--lib` parity gap. Degrades to
+ *  the empty string for non-rust setups and on null/undefined/malformed `s`
+ *  (via `s?.language`) — never throws. */
+export function rustDiscipline(s: SetupControl): string {
 	return s?.language === "rust" ? RUST_SELF_VERIFY_DISCIPLINE : "";
 }
 
