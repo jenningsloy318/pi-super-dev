@@ -31,6 +31,15 @@ import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 export interface DashboardTheme {
 	fg(token: string, text: string): string;
 	bold?(text: string): string;
+	/**
+	 * Optional background painter (SCENARIO-007). Added so the real pi
+	 * `Theme` — whose `bg(color, text)` is a method — satisfies this shape
+	 * STRUCTURALLY, while unit-test mocks can omit it. `stream-theme.ts`
+	 * `commandBackground` reads this to paint tool-bubble backgrounds via
+	 * pi-tui `Text`'s 4th `customBgFn` arg. Optional ⇒ graceful-degrade:
+	 * callers without a background painter simply get none.
+	 */
+	bg?(token: string, text: string): string;
 }
 
 /**
