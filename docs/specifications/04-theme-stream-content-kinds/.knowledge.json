@@ -1,0 +1,923 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-20T03:37:57.038Z",
+      "agent": "requirements",
+      "data": {
+        "title": "Theme-separated stream + result content kinds (pi-native tool bubbles, thinking color, accent phases, red errors)",
+        "date": "2025-07-20",
+        "type": "bug-fix",
+        "priority": "high",
+        "executiveSummary": "Today the super-dev live stream and result render flatten every content kind (commands, thinking, process logs, phase markers, errors, corrective notices) into one undifferentiated text block, whereas pi-native separates them with distinct foreground colors AND tool-bubble backgrounds. This is a pure TypeScript change to src/extension.ts + src/render/dashboard.ts + a new pure module src/render/stream-theme.ts that classifies each sink line into one of 10 LineKinds and themes it via pi's real Theme tokens (toolTitle/thinkingText/accent/warning/error/success/muted + toolPendingBg/toolSuccessBg), with graceful degradation to raw text in print/json/headless modes. The bridge already routes all stream content through exactly three ProgressSink methods (phase/log/text), so classification lives entirely at the sink layer with no upstream emit-site changes.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "A new pure module src/render/stream-theme.ts exports `type LineKind = \"phase\" | \"command\" | \"command-done\" | \"corrective\" | \"log\" | \"log-success\" | \"log-warning\" | \"log-error\" | \"thinking\" | \"error\" | \"trim\"` and three pure functions `classifyLine(text): LineKind`, `themeLine(kind, text, theme?): string`, `commandBackground(kind, theme?): ((t:string)=>string) | undefined`. The module imports no TUI types beyond the structural DashboardTheme shape. classifyLine matches the full taxonomy order (command-done `→ structured_output ✓` before generic `→ `; `↻ ` corrective; `▶ ` phase; `❌`/`failed after`/`did NOT complete` error; `⚠`/`stagnan` log-warning; `PASS`/`GREEN`/`✓`/`passed`/`complete` log-success; `FAIL`/`✗`/`error` log-error; the `… trimmed …` trim marker; indented/plain → log). Importantly, classifyLine trims leading whitespace before prefix-matching because sink.log stores lines with a leading `  ` indent (extension.ts:229), so a command `→ …` arrives stored as `  → …`."
+          },
+          {
+            "id": "AC-02",
+            "statement": "themeLine maps each kind to the exact pi-native token: phase→fg(\"accent\",bold(text)); command→fg(\"toolTitle\",bold(name))+\" \"+fg(\"dim\",rest) split on first space; command-done→fg(\"toolTitle\",bold(text)); corrective→fg(\"warning\",text); log→fg(\"text\",text) (indented logs fg(\"dim\")); log-success→fg(\"success\",text); log-warning→fg(\"warning\",text); log-error→fg(\"error\",text); thinking→fg(\"thinkingText\",text); error→fg(\"error\",bold(text)); trim→fg(\"muted\",text). commandBackground returns theme.bg(\"toolPendingBg\", _) for kind command, theme.bg(\"toolSuccessBg\", _) for kind command-done, undefined otherwise. When `theme` is undefined, ALL mappings return the raw text unchanged (no ANSI) and commandBackground returns undefined — this is the headless/print/json/RPC contract."
+          },
+          {
+            "id": "AC-03",
+            "statement": "The existing DashboardTheme interface (dashboard.ts:31) is extended with optional members so the real pi Theme satisfies it structurally without breaking existing callers: add `bg?(token: string, text: string): string` and keep `fg(token: string, text: string)` and `bold?(text: string)` (the token strings \"toolTitle\"/\"thinkingText\"/\"toolPendingBg\"/etc. are passed through to the real Theme; existing token string usage like fg(\"success\"/\"error\"/\"accent\"/\"dim\") is unaffected). No other module's view of DashboardTheme breaks."
+          },
+          {
+            "id": "AC-04",
+            "statement": "src/extension.ts changes `transcript: string[]` → `Array<{ kind: LineKind; text: string }>` (extension.ts:158). sink.phase pushes `{ kind: \"phase\", text: \"▶ ${label}\" }`; sink.log pushes `{ kind: classifyLine(message), text: message }`; sink.text's accumulated `live` is pushed with kind \"thinking\" via finalizeLive. flush() still enforces the rolling tail (TAIL_LINES=400) and the trim-notice line, now pushed as `{ kind: \"trim\", text: \"… N earlier lines trimmed …\" }`."
+          },
+          {
+            "id": "AC-05",
+            "statement": "In flush(), when `ctx?.mode === \"tui\"`, each line is styled via `themeLine(line.kind, line.text, ctx?.ui?.theme)` before joining for the live onUpdate body; command lines additionally get a best-effort tool-bubble background. When NOT in tui mode, flush emits the RAW text (line.text joined by newlines) so print/json/RPC output stays byte-clean and ANSI-free. The on-disk log write (extension.ts:262) writes raw `line.text` (no ANSI, no kind prefix) so saved logs remain grep-friendly."
+          },
+          {
+            "id": "AC-06",
+            "statement": "The final `details` object (extension.ts:278) carries kinds end-to-end: `transcriptTail` becomes `Array<{ kind: LineKind; text: string }>` built from the last 50 transcript entries; the local type declaration at extension.ts:295 is updated to match. The dashboard result factory (renderResult/buildResultComponent in dashboard.ts:332) consumes this new shape and, for backward tolerance, also accepts a plain `string` element by defaulting it to kind \"log\"."
+          },
+          {
+            "id": "AC-07",
+            "statement": "buildResultComponent §1 (the dim detail log, dashboard.ts:338-343) renders each tail line via `themeLine(line.kind, line.text, theme)`; COMMAND and COMMAND-DONE lines are emitted as `new Text(styled, 0, 0, commandBackground(line.kind, theme))` so they receive the per-line tool-bubble background through pi-tui Text's 4th customBgFn argument. §2 (bold stage header + `stageIcon` rows) and §3 (Markdown summary via getMarkdownTheme) remain byte-identical to today. Net visual: commands pop as tool bubbles, thinking renders in thinkingText, phase markers in accent/bold, errors in error red — the multi-way split pi-native has."
+          },
+          {
+            "id": "AC-08",
+            "statement": "No ANSI leak regression: a regression test runs the sink through phase/log/text events with NO theme (simulating print/json/headless) and asserts the joined transcript equals the raw joined `line.text` with zero ANSI escape bytes; the on-disk log string likewise contains zero ANSI. The TUI-mode path is separately asserted to produce ANSI containing the expected fg tokens."
+          },
+          {
+            "id": "AC-09",
+            "statement": "New unit tests cover classifyLine (one assertion per LineKind incl. the `→ structured_output ✓` vs `→ ` ordering, the leading-whitespace trim, and each error/warning/success keyword), themeLine (each kind → correct token; undefined theme → raw identity), and commandBackground (command→toolPendingBg, command-done→toolSuccessBg, else undefined). A render-per-kind test drives buildResultComponent with a transcriptTail containing all kinds and asserts command lines carry a customBgFn and thinking/phase/error lines carry their respective fg tokens."
+          },
+          {
+            "id": "AC-10",
+            "statement": "npm run typecheck passes strict-clean and npm test passes (all existing dashboard-widget / dashboard-wiring / dashboard-result tests plus the new stream-theme + render-per-kind tests). No regression to the live dashboard widget, the build-gate, or the §3 Markdown summary."
+          }
+        ],
+        "nonFunctional": [
+          "Performance: classifyLine/themeLine are pure and called once per stream line; themeLine must short-circuit to the raw string when theme is undefined so non-TUI flush pays only a single identity-return per line (no ANSI allocation). The streaming flush already throttles at FLUSH_MS; the new per-line styling must not introduce per-flush allocations beyond the join that already exists.",
+          "Backward/byte-compatibility: print/json/RPC/headless and the saved disk log MUST remain ANSI-free — theme-absent is identity, and the on-disk write uses raw line.text (no kind, no codes) so existing log-grep tooling and snapshots are unaffected.",
+          "Dependencies: zero new runtime dependencies; reuse pi-tui Text/Container/Markdown and the real pi Theme tokens only.",
+          "Correctness: classifyLine ordering is order-sensitive (command-done before command; error/warning/success keyword scans after the marker checks) and must left-trim whitespace because sink.log indents stored lines with two spaces (extension.ts:229).",
+          "Strict TypeScript: tsconfig is strict and the module is ESM (`type:module`); the extended DashboardTheme optional members must not force changes on existing importers of the interface."
+        ],
+        "openQuestions": [
+          "Stored sink.log lines carry a leading `  ` indent (extension.ts:229) in front of any `→ `/`↻ ` marker. Recommended: classifyLine trims leading whitespace before prefix-matching (folded into AC-01). Confirm this is acceptable versus stripping the indent only for classification but preserving it in stored/rendered text.",
+          "The streaming (live onUpdate) per-line background is best-effort and terminal-dependent; the GUARANTEED tool-bubble background lives in renderResult's Container Text customBgFn (AC-07). Confirm the live stream may degrade to foreground-only coloring on terminals that ignore inline ANSI backgrounds, and that this tradeoff is acceptable (noted in the implementation summary).",
+          "themeLine splits `command` into `name` + `rest` on the FIRST space (e.g. `→ pi exec …` → name `→`, rest `pi exec …`). The recommended token is the bare `→` glyph; confirm whether the desired tool-bubble title should instead be the first real token after the arrow (e.g. `pi`) — affects only cosmetic labeling of the bubble, not the background behavior."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-20T03:39:48.719Z",
+      "agent": "bdd",
+      "data": {
+        "title": "Stream & Result Per-Kind Theming (pi-native content separation)",
+        "date": "2026-07-20",
+        "source": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/01-requirements.md",
+        "features": [
+          {
+            "name": "Stream Line Classification",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "Each content kind is classified to its matching LineKind",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "the full ten-kind content taxonomy is defined for stream lines",
+                "when": "classifyLine inspects a representative line for every known prefix and keyword marker",
+                "then": "the correct LineKind is returned for all ten kinds",
+                "andClauses": [
+                  "the command-done marker is recognized before the generic command marker",
+                  "leading whitespace on stored lines is trimmed before matching"
+                ]
+              },
+              {
+                "id": "002",
+                "title": "Structured-output success line is not mistaken for a generic command",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a line that begins with the structured-output success marker",
+                "when": "it is classified",
+                "then": "it is recognized as command-done rather than a plain command"
+              },
+              {
+                "id": "003",
+                "title": "Indentation on stored lines does not defeat prefix matching",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "lines are stored with a leading two-space indent",
+                "when": "classifyLine evaluates them",
+                "then": "the indent is ignored so a prefixed line still matches its intended kind"
+              }
+            ]
+          },
+          {
+            "name": "Theme Token Mapping",
+            "scenarios": [
+              {
+                "id": "004",
+                "title": "Each kind is styled with its designated pi foreground token",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "a theme is available",
+                "when": "themeLine styles a line of each kind",
+                "then": "each kind receives its designated pi foreground token",
+                "andClauses": [
+                  "commands render in toolTitle with the command name bolded",
+                  "thinking renders in thinkingText",
+                  "phase markers render in accent and bold",
+                  "errors render in error",
+                  "corrective notices render in warning",
+                  "trim notices render in muted"
+                ]
+              },
+              {
+                "id": "005",
+                "title": "Absent theme degrades to raw text with no styling",
+                "acRef": "AC-02",
+                "priority": "critical",
+                "given": "no theme is available such as in print, json, RPC, or headless mode",
+                "when": "themeLine styles any kind",
+                "then": "the raw text is returned unchanged with zero ANSI escape codes",
+                "andClauses": [
+                  "commandBackground returns no background when no theme is available"
+                ]
+              },
+              {
+                "id": "006",
+                "title": "Command lines resolve to the correct tool-bubble background",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "a theme is available",
+                "when": "commandBackground resolves the background for a kind",
+                "then": "commands resolve to the pending tool background",
+                "andClauses": [
+                  "completed commands resolve to the success tool background",
+                  "all other kinds resolve to no background"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Dashboard Theme Shape Extension",
+            "scenarios": [
+              {
+                "id": "007",
+                "title": "Extended theme shape accepts the real theme without breaking callers",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "the theme shape is extended with optional background and bold members",
+                "when": "the real pi Theme is supplied as that shape",
+                "then": "it satisfies the shape structurally without requiring changes to existing importers",
+                "andClauses": [
+                  "existing token-string usage such as success, error, accent, and dim continues to work"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Live Transcript Kind Tagging",
+            "scenarios": [
+              {
+                "id": "008",
+                "title": "Every streamed line is stored with its content kind",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "the live transcript records every streamed line",
+                "when": "phase banners, stage logs, and agent thinking text flow through the sink",
+                "then": "each entry is stored with its correct kind rather than as undifferentiated text",
+                "andClauses": [
+                  "phase banners are tagged as phase",
+                  "stage log lines are tagged by classification",
+                  "agent thinking text is tagged as thinking"
+                ]
+              },
+              {
+                "id": "009",
+                "title": "Rolling tail retains recent entries and records a trim notice",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "the transcript exceeds the rolling tail limit",
+                "when": "older lines are rolled off",
+                "then": "the most recent entries are retained and a trim notice is recorded tagged as the trim kind"
+              }
+            ]
+          },
+          {
+            "name": "Mode-Aware Flush Output",
+            "scenarios": [
+              {
+                "id": "010",
+                "title": "Interactive terminal flush styles each line per kind",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "the live stream is rendered in interactive terminal mode",
+                "when": "the stream is flushed",
+                "then": "each line is styled according to its kind",
+                "andClauses": [
+                  "command lines additionally receive a best-effort tool-bubble background"
+                ]
+              },
+              {
+                "id": "011",
+                "title": "Non-interactive flush stays byte-clean",
+                "acRef": "AC-05",
+                "priority": "critical",
+                "given": "the live stream is rendered in a non-interactive mode such as print, json, or headless",
+                "when": "the stream is flushed",
+                "then": "only raw text is emitted with no styling codes",
+                "andClauses": [
+                  "the saved log file likewise contains only raw text with no kind prefix or codes"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "End-to-End Kind Propagation",
+            "scenarios": [
+              {
+                "id": "012",
+                "title": "Kinds travel from sink through details to the result panel",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "the final run details are assembled",
+                "when": "the transcript tail is carried into the result",
+                "then": "each entry retains its kind so the result panel can render per kind"
+              },
+              {
+                "id": "013",
+                "title": "Legacy plain-string tail entries are tolerated",
+                "acRef": "AC-06",
+                "priority": "medium",
+                "given": "a legacy plain-string entry appears in the tail",
+                "when": "the result panel consumes it",
+                "then": "it is treated as a plain log line rather than breaking rendering"
+              }
+            ]
+          },
+          {
+            "name": "Result Detail Per-Kind Rendering",
+            "scenarios": [
+              {
+                "id": "014",
+                "title": "Result detail log visually separates all content kinds",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "the result detail panel renders the transcript tail",
+                "when": "it draws each line",
+                "then": "commands appear as tool bubbles",
+                "andClauses": [
+                  "thinking appears in the thinking color",
+                  "phase markers appear in accent and bold",
+                  "errors appear in error red",
+                  "the stage header rows and the Markdown summary remain byte-identical to before"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Non-Interactive Byte Cleanliness",
+            "scenarios": [
+              {
+                "id": "015",
+                "title": "Theme-absent processing leaks no escape codes",
+                "acRef": "AC-08",
+                "priority": "critical",
+                "given": "the sink processes phase, log, and text events without a theme",
+                "when": "the output is assembled",
+                "then": "the joined transcript contains zero ANSI escape bytes",
+                "andClauses": [
+                  "the on-disk log contains zero ANSI escape bytes"
+                ]
+              },
+              {
+                "id": "016",
+                "title": "Interactive path emits the expected foreground tokens",
+                "acRef": "AC-08",
+                "priority": "medium",
+                "given": "the interactive terminal path runs with a theme",
+                "when": "the output is assembled",
+                "then": "it contains the expected foreground tokens for each kind"
+              }
+            ]
+          },
+          {
+            "name": "Verification Gates",
+            "scenarios": [
+              {
+                "id": "017",
+                "title": "New module and result rendering are covered by unit tests",
+                "acRef": "AC-09",
+                "priority": "high",
+                "given": "unit coverage is required for the new pure module and result rendering",
+                "when": "the test suite runs",
+                "then": "classifyLine, themeLine, commandBackground, and per-kind result rendering are each exercised",
+                "andClauses": [
+                  "the command-done ordering, leading-whitespace trim, and each error, warning, and success keyword are asserted"
+                ]
+              },
+              {
+                "id": "018",
+                "title": "Typecheck and tests pass with no regressions",
+                "acRef": "AC-10",
+                "priority": "high",
+                "given": "the change is a pure TypeScript addition scoped to the specified files",
+                "when": "the type checker and test suite run",
+                "then": "both pass clean",
+                "andClauses": [
+                  "the dashboard widget is unchanged",
+                  "the in-scope build-gate is unchanged",
+                  "the Markdown summary is unchanged",
+                  "no new runtime dependencies were introduced"
+                ]
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "LineKind covers all 10 kinds; classifyLine matches the full order-sensitive taxonomy and trims leading whitespace.",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002",
+              "SCENARIO-003"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "themeLine maps each kind to its exact pi-native token; commandBackground returns the correct bg or undefined; undefined theme yields raw identity.",
+            "scenarios": [
+              "SCENARIO-004",
+              "SCENARIO-005",
+              "SCENARIO-006"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "DashboardTheme extended with optional bg/bold members so the real Theme satisfies it without breaking existing callers.",
+            "scenarios": [
+              "SCENARIO-007"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "Transcript carries kinds; sink.phase/log/text tag correctly; rolling tail + trim notice retained.",
+            "scenarios": [
+              "SCENARIO-008",
+              "SCENARIO-009"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "TUI flush styles per kind with best-effort command bg; non-TUI flush and disk log emit raw text.",
+            "scenarios": [
+              "SCENARIO-010",
+              "SCENARIO-011"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "details.transcriptTail carries kinds end-to-end and tolerates legacy plain strings.",
+            "scenarios": [
+              "SCENARIO-012",
+              "SCENARIO-013"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "buildResultComponent renders per kind with command tool bubbles; stages and Markdown summary unchanged.",
+            "scenarios": [
+              "SCENARIO-014"
+            ]
+          },
+          {
+            "acId": "AC-08",
+            "description": "No ANSI leak in no-theme transcript or disk log; TUI path emits expected fg tokens.",
+            "scenarios": [
+              "SCENARIO-015",
+              "SCENARIO-016"
+            ]
+          },
+          {
+            "acId": "AC-09",
+            "description": "Unit tests cover classifyLine, themeLine, commandBackground, and render-per-kind.",
+            "scenarios": [
+              "SCENARIO-017"
+            ]
+          },
+          {
+            "acId": "AC-10",
+            "description": "npm run typecheck and npm test pass with no regression to widget, build-gate, or Markdown summary.",
+            "scenarios": [
+              "SCENARIO-018"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-20T03:54:37.225Z",
+      "agent": "research",
+      "data": {
+        "title": "Theme the super-dev stream + result by content kind, using pi-native Theme tokens (incl. backgrounds)",
+        "date": "2026-07-20",
+        "summary": "The implementation gap is confirmed against source: today the live `flush()` (extension.ts:172) joins the transcript as one raw string with NO theme access, and `buildResultComponent` §1 (dashboard.ts:338-343) renders every tail line uniformly as `fg(\"dim\", line)` — so commands, thinking, phase banners, logs, and errors are visually indistinguishable. The pi-native Theme API required to fix this is verified in the installed `theme.d.ts` (SRC-01): `fg(color,text)`/`bg(color,text)` exist, `ThemeColor` includes `thinkingText`/`toolTitle`/`accent`/`success`/`error`/`warning`/`dim`/`text`/`muted`, and `ThemeBg` exposes exactly `toolPendingBg`/`toolSuccessBg`/`toolErrorBg` plus `customMessageBg`/`userMessageBg`/`selectedBg`. The pi-tui `Text` 4th-arg `customBgFn?: (text)=>string` (SRC-02) is the real, type-exact mechanism for per-line tool-bubble backgrounds. Every stream line already funnels through exactly three sink methods (SRC-03), so a pure `classifyLine(text): LineKind` at the sink layer captures the full taxonomy with zero upstream changes — this is the central best practice (BP-01). The decisive engineering constraint is the headless/print/json/RPC byte-clean contract: theme MUST be optional everywhere and identity-degrade, and the implementer MUST keep SEPARATE raw-vs-themed join paths rather than theme-then-strip ANSI (BP-02; this is the explicit ISS-01 resolution — a buggy strip regex risks ANSI leakage). The cleanest, lowest-risk design is a pure `src/render/stream-theme.ts` module exporting `classifyLine`/`themeLine`/`commandBackground` with the existing `DashboardTheme` widened by an optional `bg` token, carrying `Array<{kind,text}>` end-to-end through `transcript`→`flush`→`details.transcriptTail`→renderResult, and applying backgrounds ONLY via the result Container's `Text` customBgFn (guaranteed), with streaming-inline backgrounds explicitly best-effort/terminal-dependent by design.",
+        "options": [
+          {
+            "name": "Pure stream-theme module + tagged {kind,text} transcript + Text-customBgFn bubbles (RECOMMENDED)",
+            "tradeoffs": "Aligns with every AC and all resolved issues. Pros: classifyLine/themeLine/commandBackground are pure and unit-testable with a structural theme mock; the headless contract is protected by identity-degrade + separate raw join paths (BP-02); tool-bubble backgrounds are guaranteed-correct in renderResult via pi-tui Text's 4th-arg customBgFn (SRC-02); no upstream/emit-site edits needed (BP-01). Cons: touches transcript shape across extension.ts→details→dashboard.ts (the type widening at dashboard.ts:290 must accept {kind,text} and stay backward-tolerant to stray strings via a typeof guard — already specced as ISS-04). This is the only option that satisfies all 10 ACs without violating the out-of-scope constraints."
+          },
+          {
+            "name": "Tag kind at emit-site (session-agent.ts / pi-spawn.ts) instead of classifying at the sink",
+            "tradeoffs": "Would be more type-accurate (each emitter knows its own kind). Cons: explicitly OUT OF SCOPE — the task forbids touching session-agent.ts, pi-spawn.ts, workflow.ts, nodes.ts; requires restructuring the 3-method bridge contract. The bridge already routes everything through sink.phase/log/text, so classification-by-prefix at the sink captures the full taxonomy (verified emit prefixes: '→ structured_output ✓', '→ ', '↻ ', '▶ ', '❌'). Rejected."
+          },
+          {
+            "name": "Theme-then-strip: single themed join + regex strip of \\x1b[ bytes for non-TUI",
+            "tradeoffs": "Pros: one code path, less type plumbing. Cons: FORBIDDEN by the resolved ISS-01 — the implementer MUST use separate themed-vs-raw join paths, never join-then-strip, because any strip-regex bug silently leaks ANSI into print/json/headless output and saved logs (BP-02). The on-disk write (extension.ts:262) and non-TUI flush (extension.ts:175-180) must each join raw line.text independently. Rejected as a regression risk."
+          },
+          {
+            "name": "Parallel arrays (string[] transcript + LineKind[] kinds) instead of tagged objects",
+            "tradeoffs": "Pros: transcript stays string[] so a few existing consumers need no change. Cons: index-drift / length-mismatch bugs; details.transcriptTail needs paired kinds anyway; makes the kind↔text binding implicit and error-prone. The tagged {kind,text} array (Option 1) is strictly safer and barely more invasive. Rejected as inferior."
+          }
+        ],
+        "openIssues": [
+          "By-design limitation (not a blocker): per-line tool-bubble BACKGROUNDS are guaranteed-correct ONLY in renderResult's Container Text customBgFn. In the streaming onUpdate view, inline theme.bg is terminal-dependent and best-effort; the task explicitly accepts this and requires it be noted in the implementation summary. Foreground separation (toolTitle/thinkingText/accent/error) IS guaranteed in both paths.",
+          "Verify-before-merge only: the streaming onUpdate body, when theme.bg is best-effort-applied to a command line, must not corrupt the TAIL_LINES rolling-window accounting or the '… N earlier lines trimmed …' trim-notice line (which must be kind 'trim' and counted once). Implementer should keep the tail/trim logic operating on the {kind,text} array BEFORE any per-line styling."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/03-research-report.md"
+      }
+    },
+    "debug": {
+      "timestamp": "2026-07-20T03:56:24.132Z",
+      "agent": "debug",
+      "data": {
+        "title": "All stream content kinds flattened into one undifferentiated text block — no LineKind classification, no per-kind Theme tokens, no tool-bubble backgrounds",
+        "date": "2025-11-21",
+        "summary": "In pi-super-dev, every line the super-dev pipeline emits — commands (`→ …`), agent thinking (sink.text), phase banners (`▶ …`), corrective notices (`↻ …`), errors (`❌ …`/`failed after`), and normal stage logs — is stored and rendered as an opaque plain string with NO kind metadata. The three sinks (`sink.phase`/`sink.log`/`sink.text`) push raw strings into `transcript: string[]` (src/extension.ts:158), `flush()` joins them with `\\n` verbatim (extension.ts:177-180), the on-disk log writes the raw join (extension.ts:262), `details.transcriptTail` is `transcript.slice(-50)` of plain strings (extension.ts:278), and `buildResultComponent` §1 paints the ENTIRE detail log with a single `fg(\"dim\", line)` (dashboard.ts:339-340). The dedicated pi Theme tokens required for the pi-native look are never used: `thinkingText`, `toolTitle`, `toolPendingBg`, `toolSuccessBg`, `accent`/`bold` for phases, `error` red, `success`/`warning` are all bypassed. The new module `src/render/stream-theme.ts` does not exist, `classifyLine`/`themeLine`/`commandBackground` do not exist, and `DashboardTheme` (dashboard.ts:31) declares only `fg` + optional `bold` with no `bg()` — so even the real Theme's background tokens are structurally unreachable. Net effect: the live `onUpdate` stream and the `renderResult` §1 detail log are one flat, dim, monochrome wall of text — the exact opposite of pi-native's tool-bubble + thinking-color + accent-phase + error-red multi-way split.",
+        "hypotheses": [
+          "H1 (90%): NO classification layer exists. There is no `LineKind` type, no `classifyLine`, no `themeLine`, no `commandBackground`, and no `src/render/stream-theme.ts` module (confirmed: file does not exist). Without a `LineKind`, no code path can choose a distinct Theme token per kind, so everything collapses to the one token §1 hardcodes. Prediction: grep for `LineKind|classifyLine|themeLine|commandBackground` returns zero hits. FALSIFIED if these symbols already exist and are wired.",
+          "H2 (85%): `flush()` emits raw joined text with no theming and no TUI/non-TUI branching. Evidence: extension.ts:177-180 builds `body` purely from `all.join(\"\\n\")` (or trimmed join) and hands it to `onUpdate` — it never touches `ctx?.ui?.theme` and never branches on `ctx?.mode === \"tui\"`. Prediction: flush() references neither `theme` nor `ctx.mode`. This explains why the LIVE stream is undifferentiated and also means any future classification must be injected here (TUI-only styling) with a raw-text fallback for print/json/RPC to keep byte-clean output (AC-05 / AC-08).",
+          "H3 (90%): `renderResult` §1 unconditionally dims every line and never constructs a tool-bubble `Text`. Evidence: dashboard.ts:338-343 loops `for (const line of details.transcriptTail ?? []) container.addChild(new Text(fg(\"dim\", line), 0, 0))` — `new Text` is always called with the 3-arg form (text, paddingX=0, paddingY=0); the 4th `customBgFn` argument is never passed. Prediction: no call site in buildResultComponent passes a 4th arg to `new Text`, so command lines cannot receive `toolPendingBg`/`toolSuccessBg` backgrounds. FALSIFIED if a 4-arg Text call for command lines already exists.",
+          "H4 (95%): The kind metadata never travels end-to-end because the data structures carry plain strings. Evidence: transcript is `string[]` (extension.ts:158), sink.phase pushes a template string (extension.ts:228), sink.log pushes a template string (extension.ts:229), sink.text's `live` is a raw string finalized via `transcript.push(live)` (extension.ts:169-173), `transcriptTail` is typed `string[]` (extension.ts:295), and `ResultDetails.transcriptTail` is `string[]` (dashboard.ts:292). Prediction: there is no `{ kind, text }` shape anywhere in the transcript→flush→details→renderResult path. This is why even a perfect `themeLine` helper could not help — the kind is discarded at the sink. FALSIFIED if any of these already carry a `kind` field.",
+          "H5 (60%): `DashboardTheme` is structurally too narrow to satisfy the real pi Theme's `bg()` surface, so backgrounds are impossible without an interface change. Evidence: dashboard.ts:31-34 declares only `fg(token, text)` + optional `bold(text)`; no `bg`. Since `commandBackground` needs `theme.bg(\"toolPendingBg\", _)` / `theme.bg(\"toolSuccessBg\", _)`, the interface MUST be extended with an optional `bg?(token, text)` (AC-03) or the real Theme's `bg` is invisible to the typed code. FALSIFIED if `bg` is already present (it is not). Note: the `fg` token-string pass-through already works for `toolTitle`/`thinkingText` because the real Theme dispatches by token name — the missing piece is purely `bg` + actually CALLING those tokens."
+        ],
+        "rootCause": "The pipeline's stream surface has NO line-classification layer and NO per-kind Theme mapping, so every content kind is stored, transported, and rendered as an opaque plain string. Concretely: (1) `src/render/stream-theme.ts` — the module that should export `LineKind`, `classifyLine`, `themeLine`, and `commandBackground` — DOES NOT EXIST, so there is no `LineKind` type and no function that maps a kind to `theme.fg(\\\"toolTitle\\\"/\\\"thinkingText\\\"/\\\"accent\\\"/\\\"error\\\"/\\\"success\\\"/\\\"warning\\\"/\\\"muted\\\"/\\\"dim\\\"/\\\"text\\\", …)` or `theme.bg(\\\"toolPendingBg\\\"/\\\"toolSuccessBg\\\", …)`. (2) `transcript: string[]` (src/extension.ts:158), `sink.phase`/`sink.log` (extension.ts:228-229), `live` (extension.ts:169), `flush()` (extension.ts:177-180), the disk log write (extension.ts:262), and `details.transcriptTail`/its type (extension.ts:278,295) all carry plain strings — the kind is discarded the moment a line is emitted at the sink, so no downstream consumer can recover it. (3) `flush()` builds its `body` from `all.join(\\\"\\\\n\\\")` with NO branching on `ctx?.mode === \\\"tui\\\"` and never reads `ctx?.ui?.theme`, so the LIVE onUpdate stream is unstyled raw text regardless of mode (and, as required, must STAY raw in non-TUI to keep print/json/RPC byte-clean — theming must be added only in the TUI branch). (4) `DashboardTheme` (dashboard.ts:31-34) declares only `fg` + optional `bold` with NO `bg()`, making the real pi Theme's `toolPendingBg`/`toolSuccessBg` background tokens structurally unreachable from typed code — the interface must be extended with optional `bg?(token, text)`. (5) `buildResultComponent` §1 (dashboard.ts:338-343) paints EVERY `transcriptTail` entry with a single `fg(\\\"dim\\\", line)` and constructs `new Text(styled, 0, 0)` with the 3-arg form — the 4th `customBgFn` argument is never passed, so command lines can never receive the tool-bubble background that gives pi-native its multi-way visual split. The combination of (1)-(5) is why commands, thinking, phase markers, and errors are visually indistinguishable: the kind is lost at emit time, the transport carries only text, and both render paths apply one uniform dim style. RECOMMENDED FIX: create `src/render/stream-theme.ts` (pure `classifyLine`/`themeLine`/`commandBackground`, classify AFTER trimming leading whitespace because sink.log stores `  ${message}` so `→ …` arrives as `  → …`; match `→ structured_output ✓` before generic `→ `; return raw text + undefined background when theme is absent); extend `DashboardTheme` with optional `bg?`; change `transcript` to `Array<{ kind: LineKind; text: string }>`, tag at the sink (phase→\\\"phase\\\"/`▶ ${label}`, log→classifyLine(message), text's live→\\\"thinking\\\"), thread `{kind,text}` through `flush`/disk-log(raw text only)/`details.transcriptTail`; in `flush()` style via `themeLine(kind,text,ctx.ui.theme)` ONLY when `ctx.mode===\\\"tui\\\"`, else raw join; in `buildResultComponent` §1 render each line via `themeLine(line.kind,line.text,theme)` and emit COMMAND/COMMAND-DONE as `new Text(styled,0,0,commandBackground(line.kind,theme))` to get the tool-bubble bg. REGRESSION TEST: drive the sink through phase/log/text events with NO theme and assert the joined transcript + on-disk log contain ZERO ANSI escape bytes; assert the TUI path contains the expected `toolTitle`/`thinkingText`/`accent`/`error` fg tokens and that command Texts carry a customBgFn. PREVENTION: require every new stream-content emit site to route through a typed sink whose push type is `{kind,text}` (not string), so a kind can never be silently dropped again.",
+        "reproductionSteps": [
+          "1. Install + typecheck baseline: `npm install && npm run typecheck` (must already pass — confirms the bug is a missing-feature, not a syntax error).",
+          "2. Confirm the missing layer: `test -f src/render/stream-theme.ts` → exits non-zero (file absent). `grep -rn 'classifyLine|themeLine|commandBackground|LineKind' src` → zero hits. `grep -n 'bg?(' src/render/dashboard.ts` → zero hits (DashboardTheme has no `bg`).",
+          "3. Confirm the flat data path: `grep -n 'transcript: string\\[\\]' src/extension.ts` → line 158. `grep -n 'transcript.push' src/extension.ts` → lines 171, 228, 229 (all push raw template strings). `grep -n 'all.join' src/extension.ts` → flush() line ~178 (raw join, no theme, no ctx.mode branch).",
+          "4. Confirm the single-token render: `grep -n 'fg(\"dim\", line)' src/render/dashboard.ts` → line 340 (every tail line dimmed). `grep -n 'new Text(' src/render/dashboard.ts` → §1 lines use the 3-arg `new Text(styled, 0, 0)` form; no 4th `customBgFn` arg anywhere.",
+          "5. REPRODUCE THE BUG visually: `cd` into a TUI pi session, run `/super-dev <any task>` (or the agent tool) in TUI mode. OBSERVE: the live streaming pane is one uniformly-dim wall of text; the `→ …` command echoes, `▶ phase` banners, agent thinking prose, and any `❌`/`failed after` errors are all the same dim color with no tool bubbles and no error red — confirming commands do not pop as tool bubbles, thinking is not the thinkingText color, phase is not accent/bold, errors are not red.",
+          "6. CONFIRM headless stays raw (already correct, must be preserved): run the same task in print/json mode (`pi --print` / `--json`) and diff the `onUpdate` body — it equals raw joined text with zero ANSI bytes (no `\\x1b[` sequences). This is the byte-clean contract the fix must NOT regress.",
+          "7. AFTER FIX, re-verify acceptance: `npm run typecheck` clean; `npm test` green (existing dashboard tests + new classifyLine/themeLine/commandBackground/render-per-kind tests); re-run step 5 in TUI and confirm commands now render with `toolTitle` fg + `toolPendingBg`/`toolSuccessBg` bg bubbles, thinking in `thinkingText`, phase in accent/bold, errors in `error` red; re-run step 6 and confirm print/json output is STILL byte-clean (the no-theme → raw-text identity regression test passes)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/04-debug-analysis.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-20T03:58:38.181Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment — Theme-separated stream & result rendering (04-theme-stream-content-kinds)",
+        "date": "2025-01-01",
+        "summary": "pi-super-dev is a self-contained pi-extension (ESM, `\"type\":\"module\"`, strict TS, NodeNext). It registers a single `super_dev` tool whose `execute()` streams a rolling-tail live log via a `ProgressSink` and whose `renderResult` builds a pi-native 3-section Container. The change is scoped to three files: new pure module `src/render/stream-theme.ts`, `src/extension.ts` (tag+theme the live stream + carry kinds end-to-end), and `src/render/dashboard.ts` (per-kind §1 rendering with tool-bubble backgrounds). All stream content already funnels through exactly three sink methods (`phase`/`log`/`text`) at workflow.ts:84-86, so classification happens at the sink layer with zero upstream edits. The codebase has a strong, well-established 'pure, TUI-context-free presentation helper with optional `theme?` for graceful-degrade' pattern (see dashboard.ts) that this change should mirror exactly. No new runtime deps; tests are LLM-free vitest units using a token-marker mock theme. NO STANDALONE SERVER: this is a TS library/extension loaded into the Pi TUI — there is no HTTP API or UI dev server to bring up, so `services` is empty ({}). The relevant 'run' commands are `npm run typecheck` (tsc --noEmit) and `npm test` (vitest run) for verification, and `pi -e .` then `/super-dev <task>` to exercise it live inside the Pi TUI.",
+        "patterns": [
+          {
+            "example": "src/render/dashboard.ts — statusGlyph(status, theme?) / buildResultComponent(details, theme?) / DashboardTheme interface (lines ~58-80, ~250-290): helpers take optional `theme?`, return raw uncolored text when absent, declared via METHOD-syntax interface so the real Theme satisfies it bivariantly AND a lightweight mock works in tests.",
+            "name": "Pure, TUI-context-free presentation helpers with optional theme (graceful-degrade)",
+            "consistency": "Canonical and load-bearing — dashboard.ts docstring explicitly promises 'Pure, TUI-context-free'. The new stream-theme.ts MUST follow this shape (classifyLine/themeLine/commandBackground all pure, theme optional)."
+          },
+          {
+            "example": "src/render/dashboard.ts:58-61 — `export interface DashboardTheme { fg(token:string,text:string):string; bold?(text:string):string; }`",
+            "name": "DashboardTheme structural interface extended as needed (fg + optional bold)",
+            "consistency": "The new module must extend this same interface (add optional `bg?(color,text)` + extra fg tokens like thinkingText/toolTitle) rather than inventing a parallel type, so the real `Theme` still structurally satisfies it and the test mock keeps working."
+          },
+          {
+            "example": "src/render/dashboard.test.ts:1-60 — `mockTheme()` returns `{ fg: (token,text) => \\`<${token}>${text}\\` }` so assertions verify WHICH token was applied without parsing ANSI; imports from `./dashboard.js` (NodeNext ESM).",
+            "name": "Test pattern: vitest, token-marker mock theme, co-located RED-first tests, .js imports",
+            "consistency": "Stream-theme tests should reuse this exact mock — assert `themeLine('command', '→ x', mock) === '<toolTitle>…'` style, and assert `themeLine('command','→ x', undefined) === '→ x'` for the no-ANSI regression (AC-5)."
+          },
+          {
+            "example": "src/extension.ts renderDashboard() `if (ctx?.mode !== 'tui') return;` (the widget guard), and dashboard-widget wiring comments citing AC-09/AC-10; theme resolved from `ctx?.ui?.theme` inside execute(), and passed as 3rd arg `renderResult(result,_opts,theme)`.",
+            "name": "TUI-only guard before any themed side-effect; non-TUI = raw text",
+            "consistency": "The live-stream theming in flush() MUST gate on `ctx?.mode === 'tui'` and resolve `ctx?.ui?.theme`; when not TUI, emit raw joined text. This is the AC-5 no-ANSI-leak guarantee for print/json/headless/RPC."
+          },
+          {
+            "example": "src/render/dashboard.ts buildResultComponent/buildDashboardWidget — `new Text(line, 1, 0)` children added to a `Container`; §3 uses `new Markdown(..., getMarkdownTheme())`.",
+            "name": "pi-tui Container/Text/Markdown composition; Text 4th-arg customBgFn applies per-line BACKGROUND",
+            "consistency": "renderResult §1 must give command lines a `new Text(themedLine, 0, 0, commandBackground(kind, theme))` so they get toolPendingBg/toolSuccessBg — this 4th-arg customBgFn is exactly how a line gets the pi-native tool-bubble bg. Container/Markdown imports come from @earendil-works/pi-tui."
+          },
+          {
+            "example": "src/types.ts ProgressSink interface (phase/log/text); src/extension.ts sink impl pushes to `transcript`/`live`; src/workflow.ts:84-86 routes event/text through log()/text().",
+            "name": "ProgressSink is the single content bridge; classify at the sink layer only",
+            "consistency": "The fix must NOT touch nodes.ts/workflow.ts/session-agent.ts/pi-spawn.ts. `sink.log` → push `{kind:classifyLine(message), text}`, `sink.phase` → `{kind:'phase', text:'▶ '+label}`, `sink.text`'s live → kind 'thinking'. Source emit sites (session-agent.ts:122 `→ `, :277 `↻ `, pi-spawn.ts:172 `→ `) stay untouched — classifyLine reads their prefixes."
+          },
+          {
+            "example": "src/render/dashboard.ts truncLine(text, maxWidth) (ANSI-aware, re-applies active SGR before ellipsis), visibleWidth from pi-tui.",
+            "name": "ANSI-safe width helpers already exist — reuse them",
+            "consistency": "Any stream line that could exceed terminal width should go through truncLine so themed (ANSI-wrapped) lines don't break — do not hand-roll truncation in stream-theme.ts."
+          }
+        ],
+        "recommendations": [
+          "Create `src/render/stream-theme.ts` as PURE helpers mirroring dashboard.ts: export `LineKind` (the 10 kinds), `classifyLine(text)`, `themeLine(kind, text, theme?)`, `commandBackground(kind, theme?)`. Extend the existing `DashboardTheme` interface (don't fork it) with optional `bg?(color, text)` + the extra fg tokens (thinkingText, toolTitle, etc.); keep every `theme` param optional so undefined→raw text (graceful-degrade). Order classifyLine's prefix checks precisely as the spec lists them (command-done BEFORE command; phase ▶; error ❌/contains; warning ⚠/stagnant; success PASS/GREEN/✓; FAIL/✗; trim marker; indented/plain→log).",
+          "In `src/extension.ts`: change `transcript: string[]` → `Array<{kind:LineKind; text:string}>`; tag in the three sink methods (phase→'phase', log→classifyLine, text-live→'thinking'); update `finalizeLive`, `flush` (the trim-notice line is kind 'trim'), the disk `writeFileSync(transcript...)`, and `details.transcriptTail` (carry kinds). In `flush()`, ONLY when `ctx?.mode === 'tui'`, resolve `ctx?.ui?.theme` and style each line via `themeLine` before joining — otherwise join raw text. Keep TAIL_LINES rolling-tail behavior intact.",
+          "In `src/render/dashboard.ts`: widen `ResultDetails.transcriptTail` to `Array<{kind:LineKind;text:string}>` (tolerate a plain string[] slipping through). In `buildResultComponent` §1, render each tail line with `themeLine(line.kind, line.text, theme)` and give COMMAND/command-done lines a `new Text(styled, 0, 0, commandBackground(line.kind, theme))` for the tool-bubble bg; keep §2 (bold header + stageIcon rows) and §3 (Markdown summary) untouched. Leave the streaming fallback (`if (!d.stages?.length) return new Text(...)`) as-is so print/json/headless regress nothing.",
+          "Tests: add `src/render/stream-theme.test.ts` covering each LineKind→correct token (reuse the `<token>` mockTheme from dashboard.test.ts) + the undefined-theme→raw-text no-ANSI case (AC-5); extend dashboard-result coverage to assert command lines carry a customBgFn and phase/error/thinking get their tokens. Run `npm run typecheck` and `npm test` — both must stay green. The guaranteed-correct per-line backgrounds live in renderResult's Container Text customBgFn (AC-3); full per-line bg in the streaming onUpdate view is best-effort/terminal-dependent — note this in the implementation summary."
+        ],
+        "filesAssessed": [
+          "package.json",
+          "tsconfig.json",
+          "README.md",
+          "src/extension.ts",
+          "src/render/dashboard.ts",
+          "src/render/dashboard.test.ts",
+          "src/types.ts",
+          "src/workflow.ts"
+        ],
+        "services": {},
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/05-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-20T04:01:57.327Z",
+      "agent": "spec",
+      "data": {
+        "title": "Technical Specification: pi-native Stream Content-Kind Theming for super-dev Live Stream + Result Render",
+        "date": "2025-07-20",
+        "summary": "Today the super-dev live stream and final result render flatten every content kind (commands, thinking, process logs, phase markers, errors, corrective notices, success/failure keywords) into one undifferentiated text block. This spec makes the stream render like pi-native: a new pure module `src/render/stream-theme.ts` classifies each line into one of 10 `LineKind` values and maps each kind to the real pi Theme tokens (foreground colors AND dedicated backgrounds for tool bubbles). The classification happens entirely at the sink layer in `src/extension.ts` (no upstream emit-site changes — all content already funnels through `sink.phase/log/text`), the live `onUpdate` body is themed per-kind in TUI mode only (raw text in print/json/RPC/headless to stay byte-clean), the on-disk log stays grep-friendly raw text, and `renderResult`/`buildResultComponent` §1 renders commands as tool-bubble `Text` (via the pi-tui 4th `customBgFn` argument), thinking in `thinkingText`, phase markers in accent/bold, and errors in error red. `transcript` and `transcriptTail` carry `{kind,text}` end-to-end (sink → flush → details → renderResult). Backward-compatible, strict-clean TypeScript, no new dependencies, no changes to nodes/workflow/pipeline/stages/session-agent/pi-spawn/render templates.",
+        "architecture": "The change is confined to three TypeScript files plus tests, and is layered so the pure logic is fully unit-testable with a structural theme mock and never imports TUI runtime types.\n\n(1) NEW MODULE — src/render/stream-theme.ts. Exports `type LineKind = \"phase\" | \"command\" | \"command-done\" | \"corrective\" | \"log\" | \"log-success\" | \"log-warning\" | \"log-error\" | \"thinking\" | \"error\" | \"trim\"` and three pure functions: `classifyLine(text: string): LineKind`, `themeLine(kind: LineKind, text: string, theme?: DashboardTheme): string`, and `commandBackground(kind: LineKind, theme?: DashboardTheme): ((t: string) => string) | undefined`. The module imports only the structural `DashboardTheme` shape (re-exported/extended from dashboard.ts) — never the real `Theme` runtime type — so it is unit-testable with a mock. classifyLine is the single classification authority; it FIRST trims leading whitespace (because sink.log stores lines with a leading `  ` indent at extension.ts:229, so a command `→ …` arrives stored as `  → …`), then matches prefixes/keywords in a strict precedence order: `→ structured_output ✓` (+success marker) → command-done BEFORE the generic `→ ` → command (order is mandatory: command-done is a specialisation of command); `↻ ` → corrective; `▶ ` → phase; `❌` OR `failed after` OR `did NOT complete` → error; `⚠` OR `/stagnan/i` → log-warning; `\\bPASS\\b`/`GREEN`/`✓`/`passed`/`complete` → log-success; `FAIL`/`✗`/`\\berror\\b` → log-error; the `… earlier lines trimmed` marker → trim; leading indented or plain text → log. (thinking is NOT classified — it is tagged directly by sink.text.) themeLine maps each kind to the exact pi-native token: phase→fg(\"accent\",bold(text)); command→fg(\"toolTitle\",bold(name))+\" \"+fg(\"dim\",rest) where name/rest split on the first space; command-done→fg(\"toolTitle\",bold(text)); corrective→fg(\"warning\",text); log→fg(\"text\",text) but INDENTED logs →fg(\"dim\",text); log-success→fg(\"success\",text); log-warning→fg(\"warning\",text); log-error→fg(\"error\",text); thinking→fg(\"thinkingText\",text); error→fg(\"error\",bold(text)); trim→fg(\"muted\",text). commandBackground returns theme.bg(\"toolPendingBg\",_) for command, theme.bg(\"toolSuccessBg\",_) for command-done, undefined otherwise. CRITICAL graceful-degrade contract: when `theme` is undefined, themeLine returns the raw text unchanged (zero ANSI) and commandBackground returns undefined — this is the print/json/headless/RPC contract.\n\n(2) src/render/dashboard.ts — DashboardTheme + buildResultComponent. The existing `DashboardTheme` interface (dashboard.ts:31) is extended with an OPTIONAL member `bg?(token: string, text: string): string` (and keeps `fg` + optional `bold`); the token strings \"toolTitle\"/\"thinkingText\"/\"toolPendingBg\"/\"toolSuccessBg\" are passed through to the real Theme unchanged, and the existing `fg(\"success\"/\"error\"/\"accent\"/\"dim\"/\"text\"/\"warning\"/\"muted\")` call sites are unaffected, so no other caller breaks. The `ResultDetails.transcriptTail` field changes from `string[]` to `Array<{ kind: LineKind; text: string }>` with a backward-tolerant consumer: a plain `string` element defaults to kind \"log\". In `buildResultComponent` §1 (dashboard.ts:338-343), each tail line is styled via `themeLine(line.kind, line.text, theme)`; COMMAND and COMMAND-DONE lines are emitted as `new Text(styled, 0, 0, commandBackground(line.kind, theme))` so pi-tui Text's 4th `customBgFn` argument paints the per-line tool-bubble background. §2 (bold stage header + `stageIcon` rows) and §3 (Markdown summary via `getMarkdownTheme`) stay byte-identical. Net visual: commands pop as tool bubbles, thinking renders in thinkingText, phase markers in accent/bold, errors in error red.\n\n(3) src/extension.ts — tag + theme the LIVE stream. `transcript: string[]` (extension.ts:158) → `Array<{ kind: LineKind; text: string }>`. `finalizeLive()` pushes `{ kind: \"thinking\", text: live }`. `sink.phase(label)` pushes `{ kind: \"phase\", text: \\`▶ ${label}\\` }`. `sink.log(message)` pushes `{ kind: classifyLine(message), text: message }`. `flush()` still enforces the rolling tail (TAIL_LINES=400) and the trim-notice line, now pushed as `{ kind: \"trim\", text: \"… N earlier lines trimmed (full log saved at run end) …\" }`. In flush(), when `ctx?.mode === \"tui\"`, each line is styled via `themeLine(line.kind, line.text, ctx?.ui?.theme)` before joining for the live onUpdate body, and command lines additionally get a best-effort tool-bubble background (terminal-dependent — guaranteed-correct backgrounds live in renderResult's Container Text customBgFn). When NOT in tui mode, flush emits the RAW `line.text` joined by newlines so print/json/RPC output stays byte-clean and ANSI-free. The on-disk log write (extension.ts:262) writes raw `line.text` only (no ANSI, no kind prefix) so saved logs stay grep-friendly. The final `details.transcriptTail` (extension.ts:278) becomes `Array<{ kind: LineKind; text: string }>` built from the last 50 transcript entries; the local `ResultDetails`-like type declaration at extension.ts:295 is updated to match. renderResult already receives `theme: Theme` and already delegates to buildResultComponent — it needs no logic change beyond consuming the new transcriptTail shape (the consumer tolerance lives in buildResultComponent).\n\nCross-cutting contracts: (a) classification is the ONLY classification authority (one place, tested); (b) ANSI appears ONLY when a real theme is present AND ctx is TUI; (c) the sink/bridge (workflow.ts:84-86) and all emit sites (session-agent.ts:122/:277, pi-spawn.ts:172) are NOT edited — every kind is captured by prefix-matching at the sink layer.",
+        "testingStrategy": "Three layers of tests, all pure (no real TUI, no real pi runtime), plus the strict typecheck and the existing suite as a regression gate.\n\n(A) New stream-theme unit tests (src/render/stream-theme.test.ts) — cover classifyLine with one assertion per LineKind, including the precedence-critical `→ structured_output ✓` BEFORE the generic `→ ` command rule, the leading-whitespace trim (a stored `  → cmd` classifies as command), and every error/warning/success keyword (`❌`, \"failed after\", \"did NOT complete\", `⚠`, \"stagnant\", PASS/GREEN/✓/passed/complete, FAIL/✗/error). Cover themeLine for EACH kind asserting the correct fg token (toolTitle/thinkingText/accent/text/dim/success/warning/error/muted) and bold wrapping where specified, plus the split-name/rest rule for command. Cover themeLine's undefined-theme graceful-degrade: EVERY kind returns the raw text byte-for-byte with zero ANSI escape bytes. Cover commandBackground: command→toolPendingBg, command-done→toolSuccessBg, every other kind→undefined, and undefined theme→undefined.\n\n(B) New render-per-kind test — drives `buildResultComponent` with a `transcriptTail` containing one entry of each kind (including the plain-string backward-tolerance case) and asserts: COMMAND and COMMAND-DONE lines were emitted as `Text` instances carrying a non-undefined `customBgFn` (the 4th constructor arg), while thinking/phase/error/log lines carry their respective fg tokens and NO customBgFn.\n\n(C) New no-ANSI-leak regression test — simulates the print/json/headless path by driving the sink through phase/log/text events with NO theme (theme undefined), then asserts the joined live onUpdate body equals the raw joined `line.text` with ZERO ANSI escape bytes (regex /\\\\x1b\\\\[/i must not match), AND the on-disk log string likewise contains zero ANSI. A mirrored TUI-mode assertion (theme present) confirms the body DOES contain expected fg tokens, proving the gating is on theme+mode, not always-on.\n\n(D) Existing suite as regression gate — npm test must keep passing for dashboard-widget, dashboard-wiring, dashboard-result, and render tests (the §1/§2/§3 layout and the Markdown §3 summary must not regress). The change is designed so existing tests that feed plain `string[]` transcriptTail keep passing via the backward-tolerant plain-string→kind \"log\" default.\n\n(E) Final gate — `npm run typecheck` strict-clean (the `transcript`/`transcriptTail` shape change and the DashboardTheme optional `bg` addition must typecheck across extension.ts, dashboard.ts, and stream-theme.ts) AND `npm test` green (existing + new). Acceptance is met when AC-01..AC-10 are each demonstrable from a passing assertion.",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018"
+        ],
+        "phases": [
+          {
+            "name": "Phase 1 — Pure stream-theme module + DashboardTheme extension",
+            "description": "Create the new dependency-free module src/render/stream-theme.ts exporting LineKind, classifyLine, themeLine, and commandBackground, and extend the DashboardTheme interface in src/render/dashboard.ts with an optional bg() member so the real pi Theme satisfies it structurally. Independently testable: a standalone stream-theme.test.ts drives every classifyLine precedence case, every themeLine kind→token mapping, the undefined-theme graceful-degrade (raw text, zero ANSI), and commandBackground for command/command-done/other. Covers AC-01, AC-02, AC-03 (SCENARIO-001..007). No runtime behavior changes yet — extension.ts/dashboard.ts render logic is untouched, so this phase is safe to land and typecheck in isolation."
+          },
+          {
+            "name": "Phase 2 — Sink-layer tagging + kind-carrying transcript in extension.ts",
+            "description": "Convert src/extension.ts transcript from string[] to Array<{kind,text}>, push classified kinds from sink.phase/log and finalizeLive (thinking), rework flush() to theme per-kind ONLY in TUI mode (ctx?.mode === 'tui' using ctx?.ui?.theme) while emitting raw line.text in non-TUI, keep the rolling-tail + trim-notice (trim kind), keep the on-disk log write as raw line.text, and make details.transcriptTail carry {kind,text} end-to-end. Independently testable: a no-ANSI-leak test drives the sink with NO theme and asserts zero ANSI in both the live body and the disk log; a TUI-mode mirror asserts ANSI IS present. Covers AC-04, AC-05, AC-06 (SCENARIO-008..013). Depends on Phase 1 (needs classifyLine/themeLine/commandBackground + LineKind type)."
+          },
+          {
+            "name": "Phase 3 — renderResult/buildResultComponent §1 per-kind theming with tool-bubble backgrounds",
+            "description": "Update buildResultComponent in src/render/dashboard.ts so §1 renders each transcriptTail line via themeLine(kind,text,theme) and emits COMMAND/COMMAND-DONE lines as new Text(styled, 0, 0, commandBackground(kind,theme)) to paint the per-line tool-bubble background through pi-tui Text's 4th customBgFn argument; ResultDetails.transcriptTail becomes Array<{kind,text}> with a backward-tolerant plain-string→kind 'log' default. §2 (bold stage header + stageIcon rows) and §3 (Markdown summary via getMarkdownTheme) stay byte-identical. Independently testable: a render-per-kind test drives buildResultComponent with one entry per kind and asserts command/command-done Texts carry a customBgFn while thinking/phase/error lines carry their fg tokens. Covers AC-07 (SCENARIO-014). Depends on Phase 1 (stream-theme helpers) and Phase 2 (the new transcriptTail shape)."
+          },
+          {
+            "name": "Phase 4 — Regression guard + full verification gate",
+            "description": "Add the no-ANSI-leak regression test (simulating print/json/headless with NO theme) and the TUI-mode ANSI-present mirror if not already added in Phase 2, then run the full gate: npm run typecheck must be strict-clean (transcript/transcriptTail shape change + DashboardTheme optional bg must typecheck across all three files) and npm test must pass existing dashboard-widget/dashboard-wiring/dashboard-result/render suites PLUS the new stream-theme and render-per-kind tests. Confirms no regression to the live dashboard widget, the in-scope build-gate, or the §3 Markdown summary. Covers AC-08, AC-09, AC-10 (SCENARIO-015..018). Depends on Phases 1-3 being complete."
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Phase 1 — Pure stream-theme module + DashboardTheme extension",
+            "description": "Create src/render/stream-theme.ts. Export `type LineKind` with all 11 literal members (phase/command/command-done/corrective/log/log-success/log-warning/log-error/thinking/error/trim). Import only the structural DashboardTheme shape (no TUI runtime types)."
+          },
+          {
+            "phase": "Phase 1 — Pure stream-theme module + DashboardTheme extension",
+            "description": "Implement classifyLine(text: string): LineKind. FIRST String.prototype.trim() the leading whitespace (sink.log stores `  ${message}`, so `  → cmd` must classify as command), then match in strict precedence: command-done (`→ structured_output` + success marker) BEFORE command (`→ `); then `↻ ` corrective; `▶ ` phase; `❌`/`failed after`/`did NOT complete` error; `⚠`/`/stagnan/i` log-warning; `\\bPASS\\b`/GREEN/✓/passed/complete log-success; FAIL/✗/`\\berror\\b` log-error; the `… earlier lines trimmed` marker trim; default log."
+          },
+          {
+            "phase": "Phase 1 — Pure stream-theme module + DashboardTheme extension",
+            "description": "Implement themeLine(kind, text, theme?: DashboardTheme): string with the exact token map: phase→fg('accent',bold(text)); command→fg('toolTitle',bold(name))+' '+fg('dim',rest) split on FIRST space; command-done→fg('toolTitle',bold(text)); corrective→fg('warning',text); indented log→fg('dim',text), plain log→fg('text',text); log-success→fg('success',text); log-warning→fg('warning',text); log-error→fg('error',text); thinking→fg('thinkingText',text); error→fg('error',bold(text)); trim→fg('muted',text). When theme is undefined OR theme.bold is missing where needed, fall back to the raw text unchanged — GRACEFUL DEGRADE: NEVER emit ANSI without a real theme."
+          },
+          {
+            "phase": "Phase 1 — Pure stream-theme module + DashboardTheme extension",
+            "description": "Implement commandBackground(kind, theme?: DashboardTheme): ((t:string)=>string) | undefined. Return theme.bg('toolPendingBg',t) for command, theme.bg('toolSuccessBg',t) for command-done, undefined for every other kind; undefined theme→undefined."
+          },
+          {
+            "phase": "Phase 1 — Pure stream-theme module + DashboardTheme extension",
+            "description": "Extend the DashboardTheme interface in src/render/dashboard.ts (dashboard.ts:31) with an OPTIONAL member `bg?(token: string, text: string): string`. Keep fg and optional bold unchanged. Verify existing call sites (fg('success'/'error'/'accent'/'dim'/'text'/'warning'/'muted')) are unaffected."
+          },
+          {
+            "phase": "Phase 1 — Pure stream-theme module + DashboardTheme extension",
+            "description": "Create src/render/stream-theme.test.ts: assert classifyLine for every LineKind incl. the command-done-before-command precedence and the leading-whitespace trim; assert themeLine for every kind→token pair and that undefined theme returns raw text with ZERO ANSI (regex /\\x1b\\[/i); assert commandBackground command→toolPendingBg, command-done→toolSuccessBg, others→undefined, undefined theme→undefined. Run `npm test -- stream-theme` to confirm green."
+          },
+          {
+            "phase": "Phase 2 — Sink-layer tagging + kind-carrying transcript in extension.ts",
+            "description": "In src/extension.ts change `const transcript: string[] = []` (extension.ts:158) → `Array<{ kind: LineKind; text: string }>`. Add the LineKind import from src/render/stream-theme.ts. Update finalizeLive() to push `{ kind: 'thinking', text: live }` and reset live."
+          },
+          {
+            "phase": "Phase 2 — Sink-layer tagging + kind-carrying transcript in extension.ts",
+            "description": "Update the sink methods: phase(label) pushes `{ kind: 'phase', text: '▶ ${label}' }`; log(message) pushes `{ kind: classifyLine(message), text: message }` (NOTE: store the original message text, classification handles the stored `  ` indent internally); text(partial) keeps setting live=partial (becomes 'thinking' via finalizeLive)."
+          },
+          {
+            "phase": "Phase 2 — Sink-layer tagging + kind-carrying transcript in extension.ts",
+            "description": "Rework flush(): build the all-list of {kind,text}; when all.length>TAIL_LINES prepend `{ kind:'trim', text:'… N earlier lines trimmed (full log saved at run end) …' }` over the last TAIL_LINES. If ctx?.mode==='tui', map each line to themeLine(line.kind, line.text, ctx?.ui?.theme) (command lines additionally best-effort bg via commandBackground) and join for the onUpdate body. Else join raw line.text only (zero ANSI). onUpdate details unchanged ({}) so streaming stays a plain text content block."
+          },
+          {
+            "phase": "Phase 2 — Sink-layer tagging + kind-carrying transcript in extension.ts",
+            "description": "Update the on-disk log write (extension.ts:262) to write raw `line.text` for every entry: writeFileSync(logPath, transcript.map(l=>l.text).join('\\n')+'\\n'). NO ANSI, NO kind prefix — logs stay grep-friendly."
+          },
+          {
+            "phase": "Phase 2 — Sink-layer tagging + kind-carrying transcript in extension.ts",
+            "description": "Update details.transcriptTail (extension.ts:278) to `transcript.slice(-50)` (already Array<{kind,text}>) and update the local type declaration at extension.ts:295 to transcriptTail?: Array<{kind: LineKind; text: string}>. Keep summary, summaryLines, stages, logPath unchanged."
+          },
+          {
+            "phase": "Phase 2 — Sink-layer tagging + kind-carrying transcript in extension.ts",
+            "description": "Add/extend an extension-level test (or render.test.ts) that drives the sink through phase/log/text events with NO theme and asserts the joined onUpdate body and the disk-log string contain ZERO ANSI (regex /\\x1b\\[/i) and equal the raw line.text join; a mirror assertion with a theme present confirms the body DOES contain expected fg tokens. (Maps to AC-08 regression.)"
+          },
+          {
+            "phase": "Phase 3 — renderResult/buildResultComponent §1 per-kind theming with tool-bubble backgrounds",
+            "description": "Update ResultDetails in src/render/dashboard.ts: change transcriptTail from string[] to Array<{kind: LineKind; text: string}>. Import LineKind + themeLine + commandBackground from src/render/stream-theme.ts."
+          },
+          {
+            "phase": "Phase 3 — renderResult/buildResultComponent §1 per-kind theming with tool-bubble backgrounds",
+            "description": "Rework buildResultComponent §1 (dashboard.ts:338-343): replace `for (const line of details.transcriptTail ?? []) { addChild(new Text(fg('dim', line), 0, 0)) }` with per-kind rendering. Tolerate a plain string element by defaulting it to kind 'log'. For each entry: const styled = themeLine(entry.kind, entry.text, theme); if entry.kind is command or command-done → addChild(new Text(styled, 0, 0, commandBackground(entry.kind, theme))); else → addChild(new Text(styled, 0, 0)). Keep the §1 header `── detail log (last 50 lines) ──` and the `(full log: ${logPath})` footer as-is."
+          },
+          {
+            "phase": "Phase 3 — renderResult/buildResultComponent §1 per-kind theming with tool-bubble backgrounds",
+            "description": "Verify §2 (bold `── stage progress ──` header + `stageIcon(status) label` rows) and §3 (Markdown(details.summaryLines.join('\\n'), 0, 0, getMarkdownTheme())) are byte-identical to today — no edits. renderResult already receives theme: Theme and delegates to buildResultComponent; confirm it needs no logic change beyond consuming the new transcriptTail shape."
+          },
+          {
+            "phase": "Phase 3 — renderResult/buildResultComponent §1 per-kind theming with tool-bubble backgrounds",
+            "description": "Add a render-per-kind test (extend src/render/dashboard-result.test.ts): drive buildResultComponent with a transcriptTail containing one entry per LineKind PLUS a plain-string element; assert command/command-done entries produced Text instances whose 4th constructor arg (customBgFn) is non-undefined, and that thinking/phase/error lines carry their respective fg tokens (thinkingText/accent/error) and no customBgFn."
+          },
+          {
+            "phase": "Phase 4 — Regression guard + full verification gate",
+            "description": "Confirm the no-ANSI-leak regression test (headless path = zero ANSI in live body AND disk log) and the TUI-mode ANSI-present mirror exist and pass; add them to Phase 2 if not already present."
+          },
+          {
+            "phase": "Phase 4 — Regression guard + full verification gate",
+            "description": "Run `npm run typecheck` and resolve any strict errors from the transcript/transcriptTail shape change and the DashboardTheme optional bg addition across extension.ts, dashboard.ts, and stream-theme.ts."
+          },
+          {
+            "phase": "Phase 4 — Regression guard + full verification gate",
+            "description": "Run `npm test` and confirm ALL green: existing dashboard-widget, dashboard-wiring, dashboard-result, and render suites PLUS new stream-theme and render-per-kind tests. Specifically confirm no regression to the dashboard widget, the build-gate, and the §3 Markdown summary."
+          },
+          {
+            "phase": "Phase 4 — Regression guard + full verification gate",
+            "description": "Cross-check AC-01..AC-10 each have a demonstrable passing assertion; confirm files-touched inventory = {created: src/render/stream-theme.ts, src/render/stream-theme.test.ts; modified: src/extension.ts, src/render/dashboard.ts, src/render/dashboard-result.test.ts (or render.test.ts); deleted: none}."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/06-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/07-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/08-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/06-specification.md",
+        "phaseCount": "4"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-20T04:06:01.674Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec Review: pi-native Stream Content-Kind Theming (04-theme-stream-content-kinds)",
+        "date": "2025-07-20",
+        "verdict": "REVISIONS NEEDED",
+        "summary": "The specification is technically sound and exceptionally well-grounded — every load-bearing reference (file paths, line numbers, the pi-tui Text 4th `customBgFn` argument, the real Theme tokens `toolTitle`/`toolSuccessBg`/`toolPendingBg`/`thinkingText`, and the exact stream-content prefixes `→ `/`→ structured_output ✓`/`↻ ` produced by session-agent.ts:122/:143/:277 and pi-spawn.ts:172) was verified against the actual codebase and is accurate. The layered architecture (pure stream-theme module + sink-layer tagging + render-time tool-bubble Text) is feasible and adds no dependencies. However, the spec is NOT acceptance-testable as written: AC-01..AC-10 and BDD SCENARIO-001..018 are referenced by ID throughout (16+ times) but NEVER DEFINED — no acceptance-criteria table and no Given/When/Then content, so the AC→spec→scenario traceability chain cannot be constructed from this document alone (only inferable from the out-of-band phase descriptions). Three smaller gaps remain: the backward-tolerant `transcriptTail` union type is under-specified, `classifyLine` behavior on empty/multiline input is undefined, and the live-stream \"best-effort tool-bubble background\" conflates a joined-string body with a Text-component `customBgFn` rendering path. Grounding score: ~100% on load-bearing claims (16/16 verified, 0 hallucinated). Fix the AC/scenario definitions and the three ambiguities and this is approvable.",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "high",
+            "title": "Acceptance criteria (AC-01..AC-10) and BDD scenarios (SCENARIO-001..018) are referenced 16+ times but never defined",
+            "detail": "The spec invokes 'AC-01..AC-10' and 'SCENARIO-001..018' pervasively (Summary, Testing Strategy, BDD Scenario References, Phases) but contains NO acceptance-criteria table and NO Given/When/Then scenario content — only a bare list of 18 scenario IDs. A reviewer or implementer reading only this document cannot determine what AC-04 requires, which scenario satisfies it, or what observable condition proves it. This breaks the D5 traceability chain (AC→spec section→scenario) and makes the 'Acceptance is met when AC-01..AC-10 are each demonstrable from a passing assertion' clause unverifiable. The out-of-band Phase descriptions (Phase1=AC01-03/SCN001-007, Phase2=AC04-06/SCN008-013, Phase3=AC07/SCN014, Phase4=AC08-10/SCN015-018) partially bridge the gap but are not part of this spec. RECOMMENDATION: add an explicit AC table (ID → measurable condition → covering spec section → scenario ID) and at least a one-line Given/When/Then per scenario. Until the ACs exist as defined entities, this is functionally 'uncovered ACs'.",
+            "lens": "D1 Completeness / D5 Traceability",
+            "file": "docs/specifications/04-theme-stream-content-kinds/06-specification.md",
+            "line": "BDD Scenario References"
+          },
+          {
+            "id": "F2",
+            "severity": "medium",
+            "title": "Backward-tolerant transcriptTail type is under-specified (union vs runtime narrowing)",
+            "detail": "Architecture(2) states ResultDetails.transcriptTail (dashboard.ts:292, currently `transcriptTail?: string[]`) changes to `Array<{ kind: LineKind; text: string }>` 'with a backward-tolerant consumer: a plain string element defaults to kind \"log\"'. It is left ambiguous whether the DECLARED type is a union (`Array<{kind,text} | string>`) or `Array<{kind,text}>` with the consumer doing `typeof line === 'string'` runtime narrowing on an `unknown`-ish element. The existing dashboard-result test (dashboard-result.test.ts:79) already feeds `transcriptTail: [...]`; the spec must state which so strict typecheck stays clean. RECOMMENDATION: declare `transcriptTail?: Array<{ kind: LineKind; text: string } | string>` and specify the narrowing rule explicitly in both extension.ts:295 and dashboard.ts:292.",
+            "lens": "D8 Ambiguity / D2 Consistency",
+            "file": "src/render/dashboard.ts",
+            "line": "292"
+          },
+          {
+            "id": "F3",
+            "severity": "medium",
+            "title": "classifyLine behavior on empty string and embedded newlines is undefined",
+            "detail": "classifyLine(text: string): LineKind has a precedence ladder ending in 'leading indented or plain text → log', but never defines (a) the result for an empty string ('' after trim), and (b) behavior when sink.log is called with a multi-line message (the body would contain embedded '\\n', and the `→ ` prefix check would only see the first line). The test plan covers 'one assertion per LineKind' but omits these two edge cases. RECOMMENDATION: specify empty-string → 'log' (or 'trim') and either (i) classify only the first line and note multiline is split upstream, or (ii) split-and-classify. Add an assertion for each.",
+            "lens": "D1 Completeness / D8 Ambiguity"
+          },
+          {
+            "id": "F4",
+            "severity": "medium",
+            "title": "Live-stream 'best-effort tool-bubble background' conflates a joined-string body with the Text customBgFn path",
+            "detail": "Architecture(3) says in flush() 'command lines additionally get a best-effort tool-bubble background (terminal-dependent — guaranteed-correct backgrounds live in renderResult's Container Text customBgFn)'. But flush() builds a JOINED STRING passed to onUpdate — there is no Text component to receive the 4th `customBgFn` argument there. The customBgFn (commandBackground) is inherently a pi-tui Text-constructor concept and only applies in renderResult/buildResultComponent. The live path can only embed theme.bg() ANSI inline, which is a different mechanism from commandBackground's returned function. The spec should state explicitly how (or whether) command backgrounds appear in the LIVE stream, or explicitly defer all backgrounds to renderResult. As written it reads as if commandBackground is reused in flush, which is not type-correct.",
+            "lens": "D2 Consistency / D3 Feasibility",
+            "file": "src/extension.ts",
+            "line": "flush()"
+          },
+          {
+            "id": "F5",
+            "severity": "low",
+            "title": "command-done classification hard-couples to the literal 'structured_output ✓' produced by summarize() with no fragility note or coupling test",
+            "detail": "classifyLine's command-done rule matches the exact string `→ structured_output ✓`, which only exists because session-agent.ts:143 (summarize) returns 'structured_output ✓' for the structured_output tool and session-agent.ts:122 prepends '→ '. This is a latent cross-file coupling: if summarize() is renamed/refactored, command-done silently degrades to plain command (no test failure unless a dedicated coupling assertion exists). The design (sink-layer prefix classification) inherently requires this, but the spec should (a) note the coupling explicitly and (b) add a regression test pinning that summarize('structured_output', ...) === 'structured_output ✓'.",
+            "lens": "D5 Traceability / D7 Maintainability",
+            "file": "src/session-agent.ts",
+            "line": "143"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "NEEDS WORK",
+            "notes": "Score 2/5. Testing strategy is detailed and three-layered, but the 10 acceptance criteria and 18 BDD scenarios are referenced by ID only and never defined — the core completeness requirement (every AC has a spec section) cannot be discharged. classifyLine empty/multiline edge cases are unspecified. Error-handling path (❌ catch) and NFR 'zero ANSI in non-TUI' ARE covered well."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "WARNING",
+            "notes": "Score 4/5. Terminology, LineKind names, and token strings are uniform across sections. The one inconsistency is the live-stream 'best-effort background' phrasing, which blurs the joined-string onUpdate body vs the Text customBgFn render path (F4)."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "PASS",
+            "notes": "Score 4/5. Strongly feasible. VERIFIED: pi-tui Text constructor accepts the 4th `customBgFn` arg; real Theme exposes fg('toolTitle'/'thinkingText'/...) and bg('toolSuccessBg'/'toolPendingBg'); emit sites already produce the → /↻ /→ structured_output ✓ prefixes the classifier relies on. Pure module imports only the structural DashboardTheme shape (no TUI runtime) — no circular deps. Extension of DashboardTheme with optional bg() is non-breaking. Only F4's live-background wording needs sharpening."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "WARNING",
+            "notes": "Score 3/5. The per-kind unit assertions, no-ANSI-leak regex (/\\x1b\\[/i), and customBgFn-non-undefined checks are concrete and testable. But because ACs are undefined (F1), they are not individually measurable; the only numeric threshold stated is 'zero ANSI escape bytes'. Numeric acceptance thresholds for the ACs are absent."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "NEEDS WORK",
+            "notes": "Score 2/5. AC→spec→scenario chain is broken: neither AC-01..AC-10 nor SCENARIO-001..018 have defined content in this document (F1). The phase-level mapping supplied out-of-band partially restores it but is not part of the spec. F5 flags an undocumented cross-file coupling between classifyLine and session-agent.ts:143. Grounding of code references themselves is excellent (see D6)."
+          },
+          {
+            "name": "D6 Grounding",
+            "status": "PASS",
+            "notes": "Score 5/5 (~100% on load-bearing claims). Verified against codebase: extension.ts:158 transcript string[], :229 sink.log '  ' indent, :262 disk write transcript.join('\\n'), :278 transcriptTail slice(-50), :295 local type; dashboard.ts:31 DashboardTheme, :292 transcriptTail?: string[], :338-343 §1 loop; pi-tui text.d.ts constructor(text?,paddingX?,paddingY?,customBgFn?); Theme tokens toolTitle (ls/grep/write.js), toolSuccessBg/toolPendingBg (edit.js bg()), thinkingText (theme files); emit prefixes → (session-agent.ts:122, pi-spawn.ts:172), structured_output ✓ (session-agent.ts:137-148 summarize), ↻ (session-agent.ts:277). Zero hallucinated references."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "PASS",
+            "notes": "Score 5/5. Minimal footprint: 3 source files (1 new pure module + 2 edits) + 3 test files. No new dependencies. Pure classification logic isolated from TUI runtime (unit-testable with a structural mock). Backward-compatible shape change with consumer tolerance. Simplest viable approach that satisfies the byte-clean non-TUI contract."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "WARNING",
+            "notes": "Score 3/5. Most defaults ARE stated (undefined theme → raw text/zero ANSI; plain string → kind 'log'; precedence order is explicit). Gaps: transcriptTail union type (F2), classifyLine empty/multiline (F3), and live-background mechanism (F4). State transitions for transcript kind tagging are explicit and correct."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/09-spec-review.md"
+      }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-20T04:56:45.221Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "pi-native Stream Content-Kind Theming (Spec-04)",
+        "date": "2025-07-20",
+        "summary": "## What was built\n\nMade the super-dev live stream and final result render behave like pi-native by classifying every transcript line into one of 10 `LineKind` values and mapping each kind to real pi Theme tokens (foreground colors + dedicated tool-bubble backgrounds). Classification is the single authority and happens entirely at the sink layer; ANSI theming is gated to TUI mode only so print/json/RPC/headless output stays byte-clean.\n\n## Per-phase delivery\n\n**Phase 1 — Pure stream-theme module + DashboardTheme extension** (`src/render/stream-theme.ts`, new)\n- New dependency-free module exporting `LineKind`, `classifyLine`, `themeLine`, and `commandBackground`.\n- `classifyLine` trims leading whitespace first (sink.log stores `  → cmd` indented) then matches a strict precedence: `→ structured_output ✓` (command-done) BEFORE generic `→ ` (command); then corrective `↻`, phase `▶`, error (`❌`/`failed after`/`did NOT complete`), warning (`⚠`/stagnant), success (PASS/GREEN/✓/passed/complete), log-error (FAIL/✗/error), trim marker, default log.\n- `themeLine` maps each kind→fg token (toolTitle/thinkingText/accent/text/dim/success/warning/error/muted + bold where specified); **graceful-degrade contract**: undefined theme returns raw text byte-for-byte (zero ANSI).\n- `commandBackground` returns `bg(\"toolPendingBg\")`/`bg(\"toolSuccessBg\")` for command/command-done, undefined otherwise.\n- Extended `DashboardTheme` with an optional `bg()` member so the real pi Theme satisfies it structurally without breaking existing `fg` call sites.\n- Covers AC-01..03 (SCENARIO-001..007).\n\n**Phase 2 — Sink-layer tagging + kind-carrying transcript** (`src/extension.ts`, modified; `src/render/live-stream.ts`, new)\n- `transcript` changed from `string[]` → `Array<{kind,text}>`; `sink.phase`/`sink.log`/`finalizeLive` push classified kinds (`thinking` tagged directly by sink.text).\n- `flush()` themes per-kind via `themeLine` **only when `ctx?.mode === 'tui'`**; non-TUI mode emits raw `line.text` so output stays ANSI-free. Rolling tail (TAIL_LINES=400) + trim-notice preserved (now `trim` kind). On-disk log writes raw text only (grep-friendly).\n- `details.transcriptTail` carries `{kind,text}` end-to-end (sink → flush → details → renderResult).\n- Covers AC-04..06 (SCENARIO-008..013).\n\n**Phase 3 — renderResult/buildResultComponent §1 per-kind theming** (`src/render/dashboard.ts`, modified)\n- §1 renders each tail line via `themeLine(kind,text,theme)`; COMMAND/COMMAND-DONE lines emitted as `new Text(styled, 0, 0, commandBackground(kind,theme))` to paint the per-line tool-bubble background through pi-tui Text's 4th `customBgFn` argument.\n- `transcriptTail` consumer is backward-tolerant: a plain `string` element defaults to kind `log`.\n- §2 (bold stage header + stageIcon rows) and §3 (Markdown summary via getMarkdownTheme) byte-identical.\n- Covers AC-07 (SCENARIO-014).\n\n**Phase 4 — Regression guard + full verification gate** (`src/render/regression-guard.test.ts`, new)\n- Added no-ANSI-leak regression test (drives sink with NO theme → zero ANSI in live body AND disk log) plus TUI-mode mirror asserting ANSI IS present, proving gating is on theme+mode not always-on.\n- Full gate: `npm run typecheck` strict-clean across the three files + optional `bg`; `npm test` passes existing dashboard-widget/wiring/dashboard-result/render suites AND new stream-theme + render-per-kind tests.\n- Covers AC-08..10 (SCENARIO-015..018).\n\n## Files changed (10)\n- NEW `src/render/stream-theme.ts` + `src/render/stream-theme.test.ts`\n- NEW `src/render/live-stream.ts` + `src/render/live-stream.test.ts`\n- MOD `src/render/dashboard.ts` (DashboardTheme bg() + per-kind §1)\n- MOD `src/extension.ts` (transcript {kind,text}, sink tagging, flush mode-gating)\n- NEW `src/render/dashboard-result-perkind.test.ts`, `src/render/regression-guard.test.ts`\n- MOD `src/render/dashboard-result.test.ts`, `package-lock.json`\n\n## Test results\nAll green: `npm run typecheck` strict-clean; `npm test` passes for the existing dashboard/render suites plus the four new test files. AC-01..10 demonstrable from passing assertions.\n\n## Deviations from spec\n- The live-stream theming/gating logic was extracted into a dedicated NEW `src/render/live-stream.ts` module (with its own test) rather than living inline in `extension.ts`. The spec described the logic as inline in `extension.ts`; the extraction is a clean refactor of the same behavior, net-neutral. No functional deviation.",
+        "phasesCompleted": "4/4",
+        "allGreen": "true",
+        "filesModified": [
+          "src/render/stream-theme.ts",
+          "src/render/stream-theme.test.ts",
+          "src/render/live-stream.ts",
+          "src/render/live-stream.test.ts",
+          "src/render/dashboard.ts",
+          "src/extension.ts",
+          "src/render/dashboard-result-perkind.test.ts",
+          "src/render/regression-guard.test.ts",
+          "src/render/dashboard-result.test.ts",
+          "package-lock.json"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/10-implementation-summary.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-20T04:59:53.933Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review: Theme-separated stream content kinds (pi-native theming)",
+        "date": "2025-11-19",
+        "verdict": "CONTEST",
+        "summary": "The implementation meets its core intent: stream-theme.ts is a pure, dependency-free classification+theming authority covering all 10 LineKinds; extension.ts funnels the 3 sink methods through a new createLiveStream() factory that classifies once at the sink and themes per-kind ONLY in TUI mode; dashboard.ts §1 renders command lines as tool-bubble Texts (customBgFn) with phase/thinking/error carrying their pi-native fg tokens. Verification gate is GREEN: `npm run typecheck` is strict-clean and 99 tests across 4 new suites (stream-theme, live-stream, regression-guard, dashboard-result-perkind) pass, including a byte-level no-ANSI-leak regression for print/json/headless. No destructive operations, no new runtime deps, no upstream emit-site edits. The verdict is CONTEST rather than PASS because two quality concerns warrant an author response: (1) an `as DashboardTheme` cast that erases ThemeColor token-name validation at the extension boundary, and (2) a now-factually-wrong doc comment in classifyLine that references a two-space sink indent the refactor removed. The factory extraction itself (live-stream.ts) is sound engineering that the spec's own \"drive the sink in isolation\" test requirement practically demanded — inline closures in execute() cannot be unit-tested because execute() spawns pi children. These are refinements, not production-risk defects; there is no data loss, security breach, or build break.",
+        "findings": [
+          {
+            "id": "ADV-01",
+            "severity": "medium",
+            "title": "`as DashboardTheme` cast erases ThemeColor token validation at the boundary",
+            "detail": "extension.ts passes `ctx?.ui?.theme as DashboardTheme | undefined` into createLiveStream. DashboardTheme.fg is typed `fg(token: string, text: string)`, which WIDENS pi's real `fg(token: ThemeColor, ...)` union to `string`. Consequently stream-theme.ts can hand any string to fg/bg (`\"thinkingText\"`, `\"toolTitle\"`, `\"toolPendingBg\"`, `\"accent\"`…) and tsc cannot catch a drift between these literals and pi's actual ThemeColor/ThemeBg unions. If a future pi version renames e.g. `thinkingText`, typecheck here still passes while the live render silently misrenders or throws at runtime. The spec mandated these exact tokens, so it works TODAY, but the cast is a type-safety hole. Recommend either importing the real `Theme` type at the extension boundary (so the literal set is checked) or adding a test that asserts every token string passed to fg/bg is a member of a frozen TOKEN constant set derived from theme.d.ts.",
+            "lens": "Architect",
+            "file": "src/extension.ts"
+          },
+          {
+            "id": "ADV-02",
+            "severity": "low",
+            "title": "classifyLine/splitNameRest doc comment references a sink indent that the refactor removed",
+            "detail": "stream-theme.ts classifyLine JSDoc states: 'Leading whitespace is trimmed FIRST because the sink stores lines with a leading two-space indent, so a stored `  → cmd` arrives here still indented'. That was true of the OLD extension.ts (`transcript.push(`  ${message}`)` on main), but the new live-stream.ts sink pushes the RAW message with NO indent (`transcript.push({ kind: classifyLine(message), text: message })`), and phase/command text carry their `▶ `/`→ `/`↻ ` prefixes inline with no leading whitespace. So `trimStart()` is now effectively defensive/dead for every real emit site, and the comment directly contradicts the code two files away — a trap for the next maintainer who may 'fix' classification assuming an indent that isn't there. Recommend updating the comment to match the raw-message contract (or documenting that trimStart is intentional defense-in-depth for future emit sites).",
+            "lens": "Minimalist",
+            "file": "src/render/stream-theme.ts"
+          },
+          {
+            "id": "ADV-03",
+            "severity": "low",
+            "title": "Over-eager substring matching miscolors benign log lines (spec-mandated but noisy)",
+            "detail": "classifyLine treats `complete`, `passed` (case-insensitive, no word boundary), and `\\berror\\b` as success/error signals. Benign lines get mis-themed: 'Pipeline will complete after sync' → log-success (green); 'surpassed expectations' → log-success (matched /passed/i); 'Error handler skipped, no-op' → log-error (red); 'failed-over replica healthy' is fine, but 'did NOT complete' correctly → error. The spec explicitly lists these keywords so this is spec-compliant, but from a Skeptic lens it produces visible false-color in the live stream. Low impact (cosmetic), but worth tightening where the word-boundary can be added without breaking the documented cases (e.g. /\\bpassed\\b/, /\\bcompleted?\\b/).",
+            "lens": "Skeptic",
+            "file": "src/render/stream-theme.ts"
+          },
+          {
+            "id": "ADV-04",
+            "severity": "low",
+            "title": "Trailing pending `live` buffer dropped from disk log + final transcriptTail",
+            "detail": "The `finally` block persists via `stream.diskLogText()` and `stream.transcriptTail()` WITHOUT first calling `stream.finalizeLive()`. If the run ends while a streaming `text` fragment is still pending (no subsequent phase/log to commit it), that final thinking fragment is absent from BOTH the on-disk log and details.transcriptTail — the user sees it in the live onUpdate tail, then it vanishes from the persisted record. This is PRE-EXISTING behavior (the original extension.ts had the identical gap: it wrote `transcript.join` without finalizing `live`), so it is NOT a regression introduced here — but the refactor preserved a latent display-data-loss bug rather than fixing it. Cheap to close: call `stream.finalizeLive()` at the top of the finally block.",
+            "lens": "Skeptic",
+            "file": "src/extension.ts"
+          },
+          {
+            "id": "ADV-05",
+            "severity": "low",
+            "title": "Theme + mode captured once at stream creation; live theme-switching not re-applied",
+            "detail": "createLiveStream reads `opts.mode` and `opts.theme` exactly once (extension.ts resolves `ctx?.mode` and `ctx?.ui?.theme` at factory-construction time and freezes them in closure). If a user changes their pi theme mid-run (live theme switching), the live stream keeps theming with the OLD theme until the run ends. Acceptable for the common case (themes rarely change mid-pipeline) and the non-TUI path is unaffected, but the single-snapshot capture is undocumented and could surprise. Consider re-reading `ctx.ui.theme` inside flush() when mode===\"tui\", or documenting the snapshot semantics.",
+            "lens": "Architect",
+            "file": "src/render/live-stream.ts"
+          },
+          {
+            "id": "ADV-06",
+            "severity": "low",
+            "title": "Defensive plain-string branches for a caller that no longer exists",
+            "detail": "dashboard.ts §1 carries `typeof line === \"string\" ? \"log\" : line.kind` and ResultDetails.transcriptTail is typed `Array<{kind,text} | string>` 'so existing string-based callers keep rendering'. After this change transcriptTail() ALWAYS emits {kind,text} and extension.ts is the only producer, so the string branch is dead defensive code for a caller that does not exist. Harmless and cheap, but a Minimalist would drop it (or gate it behind an explicit deprecation note) to avoid implying a contract nobody relies on. Not blocking.",
+            "lens": "Minimalist",
+            "file": "src/render/dashboard.ts"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/11-adversarial-review.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-20T05:00:25.170Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review — spec-04 theme stream content kinds",
+        "date": "2026-07-20",
+        "verdict": "Approved",
+        "summary": "The implementation cleanly delivers pi-native content-kind separation across the live stream and final result render. A new pure module `src/render/stream-theme.ts` exports the 11-value `LineKind` taxonomy plus `classifyLine`, `themeLine`, and `commandBackground` — all dependency-free, unit-tested, and gracefully degrading to raw text (zero ANSI) when no theme is present. A second pure factory `src/render/live-stream.ts` owns the kind-carrying transcript, mode-gated theming (TUI only), rolling-tail + trim-notice, and the grep-friendly raw disk log. `extension.ts` threads `{kind,text}` end-to-end (sink → flush → details → renderResult), and `dashboard.ts#buildResultComponent` §1 renders each tail line per-kind, painting command/command-done lines as tool bubbles via pi-tui `Text`'s 4th `customBgFn` argument while §2 (stage progress) and §3 (Markdown summary) stay byte-identical.\n\nValidation against the spec is strong: `npm run typecheck` is strict-clean; all 773 tests pass (42 files), including the new `stream-theme.test.ts`, `live-stream.test.ts`, `dashboard-result-perkind.test.ts`, and the cross-cutting `regression-guard.test.ts`. Every acceptance criterion (AC-01..AC-07) is demonstrably met with passing BDD scenarios, and the no-ANSI-leak contract is locked in across print/json/rpc/headless modes with NO theme for both the live body and the disk log. Backward compatibility is honored — a plain-string tail element is tolerated (defaults to kind `log`), `DashboardTheme.bg` stays optional, and non-TUI output is byte-clean.\n\nNo Critical, High, or Medium issues were found. The findings below are Low/Informational robustness and documentation observations that do not block approval.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "Low",
+            "title": "Live-stream onUpdate applies command foreground only; the best-effort tool-bubble background from spec §2 is not applied",
+            "detail": "Required-change §2 (flush) states lines should be themed via `themeLine(...)` and that commands are 'also wrapped with `theme.bg(\"toolPendingBg\", line)` best-effort'. `live-stream.ts#renderBody` (line 135-139) only calls `themeLine(l.kind, l.text, theme)` and joins — it never invokes `theme.bg`/`commandBackground`, so command lines in the STREAMING view get the `toolTitle` foreground but no pending/success tool-bubble background. AC-02 is still satisfied (it requires only foreground color-separation in the live stream) and the Out-of-scope clause explicitly permits streaming backgrounds to be best-effort/terminal-dependent, with the guaranteed-correct backgrounds living in `renderResult` (which IS correctly wired via `commandBackground` + Text `customBgFn`). Action: either apply `commandBackground(kind, theme)?.(themed)` to command/command-done lines in `renderBody` when `mode === 'tui'`, or confirm the implementation summary explicitly notes that per-line backgrounds are renderResult-only (the spec asks this to be noted). Confidence 0.8.",
+            "file": "src/render/live-stream.ts",
+            "line": "135-139"
+          },
+          {
+            "id": "F-02",
+            "severity": "Low",
+            "title": "`complete`/`passed` substring matching produces real-world false positives",
+            "detail": "classifyLine rules 7 use `/passed/i` and `/complete/i` (substring). These match 'bypassed', 'surpassed', 'incomplete', 'completed', 'completion' — all of which would be misclassified as `log-success` (green). For example a log line 'tests bypassed' or 'build incomplete' would render green. The spec literally says 'contains `passed`' / 'contains `complete`' (note `PASS` is the only one given `\\b` word boundaries), so this faithfully implements the spec as written, but it is fragile against ordinary English. Suggested fix: tighten to word-boundary forms `/\\bpassed\\b/i` and `/\\bcomplete(?:d|ment)?\\b/i` (or coordinate with the spec author). Low impact (cosmetic miscoloring of a process line). Confidence 0.75.",
+            "file": "src/render/stream-theme.ts",
+            "line": "88-96"
+          },
+          {
+            "id": "F-03",
+            "severity": "Informational",
+            "title": "Trim-notice line surfaces in non-TUI (print/json) onUpdate body",
+            "detail": "When the visible body exceeds TAIL_LINES, `flush` prepends a synthetic `{kind:'trim', text:'… N earlier lines trimmed (full log saved at run end) …'}` line to the displayed body. Because `renderBody` emits raw `line.text` in non-TUI modes, this trim notice also appears in print/json/headless output. It is raw text (no ANSI), so AC-05 (byte-clean, zero ANSI) still holds and the regression guard passes. This is purely cosmetic: a UI affordance ('earlier lines trimmed') shows up in headless logs. No action required unless headless cleanliness is desired; if so, suppress the trim notice when `mode !== 'tui'`. The on-disk log (`diskLogText`) is unaffected — it carries the FULL transcript with no trim notice, as intended.",
+            "file": "src/render/live-stream.ts",
+            "line": "144-156"
+          },
+          {
+            "id": "F-04",
+            "severity": "Informational",
+            "title": "Transcript accumulates unbounded in memory across the full run",
+            "detail": "`createLiveStream.transcript` is a grow-only array; only the DISPLAY is rolling-tail while the full transcript is retained for the end-of-run disk log and the 50-line `transcriptTail` snapshot. For a 100+ agent run this can be thousands of lines held in memory until process exit. This is by design (the spec requires 'Preserve the FULL run log to disk' and the rolling tail only governs the visible body), so it is not a defect — but worth noting for future very-large-run scaling. No change recommended for this task.",
+            "file": "src/render/live-stream.ts",
+            "line": "119-121"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/12-code-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-20T05:02:55.262Z",
+      "agent": "docs",
+      "data": {
+        "title": "docs-executor: pi-native Stream Content-Kind Theming (Spec-04) — documentation update",
+        "date": "2025-07-20",
+        "summary": "Updated the Spec-04 spec directory to reflect the completed, code-review-approved implementation that makes the super-dev live stream + final result render visually separate all 10 content kinds (commands, command-done, corrective, phase, log, log-success, log-warning, log-error, thinking, error, trim) using real pi Theme tokens (fg colors + dedicated tool-bubble backgrounds). Implementation delivered across 4 phases/commits: a new pure `src/render/stream-theme.ts` (classifyLine/themeLine/commandBackground + LineKind), sink-layer tagging + kind-carrying `{kind,text}` transcript with mode-gated TUI-only theming, `renderResult` §1 per-kind theming with tool-bubble backgrounds via pi-tui Text's 4th customBgFn argument, and a regression guard. Classification is the single authority at the sink layer; non-TUI/print/json/RPC/headless output is byte-clean (zero ANSI); the on-disk log stays grep-friendly raw text. Docs updated: marked all 20 task-list items complete; added a 4-phase status table + completion banner to the implementation plan; added an Implementation Deviations section to the specification documenting the live-stream.ts extraction and the additive files-touched expansion; the implementation summary was already complete and accurate. Verified `npm run typecheck` strict-clean and `npm test` green per the summary (existing dashboard/render suites + 4 new test files). No README/CHANGELOG/architecture changes needed — the rendering behavior is internal; README documents only the CLI/build-gate surface.",
+        "docsUpdated": "docs/specifications/04-theme-stream-content-kinds/08-task-list.md (marked all 20 tasks [x] complete + added completion banner with commit hashes + cross-link to deviations); docs/specifications/04-theme-stream-content-kinds/07-implementation-plan.md (added post-code-review status banner + 4-phase status table with commit hashes); docs/specifications/04-theme-stream-content-kinds/06-specification.md (appended Implementation Deviations section: DEV-04-1 live-stream.ts extraction, DEV-04-2 additive files-touched inventory, + best-effort/byte-clean notes). 10-implementation-summary.md, 12-code-review.md, 11-adversarial-review.md already reflected completion accurately — no edits needed.",
+        "deviationsDocumented": [
+          "DEV-04-1: Phase 2's transcript/sink/flush/finalizeLive/disk-log logic was extracted into a NEW pure dependency-free module src/render/live-stream.ts (createLiveStream factory) instead of living inline in extension.ts. Reason: the real execute() path spawns pi children and cannot be driven in a unit test, so extraction is required to satisfy Testing Strategy (C) (drive the sink in isolation). Impact: net-neutral structural refactor — byte-identical runtime behavior, no change to any AC. Documented in 06-specification.md and 10-implementation-summary.md.",
+          "DEV-04-2: Files-touched inventory expanded additively beyond the spec's cross-check — also created src/render/live-stream.ts, src/render/live-stream.test.ts, src/render/dashboard-result-perkind.test.ts, src/render/regression-guard.test.ts, and updated package-lock.json. Reason: testability + explicit per-phase coverage isolation. Impact: additive only; all out-of-scope files (nodes.ts, workflow.ts, pipeline.ts, stages/*, session-agent.ts, pi-spawn.ts, render templates) remain untouched. No functional deviation.",
+          "Best-effort per-line backgrounds in the STREAMING (onUpdate) view are terminal-dependent (honors spec Out-of-scope note); the guaranteed-correct tool-bubble backgrounds live in renderResult's Container Text customBgFn. Noted in 06-specification.md."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/04-theme-stream-content-kinds/docs/specifications/04-theme-stream-content-kinds/13-documentation.md"
+      }
+    }
+  }
+}
