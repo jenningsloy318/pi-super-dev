@@ -67,6 +67,11 @@ export interface ActiveRun {
 
 let activeRun: ActiveRun | null = null;
 
+/** Bound on queued mid-run inputs so a single specialist spawn cannot be
+ *  token-bombed via a huge guidance prepend. Older entries are dropped first
+ *  (most-recent guidance wins — it reflects the user's latest intent). */
+const MAX_QUEUED_INPUTS = 20;
+
 /** Phase 4 (AC-08 / SCENARIO-017..018): the session-backend live-steer
  *  forwarder, set by `runAgentViaSession`'s `onSteer` seam while a specialist
  *  AgentSession is alive and nulled on dispose. The input handler nudges it
@@ -95,6 +100,9 @@ export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandl
 			const t = String(text ?? "").trim();
 			if (!t) return;
 			this.queue.push(t);
+			// Bound the queue: drop the oldest entry when over capacity so a single
+			// specialist spawn can't be token-bombed (most-recent guidance wins).
+			if (this.queue.length > MAX_QUEUED_INPUTS) this.queue.shift();
 			// Phase 2 (AC-04 / AC-07): ACK surfaces — TUI-only AND stream-attached,
 			// each wrapped best-effort try/catch so a failing surface never aborts
 			// capture (SCENARIO-006 / SCENARIO-023). No stream ⇒ no ACK at all
@@ -377,9 +385,11 @@ export default function activate(pi: ExtensionAPI): void {
 				},
 			};
 			try {
-				// Phase 1 (AC-02 / SCENARIO-002): set the run-state singleton on execute()
-				// entry, storing ctx so the listener + (Phase 2) ACK surfaces can use it.
-				activeRun = createActiveRun(ctx, stream);
+				// Set the run-state singleton on execute() entry via the exported setter
+				// (single write path). Guard overlapping runs: a non-null singleton here
+				// means a prior run never cleared its finally (reentrancy) — discard it.
+				if (activeRun != null) setActiveRun(null);
+				setActiveRun(createActiveRun(ctx, stream));
 				ensureSuperDevDirs();
 				startRun();
 				const summary = await runPipelineTask(task, {
@@ -389,11 +399,16 @@ export default function activate(pi: ExtensionAPI): void {
 					model: params.model as string | undefined,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
 					resume: typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined),
-				// Phase 3 (AC-05 / SCENARIO-013..016): wire the mid-run input drain to
-				// the activeRun singleton. workflow.ts realAgent drains this ONCE per
-				// specialist spawn; empty while idle/after drain so non-TUI/idle runs
-				// inject nothing (byte-identical baseline).
-				userSteerProvider: () => activeRun?.drain() ?? [],
+				// Wire the mid-run input drain to the activeRun singleton. workflow.ts
+				// realAgent drains this ONCE per specialist spawn; empty while idle/after
+				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
+				userSteerProvider: () => getActiveRun()?.drain() ?? [],
+				// AC-08: wire the session-backend live-steer seam. runAgentViaSession
+				// invokes onSteer with a no-throw forwarder bound to the live AgentSession
+				// (or null on dispose / when steer() is absent); registering it here is
+				// what makes the input handler's live steer actually fire on the session
+				// backend. subprocess/browser never set a forwarder → documented no-op.
+				onSteer: setActiveSteerForwarder,
 				progress: sink,
 					signal,
 				});
@@ -425,11 +440,11 @@ export default function activate(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
 			} finally {
-				// Phase 1 (AC-02 / SCENARIO-002): discard the module-scoped run-state
-				// singleton in the SAME cleanup that removes the run's dashboard widget,
-				// so run teardown + widget teardown stay unified (no leak across runs).
-				activeRun = null;
-				activeSteerForwarder = null;
+				// Discard the run-state singleton via the exported setter (single write
+				// path), in the SAME cleanup that removes the run's dashboard widget — so
+				// run teardown + widget teardown stay unified (no leak across runs).
+				setActiveRun(null);
+				setActiveSteerForwarder(null);
 				// Always clear the dashboard widget + footer state when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
