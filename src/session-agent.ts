@@ -38,6 +38,84 @@ import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4 (AC-08 / SCENARIO-017 / SCENARIO-018): session-backend best-effort
+// LIVE STEER. The AgentSession handle is created LOCALLY inside
+// `runAgentViaSession` (`const { session } = await createAgentSession(...)`)
+// and disposed in its `finally` — it is NEVER returned to, or reachable from,
+// `makeContext`/`realAgent` or the input-capture path. So live steer is exposed
+// ONLY through an additive `onSteer` seam: `runAgentViaSession` hands out a
+// no-throw forwarder bound to the live session when it exposes `steer()`, and
+// `null` on dispose (or when the session lacks `steer()`). The capture path
+// (extension.ts input handler) nudges the currently-running specialist with
+// the MOST-RECENT input only — one forward per capture — bounding context
+// growth. The Phase-3 queue path (`RunOptions.userSteerProvider`) is the
+// GUARANTEED delivery contract for BOTH the session AND subprocess/browser
+// backends; live steer is an additive enhancement that never blocks a run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A no-throw steer forwarder: bound to a live AgentSession so calling it
+ *  nudges the currently-running specialist mid-turn. */
+export type SteerForwarder = (text: string) => void;
+
+/** Build a best-effort, no-throw steer forwarder bound to a session handle.
+ *  Returns `null` when the handle is absent or has no `steer()` method (the
+ *  documented best-effort no-op — the queue path remains the guaranteed
+ *  contract). Binds the method back to the handle via `.call` so `this` stays
+ *  attached — guards the same class-detachment class of bug the stream-theme
+ *  class-theme regression covers. Swallows any throw (AC-09). */
+export function makeSteer(handle: unknown): SteerForwarder | null {
+	if (handle == null) return null;
+	const steer: unknown = (handle as { steer?: unknown }).steer;
+	if (typeof steer !== "function") return null;
+	const fn = steer as (text: string) => void;
+	return (text: string): void => {
+		try {
+			// `.call(handle, …)` rebinds `this` to the handle so a class-based
+			// session (whose steer() reads `this.fgColors` etc.) keeps `this`.
+			fn.call(handle, text);
+		} catch {
+			/* best-effort (AC-09): a throwing live session must never break the capture path */
+		}
+	};
+}
+
+/** A tiny sink holding at most one live steer forwarder, used by a capture
+ *  path to nudge the currently-running session specialist with the MOST-RECENT
+ *  input only (one forward per capture — bounds context growth, SCENARIO-017).
+ *  The accumulating queue is the Phase-3 injection path's job; this path sends
+ *  exactly one nudge per capture and never hands the handle a list. */
+export interface SteerSink {
+	/** Register a live session handle (builds the forwarder via makeSteer). */
+	set(handle: unknown): void;
+	/** Forward the just-captured (most-recent) input. No-throw no-op when no
+	 *  handle is registered (SCENARIO-018). */
+	forward(text: string): void;
+	/** Unregister the handle (mirrors session.dispose → onSteer(null)). */
+	clear(): void;
+}
+
+/** Create a fresh SteerSink (no shared state across runs — no leak). */
+export function createSteerSink(): SteerSink {
+	let forwarder: SteerForwarder | null = null;
+	return {
+		set(handle: unknown): void {
+			forwarder = makeSteer(handle);
+		},
+		forward(text: string): void {
+			if (!forwarder) return;
+			try {
+				forwarder(text);
+			} catch {
+				/* defensive (AC-09): makeSteer already swallows, but the sink never propagates */
+			}
+		},
+		clear(): void {
+			forwarder = null;
+		},
+	};
+}
+
 export interface SessionAgentOptions {
 	agent: string;
 	prompt: string;
@@ -52,6 +130,16 @@ export interface SessionAgentOptions {
 	controlKeys?: string[];
 	schema?: unknown;
 	onProgress?: AgentProgress;
+	/** Phase 4 (AC-08 / SCENARIO-017..018): best-effort live-steer seam. When
+	 *  provided, `runAgentViaSession` invokes `onSteer` with a no-throw forwarder
+	 *  bound to the live AgentSession as soon as the session is created (if it
+	 *  exposes `steer()`), and with `null` on dispose (or when the session lacks
+	 *  `steer()`). The capture path uses the forwarder to nudge the
+	 *  currently-running specialist with the MOST-RECENT input only. When the
+	 *  handle is absent (subprocess backend, browser agents, or a session
+	 *  without steer()), the Phase-3 queue path is the guaranteed contract for
+	 *  BOTH backends — live steer is an additive enhancement only. */
+	onSteer?: (fn: SteerForwarder | null) => void;
 }
 
 /** Build the structured_output schema. When `keys` is non-empty, each key is
@@ -231,6 +319,15 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
 	});
 
+	// Phase 4 (AC-08 / SCENARIO-017..018): hand out a no-throw live-steer
+	// forwarder bound to this session when it exposes `steer()`; otherwise signal
+	// `null` (documented best-effort no-op). The capture path nudges the
+	// currently-running specialist with the MOST-RECENT input only; the Phase-3
+	// queue path is the guaranteed contract for BOTH backends.
+	try {
+		opts.onSteer?.(makeSteer(session));
+	} catch { /* best-effort: never let steer-wiring break a run */ }
+
 	const unsub = opts.onProgress ? forwardProgress(session, opts.onProgress) : undefined;
 	let timedOut = false;
 	const onAbort = () => void session.abort();
@@ -289,6 +386,11 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	} catch (err) {
 		return { text: "", control: null, error: err instanceof Error ? err.message : String(err) };
 	} finally {
+		// Phase 4: invalidate the live-steer forwarder BEFORE disposing the
+		// session so the capture path degrades to a no-op (SCENARIO-018).
+		try {
+			opts.onSteer?.(null);
+		} catch { /* best-effort */ }
 		clearTimeout(timer);
 		opts.signal?.removeEventListener("abort", onAbort);
 		unsub?.();

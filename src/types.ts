@@ -267,6 +267,14 @@ export interface RunOptions {
 	 *  `realAgent`, NOT the memoizing wrapper). Optional — omitting it disables
 	 *  the feature and prompts stay byte-identical to the no-feature baseline. */
 	userSteerProvider?: () => string[];
+	/** Phase 4 (AC-08 / SCENARIO-017..018): session-backend best-effort LIVE
+	 *  steer. When provided, the session backend hands out a no-throw
+	 *  forwarder bound to the live AgentSession (or `null` when the handle is
+	 *  absent). The capture path nudges the currently-running specialist with
+	 *  the MOST-RECENT input only. Optional — omitting it (or using the
+	 *  subprocess/browser backend) leaves the Phase-3 queue path as the sole
+	 *  delivery contract, with an identical guarantee. */
+	onSteer?: (fn: ((text: string) => void) | null) => void;
 }
 
 /** Honest, derived overall outcome of a run. */

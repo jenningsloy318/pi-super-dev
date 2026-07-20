@@ -97,6 +97,10 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				event: (m: string) => log(m),
 				text: (partial: string) => options.progress?.text(partial),
 			},
+			// Phase 4 (AC-08): thread the session-backend live-steer seam through to
+			// runAgentViaSession. Only consulted by the session backend; the
+			// subprocess/browser path ignores it (queue path is the guaranteed contract).
+			onSteer: options.onSteer,
 		};
 		// Backend selectable. Default is 'session' (in-process createAgentSession):
 		// same SDK we peer-depend on, structured output via a schema, no spawn/

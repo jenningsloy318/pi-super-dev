@@ -67,6 +67,13 @@ export interface ActiveRun {
 
 let activeRun: ActiveRun | null = null;
 
+/** Phase 4 (AC-08 / SCENARIO-017..018): the session-backend live-steer
+ *  forwarder, set by `runAgentViaSession`'s `onSteer` seam while a specialist
+ *  AgentSession is alive and nulled on dispose. The input handler nudges it
+ *  with the MOST-RECENT captured input only. `null` outside a session run
+ *  (idle / subprocess / browser backend) → no-throw no-op. */
+let activeSteerForwarder: ((text: string) => void) | null = null;
+
 /** Phase 2 (AC-04 / SCENARIO-008): ellipsize the queued-input preview to ~60
  *  chars so the status pill stays one line even for long user messages. */
 function previewInput(text: string, max = 60): string {
@@ -115,6 +122,18 @@ export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandl
  * in the execute() finally (discard — unifies run + widget teardown). */
 export function setActiveRun(run: ActiveRun | null): void {
 	activeRun = run;
+}
+
+/** Phase 4 (AC-08 / SCENARIO-017..018): the bridge the session backend's
+ *  `onSteer` seam populates. `runAgentViaSession` calls this with a no-throw
+ *  forwarder bound to the live AgentSession on creation, and `null` on dispose
+ *  — so each captured input nudges the currently-running session specialist
+ *  with the MOST-RECENT input only (bounds context growth). Idle / subprocess /
+ *  browser backends never call it, so live steer is a documented no-throw
+ *  no-op and the Phase-3 queue path is the sole, identical delivery guarantee.
+ *  execute()'s finally clears it alongside activeRun (no stale leak). */
+export function setActiveSteerForwarder(fn: ((text: string) => void) | null): void {
+	activeSteerForwarder = fn;
 }
 
 /** Read the module singleton. Null when idle (no run in progress). */
@@ -244,6 +263,12 @@ export default function activate(pi: ExtensionAPI): void {
 			// byte-identical to today.
 			if (event?.source !== "interactive") return { action: "continue" };
 			activeRun.push(event.text);
+			// Phase 4 (AC-08 / SCENARIO-017): best-effort live steer — nudge the
+			// currently-running session specialist with the MOST-RECENT input only
+			// (one forward per capture, bounds context growth). No-throw no-op when
+			// no session handle is reachable (idle / subprocess / browser backend);
+			// the Phase-3 queue path still guarantees delivery.
+			try { activeSteerForwarder?.(event.text); } catch { /* best-effort */ }
 			return { action: "handled" };
 		} catch {
 			return { action: "continue" };
@@ -404,6 +429,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// singleton in the SAME cleanup that removes the run's dashboard widget,
 				// so run teardown + widget teardown stay unified (no leak across runs).
 				activeRun = null;
+				activeSteerForwarder = null;
 				// Always clear the dashboard widget + footer state when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
