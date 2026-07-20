@@ -179,20 +179,97 @@ export function detectTouchedCargoPackages(cwd: string, baseRef?: string): strin
 }
 
 /**
- * Build the scoped `cargo test` argv for a list of packages.
+ * The three cargo subcommands the build gate scopes. Constrained to a literal
+ * union so a typo at a call site is a compile error, not a silent wrong argv.
+ */
+type CargoSubcommand = "build" | "test" | "clippy";
+
+/**
+ * Build a scoped cargo argv for a subcommand + package list + trailing extras.
  *
- * Non-empty → `["cargo","test", ...packages.flatMap(p => ["-p", p]), "--quiet"]`
- * (one `-p` flag per package, `--quiet` retained). Empty → `["cargo","test",
- * "--quiet"]` (byte-identical to the unscoped workspace argv). Package names are
- * emitted as discrete argv elements so they never pass through a shell (no
- * `shell:true` is ever used) — see SCENARIO-014.
+ * Shared core of the AC-02 argv family. Emits
+ * `["cargo", subcommand, ...packages.flatMap(p => ["-p", p]), ...(extraArgs ?? [])]`
+ * — one `-p` flag per package, in first-seen input order, followed verbatim by
+ * the trailing extra args. An empty package set yields a byte-identical
+ * workspace-wide argv (no `-p` flags at all) because `flatMap` over `[]` is a
+ * no-op — the SCENARIO-005 invariant. `extraArgs` defaults to `undefined`
+ * (omitted entirely), and an explicit `[]` is treated identically to
+ * `undefined` (both append nothing). Package names are emitted as discrete
+ * argv elements so they never pass through a shell (no `shell:true` is ever
+ * used) — see SCENARIO-014. Each call returns a freshly-allocated array.
+ *
+ * Pure & side-effect-free: no git, no spawn, no filesystem, no env — fully
+ * unit-testable. See SCENARIO-004 (non-empty) / SCENARIO-005 (empty).
+ *
+ * @param subcommand One of `build` | `test` | `clippy`.
+ * @param packages Resolved (de-duplicated) package names, in run order.
+ * @param extraArgs Optional trailing argv to append verbatim (e.g. `--quiet`).
+ * @returns The scoped cargo argv (fresh array each call).
+ */
+export function scopedCargoArgs(
+	subcommand: CargoSubcommand,
+	packages: string[],
+	extraArgs?: string[],
+): string[] {
+	return [
+		"cargo",
+		subcommand,
+		...packages.flatMap((p) => ["-p", p]),
+		...(extraArgs ?? []),
+	];
+}
+
+/**
+ * Build the scoped `cargo build` argv for a list of packages — AC-02.
+ *
+ * Thin wrapper over {@link scopedCargoArgs}: delegates to
+ * `scopedCargoArgs("build", packages, ["--quiet"])`. Non-empty →
+ * `["cargo","build", ...packages.flatMap(p => ["-p", p]), "--quiet"]`; empty →
+ * `["cargo","build","--quiet"]` (byte-identical to the unscoped workspace
+ * argv). See SCENARIO-004/005.
+ *
+ * @param packages Resolved (de-duplicated) package names.
+ * @returns The cargo build argv, scoped or unscoped.
+ */
+export function scopedCargoBuildArgs(packages: string[]): string[] {
+	return scopedCargoArgs("build", packages, ["--quiet"]);
+}
+
+/**
+ * Build the scoped `cargo test` argv for a list of packages — AC-02.
+ *
+ * Thin wrapper over {@link scopedCargoArgs}: delegates to
+ * `scopedCargoArgs("test", packages, ["--quiet"])` (byte-identical to the
+ * pre-refactor hand-rolled implementation, so `verify.ts` /
+ * `implementation.ts` callers and existing tests are unchanged). Non-empty →
+ * `["cargo","test", ...packages.flatMap(p => ["-p", p]), "--quiet"]` (one `-p`
+ * flag per package, `--quiet` retained). Empty → `["cargo","test","--quiet"]`
+ * (byte-identical to the unscoped workspace argv). Package names are emitted as
+ * discrete argv elements so they never pass through a shell (no `shell:true` is
+ * ever used) — see SCENARIO-014.
  *
  * @param packages Resolved (de-duplicated) package names.
  * @returns The cargo test argv, scoped or unscoped.
  */
 export function scopedCargoTestArgs(packages: string[]): string[] {
-	if (packages.length === 0) return ["cargo", "test", "--quiet"];
-	return ["cargo", "test", ...packages.flatMap((p) => ["-p", p]), "--quiet"];
+	return scopedCargoArgs("test", packages, ["--quiet"]);
+}
+
+/**
+ * Build the scoped `cargo clippy` argv for a list of packages — AC-02.
+ *
+ * Thin wrapper over {@link scopedCargoArgs}: delegates to
+ * `scopedCargoArgs("clippy", packages, ["--all-targets", "--quiet"])`. Non-empty
+ * → `["cargo","clippy", ...packages.flatMap(p => ["-p", p]), "--all-targets",
+ * "--quiet"]`; empty → `["cargo","clippy","--all-targets","--quiet"]`
+ * (byte-identical to the unscoped workspace argv, with `--all-targets` retained
+ * before `--quiet`). See SCENARIO-004/005.
+ *
+ * @param packages Resolved (de-duplicated) package names.
+ * @returns The cargo clippy argv, scoped or unscoped.
+ */
+export function scopedCargoClippyArgs(packages: string[]): string[] {
+	return scopedCargoArgs("clippy", packages, ["--all-targets", "--quiet"]);
 }
 
 const STDERR_TAIL_LINES = 12;
