@@ -344,8 +344,13 @@ export function stageIcon(st: string): string {
  * (SCENARIO-006 / SCENARIO-010 / SCENARIO-015 / SCENARIO-016).
  */
 export function buildResultComponent(details: ResultDetails, theme?: DashboardTheme): Container {
-	const fg = theme?.fg ?? ((_token: string, text: string) => text);
-	const bold = theme?.bold ?? ((text: string) => text);
+	// HOTFIX: call theme.fg / theme.bold METHOD-STYLE (not destructured). The real
+	// pi Theme is a class whose `fg()` reads `this.fgColors`; detaching via
+	// `const fg = theme.fg` loses `this` and throws "reading 'fgColors'". The
+	// per-kind §1 lines route through `themeLine` (already method-style), but the
+	// §1 header + §2 stage header below call these wrappers directly.
+	const bold = (text: string): string => (theme?.bold ? theme.bold(text) : text);
+	const fg = (color: string, text: string): string => (theme ? theme.fg(color, text) : text);
 	const container = new Container();
 
 	// §1 detail log — PER-KIND themed (AC-07 / SCENARIO-014). Each tail line is

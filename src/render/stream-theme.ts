@@ -138,8 +138,14 @@ function splitNameRest(text: string): { name: string; rest: string } {
 export function themeLine(kind: LineKind, text: string, theme?: DashboardTheme): string {
 	// SCENARIO-005: no theme → raw text, zero ANSI.
 	if (!theme) return text;
-	const fg = theme.fg;
-	const bold = theme.bold ?? ((value: string) => value);
+	// HOTFIX: call theme.fg / theme.bold METHOD-STYLE (not destructured). The real
+	// pi Theme is a class whose `fg()` reads `this.fgColors`; detaching via
+	// `const fg = theme.fg; fg(...)` loses `this` and throws "reading 'fgColors'"
+	// on undefined. Plain-object mock themes happen to survive detachment, so the
+	// bug only surfaces against the real Theme at runtime — see the class-theme
+	// regression test (tests/stream-theme-class-theme.test.ts).
+	const bold = (value: string): string => (theme.bold ? theme.bold(value) : value);
+	const fg = (color: string, value: string): string => theme.fg(color, value);
 	switch (kind) {
 		case "phase":
 			return fg("accent", bold(text));
