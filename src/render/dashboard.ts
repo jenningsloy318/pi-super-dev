@@ -18,6 +18,7 @@
 
 import { Container, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import type { LineKind } from "./stream-theme.js";
 
 /**
  * Structural subset of pi's `Theme` that the dashboard presentation layer
@@ -298,7 +299,11 @@ export function createDashboardWidgetFactory(
  */
 export interface ResultDetails {
 	summaryLines?: string[];
-	transcriptTail?: string[];
+	/** Per-kind transcript tail (AC-06). Phase 2 carries `{kind,text}` end-to-end
+	 *  from the sink; a plain `string` element is tolerated (defaults to kind
+	 *  `log`) so existing string-based callers keep rendering. Phase 3 upgrades
+	 *  the §1 render to per-kind theming + command-bubble backgrounds. */
+	transcriptTail?: Array<{ kind: LineKind; text: string } | string>;
 	stages?: Array<{ label: string; status: string }>;
 	logPath?: string;
 }
@@ -346,7 +351,8 @@ export function buildResultComponent(details: ResultDetails, theme?: DashboardTh
 	// §1 detail log — DIMMED (like agent thought progress; persisted, not transient).
 	container.addChild(new Text(fg("dim", "── detail log (last 50 lines) ──"), 0, 0));
 	for (const line of details.transcriptTail ?? []) {
-		container.addChild(new Text(fg("dim", line), 0, 0));
+		const text = typeof line === "string" ? line : line.text;
+		container.addChild(new Text(fg("dim", text), 0, 0));
 	}
 	if (details.logPath) {
 		container.addChild(new Text(fg("dim", `(full log: ${details.logPath})`), 0, 0));
