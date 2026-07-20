@@ -16,6 +16,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ControlObj } from "./types.ts";
+import type { PhaseDeliverables } from "./render/schemas.ts";
 
 export interface DocRef {
 	path: string;
@@ -89,15 +90,21 @@ export function toBool(v: unknown): boolean {
 	return false;
 }
 
-/** Normalize a spec's `phases` field into a usable {name, description?} array.
- *  Agents occasionally return phases as a string (newline/comma list) or an
+/** A normalized spec phase. `deliverables` is OPTIONAL and round-trips from the
+ *  agent's declared `phases[].deliverables` so downstream consumers (the
+ *  implementation stage) read a typed `phase.deliverables`. */
+export type NormalizedPhase = { name: string; description?: string; deliverables?: PhaseDeliverables };
+
+/** Normalize a spec's `phases` field into a usable {name, description?, deliverables?}
+ *  array. Agents occasionally return phases as a string (newline/comma list) or an
  *  object instead of an array; the implementation stage iterates it, so a
  *  non-array must never reach `for...of phases.entries()` (which threw:
- *  "phases.entries is not a function"). Array → keep valid entries; string →
- *  best-effort split into names; anything else → []. */
-export function normalizePhases(raw: unknown): Array<{ name: string; description?: string }> {
+ *  "phases.entries is not a function"). Array → keep valid entries (preserving a
+ *  declared `deliverables` object by reference); string → best-effort split into
+ *  names; anything else → []. */
+export function normalizePhases(raw: unknown): NormalizedPhase[] {
 	if (Array.isArray(raw)) {
-		return raw.filter((p): p is { name: string; description?: string } =>
+		return raw.filter((p): p is NormalizedPhase =>
 			!!p && typeof p === "object" && typeof (p as { name?: unknown }).name === "string" && (p as { name: string }).name.trim() !== "",
 		);
 	}
