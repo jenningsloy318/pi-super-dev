@@ -432,7 +432,7 @@ describe("spawn shape: cargo metadata, discrete argv (AC-10 / SCENARIO-020)", ()
 		expect(opts?.shell).toBeFalsy();
 	});
 
-	it("runs under the existing resolveTimeoutMs() envelope (encoding utf8)", () => {
+	it("runs under a dedicated SHORT metadata timeout (NOT the 10-min build envelope)", () => {
 		metadataReturns(metadataJson([...PREFIXED]));
 		resolveCargoPackageNames("/repo", ["data"]);
 		const opts = (spawn.mock.calls[0] as [
@@ -441,11 +441,13 @@ describe("spawn shape: cargo metadata, discrete argv (AC-10 / SCENARIO-020)", ()
 			{ timeout?: number; encoding?: string },
 		])[2];
 		expect(opts?.encoding).toBe("utf8");
-		// Timeout equals the resolved envelope (DEFAULT_TIMEOUT_MS when no env
-		// override is set — beforeEach clears SUPER_DEV_BUILD_TIMEOUT_MS).
-		expect(opts?.timeout).toBe(DEFAULT_TIMEOUT_MS);
+		// Review fix: a metadata lookup is a cheap manifest-graph read, NOT a build,
+		// so it must NOT inherit the 10-min resolveTimeoutMs() build envelope (a
+		// hung/missing cargo would otherwise block 10 min before the identity
+		// fallback). Dedicated timeout is finite, positive, and strictly shorter.
 		expect(Number.isFinite(opts?.timeout)).toBe(true);
 		expect((opts?.timeout ?? 0) > 0).toBe(true);
+		expect((opts?.timeout ?? Infinity) < DEFAULT_TIMEOUT_MS).toBe(true);
 	});
 
 	it("the cargo metadata spawn is the ONLY new spawn the resolver performs", () => {

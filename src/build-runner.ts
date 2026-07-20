@@ -95,6 +95,25 @@ export function resolveTimeoutMs(explicit?: number): number {
 	return DEFAULT_TIMEOUT_MS;
 }
 
+/**
+ * Per-call timeout for the cached `cargo metadata` lookup (review finding).
+ *
+ * A metadata fetch is a cheap read of the manifest graph, NOT a full build, so
+ * it must NOT inherit the 10-minute {@link resolveTimeoutMs} build envelope — a
+ * hung or missing `cargo` would otherwise block up to 10 minutes before the
+ * resolver's identity fallback fires. 30s comfortably covers the largest real
+ * workspace graph reads while failing fast. Overridable via env for CI.
+ */
+const DEFAULT_CARGO_METADATA_TIMEOUT_MS = 30_000;
+export function cargoMetadataTimeoutMs(): number {
+	const raw = process.env.SUPER_DEV_CARGO_METADATA_TIMEOUT_MS;
+	if (raw !== undefined && raw !== "") {
+		const parsed = Number.parseInt(raw, 10);
+		if (Number.isFinite(parsed) && parsed > 0) return parsed;
+	}
+	return DEFAULT_CARGO_METADATA_TIMEOUT_MS;
+}
+
 /** Dedupe a list of package names, preserving first-seen order. */
 function dedupePreservingOrder(items: string[]): string[] {
 	const seen = new Set<string>();
@@ -202,7 +221,12 @@ function firstCratesSegment(manifestDir: string): string | null {
  * @returns `{ ok:true, packages }` on success, else `{ ok:false }`.
  */
 function loadCargoMetadata(cwd: string): CargoMetadataResult {
-	const key = resolve(cwd);
+	// Resolve ONCE so the cache KEY and the --manifest-path argv use the SAME
+	// absolute path — otherwise a relative/symlinked `cwd` could key the cache
+	// under `resolve(cwd)` while cargo opens `join(cwd,"Cargo.toml")`, yielding a
+	// duplicate spawn (review finding: cache-key/argv skew).
+	const absCwd = resolve(cwd);
+	const key = absCwd;
 	const cached = cargoMetadataCache.get(key);
 	if (cached) return cached;
 	let result: CargoMetadataResult;
@@ -215,9 +239,13 @@ function loadCargoMetadata(cwd: string): CargoMetadataResult {
 				"1",
 				"--no-deps",
 				"--manifest-path",
-				join(cwd, "Cargo.toml"),
+				join(absCwd, "Cargo.toml"),
 			],
-			{ encoding: "utf8", timeout: resolveTimeoutMs() },
+			// Dedicated SHORT timeout (review finding): a metadata lookup is a cheap
+			// read of the manifest graph, NOT a full build. Inheriting the 10-min
+			// build timeout meant a hung/missing cargo blocked up to 10 minutes
+			// before the identity fallback kicked in. Overridable via env.
+			{ encoding: "utf8", timeout: cargoMetadataTimeoutMs() },
 		);
 		if (r.error || r.status !== 0) {
 			result = { ok: false };
@@ -300,33 +328,51 @@ export function resolveCargoPackageNames(
 	cwd: string,
 	touchedDirs: string[],
 ): string[] {
+	// Normalize ONCE (review finding): coalesce the string-filter + dedupe that
+	// BOTH failure fallbacks duplicated into a single `strDirs`, so there is one
+	// source of truth for "the touched dir names to fall back to".
+	const strDirs = Array.isArray(touchedDirs)
+		? touchedDirs.filter((d): d is string => typeof d === "string")
+		: [];
+	if (strDirs.length === 0) return [];
 	try {
-		if (!Array.isArray(touchedDirs) || touchedDirs.length === 0) {
-			return [];
-	}
 		const meta = loadCargoMetadata(cwd);
 		// No usable metadata → whole-list identity fallback (AC-02).
 		if (!meta.ok) {
-			return dedupePreservingOrder(
-				touchedDirs.filter((d): d is string => typeof d === "string"),
-			);
+			return dedupePreservingOrder(strDirs);
 		}
 		const out: string[] = [];
-		for (const d of touchedDirs) {
-			if (typeof d !== "string") continue;
-			const matched = meta.packages.find(
-				(p) => firstCratesSegment(p.manifestDir) === d,
-			);
+		for (const d of strDirs) {
+			const matched = matchPackageBySegment(meta.packages, d);
 			out.push(matched ? matched.name : d);
 		}
 		return dedupePreservingOrder(out);
 	} catch {
-		return dedupePreservingOrder(
-			Array.isArray(touchedDirs)
-				? touchedDirs.filter((d): d is string => typeof d === "string")
-				: [],
-		);
+		return dedupePreservingOrder(strDirs);
 	}
+}
+
+/**
+ * Pick the package whose first `crates/<seg>/` segment equals `seg`,
+ * DETERMINISTICALLY preferring an exact crate root (`crates/<seg>`) over a
+ * nested one (`crates/<seg>/inner`) when several workspace members share a top
+ * segment (review finding: multi-crate-per-top-segment matching was ambiguous /
+ * order-dependent on `cargo metadata`'s package order). Never throws.
+ */
+function matchPackageBySegment(
+	packages: Array<{ name: string; manifestDir: string }>,
+	seg: string,
+): { name: string; manifestDir: string } | undefined {
+	let nested: { name: string; manifestDir: string } | undefined;
+	for (const p of packages) {
+		if (firstCratesSegment(p.manifestDir) !== seg) continue;
+		// Exact crate root wins unambiguously (flat crate `crates/<seg>`).
+		if (p.manifestDir === `crates/${seg}` || p.manifestDir.endsWith(`/crates/${seg}`)) {
+			return p;
+		}
+		if (!nested) nested = p; // keep the FIRST nested match for determinism
+	}
+	return nested;
 }
 
 /**
@@ -367,11 +413,12 @@ export function detectTouchedCargoPackages(cwd: string, baseRef?: string): strin
 		const out: string = r.stdout;
 		if (typeof out !== "string" || out.trim() === "") return [];
 		// Match the FIRST `crates/<pkg>/` segment of each line; ignore non-crate
-		// paths entirely. `(?:^|\/)crates\/` tolerates nested-`crates/` prefixes.
-		const re = /(?:^|\/)crates\/([^/]+)\//;
+		// paths entirely. Reuses the module-level {@link CRATE_SEGMENT_RE} (review
+		// finding: no duplicate regex). It is non-global, so `exec` is stateless
+		// per call and needs no `lastIndex` reset.
 		const pkgs: string[] = [];
 		for (const line of out.split("\n")) {
-			const m = re.exec(line);
+			const m = CRATE_SEGMENT_RE.exec(line);
 			if (m) pkgs.push(m[1]);
 		}
 		// FINAL mapping step (Fix 1 wiring): resolve the deduped DIRECTORY
@@ -504,6 +551,35 @@ export function scopedCargoClippyArgs(packages: string[]): string[] {
  * @param scopedSet The resolved (de-duplicated) in-scope crate set.
  * @returns The partition into `inScopeErrors` and `outOfScopeErrors`.
  */
+
+/**
+ * Augment the resolved REAL package-name scope with each in-scope crate's
+ * `crates/<dir>/` DIRECTORY segment (review finding — HIGH false-green fix).
+ *
+ * `classifyOutOfScopeErrors` matches cargo BUILD/CLIPPY error blocks two ways:
+ *   - `crates/<seg>/` SOURCE PATH markers → the DIRECTORY segment, and
+ *   - `-p <name>` rerun flags → the REAL name.
+ * Cargo does NOT always emit the rerun `-p` flag (build/clippy rarely do), so
+ * the directory segment is the reliable signal — but `testPackages` carries
+ * REAL names post-resolution. This maps each in-scope real name back to its
+ * directory segment via the cached metadata and unions the two, so BOTH marker
+ * forms match an in-scope crate (and, critically, NEITHER matches an
+ * out-of-scope one). Pure over cached metadata; never spawns; never throws.
+ */
+function classificationScope(cwd: string, realNames: string[]): string[] {
+	const out = new Set<string>(realNames);
+	const meta = loadCargoMetadata(cwd);
+	if (meta.ok) {
+		for (const p of meta.packages) {
+			if (out.has(p.name)) {
+				const seg = firstCratesSegment(p.manifestDir);
+				if (seg) out.add(seg);
+			}
+		}
+	}
+	return [...out];
+}
+
 export function classifyOutOfScopeErrors(
 	errors: string[],
 	scopedSet: string[],
@@ -816,7 +892,21 @@ export function runBuildGate(
 	// and `inScopePass` mirrors `pass` (true on green, false otherwise) so the
 	// pre-change abort semantics are preserved exactly. SCENARIO-009/010/011/
 	// 021/024/028.
-	const { outOfScopeErrors } = classifyOutOfScopeErrors(errors, testPackages);
+	// Build the CLASSIFICATION scope (review finding: HIGH-severity false-green
+	// regression). `testPackages` now carries REAL cargo names, but cargo
+	// BUILD/CLIPPY error blocks reference crates via `crates/<dir>/` SOURCE PATH
+	// markers (directory segments) — and cargo does NOT always print a rerun
+	// `-p <realname>` flag. Without also including the directory segments, every
+	// in-scope failure's path marker would mismatch the real-name scope and be
+	// misclassified out-of-scope → inScopePass=true → FALSE GREEN. So augment the
+	// scope with each in-scope crate's directory segment (from cached metadata).
+	// Only for rust + a non-empty scope (the metadata tier's existing
+	// precondition), so non-rust repos and workspace-wide gates stay byte-identical.
+	const classScope =
+		cmds0.language === "rust" && testPackages.length > 0
+			? classificationScope(cwd, testPackages)
+			: testPackages;
+	const { outOfScopeErrors } = classifyOutOfScopeErrors(errors, classScope);
 	const inScopePass =
 		pass || (errors.length > 0 && outOfScopeErrors.length === errors.length);
 	return {

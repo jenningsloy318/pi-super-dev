@@ -43,6 +43,9 @@ const PHASE = { name: "Phase 3 — Agent Self-Verification Prompt Discipline", d
  */
 const flat = (s: string) => s.replace(/`/g, "");
 
+/** Stable substring unique to the Rust self-verify discipline line. */
+const RUST_DISCIPLINE_MARKER = "never sufficient proof";
+
 describe("buildImplementPrompt — cargo self-verification discipline (AC-07, SCENARIO-010)", () => {
 	it("requires `cargo test -p <pkg>` (scoped test command with a package placeholder)", () => {
 		const out = buildImplementPrompt(mkSetup(), null, PHASE, { languageInstructions: "" }, null);
@@ -78,12 +81,12 @@ describe("buildImplementPrompt — cargo self-verification discipline (AC-07, SC
 		expect(flat(out)).toMatch(/(not|never|do not|don't)[^]*green|--lib[^]*(not|never)/i);
 	});
 
-	it("appends the Rust discipline as generic wording for non-Rust stacks (language-scoped, not gated)", () => {
-		// frontend setup — the discipline is still present, scoped via "when Rust"
+	it("does NOT broadcast the Rust discipline to non-Rust stacks (language-scoped, gated by setup language)", () => {
+		// frontend setup — the cargo discipline must be ABSENT (review fix:
+		// previously broadcast to ALL languages via unconditional append).
 		const out = buildImplementPrompt(mkSetup("frontend"), null, PHASE, { languageInstructions: "" }, null);
-		expect(out).toContain("cargo test -p");
-		expect(out).toContain("tests/");
-		expect(out.toLowerCase()).toContain("rust");
+		expect(out).not.toContain("cargo test -p");
+		expect(out).not.toContain(RUST_DISCIPLINE_MARKER);
 	});
 
 	it("preserves the original implement instructions (no regression)", () => {
@@ -139,11 +142,10 @@ describe("buildQaPrompt — cargo self-verification discipline (AC-07, SCENARIO-
 		expect(flat(out)).toMatch(/(not|never|do not|don't)[^]*green|--lib[^]*(not|never)/i);
 	});
 
-	it("appends the Rust discipline as generic wording for non-Rust stacks (language-scoped, not gated)", () => {
+	it("does NOT broadcast the Rust discipline to non-Rust stacks (language-scoped, gated by setup language)", () => {
 		const out = buildQaPrompt(mkSetup("frontend"), null, PHASE);
-		expect(out).toContain("cargo test -p");
-		expect(out).toContain("tests/");
-		expect(out.toLowerCase()).toContain("rust");
+		expect(out).not.toContain("cargo test -p");
+		expect(out).not.toContain(RUST_DISCIPLINE_MARKER);
 	});
 
 	it("preserves the original qa instructions (no regression)", () => {

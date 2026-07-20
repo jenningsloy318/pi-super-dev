@@ -98,12 +98,22 @@ export function buildTddPrompt(s: SetupControl, c: Classification | null, phase:
  *  is NO control-flow / nodes / workflow / pipeline change. */
 const RUST_SELF_VERIFY_DISCIPLINE = "When verifying a Rust crate, run `cargo test -p <pkg>` WITHOUT the `--lib` flag so the integration binaries under tests/ execute as well, PLUS any spec-mandated e2e or integration target. Do NOT declare green on `--lib`-only evidence: `--lib` skips the tests/ integration binaries, so it is never sufficient proof.";
 
+/** Return the Rust verification discipline ONLY for Rust projects (review
+ *  finding: it was previously broadcast to ALL languages). Uses the
+ *  SETUP-detected language (`s.language`, derived from repo manifests) so it is
+ *  reliable even when the per-task classification is null at prompt-build time. */
+function rustDiscipline(s: SetupControl): string {
+	return s?.language === "rust" ? RUST_SELF_VERIFY_DISCIPLINE : "";
+}
+
 export function buildImplementPrompt(s: SetupControl, c: Classification | null, phase: { name: string; description?: string }, specialist: R, specControl: R): string {
 	const li = (specialist?.languageInstructions as string) ?? "";
-	return [ctxBlock(s, c), "", "## Implementation Phase", `- Phase: ${phase.name}`, `- Description: ${phase.description ?? ""}`, `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, "", li ? `## Language-Specific Instructions\n${li}\n` : "", "## Instructions", "Implement the code to make the failing tests pass (green phase of TDD).", "Follow existing patterns from the code assessment. Keep changes minimal and focused.", RUST_SELF_VERIFY_DISCIPLINE, "", "Output <control> JSON with: filesModified (array), testsPassCount (number), summary."].join("\n");
+	const rust = rustDiscipline(s);
+	return [ctxBlock(s, c), "", "## Implementation Phase", `- Phase: ${phase.name}`, `- Description: ${phase.description ?? ""}`, `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, "", li ? `## Language-Specific Instructions\n${li}\n` : "", "## Instructions", "Implement the code to make the failing tests pass (green phase of TDD).", "Follow existing patterns from the code assessment. Keep changes minimal and focused.", ...(rust ? [rust] : []), "", "Output <control> JSON with: filesModified (array), testsPassCount (number), summary."].join("\n");
 }
 export function buildQaPrompt(s: SetupControl, c: Classification | null, phase: { name: string }): string {
-	return [ctxBlock(s, c), "", "## Implementation Phase", `- Phase: ${phase.name}`, "", "## Instructions", "Run the full test suite and verify build succeeds.", "Check coverage meets threshold. Report any regressions.", RUST_SELF_VERIFY_DISCIPLINE, "", "Output <control> JSON with: allTestsPass (boolean), buildSuccess (boolean), coveragePercent (number), regressions (array), summary."].join("\n");
+	const rust = rustDiscipline(s);
+	return [ctxBlock(s, c), "", "## Implementation Phase", `- Phase: ${phase.name}`, "", "## Instructions", "Run the full test suite and verify build succeeds.", "Check coverage meets threshold. Report any regressions.", ...(rust ? [rust] : []), "", "Output <control> JSON with: allTestsPass (boolean), buildSuccess (boolean), coveragePercent (number), regressions (array), summary."].join("\n");
 }
 export function buildImplementationSummaryPrompt(s: SetupControl, c: Classification | null, impl: R): string {
 	return [ctxBlock(s, c), "", "## Implementation Result", `- Phases Completed: ${(impl?.phasesCompleted as number) ?? 0}/${(impl?.totalPhases as number) ?? 0}`, `- All Green: ${(impl?.allGreen as boolean) ?? false}`, `- Files Modified: ${((impl?.filesModified as string[]) ?? []).join(", ") || "none"}`, "", "## Instructions", "Write a concise implementation summary: what was built per phase, files changed, test results, and any deviations from the specification.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "Output <control> JSON with: title, date, summary, phasesCompleted, allGreen, filesModified."].join("\n");

@@ -844,6 +844,140 @@
         ],
         "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/07-cargo-package-name-resolution/docs/specifications/07-cargo-package-name-resolution/09-spec-review.md"
       }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-20T09:01:56.840Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "Resolve real cargo package names in the scope-aware build gate (spec-07)",
+        "date": "2026-07-20",
+        "summary": "**Problem:** The scope-aware cargo build gate in `src/build-runner.ts` derived `-p` flags from workspace DIRECTORY names (e.g. `crates/data/` → `data`) instead of real package names (e.g. `stockfan-data`). On any prefixed-crate workspace, `cargo build -p data` fails instantly with `package ID specification 'data' did not match any packages` (exit 101), false-failing every gate attempt before anything compiled — a repair loop can never fix a framework-derived command. Fix 3: the agent self-verification prompts also allowed `--lib`-only evidence, a vacuous-green vector.\n\n**What was built, by phase:**\n\n- **Phase 1 — Metadata resolver + per-cwd cache** (`src/build-runner.ts`): Added exported `resolveCargoPackageNames(cwd, touchedDirs)` plus private `loadCargoMetadata(cwd)` and a module-level `cargoMetadataCache: Map<cwd, CargoMetadataResult>`. The loader spawns `cargo metadata --format-version 1 --no-deps --manifest-path <cwd>/Cargo.toml` via discrete-argv `spawnSync` (no `shell:true`) under the existing `resolveTimeoutMs()` envelope, parses `packages[]` into `{name, manifestDir}`, and memoizes per-cwd (storing either the list or a `{ok:false}` failure sentinel so a missing cargo is not re-spawned). `resolveCargoPackageNames` maps each touched segment to the package whose first `crates/<seg>/` segment in `manifestDir` equals it (manifest-in-subdir safe), dedupes first-seen-order, and per-element / whole-list identity-falls-back to directory names on any failure — the whole body never throws, documented in JSDoc.\n\n- **Phase 2 — Wire resolver into `detectTouchedCargoPackages` + complete touched set**: The existing `git diff` discrete-argv spawn, `/(?:^|\\/)crates\\/([^/]+)\\//` regex, and `dedupePreservingOrder` are byte-identical; the deduped dir segments now pass through `resolveCargoPackageNames(cwd, dirs)` as the FINAL mapping step before return. Because the resolver is identity for dir==name and identity-on-failure, non-cargo/non-git/dir==name paths are byte-identical. The regex already captures `workflows` for `crates/workflows/tests/e2e_*.rs`, so the e2e crate is not dropped. Real names flow unchanged through every `runBuildGate` precedence tier and the unchanged `scopedCargo*` builders → `cargo build -p stockfan-data -p stockfan-tools -p stockfan-workflows --quiet`.\n\n- **Phase 3 — Agent self-verification prompt discipline** (`src/prompts.ts`, parallelizable with 1–2): Added a `RUST_SELF_VERIFY_DISCIPLINE` constant appended to both `buildImplementPrompt` and `buildQaPrompt` instruction arrays — requires `cargo test -p <pkg>` WITHOUT `--lib` (so `tests/` integration binaries run) plus spec-mandated e2e/integration, and explicitly forbids declaring green on `--lib`-only evidence. Prompt-text only; `src/stages/implementation.ts`/`verify.ts`, `nodes.ts`/`workflow.ts`/`pipeline.ts`, and the render/theme layer are untouched.\n\n- **Phase 4 — Regression suite, backward-compat & gate verification**: Ran the full existing build-runner suite unchanged and confirmed dir==name workspaces, non-cargo repos (go/python/node/mixed), and non-git dirs are byte-identical (the metadata tier runs only when `language==='rust'` and a non-empty scope resolves), and that `classifyOutOfScopeErrors` now partitions against REAL names.\n\n**Files changed:**\n- MODIFIED: `src/build-runner.ts` (resolver + cache + wiring), `src/prompts.ts` (rust self-verify discipline), `src/build-runner.test.ts` (cache-reset hook for hermetic tests).\n- NEW: `tests/build-runner-package-resolution.test.ts` (AC-06 hermetic dir→name / failure-fallback / cache-hit / e2e `-p` tests with `spawnSync` mocked), `tests/build-runner-package-wiring.test.ts`, `tests/build-runner-backward-compat-regression.test.ts`, `tests/prompts-cargo-verify-discipline.test.ts`.\n\n**Test results:** `npm test` → 47 files / 861 tests passed (0 failures), including the theme-method-binding guardrail (`stream-theme-class-theme`). `npm run typecheck` strict-clean. No new runtime dependencies; the only new spawned process is the cached `cargo metadata --no-deps`.\n\n**Deviations from spec:** Minor — the plan specified a single new test file (`build-runner-package-resolution.test.ts`) but four granular test files were created (package-resolution, package-wiring, backward-compat-regression, prompts-cargo-verify-discipline). This strictly exceeds the spec's AC-06 coverage rather than reducing it; all AC-01 through AC-10 are satisfied. No code/control-flow/theme changes beyond the two specified source files.",
+        "phasesCompleted": "4/4",
+        "allGreen": "true",
+        "filesModified": [
+          "src/build-runner.ts",
+          "src/prompts.ts",
+          "src/build-runner.test.ts",
+          "tests/build-runner-package-resolution.test.ts",
+          "tests/build-runner-package-wiring.test.ts",
+          "tests/build-runner-backward-compat-regression.test.ts",
+          "tests/prompts-cargo-verify-discipline.test.ts"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/07-cargo-package-name-resolution/docs/specifications/07-cargo-package-name-resolution/10-implementation-summary.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-20T09:17:27.678Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review: Cargo Package Name Resolution for Scope-Aware Build Gate",
+        "date": "2026-07-20",
+        "verdict": "CONTEST",
+        "summary": "The core fix is correct and well-executed: `resolveCargoPackageNames` maps touched directory segments to real cargo package names via cached `cargo metadata --no-deps` (discrete argv, no shell), with a documented, never-throw fallback chain (empty→[], metadata-fail→whole-list identity, unmatched-segment→per-element identity) and a process-local per-cwd cache that also memoizes the `{ok:false}` failure sentinel. It is correctly wired as the final step of `detectTouchedCargoPackages` (git-diff + regex + dedupe byte-identical), so the stockfan shape emits `cargo build/test/clippy -p stockfan-data -p stockfan-tools -p stockfan-workflows`, and the `crates/workflows/tests/e2e_*.rs` set is preserved (Fix 2). Fix 3 lands prompt-only discipline in `buildImplementPrompt`/`buildQaPrompt`, correctly gated on `setup.language === \"rust\"` (not broadcast to non-rust stacks — a review-fix the author applied beyond the spec's literal text). The `classificationScope` augmentation is conservative (only adds directory segments to the in-scope set, making false-green strictly harder) — a thoughtful guard against a HIGH-severity regression. Verification: `npm run typecheck` clean; `npm test` 862/862 green across all 47 files including the new resolution/wiring/prompt suites and the full backward-compat/nonregression/autoscope/touched-crates/scoped-args suites; no new runtime deps; only new spawn is the cached `cargo metadata`. The verdict is CONTEST rather than PASS because of one design-level blind spot (nested crates sharing a top segment can be silently mis-resolved, regressing the old safe-fail into a possible false-green) plus several lower-severity nits; none rise to REJECT (no production-failure/data-loss/security breach in the common layouts the spec targets).",
+        "findings": [
+          {
+            "id": "ADV-01",
+            "severity": "medium",
+            "title": "Nested-crate shadowing: two packages sharing a top `crates/<seg>/` segment can be mis-resolved, regressing a safe false-FAIL into a possible false-GREEN",
+            "detail": "`matchPackageBySegment` (src/build-runner.ts, ~lines 295-315) resolves a touched segment to the package whose FIRST `crates/<seg>/` segment equals it, preferring an exact crate root over a nested one. Consider a workspace with `crates/data/Cargo.toml` (package `core-data`) AND `crates/data/extra/Cargo.toml` (package `extra-data`, a nested crate under `data/`). A change to `crates/data/extra/src/lib.rs` is captured by the git-diff regex as segment `data`, which `matchPackageBySegment` resolves to `core-data` (the exact-root winner). The gate then runs `cargo build/test -p core-data` and NEVER builds `extra-data`, the crate that actually changed → `extra-data`'s tests silently don't run → potential false-green (inScopePass=true on a clean core-data build). This is a genuine regression vs the PRE-fix behavior: the old code returned the directory name `data`, which cargo rejected with exit 101 → safe false-FAIL (run aborts). The fix trades a safe abort for a possible silent miss in this exotic-but-legal layout. The spec's SCENARIO-002 sanctions segment-based matching for a SINGLE nested package, but never contemplates two packages sharing a top segment, and there is no test covering the two-package-same-segment case. Recommendation: either (a) when ≥2 packages share the touched top segment AND none is an exact root, conservatively expand the scope to ALL of them (safe over-build, never a miss), or (b) fall back to identity (dir name) so cargo rejects it (safe-fail) rather than guessing. At minimum add a regression test for the shadowing layout.",
+            "lens": "Skeptic",
+            "file": "src/build-runner.ts",
+            "line": "295"
+          },
+          {
+            "id": "ADV-02",
+            "severity": "low",
+            "title": "Dead `===` branch in matchPackageBySegment — exact-root check is unreachable for real cargo metadata",
+            "detail": "`if (p.manifestDir === \\`crates/${seg}\\` || p.manifestDir.endsWith(\\`/crates/${seg}\\`))` — `cargo metadata` always emits ABSOLUTE `manifest_path` values, so `dirname(...)` is absolute (e.g. `/repo/crates/data`). The left operand `manifestDir === 'crates/data'` (relative) can therefore never be true; only the `endsWith('/crates/data')` branch ever fires. The `===` half is effectively dead code for real metadata. Not a correctness bug (the `endsWith` covers it), but it misleads readers into thinking the relative form is reachable. Recommendation: drop the `===` half and rely solely on `endsWith`, or normalize `manifestDir` to relative-first. (Minor Windows-portability note: `endsWith('/crates/...')` assumes forward slashes; `cargo metadata` does emit forward-slash-normalized paths cross-platform via Utf8Path Display, so this is safe in practice, but worth a one-line comment.)",
+            "lens": "Minimalist",
+            "file": "src/build-runner.ts",
+            "line": "307"
+          },
+          {
+            "id": "ADV-03",
+            "severity": "low",
+            "title": "Cache key uses `path.resolve` which does NOT dereference symlinks → duplicate `cargo metadata` spawns on aliased worktree paths",
+            "detail": "`loadCargoMetadata` keys the cache on `absCwd = resolve(cwd)` (src/build-runner.ts, ~line 232). `path.resolve` normalizes `.`/`..` and makes the path absolute, but it does NOT resolve symlinks (that requires `fs.realpathSync`). If the same physical worktree is addressed via two different paths in one process (e.g. a canonical path and a symlinked alias, or a `/tmp` vs real-path indirection common in CI/worktree harnesses), the cache misses and `cargo metadata` is spawned once per alias — wasting the per-run-once invariant the spec's SCENARIO-005 promises. No correctness impact (each spawn returns the same data), just a redundant spawn. Recommendation: key on `fs.realpathSync(cwd)` inside the existing try/catch (fall back to `resolve(cwd)` if realpath throws), or document the assumption that the caller passes a stable canonical cwd.",
+            "lens": "Architect",
+            "file": "src/build-runner.ts",
+            "line": "232"
+          },
+          {
+            "id": "ADV-04",
+            "severity": "low",
+            "title": "Failure sentinel cannot distinguish transient from permanent failures → a one-off cargo-metadata hiccup reverts the whole run to the original dir-name bug",
+            "detail": "`loadCargoMetadata` caches `{ok:false}` for the life of the process on ANY failure (SCENARIO-018 intent: don't re-spawn a missing/broken cargo). This is correct for PERMANENT failures (cargo not installed, corrupt manifest). But a TRANSIENT failure on the FIRST gate of a run — a momentary spawn error, a one-off 30s timeout under load, a fleeting registry/lock hiccup — poisons the cache for every subsequent gate in the SAME pi-super-dev run (verify, implementation, merge). From that point on, `resolveCargoPackageNames` degrades to directory names, and on a dir≠name workspace the gate re-enters the EXACT original bug (`cargo build -p data` → exit 101 → false-fail) for the rest of the run, with no self-heal short of process restart. `cargo metadata --no-deps` is genuinely robust (no compile, no build lock, no registry), so transient failures are unlikely — but the sentinel has no TTL, no retry-once, and no way to tell transient from permanent. Recommendation (optional, since spec sanctions the behavior): consider NOT caching the failure on the specific transient signals (timeout `signal` / ENOENT-that-might-be-PATH-race) while still caching genuine cargo-nonzero/cargo-missing; or expose a `clearCargoMetadataCache()` for the harness to call between independent gates. At minimum document that a transient first-call failure blinds the rest of the run.",
+            "lens": "Skeptic",
+            "file": "src/build-runner.ts",
+            "line": "240"
+          },
+          {
+            "id": "ADV-05",
+            "severity": "low",
+            "title": "Heavy JSDoc density — roughly half the added lines re-explain the same fallback chain",
+            "detail": "The build-runner.ts diff adds ~305 lines, of which an estimated ~150 are JSDoc/comment, much of it restating the identical never-throw / identity-fallback / per-cwd-cache contract three or four times across `loadCargoMetadata`, `resolveCargoPackageNames`, `matchPackageBySegment`, and `classificationScope`. The spec does mandate documenting the fallback (AC-02), so verbosity here is defensible and even helpful for a framework module. But the redundancy (the same SCENARIO-xxx citations and fallback bullet-lists repeated per function) is token-cost on every future read/edit and a maintenance hazard (drift between the duplicated paragraphs). Recommendation: state the fallback contract ONCE on `resolveCargoPackageNames` and have the helpers reference it; keep the per-function docs to their own unique invariants.",
+            "lens": "Minimalist",
+            "file": "src/build-runner.ts",
+            "line": "161"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/07-cargo-package-name-resolution/docs/specifications/07-cargo-package-name-resolution/12-adversarial-review.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-20T09:16:19.917Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review — Cargo Package Name Resolution for the Scope-Aware Build Gate",
+        "date": "2026-07-20",
+        "verdict": "Approved",
+        "summary": "The implementation correctly fixes the framework-derived `cargo build -p <dir>` false-fail by resolving REAL cargo package names from `cargo metadata` instead of workspace directory names. All 10 acceptance criteria are met and verified: `resolveCargoPackageNames` (src/build-runner.ts) maps touched directory segments → real package names via a cached `cargo metadata --format-version 1 --no-deps --manifest-path <cwd>/Cargo.toml` (discrete argv, no shell), with a per-element identity fallback for unmatched dirs, a whole-list identity fallback + never-throw on any failure, and a process-local per-cwd cache keyed by the SAME absolute path used for `--manifest-path` (cache-key/argv-skew finding addressed). It is wired as the FINAL mapping step inside `detectTouchedCargoPackages` (git-diff + regex + dedupe byte-identical upstream), so the complete touched set — including the e2e crate `crates/workflows/tests/e2e_*.rs` → `stockfan-workflows` — flows through unchanged and the gate now emits `-p stockfan-data -p stockfan-tools -p stockfan-workflows`. The classifier is correctly augmented (`classificationScope`) so cargo's `crates/<dir>/` source-path markers match an in-scope crate even though `testPackages` now carries real names — this prevents a HIGH-severity false-green regression that an uncritical port would have introduced. Prompt discipline (Fix 3) forbids `--lib`-only verification in both `buildImplementPrompt` and `buildQaPrompt`. Typecheck is strict-clean (tsc exit 0) and all 862 tests pass (47 files) including the new package-resolution/wiring/prompt-discipline suites plus the full existing regression suite (touched-crates, autoscope, inscope-classification, scoped-args, packages, nonregression, timeout, docs, stream-theme-class-theme). No new runtime deps; the only new spawned process is the cached `cargo metadata --no-deps`. Two intentional, documented deviations from the spec's literal wording are net improvements and do not violate any AC; one minor dead-code branch is flagged Low. No Critical/High/Medium issues. APPROVED.\n\nDimension scores: Correctness 5 · Security 5 · Performance 5 · Concurrency 5 · Maintainability 4 · Testability 5 · Error Handling 5 · Data Integrity 5 · Observability 4.\n\nAC checklist: AC-01 ✅ (resolver + cache + never-throw + identity fallback) · AC-02 ✅ (real names emitted end-to-end) · AC-03 ✅ (workflows not dropped — regex captures the segment; verified by wiring test) · AC-04 ✅ (4 unit-test groups present: resolution/fallback/cache/end-to-end -p flags, spawnSync mocked) · AC-05 ✅ (prompts forbid --lib-only, require full `cargo test -p <pkg>` + spec e2e) · AC-06 ✅ (typecheck + npm test green) · AC-07 ✅ (regression + non-cargo/non-git unchanged) · AC-08 ✅ (theme method-binding preserved — stream-theme-class-theme green, no new render) · AC-09 ✅ (no new deps, only cached `cargo metadata --no-deps`) · AC-10 ✅.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "Low",
+            "title": "Dead-code branch in matchPackageBySegment exact-root check",
+            "detail": "In src/build-runner.ts `matchPackageBySegment`, the exact-crate-root detection is `p.manifestDir === \\`crates/${seg}\\` || p.manifestDir.endsWith(\\`/crates/${seg}\\`)`. Cargo's `manifest_path` from `cargo metadata` is ALWAYS absolute, so `manifestDir` is always absolute and the first disjunct (`=== 'crates/<seg>'`, a relative path) can NEVER be true — only the `endsWith` branch is reachable. Not a bug (the second branch correctly handles absolute manifest dirs), but it is misleading dead code that suggests relative manifest paths are possible. Failure scenario: a future maintainer 'fixes' the endsWith branch and assumes the `===` branch covers a case it cannot. Suggested fix: drop the unreachable first disjunct and rely solely on `p.manifestDir.endsWith(\\`/crates/${seg}\\`)`, or add a comment that the first branch is retained defensively for non-absolute manifest paths. Confidence 0.9.",
+            "file": "src/build-runner.ts",
+            "line": "~310"
+          },
+          {
+            "id": "F-02",
+            "severity": "Informational",
+            "title": "Spec deviation (improvement): Rust self-verify discipline is appended CONDITIONALLY on s.language==='rust', not UNCONDITIONALLY as the spec text stated",
+            "detail": "The spec (06-specification.md, Fix 3) states the discipline is 'Appended UNCONDITIONALLY to buildImplementPrompt and buildQaPrompt; scoped to Rust via its wording'. The implementation instead gates it via `rustDiscipline(s)` returning the discipline only when `s?.language === 'rust'` (setup-detected repo language). This is a NET IMPROVEMENT — broadcasting `cargo test -p <pkg>` instructions to a Node/Python/Go repo would be noise — and AC-07 is fully met (Rust prompts contain `cargo test -p`, `WITHOUT --lib`, `tests/` integration binaries, and the --lib-only-not-green clause; verified by tests/prompts-cargo-verify-discipline.test.ts, 16 tests green). Flagged only for spec-vs-impl traceability. One edge: if a repo's per-task classification language ever diverges from the setup-detected language, the discipline is driven by the setup language — which the comment documents as the more reliable signal. No action required. Confidence 0.95.",
+            "file": "src/prompts.ts",
+            "line": "~100"
+          },
+          {
+            "id": "F-03",
+            "severity": "Informational",
+            "title": "Spec deviation (improvement): dedicated 30s cargo-metadata timeout + new SUPER_DEV_CARGO_METADATA_TIMEOUT_MS env var instead of the spec's 'existing resolveTimeoutMs envelope'",
+            "detail": "The spec said `loadCargoMetadata` should run 'under the existing resolveTimeoutMs() envelope' (i.e. the 10-min build timeout). The implementation introduces a dedicated `cargoMetadataTimeoutMs()` (30s default) and a new env var `SUPER_DEV_CARGO_METADATA_TIMEOUT_MS`. This is STRICTLY BETTER: a metadata lookup is a cheap manifest-graph read, so inheriting the 10-min envelope would let a hung/missing cargo block up to 10 minutes before the identity fallback fires, stalling the whole gate. The rationale is documented inline. It does add one config surface not enumerated in the spec, but it is backward-compatible (sensible default, opt-in override) and within the spirit of AC-09 ('only new spawned process is cached cargo metadata --no-deps'). No action required; noted for completeness. Confidence 0.95.",
+            "file": "src/build-runner.ts",
+            "line": "~165"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/07-cargo-package-name-resolution/docs/specifications/07-cargo-package-name-resolution/12-code-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-20T09:21:49.483Z",
+      "agent": "docs",
+      "data": {
+        "title": "Cargo Package Name Resolution for the Scope-Aware Build Gate — Docs Update",
+        "date": "2026-07-20",
+        "summary": "Updated spec-directory and project-level documentation to reflect the merged spec-07 implementation (all 4 phases committed: cd77138b→3bb350d5). The scope-aware cargo build-gate in src/build-runner.ts now resolves REAL cargo package names from `cargo metadata --no-deps` instead of workspace directory names, eliminating the framework-derived `cargo build -p data` false-fail (exit 101) on prefixed-crate workspaces like stockfan (dirs data/tools/workflows → packages stockfan-data/stockfan-tools/stockfan-workflows). New `resolveCargoPackageNames(cwd, touchedDirs)` + cached `loadCargoMetadata` is wired as the final step of `detectTouchedCargoPackages`; `classificationScope()` augments `classifyOutOfScopeErrors` so cargo source-path markers match in-scope crates under their real names (prevents a HIGH false-green regression). Prompts forbid `--lib`-only verification. Docs updated: marked 08-task-list.md (15/15 tasks complete) and 07-implementation-plan.md (4/4 phases complete) with status banners + completion notes; rewrote README.md's auto-detect section to describe the directory→real-name resolution + directory-name fallback, added the new SUPER_DEV_CARGO_METADATA_TIMEOUT_MS (30s default) env var, and added resolveCargoPackageNames() to the internals list; added an [Unreleased] CHANGELOG entry (Fixed + Changed). Verified `npm run typecheck` strict-clean. Committed as cec52929.",
+        "docsUpdated": "docs/specifications/07-cargo-package-name-resolution/08-task-list.md (15/15 tasks marked [x] complete, status banner + completion notes added); docs/specifications/07-cargo-package-name-resolution/07-implementation-plan.md (all 4 phases marked ✅ COMPLETE, status banner added); README.md (auto-detect touched-crates section rewritten to reflect real-name resolution via cached cargo metadata + identity fallback; new SUPER_DEV_CARGO_METADATA_TIMEOUT_MS env var documented; resolveCargoPackageNames() added to internals list); CHANGELOG.md (new [Unreleased] section: Fixed = real package-name resolution + classificationScope false-green guard; Changed = --lib-only verification prohibition in implementation/QA prompts)",
+        "deviationsDocumented": [
+          "D1 (spec wording vs impl, net improvement): Fix 3 self-verify discipline is HARD-GATED on setup-detected language==='rust' via rustDiscipline(s) rather than appended UNCONDITIONALLY as the spec text literally stated — broadcasting cargo test instructions to Node/Python/Go repos would be noise. AC-07 fully met; documented in 12-code-review.md F-02 and surfaced in task-list completion notes.",
+          "D2 (spec wording vs impl, net improvement): a dedicated cargoMetadataTimeoutMs() (30s default) + new SUPER_DEV_CARGO_METADATA_TIMEOUT_MS env var is used instead of the spec's 'existing resolveTimeoutMs() envelope' (the 10-min build timeout) — a metadata read is a cheap manifest-graph scan, so inheriting the 10-min envelope would let a hung cargo stall the whole gate before the fallback. Documented in 12-code-review.md F-03 and now surfaced in README + CHANGELOG.",
+          "D3 (beyond-spec hardening): classificationScope(cwd, realNames) was added to fix a HIGH-severity false-green regression discovered in code-review round 2 — once testPackages carried real names, cargo's crates/<dir>/ source-path markers mismatched the scope and were misclassified out-of-scope → inScopePass=true. It augments the in-scope set with each crate's directory segment (conservative; makes false-green strictly harder). Documented in 10-implementation-summary.md code-review-fix-round and task-list completion notes.",
+          "D4 (test organization): spec planned a single new test file (build-runner-package-resolution.test.ts); four granular files were created (package-resolution, package-wiring, backward-compat-regression, prompts-cargo-verify-discipline). Strictly exceeds AC-06 coverage; documented in 10-implementation-summary.md.",
+          "D5 (determinism): matchPackageBySegment() replaced order-dependent find() so multi-crate-per-top-segment matching is deterministic (prefers exact crate root over nested). Documented in 10-implementation-summary.md."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/07-cargo-package-name-resolution/docs/specifications/07-cargo-package-name-resolution/14-documentation.md"
+      }
     }
   }
 }
