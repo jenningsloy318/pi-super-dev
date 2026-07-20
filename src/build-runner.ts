@@ -1560,3 +1560,320 @@ function hasVitestScript(cwd: string): boolean {
 		return false;
 	}
 }
+
+// ============================================================================
+// Deliverable Checker Primitive (Layer 1, AC-01/02 → SCENARIO-001..010, 014)
+// A sibling of runRedCheck / runBuildGate that enforces a spec-declared
+// DELIVERABLE CONTRACT, AND-ed with build-green so a phase that compiles green
+// while delivering NOTHING (a never-created test file, an unwired call site, a
+// dead `_ => {}` router arm) is correctly reported as FAIL.
+// ============================================================================
+
+/**
+ * A per-phase DELIVERABLE CONTRACT declared by the spec author and AND-ed with
+ * build-green (AC-01). Every field is optional; a phase/spec with NO
+ * deliverables validates & behaves identically to today (backward compat — the
+ * checker returns { pass:true } for an empty/undefined contract).
+ *
+ *   - requireFiles       — paths that MUST exist (a created/wired deliverable).
+ *   - requireContains    — {file,pattern} regex (substring fallback on an invalid
+ *                          regex) that MUST appear in a file (e.g. a wired
+ *                          call site X→Y).
+ *   - requireNotContains — {file,pattern} regex that MUST NOT appear (e.g. a
+ *                          dead `_ => {}` match arm / leftover stub).
+ *   - requireTests       — test names that MUST appear in the project test list
+ *                          (tolerant substring-OR-regex match).
+ */
+export interface DeliverableContract {
+	requireFiles?: string[];
+	requireContains?: Array<{ file: string; pattern: string }>;
+	requireNotContains?: Array<{ file: string; pattern: string }>;
+	requireTests?: string[];
+}
+
+/**
+ * Outcome of {@link runDeliverableCheck}. `missing` is EXHAUSTIVE (every
+ * element of every sub-check is evaluated, no short-circuit) so a
+ * build-green-but-empty phase surfaces ALL unmet deliverables at once. `ran`
+ * is a human-readable audit trail — one token per check (e.g.
+ * `file:src/x.rs`, `contains:a.rs:foo`, `not-contains:b.rs:bar`,
+ * `tests:list` / `tests:unavailable`).
+ */
+export interface DeliverableCheckResult {
+	pass: boolean;
+	missing: string[];
+	ran: string[];
+}
+
+/** Options for {@link runDeliverableCheck} (shares the gate-primitive shape). */
+export interface DeliverableCheckOptions {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+/**
+ * Resolved project test list: either the collected list text OR an
+ * `{ available:false }` sentinel (no-runner / spawn error / timeout / empty
+ * stdout). Cached per absolute cwd so the lister spawns at most once per run.
+ */
+type TestListResult = { available: true; list: string } | { available: false };
+
+/**
+ * Process-local cache of the project test LIST, keyed by ABSOLUTE `cwd`. Stores
+ * either the collected list text OR an `{ available:false }` sentinel so the
+ * lister spawns AT MOST ONCE per cwd per run (SCENARIO-009 — two
+ * requireTests-bearing phases sharing a cwd share one spawn). Lives only in
+ * memory; `vi.resetModules()` (or process exit) clears it, so no result ever
+ * leaks across runs. Keyed by absolute cwd so each temp worktree is distinct.
+ */
+const testListCache = new Map<string, TestListResult>();
+
+/**
+ * Read a file for deliverable checking, DISTINGUISHING "missing" from
+ * "unreadable" (the generic {@link readMaybe} collapses both to ""). Returns:
+ *   - { ok:true,  text }        — file exists & is readable (text may be "");
+ *   - { ok:false, exists:false } — file does NOT exist (→ "missing pattern");
+ *   - { ok:false, exists:true  } — file EXISTS but is unreadable (→ "unreadable").
+ * Never throws (SCENARIO-008/010).
+ */
+function readForDeliverable(
+	cwd: string,
+	file: string,
+): { ok: true; text: string } | { ok: false; exists: boolean } {
+	const abs = join(cwd, file);
+	try {
+		if (!existsSync(abs)) return { ok: false, exists: false };
+		return { ok: true, text: readFileSync(abs, "utf8") };
+	} catch {
+		// existsSync was true but readFileSync threw (EACCES / chmod 000) → unreadable.
+		return { ok: false, exists: true };
+	}
+}
+
+/**
+ * Tolerant pattern match (SCENARIO-006): try `pattern` as a RegExp first, fall
+ * back to a plain substring `includes` on an INVALID regex OR when the regex
+ * does not match. Match by EITHER satisfies. Never throws (an invalid regex →
+ * substring). Used for requireContains, requireNotContains, and requireTests.
+ */
+function tolerantMatch(pattern: string, text: string): boolean {
+	let re: RegExp | null = null;
+	try {
+		re = new RegExp(pattern);
+	} catch {
+		re = null; // invalid regex → fall back to substring
+	}
+	if (re && re.test(text)) return true;
+	return text.includes(pattern);
+}
+
+/**
+ * Resolve the project test-LISTER argv for `cmds`, mirroring runRedCheck's
+ * runner selection so the lister is chosen EXACTLY as the RED oracle chooses
+ * its runner. Returns `null` when no recognized runner exists (greenfield /
+ * mixed / go) → requireTests degrades to "test-list unavailable" WITHOUT
+ * spawning (SCENARIO-007). Pure: only READS package.json (no spawn/git).
+ */
+function resolveTestListerArgv(cwd: string, cmds: ProjectCommands): string[] | null {
+	if (cmds.language === "rust") {
+		return ["cargo", "test", "--", "--list"];
+	}
+	if (cmds.language === "python") {
+		return ["pytest", "--collect-only", "-q"];
+	}
+	if (cmds.language === "frontend" || cmds.language === "backend") {
+		// node family: prefer `vitest list --json`, else `jest --listTests`. Decide
+		// from the package.json `test` script content (runRedCheck's same heuristic).
+		if (hasVitestScript(cwd)) return ["vitest", "list", "--json"];
+		const pkgText = readMaybe(cwd, "package.json");
+		if (/"test"\s*:\s*"[^"]*jest/i.test(pkgText)) return ["jest", "--listTests"];
+		return null; // no recognized node lister → unavailable
+	}
+	return null;
+}
+
+/**
+ * Load (and cache) the project test list for `cwd` via ONE spawn per cwd per
+ * run (SCENARIO-009). On no-runner / spawn error / timeout / empty stdout →
+ * returns `{ available:false }` and does NOT block (existence/grep still
+ * enforced — SCENARIO-007). Never throws.
+ */
+function loadTestList(
+	cwd: string,
+	cmds: ProjectCommands,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): TestListResult {
+	const cached = testListCache.get(cwd);
+	if (cached) return cached;
+	const argv = resolveTestListerArgv(cwd, cmds);
+	if (!argv || argv.length === 0) {
+		const res: TestListResult = { available: false };
+		testListCache.set(cwd, res);
+		return res;
+	}
+	if (signal?.aborted) {
+		const res: TestListResult = { available: false };
+		testListCache.set(cwd, res);
+		return res;
+	}
+	let list = "";
+	let available = false;
+	try {
+		const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" });
+		if (!r.error && r.status === 0) {
+			const out = (r.stdout ?? "").trim();
+			if (out.length > 0) {
+				list = out;
+				available = true;
+			}
+		}
+	} catch {
+		available = false; // spawn threw → unavailable, do not block
+	}
+	const res: TestListResult = available
+		? { available: true, list }
+		: { available: false };
+	testListCache.set(cwd, res);
+	return res;
+}
+
+/**
+ * Deterministic per-phase DELIVERABLE checker (Layer 1, AC-01/02 →
+ * SCENARIO-001..010, 014). A sibling of {@link runRedCheck}/{@link runBuildGate}
+ * that enforces a spec-declared DELIVERABLE CONTRACT — requireFiles /
+ * requireContains / requireNotContains / requireTests — AND-ed with build-green
+ * so a phase that compiles green while delivering NOTHING (a never-created test
+ * file, an unwired call site, a dead `_ => {}` router arm) is correctly
+ * reported as FAIL. This is the proven root cause of the 2026-07-20 stockfan
+ * spec-54 false-green.
+ *
+ * Reuses the single sources of truth: {@link detectProjectCommands} for runner
+ * selection, {@link resolveTimeoutMs} for the spawn envelope, and ONE cached
+ * {@link spawnSync} test-list subprocess per cwd per run ({@link testListCache}).
+ *
+ * NEVER throws (the load-bearing build-runner-nonregression invariant): the
+ * ENTIRE body is wrapped in try/catch; on any thrown error it returns
+ * { pass:false, missing:['<reason>'], ran:[...] } rather than propagating
+ * (SCENARIO-010). Every element of every sub-check is evaluated (no
+ * short-circuit) so `missing` is exhaustive and `ran` is complete.
+ *
+ * Sub-checks:
+ *   (a) requireFiles       → existsSync(resolve(cwd,p)); miss ⇒
+ *                            `missing file: <p>`.
+ *   (b) requireContains    → readForDeliverable; unreadable ⇒ `unreadable: <p>`;
+ *                            missing-file OR absent-pattern ⇒
+ *                            `missing pattern <pat> in <file>` (tolerant regex,
+ *                            substring fallback on an invalid regex).
+ *   (c) requireNotContains → a READABLE hit ⇒ `forbidden pattern <pat> still
+ *                            present in <file>`; missing/unreadable ⇒ no entry.
+ *   (d) requireTests       → ONE cached test-list spawn per cwd; tolerant
+ *                            substring-OR-regex name match; miss ⇒
+ *                            `missing test: <name>`. On no-runner / spawn
+ *                            error / timeout / empty stdout ⇒ records
+ *                            `tests:unavailable` and does NOT block
+ *                            (SCENARIO-007).
+ *
+ * When `deliverables` is undefined/null/empty → early-returns
+ * { pass:true, missing:[], ran:[] } immediately (backward compat, SCENARIO-014).
+ *
+ * @param cwd          Absolute worktree path to check deliverables in.
+ * @param deliverables The spec-declared DELIVERABLE CONTRACT (all-optional).
+ * @param opts         Optional timeout/signal envelope.
+ * @returns { pass, missing, ran }. Never throws.
+ */
+export function runDeliverableCheck(
+	cwd: string,
+	deliverables: DeliverableContract | null | undefined,
+	opts?: DeliverableCheckOptions,
+): DeliverableCheckResult {
+	try {
+		// Backward compat (SCENARIO-014): no contract ⇒ nothing to check ⇒ green.
+		if (!deliverables || typeof deliverables !== "object") {
+			return { pass: true, missing: [], ran: [] };
+		}
+
+		const missing: string[] = [];
+		const ran: string[] = [];
+
+		// (a) requireFiles — every path checked (no short-circuit).
+		const files = deliverables.requireFiles;
+		if (Array.isArray(files)) {
+			for (const p of files) {
+				ran.push(`file:${p}`);
+				if (!existsSync(resolve(cwd, p))) {
+					missing.push(`missing file: ${p}`);
+				}
+			}
+		}
+
+		// (b) requireContains — distinguish missing-file vs unreadable vs absent.
+		const contains = deliverables.requireContains;
+		if (Array.isArray(contains)) {
+			for (const entry of contains) {
+				const file = entry?.file;
+				const pattern = entry?.pattern;
+				ran.push(`contains:${file}:${pattern}`);
+				const rd = readForDeliverable(cwd, file);
+				if (!rd.ok) {
+					if (rd.exists) {
+						missing.push(`unreadable: ${file}`);
+					} else {
+						missing.push(`missing pattern ${pattern} in ${file}`);
+					}
+					continue;
+				}
+				if (!tolerantMatch(pattern, rd.text)) {
+					missing.push(`missing pattern ${pattern} in ${file}`);
+				}
+			}
+		}
+
+		// (c) requireNotContains — only a READABLE hit is forbidden.
+		const notContains = deliverables.requireNotContains;
+		if (Array.isArray(notContains)) {
+			for (const entry of notContains) {
+				const file = entry?.file;
+				const pattern = entry?.pattern;
+				ran.push(`not-contains:${file}:${pattern}`);
+				const rd = readForDeliverable(cwd, file);
+				if (rd.ok && tolerantMatch(pattern, rd.text)) {
+					missing.push(`forbidden pattern ${pattern} still present in ${file}`);
+				}
+			}
+		}
+
+		// (d) requireTests — ONE cached test-list spawn per cwd per run.
+		const tests = deliverables.requireTests;
+		if (Array.isArray(tests) && tests.length > 0) {
+			const cmds = detectProjectCommands(cwd);
+			const timeoutMs = resolveTimeoutMs(opts?.timeoutMs);
+			const list = loadTestList(cwd, cmds, timeoutMs, opts?.signal);
+			if (list.available) {
+				ran.push("tests:list");
+				for (const name of tests) {
+					if (!tolerantMatch(name, list.list)) {
+						missing.push(`missing test: ${name}`);
+					}
+				}
+			} else {
+				// No runner / spawn error / timeout / empty stdout — do NOT block
+				// (existence/grep still enforced). SCENARIO-007.
+				ran.push("tests:unavailable");
+			}
+		}
+
+		return { pass: missing.length === 0, missing, ran };
+	} catch (err) {
+		// NEVER-THROW invariant (SCENARIO-010): any thrown error (e.g. a
+		// deliverables object whose field access throws) degrades to a FAIL with a
+		// reason rather than propagating — the gate primitive must NEVER stall the
+		// pipeline. BDD: SCENARIO-010.
+		const msg = err instanceof Error ? err.message : String(err);
+		return {
+			pass: false,
+			missing: [`deliverable-check error: ${msg.split("\n")[0]}`],
+			ran: [],
+		};
+	}
+}
