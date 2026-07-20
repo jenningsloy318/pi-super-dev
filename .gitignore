@@ -5,3 +5,6 @@ dist/
 coverage/
 .worktree/
 .pi-subagents/
+
+# transient super-dev workflow resume cache (root)
+.resume-cache.jsonl
