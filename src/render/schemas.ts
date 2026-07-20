@@ -227,6 +227,16 @@ export const SpecificationData = Type.Object({
 	scenarioRefs: Type.Array(Type.String()),
 	phases: Type.Array(Type.Object({ name: Type.String(), description: Type.String() }), { minItems: 1 }),
 	tasks: Type.Array(Type.Object({ phase: Type.String(), description: Type.String() })),
+	// Layer D (AC-04..08): an OPTIONAL spec-declared cargo build-gate contract.
+	// The specification stage MAY declare it for backend/integration features; it
+	// is threaded into RunOptions.gate and becomes the top-precedence scope tier.
+	gate: Type.Optional(
+		Type.Object({
+			packages: Type.Optional(Type.Array(Type.String())),
+			workspace: Type.Optional(Type.Boolean()),
+			integration: Type.Optional(Type.Array(Type.String())),
+		}),
+	),
 });
 
 // Register the multi-doc specification stage

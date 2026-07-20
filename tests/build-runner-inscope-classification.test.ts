@@ -154,9 +154,20 @@ function routeSpawn(
 	gitDiff: string,
 	perSub: Partial<Record<"build" | "test" | "clippy", { status: number; stderr: string }>>,
 ): void {
+	// Derive metadata members from the gitDiff so touched dirs resolve to names
+	// and the in-scope classification has a real scope to compare against.
+	const dirs = [...new Set((gitDiff.match(/crates\/([^/]+)/g) ?? []).map((m) => m.split("/")[1]!))];
+	const metadataJson = dirs.length > 0
+		? JSON.stringify({
+			packages: dirs.map((dir) => ({ name: dir, manifest_path: `crates/${dir}/Cargo.toml` })),
+		})
+		: "";
 	spawn.mockImplementation((cmd: string, args: string[]) => {
 		if (cmd === "git") {
 			return { status: 0, stdout: gitDiff, stderr: "" };
+		}
+		if (cmd === "cargo" && args[0] === "metadata") {
+			return { status: 0, stdout: metadataJson, stderr: "" };
 		}
 		const sub = (args ?? [])[0] as "build" | "test" | "clippy" | undefined;
 		const cfg = sub ? perSub[sub] : undefined;

@@ -121,18 +121,19 @@ describe("Stage call sites unchanged (SCENARIO-012)", () => {
 		"src/stages/index.ts",
 	];
 
-	it.each(stageFiles)("calls runBuildGate with only { signal } in %s", (rel) => {
+	it.each(stageFiles)("calls runBuildGate with { signal, gate } in %s", (rel) => {
 		const text = readFileSync(join(ROOT, rel), "utf8");
-		// Every call site must pass ONLY the signal option — no timeoutMs / no
-		// testPackages. Matches the spec invariant that zero stage edits are
-		// required because the helper resolves env vars internally.
+		// Every call site must pass the signal + the spec-declared gate contract
+		// (Layer D threading). No timeoutMs / no testPackages — the helper resolves
+		// env vars + touched crates internally.
 		expect(text, `${rel} must call runBuildGate`).toContain("runBuildGate(");
-		expect(text, `${rel} must pass only { signal: ctx.signal }`).toContain(
-			"{ signal: ctx.signal }",
+		expect(text, `${rel} must pass signal: ctx.signal`).toContain(
+			"signal: ctx.signal",
 		);
-		// Robust against nested parens (e.g. setupOf(s).worktreePath): assert no
-		// new options ever leak into a stage call site.
-		expect(text, `${rel} must not thread the new opts`).not.toMatch(
+		// The gate contract from the spec threads through (Layer D).
+		expect(text, `${rel} must thread the spec gate contract`).toContain("gate:");
+		// Robust against nested parens: assert no other new options leak in.
+		expect(text, `${rel} must not thread timeoutMs or testPackages`).not.toMatch(
 			/timeoutMs|testPackages/,
 		);
 	});

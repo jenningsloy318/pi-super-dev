@@ -25,7 +25,7 @@ import { setupStage } from "./setup.ts";
 import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
-import { runBuildGate } from "../build-runner.ts";
+import { runBuildGate, type GateOptions } from "../build-runner.ts";
 import { implementationStage } from "./implementation.ts";
 import { reviewLoopNode, integrationLoopNode, reviewApproved } from "./verify.ts";
 
@@ -50,7 +50,7 @@ const preMergeBuildStage: Stage = {
 	label: "Pre-merge build gate",
 	async run(state, ctx) {
 		const setup = state.setup!;
-		const r = runBuildGate(setup.worktreePath, { signal: ctx.signal });
+		const r = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 		ctx.log(`Pre-merge build-gate ${r.pass ? "PASS" : "FAIL"} (ran: ${r.ran.join(", ") || "no commands"})${r.pass ? "" : " — merge will be skipped"}`);
 		return { pass: r.pass, ran: r.ran, errors: r.errors };
 	},

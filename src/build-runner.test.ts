@@ -62,11 +62,22 @@ function ok(): ReturnType<NonNullable<typeof mock.stubber>> {
 	return { status: 0, stdout: "", stderr: "", signal: null };
 }
 
-/** Default stubber: git diff lists touched crates/data; cargo calls succeed. */
+/** Default stubber: git diff lists touched crates/data; cargo metadata returns
+ * synthetic members derived from the touched stdout; cargo build/test/clippy succeed. */
 function rustWorktreeStubber(touchedStdout: string) {
+	// Derive metadata members from the touched stdout so dir segments resolve.
+	const dirs = [...new Set((touchedStdout.match(/crates\/([^/]+)/g) ?? []).map((m) => m.split("/")[1]!))];
+	const metadataJson = dirs.length > 0
+		? JSON.stringify({
+			packages: dirs.map((dir) => ({ name: dir, manifest_path: `crates/${dir}/Cargo.toml` })),
+		})
+		: "";
 	return (args: string[]) => {
-		if (args[0] === "git" && args.includes("diff")) {
+		if (args[0] === "git") {
 			return { status: 0, stdout: touchedStdout, stderr: "", signal: null };
+		}
+		if (args[0] === "cargo" && args[1] === "metadata") {
+			return { status: 0, stdout: metadataJson, stderr: "", signal: null };
 		}
 		// cargo build/test/clippy → success.
 		return ok();

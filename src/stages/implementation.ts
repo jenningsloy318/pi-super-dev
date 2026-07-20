@@ -11,7 +11,7 @@ import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplement
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
-import { runBuildGate } from "../build-runner.ts";
+import { runBuildGate, type GateOptions } from "../build-runner.ts";
 
 const MAX_ATTEMPTS = 3;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -81,7 +81,7 @@ export const implementationStage: Stage = {
 				// HARD test oracle: actually run build/test/typecheck instead of trusting
 				// a QA agent's self-report (vacuous-pass risk). Non-fatal when nothing
 				// is detectable (greenfield): ran is empty and pass is true.
-				const gate = runBuildGate(setup.worktreePath, { signal: ctx.signal });
+				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
 				// In-scope verdict (AC-05 → SCENARIO-012/013/014/025/027): the phase is GREEN

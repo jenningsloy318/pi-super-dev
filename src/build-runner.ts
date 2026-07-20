@@ -301,55 +301,135 @@ function loadCargoMetadata(cwd: string): CargoMetadataResult {
  * package at `crates/data/inner/Cargo.toml` has manifestDir `crates/data/inner`
  * whose first segment is `data`.
  *
- * FALLBACK CHAIN (NEVER throws — AC-02, SCENARIO-003/004/018/019):
+ * HARDENED FALLBACK CHAIN (Layer C defense-in-depth — NEVER throws, AC-02,
+ * SCENARIO-003..008/018/019/034). The per-element AND whole-list identity
+ * fallbacks are REMOVED so an unknown dir never emits as a raw name and a
+ * metadata failure never emits guessed names:
  *   - empty touched-dir input → returns `[]` WITHOUT spawning `cargo metadata`
  *     (no packages to resolve → workspace-wide gate → metadata unneeded);
  *   - `loadCargoMetadata` returns `{ ok:false }` (cargo missing / non-zero /
- *     timeout / bad JSON / wrong shape) → whole-list identity fallback: return
- *     the de-duped touched dir names verbatim;
- *   - a touched segment with NO matching package → PER-ELEMENT identity fallback
- *     to its own directory name (SCENARIO-004);
- *   - any thrown exception → whole-list identity fallback.
+ *     timeout / bad JSON / wrong shape) → DROP everything, return `[]` (NO
+ *     whole-list identity fallback — SCENARIO-006) so the gate widens safely
+ *     to workspace-wide;
+ *   - a touched segment with NO matching package → DROPPED (NO per-element
+ *     identity fallback — SCENARIO-005); an unresolved dir never emits as its
+ *     raw name;
+ *   - any thrown exception → return `[]` (SCENARIO-034).
  * An empty touched-dir input short-circuits before the spawn (AC-10: the only
  * new spawn is the cached `cargo metadata --no-deps` and ONLY when there is
  * something to resolve).
  *
- * Backward compatible (AC-08): a dir==name workspace is an identity no-op (the
- * real name equals the dir name); a non-rust repo never reaches this resolver
- * because `runBuildGate` only enters the scoping tier when
- * `language === "rust"` and a non-empty scope resolves.
+ * Backward compatible (AC-08): a dir==name workspace is a no-op when metadata
+ * is available (the real name equals the dir name via {@link matchPackageBySegment});
+ * a non-rust repo never reaches this resolver because `runBuildGate` only
+ * enters the scoping tier when `language === "rust"` and a non-empty scope
+ * resolves.
  *
  * @param cwd Absolute worktree path whose `Cargo.toml` is the workspace root.
  * @param touchedDirs Touched `crates/<dir>/` DIRECTORY segments.
- * @returns Resolved REAL package names, deduped first-seen order (identity on
- *   any failure or for an empty input).
+ * @returns Resolved REAL package names, deduped first-seen order; unknown dirs
+ *   are DROPPED and any metadata failure yields `[]` (never throws).
  */
 export function resolveCargoPackageNames(
 	cwd: string,
 	touchedDirs: string[],
 ): string[] {
-	// Normalize ONCE (review finding): coalesce the string-filter + dedupe that
-	// BOTH failure fallbacks duplicated into a single `strDirs`, so there is one
-	// source of truth for "the touched dir names to fall back to".
+	// Normalize ONCE: filter to string segments + dedupe into a single `strDirs`
+	// so there is one source of truth for the touched dir names.
 	const strDirs = Array.isArray(touchedDirs)
 		? touchedDirs.filter((d): d is string => typeof d === "string")
 		: [];
 	if (strDirs.length === 0) return [];
 	try {
 		const meta = loadCargoMetadata(cwd);
-		// No usable metadata → whole-list identity fallback (AC-02).
+		// No usable metadata → DROP everything (NO whole-list identity fallback,
+		// AC-02 / SCENARIO-006). Widens safely to workspace-wide; never throws.
 		if (!meta.ok) {
-			return dedupePreservingOrder(strDirs);
+			return [];
 		}
 		const out: string[] = [];
 		for (const d of strDirs) {
 			const matched = matchPackageBySegment(meta.packages, d);
-			out.push(matched ? matched.name : d);
+			// Unresolved dir → DROPPED (NO per-element identity fallback, AC-02 /
+			// SCENARIO-005). An unresolved dir never emits as its raw name.
+			if (matched) out.push(matched.name);
 		}
 		return dedupePreservingOrder(out);
 	} catch {
-		return dedupePreservingOrder(strDirs);
+		// NEVER throws — safe [] (AC-02 / SCENARIO-034).
+		return [];
 	}
+}
+
+/**
+ * Validate a list of candidate cargo package names against the workspace's
+ * KNOWN members (Layer C defense-in-depth, AC-03 / SCENARIO-007/008).
+ *
+ * Reuses the per-cwd cached `cargo metadata` ({@link loadCargoMetadata}) so a
+ * prior {@link resolveCargoPackageNames} (or repeated validator) call does NOT
+ * trigger a second `cargo metadata` spawn (SCENARIO-007b). Returns ONLY
+ * candidates that are known workspace members — every name is re-checked
+ * against the member set so an invalid name is DROPPED before any `-p` flag is
+ * built. De-duped, first-seen order preserved. With no usable metadata NOTHING
+ * is a known member → returns `[]` (cannot confirm anything → widen safely).
+ * NEVER throws — the whole body is try/caught and returns `[]` on any failure
+ * (SCENARIO-034).
+ *
+ * @param cwd Absolute worktree path whose `Cargo.toml` is the workspace root.
+ * @param names Candidate cargo package names to validate.
+ * @returns Only candidates that are known members, deduped first-seen order;
+ *   `[]` when metadata is unavailable or on any failure (never throws).
+ */
+export function validatePackageNames(cwd: string, names: string[]): string[] {
+	const strNames = Array.isArray(names)
+		? names.filter((n): n is string => typeof n === "string")
+		: [];
+	if (strNames.length === 0) return [];
+	try {
+		const meta = loadCargoMetadata(cwd);
+		// No usable metadata → cannot confirm ANY name → drop all (AC-03 /
+		// SCENARIO-007). Widens safely to workspace-wide; never throws.
+		if (!meta.ok) return [];
+		const known = new Set(meta.packages.map((p) => p.name));
+		return dedupePreservingOrder(strNames.filter((n) => known.has(n)));
+	} catch {
+		// NEVER throws — safe [] (SCENARIO-034).
+		return [];
+	}
+}
+
+/**
+ * Resolve spec-declared `gate.integration` targets (file paths like
+ * `crates/workflows/tests/e2e_x.rs`) to `cargo test --test <stem>` stems.
+ *
+ * CR-004 fix: integration targets are FILE PATHS, not package names. Each is:
+ *   1. Trimmed + basename taken (`e2e_x.rs` -> stem `e2e_x` after `.rs` strip);
+ *   2. STAT-checked via `existsSync(join(cwd, path))` -- a missing file is DROPPED
+ *      (never emits a cargo error for a non-existent test binary);
+ *   3. Emitted as a separate `cargo test --test <stem>` invocation (NOT appended
+ *      to the `-p` package list -- these are explicit test binaries, not packages).
+ *
+ * Never throws. Returns `[]` on any error or when no targets resolve.
+ */
+export function resolveIntegrationStems(cwd: string, integration: string[]): string[] {
+	const paths = Array.isArray(integration)
+		? integration.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+		: [];
+	if (paths.length === 0) return [];
+	const stems: string[] = [];
+	for (const raw of paths) {
+		try {
+			const trimmed = raw.trim();
+			const base = trimmed.split("/").pop() ?? trimmed;
+			const stem = base.endsWith(".rs") ? base.slice(0, -3) : base;
+			if (!stem) continue;
+			if (!existsSync(join(cwd, trimmed))) continue;
+			stems.push(stem);
+		} catch {
+			// never throw -- skip unresolvable targets
+		}
+	}
+	return dedupePreservingOrder(stems);
 }
 
 /**
@@ -405,28 +485,52 @@ function matchPackageBySegment(
 export function detectTouchedCargoPackages(cwd: string, baseRef?: string): string[] {
 	try {
 		const ref = baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF ?? "main";
-		const r = spawnSync("git", ["-C", cwd, "diff", "--merge-base", ref, "--name-only"], {
+		// Layer B (untracked-file union — the motivating stockfan e2e fix, AC-01):
+		// UNION the committed diff against the base ref WITH
+		// `git ls-files --others --exclude-standard` (the untracked-but-not-ignored
+		// file list) so a brand-new crate dir such as
+		// `crates/workflows/tests/e2e_*.rs` also contributes its segment. `git diff
+		// --merge-base` lists ONLY committed changes; without the union an untracked
+		// crate was silently dropped and its mandated e2e never entered scope.
+		// Either command failing contributes nothing to the union; the helper still
+		// NEVER throws. The untracked spawn is against the working tree (base ref
+		// does not apply to it).
+		const diffR = spawnSync("git", ["-C", cwd, "diff", "--merge-base", ref, "--name-only"], {
 			encoding: "utf8",
 		});
-		// Non-zero exit (bad ref / non-git dir) or spawn error → safe [] return.
-		if (r.error || r.status !== 0) return [];
-		const out: string = r.stdout;
-		if (typeof out !== "string" || out.trim() === "") return [];
-		// Match the FIRST `crates/<pkg>/` segment of each line; ignore non-crate
-		// paths entirely. Reuses the module-level {@link CRATE_SEGMENT_RE} (review
-		// finding: no duplicate regex). It is non-global, so `exec` is stateless
-		// per call and needs no `lastIndex` reset.
+		const untrackedR = spawnSync(
+			"git",
+			["-C", cwd, "ls-files", "--others", "--exclude-standard"],
+			{ encoding: "utf8" },
+		);
+		// Concatenate both stdouts; each command failing independently contributes
+		// nothing (non-zero exit / spawn error / non-string stdout skipped).
 		const pkgs: string[] = [];
-		for (const line of out.split("\n")) {
-			const m = CRATE_SEGMENT_RE.exec(line);
-			if (m) pkgs.push(m[1]);
-		}
-		// FINAL mapping step (Fix 1 wiring): resolve the deduped DIRECTORY
-		// segments to REAL cargo package names via cached `cargo metadata`.
-		// Identity on any failure / for dir==name workspaces (AC-08); an empty
-		// touched set returns [] WITHOUT spawning cargo (empty-input guard in
-		// resolveCargoPackageNames), so non-crate / non-git paths skip metadata.
-		return resolveCargoPackageNames(cwd, dedupePreservingOrder(pkgs));
+		const collect = (r: { error?: unknown; status?: number | null; stdout?: unknown } | null) => {
+			if (!r || r.error || r.status !== 0) return;
+			const out = r.stdout;
+			if (typeof out !== "string" || out.trim() === "") return;
+			// Match the FIRST `crates/<pkg>/` segment of each line; ignore non-crate
+			// paths entirely. Reuses the module-level {@link CRATE_SEGMENT_RE} (review
+			// finding: no duplicate regex). It is non-global, so `exec` is stateless
+			// per call and needs no `lastIndex` reset.
+			for (const line of out.split("\n")) {
+				const m = CRATE_SEGMENT_RE.exec(line);
+				if (m) pkgs.push(m[1]);
+			}
+		};
+		collect(diffR);
+		collect(untrackedR);
+		// Returns raw DIRECTORY segments (spec-08 Layer C separation). Resolution
+		// to REAL cargo package names is a SEPARATE step ({@link
+		// resolveCargoPackageNames}) invoked by {@link runBuildGate}, NOT here, so
+		// this helper is a PURE git extraction that NEVER spawns `cargo metadata`
+		// (SCENARIO-020: bounded git spawns — now the diff + untracked union;
+		// SCENARIO-001..003 assert segment output). This also keeps the
+		// never-throw degrade-to-[] invariant
+		// local to git: an unknown dir stays a segment here and is DROPPED later by
+		// the resolver (SCENARIO-005), never emitted as a raw `-p` name.
+		return dedupePreservingOrder(pkgs);
 	} catch {
 		return [];
 	}
@@ -697,6 +801,24 @@ export interface BuildGateResult {
 	inScopePass: boolean;
 }
 
+/**
+ * Spec-declared cargo build-gate contract (Layer D, AC-04..08). Optional. On
+ * a rust repo, when present this is the HIGHEST-precedence scope source:
+ *   - `workspace: true` short-circuits to workspace-wide (no `-p` flags);
+ *   - otherwise `packages` (validated against known workspace members — unknowns
+ *     dropped) drives the scoped `-p` set;
+ *   - `integration` targets (also validated) are APPENDED to whichever set
+ *     resolves, so mandated integration coverage (e.g. an e2e crate) runs.
+ * Unknown declared names degrade safely (dropped → widen to workspace-wide).
+ * Non-rust repos ignore the contract entirely. Reused as the {@link
+ * RunOptions}.gate shape so the spec → runBuildGate path is type-checked.
+ */
+export interface GateOptions {
+	packages?: string[];
+	workspace?: boolean;
+	integration?: string[];
+}
+
 /** Best-effort read of a file's text ("" if missing/unreadable). */
 function readMaybe(cwd: string, file: string): string {
 	try {
@@ -809,7 +931,7 @@ export function detectProjectCommands(cwd: string): ProjectCommands {
  */
 export function runBuildGate(
 	cwd: string,
-	opts: { timeoutMs?: number; testPackages?: string[]; signal?: AbortSignal } = {},
+	opts: { timeoutMs?: number; testPackages?: string[]; gate?: GateOptions; signal?: AbortSignal } = {},
 ): BuildGateResult {
 	const cmds0 = detectProjectCommands(cwd);
 	const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
@@ -821,16 +943,67 @@ export function runBuildGate(
 	//         no spawn, preserving the pre-change env-set behaviour);
 	//   (iii) detectTouchedCargoPackages(cwd) — ONLY for rust repos (AC-01);
 	//   (iv)  [] → workspace-wide (no scoping).
+	// Layer D (spec-declared gate contract, AC-04/05/06/08): the NEW top
+	// precedence tier. When `opts.gate` is provided on a rust repo it
+	// SHORT-CIRCUITS the env/auto-detect tiers: `gate.workspace===true` forces
+	// workspace-wide (no -p), else `gate.packages` (validated against known
+	// members) drives scope. `gate.integration` targets are appended after the
+	// validator pass. Unknown declared names DROP via validatePackageNames with
+	// the widen-to-workspace-wide safe behavior; non-rust repos ignore gate.
+	const gate = opts.gate;
+	// CR-004: integration targets are test-binary STEMS (from file paths), NOT
+	// package names. Resolved via stat-check; emitted as `cargo test --test <stem>`
+	// after the main exec loop (never appended to the -p list).
+	let gateIntegrationStems: string[] = [];
 	let testPackages: string[];
-	if (opts.testPackages !== undefined) {
+	if (cmds0.language === "rust" && gate) {
+		if (gate.integration && gate.integration.length > 0) {
+			gateIntegrationStems = resolveIntegrationStems(cwd, gate.integration);
+		}
+		if (gate.workspace === true) {
+			// Explicit workspace-wide short-circuit (no -p).
+			testPackages = [];
+		} else if (Array.isArray(gate.packages)) {
+			testPackages = validatePackageNames(cwd, gate.packages);
+		} else {
+			testPackages = [];
+		}
+	} else if (opts.testPackages !== undefined) {
 		testPackages = dedupePreservingOrder(opts.testPackages);
 	} else if (process.env.SUPER_DEV_BUILD_TEST_PACKAGES !== undefined) {
 		testPackages = parseTestPackages(process.env.SUPER_DEV_BUILD_TEST_PACKAGES);
 	} else if (cmds0.language === "rust") {
-		testPackages = detectTouchedCargoPackages(cwd);
+		// AC-01/AC-02 (spec-08 Layer C separation): detect the raw touched
+		// DIRECTORY segments via git, THEN resolve them to REAL cargo package
+		// names via cached `cargo metadata` as a distinct step. Detection is a
+		// pure git extraction ({@link detectTouchedCargoPackages} returns segments
+		// and never spawns cargo); {@link resolveCargoPackageNames} maps segments
+		// → names, DROPPING unknown dirs and returning [] on metadata failure (no
+		// identity fallback — SCENARIO-005/006). The validator below re-checks the
+		// result, so every candidate set (opt/env/auto-detect) is validated before
+		// any `-p` flag is built.
+		testPackages = resolveCargoPackageNames(cwd, detectTouchedCargoPackages(cwd));
 	} else {
 		testPackages = [];
 	}
+	// NOTE: opt (tier i) + env (tier ii) sources are EXPLICIT user overrides and
+	// are TRUSTED as-is — they are NOT re-validated against workspace members.
+	// Re-validating them dropped every explicitly-provided package name whenever
+	// `cargo metadata` was unavailable (e.g. cargo not installed, or a hermetic
+	// test harness), silently widening a deliberate `-p <pkg>` scope to
+	// workspace-wide (review finding: "Explicit opt/env overrides silently
+	// discarded"). The auto-detect tier (iii) is ALREADY validated: it resolves
+	// raw touched DIRECTORY segments to REAL package names via
+	// {@link resolveCargoPackageNames}, which DROPS unknown dirs and returns []
+	// on metadata failure (no identity fallback — SCENARIO-005/006). So no
+	// additional re-check is needed here; the spec-declared `gate` contract above
+	// is the ONLY opt-in path that runs {@link validatePackageNames} (because its
+	// names come from the LLM, not a trusted operator). This also removes the
+	// redundant re-validation of already-validated gate output.
+	// CR-004/CR-008: integration STEMS are NOT appended to the -p package list.
+	// They run as independent `cargo test --test <stem>` commands (below) so a
+	// `gate.workspace===true` decision is never resurrected into a scoped -p gate
+	// by a surviving integration target. The stems are independent of testPackages.
 	// AC-03/AC-06: scope ALL THREE cargo commands (build/test/typecheck) on a
 	// SHALLOW COPY when rust + a non-empty scope resolve; an empty set leaves cmds
 	// byte-identical to detectProjectCommands (the detector purity regression
@@ -857,28 +1030,44 @@ export function runBuildGate(
 		}
 		const label = argv.join(" ");
 		ran.push(label);
-		const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" });
-		if (opts.signal?.aborted) {
+		try {
+			const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" });
+			if (opts.signal?.aborted) {
+				flag[key] = false;
+				errors.push(`${label}: aborted`);
+				return;
+			}
+			if (r.error) {
+				flag[key] = false;
+				errors.push(`${label} FAILED (${r.error.message.split("\n")[0]})`);
+				return;
+			}
+			if (r.status !== 0) {
+				flag[key] = false;
+				const reason = r.signal ? `killed (signal ${r.signal})` : `exit ${r.status}`;
+				const tail = (r.stderr || r.stdout || "").trim().split("\n").slice(-STDERR_TAIL_LINES).join("\n").trim();
+				errors.push(`${label} FAILED (${reason})${tail ? ":\n" + tail : ""}`);
+			}
+		} catch (err) {
+			// NEVER let a throwing spawn (e.g. a mocked handler that throws, or an
+			// ENOENT thrown synchronously) escape the gate — SCENARIO-034 / AC-02.
 			flag[key] = false;
-			errors.push(`${label}: aborted`);
-			return;
-		}
-		if (r.error) {
-			flag[key] = false;
-			errors.push(`${label} FAILED (${r.error.message.split("\n")[0]})`);
-			return;
-		}
-		if (r.status !== 0) {
-			flag[key] = false;
-			const reason = r.signal ? `killed (signal ${r.signal})` : `exit ${r.status}`;
-			const tail = (r.stderr || r.stdout || "").trim().split("\n").slice(-STDERR_TAIL_LINES).join("\n").trim();
-			errors.push(`${label} FAILED (${reason})${tail ? ":\n" + tail : ""}`);
+			const msg = err instanceof Error ? err.message : String(err);
+			errors.push(`${label} FAILED (${msg.split("\n")[0]})`);
 		}
 	};
 
 	if (cmds.build) exec(cmds.build, "build");
 	if (cmds.test) exec(cmds.test, "test");
 	if (cmds.typecheck) exec(cmds.typecheck, "typecheck");
+
+	// CR-004: run spec-declared integration/e2e targets as additional
+	// `cargo test --test <stem>` invocations (NOT -p flags — these are explicit
+	// test binaries whose file paths were stat-validated). Uses key "test" so a
+	// failure in any integration target correctly marks allTestsPass=false.
+	for (const stem of gateIntegrationStems) {
+		exec(["cargo", "test", "--test", stem, "--quiet"], "test");
+	}
 
 	const buildSuccess = flag.build;
 	const allTestsPass = flag.test;

@@ -226,11 +226,16 @@ describe("never throws — degrades to [] (AC-01 / SCENARIO-003 & SCENARIO-021)"
 /* spawn shape: one bounded git diff, discrete argv — AC-01 / SCENARIO-020/023  */
 /* -------------------------------------------------------------------------- */
 
-describe("spawn shape: one bounded git diff, discrete argv (AC-01 / SCENARIO-020 & SCENARIO-023)", () => {
-	it("invokes git as a single discrete-argv spawnSync (named 'git', no shell)", () => {
+describe("spawn shape: two read-only git spawns (diff + untracked union), discrete argv (AC-01 / SCENARIO-020/023/037/038)", () => {
+	it("invokes git as discrete-argv spawnSync calls (named 'git', no shell)", () => {
 		diffReturns("crates/data/src/lib.rs\n");
 		detectTouchedCargoPackages("/repo");
-		expect(spawn.mock.calls).toHaveLength(1);
+		// Layer B (untracked-file union, AC-01): detection now spawns TWO read-only
+		// git commands — `diff --merge-base` (committed changes) +
+		// `ls-files --others --exclude-standard` (untracked files) — so a brand-new
+		// (uncommitted) crate dir is NOT silently dropped. Both are discrete-argv
+		// spawns with no shell:true.
+		expect(spawn.mock.calls).toHaveLength(2);
 		const [cmd, argv, opts] = spawn.mock.calls[0] as [
 			string,
 			string[],
@@ -238,24 +243,29 @@ describe("spawn shape: one bounded git diff, discrete argv (AC-01 / SCENARIO-020
 		];
 		expect(cmd).toBe("git");
 		expect(argv).toEqual(["-C", "/repo", "diff", "--merge-base", "main", "--name-only"]);
-		// Discrete argv elements only — the binary is named directly and
-		// shell:true is never passed (no shell injection surface).
 		expect(opts?.shell).toBeFalsy();
 		expect(opts?.encoding).toBe("utf8");
+		// The second spawn is the untracked-files union.
+		const [cmd2, argv2] = spawn.mock.calls[1] as [string, string[], unknown];
+		expect(cmd2).toBe("git");
+		expect(argv2).toEqual(["-C", "/repo", "ls-files", "--others", "--exclude-standard"]);
 	});
 
-	it("performs at most ONE git-diff spawn per call (no baseline-on-main run)", () => {
-		// SCENARIO-023: full baseline-diff gating is NOT implemented; only the
-		// single `git diff --name-only` ever runs here.
+	it("performs exactly TWO git spawns per call: the committed diff + the untracked union (no baseline-on-main run)", () => {
+		// SCENARIO-023: full baseline-diff gating is NOT implemented; the only git
+		// spawns are the single `git diff --name-only` and the `git ls-files`
+		// untracked union (SCENARIO-037/038).
 		diffReturns("crates/api/x.rs\ncrates/data/y.rs\n");
 		detectTouchedCargoPackages("/repo");
-		expect(spawn.mock.calls).toHaveLength(1);
+		expect(spawn.mock.calls).toHaveLength(2);
 	});
 
-	it("does no follow-up diagnostic spawns on a failed diff (still exactly one)", () => {
+	it("still spawns exactly two git commands on a failed diff (no follow-up diagnostic spawns)", () => {
+		// Even when the diff fails, the untracked union still runs independently;
+		// each failing command contributes nothing but no extra spawns occur.
 		spawn.mockReturnValue({ status: 128, stdout: "", stderr: "fatal" });
 		detectTouchedCargoPackages("/repo");
-		expect(spawn.mock.calls).toHaveLength(1);
+		expect(spawn.mock.calls).toHaveLength(2);
 	});
 });
 

@@ -76,17 +76,31 @@ function withEnv() {
 }
 
 /**
- * Configure spawnSync routing: `git` diff calls return `gitDiff` stdout
- * (status 0); every other (cargo) call returns status 0 success. The list of
- * cargo spawn calls is appended to `cargoCalls` (ref) for later assertion.
+ * Configure spawnSync routing: `git` calls return `gitDiff` stdout (status 0);
+ * `cargo metadata` returns synthetic metadata JSON derived from the gitDiff
+ * (so touched dirs resolve to package names); every other cargo call (build/
+ * test/clippy) is captured to `cargoCalls` and returns status 0 success.
  */
 function routeSpawn(gitDiff: string, cargoCalls: string[][]): void {
-	spawn.mockImplementation((cmd: string, _args: string[]) => {
+	// Derive metadata members from the gitDiff so touched dirs resolve to names.
+	// Uses RELATIVE manifest_path (crates/<dir>/Cargo.toml) — firstCratesSegment
+	// matches on the segment, not the absolute path.
+	const dirs = [...new Set((gitDiff.match(/crates\/([^/]+)/g) ?? []).map((m) => m.split("/")[1]!))];
+	const metadataJson = dirs.length > 0
+		? JSON.stringify({
+			packages: dirs.map((dir) => ({ name: dir, manifest_path: `crates/${dir}/Cargo.toml` })),
+		})
+		: "";
+
+	spawn.mockImplementation((cmd: string, args: string[]) => {
 		if (cmd === "git") {
 			return { status: 0, stdout: gitDiff, stderr: "" };
 		}
+		if (cmd === "cargo" && args[0] === "metadata") {
+			return { status: 0, stdout: metadataJson, stderr: "" };
+		}
 		// cargo build/test/clippy — capture the full argv [cmd, ...args] and succeed.
-		cargoCalls.push([cmd, ...(_args ?? [])]);
+		cargoCalls.push([cmd, ...(args ?? [])]);
 		return { status: 0, stdout: "", stderr: "" };
 	});
 }
@@ -152,13 +166,13 @@ describe("SCENARIO-006 — touched crates scope build+test+typecheck (no overrid
 		}
 	});
 
-	it("exactly ONE git-diff spawn runs (no double-detection, no baseline-on-main run)", () => {
+	it("exactly TWO git spawns run (diff + untracked union — Layer B)", () => {
 		const cargoCalls: string[][] = [];
 		routeSpawn("crates/data/src/lib.rs\n", cargoCalls);
 		const d = rustTmp();
 		try {
 			runBuildGate(d);
-			expect(callsFor("git")).toHaveLength(1);
+			expect(callsFor("git")).toHaveLength(2);
 		} finally {
 			rmSync(d, { recursive: true, force: true });
 		}
@@ -479,8 +493,8 @@ describe("SCENARIO-008 — empty resolved scope leaves argvs byte-identical to d
 		const d = rustTmp();
 		try {
 			runBuildGate(d);
-			// Detection ran (1 git call) but resolved to [] → byte-identical cmds.
-			expect(callsFor("git")).toHaveLength(1);
+			// Detection ran (2 git calls: diff + ls-files) but resolved to [] → byte-identical cmds.
+			expect(callsFor("git")).toHaveLength(2);
 			expect(cargoArgvFor(cargoCalls, "build")).toEqual(["cargo", "build", "--quiet"]);
 			expect(cargoArgvFor(cargoCalls, "test")).toEqual(["cargo", "test", "--quiet"]);
 			expect(cargoArgvFor(cargoCalls, "clippy")).toEqual([

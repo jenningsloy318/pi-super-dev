@@ -13,7 +13,7 @@
 
 import { loop, sequence, parallel, branch, noop, task, tryCatch } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
-import { runBuildGate } from "../build-runner.ts";
+import { runBuildGate, type GateOptions } from "../build-runner.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -84,7 +84,7 @@ const buildGateStep = task({
 	requires: ["*-specification.md"],
 	async run(s, ctx) {
 		if (!ctx.budget.check()) return undefined;
-		const r = runBuildGate(setupOf(s).worktreePath, { signal: ctx.signal });
+		const r = runBuildGate(setupOf(s).worktreePath, { gate: (s.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 		if (!r.pass && r.ran.length) ctx.log(`build-gate FAIL (ran: ${r.ran.join(", ")}): ${r.errors.join("; ")}`);
 		return { pass: r.pass, ran: r.ran, errors: r.errors };
 	},

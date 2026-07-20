@@ -1,21 +1,26 @@
 /**
- * Phase 2 — Wire `resolveCargoPackageNames` into `detectTouchedCargoPackages`
- * + complete the touched set (RED phase).
+ * Wiring: git diff → touched directory SEGMENTS → REAL cargo package names
+ * → scoped cargo argv (spec-08 Layer C separation contract).
  *
- * Phase 1 shipped the resolver (`resolveCargoPackageNames`) and unit-tested it in
- * isolation. Phase 2's contract is that `detectTouchedCargoPackages` passes its
- * de-duplicated `crates/<dir>/` directory segments through
- * `resolveCargoPackageNames(cwd, dirs)` AS THE FINAL MAPPING STEP before return,
- * so that real cargo package names (not workspace directory names) flow into the
- * unchanged `scopedCargo{Build,Test,Clippy}Args` builders.
+ * spec-07 originally resolved names INSIDE `detectTouchedCargoPackages`. spec-08
+ * REVERSES that separation to remove the identity fallbacks that crashed the
+ * stockfan gate (`-p data`): `detectTouchedCargoPackages` is now a PURE git
+ * extraction that returns raw `crates/<seg>/` directory segments and NEVER
+ * spawns `cargo metadata`; resolution to REAL package names is a SEPARATE step
+ * (`resolveCargoPackageNames`) invoked by `runBuildGate` (or composed at the
+ * call site). The identity fallbacks are GONE: unknown dirs are DROPPED and a
+ * metadata failure yields `[]` (the gate widens safely to workspace-wide).
  *
- * TODAY (pre-Phase-2) `detectTouchedCargoPackages` returns the raw directory
- * segments verbatim and NEVER spawns `cargo metadata`. So every test below that
- * asserts a dir≠name workspace resolves to the REAL prefixed names — or that
- * `cargo metadata` is spawned at all — FAILS until Phase 2 lands. That is the
- * intentional RED state.
+ * This file asserts that SEPARATED wiring end-to-end: detection yields raw
+ * segments + no cargo spawn; the resolver, fed those segments, yields the real
+ * prefixed package names; and the scoped argv builders driven through the
+ * composed chain `scopedCargo*(resolveCargoPackageNames(cwd, detect(cwd)))`
+ * emit `-p stockfan-*` (never the rejected `-p data`).
  *
- * Covers AC-04 / AC-05 / AC-10 and SCENARIO-007 / 008 / 009 / 014 / 021 / 022.
+ * Covers AC-04 / AC-05 / AC-10 and SCENARIO-007 / 008 / 009 / 014 / 021 / 022
+ * (resolution-side coverage; segment-extraction coverage lives in
+ * build-runner-touched-crates.test.ts and never-throw/drop contract in
+ * build-runner-resolver-validation.test.ts).
  *
  * Hermetic: `node:child_process.spawnSync` is mocked via `vi.mock` so NO real
  * `cargo` or `git` ever runs. The mock branches on the spawned binary name
@@ -38,6 +43,7 @@ vi.mock("node:child_process", () => ({
 type SpawnFn = ReturnType<typeof vi.fn>;
 let spawn: SpawnFn;
 let detectTouchedCargoPackages: (cwd: string, baseRef?: string) => string[];
+let resolveCargoPackageNames: (cwd: string, touchedDirs: string[]) => string[];
 let scopedCargoBuildArgs: (pkgs: string[]) => string[];
 let scopedCargoTestArgs: (pkgs: string[]) => string[];
 let scopedCargoClippyArgs: (pkgs: string[]) => string[];
@@ -55,6 +61,7 @@ beforeEach(async () => {
 	spawn.mockReset();
 	const mod = await import("../src/build-runner.ts");
 	detectTouchedCargoPackages = mod.detectTouchedCargoPackages;
+	resolveCargoPackageNames = mod.resolveCargoPackageNames;
 	scopedCargoBuildArgs = mod.scopedCargoBuildArgs;
 	scopedCargoTestArgs = mod.scopedCargoTestArgs;
 	scopedCargoClippyArgs = mod.scopedCargoClippyArgs;
@@ -128,16 +135,66 @@ function cargoSpawnCount(): number {
 }
 
 /* -------------------------------------------------------------------------- */
-/* wiring: dir→name resolution through detectTouchedCargoPackages              */
-/* AC-04 / SCENARIO-007 / SCENARIO-021                                         */
+/* detectTouchedCargoPackages is a PURE git extraction (segments, no cargo)    */
+/* AC-04 / SCENARIO-020 / SCENARIO-021                                         */
 /* -------------------------------------------------------------------------- */
 
-describe("detectTouchedCargoPackages wiring: dir→name resolution (AC-04 / SCENARIO-007 / SCENARIO-021)", () => {
+describe("detectTouchedCargoPackages returns raw directory segments (AC-04 / SCENARIO-020/021)", () => {
+	it("returns the deduped `crates/<seg>/` segments, NOT resolved names", () => {
+		setupWorkspace("crates/data/src/lib.rs\ncrates/tools/src/main.rs\ncrates/workflows/src/lib.rs");
+		// Pure git extraction: segments flow out UNCHANGED — resolution is a
+		// separate step, so detection never emits a package name.
+		expect(detectTouchedCargoPackages("/repo")).toEqual([
+			"data",
+			"tools",
+			"workflows",
+		]);
+	});
+
+	it("does NOT resolve to package names when dir ≠ name (resolution is separate)", () => {
+		setupWorkspace("crates/data/src/lib.rs\ncrates/tools/src/main.rs");
+		const out = detectTouchedCargoPackages("/repo");
+		expect(out).not.toContain("stockfan-data");
+		expect(out).not.toContain("stockfan-tools");
+		expect(out).toEqual(["data", "tools"]);
+	});
+
+	it("preserves first-seen order of segments (tools before data)", () => {
+		setupWorkspace("crates/tools/src/main.rs\ncrates/data/src/lib.rs");
+		expect(detectTouchedCargoPackages("/repo")).toEqual(["tools", "data"]);
+	});
+
+	it("dedupes repeated touched directories to a single segment", () => {
+		setupWorkspace("crates/data/src/lib.rs\ncrates/data/src/util.rs");
+		expect(detectTouchedCargoPackages("/repo")).toEqual(["data"]);
+	});
+
+	it("NEVER spawns `cargo metadata` (resolution is deferred to runBuildGate)", () => {
+		setupWorkspace("crates/data/src/lib.rs");
+		detectTouchedCargoPackages("/repo");
+		expect(cargoSpawnCount()).toBe(0);
+	});
+
+	it("an unmatched segment (ghost) is still returned — dropping is the resolver's job", () => {
+		// Detection must surface every touched segment; `ghost` is DROPPED later
+		// by resolveCargoPackageNames (SCENARIO-005), not silently dropped here.
+		setupWorkspace("crates/data/src/lib.rs\ncrates/ghost/src/lib.rs", [
+			{ name: "stockfan-data", manifestPath: "/repo/crates/data/Cargo.toml" },
+		]);
+		expect(detectTouchedCargoPackages("/repo")).toEqual(["data", "ghost"]);
+		expect(cargoSpawnCount()).toBe(0);
+	});
+});
+
+/* -------------------------------------------------------------------------- */
+/* resolveCargoPackageNames maps detected segments → REAL names (the wiring)    */
+/* AC-04 / SCENARIO-007 / SCENARIO-005 (drop) / SCENARIO-006 (metadata fail)    */
+/* -------------------------------------------------------------------------- */
+
+describe("resolveCargoPackageNames maps segments to REAL package names (AC-04 / SCENARIO-007)", () => {
 	it("maps touched directory segments to REAL cargo package names", () => {
 		setupWorkspace("crates/data/src/lib.rs\ncrates/tools/src/main.rs\ncrates/workflows/src/lib.rs");
-		// TODAY this returns ["data","tools","workflows"] (the bug). After Phase 2
-		// the deduped dirs flow through resolveCargoPackageNames → real names.
-		expect(detectTouchedCargoPackages("/repo")).toEqual([
+		expect(resolveCargoPackageNames("/repo", ["data", "tools", "workflows"])).toEqual([
 			"stockfan-data",
 			"stockfan-tools",
 			"stockfan-workflows",
@@ -146,84 +203,64 @@ describe("detectTouchedCargoPackages wiring: dir→name resolution (AC-04 / SCEN
 
 	it("is NOT an identity pass-through when dir ≠ name (the bug being fixed)", () => {
 		setupWorkspace("crates/data/src/lib.rs\ncrates/tools/src/main.rs");
-		const out = detectTouchedCargoPackages("/repo");
-		// The pre-fix bug returned ["data","tools"]; the wiring MUST map to real
-		// prefixed names so `cargo build -p stockfan-data` (NOT `-p data`).
+		const out = resolveCargoPackageNames("/repo", ["data", "tools"]);
+		// The pre-fix bug resolved dir==name / identity-fell-back to ["data","tools"];
+		// the resolver MUST map to real prefixed names so `cargo build -p stockfan-data`.
 		expect(out).not.toEqual(["data", "tools"]);
 		expect(out).toEqual(["stockfan-data", "stockfan-tools"]);
 	});
 
-	it("preserves first-seen order through the wiring (tools before data)", () => {
+	it("preserves first-seen order through resolution (tools before data)", () => {
 		setupWorkspace("crates/tools/src/main.rs\ncrates/data/src/lib.rs");
-		expect(detectTouchedCargoPackages("/repo")).toEqual([
+		expect(resolveCargoPackageNames("/repo", ["tools", "data"])).toEqual([
 			"stockfan-tools",
 			"stockfan-data",
 		]);
 	});
 
-	it("dedupes repeated touched directories to a single resolved name", () => {
-		// Two files under the same crate → one dir segment → one resolved package.
-		setupWorkspace("crates/data/src/lib.rs\ncrates/data/src/util.rs");
-		expect(detectTouchedCargoPackages("/repo")).toEqual(["stockfan-data"]);
-	});
-
-	it("applies per-element identity fallback for an unmatched touched dir", () => {
-		// `ghost` has NO matching package in metadata → degrades to its own dir
-		// name (SCENARIO-004), while `data` still resolves to its real name.
-		setupWorkspace("crates/data/src/lib.rs\ncrates/ghost/src/lib.rs", [
-			{ name: "stockfan-data", manifestPath: "/repo/crates/data/Cargo.toml" },
-		]);
-		expect(detectTouchedCargoPackages("/repo")).toEqual(["stockfan-data", "ghost"]);
-	});
-});
-
-/* -------------------------------------------------------------------------- */
-/* complete touched set — Fix 2 (regex already captures the workflows segment) */
-/* AC-05 / SCENARIO-009                                                        */
-/* -------------------------------------------------------------------------- */
-
-describe("complete touched set: e2e crate not dropped (AC-05 / SCENARIO-009)", () => {
-	it("resolves `crates/workflows/tests/e2e_*.rs` to `stockfan-workflows`", () => {
-		// The existing regex `/(?:^|\/)crates\/([^/]+)\//` captures `workflows`
-		// from `crates/workflows/tests/e2e_smoke.rs`; the resolver then maps it.
-		// TODAY this returns ["workflows"]; after wiring → ["stockfan-workflows"].
+	it("resolves `crates/workflows/tests/e2e_*.rs` segment to `stockfan-workflows`", () => {
+		// The detection regex captures `workflows` from
+		// `crates/workflows/tests/e2e_smoke.rs`; the resolver then maps it.
 		setupWorkspace("crates/workflows/tests/e2e_smoke.rs");
-		expect(detectTouchedCargoPackages("/repo")).toEqual(["stockfan-workflows"]);
+		expect(resolveCargoPackageNames("/repo", ["workflows"])).toEqual(["stockfan-workflows"]);
 	});
 
-	it("includes the e2e crate alongside lib crates in a mixed diff", () => {
+	it("includes the e2e crate alongside lib crates in a mixed set", () => {
 		setupWorkspace(
 			"crates/data/src/lib.rs\ncrates/workflows/tests/e2e_smoke.rs\ncrates/tools/src/main.rs",
 		);
-		expect(detectTouchedCargoPackages("/repo")).toEqual([
+		expect(resolveCargoPackageNames("/repo", ["data", "workflows", "tools"])).toEqual([
 			"stockfan-data",
 			"stockfan-workflows",
 			"stockfan-tools",
 		]);
 	});
 
-	it("does NOT drop the workflows crate when only its integration tests changed", () => {
-		// A workflows-only diff must still resolve to the real e2e package, never
-		// to [] (which would silently skip spec-mandated e2e verification).
-		setupWorkspace("crates/workflows/tests/e2e_login.rs\ncrates/workflows/tests/e2e_checkout.rs");
-		expect(detectTouchedCargoPackages("/repo")).toEqual(["stockfan-workflows"]);
+	it("DROPS an unmatched segment (ghost) instead of identity-falling-back (SCENARIO-005)", () => {
+		setupWorkspace("crates/data/src/lib.rs\ncrates/ghost/src/lib.rs", [
+			{ name: "stockfan-data", manifestPath: "/repo/crates/data/Cargo.toml" },
+		]);
+		// `ghost` has NO matching package → DROPPED (never emitted as a raw name).
+		expect(resolveCargoPackageNames("/repo", ["data", "ghost"])).toEqual(["stockfan-data"]);
 	});
 });
 
 /* -------------------------------------------------------------------------- */
-/* end-to-end scoped argv DRIVEN THROUGH detectTouchedCargoPackages            */
+/* end-to-end: detected segments → resolve → scoped argv yields real names     */
 /* AC-04 / SCENARIO-007 / SCENARIO-008 / SCENARIO-022                          */
 /* -------------------------------------------------------------------------- */
 
-describe("end-to-end scoped argv via detectTouchedCargoPackages (AC-04 / SCENARIO-007/008/022)", () => {
-	// A diff touching all three prefixed crates — fed through the detection +
-	// resolution pipeline, then into the UNCHANGED scopedCargo* builders.
+describe("end-to-end scoped argv via resolve(detect(cwd)) (AC-04 / SCENARIO-007/008/022)", () => {
+	// A diff touching all three prefixed crates — fed through detection +
+	// resolution, then into the UNCHANGED scopedCargo* builders.
 	const ALL_THREE_DIFF =
 		"crates/data/src/lib.rs\ncrates/tools/src/main.rs\ncrates/workflows/tests/e2e_smoke.rs";
 
 	it("scopedCargoBuildArgs yields `cargo build -p <real>... --quiet`", () => {
 		setupWorkspace(ALL_THREE_DIFF);
-		const argv = scopedCargoBuildArgs(detectTouchedCargoPackages("/repo"));
+		const argv = scopedCargoBuildArgs(
+			resolveCargoPackageNames("/repo", detectTouchedCargoPackages("/repo")),
+		);
 		expect(argv).toEqual([
 			"cargo",
 			"build",
@@ -244,7 +281,9 @@ describe("end-to-end scoped argv via detectTouchedCargoPackages (AC-04 / SCENARI
 
 	it("scopedCargoTestArgs yields `cargo test -p <real>... --quiet`", () => {
 		setupWorkspace(ALL_THREE_DIFF);
-		expect(scopedCargoTestArgs(detectTouchedCargoPackages("/repo"))).toEqual([
+		expect(
+			scopedCargoTestArgs(resolveCargoPackageNames("/repo", detectTouchedCargoPackages("/repo"))),
+		).toEqual([
 			"cargo",
 			"test",
 			"-p",
@@ -259,7 +298,9 @@ describe("end-to-end scoped argv via detectTouchedCargoPackages (AC-04 / SCENARI
 
 	it("scopedCargoClippyArgs yields `cargo clippy -p <real>... --all-targets --quiet`", () => {
 		setupWorkspace(ALL_THREE_DIFF);
-		expect(scopedCargoClippyArgs(detectTouchedCargoPackages("/repo"))).toEqual([
+		expect(
+			scopedCargoClippyArgs(resolveCargoPackageNames("/repo", detectTouchedCargoPackages("/repo"))),
+		).toEqual([
 			"cargo",
 			"clippy",
 			"-p",
@@ -275,14 +316,14 @@ describe("end-to-end scoped argv via detectTouchedCargoPackages (AC-04 / SCENARI
 });
 
 /* -------------------------------------------------------------------------- */
-/* cargo metadata spawn contract (only NEW spawn, discrete argv, cached)       */
-/* AC-10 / SCENARIO-014                                                        */
+/* cargo metadata spawn contract (the resolver is the ONLY new spawn)          */
+/* AC-10 / SCENARIO-014 / SCENARIO-007b (cached)                               */
 /* -------------------------------------------------------------------------- */
 
 describe("cargo metadata spawn contract (AC-10 / SCENARIO-014)", () => {
-	it("spawns `cargo metadata` as a discrete-argv call with --no-deps + workspace manifest", () => {
+	it("resolveCargoPackageNames spawns `cargo metadata` as discrete argv with --no-deps + workspace manifest", () => {
 		setupWorkspace("crates/data/src/lib.rs");
-		detectTouchedCargoPackages("/repo");
+		resolveCargoPackageNames("/repo", ["data"]);
 		// The ONLY new spawned process in build-runner.ts is this one. It must be
 		// discrete-argv (no shell:true) with the workspace-root Cargo.toml.
 		const cargoCalls = spawn.mock.calls.filter((c) => c[0] === "cargo");
@@ -298,39 +339,38 @@ describe("cargo metadata spawn contract (AC-10 / SCENARIO-014)", () => {
 		expect(cargoArgv[manifestIdx + 1]).toBe("/repo/Cargo.toml");
 	});
 
-	it("spawns `cargo metadata` EXACTLY ONCE per cwd across repeated detections (cache)", () => {
+	it("resolveCargoPackageNames spawns `cargo metadata` EXACTLY ONCE per cwd across repeats (cache)", () => {
 		setupWorkspace("crates/data/src/lib.rs");
-		// Two detection passes for the same cwd must hit the per-cwd cache once
-		// and reuse it — never re-spawn cargo within a single run (SCENARIO-005).
-		detectTouchedCargoPackages("/repo");
-		detectTouchedCargoPackages("/repo");
+		// Two resolution passes for the same cwd must hit the per-cwd cache once
+		// and reuse it — never re-spawn cargo within a single run (SCENARIO-007b).
+		resolveCargoPackageNames("/repo", ["data"]);
+		resolveCargoPackageNames("/repo", ["data"]);
 		expect(cargoSpawnCount()).toBe(1);
 	});
 });
 
 /* -------------------------------------------------------------------------- */
-/* failure fallback survives the wiring (never throw, identity on cargo fail)   */
-/* AC-02 / SCENARIO-018 / SCENARIO-019                                         */
+/* failure: metadata failure → resolver returns [] (NO identity); detect still  */
+/* returns segments. The gate widens safely to workspace-wide.                  */
+/* AC-02 / SCENARIO-006 / SCENARIO-018 / SCENARIO-019                          */
 /* -------------------------------------------------------------------------- */
 
-describe("failure fallback through the wiring (AC-02 / SCENARIO-018/019)", () => {
-	it("returns directory segments verbatim when `cargo metadata` exits non-zero (identity)", () => {
-		// cargo rejects / is missing → resolver identity-falls-back to dir names.
-		// detectTouchedCargoPackages must NOT throw and must return the dirs.
+describe("failure: resolver returns [] on metadata failure, detect returns segments (AC-02 / SCENARIO-006)", () => {
+	it("resolveCargoPackageNames returns [] when `cargo metadata` exits non-zero (NO identity fallback)", () => {
+		// cargo rejects / is missing → resolver DROPS everything ([]), so the gate
+		// widens to workspace-wide. It must NOT identity-fall-back to dir names.
 		setupCargoFailure("crates/data/src/lib.rs\ncrates/tools/src/main.rs", {
 			status: 101,
 			stdout: "",
 			stderr: "error: could not find Cargo.toml",
 		});
-		const out = detectTouchedCargoPackages("/repo");
-		expect(out).toEqual(["data", "tools"]);
-		// AND cargo was actually attempted (the wiring invoked the resolver) —
-		// TODAY (pre-wiring) cargo is never spawned, so this distinguishes the
-		// wired identity-fallback from the unwired identity return.
+		expect(resolveCargoPackageNames("/repo", ["data", "tools"])).toEqual([]);
+		// AND cargo was actually attempted (the resolver invoked metadata) — this
+		// distinguishes the [] widening from a never-spawned short-circuit.
 		expect(cargoSpawnCount()).toBeGreaterThanOrEqual(1);
 	});
 
-	it("returns directory segments verbatim when `cargo metadata` throws (identity)", () => {
+	it("resolveCargoPackageNames returns [] when `cargo metadata` throws (NO identity fallback)", () => {
 		setupWorkspace("crates/data/src/lib.rs");
 		// Override only the cargo branch to throw synchronously.
 		spawn.mockImplementation((bin: string) => {
@@ -338,11 +378,22 @@ describe("failure fallback through the wiring (AC-02 / SCENARIO-018/019)", () =>
 			if (bin === "cargo") throw new Error("spawn cargo ENOENT");
 			return { status: 0, stdout: "", stderr: "" };
 		});
-		expect(() => detectTouchedCargoPackages("/repo")).not.toThrow();
-		expect(detectTouchedCargoPackages("/repo")).toEqual(["data"]);
-		// AND cargo was actually attempted (the wiring invoked the resolver) —
-		// TODAY (pre-wiring) cargo is never spawned, so this distinguishes the
-		// wired identity-fallback from the unwired identity return.
+		expect(() => resolveCargoPackageNames("/repo", ["data"])).not.toThrow();
+		expect(resolveCargoPackageNames("/repo", ["data"])).toEqual([]);
+		// AND cargo was actually attempted (the resolver invoked metadata).
 		expect(cargoSpawnCount()).toBeGreaterThanOrEqual(1);
+	});
+
+	it("detectTouchedCargoPackages is unaffected by a cargo failure (returns segments, never throws)", () => {
+		// Detection never touches cargo, so a failing `cargo metadata` cannot
+		// corrupt the detected segments — they remain the git-extracted set.
+		setupCargoFailure("crates/data/src/lib.rs\ncrates/tools/src/main.rs", {
+			status: 101,
+			stdout: "",
+			stderr: "error: could not find Cargo.toml",
+		});
+		expect(() => detectTouchedCargoPackages("/repo")).not.toThrow();
+		expect(detectTouchedCargoPackages("/repo")).toEqual(["data", "tools"]);
+		expect(cargoSpawnCount()).toBe(0);
 	});
 });

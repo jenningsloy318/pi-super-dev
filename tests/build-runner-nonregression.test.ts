@@ -203,7 +203,7 @@ describe("SCENARIO-015 backward-compat: identical argvs + result (modulo additiv
 		}
 	});
 
-	it("rust repo with NO touched crates (empty diff) → workspace-wide argvs + ONE read-only git diff", () => {
+	it("rust repo with NO touched crates (empty diff) → workspace-wide argvs + TWO read-only git spawns (diff + ls-files)", () => {
 		const dir = tmpProj((d) => writeFileSync(join(d, "Cargo.toml"), ""));
 		try {
 			const calls = mockSpawn({ gitDiff: "" });
@@ -216,9 +216,9 @@ describe("SCENARIO-015 backward-compat: identical argvs + result (modulo additiv
 			nonGitCalls(calls).forEach((argv) =>
 				expect(argv).not.toContain("-p"),
 			);
-			// exactly ONE git spawn (the only added process), read-only diff
+			// exactly TWO git spawns (diff + ls-files union — Layer B), read-only
 			const g = gitCalls(calls);
-			expect(g).toHaveLength(1);
+			expect(g).toHaveLength(2);
 			expect(g[0]).toContain("diff");
 			expect(g[0]).toContain("--name-only");
 			expect(g[0]).toContain("--merge-base");
@@ -238,8 +238,8 @@ describe("SCENARIO-015 backward-compat: identical argvs + result (modulo additiv
 			nonGitCalls(calls).forEach((argv) =>
 				expect(argv).not.toContain("-p"),
 			);
-			// git-diff attempted once, failed, swallowed → []
-			expect(gitCalls(calls)).toHaveLength(1);
+			// git diff + ls-files both attempted (2 calls), both failed, swallowed → []
+			expect(gitCalls(calls)).toHaveLength(2);
 			assertAdditiveNoOp(r);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -264,14 +264,14 @@ describe("SCENARIO-015 backward-compat: identical argvs + result (modulo additiv
 		}
 	});
 
-	it("unset env vars (no SUPER_DEV_BUILD_TEST_PACKAGES) ⇒ tier iii/iv used, no extra spawns beyond one git diff", () => {
+	it("unset env vars (no SUPER_DEV_BUILD_TEST_PACKAGES) ⇒ tier iii/iv used, no extra spawns beyond two git spawns (diff + ls-files)", () => {
 		const dir = tmpProj((d) => writeFileSync(join(d, "Cargo.toml"), ""));
 		try {
 			expect(process.env[PKG_ENV]).toBeUndefined();
 			const calls = mockSpawn({ gitDiff: "" });
 			runBuildGate(dir);
-			// exactly one git + the gate commands
-			expect(gitCalls(calls)).toHaveLength(1);
+			// exactly two git (diff + ls-files) + the gate commands
+			expect(gitCalls(calls)).toHaveLength(2);
 			expect(nonGitCalls(calls)).toEqual(expectedArgvs(dir));
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -381,14 +381,14 @@ describe("SCENARIO-026 baseline-diff on main is deferred (no such code path)", (
 		}
 	});
 
-	it("a workspace-wide rust run spawns exactly ONE read-only git diff — no baseline run on main", () => {
+	it("a workspace-wide rust run spawns exactly TWO read-only git spawns (diff + ls-files) — no baseline run on main", () => {
 		const dir = tmpProj((d) => writeFileSync(join(d, "Cargo.toml"), ""));
 		try {
 			const calls = mockSpawn({ gitDiff: "" });
 			runBuildGate(dir);
 			const g = gitCalls(calls);
-			expect(g).toHaveLength(1);
-			// only one git subcommand, and it is the read-only diff
+			expect(g).toHaveLength(2);
+			// two git subcommands (diff + ls-files), both read-only
 			const sub = g[0].slice(1); // drop "git"
 			expect(sub).toContain("diff");
 			expect(sub).toContain("--name-only");
@@ -407,12 +407,12 @@ describe("SCENARIO-026 baseline-diff on main is deferred (no such code path)", (
  * SCENARIO-018 — no new runtime deps / no new spawned processes
  * ------------------------------------------------------------------ */
 describe("SCENARIO-018 no new deps / processes beyond gate commands + one git diff", () => {
-	it("rust workspace-wide run spawns exactly: 1 git (diff) + 3 cargo (build/test/clippy)", () => {
+	it("rust workspace-wide run spawns exactly: 2 git (diff + ls-files) + 3 cargo (build/test/clippy)", () => {
 		const dir = tmpProj((d) => writeFileSync(join(d, "Cargo.toml"), ""));
 		try {
 			const calls = mockSpawn({ gitDiff: "" });
 			runBuildGate(dir);
-			expect(gitCalls(calls)).toHaveLength(1);
+			expect(gitCalls(calls)).toHaveLength(2);
 			expect(nonGitCalls(calls)).toHaveLength(3);
 			expect(nonGitCalls(calls).every((a) => a[0] === "cargo")).toBe(true);
 			// exact match to the pure detector output (no extra/missing argvs)

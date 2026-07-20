@@ -260,6 +260,12 @@ export interface RunOptions {
 	resumeSpecIdentifier?: string;
 	/** @internal loaded resume cache; when present, ctx.agent memoizes. */
 	resumeCache?: Map<string, AgentResult>;
+	/** Spec-declared cargo build-gate contract (Layer D, AC-04..08). Optional.
+	 *  On a rust repo this is the HIGHEST-precedence scope source: `workspace`
+	 *  short-circuits to workspace-wide; `packages` (validated) drives the scoped
+	 *  set; `integration` targets are appended. Threaded from the specification
+	 *  stage's declared `gate` via `state.spec?.gate`. */
+	gate?: { packages?: string[]; workspace?: boolean; integration?: string[] };
 }
 
 /** Honest, derived overall outcome of a run. */
