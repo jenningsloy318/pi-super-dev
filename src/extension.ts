@@ -14,6 +14,9 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
+import type { DashboardTheme } from "./render/dashboard.ts";
+import { createLiveStream } from "./render/live-stream.js";
+import type { TranscriptLine } from "./render/live-stream.js";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -155,30 +158,22 @@ export default function activate(pi: ExtensionAPI): void {
 			if (!task) {
 				return { content: [{ type: "text", text: "super_dev requires a non-empty `task`." }], isError: true, details: {} };
 			}
-			const transcript: string[] = [];
-			let live = "";
 			let lastFlush = 0;
 			const FLUSH_MS = 80;
-			// The live display is a ROLLING TAIL. A full run (100+ agents) produces
-			// thousands of transcript lines; sending the whole thing on every flush
-			// let pi truncate it, and since later stages append at the END, they were
-			// the first to fall off the visible window ("very little logs afterwards").
-			// The tail keeps the CURRENT activity visible; the full log is written to
-			// disk at run end so nothing is lost.
-			const TAIL_LINES = 400;
-			const finalizeLive = () => {
-				if (live) {
-					transcript.push(live);
-					live = "";
-				}
-			};
-			const flush = () => {
-				const all = live ? [...transcript, live] : transcript;
-				const body = all.length > TAIL_LINES
-					? `… ${all.length - TAIL_LINES} earlier lines trimmed (full log saved at run end) …\n` + all.slice(-TAIL_LINES).join("\n")
-					: all.join("\n");
-				onUpdate?.({ content: [{ type: "text", text: body }], details: {} });
-			};
+			// Phase 2 (AC-04 / AC-05 / AC-06): the live transcript + mode-aware
+			// per-kind theming + rolling tail + raw disk log are owned by the pure
+			// `createLiveStream` factory. It classifies every line AT THE SINK
+			// (single authority) and renders the live body themed per-kind ONLY in
+			// TUI mode; print/json/headless/RPC emit raw `line.text` (byte-clean,
+			// zero ANSI — AC-08 no-leak contract). `transcriptTail` carries
+			// `{kind,text}` end-to-end (AC-06).
+			const stream = createLiveStream({
+				onUpdate: (body) => onUpdate?.({ content: [{ type: "text", text: body }], details: {} }),
+				mode: ctx?.mode,
+				theme: ctx?.ui?.theme as DashboardTheme | undefined,
+			});
+			const finalizeLive = stream.finalizeLive;
+			const flush = stream.flush;
 			// Workflow dashboard v1 (Gap Dashboard): always-on phase-tracker widget,
 			// TUI-only. Updated from the structured `stage` events emitted by task()
 			// nodes (running → terminal). v2 will grow this into a full two-panel
@@ -225,10 +220,10 @@ export default function activate(pi: ExtensionAPI): void {
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
 			const sink: ProgressSink = {
-				phase: (label) => { finalizeLive(); transcript.push(`▶ ${label}`); dashboardActivity = label; if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flush(); },
-				log: (message) => { finalizeLive(); transcript.push(`  ${message}`); dashboardActivity = message; renderDashboardThrottled(); flush(); },
+				phase: (label) => { stream.sink.phase(label); dashboardActivity = label; if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flush(); },
+				log: (message) => { stream.sink.log(message); dashboardActivity = message; renderDashboardThrottled(); flush(); },
 				text: (partial) => {
-					live = partial;
+					stream.sink.text(partial);
 					dashboardActivity = partial;
 					const now = Date.now();
 					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; renderDashboardThrottled(); }
@@ -259,7 +254,7 @@ export default function activate(pi: ExtensionAPI): void {
 				let logPath = "";
 				try {
 					logPath = getRunLogPath();
-					writeFileSync(logPath, transcript.join("\n") + "\n");
+					writeFileSync(logPath, stream.diskLogText() + "\n");
 				} catch { /* best-effort; the live tail is the primary surface */ }
 				const escalationChoice = await handleStagnation(summary, ctx);
 				const isError = summary.status === "failed";
@@ -275,7 +270,7 @@ export default function activate(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text", text: fallback.join("\n") }],
 					isError,
-					details: { summary, summaryLines, transcriptTail: transcript.slice(-50), stages, logPath },
+					details: { summary, summaryLines, transcriptTail: stream.transcriptTail(), stages, logPath },
 				};
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
@@ -292,7 +287,7 @@ export default function activate(pi: ExtensionAPI): void {
 		renderResult(result, _opts: any, theme: Theme) {
 			const d = (result.details ?? {}) as {
 				summaryLines?: string[];
-				transcriptTail?: string[];
+				transcriptTail?: TranscriptLine[];
 				stages?: Array<{ label: string; status: string }>;
 				logPath?: string;
 			};

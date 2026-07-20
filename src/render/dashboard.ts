@@ -18,6 +18,7 @@
 
 import { Container, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { themeLine, commandBackground, type LineKind } from "./stream-theme.js";
 
 /**
  * Structural subset of pi's `Theme` that the dashboard presentation layer
@@ -31,6 +32,15 @@ import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 export interface DashboardTheme {
 	fg(token: string, text: string): string;
 	bold?(text: string): string;
+	/**
+	 * Optional background painter (SCENARIO-007). Added so the real pi
+	 * `Theme` — whose `bg(color, text)` is a method — satisfies this shape
+	 * STRUCTURALLY, while unit-test mocks can omit it. `stream-theme.ts`
+	 * `commandBackground` reads this to paint tool-bubble backgrounds via
+	 * pi-tui `Text`'s 4th `customBgFn` arg. Optional ⇒ graceful-degrade:
+	 * callers without a background painter simply get none.
+	 */
+	bg?(token: string, text: string): string;
 }
 
 /**
@@ -289,7 +299,11 @@ export function createDashboardWidgetFactory(
  */
 export interface ResultDetails {
 	summaryLines?: string[];
-	transcriptTail?: string[];
+	/** Per-kind transcript tail (AC-06). Phase 2 carries `{kind,text}` end-to-end
+	 *  from the sink; a plain `string` element is tolerated (defaults to kind
+	 *  `log`) so existing string-based callers keep rendering. Phase 3 upgrades
+	 *  the §1 render to per-kind theming + command-bubble backgrounds. */
+	transcriptTail?: Array<{ kind: LineKind; text: string } | string>;
 	stages?: Array<{ label: string; status: string }>;
 	logPath?: string;
 }
@@ -334,10 +348,19 @@ export function buildResultComponent(details: ResultDetails, theme?: DashboardTh
 	const bold = theme?.bold ?? ((text: string) => text);
 	const container = new Container();
 
-	// §1 detail log — DIMMED (like agent thought progress; persisted, not transient).
+	// §1 detail log — PER-KIND themed (AC-07 / SCENARIO-014). Each tail line is
+	// styled via themeLine(kind, text, theme) and COMMAND / COMMAND-DONE lines
+	// are emitted with a tool-bubble background (pi-tui Text's 4th `customBgFn`
+	// argument via commandBackground) so commands pop as tool bubbles while
+	// thinking/phase/error/log lines carry their pi-native foreground tokens. A
+	// plain-string tail element is tolerated and defaults to kind "log".
 	container.addChild(new Text(fg("dim", "── detail log (last 50 lines) ──"), 0, 0));
 	for (const line of details.transcriptTail ?? []) {
-		container.addChild(new Text(fg("dim", line), 0, 0));
+		const kind: LineKind = typeof line === "string" ? "log" : line.kind;
+		const text = typeof line === "string" ? line : line.text;
+		const styled = themeLine(kind, text, theme);
+		const bgFn = commandBackground(kind, theme);
+		container.addChild(new Text(styled, 0, 0, bgFn));
 	}
 	if (details.logPath) {
 		container.addChild(new Text(fg("dim", `(full log: ${details.logPath})`), 0, 0));
