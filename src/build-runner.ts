@@ -17,7 +17,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * Default per-command timeout for the build gate, in milliseconds (10 min).
@@ -129,6 +129,204 @@ export function parseTestPackages(raw?: string): string[] {
 		out.push(trimmed);
 	}
 	return out;
+}
+
+/**
+ * The first `crates/<seg>/` segment matcher — identical to the one used by
+ * {@link detectTouchedCargoPackages}. Non-global: each call starts at index 0
+ * so `lastIndex` never needs resetting.
+ */
+const CRATE_SEGMENT_RE = /(?:^|\/)crates\/([^/]+)\//;
+
+/**
+ * Result of a cached `cargo metadata` lookup. `ok:true` carries the workspace
+ * member packages mapped to `{ name, manifestDir }`; `ok:false` is the failure
+ * sentinel cached so a missing/failing `cargo` is not re-spawned within one run
+ * (AC-02, SCENARIO-018). NEVER persisted (process-local — SCENARIO-006).
+ */
+type CargoMetadataResult =
+	| { ok: true; packages: Array<{ name: string; manifestDir: string }> }
+	| { ok: false };
+
+/**
+ * Process-local cache of `cargo metadata` results, keyed by ABSOLUTE `cwd`.
+ *
+ * Stores either the parsed package list OR a `{ ok:false }` failure sentinel so
+ * a failing/missing `cargo` is not re-spawned within one run (SCENARIO-018).
+ * Lives only in memory — `vi.resetModules()` (or process exit) clears it, so no
+ * stale result ever leaks across runs (SCENARIO-006). Module-level (NOT
+ * exported) because the resolver is the sole reader.
+ */
+const cargoMetadataCache = new Map<string, CargoMetadataResult>();
+
+/**
+ * Extract the FIRST `crates/<seg>/` segment from a directory path.
+ *
+ * Cargo `manifest_path` is a FILE (`…/crates/<seg>/Cargo.toml`); its parent
+ * `manifestDir` is a DIRECTORY and so lacks a trailing slash, which would
+ * defeat the `crates/<seg>/` regex on a flat crate (`crates/data`). Appending
+ * `/` normalizes both flat and nested manifest dirs to a path the SAME regex
+ * matches, yielding the first `crates/<seg>/` segment (SCENARIO-002: a manifest
+ * at `crates/data/inner/Cargo.toml` has manifestDir `crates/data/inner` whose
+ * first segment is `data`, not `inner`). Returns `null` when no
+ * `crates/<seg>/` segment exists (root package / non-crates layout).
+ */
+function firstCratesSegment(manifestDir: string): string | null {
+	const m = CRATE_SEGMENT_RE.exec(`${manifestDir}/`);
+	return m ? m[1] : null;
+}
+
+/**
+ * Load and cache `cargo metadata` for a workspace root (AC-10, SCENARIO-005).
+ *
+ * Spawns `cargo metadata --format-version 1 --no-deps --manifest-path
+ * <cwd>/Cargo.toml` via DISCRETE argv (no `shell:true` — package/path data never
+ * reaches a shell) under the existing {@link resolveTimeoutMs} envelope with
+ * `encoding:"utf8"`. The `--manifest-path` targets the WORKSPACE-ROOT
+ * `Cargo.toml`; cargo returns ALL workspace members in `packages[]`, each
+ * carrying its individual `manifest_path`. Each member is mapped to
+ * `{ name, manifestDir: dirname(manifest_path) }` and the result cached under
+ * the absolute `cwd` (or a `{ ok:false }` sentinel on failure).
+ *
+ * NEVER throws (AC-02): the whole body is try/caught. Spawn error (`r.error`),
+ * non-zero exit (bad package spec / missing manifest), timeout kill (signal),
+ * missing `cargo` (ENOENT), JSON parse failure, non-string stdout, a missing /
+ * non-array `packages[]`, an empty valid set, or any thrown exception → cache
+ * and return `{ ok:false }`. A failure is STILL cached so the spawn is not
+ * repeated within one run (SCENARIO-018).
+ *
+ * Side-effecting (spawns `cargo`) but pure wrt argv construction. Memoized per
+ * absolute `cwd` via {@link cargoMetadataCache}.
+ *
+ * @param cwd Absolute worktree path whose `Cargo.toml` is the workspace root.
+ * @returns `{ ok:true, packages }` on success, else `{ ok:false }`.
+ */
+function loadCargoMetadata(cwd: string): CargoMetadataResult {
+	const key = resolve(cwd);
+	const cached = cargoMetadataCache.get(key);
+	if (cached) return cached;
+	let result: CargoMetadataResult;
+	try {
+		const r = spawnSync(
+			"cargo",
+			[
+				"metadata",
+				"--format-version",
+				"1",
+				"--no-deps",
+				"--manifest-path",
+				join(cwd, "Cargo.toml"),
+			],
+			{ encoding: "utf8", timeout: resolveTimeoutMs() },
+		);
+		if (r.error || r.status !== 0) {
+			result = { ok: false };
+		} else {
+			const out = r.stdout;
+			if (typeof out !== "string" || out === "") {
+				result = { ok: false };
+			} else {
+				const parsed = JSON.parse(out) as {
+					packages?: Array<{ name?: unknown; manifest_path?: unknown }>;
+				};
+				const pkgs = Array.isArray(parsed?.packages) ? parsed.packages : null;
+				if (!pkgs) {
+					result = { ok: false };
+				} else {
+					const mapped: Array<{ name: string; manifestDir: string }> = [];
+					for (const p of pkgs) {
+						if (
+							p &&
+							typeof p.name === "string" &&
+							typeof p.manifest_path === "string"
+						) {
+							mapped.push({
+								name: p.name,
+								manifestDir: dirname(p.manifest_path),
+							});
+						}
+					}
+					result = mapped.length > 0 ? { ok: true, packages: mapped } : { ok: false };
+				}
+			}
+		}
+	} catch {
+		result = { ok: false };
+	}
+	cargoMetadataCache.set(key, result);
+	return result;
+}
+
+/**
+ * Resolve touched DIRECTORY segments to REAL cargo package names (AC-01).
+ *
+ * Given touched DIRECTORY segments (e.g. `["data","tools","workflows"]`),
+ * returns the REAL cargo package names (e.g.
+ * `["stockfan-data","stockfan-tools","stockfan-workflows"]`) so the gate emits
+ * `cargo build -p stockfan-data` instead of the rejected `-p data`. Pure-mapping
+ * over the cached side-effect {@link loadCargoMetadata}; deduped, first-seen
+ * order preserved.
+ *
+ * MATCHING (SCENARIO-002): for each touched segment `d`, select the package
+ * whose `manifestDir` first `crates/<seg>/` segment (via
+ * {@link firstCratesSegment}) EQUALS `d`. This is manifest-in-subdir safe: a
+ * package at `crates/data/inner/Cargo.toml` has manifestDir `crates/data/inner`
+ * whose first segment is `data`.
+ *
+ * FALLBACK CHAIN (NEVER throws — AC-02, SCENARIO-003/004/018/019):
+ *   - empty touched-dir input → returns `[]` WITHOUT spawning `cargo metadata`
+ *     (no packages to resolve → workspace-wide gate → metadata unneeded);
+ *   - `loadCargoMetadata` returns `{ ok:false }` (cargo missing / non-zero /
+ *     timeout / bad JSON / wrong shape) → whole-list identity fallback: return
+ *     the de-duped touched dir names verbatim;
+ *   - a touched segment with NO matching package → PER-ELEMENT identity fallback
+ *     to its own directory name (SCENARIO-004);
+ *   - any thrown exception → whole-list identity fallback.
+ * An empty touched-dir input short-circuits before the spawn (AC-10: the only
+ * new spawn is the cached `cargo metadata --no-deps` and ONLY when there is
+ * something to resolve).
+ *
+ * Backward compatible (AC-08): a dir==name workspace is an identity no-op (the
+ * real name equals the dir name); a non-rust repo never reaches this resolver
+ * because `runBuildGate` only enters the scoping tier when
+ * `language === "rust"` and a non-empty scope resolves.
+ *
+ * @param cwd Absolute worktree path whose `Cargo.toml` is the workspace root.
+ * @param touchedDirs Touched `crates/<dir>/` DIRECTORY segments.
+ * @returns Resolved REAL package names, deduped first-seen order (identity on
+ *   any failure or for an empty input).
+ */
+export function resolveCargoPackageNames(
+	cwd: string,
+	touchedDirs: string[],
+): string[] {
+	try {
+		if (!Array.isArray(touchedDirs) || touchedDirs.length === 0) {
+			return [];
+	}
+		const meta = loadCargoMetadata(cwd);
+		// No usable metadata → whole-list identity fallback (AC-02).
+		if (!meta.ok) {
+			return dedupePreservingOrder(
+				touchedDirs.filter((d): d is string => typeof d === "string"),
+			);
+		}
+		const out: string[] = [];
+		for (const d of touchedDirs) {
+			if (typeof d !== "string") continue;
+			const matched = meta.packages.find(
+				(p) => firstCratesSegment(p.manifestDir) === d,
+			);
+			out.push(matched ? matched.name : d);
+		}
+		return dedupePreservingOrder(out);
+	} catch {
+		return dedupePreservingOrder(
+			Array.isArray(touchedDirs)
+				? touchedDirs.filter((d): d is string => typeof d === "string")
+				: [],
+		);
+	}
 }
 
 /**
