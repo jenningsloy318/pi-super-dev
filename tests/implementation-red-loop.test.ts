@@ -64,6 +64,8 @@ vi.mock("../src/build-runner.ts", () => ({
 		errors: [] as string[],
 		outOfScopeErrors: [] as string[],
 	})),
+	runDeliverableCheck: vi.fn(() => ({ pass: true, missing: [] as string[], ran: [] as string[] })),
+	resetDeliverableCheckCache: vi.fn(() => {}),
 }));
 
 // Mock the only filesystem-writing side effect of the stage (the summary render)

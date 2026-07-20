@@ -218,6 +218,28 @@ export const STAGE_MODELS: Record<string, StageModel> = {
 
 // ─── Specification (multi-doc: specification + implementation-plan + task-list) ─
 
+/** Per-phase DELIVERABLE CONTRACT (AC-04/05 → SCENARIO-018..020). OPTIONAL; a
+ *  phase with no deliverables validates & behaves identically to today (backward
+ *  compat). Enforced by runDeliverableCheck AND-ed with build-green so a phase
+ *  that creates a file / wires a call site X→Y / makes new sources reachable /
+ *  adds a named test cannot compile green while delivering nothing. */
+export const PhaseDeliverables = Type.Object({
+	requireFiles: Type.Optional(Type.Array(Type.String())),
+	requireContains: Type.Optional(Type.Array(Type.Object({ file: Type.String(), pattern: Type.String() }))),
+	requireNotContains: Type.Optional(Type.Array(Type.Object({ file: Type.String(), pattern: Type.String() }))),
+	requireTests: Type.Optional(Type.Array(Type.String())),
+});
+export type PhaseDeliverables = Static<typeof PhaseDeliverables>;
+
+/** A specification phase element. `deliverables` is OPTIONAL (backward compat).
+ *  When present it round-trips through normalizePhases as typed `phase.deliverables`. */
+export const SpecPhase = Type.Object({
+	name: Type.String(),
+	description: Type.String(),
+	deliverables: Type.Optional(PhaseDeliverables),
+});
+export type SpecPhase = Static<typeof SpecPhase>;
+
 export const SpecificationData = Type.Object({
 	title: Type.String(),
 	date: Type.String(),
@@ -225,7 +247,7 @@ export const SpecificationData = Type.Object({
 	architecture: Type.String(),
 	testingStrategy: Type.String(),
 	scenarioRefs: Type.Array(Type.String()),
-	phases: Type.Array(Type.Object({ name: Type.String(), description: Type.String() }), { minItems: 1 }),
+	phases: Type.Array(SpecPhase, { minItems: 1 }),
 	tasks: Type.Array(Type.Object({ phase: Type.String(), description: Type.String() })),
 	// Layer D (AC-04..08): an OPTIONAL spec-declared cargo build-gate contract.
 	// The specification stage MAY declare it for backend/integration features; it

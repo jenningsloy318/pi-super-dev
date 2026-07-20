@@ -11,7 +11,7 @@ import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplement
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
-import { runBuildGate, runRedCheck, type GateOptions, type RedStatus } from "../build-runner.ts";
+import { resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, runRedCheck, type GateOptions, type RedStatus } from "../build-runner.ts";
 
 const MAX_ATTEMPTS = 3;
 /** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
@@ -95,6 +95,11 @@ export const implementationStage: Stage = {
 			const phaseId = `phase-${pad(idx + 1)}`;
 			let green = false;
 			let attemptErrors: string[] = [];
+			// AND-semantics (AC-03 → SCENARIO-011..015): the missing DELIVERABLE entries
+			// from the previous attempt, fed into the next implementer retry under a
+			// `## Deliverables still missing — create/wire these` block. Resets each
+			// attempt, mirroring `attemptErrors = gate.errors`.
+			let missingDeliverables: string[] = [];
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 				if (!ctx.budget.check()) {
 					allGreen = false;
@@ -141,6 +146,13 @@ export const implementationStage: Stage = {
 				if (attemptErrors.length) {
 					implParts.push(`## Previous attempt failed the build/test gate — fix these\n${attemptErrors.map((e) => `- ${e}`).join("\n")}`);
 				}
+				// AND-semantics (AC-03 → SCENARIO-012): when a previous attempt was
+				// build-green but its DELIVERABLE CONTRACT was unmet, the exhaustive
+				// `missing` list is injected here so the implementer creates the files /
+				// does the wiring / adds the named tests instead of resampling.
+				if (missingDeliverables.length) {
+					implParts.push(`## Deliverables still missing — create/wire these\n${missingDeliverables.map((e) => `- ${e}`).join("\n")}`);
+				}
 				implParts.push(redImplementContext(redStatus, capExhausted));
 				const implPrompt = implParts.join("\n\n");
 				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
@@ -153,13 +165,33 @@ export const implementationStage: Stage = {
 				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
+				// DELIVERABLE CONTRACT (AC-03 → SCENARIO-011..015): a build-green phase can
+				// deliver NOTHING (a never-created file compiles fine, an unwired call site
+				// is still a valid public fn, a dead `_ => {}` router arm passes its own
+				// tests). runDeliverableCheck is the never-throwing sibling oracle AND-ed
+				// with the gate so the phase is only GREEN when the declared files/contains/
+				// not-contains/tests are ALSO satisfied. When phase.deliverables is undefined
+				// it early-returns {pass:true} → today's behavior (SCENARIO-014 backward compat).
+				// RUN-BOUNDARY RESET (review finding, HIGH): a module-level test-list
+				// cache is STALE the instant the implementer adds a test on a retry — the
+				// cached list omits the new name and requireTests false-negatives forever,
+				// defeating the core retry mechanism. Clearing it before EACH attempt
+				// guarantees a FRESH list is spawned (a freshly-added test is seen).
+				resetDeliverableCheckCache();
+				// SKIP the test-lister when the build gate FAILED (review finding: wasted
+				// compile on a broken build + a poisoned cache). The cheap file/contains/
+				// not-contains checks still run; only the requireTests spawn is deferred.
+				const buildGreen = gate.pass || gate.inScopePass;
+				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phase.deliverables, { signal: ctx.signal, skipTests: !buildGreen });
+				missingDeliverables = deliverableCheck.missing;
+				ctx.log(`Implementation ${phaseId} deliverable-check ${deliverableCheck.pass ? "PASS" : "FAIL"} (missing: ${deliverableCheck.missing.join("; ") || "none"}; ran: ${deliverableCheck.ran.join(", ") || "none"})`);
 				// In-scope verdict (AC-05 → SCENARIO-012/013/014/025/027): the phase is GREEN
 				// when the gate fully passed OR when every failure is a pre-existing
 				// out-of-scope crate the branch never touched (gate.inScopePass). The
 				// `if (!green)` branch below therefore fires ONLY on genuine in-scope
 				// failures — neither pass nor inScopePass after MAX_ATTEMPTS — so
 				// pre-existing breakage elsewhere can no longer abort green in-scope work.
-				if (gate.pass || gate.inScopePass) {
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
 					green = true;
 					if (gate.pass) {
 						ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
@@ -168,7 +200,7 @@ export const implementationStage: Stage = {
 					}
 					break;
 				}
-				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${gate.errors.join("; ")}`);
+				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${[...gate.errors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "deliverables unmet"}`);
 			}
 			if (!green) {
 				ctx.log(`Implementation ${phaseId} failed after ${MAX_ATTEMPTS} attempts — terminating early`);
