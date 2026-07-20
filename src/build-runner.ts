@@ -482,19 +482,59 @@ function matchPackageBySegment(
  * @param baseRef Optional base ref override (`--merge-base <baseRef>`).
  * @returns De-duplicated touched crate names (first-seen order), or `[]`.
  */
-export function detectTouchedCargoPackages(cwd: string, baseRef?: string): string[] {
+/**
+ * List the RAW touched file paths on the current branch vs a base ref.
+ *
+ * Gap 4 foundation / AC-04 — the single git extraction shared by BOTH the cargo
+ * in/out-of-scope classifier ({@link detectTouchedCargoPackages}) AND the npm
+ * (vitest/jest) classifier (Phase 5). Spawns `git -C <cwd> diff --merge-base
+ * <baseRef> --name-only` ONCE (committed changes) and `git -C <cwd> ls-files
+ * --others --exclude-standard` ONCE (the untracked-but-not-ignored union),
+ * concatenates both stdouts, and de-duplicates via
+ * {@link dedupePreservingOrder} preserving first-seen order (committed-diff
+ * lines first, then untracked-only lines).
+ *
+ * Unlike {@link detectTouchedCargoPackages} this returns RAW file paths — NO
+ * crate-segment filtering. A line like `crates/data/src/lib.rs` is returned
+ * verbatim; non-crate paths (`Cargo.toml`, `README.md`, `docs/spec.md`,
+ * `src/*.test.ts`) are ALSO returned so the npm classifier has the full touched
+ * set to compare failing-test files against. The crate-segment collapse is a
+ * SEPARATE, downstream step performed by {@link detectTouchedCargoPackages}.
+ *
+ * Base-ref precedence (highest → lowest): an explicit {@link baseRef} arg > the
+ * `SUPER_DEV_GATE_BASE_REF` env var > `"main"`. The base ref applies ONLY to
+ * the committed diff; the untracked-union spawn is against the working tree
+ * (never takes `--merge-base`).
+ *
+ * Safe degradation (NEVER throws — the entire body is try/caught): returns `[]`
+ * on a non-zero git exit (missing base ref / non-git dir), an `r.error` (git
+ * not installed / ENOENT), empty or whitespace-only output, a non-string
+ * stdout, or any thrown exception. An empty `[]` return is the conservative
+ * in-scope fallback Phase 5 relies on (grants no false green). See
+ * SCENARIO-001/002/003/020/021/022/023/037/038.
+ *
+ * Side-effecting (spawns git + reads env) like the rest of the module, but pure
+ * wrt argv construction: it spawns `git` as discrete-argv calls with no
+ * `shell:true`, so path data never reaches a shell. Performs exactly TWO
+ * bounded git spawns per call (no baseline-on-main run, no diagnostic
+ * follow-up spawns — SCENARIO-023).
+ *
+ * @param cwd Absolute worktree path to run git in (`-C <cwd>`).
+ * @param baseRef Optional base ref override (`--merge-base <baseRef>`).
+ * @returns De-duplicated RAW touched file paths (first-seen order), or `[]`.
+ */
+export function touchedFilePaths(cwd: string, baseRef?: string): string[] {
 	try {
 		const ref = baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF ?? "main";
 		// Layer B (untracked-file union — the motivating stockfan e2e fix, AC-01):
 		// UNION the committed diff against the base ref WITH
 		// `git ls-files --others --exclude-standard` (the untracked-but-not-ignored
-		// file list) so a brand-new crate dir such as
-		// `crates/workflows/tests/e2e_*.rs` also contributes its segment. `git diff
-		// --merge-base` lists ONLY committed changes; without the union an untracked
-		// crate was silently dropped and its mandated e2e never entered scope.
-		// Either command failing contributes nothing to the union; the helper still
-		// NEVER throws. The untracked spawn is against the working tree (base ref
-		// does not apply to it).
+		// file list) so a brand-new file such as `crates/workflows/tests/e2e_*.rs`
+		// also contributes its path. `git diff --merge-base` lists ONLY committed
+		// changes; without the union an untracked file was silently dropped.
+		// Either command failing contributes nothing to the union; the helper
+		// still NEVER throws. The untracked spawn is against the working tree
+		// (base ref does not apply to it).
 		const diffR = spawnSync("git", ["-C", cwd, "diff", "--merge-base", ref, "--name-only"], {
 			encoding: "utf8",
 		});
@@ -504,32 +544,87 @@ export function detectTouchedCargoPackages(cwd: string, baseRef?: string): strin
 			{ encoding: "utf8" },
 		);
 		// Concatenate both stdouts; each command failing independently contributes
-		// nothing (non-zero exit / spawn error / non-string stdout skipped).
-		const pkgs: string[] = [];
+		// nothing (non-zero exit / spawn error / non-string stdout skipped). Paths
+		// are returned RAW (verbatim) — NO crate-segment filtering here.
+		const paths: string[] = [];
 		const collect = (r: { error?: unknown; status?: number | null; stdout?: unknown } | null) => {
 			if (!r || r.error || r.status !== 0) return;
 			const out = r.stdout;
 			if (typeof out !== "string" || out.trim() === "") return;
-			// Match the FIRST `crates/<pkg>/` segment of each line; ignore non-crate
-			// paths entirely. Reuses the module-level {@link CRATE_SEGMENT_RE} (review
-			// finding: no duplicate regex). It is non-global, so `exec` is stateless
-			// per call and needs no `lastIndex` reset.
 			for (const line of out.split("\n")) {
-				const m = CRATE_SEGMENT_RE.exec(line);
-				if (m) pkgs.push(m[1]);
+				// Trim each line so trailing newlines, stray whitespace, and CRLF
+				// line endings (Windows git) collapse to clean RAW paths. Empty /
+				// whitespace-only lines (e.g. the trailing newline of --name-only
+				// output) contribute nothing — they are NOT emitted as paths.
+				const path = line.trim();
+				if (path !== "") paths.push(path);
 			}
 		};
 		collect(diffR);
 		collect(untrackedR);
+		// First-seen dedup: a path present in BOTH the diff and the untracked set
+		// collapses to ONE entry at its committed-diff position. This is the exact
+		// input the cargo segment-mapper ({@link detectTouchedCargoPackages}) and
+		// the Phase 5 npm classifier consume.
+		return dedupePreservingOrder(paths);
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Detect the cargo crates touched on the current branch vs a base ref.
+ *
+ * AC-01 — delegates the raw git extraction to {@link touchedFilePaths} (the Gap
+ * 4 shared helper) and maps each raw `crates/<pkg>/…` path to `<pkg>` (first
+ * `crates/` segment wins) via the module-level {@link CRATE_SEGMENT_RE}, then
+ * de-duplicates the crate segments via {@link dedupePreservingOrder} preserving
+ * first-seen order. Non-crate paths (root `Cargo.toml`, `README`, `docs/…`) are
+ * ignored. This is a zero-behavior-change refactor of the pre-Phase-1 body:
+ * `touchedFilePaths` performs the identical two bounded git spawns and the
+ * segment-mapper + dedup collapse crate paths exactly as before.
+ *
+ * Base-ref precedence (highest → lowest): an explicit {@link baseRef} arg > the
+ * `SUPER_DEV_GATE_BASE_REF` env var > `"main"` (delegated to
+ * {@link touchedFilePaths}).
+ *
+ * Safe degradation (NEVER throws — the body is try/caught and
+ * {@link touchedFilePaths} itself degrades to `[]`): returns `[]` on a non-zero
+ * git exit (missing base ref / non-git dir), an `r.error` (git not installed),
+ * empty or whitespace-only diff output, a diff with no crate paths, a
+ * non-string stdout, or any thrown exception. An empty `[]` return is exactly
+ * the value `runBuildGate` relies on to fall back to workspace-wide scoping (no
+ * `-p` flags anywhere). See SCENARIO-001/002/003/020/022/023.
+ *
+ * Side-effecting (spawns git via {@link touchedFilePaths} + reads env) but pure
+ * wrt argv construction: no `shell:true`, so path data never reaches a shell.
+ *
+ * @param cwd Absolute worktree path to run git in (`-C <cwd>`).
+ * @param baseRef Optional base ref override (`--merge-base <baseRef>`).
+ * @returns De-duplicated touched crate names (first-seen order), or `[]`.
+ */
+export function detectTouchedCargoPackages(cwd: string, baseRef?: string): string[] {
+	try {
+		// Reuse the shared raw-file-path helper (Gap 4 foundation, AC-04) so the
+		// cargo and npm in/out-of-scope classifiers share ONE git extraction. The
+		// raw paths are mapped through the SAME {@link CRATE_SEGMENT_RE}
+		// segment-mapper as before (first `crates/<pkg>/` segment wins) and
+		// {@link dedupePreservingOrder} is still applied to the crate segments —
+		// observable crate-segment output is byte-for-byte unchanged (the
+		// touched-crates / autoscope / nonregression suites stay green).
+		const pkgs: string[] = [];
+		for (const line of touchedFilePaths(cwd, baseRef)) {
+			const m = CRATE_SEGMENT_RE.exec(line);
+			if (m) pkgs.push(m[1]);
+		}
 		// Returns raw DIRECTORY segments (spec-08 Layer C separation). Resolution
 		// to REAL cargo package names is a SEPARATE step ({@link
 		// resolveCargoPackageNames}) invoked by {@link runBuildGate}, NOT here, so
-		// this helper is a PURE git extraction that NEVER spawns `cargo metadata`
-		// (SCENARIO-020: bounded git spawns — now the diff + untracked union;
-		// SCENARIO-001..003 assert segment output). This also keeps the
-		// never-throw degrade-to-[] invariant
-		// local to git: an unknown dir stays a segment here and is DROPPED later by
-		// the resolver (SCENARIO-005), never emitted as a raw `-p` name.
+		// this helper NEVER spawns `cargo metadata` (SCENARIO-020: bounded git
+		// spawns; SCENARIO-001..003 assert segment output). This also keeps the
+		// never-throw degrade-to-[] invariant local to git: an unknown dir stays
+		// a segment here and is DROPPED later by the resolver (SCENARIO-005),
+		// never emitted as a raw `-p` name.
 		return dedupePreservingOrder(pkgs);
 	} catch {
 		return [];
