@@ -16,7 +16,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import type { DashboardTheme } from "./render/dashboard.ts";
 import { createLiveStream } from "./render/live-stream.js";
-import type { TranscriptLine } from "./render/live-stream.js";
+import type { TranscriptLine, LiveStreamHandle } from "./render/live-stream.js";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -56,6 +56,9 @@ export interface ActiveRun {
 	queue: string[];
 	/** The execute() ctx (TUI guards + ACK surfaces use this — Phase 2). */
 	ctx?: ExtensionContext;
+	/** The live-stream handle (Phase 2 ACK: pushes the user-input transcript
+	 *  line). Optional so the Phase 1 idle-shape (no stream) still works. */
+	stream?: LiveStreamHandle;
 	/** Store interactive input. Empty/whitespace-only is skipped (SCENARIO-007). */
 	push(text: string): void;
 	/** Atomically return the pending inputs AND clear the queue (SCENARIO-013). */
@@ -64,17 +67,39 @@ export interface ActiveRun {
 
 let activeRun: ActiveRun | null = null;
 
-/** Factory for the module-scoped ActiveRun (fresh queue per run — no leak). */
-export function createActiveRun(ctx?: ExtensionContext): ActiveRun {
+/** Phase 2 (AC-04 / SCENARIO-008): ellipsize the queued-input preview to ~60
+ *  chars so the status pill stays one line even for long user messages. */
+function previewInput(text: string, max = 60): string {
+	const t = String(text ?? "");
+	return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/** Factory for the module-scoped ActiveRun (fresh queue per run — no leak).
+ *  Phase 2 adds the optional `stream` arg so push() can reach the live-stream's
+ *  `userInput` sink; omitting it preserves Phase 1 behavior (queue + no ACK). */
+export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandle): ActiveRun {
 	return {
 		queue: [],
 		ctx,
+		stream,
 		push(text: string): void {
 			// SCENARIO-007: never queue empty/whitespace-only input (no spurious
 			// guidance entry would be prepended downstream).
 			const t = String(text ?? "").trim();
 			if (!t) return;
 			this.queue.push(t);
+			// Phase 2 (AC-04 / AC-07): ACK surfaces — TUI-only AND stream-attached,
+			// each wrapped best-effort try/catch so a failing surface never aborts
+			// capture (SCENARIO-006 / SCENARIO-023). No stream ⇒ no ACK at all
+			// (keeps the Phase 1 idle shape byte-identical).
+			if (this.ctx?.mode === "tui" && this.stream) {
+				// (a) status pill — "📥 queued: <preview ~60ch>" (SCENARIO-008).
+				try { this.ctx?.ui?.setStatus?.("super-dev-input", `📥 queued: ${previewInput(t)}`); } catch { /* best-effort */ }
+				// (c) transcript line — flows through transcriptTail → renderResult
+				// unchanged (SCENARIO-009). (b) dashboard count is derived from
+				// queue.length by execute()'s renderDashboard() closure below.
+				try { this.stream.sink.userInput(t); } catch { /* best-effort */ }
+			}
 		},
 		drain(): string[] {
 			// SCENARIO-013: atomic return-and-clear. A second drain returns [] until
@@ -303,7 +328,7 @@ export default function activate(pi: ExtensionAPI): void {
 					// in print/json/headless/RPC modes (AC-09 / AC-10).
 					ctx?.ui?.setWidget?.(
 						DASHBOARD_KEY,
-						createDashboardWidgetFactory(entries, dashboardActivity),
+						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0),
 						{ placement: "aboveEditor" },
 					);
 				} catch { /* best-effort */ }
@@ -329,7 +354,7 @@ export default function activate(pi: ExtensionAPI): void {
 			try {
 				// Phase 1 (AC-02 / SCENARIO-002): set the run-state singleton on execute()
 				// entry, storing ctx so the listener + (Phase 2) ACK surfaces can use it.
-				activeRun = createActiveRun(ctx);
+				activeRun = createActiveRun(ctx, stream);
 				ensureSuperDevDirs();
 				startRun();
 				const summary = await runPipelineTask(task, {
@@ -378,6 +403,9 @@ export default function activate(pi: ExtensionAPI): void {
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
 				try { ctx?.ui?.setStatus?.("super-dev", undefined); } catch { /* best-effort */ }
+				// Phase 2 (AC-04 / SCENARIO-010): clear the mid-run input status pill in
+				// the same cleanup that nulls activeRun + the dashboard widget.
+				try { ctx?.ui?.setStatus?.("super-dev-input", undefined); } catch { /* best-effort */ }
 			}
 		},
 		// Pi-native result rendering: 3 sections. §1 detail logs DIMMED (thought-like,

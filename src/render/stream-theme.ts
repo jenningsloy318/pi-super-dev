@@ -42,7 +42,8 @@ export type LineKind =
 	| "log-error"
 	| "thinking"
 	| "error"
-	| "trim";
+	| "trim"
+	| "user-input";
 
 /**
  * Classify a single stream line into its {@link LineKind}.
@@ -173,6 +174,14 @@ export function themeLine(kind: LineKind, text: string, theme?: DashboardTheme):
 			return fg("error", bold(text));
 		case "trim":
 			return fg("muted", text);
+		// Phase 2 (AC-07 / SCENARIO-009): mid-run user input is tagged directly at
+		// the sink (NOT derived by classifyLine), like thinking/trim. Styled
+		// accent+bold (mirrors `phase`) so queued guidance stands out in the tail.
+		// Uses the METHOD-bound `fg`/`bold` wrappers above so the real class-based
+		// pi Theme (whose `fg()` reads `this.fgColors`) survives without a detached-
+		// `this` throw (SCENARIO-011 / SCENARIO-022).
+		case "user-input":
+			return fg("accent", bold(text));
 		default:
 			// Exhaustiveness guard — every LineKind is handled above.
 			return text;
