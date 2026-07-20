@@ -45,6 +45,15 @@ vi.mock("../src/build-runner.ts", () => ({
 		errors: [] as string[],
 		outOfScopeErrors: [] as string[],
 	})),
+	// Phase 3 (AC-03 → SCENARIO-011..015): the stage now calls this third sibling
+	// primitive after the build-gate, AND-ed into the GREEN verdict. Default PASS
+	// (these phases declare no deliverables) so today's behavior is preserved.
+	runDeliverableCheck: vi.fn(() => ({
+		pass: true,
+		missing: [] as string[],
+		ran: [] as string[],
+	})),
+	resetDeliverableCheckCache: vi.fn(() => {}),
 }));
 
 vi.mock("../src/render/render.ts", () => ({
@@ -52,10 +61,11 @@ vi.mock("../src/render/render.ts", () => ({
 }));
 
 import { implementationStage } from "../src/stages/implementation.ts";
-import { runRedCheck, runBuildGate } from "../src/build-runner.ts";
+import { runRedCheck, runBuildGate, runDeliverableCheck } from "../src/build-runner.ts";
 
 const redCheck = runRedCheck as unknown as ReturnType<typeof vi.fn>;
 const buildGate = runBuildGate as unknown as ReturnType<typeof vi.fn>;
+const deliverableCheck = runDeliverableCheck as unknown as ReturnType<typeof vi.fn>;
 
 /** Unique substring of the Rust self-verify discipline (single source of truth). */
 const RUST_DISCIPLINE_MARKER = "never sufficient proof";
@@ -127,7 +137,9 @@ function mkCtx(): { ctx: StageContext; calls: CapturedCalls } {
 beforeEach(() => {
 	redCheck.mockReset();
 	buildGate.mockReset();
-	// Default: RED oracle unknown (greenfield-safe, immediate proceed) + gate pass.
+	deliverableCheck.mockReset();
+	// Default: RED oracle unknown (greenfield-safe, immediate proceed) + gate pass
+	// + deliverable check pass (phases declare no contract → backward-compat).
 	redCheck.mockImplementation(() => "unknown");
 	buildGate.mockImplementation(() => ({
 		pass: true,
@@ -135,6 +147,11 @@ beforeEach(() => {
 		ran: ["npm test"],
 		errors: [],
 		outOfScopeErrors: [],
+	}));
+	deliverableCheck.mockImplementation(() => ({
+		pass: true,
+		missing: [],
+		ran: [],
 	}));
 });
 

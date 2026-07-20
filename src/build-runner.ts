@@ -1609,6 +1609,18 @@ export interface DeliverableCheckResult {
 export interface DeliverableCheckOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	/**
+	 * Skip the {@link requireTests} sub-check entirely (no test-lister spawn).
+	 *
+	 * Review finding: `runDeliverableCheck` spawned the test-lister even when the
+	 * build gate had ALREADY failed — a wasted compile on a broken build that also
+	 * seeded a poisoned cache (an incomplete/unrepresentative list). The
+	 * implementation stage sets this to `true` whenever the build gate is NOT
+	 * green, so the cheap file/contains/not-contains checks still run and report
+	 * missing deliverables, but the test-lister is NOT spawned against a broken
+	 * build. When the build is green (or this is unset) the full check runs.
+	 */
+	skipTests?: boolean;
 }
 
 /**
@@ -1619,14 +1631,44 @@ export interface DeliverableCheckOptions {
 type TestListResult = { available: true; list: string } | { available: false };
 
 /**
- * Process-local cache of the project test LIST, keyed by ABSOLUTE `cwd`. Stores
- * either the collected list text OR an `{ available:false }` sentinel so the
- * lister spawns AT MOST ONCE per cwd per run (SCENARIO-009 — two
- * requireTests-bearing phases sharing a cwd share one spawn). Lives only in
- * memory; `vi.resetModules()` (or process exit) clears it, so no result ever
- * leaks across runs. Keyed by absolute cwd so each temp worktree is distinct.
+ * Process-local cache of the project test LIST, keyed by ABSOLUTE `cwd` (via
+ * `resolve()` so a relative/symlinked `cwd` keys the cache identically to the
+ * spawn `cwd` — mirrors {@link cargoMetadataCache}, review finding: cache-key/
+ * argv skew risk). Stores either the collected list text OR an
+ * `{ available:false }` sentinel so the lister spawns AT MOST ONCE per cwd per
+ * run (SCENARIO-009 — two requireTests-bearing phases sharing a cwd share one
+ * spawn). Lives only in memory.
+ *
+ * RUN-BOUNDARY RESET (review finding, HIGH): a module-level cache is STALE the
+ * instant the implementer ADDS a test on a retry — the cached list still omits
+ * the new name, so `requireTests` false-negatives forever across retry
+ * attempts AND across phases (defeating the core retry mechanism). The cache is
+ * therefore NEVER the source of truth across attempts: the implementation
+ * stage calls {@link resetDeliverableCheckCache()} before each attempt's
+ * `runDeliverableCheck`, so every attempt re-spawns a FRESH list. The cache
+ * still dedupes a single runDeliverableCheck call's sub-checks (and within-run
+ * calls that did not change the test set); it just cannot survive a retry
+ * boundary. {@link resetDeliverableCheckCache} also bounds the map so it never
+ * grows unbounded across phases.
  */
 const testListCache = new Map<string, TestListResult>();
+
+/**
+ * Clear the deliverable-checker's process-local caches (the test-list cache).
+ *
+ * Run-boundary hook (review finding, HIGH): the implementation stage MUST call
+ * this before each retry attempt's {@link runDeliverableCheck} so a freshly
+ * added test is observed instead of being masked by the stale cached list. It
+ * also bounds {@link testListCache} (no unbounded growth across phases). Pure
+ * (clears an in-memory map); never throws.
+ */
+export function resetDeliverableCheckCache(): void {
+	try {
+		testListCache.clear();
+	} catch {
+		// NEVER throw — a reset failure must not stall the pipeline.
+	}
+}
 
 /**
  * Read a file for deliverable checking, DISTINGUISHING "missing" from
@@ -1704,17 +1746,20 @@ function loadTestList(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): TestListResult {
-	const cached = testListCache.get(cwd);
+	// Resolve ONCE so the cache KEY and the spawn `cwd` use the SAME absolute
+	// path (review finding: cache-key/argv skew — mirrors {@link cargoMetadataCache}).
+	const key = resolve(cwd);
+	const cached = testListCache.get(key);
 	if (cached) return cached;
 	const argv = resolveTestListerArgv(cwd, cmds);
 	if (!argv || argv.length === 0) {
 		const res: TestListResult = { available: false };
-		testListCache.set(cwd, res);
+		testListCache.set(key, res);
 		return res;
 	}
 	if (signal?.aborted) {
 		const res: TestListResult = { available: false };
-		testListCache.set(cwd, res);
+		testListCache.set(key, res);
 		return res;
 	}
 	let list = "";
@@ -1734,7 +1779,7 @@ function loadTestList(
 	const res: TestListResult = available
 		? { available: true, list }
 		: { available: false };
-	testListCache.set(cwd, res);
+	testListCache.set(key, res);
 	return res;
 }
 
@@ -1829,7 +1874,13 @@ export function runDeliverableCheck(
 			}
 		}
 
-		// (c) requireNotContains — only a READABLE hit is forbidden.
+		// (c) requireNotContains — a forbidden pattern surviving in a READABLE file
+		// is reported; a MISSING or UNREADABLE file is ALSO a failure (review finding:
+		// requireNotContains silently PASSED when the target file was missing or
+		// unreadable — a spec that forbids a pattern in `<file>` cannot be verified
+		// when `<file>` is absent, so the contract is unmet and must FAIL, not silently
+		// pass). This mirrors requireFiles/requireContains: `missing file:` when the
+		// file is absent, `unreadable:` when it exists but cannot be read.
 		const notContains = deliverables.requireNotContains;
 		if (Array.isArray(notContains)) {
 			for (const entry of notContains) {
@@ -1837,22 +1888,37 @@ export function runDeliverableCheck(
 				const pattern = entry?.pattern;
 				ran.push(`not-contains:${file}:${pattern}`);
 				const rd = readForDeliverable(cwd, file);
-				if (rd.ok && tolerantMatch(pattern, rd.text)) {
+				if (!rd.ok) {
+					missing.push(rd.exists ? `unreadable: ${file}` : `missing file: ${file}`);
+				} else if (tolerantMatch(pattern, rd.text)) {
 					missing.push(`forbidden pattern ${pattern} still present in ${file}`);
 				}
 			}
 		}
 
-		// (d) requireTests — ONE cached test-list spawn per cwd per run.
+		// (d) requireTests — ONE cached test-list spawn per cwd per run. Skipped
+		// entirely when `opts.skipTests` is set (review finding: do NOT spawn the
+		// test-lister when the build gate already failed — wasted compile on a broken
+		// build, and a poisoned cache). The cheap file/contains/not-contains checks
+		// above still ran regardless.
 		const tests = deliverables.requireTests;
-		if (Array.isArray(tests) && tests.length > 0) {
+		if (Array.isArray(tests) && tests.length > 0 && !opts?.skipTests) {
 			const cmds = detectProjectCommands(cwd);
 			const timeoutMs = resolveTimeoutMs(opts?.timeoutMs);
 			const list = loadTestList(cwd, cmds, timeoutMs, opts?.signal);
 			if (list.available) {
 				ran.push("tests:list");
+				// Review finding: matching the test name against the WHOLE raw stdout
+				// (a single giant string) risks false-greens — a name substring hit in
+				// a path, a directory header, or a comment line would satisfy the
+				// contract even when no real test by that name exists. Match per-LINE
+				// instead so a hit requires the name to appear on an actual listed
+				// entry line (cargo/pytest emit one test per line; vitest --json emits
+				// a single-line JSON array, which is one line and unaffected).
+				const lines = list.list.split(/\r?\n/).filter((l) => l.trim().length > 0);
 				for (const name of tests) {
-					if (!tolerantMatch(name, list.list)) {
+					const hit = lines.some((line) => tolerantMatch(name, line));
+					if (!hit) {
 						missing.push(`missing test: ${name}`);
 					}
 				}

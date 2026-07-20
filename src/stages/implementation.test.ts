@@ -39,6 +39,14 @@ vi.mock("../build-runner.ts", () => ({
 		if (mock.result) return { ...mock.result };
 		return { pass: true, buildSuccess: true, allTestsPass: true, typecheckSuccess: true, ran: [], errors: [], outOfScopeErrors: [], inScopePass: true };
 	},
+	// DELIVERABLE oracle (AC-03): the stage now calls runDeliverableCheck after
+	// runBuildGate. These in-scope-verdict tests declare NO deliverables, so the
+	// primitive early-returns {pass:true} (SCENARIO-014 backward compat) — mirror
+	// that exact outcome here so the verdict reduces to today's behavior. The
+	// deliverable-check logic itself is exercised by tests/build-runner-deliverable-check.test.ts
+	// and tests/implementation-deliverable-regression.test.ts.
+	runDeliverableCheck: (_cwd: string, _deliverables?: unknown, _opts?: unknown) => ({ pass: true, missing: [] as string[], ran: [] as string[] }),
+	resetDeliverableCheckCache: () => {},
 }));
 
 import { implementationStage } from "./implementation.ts";
