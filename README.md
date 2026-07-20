@@ -102,8 +102,13 @@ SUPER_DEV_BUILD_TEST_PACKAGES="api,store" pi super-dev fix ...
 **auto-detect touched crates** when neither an explicit package list nor
 `SUPER_DEV_BUILD_TEST_PACKAGES` is set. The gate runs
 `git -C <worktree> diff --merge-base <baseRef> --name-only`, maps every
-`crates/<pkg>/...` path to `<pkg>`, de-dupes (first-seen order), and scopes
-all three commands to that set. Defaults to `main`; set it for repos whose
+`crates/<dir>/...` path to its directory segment, then resolves each segment
+to the **real cargo package name** via a cached `cargo metadata --no-deps`
+lookup (so prefixed-crate workspaces resolve correctly — `crates/data/` →
+`stockfan-data`, not `data`), de-dupes (first-seen order), and scopes all
+three commands to that set. If `cargo` is missing or `metadata` fails / times
+out, it degrades to the directory name verbatim — identical to the old
+behavior, so `dir == name` workspaces are unaffected. Defaults to `main`; set it for repos whose
 default branch is `develop`, `master`, or `trunk`:
 
 ```bash
@@ -117,6 +122,14 @@ the byte-identical workspace-wide behavior (no `-p` flags). Note: this means
 the feature is silently inactive on repos that don't follow the
 `crates/<pkg>/` convention — see the scope-aware build-gate spec for known
 limitations and future work (full baseline-diff).
+
+**`SUPER_DEV_CARGO_METADATA_TIMEOUT_MS`** — timeout (ms) for the single cached
+`cargo metadata --no-deps` lookup the auto-detect path uses to resolve touched
+crate **directories to real package names**. Defaults to `30_000` (30 s); a
+metadata read is a cheap manifest-graph scan, not a build, so it gets a far
+shorter envelope than `SUPER_DEV_BUILD_TIMEOUT_MS`. On any error or timeout
+it degrades to the directory name verbatim (a no-op where directory already
+equals package name). Override only if a cold toolchain needs more headroom.
 
 Package-set **precedence** (highest → lowest): explicit `opts` argument →
 `SUPER_DEV_BUILD_TEST_PACKAGES` → auto-detected touched crates →
@@ -132,7 +145,9 @@ SUPER_DEV_GATE_BASE_REF=develop \
 
 Internals: timeout resolution lives in `resolveTimeoutMs()`, package scoping
 in `scopedCargoArgs()` / `scopedCargoBuildArgs()` / `scopedCargoTestArgs()` /
-`scopedCargoClippyArgs()`, auto-detection in `detectTouchedCargoPackages()`,
+`scopedCargoClippyArgs()`, directory→package-name resolution in
+`resolveCargoPackageNames()` (backed by a per-cwd `cargo metadata` cache),
+auto-detection in `detectTouchedCargoPackages()`,
 and in-scope classification in `classifyOutOfScopeErrors()` (all in
 `src/build-runner.ts`). The implementation retry loop (Stage 9.2) treats a
 gate result as GREEN when `gate.pass || gate.inScopePass`, logging any ignored

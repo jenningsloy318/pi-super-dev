@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Scope-aware build gate now resolves real cargo package names.** `detectTouchedCargoPackages` (`src/build-runner.ts`) previously derived `-p` flags from workspace DIRECTORY names (e.g. `crates/data/` → `data`); on any prefixed-crate workspace (dirs `data/tools/workflows` → packages `stockfan-data/stockfan-tools/stockfan-workflows`) the gate ran `cargo build -p data -p tools`, which cargo rejected with `package ID specification 'data' did not match any packages` (exit 101), false-failing every attempt BEFORE compiling anything — a failure the repair loop cannot fix because the command is framework-derived. Added `resolveCargoPackageNames(cwd, touchedDirs)` (plus private `loadCargoMetadata` + a process-local per-cwd `cargoMetadataCache`) that spawns cached `cargo metadata --format-version 1 --no-deps`, maps each touched directory segment to the workspace package whose `manifest_path` parent matches, and is wired as the final step of `detectTouchedCargoPackages`. Never throws: any failure (missing/non-zero cargo, timeout, bad JSON) degrades to the directory-name identity fallback, so `dir==name` workspaces, non-cargo repos, and non-git dirs are byte-identical. Also augments `classifyOutOfScopeErrors` (`classificationScope`) so cargo's `crates/<dir>/` source-path markers still match in-scope crates under their real names (prevents a false-green regression). New env var `SUPER_DEV_CARGO_METADATA_TIMEOUT_MS` (default 30 000) bounds the single metadata spawn.
+
+### Changed
+- **Agent self-verification prompts forbid `--lib`-only green.** `buildImplementPrompt` / `buildQaPrompt` (`src/prompts.ts`) now append a Rust-scoped clause requiring `cargo test -p <pkg>` WITHOUT `--lib` (so `tests/` integration binaries run) plus any spec-mandated e2e/integration target, gated on the setup-detected `language === 'rust'`. Prompt-text only — no control-flow / nodes / workflow / pipeline change.
+
 ## [0.3.0] - 2026-07-06
 
 ### Added
