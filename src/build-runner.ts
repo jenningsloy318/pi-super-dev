@@ -856,6 +856,160 @@ export function classifyOutOfScopeErrors(
 	}
 }
 
+/**
+ * Strip a trailing vitest `:line:col` (or bare `:line`) location suffix from a
+ * test-file path token so it matches a RAW git diff/ls-files path. vitest's
+ * `❯ <path>:<line>:<col>` pointer always carries a location; jest's
+ * `FAIL <path>` summary never does. Applying this to BOTH forms is a safe no-op
+ * when no `:digit` suffix is present. Pure; never throws.
+ */
+function stripLineCol(p: string): string {
+	return p.replace(/:\d+(?::\d+)?$/, "");
+}
+
+/**
+ * Module-level regexes for {@link parseFailingNpmTestFiles}. Both are GLOBAL
+ * so a single `exec` loop finds every marker; {@link parseFailingNpmTestFiles}
+ * resets `lastIndex = 0` before each use (the constants are reused across
+ * calls). Each consumes ≥1 captured char per match, so `exec` always advances
+ * `lastIndex` — no zero-length-match infinite loop.
+ *
+ *   - `VITEST_FAIL_PTR_RE` matches vitest's `❯ <path>:line:col` assertion
+ *     pointer. The path token `[\s\s❯]+` excludes whitespace AND the `❯` marker
+ *     itself, so a bare `❯`/`❯\n❯` sequence with NO path yields no capture
+ *     (adversarial robustness — never invents a path out of marker noise).
+ *   - `JEST_FAIL_LINE_RE` matches jest's line-start `FAIL <path>` summary
+ *     (multiline + global: anchored to the start of ANY line). A mid-sentence
+ *     `FAIL` is correctly ignored (the spec anchors jest at `^FAIL`).
+ */
+const VITEST_FAIL_PTR_RE = /❯\s*([^\s❯]+)/g;
+const JEST_FAIL_LINE_RE = /^FAIL\s+(\S+)/gm;
+
+/**
+ * Parse the failing npm-family (vitest / jest) test files out of combined
+ * runner output. Phase 5 / Gap 4 — the npm counterpart of the cargo
+ * `crates/<pkg>/` marker scan performed by {@link classifyOutOfScopeErrors}.
+ *
+ * Matches:
+ *   - vitest `❯\s*<path>` assertion pointers (the authoritative failing-file
+ *     signal), STRIPPING a trailing `:line:col` / `:line` location via
+ *     {@link stripLineCol} so the result matches a RAW git path; AND
+ *   - jest `^FAIL\s+<path>` line-start summary markers.
+ *
+ * Returns the de-duplicated RAW file paths in first-seen order (vitest markers
+ * first, then jest-only markers), or `[]` when no marker is found.
+ *
+ * NEVER throws — the entire body is try/caught and degrades to `[]` on any
+ * input (non-string, null/undefined, adversarial content, regex explosion). An
+ * empty `[]` return is the conservative in-scope fallback the npm classifier
+ * ({@link classifyOutOfScopeNpmErrors}) relies on: unparseable output grants
+ * NO false green.
+ *
+ * Pure & side-effect-free (no spawn, no fs, no env).
+ *
+ * @param combinedOutput The combined stdout/stderr of a failed npm-family test
+ *   step (vitest/jest) — typically the assembled error block(s).
+ * @returns De-duplicated RAW failing test file paths (first-seen order), or [].
+ */
+export function parseFailingNpmTestFiles(combinedOutput: string): string[] {
+	try {
+		if (typeof combinedOutput !== "string" || combinedOutput.length === 0) {
+			return [];
+		}
+		const seen = new Set<string>();
+		const out: string[] = [];
+		const add = (raw: string) => {
+			const p = stripLineCol(raw);
+			if (p && !seen.has(p)) {
+				seen.add(p);
+				out.push(p);
+			}
+		};
+		// vitest `❯ <path>:line:col` pointers first (authoritative signal).
+		VITEST_FAIL_PTR_RE.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		while ((m = VITEST_FAIL_PTR_RE.exec(combinedOutput)) !== null) {
+			if (m[1]) add(m[1]);
+		}
+		// jest `^FAIL <path>` line-start summaries (dedup against vitest hits).
+		JEST_FAIL_LINE_RE.lastIndex = 0;
+		while ((m = JEST_FAIL_LINE_RE.exec(combinedOutput)) !== null) {
+			if (m[1]) add(m[1]);
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Classify npm-family (vitest/jest) error blocks into out-of-scope failures.
+ *
+ * Phase 5 / Gap 4 — the npm counterpart of {@link classifyOutOfScopeErrors}
+ * (cargo). Whereas the cargo classifier partitions blocks by `crates/<pkg>/` +
+ * `-p <pkg>` markers against a resolved CRATE scope, this classifier partitions
+ * by failing-test-FILE markers (parsed via {@link parseFailingNpmTestFiles})
+ * against the RAW touched-file set ({@link touchedFilePaths}): a failing test
+ * file is OUT-of-scope iff it is ABSENT from the touched set.
+ *
+ * Mirrors the cargo contract EXACTLY (AC-04):
+ *   - unparseable output (no failing-file marker) ⇒ conservative IN-SCOPE
+ *     (returns `[]` — grants NO false green);
+ *   - EMPTY touched set (git error / no diff) ⇒ conservative IN-SCOPE (`[]`);
+ *   - a block referencing ≥1 failing file ALL absent from touched ⇒ OUT-of-scope;
+ *   - any block whose failing files intersect touched ⇒ conservative IN-SCOPE
+ *     (mixed failures never escape to out-of-scope).
+ *
+ * Side-effecting (spawns git via {@link touchedFilePaths}) like the cargo
+ * path's {@link classificationScope}, but pure wrt argv construction. NEVER
+ * throws — the entire body is try/caught and degrades to `[]`.
+ *
+ * @param errors The raw error blocks collected by the gate exec loop.
+ * @param cwd Absolute worktree path (passed to {@link touchedFilePaths}).
+ * @returns The out-of-scope error blocks (subset of `errors`), or [].
+ */
+function classifyOutOfScopeNpmErrors(errors: string[], cwd: string): string[] {
+	try {
+		const safeErrors = Array.isArray(errors) ? errors : [];
+		// Short-circuit: parse the COMBINED output once. If NO failing-file marker
+		// is found anywhere, there is nothing to classify AND no reason to spawn
+		// git — degrade conservatively to in-scope (grants no false green). This
+		// also skips the git spawn when the gate PASSED (errors=[]).
+		const combined = safeErrors
+			.map((e) => (typeof e === "string" ? e : String(e ?? "")))
+			.join("\n");
+		const failingFiles = parseFailingNpmTestFiles(combined);
+		if (failingFiles.length === 0) return [];
+		// Empty touched set (git error / non-git dir / no diff) ⇒ cannot PROVE any
+		// failure is out-of-scope ⇒ conservative IN-SCOPE.
+		const touched = touchedFilePaths(cwd);
+		if (touched.length === 0) return [];
+		const touchedSet = new Set(touched);
+		// Per-block classification mirroring {@link classifyOutOfScopeErrors}: a
+		// block is OUT-of-scope iff it references ≥1 failing file AND ALL of its
+		// referenced failing files are ABSENT from the touched set. Any in-scope
+		// (touched) failing file ⇒ the whole block stays in-scope (no false green).
+		const outOfScopeErrors: string[] = [];
+		for (const err of safeErrors) {
+			const block = typeof err === "string" ? err : String(err ?? "");
+			const blockFiles = parseFailingNpmTestFiles(block);
+			if (blockFiles.length === 0) continue; // no marker ⇒ in-scope (skip)
+			let anyInScope = false;
+			for (const f of blockFiles) {
+				if (touchedSet.has(f)) {
+					anyInScope = true;
+					break;
+				}
+			}
+			if (!anyInScope) outOfScopeErrors.push(block);
+		}
+		return outOfScopeErrors;
+	} catch {
+		// NEVER throw — degrade to in-scope on any failure.
+		return [];
+	}
+}
+
 const STDERR_TAIL_LINES = 12;
 
 export type CmdKey = "build" | "test" | "typecheck";
@@ -1190,7 +1344,19 @@ export function runBuildGate(
 		cmds0.language === "rust" && testPackages.length > 0
 			? classificationScope(cwd, testPackages)
 			: testPackages;
-	const { outOfScopeErrors } = classifyOutOfScopeErrors(errors, classScope);
+	// AC-04: the cargo branch (rust) classifies via {@link
+	// classifyOutOfScopeErrors} (crates/<pkg>/ + -p <pkg> markers) — byte-for-byte
+	// UNCHANGED (same call + args). Phase 5 / Gap 4 generalizes in/out-of-scope
+	// classification to the npm family (vitest/jest) via {@link
+	// classifyOutOfScopeNpmErrors}, which partitions failing-test-FILE markers
+	// against the touched-file set ({@link touchedFilePaths}). Both paths degrade
+	// conservatively to in-scope on any ambiguity / empty touched set /
+	// unparseable output (grants NO false green). The `inScopePass = pass ||
+	// (all-failures-out-of-scope)` formula is shared verbatim across both branches.
+	const outOfScopeErrors =
+		cmds0.language === "rust"
+			? classifyOutOfScopeErrors(errors, classScope).outOfScopeErrors
+			: classifyOutOfScopeNpmErrors(errors, cwd);
 	const inScopePass =
 		pass || (errors.length > 0 && outOfScopeErrors.length === errors.length);
 	return {
