@@ -61,49 +61,83 @@ Tool options: `skipWorktree`, `skipStages`, `model`, `maxAgents`.
 
 The deterministic build gate (Stage 9 verify / 9.2 implementation / 11 merge)
 runs `build`, `test`, and `typecheck` (and Rust `clippy`) against your
-worktree. Two **optional environment variables** tune its timeout and test
-scope **without editing any stage call site** — the harness resolves them
-internally, so the three callers keep passing only `{ signal }`.
+worktree. It is **scope-aware**: on Rust workspaces it can narrow all three
+commands to the crates the current branch actually touched and treat
+pre-existing out-of-scope failures as ignorable, so it stops false-failing
+and false-aborting on messy real-world monorepos. Three **optional
+environment variables** tune its timeout and scope **without editing any
+stage call site** — the harness resolves them internally, so the three
+callers keep passing only `{ signal }`.
 
 **`SUPER_DEV_BUILD_TIMEOUT_MS`** — per-command timeout override in
 milliseconds (base-10 integer). The default is 600_000 ms (10 minutes); a
 too-short timeout previously caused false FAILs on slow first-time Rust
 compiles before the build finished. Falls back to the default when the var is
-unset, empty, not-a-number, or `<= 0`. This is the per-package test scoping
-companion to the timeout var. Give every cargo / build / typecheck command up
-to 15 minutes:
+unset, empty, not-a-number, or `<= 0`. Give every cargo / build / typecheck
+command up to 15 minutes:
 
 ```bash
 SUPER_DEV_BUILD_TIMEOUT_MS=900000 pi super-dev fix ...
 ```
 
-**`SUPER_DEV_BUILD_TEST_PACKAGES`** — a comma-separated list of Cargo crate
-names that scopes the gate's `cargo test` invocation to those packages
-(`cargo test -p <pkg> ...`) instead of running workspace-wide. This lets the
-gate reach green on a Rust workspace whose other crates carry pre-existing,
-unrelated failing tests — **without mutating the target repo** (no `#[ignore]`,
+**`SUPER_DEV_BUILD_TEST_PACKAGES`** — a comma-separated list of Cargo **crate
+names** that forces the gate to scope all three commands (`build`, `test`,
+`clippy`) to those packages (`-p <pkg> ...`) instead of running
+workspace-wide. Crate names are bare package names, **not paths** — e.g.
+`api,store`, not `crates/api,crates/store` (a leading `crates/` is passed
+verbatim to cargo and produces an invalid package spec). This lets the gate
+reach green on a Rust workspace whose other crates carry pre-existing,
+unrelated failures — **without mutating the target repo** (no `#[ignore]`,
 no quarantine, no file writes). Applied **only when the detected language is
 `rust`** and the list is non-empty; go/python/node/mixed stacks ignore it
-entirely, and empty/missing falls back to a workspace-wide
-`cargo test --quiet`. Scope the gate's `cargo test` to two crates, ignoring
-the rest of the workspace:
+entirely, and empty/missing falls back to auto-detection (below) or a
+workspace-wide build. Scope the gate to two crates, ignoring the rest of the
+workspace:
 
 ```bash
-SUPER_DEV_BUILD_TEST_PACKAGES="crates/api,crates/store" pi super-dev fix ...
+SUPER_DEV_BUILD_TEST_PACKAGES="api,store" pi super-dev fix ...
 ```
 
-Both variables can be combined on a Rust workspace:
+**`SUPER_DEV_GATE_BASE_REF`** — the git ref the gate diffs against to
+**auto-detect touched crates** when neither an explicit package list nor
+`SUPER_DEV_BUILD_TEST_PACKAGES` is set. The gate runs
+`git -C <worktree> diff --merge-base <baseRef> --name-only`, maps every
+`crates/<pkg>/...` path to `<pkg>`, de-dupes (first-seen order), and scopes
+all three commands to that set. Defaults to `main`; set it for repos whose
+default branch is `develop`, `master`, or `trunk`:
+
+```bash
+SUPER_DEV_GATE_BASE_REF=develop pi super-dev fix ...
+```
+
+Auto-detection is a safe degradation: on any git error, empty diff, a
+non-`crates/<pkg>/` layout (top-level member dirs, `members=["*"]`), or a
+base ref that does not resolve, it returns `[]` and the gate falls back to
+the byte-identical workspace-wide behavior (no `-p` flags). Note: this means
+the feature is silently inactive on repos that don't follow the
+`crates/<pkg>/` convention — see the scope-aware build-gate spec for known
+limitations and future work (full baseline-diff).
+
+Package-set **precedence** (highest → lowest): explicit `opts` argument →
+`SUPER_DEV_BUILD_TEST_PACKAGES` → auto-detected touched crates →
+workspace-wide. The git-diff spawn is skipped when a higher-precedence source
+supplies a value. All three variables can be combined on a Rust workspace:
 
 ```bash
 SUPER_DEV_BUILD_TIMEOUT_MS=900000 \
-SUPER_DEV_BUILD_TEST_PACKAGES="crates/api,crates/store" \
+SUPER_DEV_BUILD_TEST_PACKAGES="api,store" \
+SUPER_DEV_GATE_BASE_REF=develop \
   pi super-dev fix "add OAuth2 login"
 ```
 
-Internals: timeout resolution lives in `resolveTimeoutMs()` and package
-scoping in `parseTestPackages()` / `scopedCargoTestArgs()` (all in
-`src/build-runner.ts`). Precedence for each is: explicit `opts` argument > env
-var > built-in default. See the JSDoc on `DEFAULT_TIMEOUT_MS` for the full
+Internals: timeout resolution lives in `resolveTimeoutMs()`, package scoping
+in `scopedCargoArgs()` / `scopedCargoBuildArgs()` / `scopedCargoTestArgs()` /
+`scopedCargoClippyArgs()`, auto-detection in `detectTouchedCargoPackages()`,
+and in-scope classification in `classifyOutOfScopeErrors()` (all in
+`src/build-runner.ts`). The implementation retry loop (Stage 9.2) treats a
+gate result as GREEN when `gate.pass || gate.inScopePass`, logging any ignored
+pre-existing out-of-scope failures, and terminates early only on genuine
+in-scope failures. See the JSDoc on `DEFAULT_TIMEOUT_MS` for the full timeout
 fallback matrix.
 
 ## Architecture
