@@ -1,0 +1,21 @@
+# Documentation: Cargo Package Name Resolution for the Scope-Aware Build Gate — Docs Update
+
+- **Date**: 2026-07-20
+
+---
+
+## Summary
+
+Updated spec-directory and project-level documentation to reflect the merged spec-07 implementation (all 4 phases committed: cd77138b→3bb350d5). The scope-aware cargo build-gate in src/build-runner.ts now resolves REAL cargo package names from `cargo metadata --no-deps` instead of workspace directory names, eliminating the framework-derived `cargo build -p data` false-fail (exit 101) on prefixed-crate workspaces like stockfan (dirs data/tools/workflows → packages stockfan-data/stockfan-tools/stockfan-workflows). New `resolveCargoPackageNames(cwd, touchedDirs)` + cached `loadCargoMetadata` is wired as the final step of `detectTouchedCargoPackages`; `classificationScope()` augments `classifyOutOfScopeErrors` so cargo source-path markers match in-scope crates under their real names (prevents a HIGH false-green regression). Prompts forbid `--lib`-only verification. Docs updated: marked 08-task-list.md (15/15 tasks complete) and 07-implementation-plan.md (4/4 phases complete) with status banners + completion notes; rewrote README.md's auto-detect section to describe the directory→real-name resolution + directory-name fallback, added the new SUPER_DEV_CARGO_METADATA_TIMEOUT_MS (30s default) env var, and added resolveCargoPackageNames() to the internals list; added an [Unreleased] CHANGELOG entry (Fixed + Changed). Verified `npm run typecheck` strict-clean. Committed as cec52929.
+
+## Documentation Updates
+
+- **Docs Updated**: docs/specifications/07-cargo-package-name-resolution/08-task-list.md (15/15 tasks marked [x] complete, status banner + completion notes added); docs/specifications/07-cargo-package-name-resolution/07-implementation-plan.md (all 4 phases marked ✅ COMPLETE, status banner added); README.md (auto-detect touched-crates section rewritten to reflect real-name resolution via cached cargo metadata + identity fallback; new SUPER_DEV_CARGO_METADATA_TIMEOUT_MS env var documented; resolveCargoPackageNames() added to internals list); CHANGELOG.md (new [Unreleased] section: Fixed = real package-name resolution + classificationScope false-green guard; Changed = --lib-only verification prohibition in implementation/QA prompts)
+
+## Deviations Documented
+
+- D1 (spec wording vs impl, net improvement): Fix 3 self-verify discipline is HARD-GATED on setup-detected language==='rust' via rustDiscipline(s) rather than appended UNCONDITIONALLY as the spec text literally stated — broadcasting cargo test instructions to Node/Python/Go repos would be noise. AC-07 fully met; documented in 12-code-review.md F-02 and surfaced in task-list completion notes.
+- D2 (spec wording vs impl, net improvement): a dedicated cargoMetadataTimeoutMs() (30s default) + new SUPER_DEV_CARGO_METADATA_TIMEOUT_MS env var is used instead of the spec's 'existing resolveTimeoutMs() envelope' (the 10-min build timeout) — a metadata read is a cheap manifest-graph scan, so inheriting the 10-min envelope would let a hung cargo stall the whole gate before the fallback. Documented in 12-code-review.md F-03 and now surfaced in README + CHANGELOG.
+- D3 (beyond-spec hardening): classificationScope(cwd, realNames) was added to fix a HIGH-severity false-green regression discovered in code-review round 2 — once testPackages carried real names, cargo's crates/<dir>/ source-path markers mismatched the scope and were misclassified out-of-scope → inScopePass=true. It augments the in-scope set with each crate's directory segment (conservative; makes false-green strictly harder). Documented in 10-implementation-summary.md code-review-fix-round and task-list completion notes.
+- D4 (test organization): spec planned a single new test file (build-runner-package-resolution.test.ts); four granular files were created (package-resolution, package-wiring, backward-compat-regression, prompts-cargo-verify-discipline). Strictly exceeds AC-06 coverage; documented in 10-implementation-summary.md.
+- D5 (determinism): matchPackageBySegment() replaced order-dependent find() so multi-crate-per-top-segment matching is deterministic (prefers exact crate root over nested). Documented in 10-implementation-summary.md.

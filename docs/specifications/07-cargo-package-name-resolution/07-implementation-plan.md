@@ -1,0 +1,19 @@
+# Implementation Plan: Cargo Package Name Resolution for the Scope-Aware Build Gate
+
+- **Date**: 2026-07-20
+- **Status**: ✅ ALL 4 PHASES COMPLETE — merged green (`npm test` 862/862, `npm run typecheck` strict-clean). Commit `cd77138b` (P1) → `a93acfcf` (P2) → `9d058e07` (P3) → `3bb350d5` (P4, incl. code-review round-2 fixes) → `3a067237` (docs).
+
+---
+
+## Phase 1: Phase 1 — Metadata Resolver & Per-Cwd Cache — ✅ COMPLETE
+
+Independently testable: ship `resolveCargoPackageNames(cwd, touchedDirs)` + private `loadCargoMetadata(cwd)` + module-level `cargoMetadataCache` in src/build-runner.ts. Contract: spawns `cargo metadata --format-version 1 --no-deps --manifest-path <cwd>/Cargo.toml` via discrete-argv spawnSync (no shell:true) under the existing `resolveTimeoutMs()` envelope, parses JSON, maps each workspace member to `{name, manifestDir: dirname(manifest_path)}`, caches the result (or a failure sentinel). `resolveCargoPackageNames` maps each touched segment to the package whose manifestDir first `crates/<seg>/` segment equals the touched segment (manifest-in-subdir safe), per-element identity fallback for unmatched dirs, whole-list identity fallback + never-throw on any failure, deduped first-seen order. Covers AC-01/02/03, SCENARIO-001/002/003/004/005/006/017/018/019/020. Unit-tested in isolation with spawnSync mocked (no git, no real cargo).
+## Phase 2: Phase 2 — Wire Resolver Into detectTouchedCargoPackages + Complete Touched Set — ✅ COMPLETE
+
+Depends on Phase 1. Independently testable: inside `detectTouchedCargoPackages`, keep the git-diff discrete-argv spawn, the `/(?:^|\/)crates\/([^/]+)\//` regex, and `dedupePreservingOrder` byte-identical, then pass the deduped directory segments through `resolveCargoPackageNames(cwd, dirs)` as the FINAL mapping step before return. Signature unchanged. Verify the regex already captures the `workflows` segment for `crates/workflows/tests/e2e_*.rs` so the e2e crate is not dropped (Fix 2 — verify, not rewrite). End-to-end assertion: a dir≠name workspace produces `cargo build/test/clippy -p stockfan-data -p stockfan-tools -p stockfan-workflows` via the unchanged scopedCargo* builders. Covers AC-04/05, SCENARIO-007/008/009/021/022.
+## Phase 3: Phase 3 — Agent Self-Verification Prompt Discipline (Fix 3) — ✅ COMPLETE
+
+PARALLELIZABLE with Phases 1–2 (touches only src/prompts.ts, shares no code with the resolver). Independently testable: append language-scoped rust verification discipline to `buildImplementPrompt` and `buildQaPrompt` instruction arrays in src/prompts.ts — require `cargo test -p <pkg>` with NO `--lib` flag (so `tests/` integration binaries run), PLUS any spec-mandated e2e/integration target, and an explicit instruction that `--lib`-only evidence is NOT a green because `--lib` skips the `tests/` integration binaries. Prompt-TEXT only: src/stages/implementation.ts and src/stages/verify.ts consume these builders unchanged (no control-flow / nodes / workflow / pipeline change). Covers AC-07, SCENARIO-010/011.
+## Phase 4: Phase 4 — Regression Suite, Backward-Compat & Gate Verification — ✅ COMPLETE
+
+Depends on Phases 1–3. Independently testable: run the full existing build-runner test suite (touched-crates, autoscope, inscope-classification, scoped-args, packages, nonregression, timeout, docs, base) and assert green unchanged; confirm dir==name workspaces, non-cargo repos (go/python/node/mixed), and non-git dirs are byte-identical (metadata tier runs only when language==='rust' and a non-empty scope resolves); confirm `classifyOutOfScopeErrors` now partitions against REAL names; run tests/stream-theme-class-theme.test.ts (AC-09 method-binding preserved, no new rendering); `npm run typecheck` strict-clean; `npm test` green (existing + new); assert no new runtime deps and that the only new spawned process is cached `cargo metadata --no-deps`. Covers AC-06/08/09/10, SCENARIO-012/013/014/015/016/023/024.

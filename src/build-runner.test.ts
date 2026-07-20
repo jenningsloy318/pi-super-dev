@@ -96,9 +96,12 @@ afterEach(() => {
 	rmSync(worktree, { recursive: true, force: true });
 });
 
-/** All captured cargo-gate argvs (build/test/typecheck), in run order. */
+/** All captured cargo-GATE argvs (build/test/typecheck), in run order.
+ * Excludes the resolver-internal `cargo metadata` spawn (not a gate exec). */
 function cargoCalls(): string[][] {
-	return mock.calls.filter((c) => c.args[0] === "cargo").map((c) => c.args);
+	return mock.calls
+		.filter((c) => c.args[0] === "cargo" && c.args[1] !== "metadata")
+		.map((c) => c.args);
 }
 
 /** Did any `git ... diff --name-only` spawn happen? */
@@ -477,5 +480,49 @@ describe("runBuildGate in-scope classification fields (AC-04 wiring)", () => {
 			2 > 0 && outOfScopeErrors.length === 2;
 		expect(outOfScopeErrors).toHaveLength(2);
 		expect(inScopePass).toBe(true);
+	});
+
+	it("dir≠name: a BUILD failure referencing a DIRECTORY path segment is IN-SCOPE (no false green via inScopePass)", () => {
+		// REVIEW FIX (HIGH false-green regression). After the resolver wired REAL
+		// package names into `testPackages`, a cargo BUILD/CLIPPY error block that
+		// references the crate via its SOURCE PATH (`crates/data/…`) — which cargo
+		// does NOT always pair with a rerun `-p <realname>` flag — would have its
+		// directory segment (`data`) mismatch the real-name scope (`stockfan-data`)
+		// and be misclassified out-of-scope → inScopePass=true → FALSE GREEN.
+		// classificationScope() now augments the scope with each in-scope crate's
+		// directory segment so the path marker matches.
+		const dir = mkdtempSync(join(tmpdir(), "dirnename-"));
+		writeFileSync(join(dir, "Cargo.toml"), "[workspace]\n");
+		mock.stubber = (args: string[]) => {
+			if (args[0] === "git" && args.includes("diff")) {
+				return { status: 0, stdout: "crates/data/src/lib.rs\n", stderr: "", signal: null };
+			}
+			if (args[0] === "cargo" && args.includes("metadata")) {
+				return {
+					status: 0,
+					stdout: JSON.stringify({
+						packages: [
+							{ name: "stockfan-data", manifest_path: "crates/data/Cargo.toml" },
+						],
+					}),
+					stderr: "",
+					signal: null,
+				};
+			}
+			// cargo build/test/clippy → FAIL, error block carries ONLY a directory
+			// path marker (no rerun `-p` flag), the realistic BUILD case.
+			return {
+				status: 1,
+				stdout: "",
+				stderr: "error[E0308]: mismatched types\n  --> crates/data/src/lib.rs:10:5",
+				signal: null,
+			};
+		};
+		const res = runBuildGate(dir);
+		expect(res.pass).toBe(false);
+		// The failure is in-scope → must NOT be partitioned out-of-scope.
+		expect(res.outOfScopeErrors).toHaveLength(0);
+		expect(res.inScopePass).toBe(false);
+		rmSync(dir, { recursive: true, force: true });
 	});
 });
