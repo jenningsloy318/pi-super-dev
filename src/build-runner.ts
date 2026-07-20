@@ -374,7 +374,12 @@ export function detectTouchedCargoPackages(cwd: string, baseRef?: string): strin
 			const m = re.exec(line);
 			if (m) pkgs.push(m[1]);
 		}
-		return dedupePreservingOrder(pkgs);
+		// FINAL mapping step (Fix 1 wiring): resolve the deduped DIRECTORY
+		// segments to REAL cargo package names via cached `cargo metadata`.
+		// Identity on any failure / for dir==name workspaces (AC-08); an empty
+		// touched set returns [] WITHOUT spawning cargo (empty-input guard in
+		// resolveCargoPackageNames), so non-crate / non-git paths skip metadata.
+		return resolveCargoPackageNames(cwd, dedupePreservingOrder(pkgs));
 	} catch {
 		return [];
 	}

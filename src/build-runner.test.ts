@@ -96,9 +96,12 @@ afterEach(() => {
 	rmSync(worktree, { recursive: true, force: true });
 });
 
-/** All captured cargo-gate argvs (build/test/typecheck), in run order. */
+/** All captured cargo-GATE argvs (build/test/typecheck), in run order.
+ * Excludes the resolver-internal `cargo metadata` spawn (not a gate exec). */
 function cargoCalls(): string[][] {
-	return mock.calls.filter((c) => c.args[0] === "cargo").map((c) => c.args);
+	return mock.calls
+		.filter((c) => c.args[0] === "cargo" && c.args[1] !== "metadata")
+		.map((c) => c.args);
 }
 
 /** Did any `git ... diff --name-only` spawn happen? */
