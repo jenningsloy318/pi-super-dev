@@ -11,7 +11,7 @@
  *     invokes the `super_dev` tool.
  */
 
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import type { DashboardTheme } from "./render/dashboard.ts";
@@ -33,6 +33,69 @@ export { runWorkflow } from "./workflow.ts";
 
 const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
+
+/**
+ * Phase 1 (AC-01 / AC-02 / AC-03) — Mid-run input injection run-state singleton.
+ *
+ * `activeRun` is the single module-scoped source of truth for "a super_dev run
+ * is in progress." It is created on `execute()` entry (ctx stored on it) and
+ * nulled in the existing execute() `finally` alongside the dashboard-widget
+ * teardown, so run teardown and widget teardown stay unified (SCENARIO-002).
+ *
+ * The module-lifetime `pi.events.on("input", handler)` listener — registered
+ * EXACTLY ONCE in `activate(pi)`, never per-run — reads this singleton to
+ * decide {active-run + interactive}→handled / {else}→continue (AC-03), which
+ * also prevents listener leaks across runs (AC-01 / SCENARIO-001).
+ *
+ * Phase 1 ships ONLY the queue mechanics + guards. ACK surfaces (status pill,
+ * dashboard count, transcript LineKind) are added in Phase 2; the
+ * `userSteerProvider` drain seam is wired in Phase 3.
+ */
+export interface ActiveRun {
+	/** Pending mid-run user inputs not yet injected into a specialist prompt. */
+	queue: string[];
+	/** The execute() ctx (TUI guards + ACK surfaces use this — Phase 2). */
+	ctx?: ExtensionContext;
+	/** Store interactive input. Empty/whitespace-only is skipped (SCENARIO-007). */
+	push(text: string): void;
+	/** Atomically return the pending inputs AND clear the queue (SCENARIO-013). */
+	drain(): string[];
+}
+
+let activeRun: ActiveRun | null = null;
+
+/** Factory for the module-scoped ActiveRun (fresh queue per run — no leak). */
+export function createActiveRun(ctx?: ExtensionContext): ActiveRun {
+	return {
+		queue: [],
+		ctx,
+		push(text: string): void {
+			// SCENARIO-007: never queue empty/whitespace-only input (no spurious
+			// guidance entry would be prepended downstream).
+			const t = String(text ?? "").trim();
+			if (!t) return;
+			this.queue.push(t);
+		},
+		drain(): string[] {
+			// SCENARIO-013: atomic return-and-clear. A second drain returns [] until
+			// new input arrives, so each captured input is injected exactly once.
+			const out = this.queue;
+			this.queue = [];
+			return out;
+		},
+	};
+}
+
+/** Set/clear the module singleton. Called on execute() entry (store ctx) and
+ * in the execute() finally (discard — unifies run + widget teardown). */
+export function setActiveRun(run: ActiveRun | null): void {
+	activeRun = run;
+}
+
+/** Read the module singleton. Null when idle (no run in progress). */
+export function getActiveRun(): ActiveRun | null {
+	return activeRun;
+}
 
 /** Format a run summary honestly: success ✅ / partial ⚠️ / failed ❌. */
 function formatSummary(s: RunSummary, cwd?: string): string[] {
@@ -134,6 +197,34 @@ export {
 };
 
 export default function activate(pi: ExtensionAPI): void {
+	// Phase 1 (AC-01 / SCENARIO-001): register the mid-run input listener EXACTLY
+	// ONCE at module lifetime (inside activate, never per execute() call). The
+	// handler implements the {active-run + interactive}→handled / {else}→continue
+	// invariant (AC-03); returning {action:"handled"} for captured input tells pi
+	// NOT to re-queue it as a parent steer (SCENARIO-004). The whole body is
+	// try/catch-wrapped so any capture failure degrades to a safe no-op and the
+	// run always completes normally (SCENARIO-006 / SCENARIO-023).
+	// NOTE: `EventBus.on(channel, handler)` types the data payload as `unknown`
+	// (generic pub/sub). We contextually accept `unknown` and narrow to the
+	// `InputEvent` shape here — the "input" channel only ever carries an
+	// InputEvent. Any malformed payload falls through to the catch → {continue}.
+	pi.events.on("input", (data) => {
+		try {
+			// SCENARIO-002 / SCENARIO-003 / SCENARIO-019: idle (no run in progress)
+			// → pi owns the input entirely; nothing is captured.
+			if (activeRun == null) return { action: "continue" };
+			const event = data as InputEvent;
+			// SCENARIO-005 / SCENARIO-020: non-interactive sources (rpc/extension) are
+			// never captured — print/json/headless/RPC input flows through pi
+			// byte-identical to today.
+			if (event?.source !== "interactive") return { action: "continue" };
+			activeRun.push(event.text);
+			return { action: "handled" };
+		} catch {
+			return { action: "continue" };
+		}
+	});
+
 	pi.registerTool({
 		name: SUPER_DEV_TOOL,
 		label: "Super Dev",
@@ -236,6 +327,9 @@ export default function activate(pi: ExtensionAPI): void {
 				},
 			};
 			try {
+				// Phase 1 (AC-02 / SCENARIO-002): set the run-state singleton on execute()
+				// entry, storing ctx so the listener + (Phase 2) ACK surfaces can use it.
+				activeRun = createActiveRun(ctx);
 				ensureSuperDevDirs();
 				startRun();
 				const summary = await runPipelineTask(task, {
@@ -276,6 +370,10 @@ export default function activate(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
 			} finally {
+				// Phase 1 (AC-02 / SCENARIO-002): discard the module-scoped run-state
+				// singleton in the SAME cleanup that removes the run's dashboard widget,
+				// so run teardown + widget teardown stay unified (no leak across runs).
+				activeRun = null;
 				// Always clear the dashboard widget + footer state when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
