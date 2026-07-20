@@ -276,6 +276,108 @@ export function scopedCargoClippyArgs(packages: string[]): string[] {
 	return scopedCargoArgs("clippy", packages, ["--all-targets", "--quiet"]);
 }
 
+/**
+ * Partition gate failure blocks into in-scope vs out-of-scope relative to the
+ * resolved scoped crate set — AC-04.
+ *
+ * Contract: for each error block, extract the referenced crate names via:
+ *   (a) `--> crates/<pkg>/…` (and any `crates/<pkg>/`) path markers, using
+ *       regex `/crates\/([^/]+)\//`; and
+ *   (b) cargo test-failure `-p <pkg>` listing markers, using regex
+ *       `/(?:^|\s)-p\s+(\S+)/`.
+ *
+ * An error is OUT-OF-SCOPE iff it references ≥1 crate AND EVERY referenced
+ * crate is NOT in `scopedSet`. Otherwise it is IN-SCOPE: no parseable crate
+ * marker found (conservative — could be the genuine failure), ≥1 referenced
+ * crate IS in scope (mixed), or `scopedSet` is empty (no scoping active).
+ * Ambiguity NEVER grants a false green. See SCENARIO-009/010/011/021/024/028.
+ *
+ * Pure & side-effect-free (no spawn, no fs, no env). NEVER throws — the entire
+ * body is try/caught and, on ANY error (bad input, regex explosion), treats
+ * ALL blocks as in-scope (returns `outOfScopeErrors: []`).
+ *
+ * @param errors The raw error blocks collected by the gate exec loop (cargo
+ *   stderr tails, failure listings, or the harness label-prefixed strings).
+ * @param scopedSet The resolved (de-duplicated) in-scope crate set.
+ * @returns The partition into `inScopeErrors` and `outOfScopeErrors`.
+ */
+export function classifyOutOfScopeErrors(
+	errors: string[],
+	scopedSet: string[],
+): { inScopeErrors: string[]; outOfScopeErrors: string[] } {
+	try {
+		const scope = new Set<string>(scopedSet);
+		// Empty scoped set ⇒ no scoping active ⇒ treat EVERY error as in-scope
+		// (SCENARIO-011 / SCENARIO-016 parity: never grants a false green).
+		if (scope.size === 0) {
+			const safe = Array.isArray(errors) ? errors : [];
+			return {
+				inScopeErrors: safe.map((e) =>
+					typeof e === "string" ? e : String(e ?? ""),
+				),
+				outOfScopeErrors: [],
+			};
+		}
+		const inScopeErrors: string[] = [];
+		const outOfScopeErrors: string[] = [];
+		// Both regexes consume ≥1 captured char per match, so `exec` always
+		// advances `lastIndex` — no zero-length-match infinite loop possible.
+		// `pathRe` extracts `crates/<pkg>/` source-path markers from the WHOLE
+		// block (command labels never contain `crates/` paths).
+		const pathRe = /crates\/([^/]+)\//g;
+		// `flagRe` extracts `-p <pkg>` rerun markers. The negative lookbehind
+		// `(?<!\w)` lets `-p` follow a quote (cargo's `rerun pass '-p pkg …'`),
+		// a space, or string start, while rejecting `-p` glued to a word char
+		// (`some-pkg`). It is run ONLY on the post-label region (see below) so
+		// the command label's own `-p <scoped-pkg>` is never miscounted as a
+		// crate reference (SCENARIO-028 label-exclusion contract).
+		const flagRe = /(?<!\w)-p\s+(\S+)/g;
+		for (const err of errors) {
+			const block = typeof err === "string" ? err : String(err ?? "");
+			// The gate assembles errors as `<label> FAILED (<reason>):\n<tail>`.
+			// The label carries our OWN scoped `-p <pkg>` (always in scope by
+			// construction); scanning it would falsely mark every failure
+			// in-scope. Scan `-p` ONLY in the post-` FAILED (` tail. Path
+			// markers are scanned on the whole block (labels lack `crates/`).
+			const failedIdx = block.indexOf(" FAILED (");
+			const flagRegion = failedIdx === -1 ? block : block.slice(failedIdx);
+			const referenced = new Set<string>();
+			let m: RegExpExecArray | null;
+			pathRe.lastIndex = 0;
+			while ((m = pathRe.exec(block)) !== null) referenced.add(m[1]);
+			flagRe.lastIndex = 0;
+			while ((m = flagRe.exec(flagRegion)) !== null) referenced.add(m[1]);
+			if (referenced.size === 0) {
+				// No parseable crate marker → conservative IN-SCOPE.
+				inScopeErrors.push(block);
+				continue;
+			}
+			// OUT-OF-SCOPE iff ≥1 crate referenced AND ALL referenced are NOT in
+			// scope (anyInScope ⇒ conservative IN-SCOPE).
+			let anyInScope = false;
+			for (const pkg of referenced) {
+				if (scope.has(pkg)) {
+					anyInScope = true;
+					break;
+				}
+			}
+			if (anyInScope) {
+				inScopeErrors.push(block);
+			} else {
+				outOfScopeErrors.push(block);
+			}
+		}
+		return { inScopeErrors, outOfScopeErrors };
+	} catch {
+		// NEVER throw — treat ALL blocks as in-scope on any failure.
+		const safe = Array.isArray(errors) ? errors : [];
+		return {
+			inScopeErrors: safe.map((e) => (typeof e === "string" ? e : String(e ?? ""))),
+			outOfScopeErrors: [],
+		};
+	}
+}
+
 const STDERR_TAIL_LINES = 12;
 
 export type CmdKey = "build" | "test" | "typecheck";
@@ -299,6 +401,21 @@ export interface BuildGateResult {
 	typecheckSuccess: boolean;
 	ran: string[];
 	errors: string[];
+	/**
+	 * Pre-existing failure blocks referencing ONLY crates outside the resolved
+	 * scope — AC-04. Empty when the gate passed or when no scoping is active.
+	 * Conservative: an ambiguous/mixed/no-marker error is kept in `errors` but
+	 * never appears here (never grants a false green).
+	 */
+	outOfScopeErrors: string[];
+	/**
+	 * True when the gate is GREEN for the current scope: either `pass`, OR the
+	 * gate failed ONLY on pre-existing out-of-scope crates (every failure is
+	 * out-of-scope). A phase may still commit in the latter case (AC-05). Stays
+	 * `false` for any genuine in-scope failure and when no scoping is active,
+	 * preserving the pre-change abort semantics exactly.
+	 */
+	inScopePass: boolean;
 }
 
 /** Best-effort read of a file's text ("" if missing/unreadable). */
@@ -487,12 +604,26 @@ export function runBuildGate(
 	const buildSuccess = flag.build;
 	const allTestsPass = flag.test;
 	const typecheckSuccess = flag.typecheck;
+	const pass = errors.length === 0;
+	// AC-04: classify collected failures into in-scope vs pre-existing
+	// out-of-scope relative to the resolved scoped crate set (`testPackages`).
+	// The classifier is pure + NEVER throws, so this can only ever SHRINK the
+	// failure set (out-of-scope subset) — it never grants a false green. When the
+	// gate passed, or no scoping is active (empty set), `outOfScopeErrors` is []
+	// and `inScopePass` mirrors `pass` (true on green, false otherwise) so the
+	// pre-change abort semantics are preserved exactly. SCENARIO-009/010/011/
+	// 021/024/028.
+	const { outOfScopeErrors } = classifyOutOfScopeErrors(errors, testPackages);
+	const inScopePass =
+		pass || (errors.length > 0 && outOfScopeErrors.length === errors.length);
 	return {
-		pass: errors.length === 0,
+		pass,
 		buildSuccess,
 		allTestsPass,
 		typecheckSuccess,
 		ran,
 		errors,
+		outOfScopeErrors,
+		inScopePass,
 	};
 }
