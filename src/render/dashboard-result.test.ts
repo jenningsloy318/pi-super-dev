@@ -215,12 +215,16 @@ describe("AC-06 behavioral — buildResultComponent returns a Container of [Text
 		expect(rendered).toContain("all 13 stages passed");
 	});
 
-	it("§1 detail-log lines are DIMMED (theme token present, not bold/normal)", () => {
+	it("§1 detail-log tail lines are themed PER-KIND (plain strings default to the 'log' text token)", () => {
 		const comp = buildResultComponent(completedDetails(), mockTheme() as never) as Container;
 		const rendered = comp.render(120).join("\n");
-		// §1 detail lines are wrapped in the dim token by mockTheme.fg("dim", …).
-		expect(rendered).toContain("<dim>[req]");
-		expect(rendered).toContain("<dim>[design]");
+		// Phase 3 (AC-07): §1 tail lines are themed per-kind via themeLine. The
+		// fixture's plain-string `[req]`/`[design]` elements default to kind
+		// "log" → fg("text", …) (the legacy uniform "dim" is gone).
+		expect(rendered).toContain("<text>[req]");
+		expect(rendered).toContain("<text>[design]");
+		// The §1 dim HEADER still carries the dim token (it is not a tail line).
+		expect(rendered).toContain("<dim>── detail log (last 50 lines) ──");
 	});
 
 	it("§2 stage-progress header is BOLD and stage rows render their status icons", () => {
@@ -387,15 +391,17 @@ describe("AC-06 structural ordering — Container children are §1(dim Text) →
 		).toBeInstanceOf(Markdown);
 	});
 
-	it("places §1 dim Text children BEFORE any §2 bold Text children", () => {
+	it("places §1 themed Text children BEFORE any §2 bold Text children", () => {
 		const comp = buildResultComponent(completedDetails(), mockTheme() as never) as Container;
 		const rendered = comp.children.map((c) => (c as { render?: (w: number) => string[] }).render?.(120).join("\n") ?? "");
 		const joined = rendered.join("\n");
-		const dimIdx = joined.indexOf("<dim>[req]");
+		// Phase 3 (AC-07): the `[req]` plain-string tail element is now themed
+		// per-kind (kind "log" → fg("text", …)), so locate it by the `text` token.
+		const s1Idx = joined.indexOf("<text>[req]");
 		const boldIdx = joined.indexOf("<b>── stage progress ──</b>");
-		expect(dimIdx, "§1 dim detail-log line must be present").toBeGreaterThanOrEqual(0);
+		expect(s1Idx, "§1 themed detail-log line must be present").toBeGreaterThanOrEqual(0);
 		expect(boldIdx, "§2 bold stage-progress header must be present").toBeGreaterThanOrEqual(0);
-		expect(dimIdx, "§1 must render before §2").toBeLessThan(boldIdx);
+		expect(s1Idx, "§1 must render before §2").toBeLessThan(boldIdx);
 	});
 
 	it("places §2 stage-progress BEFORE §3 Markdown (the complete §1→§2→§3 chain)", () => {
@@ -423,7 +429,7 @@ describe("AC-06 structural ordering — Container children are §1(dim Text) →
 			.map((c) => (c as { render?: (w: number) => string[] }).render?.(120).join("\n") ?? "")
 			.join("\n");
 		const boldIdx = rendered.indexOf("<b>── stage progress ──</b>");
-		const dimIdx = rendered.indexOf("<dim>[req]");
-		expect(dimIdx).toBeLessThan(boldIdx);
+		const s1Idx = rendered.indexOf("<text>[req]");
+		expect(s1Idx, "§1 must render before §2").toBeLessThan(boldIdx);
 	});
 });

@@ -18,7 +18,7 @@
 
 import { Container, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import type { LineKind } from "./stream-theme.js";
+import { themeLine, commandBackground, type LineKind } from "./stream-theme.js";
 
 /**
  * Structural subset of pi's `Theme` that the dashboard presentation layer
@@ -348,11 +348,19 @@ export function buildResultComponent(details: ResultDetails, theme?: DashboardTh
 	const bold = theme?.bold ?? ((text: string) => text);
 	const container = new Container();
 
-	// §1 detail log — DIMMED (like agent thought progress; persisted, not transient).
+	// §1 detail log — PER-KIND themed (AC-07 / SCENARIO-014). Each tail line is
+	// styled via themeLine(kind, text, theme) and COMMAND / COMMAND-DONE lines
+	// are emitted with a tool-bubble background (pi-tui Text's 4th `customBgFn`
+	// argument via commandBackground) so commands pop as tool bubbles while
+	// thinking/phase/error/log lines carry their pi-native foreground tokens. A
+	// plain-string tail element is tolerated and defaults to kind "log".
 	container.addChild(new Text(fg("dim", "── detail log (last 50 lines) ──"), 0, 0));
 	for (const line of details.transcriptTail ?? []) {
+		const kind: LineKind = typeof line === "string" ? "log" : line.kind;
 		const text = typeof line === "string" ? line : line.text;
-		container.addChild(new Text(fg("dim", text), 0, 0));
+		const styled = themeLine(kind, text, theme);
+		const bgFn = commandBackground(kind, theme);
+		container.addChild(new Text(styled, 0, 0, bgFn));
 	}
 	if (details.logPath) {
 		container.addChild(new Text(fg("dim", `(full log: ${details.logPath})`), 0, 0));
