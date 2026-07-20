@@ -1204,3 +1204,193 @@ export function runBuildGate(
 		inScopePass,
 	};
 }
+
+/**
+ * RED-phase oracle status (Gap 1a, AC-01). Exactly one discrete outcome of
+ * running the tdd-guide-authored test targets:
+ *   - `red`:     the tests COMPILED/COLLECTED and FAILED — a genuine RED phase.
+ *   - `green`:   the tests passed already (zero failures) — RED not established.
+ *   - `broken`:  the tests did not compile/collect (compile error, collection
+ *                error, or `no tests to run`) — RED cannot be established.
+ *   - `unknown`: no runner, empty targets, spawn error, or ambiguous output.
+ *
+ * `unknown` NEVER stalls the pipeline (Phase 3 proceeds immediately on it).
+ */
+export type RedStatus = "red" | "green" | "broken" | "unknown";
+
+/**
+ * Options for {@link runRedCheck}. Shares the { timeoutMs?, signal? } shape of
+ * {@link GateOptions} / `runBuildGate`'s options so the Stage 9 wiring is
+ * type-checked and the {@link resolveTimeoutMs} envelope is reused.
+ */
+export interface RedCheckOptions {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+/**
+ * Classify a runner's COMBINED stdout+stderr into a RED-phase status using
+ * per-language heuristics (spec §A.2, AC-01). Pure + NEVER throws. Precedence
+ * is always: BROKEN markers (compile/collection failure) → GREEN (exit 0) →
+ * RED (exit≠0 + a failure marker) → UNKNOWN (ambiguous). This order guarantees
+ * a compile error that also emits a `FAILED` marker is `broken` (the test
+ * never ran), not `red` (review finding: precedence over red).
+ */
+function classifyRedStatus(language: string, combined: string, ok: boolean): RedStatus {
+	const out = combined ?? "";
+	if (language === "rust") {
+		// BROKEN — compile failed (no test executed).
+		if (/error\[E[0-9]/i.test(out) || /could not compile/i.test(out)) return "broken";
+		// BROKEN — matched no test binary (the RED phase produced no executable).
+		if (/no tests to run/i.test(out)) return "broken";
+		if (ok) return "green";
+		if (/test result: FAILED/i.test(out) || /FAILED/i.test(out) || /panicked/i.test(out)) {
+			return "red";
+		}
+		return "unknown";
+	}
+	if (language === "python") {
+		// BROKEN — pytest could not even collect.
+		if (/ERROR collecting/i.test(out)) return "broken";
+		if (ok) return "green";
+		if (/\bfailed\b/i.test(out) || /\berror\b/i.test(out)) return "red";
+		return "unknown";
+	}
+	// npm family: vitest / jest / npm run test (frontend + backend).
+	// BROKEN — collection/parse failure before any test ran.
+	if (/SyntaxError/i.test(out) || /failed to load/i.test(out) || /No test files found/i.test(out)) {
+		return "broken";
+	}
+	if (ok) return "green";
+	// RED — a failing-test marker appeared after a successful collection.
+	if (
+		/❯/.test(out) ||
+		/^FAIL\s+/m.test(out) ||
+		/Tests:?\s+\d+\s*failed/i.test(out)
+	) {
+		return "red";
+	}
+	return "unknown";
+}
+
+/**
+ * Deterministic "red" oracle for the Stage 9 TDD cycle (Gap 1a, AC-01).
+ *
+ * Modeled on the {@link runBuildGate} skeleton and reuses its primitives —
+ * {@link detectProjectCommands}, {@link resolveTimeoutMs}, and
+ * {@link resolveIntegrationStems} — introducing NO new spawn/git machinery. It
+ * runs the tdd-guide-authored {@link testTargets} and classifies the outcome
+ * into exactly one {@link RedStatus} so `implementation.ts` can enforce a
+ * genuine RED phase (Gap 1b/Phase 3 re-prompt loop).
+ *
+ * Per-language scoped invocation:
+ *   - `rust`   → resolve integration STEMS via {@link resolveIntegrationStems}
+ *               (file paths → basenames, stat-validated; NO `--lib`); run each
+ *               stem as `cargo test --test <stem>`. When no stems resolve,
+ *               fall back to a scoped `cargo test -p <pkg>` for the touched
+ *               packages ({@link detectTouchedCargoPackages}); empty scope → a
+ *               single workspace-wide `cargo test`.
+ *   - npm/vitest/jest (frontend+backend) → `<pm> run test -- <targets>` (or a
+ *               direct `vitest run <targets>` when vitest owns the test
+ *               script), reusing the detected {@link ProjectCommands.pm}.
+ *   - `python` → `pytest <targets> -q`.
+ *   - `go`     → `go test <targets>`.
+ *
+ * No-spawn short-circuit → `unknown`: a greenfield dir (no manifest), an npm
+ * project WITHOUT a test script, or `testTargets.length === 0`. A greenfield
+ * repo CANNOT stall the pipeline — it has nothing to verify RED against.
+ *
+ * NEVER throws (the load-bearing invariant mirrored from every existing gate):
+ * the ENTIRE body is try/caught; any spawn error (`r.error` / ENOENT), a
+ * throwing spawnSync, a timeout, or a parse ambiguity returns `unknown`.
+ *
+ * @param cwd Absolute worktree path to run the targets in.
+ * @param testTargets The tdd-guide-authored test file paths to run.
+ * @param opts Optional timeout/signal envelope (shares the GateOptions shape).
+ * @returns One of `red` | `green` | `broken` | `unknown`. Never throws.
+ */
+export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckOptions): RedStatus {
+	try {
+		// No targets → nothing to verify RED against (no spawn).
+		if (!Array.isArray(testTargets) || testTargets.length === 0) return "unknown";
+		const cmds = detectProjectCommands(cwd);
+		// No test runner configured (greenfield, or npm without a test script).
+		if (!cmds.test || cmds.test.length === 0) return "unknown";
+		if (opts?.signal?.aborted) return "unknown";
+
+		const timeoutMs = resolveTimeoutMs(opts?.timeoutMs);
+		const language = cmds.language;
+		const targets = testTargets.filter((t) => typeof t === "string" && t.trim().length > 0);
+		if (targets.length === 0) return "unknown";
+
+		// Build the scoped argv(s) per language, mirroring runBuildGate's branch.
+		const argvs: string[][] = [];
+		if (language === "rust") {
+			const stems = resolveIntegrationStems(cwd, targets);
+			if (stems.length > 0) {
+				// Per-stem integration binaries — NEVER `--lib` (no-`--lib` discipline).
+				for (const stem of stems) argvs.push(["cargo", "test", "--test", stem, "--quiet"]);
+			} else {
+				// No resolvable stems → scope to the touched packages; empty → workspace.
+				const pkgs = detectTouchedCargoPackages(cwd);
+				if (pkgs.length > 0) {
+					for (const pkg of pkgs) argvs.push(["cargo", "test", "-p", pkg, "--quiet"]);
+				} else {
+					argvs.push(["cargo", "test", "--quiet"]);
+				}
+			}
+		} else if (language === "python") {
+			argvs.push(["pytest", ...targets, "-q"]);
+		} else if (language === "go") {
+			argvs.push(["go", "test", ...targets]);
+		} else {
+			// npm family (frontend + backend). Prefer a direct `vitest run` when the
+			// project's test script is vitest-owned; otherwise reuse the detected pm
+			// (`<pm> run test -- <targets>`). Either routes the targets to vitest/jest.
+			const usesVitest = cmds.ran.some((label) => /vitest/i.test(label)) || hasVitestScript(cwd);
+			if (usesVitest) {
+				argvs.push(["vitest", "run", ...targets]);
+			} else {
+				argvs.push([...cmds.test, "--", ...targets]);
+			}
+		}
+
+		if (argvs.length === 0) return "unknown";
+
+		// Run each argv under the shared timeout envelope and aggregate. The
+		// phase is GREEN only when EVERY invocation exits 0; the combined stdout
+	 // + stderr feeds the per-language classifier.
+		let combined = "";
+		let allOk = true;
+		for (const argv of argvs) {
+			if (opts?.signal?.aborted) return "unknown";
+			const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" });
+			// NEVER throw on a spawn error / ENOENT — degrade to unknown.
+			if (r.error) return "unknown";
+			combined += "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
+			if (r.status !== 0) allOk = false;
+		}
+		return classifyRedStatus(language, combined, allOk);
+	} catch {
+		// The load-bearing NEVER-THROW invariant: any spawn error, thrown
+		// exception, or parse ambiguity degrades to `unknown` (proceed, do not
+		// stall). SCENARIO-001/002/003 (degrade instead of throwing).
+		return "unknown";
+	}
+}
+
+/**
+ * Whether the project's `package.json` `test` script invokes vitest. Used by
+ * {@link runRedCheck} to prefer a direct `vitest run <targets>` invocation over
+ * a generic `<pm> run test --`. Pure read, never throws.
+ */
+function hasVitestScript(cwd: string): boolean {
+	try {
+		if (!existsSync(join(cwd, "package.json"))) return false;
+		const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as Record<string, unknown>;
+		const scripts = (pkg.scripts ?? {}) as Record<string, string>;
+		return typeof scripts.test === "string" && /vitest/i.test(scripts.test);
+	} catch {
+		return false;
+	}
+}
