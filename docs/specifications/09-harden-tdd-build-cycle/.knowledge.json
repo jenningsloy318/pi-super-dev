@@ -1,0 +1,911 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-20T13:08:46.352Z",
+      "agent": "requirements",
+      "data": {
+        "title": "Harden super-dev TDD/implement/build cycle: RED oracle, no-`--lib` parity, scope-aware npm gate, render-layer test parity",
+        "date": "2026-07-20",
+        "type": "bug-fix",
+        "priority": "critical",
+        "executiveSummary": "Four proven gaps in the Stage 9 TDD→implement→build-gate loop are fixed as a single pure-TS change to pi-super-dev. (1) The TDD \"red\" phase is currently never verified — `src/stages/implementation.ts:70` calls the `tdd-guide` agent and discards its result, so \"TDD\" is really \"T+D\"; we add a deterministic `runRedCheck` oracle and a bounded re-prompt loop. (2) The `buildImplementPrompt` no-`--lib` rule already exists, but `buildTddPrompt` lacks it, so RED checks can miss integration binaries; we mirror it. (3) The cargo `inScopePass`/`outOfScopeErrors` concept is cargo-only, so pre-existing npm/vitest/jest failures block the gate; we generalize it via a shared `touchedFilePaths` git helper. (4) The fgColors-style \"real runtime shape vs. mock\" bug class passed every gate because unit tests used a mock Theme; we deliver a reusable `withRealTheme` parity helper + whole-render-layer regression + convention doc. All gates degrade safely (never throw); greenfield/in-scope behaviors are unchanged; no new runtime deps; typecheck clean + `npm test` all green. A fully-mechanical \"no framework mocks\" graph-based gate is explicitly future work.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "`runRedCheck(cwd, testTargets, opts)` exists in `src/build-runner.ts` alongside `runBuildGate`, reusing `detectProjectCommands` (for the runner + `pm`/`language`), `resolveTimeoutMs` (for `spawnSync({timeout})`), the cached cargo-metadata, and the existing scoped-test argv helpers. It runs the project's test command SCOPED to the tdd-guide's reported `testFiles`/targets and returns exactly one status: `\"red\"` (tests compiled/collected AND ≥1 failed — the desired pre-implement state); `\"green\"` (tests ran and ALL passed — weak/already-implemented); `\"broken\"` (compile/collection error — defective test); `\"unknown\"` (no detectable runner, no test targets, or parse ambiguity — greenfield fallback, MUST NOT block). Per-language invocation: cargo → `cargo test -p <pkg> --test <stem>` per stem (derive stems from testFiles like `resolveIntegrationStems`); vitest/jest → `vitest run <files>` / `npm test -- <files>`; pytest → `pytest <files>`. The function NEVER throws (any error/ambiguity → `unknown` or a conservative status)."
+          },
+          {
+            "id": "AC-02",
+            "statement": "`src/stages/implementation.ts` enforces RED inside the existing `attempt` loop: after the tdd-guide agent, it reads the agent's `testFiles` and calls `runRedCheck`, then loops `while status === \"green\" || status === \"broken\"` re-prompting the tdd-guide to write genuinely-failing/non-broken tests, capped at `MAX_RED_RETRIES = 2` within the current attempt. On `\"red\"` OR `\"unknown\"` it proceeds to the implementer. Every outcome is logged as `Implementation ${phaseId} red-oracle: ${status} (ran: …)`. It NEVER stalls the pipeline: `unknown` always proceeds immediately; on retry-cap exhaustion it proceeds with a loud warning. The implementer prompt is informed that the tests are confirmed-red (so its goal is to green them). The outer `MAX_ATTEMPTS = 3` structure and the `gate.pass || gate.inScopePass` commit condition are unchanged."
+          },
+          {
+            "id": "AC-03",
+            "statement": "`buildTddPrompt` (in `src/prompts.ts`) mirrors the no-`--lib` discipline already present in `buildImplementPrompt` via `RUST_SELF_VERIFY_DISCIPLINE`: the RED phase must run `cargo test -p <pkg>` WITHOUT `--lib` and run any spec-mandated integration target (`cargo test --test <stem>`), so integration tests are covered during the RED check, not just lib unit tests. The existing `rustDiscipline(s)` helper is reused (Rust-only, gated on `s.language === \"rust\"`); no change to the already-correct `buildImplementPrompt` text is required beyond confirming both builders share the same source string."
+          },
+          {
+            "id": "AC-04",
+            "statement": "`runBuildGate` generalizes in-scope/out-of-scope classification to npm/vitest/jest projects. After a failed non-cargo test run it parses failing TEST FILE paths from runner output (vitest `❯ path/to/file.test.ts`; jest `FAIL src/file.test.ts`), computes the touched-file set via a NEW shared `touchedFilePaths(cwd, baseRef)` helper that extracts the existing git `diff --merge-base` + `ls-files --others` union currently embedded in `detectTouchedCargoPackages` (so NO new git spawn beyond what touched-file detection already does), classifies each failing test file as OUT-OF-SCOPE if NOT in the touched set, and populates `outOfScopeErrors`/`inScopePass` exactly like the cargo path. NEVER throws; on any parse ambiguity → treat as IN-SCOPE (conservative, grants no false green). The cargo `inScopePass` behavior is unchanged byte-for-byte."
+          },
+          {
+            "id": "AC-05",
+            "statement": "`tests/helpers/real-theme.ts` exports `withRealTheme<T>(fn: (theme: Theme) => T): T` that calls `initTheme()` (idempotent) and passes the real class-based proxy `theme` to `fn`. It NEVER destructures Theme methods (guards `this.fgColors`); callers use method-style `theme.fg(...)` or a wrapper. `tests/render/real-theme-parity.test.ts` runs `themeLine`, `commandBackground`, `buildResultComponent`, `packDashboardLines`, and `createDashboardWidgetFactory`'s output through `withRealTheme` and asserts no-throw + ANSI output, generalizing `tests/stream-theme-class-theme.test.ts` into a shared regression for the WHOLE render layer. `docs/testing-parity.md` documents the convention: any module wrapping a framework type behind a structural interface MUST have ≥1 parity test via `withRealTheme`/`initTheme`; mock-only coverage of a class-based dependency is a known false-green."
+          },
+          {
+            "id": "AC-06",
+            "statement": "Backward compatibility preserved: greenfield repos (no runner/no tests) → `runRedCheck` returns `unknown` → proceeds exactly as today (no new spawn aborts); repos with no test failures are unchanged; cargo `inScopePass` is unchanged; npm repos with only in-scope failures still block correctly; repos whose suite has pre-existing failures in untouched files now pass via `inScopePass`. `npm run typecheck` is strict-clean. `npm test` is ALL green — the existing large build-runner suite (scoped-args, touched-crates, autoscope, inscope-classification, resolver-validation, nonregression, package-wiring) plus the new red-oracle + parity + npm-inscope suites. Any helper-signature change that affects existing tests is updated IN THE SAME change."
+          },
+          {
+            "id": "AC-07",
+            "statement": "No regression to existing behaviors: dashboard widget, themed stream, scope-aware cargo gate, mid-run input injection, and Markdown §3 artifacts. No change to the subprocess/session backend or control-flow engine (`nodes.ts`/`workflow.ts`/`pipeline.ts`); no change to `MAX_ATTEMPTS` (3) or the Stage 10 review / Stage 11 integration structure; no new runtime dependencies."
+          }
+        ],
+        "nonFunctional": [
+          "Performance: `runRedCheck` spawns one scoped test command per attempt using the same cached timeout envelope (`resolveTimeoutMs`) as `runBuildGate`; the npm in-scope path adds NO new git process beyond what `detectTouchedCargoPackages` already spawns (it reuses the extracted `touchedFilePaths` helper). RED re-prompts are capped at `MAX_RED_RETRIES = 2` so the worst-case cost per phase is `2 tdd-guide + 2 red-check + 1 implementer + build-gate`, bounded and never infinite.",
+          "Reliability / fail-safe: EVERY new gate/oracle/git helper degrades instead of throwing — red oracle → `unknown` → proceed; in-scope parse ambiguity → conservative IN-SCOPE (never a false green); git/spawn errors → empty touched set → conservative in-scope. No path can stall or abort the pipeline except the existing genuine in-scope gate failure after `MAX_ATTEMPTS`.",
+          "Correctness: the fix targets the specific failure class (fgColors) — a class-based framework type whose methods read `this.fgColors` and crash only on a detached call. Mocks hide this; the real Theme proxy via `withRealTheme` exposes it deterministically.",
+          "Type safety: TypeScript strict-clean (`npm run typecheck`); no `any` leaks across the new boundaries; new helpers reuse existing typed interfaces (`ProjectCommands`, `BuildGateResult`, `GateOptions`).",
+          "Maintainability: the convention is codified in `docs/testing-parity.md` so future render-layer modules have a checklist, and the shared `touchedFilePaths` helper eliminates the duplicated git-union logic.",
+          "Scope/blast-radius: pure-TS change inside pi-super-dev only; zero changes to the control-flow engine, session backend, or external service contracts."
+        ],
+        "openQuestions": [
+          "Should `runRedCheck`'s `red` classification require a MINIMUM number of failing tests (e.g. ≥1 is the spec default), or should it additionally warn when the tdd-guide reported `testsWritten > 0` but `testFiles` resolved to zero runnable targets (a likely defective guide output)? Recommended: warn-and-treat-as-`broken` to force a re-prompt, since the guide's own contract says it wrote tests.",
+          "AC-04 touches the npm path but pytest output formatting is runner/version-dependent. Recommended scope: explicitly support vitest + jest file-path markers now (the two `pm`-driven node runners this repo uses), and degrade to conservative IN-SCOPE for any unrecognized pytest output rather than over-fitting — confirm pytest is in-scope or out-of-scope for THIS repo before shipping.",
+          "For `runRedCheck` on cargo: the spec's `gate.integration` stems are validated at build-gate time via `resolveIntegrationStems`. Should the RED oracle re-validate the same stems, or trust the tdd-guide's raw `testFiles`? Recommended: trust the guide's `testFiles` for the RED check (it is testing freshly-written tests, which may not yet be valid stems), and keep validation only at the build gate — avoids a false `broken` from over-eager validation.",
+          "The `MAX_RED_RETRIES = 2` constant: confirm it should be a module-level const in `src/stages/implementation.ts` (mirroring `MAX_ATTEMPTS`) and not configurable via spec/gate. Recommended: module-level const, no new config surface, matching the task's explicit `MAX_RED_RETRIES = 2` directive."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-20T13:09:40.809Z",
+      "agent": "bdd",
+      "data": {
+        "title": "Harden super-dev TDD/implement/build cycle: RED oracle, no-`--lib` parity, scope-aware npm gate, render-layer test parity",
+        "date": "2026-07-20",
+        "source": "docs/specifications/09-harden-tdd-build-cycle/01-requirements.md",
+        "features": [
+          {
+            "name": "RED Oracle: runRedCheck",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "Tests that compile and have at least one failure classify as red",
+                "acRef": "AC-01",
+                "priority": "critical",
+                "given": "a project with a detected test runner and a tdd-guide that reported one or more test file targets",
+                "when": "runRedCheck runs the test command scoped to those targets and the suite compiles/collects and at least one test fails",
+                "then": "the function returns the status \"red\" indicating the desired pre-implementation state",
+                "andClauses": [
+                  "and the invocation uses the per-language command (cargo test -p <pkg> --test <stem> per stem, vitest run <files>, npm test -- <files>, or pytest <files>)",
+                  "and the timeout envelope comes from resolveTimeoutMs"
+                ]
+              },
+              {
+                "id": "002",
+                "title": "Tests that all pass classify as green (weak or already-implemented)",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a project with a detected test runner and reported test file targets",
+                "when": "runRedCheck runs the scoped test command and every collected test passes",
+                "then": "the function returns \"green\" so the caller knows the tests do not yet genuinely fail"
+              },
+              {
+                "id": "003",
+                "title": "A compile or collection error classifies as broken (defective test)",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a project with a detected test runner and reported test file targets",
+                "when": "the scoped test command fails before any test runs due to a compile or collection error",
+                "then": "the function returns \"broken\" distinguishing a defective test from a genuine red"
+              },
+              {
+                "id": "004",
+                "title": "No runner or no targets classifies as unknown and never blocks",
+                "acRef": "AC-01",
+                "priority": "critical",
+                "given": "a greenfield repo with no detectable test runner, no test targets reported, or parse ambiguity",
+                "when": "runRedCheck is invoked",
+                "then": "the function returns \"unknown\"",
+                "andClauses": [
+                  "and the caller proceeds exactly as today without aborting the pipeline"
+                ]
+              },
+              {
+                "id": "005",
+                "title": "Any error during execution degrades instead of throwing",
+                "acRef": "AC-01",
+                "priority": "critical",
+                "given": "a project where the spawn or parsing would otherwise raise",
+                "when": "runRedCheck encounters a spawn failure, timeout, or unparseable output",
+                "then": "the function never throws and instead returns a conservative status",
+                "andClauses": [
+                  "and no new spawn is made for greenfield repos so the pipeline cannot stall"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "RED Enforcement in the Implementation Stage",
+            "scenarios": [
+              {
+                "id": "006",
+                "title": "Confirmed-red tests let the implementer proceed",
+                "acRef": "AC-02",
+                "priority": "critical",
+                "given": "the tdd-guide agent has reported its test files inside the attempt loop",
+                "when": "runRedCheck returns \"red\"",
+                "then": "the stage proceeds directly to the implementer without re-prompting the tdd-guide",
+                "andClauses": [
+                  "and the implementer prompt is informed that the tests are confirmed-red so its goal is to make them green",
+                  "and the outcome is logged as Implementation ${phaseId} red-oracle: red (ran: …)"
+                ]
+              },
+              {
+                "id": "007",
+                "title": "Green or broken tests trigger a bounded tdd-guide re-prompt",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "runRedCheck returns \"green\" or \"broken\"",
+                "when": "the retry count has not exceeded MAX_RED_RETRIES (2)",
+                "then": "the stage re-prompts the tdd-guide to write genuinely-failing, non-broken tests",
+                "andClauses": [
+                  "and re-runs runRedCheck against the new test files",
+                  "and logs each red-oracle outcome"
+                ]
+              },
+              {
+                "id": "008",
+                "title": "Unknown status proceeds immediately and never stalls",
+                "acRef": "AC-02",
+                "priority": "critical",
+                "given": "runRedCheck returns \"unknown\" for a greenfield or ambiguous project",
+                "when": "the stage evaluates the status",
+                "then": "it proceeds to the implementer immediately without any re-prompt",
+                "andClauses": [
+                  "and backward-compatible greenfield behavior is preserved"
+                ]
+              },
+              {
+                "id": "009",
+                "title": "Retry-cap exhaustion proceeds with a loud warning rather than blocking",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "runRedCheck still returns \"green\" or \"broken\" after MAX_RED_RETRIES (2) re-prompts",
+                "when": "the retry budget is exhausted",
+                "then": "the stage proceeds to the implementer with a loud warning that tests are not confirmed-red",
+                "andClauses": [
+                  "and the worst-case cost per phase is bounded (2 tdd-guide + 2 red-check + 1 implementer + build-gate) and never infinite"
+                ]
+              },
+              {
+                "id": "010",
+                "title": "Outer attempt and commit structure is unchanged",
+                "acRef": "AC-02",
+                "priority": "medium",
+                "given": "the RED enforcement loop is in place",
+                "when": "the stage completes a phase",
+                "then": "the outer MAX_ATTEMPTS (3) structure and the gate.pass || gate.inScopePass commit condition remain unchanged"
+              }
+            ]
+          },
+          {
+            "name": "No-`--lib` Parity in TDD and Implement Prompts",
+            "scenarios": [
+              {
+                "id": "011",
+                "title": "The TDD prompt forbids --lib-only Rust self-verification",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a Rust project whose spec language is rust",
+                "when": "buildTddPrompt constructs the prompt",
+                "then": "the prompt instructs running cargo test -p <pkg> WITHOUT the --lib flag so the tests/ integration binaries run during the RED phase",
+                "andClauses": [
+                  "and the prompt requires running any spec-mandated integration target via cargo test --test <stem>",
+                  "and the same rustDiscipline helper is shared with buildImplementPrompt so both builders emit the identical no-`--lib` source string"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Scope-aware npm/vitest/jest Build Gate",
+            "scenarios": [
+              {
+                "id": "012",
+                "title": "A pre-existing failure in an untouched test file is classified out-of-scope",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "an npm/vitest/jest project whose branch did not touch a particular test file and that file fails in the suite",
+                "when": "runBuildGate runs the tests and the suite fails",
+                "then": "the failing test file is parsed from runner output and classified as out-of-scope because it is absent from the touched-file set",
+                "andClauses": [
+                  "and outOfScopeErrors is populated and inScopePass becomes true when no in-scope file fails",
+                  "and the touched-file set is computed via the shared touchedFilePaths(cwd, baseRef) helper reusing the existing git diff + ls-files union"
+                ]
+              },
+              {
+                "id": "013",
+                "title": "A failure in a touched test file remains in-scope and blocks",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "an npm/vitest/jest project whose branch modified a test file that fails in the suite",
+                "when": "runBuildGate runs the tests and the suite fails",
+                "then": "the failing test file is classified as in-scope and inScopePass stays false",
+                "andClauses": [
+                  "and the repo with only in-scope failures still blocks the gate correctly"
+                ]
+              },
+              {
+                "id": "014",
+                "title": "Parse ambiguity degrades conservatively to in-scope",
+                "acRef": "AC-04",
+                "priority": "critical",
+                "given": "an npm/vitest/jest project whose failing-test output cannot be parsed into file paths",
+                "when": "runBuildGate classifies the failure",
+                "then": "it treats the failure as in-scope rather than granting a false green",
+                "andClauses": [
+                  "and the function never throws on parse, git, or spawn errors"
+                ]
+              },
+              {
+                "id": "015",
+                "title": "Cargo in-scope classification is unchanged byte-for-byte",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "the generalized in-scope path is introduced for non-cargo runners",
+                "when": "a cargo project is gated",
+                "then": "the existing cargo inScopePass behavior remains identical to before"
+              }
+            ]
+          },
+          {
+            "name": "Render-layer Test Parity against the real Theme",
+            "scenarios": [
+              {
+                "id": "016",
+                "title": "The whole render layer is exercised against the real class-based Theme",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "the withRealTheme helper that calls initTheme and passes the real proxy Theme",
+                "when": "themeLine, commandBackground, buildResultComponent, packDashboardLines, and createDashboardWidgetFactory's output are run through withRealTheme",
+                "then": "each completes without throwing and produces ANSI output",
+                "andClauses": [
+                  "and the regression generalizes the existing stream-theme-class-theme test across the entire render layer"
+                ]
+              },
+              {
+                "id": "017",
+                "title": "The parity helper never destructures Theme methods",
+                "acRef": "AC-05",
+                "priority": "critical",
+                "given": "a caller using withRealTheme to exercise a theme-consuming function",
+                "when": "it accesses the theme inside the callback",
+                "then": "it uses method-style theme.fg(...) or a wrapper rather than destructuring",
+                "andClauses": [
+                  "and the this.fgColors crash class is therefore exposed deterministically by the real proxy",
+                  "and a detached method call that would crash at runtime is caught by the parity test"
+                ]
+              },
+              {
+                "id": "018",
+                "title": "The parity convention is documented for future modules",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "a future render-layer module wrapping a framework type behind a structural interface",
+                "when": "a developer consults the testing convention",
+                "then": "docs/testing-parity.md requires at least one parity test using withRealTheme/initTheme",
+                "andClauses": [
+                  "and mock-only coverage of a class-based dependency is documented as a known false-green"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Backward Compatibility, Type Safety, and Green Tests",
+            "scenarios": [
+              {
+                "id": "019",
+                "title": "Greenfield and unchanged repos behave exactly as before",
+                "acRef": "AC-06",
+                "priority": "critical",
+                "given": "a greenfield repo with no runner or a repo whose suite has no failures",
+                "when": "runRedCheck and runBuildGate execute",
+                "then": "runRedCheck returns unknown and proceeds as today and the no-failure repo is unchanged",
+                "andClauses": [
+                  "and cargo inScopePass is unchanged",
+                  "and an npm repo with only in-scope failures still blocks correctly"
+                ]
+              },
+              {
+                "id": "020",
+                "title": "The codebase is TypeScript strict-clean and the full suite is green",
+                "acRef": "AC-06",
+                "priority": "critical",
+                "given": "the change including helper-signature updates that affect existing tests",
+                "when": "npm run typecheck and npm test are run",
+                "then": "typecheck is strict-clean with no any leaks across the new boundaries",
+                "andClauses": [
+                  "and the existing build-runner suite (scoped-args, touched-crates, autoscope, inscope-classification, resolver-validation, nonregression, package-wiring) plus the new red-oracle, parity, and npm-inscope suites are all green",
+                  "and new helpers reuse the existing typed interfaces ProjectCommands, BuildGateResult, and GateOptions"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "No Regression to Existing Pipeline Behaviors",
+            "scenarios": [
+              {
+                "id": "021",
+                "title": "Existing render, gating, mid-run input, and artifact behaviors are preserved",
+                "acRef": "AC-07",
+                "priority": "critical",
+                "given": "the hardened TDD/implement/build cycle change is complete",
+                "when": "the pipeline runs end-to-end",
+                "then": "the dashboard widget, themed stream, scope-aware cargo gate, mid-run input injection, and Markdown section 3 artifacts behave unchanged",
+                "andClauses": [
+                  "and the subprocess/session backend and control-flow engine (nodes.ts/workflow.ts/pipeline.ts) are untouched",
+                  "and MAX_ATTEMPTS (3) and the Stage 10 review / Stage 11 integration structure are unchanged",
+                  "and no new runtime dependencies are introduced"
+                ]
+              },
+              {
+                "id": "022",
+                "title": "Every new gate, oracle, and git helper degrades instead of aborting the pipeline",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "a scenario that would otherwise raise in a new helper",
+                "when": "the red oracle, npm in-scope parser, or git helper encounters an error or ambiguity",
+                "then": "it degrades (unknown -> proceed; ambiguity -> conservative in-scope; git/spawn error -> empty touched set -> in-scope)",
+                "andClauses": [
+                  "and no path stalls or aborts except the existing genuine in-scope gate failure after MAX_ATTEMPTS"
+                ]
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "runRedCheck(cwd, testTargets, opts) exists with status red/green/broken/unknown, per-language invocation, never-throws, unknown-proceeds.",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002",
+              "SCENARIO-003",
+              "SCENARIO-004",
+              "SCENARIO-005"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "implementation.ts enforces RED: re-prompts tdd-guide on green/broken (<=MAX_RED_RETRIES), proceeds on red/unknown, logs outcomes, never stalls.",
+            "scenarios": [
+              "SCENARIO-006",
+              "SCENARIO-007",
+              "SCENARIO-008",
+              "SCENARIO-009",
+              "SCENARIO-010"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "buildTddPrompt mirrors no-`--lib` discipline and requires full cargo test -p + integration targets, shared with buildImplementPrompt.",
+            "scenarios": [
+              "SCENARIO-011"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "runBuildGate classifies npm/vitest/jest failures in/out-of-scope via touched-file union; inScopePass/outOfScopeErrors populated for non-cargo; conservative on ambiguity; cargo unchanged.",
+            "scenarios": [
+              "SCENARIO-012",
+              "SCENARIO-013",
+              "SCENARIO-014",
+              "SCENARIO-015"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "tests/helpers/real-theme.ts + tests/render/real-theme-parity.test.ts exercise the whole render layer against the real Theme; docs/testing-parity.md documents the convention.",
+            "scenarios": [
+              "SCENARIO-016",
+              "SCENARIO-017",
+              "SCENARIO-018"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "Backward compatibility preserved; typecheck strict-clean; npm test ALL green (existing suite updated + new suites).",
+            "scenarios": [
+              "SCENARIO-019",
+              "SCENARIO-020"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "No regression to existing behaviors; no change to backend/engine, MAX_ATTEMPTS, or review/integration structure; no new runtime deps.",
+            "scenarios": [
+              "SCENARIO-021",
+              "SCENARIO-022"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-20T13:14:17.943Z",
+      "agent": "research",
+      "data": {
+        "title": "Hardening the super-dev TDD/implement/build cycle: deterministic RED oracle, npm in-scope gating, and test-parity for class-based dependencies",
+        "date": "2025-11-19",
+        "summary": "All five prior open issues are now resolved against live sources and the repo's own code. Network IS reachable this session (HTTP 200), so runner output strings are confirmed current: pytest reports ERROR (collection/setup failure ⇒ broken), FAILED (test ran, assertion failed ⇒ red), PASSED (green) [SRC-03, docs.pytest.org/en/stable/how-to/output.html]; jest prints a per-file `FAIL src/file.test.ts` prefix [SRC-02, jestjs.io/docs/cli]; vitest prints `❯ path/to/file.test.ts` per failing file plus `fail`/`failed` counts [SRC-01, vitest.dev/guide/cli.html]. The repo already encodes the correct primitives: `resolveTimeoutMs` is applied per-`spawnSync` (build-runner.ts:1034), the `exec` closure try/catches ANY thrown spawn and degrades to an error entry (never escapes the gate), and `detectTouchedCargoPackages` already computes the `git diff --merge-base` + `ls-files --others` touched-file union — so a shared `touchedFilePaths(cwd, baseRef)` is a pure extraction, not new spawning [SRC-04]. The four gaps map to: (1) a `runRedCheck` that reuses `detectProjectCommands`+`resolveTimeoutMs`+`resolveIntegrationStems`+the cached cargo metadata, loops per-stem with a per-invocation timeout, and never throws; (2) an implementation.ts RED-enforcement loop capped at MAX_RED_RETRIES=2 inside the existing MAX_ATTEMPTS=3 attempt; (3) mirroring the existing `RUST_SELF_VERIFY_DISCIPLINE` constant into `buildTddPrompt` via the already-correct `rustDiscipline(s)` helper (confirmed buildTddPrompt does NOT yet call it [SRC-04]); (4) generalizing cargo `inScopePass`/`outOfScopeErrors` to npm/vitest/jest via path-normalized touched-set membership. The canonical TDD red-before-green discipline [SRC-05, Beck 2002] makes the RED oracle the load-bearing fix. The options below pin each previously-ambiguous invariant with a targeted test, so a future edit cannot silently widen broken→red, read a workspace-relative path as in-scope, nest the retry loop into a cost blow-up, or let a mid-stem timeout throw.",
+        "options": [
+          {
+            "name": "Pin RED-classifier strings as named regex constants + full-blob status tests (resolves broken-vs-red drift, open issue #2)",
+            "tradeoffs": "Define classifier regexes (e.g. PYTEST_ERROR=/\\bERROR\\b/, PYTEST_FAILED=/\\bFAILED\\b/, PYTEST_PASSED=/passed|PASSED/; jest /^FAIL /m; vitest failed/❯ + collection-error /failed to load|cannot find module/i) as module-level named constants in build-runner.ts, and assert the FULL mocked-spawnSync output blob → expected status in the red-oracle unit test. PRO: a runner upgrade that changes phrasing breaks the pinning test loudly instead of silently widening broken→red (a defective test masquerading as a real red); classification order (broken-regex checked BEFORE failed-regex) is also pinned. CON: a few extra test fixtures; strings must be touched when a runner changes its reporter — but that breakage is exactly the desired signal. Status precedence: broken (compile/collection error) → red (≥1 FAILED) → green (all passed) → unknown (parse ambiguity/no targets/no runner), matching AC-01."
+          },
+          {
+            "name": "Per-stem spawnSync with per-invocation timeout + SIGTERM→unknown degradation (resolves multi-stem timeout, open issue #5)",
+            "tradeoffs": "runRedCheck mirrors runBuildGate's exec exactly: a for loop over stems (cargo: cargo test -p <pkg> --test <stem>; vitest/jest: single vitest run <files>/npm test -- <files>; pytest: pytest <files>), each spawnSync(argv, {cwd, timeout: timeoutMs}) wrapped in try/catch. A timeout sets r.signal==='SIGTERM'/r.status===null → classify unknown (proceed), NEVER throw and NEVER emit a SyncError. PRO: matches the existing proven pattern byte-for-byte; each scoped test is cheap (single stem) so a per-invocation envelope is correct, not the whole loop; mid-loop timeout degrades cleanly per AC-01/SCENARIO-005. CON: N stems × timeout budget worst-case, but stems are derived from the tdd-guide's own reported testFiles (small N), and runRedCheck is advisory (never blocks on unknown). The vitest/jest/pytest paths run ONCE (files passed as args), so only cargo loops — and cargo scoped test binaries are individually fast."
+          },
+          {
+            "name": "Path-normalize touched-set membership via path.resolve/relative before set comparison (resolves npm in-scope normalization, open issue #3)",
+            "tradeoffs": "Extract touchedFilePaths(cwd, baseRef): string[] from the existing git union in detectTouchedCargoPackages (returns repo-rooted paths), then build the membership set as new Set(touched.map(p => path.resolve(cwd, p))). Parse failing-test paths from runner output (vitest ❯ <p>; jest FAIL <p>), normalize each via path.resolve(cwd, raw) (handles cwd-/workspace-relative) and test membership against the resolved set. A failing file NOT in the set ⇒ out-of-scope. PRO: resolve collapses all of ./, ../, cwd-relative, and absolute-under-cwd to one canonical form, so a workspace-relative vitest path matches the repo-rooted git path; the npm-inscope test exercises a cwd-relative failing path to pin this. CON: on parse ambiguity (unparseable path line) → classify IN-SCOPE (conservative: never grants a false green, per AC-04). NEVER throws: wrap parsing in try/catch, default-to-in-scope on failure. Cargo inScopePass stays byte-identical."
+          },
+          {
+            "name": "Assert ≤(MAX_RED_RETRIES+1) runRedCheck calls/attempt + retry-exhaustion proceeds (resolves cost-bound non-multiplicativity, open issue #4)",
+            "tradeoffs": "MAX_RED_RETRIES=2 lives INSIDE one attempt; worst case per attempt = 1 initial tdd-guide + runRedCheck, then up to 2 retry rounds (re-prompt tdd-guide + runRedCheck) = 3 runRedCheck spawns max/attempt, plus 1 implementer + 1 gate. Across MAX_ATTEMPTS=3 that is ≤9 advisory red-oracle spawns total (non-multiplicative with the gate). Pin a unit test that stubs runRedCheck to always return 'green' and asserts it is called exactly MAX_RED_RETRIES+1 (=3) times per attempt, AND that after exhaustion the phase proceeds to the implementer + gate (loud warning) rather than looping the outer attempt. PRO: a future edit that accidentally nests the retry loop inside the attempt loop (multiplying cost) breaks this test. CON: a test counter coupling to the constant; acceptable since the constant is load-bearing and documented. Implementation.ts treats gate.pass || gate.inScopePass as commit-green — unchanged. unknown always proceeds immediately (0 retries), red proceeds immediately (0 retries); only green/broken retry."
+          },
+          {
+            "name": "Mirror RUST_SELF_VERIFY_DISCIPLINE into buildTddPrompt via the existing rustDiscipline(s) helper (Gap 3)",
+            "tradeoffs": "The RUST_SELF_VERIFY_DISCIPLINE constant and rustDiscipline(s) helper already exist and are shared by buildImplementPrompt + buildQaPrompt; buildTddPrompt confirmed to NOT yet use them [SRC-04]. Fix is a one-line append of rustDiscipline(s) to buildTddPrompt's Instructions array, gated on s.language==='rust' (no change to non-Rust stacks). PRO: zero new constants, single source of truth for the no-`--lib` discipline; RED checks then run full cargo test -p <pkg> (covering tests/ integration binaries) not just lib unit tests. CON: none — it is the documented AC-03 intent; buildImplementPrompt text needs no change beyond confirming both share the same constant."
+          },
+          {
+            "name": "withRealTheme parity helper + whole-render-layer parity test (Gap 2; honest about graph-gate limits)",
+            "tradeoffs": "tests/helpers/real-theme.ts exports withRealTheme<T>(fn) that calls initTheme() (idempotent) and passes the real class-based proxy theme; callers use method-style theme.fg() (NEVER destructure — the fgColors-class guard). tests/render/real-theme-parity.test.ts runs themeLine, commandBackground, buildResultComponent, packDashboardLines, createDashboardWidgetFactory through it asserting no-throw + ANSI. PRO: catches the fgColors detached-method class of bug that plain-object mocks miss (a known false-green), and generalizes tests/stream-theme-class-theme.test.ts to the whole render layer. CON: a fully-mechanical 'no framework mocks' graph-based gate is NOT feasible without a type-dependency graph — acknowledge as future work in docs/testing-parity.md; the parity convention is the durable, proportionate fix (≥1 parity test per module wrapping a framework type behind a structural interface)."
+          }
+        ],
+        "openIssues": [],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/03-research-report.md"
+      }
+    },
+    "debug": {
+      "timestamp": "2026-07-20T13:16:27.056Z",
+      "agent": "debug",
+      "data": {
+        "title": "Root-Cause Analysis: Four Gaps in the super-dev TDD/Build Cycle (red-oracle, --lib discipline, npm scope, framework-type parity)",
+        "date": "2025-07-22",
+        "summary": "Stage 9's skeleton is correct — a deterministic per-phase `tdd-guide → implementer → runBuildGate` loop (hard build/test oracle) committing on `gate.pass || gate.inScopePass` — but four independent gaps let real bugs slip to runtime this session. The unifying root cause across all four is that super-dev **trusts LLM self-report or unscoped/default classification at exactly the weak seams**: (1) the TDD \"red\" phase is never verified mechanically (the tdd-guide's `{testsWritten, testFiles, allFailing}` return is awaited and discarded at `src/stages/implementation.ts:49`, so already-passing or absent tests pass as \"TDD\"); (2) the TDD prompt never forbids `--lib`-only self-verification, so the RED check only sees cargo lib unit tests and silently skips the `tests/` integration binaries; (3) out-of-scope failure classification (the cargo `inScopePass` feature that lets pre-existing breakage in untouched crates not abort in-scope work) is gated to Rust only — the npm/vitest/jest path computes `classScope = []` and `classifyOutOfScopeErrors(errors, [])` conservatively marks EVERY error in-scope, so any pre-existing failing test file the branch never touched hard-blocks the gate; (4) the `fgColors` crash class (detaching a method from the class-based pi `Theme` so `fg()` reads an undefined `this.fgColors`) is guarded by exactly ONE regression test (`tests/stream-theme-class-theme.test.ts`) over `themeLine` only — there is no shared real-object parity helper and no test over the rest of the render layer (`commandBackground`, `buildResultComponent`, `packDashboardLines`, `createDashboardWidgetFactory`), so a mock-only coverage of a class-based dependency is a known false-green everywhere else. All four were confirmed by reading the source. None requires any change to the control-flow engine (`nodes.ts`/`workflow.ts`/`pipeline.ts`) or to `MAX_ATTEMPTS`; each is a localized TS addition/orchestration in `src/build-runner.ts`, `src/stages/implementation.ts`, `src/prompts.ts`, plus one test helper + one parity test + one doc. The fixes are backward-compatible and never-throw: greenfield repos (no runner/no tests) and untouched-passing suites behave byte-identically today; every new oracle/helper degrades to a non-blocking status on any ambiguity rather than aborting the pipeline.",
+        "hypotheses": [
+          "H1 (Gap 1, p≈0.95) — the TDD 'red' phase is never verified mechanically. Prediction: in `src/stages/implementation.ts` the `tdd-guide` agent call awaits but discards its control value, and no `runRedCheck` symbol exists in `src/`. CONFIRMED: `implementation.ts:49` does `await ctx.agent({ id: ..., agent: \"tdd-guide\", prompt: buildTddPrompt(...) })` with no `const tdd = ...`, and `buildTddPrompt` (src/prompts.ts) explicitly returns `{testsWritten, testFiles, allFailing}` that nothing consumes. rg `runRedCheck|MAX_RED_RETRIES` in src/ → no matches. So tests that already pass, or are never written, sail through as 'TDD'. Falsifiable: a phase whose tdd-guide returns `allFailing:false` still proceeds straight to the implementer today.",
+          "H1.a (Gap 1 fallback, p≈0.85) — when a red oracle is added it MUST not stall greenfield pipelines or loop forever. Prediction: the correct design returns a 4th status `unknown` (no runner / no targets / parse ambiguity) that proceeds, and caps re-prompt retries at a small constant. This matches `runBuildGate`'s existing greenfield non-fatal pattern (`ran:[], pass:true`) and the cargo `inScopePass` never-throw contract.",
+          "H2 (Gap 3, p≈0.9) — the no-`--lib` self-verify discipline is wired into the implementer/QA prompts but NOT the TDD prompt. Prediction: `rustDiscipline(s)` (or `RUST_SELF_VERIFY_DISCIPLINE`) appears in `buildImplementPrompt` and `buildQaPrompt` but is absent from `buildTddPrompt`'s instruction list. CONFIRMED: src/prompts.ts defines `RUST_SELF_VERIFY_DISCIPLINE` + `rustDiscipline(s)` and spreads `...(rust ? [rust] : [])` only in `buildImplementPrompt` and `buildQaPrompt`; `buildTddPrompt` emits only `langInstructions`. So a tdd-guide that self-verifies with `cargo test -p <pkg> --lib` reports RED based solely on lib unit tests and the `tests/` integration binaries are never exercised before the gate.",
+          "H3 (Gap 4, p≈0.9) — out-of-scope classification is Rust-only by construction, so npm pre-existing failures always block. Prediction: in `runBuildGate`, the classification scope `classScope` is non-empty ONLY on the `cmds0.language === \"rust\" && testPackages.length > 0` branch; on the npm/vitest/jest branch `testPackages` is `[]`, so `classifyOutOfScopeErrors(errors, [])` hits its empty-scope branch and returns ALL errors as in-scope. CONFIRMED: `runBuildGate` computes `testPackages=[]` for non-rust repos (only the rust branch assigns touched/auto packages), then `const classScope = cmds0.language === \"rust\" && testPackages.length > 0 ? classificationScope(...) : testPackages` → `[]`; `classifyOutOfScopeErrors` returns `outOfScopeErrors:[]` whenever `scope.size === 0`; and `inScopePass = pass || (errors.length>0 && outOfScopeErrors.length===errors.length)` is therefore false whenever any npm test fails, regardless of which file. There is also no failing-test-FILE parsing (vitest `❯ path/to/file.test.ts` / jest `FAIL src/file.test.ts`) and no shared `touchedFilePaths(cwd, baseRef)` helper — the touched-file union (`git diff --merge-base` + `git ls-files --others`) is currently inlined inside `detectTouchedCargoPackages` and applied only to `crates/<seg>/` lines.",
+          "H4 (Gap 2, p≈0.8) — the fgColors crash class is guarded by a single regression test over one render function, with no real-object parity coverage for the rest of the render layer. Prediction: only `tests/stream-theme-class-theme.test.ts` exists for this bug class, it exercises `themeLine` (src/render/stream-theme.ts:139) only, and there is no `tests/helpers/real-theme.ts` and no test running `commandBackground` (stream-theme.ts:206), `buildResultComponent` (render/dashboard.ts:360), `packDashboardLines` (dashboard.ts:208), or `createDashboardWidgetFactory` (dashboard.ts:295) against the real class-based Theme. CONFIRMED via rg: the only `initTheme`+fgColors regression is stream-theme-class-theme.test.ts; `withRealTheme` does not exist anywhere. So any render path that a future refactor attaches a plain-object mock Theme to can crash at runtime on a detached `theme.fg(...)` while unit tests stay green.",
+          "H5 (alternate, p≈0.05) — one of the four failures is actually a backend/control-flow regression (signal abort, budget exhaustion, or a stage emitting empty `control:{}`). RULED OUT: `runBuildGate` already try/catches every spawn (SCENARIO-034/AC-02) and degrades non-fatally; `MAX_ATTEMPTS=3` and the Stage 10 review / Stage 11 integration structure are explicitly out of scope and untouched. The four gaps are localized prompt/orchestration/classification defects, not pipeline-engine failures."
+        ],
+        "rootCause": "Four INDEPENDENT defects, each a localized trust-seam in `src/` (no control-flow-engine change required):\n\n(1) GAP 1 — RED phase never verified. `src/stages/implementation.ts:49` runs `await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: \\\"tdd-guide\\\", prompt: buildTddPrompt(...) })` and DISCARDS the result; `buildTddPrompt` (src/prompts.ts) returns `{testsWritten, testFiles, allFailing}` that is never read, and `runRedCheck`/`MAX_RED_RETRIES` do not exist (rg → 0 matches in src/). The loop trusts the tdd-guide's self-report that tests were written and are failing. FIX: add `runRedCheck(cwd, testTargets, opts)` to `src/build-runner.ts` (reuse `detectProjectCommands` for runner/language, `resolveTimeoutMs` for the `spawnSync({timeout})` envelope, cached cargo metadata, and the existing scoped-argv + `resolveIntegrationStems`-style stem derivation) returning exactly one of `red`/`green`/`broken`/`unknown`, NEVER throwing (`unknown` = no runner/no targets/parse ambiguity → proceed); wire `implementation.ts` to read the tdd-guide's `testFiles`, call `runRedCheck`, and `while status === green || broken` re-prompt the tdd-guide capped at `MAX_RED_RETRIES = 2`, logging `Implementation ${phaseId} red-oracle: ${status} (ran: …)`, proceeding on `red`/`unknown` (unknown + retry-cap proceed with a loud warning), and telling the implementer prompt the tests are confirmed-red.\n\n(2) GAP 3 — `--lib` discipline missing from the RED prompt. `rustDiscipline(s)` (src/prompts.ts) spreads `RUST_SELF_VERIFY_DISCIPLINE` into `buildImplementPrompt` and `buildQaPrompt` but NOT `buildTddPrompt` (it emits only `langInstructions`). FIX: append `rustDiscipline(s)` to `buildTddPrompt` too so the RED check runs `cargo test -p <pkg>` WITHOUT `--lib` plus any spec-mandated `cargo test --test <stem>`.\n\n(3) GAP 4 — npm out-of-scope classification disabled by construction. In `runBuildGate` (src/build-runner.ts) `testPackages` is non-empty ONLY on the rust branch; npm/vitest/jest leaves it `[]`, so `classScope` (line `cmds0.language === \\\"rust\\\" && testPackages.length > 0 ? classificationScope(...) : testPackages`) is `[]`, and `classifyOutOfScopeErrors(errors, [])` returns ALL errors in-scope (its empty-scope conservative branch). FIX: extract the git union now inlined in `detectTouchedCargoPackages` into a shared `touchedFilePaths(cwd, baseRef)` (no NEW git spawn beyond what touched-file detection already does), parse failing TEST FILE paths from runner output (vitest `❯ path/to/file.test.ts`; jest `FAIL src/file.test.ts`) when a non-cargo test run failed, classify a failing file OUT-OF-SCOPE iff NOT in the touched set, and populate `outOfScopeErrors`/`inScopePass` exactly like the cargo path; on any parse ambiguity treat as IN-SCOPE (conservative, no false green). Cargo behavior stays byte-identical.\n\n(4) GAP 2 — framework-type parity covered for one function only. Only `tests/stream-theme-class-theme.test.ts` exercises the real class-based pi `Theme` (`fg()` reads `this.fgColors`; a detached method call throws \\\"reading 'fgColors'\\\"), and only over `themeLine` (src/render/stream-theme.ts:139). No `tests/helpers/real-theme.ts` `withRealTheme<T>(fn)`, no whole-render-layer parity test. FIX: add `tests/helpers/real-theme.ts` exporting `withRealTheme<T>(fn: (theme: Theme)=>T): T` (calls idempotent `initTheme()`, passes the real proxy, NEVER destructures methods), a `tests/render/real-theme-parity.test.ts` running `themeLine`, `commandBackground` (stream-theme.ts:206), `buildResultComponent` (render/dashboard.ts:360), `packDashboardLines` (dashboard.ts:208), and `createDashboardWidgetFactory` (dashboard.ts:295) through it asserting no-throw + ANSI output, and `docs/testing-parity.md` documenting: any module wrapping a framework type behind a structural interface MUST have ≥1 parity test via `withRealTheme`/`initTheme`; mock-only coverage of a class-based dependency is a known false-green. (A fully-mechanical graph-based 'no framework mocks' gate is NOT feasible without a type-dependency graph and is explicitly acknowledged as future work.)\n\nAll four are backward-compatible and never-throw; `npm run typecheck` strict-clean and `npm test` green (existing build-runner suite + new red-oracle, parity, and npm-inscope suites) are the acceptance signal.",
+        "reproductionSteps": [
+          "GAP 1 (red-oracle never runs): `rg -n 'runRedCheck|MAX_RED_RETRIES' src` → 0 matches. Then open `src/stages/implementation.ts` and confirm line ~49 `await ctx.agent({ id: ...`.tdd.a${attempt}., agent: \"tdd-guide\", prompt: buildTddPrompt(...) })` has no left-hand assignment — the tdd-guide's `testFiles`/`allFailing` are discarded. Reproduce the false-RED behavior: in a scratch TS repo, hand the tdd-guide a phase whose spec test ALREADY passes (or write no test); the loop proceeds straight to the implementer with no RED assertion (status today is effectively 'always proceed'). After fix: `runRedCheck` returns `green`/`broken` and the loop re-prompts ≤2× before a loud proceed.",
+          "GAP 3 (--lib discipline missing in TDD prompt): open `src/prompts.ts`, diff `buildTddPrompt` vs `buildImplementPrompt`/`buildQaPrompt` — the latter two spread `...(rust ? [rust] : [])` from `rustDiscipline(s)`; `buildTddPrompt` does not. Reproduce: on a rust repo with a failing `tests/<stem>.rs` integration binary but a passing lib, the current tdd-guide self-verifying with `cargo test -p <pkg> --lib` would report RED=false-y / pass and the integration target would be invisible until the implementer gate.",
+          "GAP 4 (npm out-of-scope always blocks): `node -e \"const{classifyOutOfScopeErrors}=require('./dist/build-runner.js'); console.log(classifyOutOfScopeErrors(['FAIL tests/legacy.test.ts'], []))\"` → `{inScopeErrors:['FAIL tests/legacy.test.ts'], outOfScopeErrors:[]}` (empty scope → all in-scope). End-to-end: in a vitest repo, leave a PRE-EXISTING failing test in an UNTOUCHED file, run `runBuildGate(cwd, {gate:...})`; `inScopePass` is `false` even though the branch touched nothing in that file. After fix: parse the vitest `❯ path/to/file.test.ts` / jest `FAIL src/file.test.ts` line, intersect with `touchedFilePaths(cwd, baseRef)` (the `git diff --merge-base <ref> --name-only` ∪ `git ls-files --others --exclude-standard` union), and a file NOT in the touched set populates `outOfScopeErrors` → `inScopePass` true. Cargo path unchanged: re-run the existing `build-runner-inscope-classification.test.ts` / `build-runner-touched-crates.test.ts` to confirm byte-identical behavior.",
+          "GAP 2 (render-layer parity hole): `rg -n 'withRealTheme|initTheme' tests/` → `initTheme` only in `stream-theme-class-theme.test.ts` and `dashboard-result.test.ts`; `withRealTheme` → 0. Reproduce the crash class: synthetically detach — `const { fg } = theme; fg('accent','x')` throws \"Cannot read properties of undefined (reading 'fgColors')\" against the real Theme, while a plain-object mock `({fg:(c,v)=>v})` does NOT, so any render path unit-tested with such a mock is a false-green. Confirm coverage hole: `rg -n 'commandBackground|buildResultComponent|packDashboardLines|createDashboardWidgetFactory' tests/` shows they are exercised only with mock/structural themes, never via `initTheme`. After fix: `tests/render/real-theme-parity.test.ts` runs all five through `withRealTheme` and asserts no-throw + ANSI output.",
+          "REGRESSION GUARD (whole-suite): `npm run typecheck` strict-clean and `npm test` ALL green — the existing build-runner suite (scoped-args, touched-crates, autoscope, inscope-classification, resolver-validation, nonregression, package-wiring, timeout, backward-compat-regression, docs) plus the new red-oracle, real-theme-parity, and npm-inscope suites; plus `tests/stream-theme-class-theme.test.ts` still green (no Theme-method destructuring introduced anywhere)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/04-debug-analysis.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-20T13:21:29.384Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment — Hardening the super-dev TDD/Build Cycle (RED oracle, npm in-scope gate, test-parity)",
+        "date": "2025-01-15",
+        "summary": "pi-super-dev is a self-contained, composable control-flow pipeline (13 stages, ~21 spawned pi subagents) packaged as a pi extension/library. The hardening work is concentrated in three modules: `src/build-runner.ts` (the deterministic build/test/typecheck \"hard oracle\", 1111 lines), `src/stages/implementation.ts` (Stage 9 per-phase TDD loop), and `src/prompts.ts` (prompt builders), plus the render layer (`src/render/dashboard.ts`, `src/render/stream-theme.ts`) for the Theme parity fix. The codebase has a strong, consistent NEVER-THROW / degrade-to-safe-default discipline (every git/cargo/spawn helper returns `[]` or a conservative verdict on any ambiguity) and a clean scoped-argv + `spawnSync({cwd,timeout,encoding})` envelope — `runRedCheck` and the npm in-scope classifier should reuse `detectProjectCommands`, `resolveTimeoutMs`, `resolveIntegrationStems`, and a shared `touchedFilePaths` extracted from `detectTouchedCargoPackages`. KEY DELTAS to note: (1) Gap 3 is PARTIALLY done — `RUST_SELF_VERIFY_DISCIPLINE` already forbids `--lib`-only in `buildImplementPrompt` (rust-gated), but `buildTddPrompt` does NOT have it; that's the real gap. (2) The existing Theme regression test (`tests/stream-theme-class-theme.test.ts`) only fakes a `ClassTheme` + calls `initTheme()` for the markdown global — it does NOT obtain the REAL pi Theme proxy object, so `withRealTheme` must first discover the real accessor from `@earendil-works/pi-coding-agent`'s exports. (3) vitest includes BOTH `tests/**/*.test.ts` AND `src/**/*.test.ts`, and tsconfig `include:[\"src\",\"tests\"]`, so new `tests/helpers/*` and `tests/render/*.test.ts` files are valid without config changes. There is NO long-running API/UI server — the repo is a library; verification is `npm test` (vitest run) + `npm run typecheck` (tsc --noEmit). No new runtime deps permitted.",
+        "patterns": [
+          {
+            "name": "NEVER-THROW / degrade-to-safe-default (the dominant invariant)",
+            "example": "src/build-runner.ts:485 (detectTouchedCargoPackages wraps git spawns in try/catch → []); :414 (resolveIntegrationStems skips unresolvable); :687 (classifyOutOfScopeErrors conservative on ambiguity); :932 (runBuildGate non-fatal when nothing detected)",
+            "consistency": "Pervasive and load-bearing. EVERY new helper (runRedCheck, touchedFilePaths, npm failing-file parser) MUST wrap its whole body in try/catch and return a safe default (unknown / [] / in-scope) on any spawn error, parse ambiguity, or missing runner. This is the single most important convention to mirror; the acceptance criteria re-state it four times."
+          },
+          {
+            "name": "Per-language project detection via detectProjectCommands",
+            "example": "src/build-runner.ts:852 — returns ProjectCommands with `language` (rust|go|python|frontend|backend|mixed), per-language argv arrays, a `ran` label set, and for npm a `pm` field (detectPm at :842)",
+            "consistency": "runRedCheck must branch on `cmds.language` exactly like runBuildGate does (cargo → `-p <pkg> --test <stem>`; npm → `pm run test -- <files>` / direct `vitest run`; pytest → `pytest <files>`). Reuse this rather than re-detecting manifests. Never assume a runner exists — greenfield returns `{language:'mixed',ran:[]}` → red status 'unknown'."
+          },
+          {
+            "name": "Scoped-argv helpers + spawnSync envelope",
+            "example": "src/build-runner.ts:612 (scopedCargoTestArgs), :567 (scopedCargoArgs), :84 (resolveTimeoutMs reads SUPER_DEV_BUILD_TIMEOUT_MS), spawnSync called at :1034 as spawnSync(argv[0], argv.slice(1), {cwd, timeout: timeoutMs, encoding:'utf8'})",
+            "consistency": "runRedCheck must (a) derive cargo test-binary stems from tdd-guide testFiles via resolveIntegrationStems (:414), (b) invoke per-stem `cargo test -p <pkg> --test <stem>` or npm/pytest scoped form, (c) run inside resolveTimeoutMs(opts.timeoutMs). Do NOT introduce a new timeout resolution path."
+          },
+          {
+            "name": "Git union for the touched-file set (basis for in-scope classification)",
+            "example": "src/build-runner.ts:498-501 — detectTouchedCargoPackages spawns `git -C <cwd> diff --merge-base <ref> --name-only` AND `git -C <cwd> ls-files --others --exclude-standard`, concatenates stdouts (base-ref precedence: arg > SUPER_DEV_GATE_BASE_REF > 'main')",
+            "consistency": "Gap 4 (npm in-scope) needs the SAME touched set but as raw FILE PATHS, not crate segments. Extract a shared `touchedFilePaths(cwd, baseRef?)` returning the diff+untracked line union; refactor detectTouchedCargoPackages to map crate segments over it (no behavior change), and have the npm classifier consume the path union directly. Keeps the 'bounded git spawns' invariant — no new git processes beyond this union."
+          },
+          {
+            "name": "In-scope / out-of-scope error partitioning (cargo today; generalize to npm)",
+            "example": "src/build-runner.ts:687 (classifyOutOfScopeErrors), :780-801 (BuildGateResult.inScopePass + outOfScopeErrors fields), :1098-1100 (inScopePass = pass || all-failures-out-of-scope)",
+            "consistency": "implementation.ts:93 already treats `gate.pass || gate.inScopePass` as green, so generalizing inScopePass to npm needs NO stage change. Reuse the BuildGateResult fields verbatim. CRITICAL conservative rule from the cargo path: a no-marker / mixed / ambiguous error stays in `errors` and is NEVER promoted to outOfScope (never grants a false green) — npm in-scope MUST mirror this: parse ambiguity → in-scope."
+          },
+          {
+            "name": "Prompt builders: array-join + ctxBlock + language-gated append constants",
+            "example": "src/prompts.ts — buildTddPrompt (~:135) and buildImplementPrompt (~:170) join string arrays with \\n; RUST_SELF_VERIFY_DISCIPLINE const (~:155) + rustDiscipline(s) gate (returns '' unless s.language==='rust') appended to buildImplementPrompt",
+            "consistency": "GAP 3 DELTA: the no-`--lib`/full-`cargo test -p` rule ALREADY exists for buildImplementPrompt (gated to rust via s.language). The actual missing piece is the SAME rule in buildTddPrompt (it takes a `langInstructions` param but the rust rule is NOT appended). Add a rust-gated rule there so RED checks cover integration tests. buildTddPrompt also returns {testsWritten,testFiles,allFailing} — implementation.ts must READ those."
+          },
+          {
+            "name": "Stage control surface (ctx.agent / ctx.helper / ctx.log)",
+            "example": "src/stages/implementation.ts:70 (ctx.agent({id, agent:'tdd-guide', prompt}) — result DISCARDED today, the bug), :77 (implementer agent), :84 (runBuildGate called synchronously), :93 (gate.pass||gate.inScopePass), :14 imports GateOptions from build-runner",
+            "consistency": "runRedCheck wires in here: capture the tdd-guide agent's `.control` ({testFiles}), call runRedCheck(worktree, testFiles), loop re-prompting tdd-guide on green/broken (≤MAX_RED_RETRIES=2 WITHIN the existing attempt; MAX_ATTEMPTS stays 3), log each red-oracle status, proceed on red|unknown. State accessed via state.spec?.gate; normalizePhases guards control shape."
+          },
+          {
+            "name": "Test conventions: vitest + vi.mock child_process + colocated & top-level tests",
+            "example": "src/build-runner.test.ts:39-40 — vi.mock('node:child_process', () => ({ spawnSync:(cmd,argv)=>{...} })) with a module-level mock-state object reset per test; vitest.config.ts includes ['tests/**/*.test.ts','src/**/*.test.ts']; tsconfig.json include:['src','tests']",
+            "consistency": "runRedCheck unit tests (per-status red/green/broken/unknown) MUST use this exact vi.mock spawnSync stub pattern. New files tests/helpers/real-theme.ts and tests/render/real-theme-parity.test.ts are valid WITHOUT config edits (vitest globs tests/**, tsconfig includes tests). The implementation.ts retry-loop test can stub runRedCheck the same way."
+          },
+          {
+            "name": "Class-based Theme regression guard (the fgColors bug class)",
+            "example": "tests/stream-theme-class-theme.test.ts — defines a local ClassTheme with this.fgColors Map, calls initTheme() in beforeAll, asserts themeLine/commandBackground/buildResultComponent don't throw when called method-style against a class theme",
+            "consistency": "Gap 2 generalizes this. BUT NOTE: the existing test FAKE-builds a ClassTheme — it does NOT obtain the REAL pi Theme proxy from @earendil-works/pi-coding-agent (it only calls initTheme() to seed the markdown global). withRealTheme must discover the real proxy accessor (e.g. getTheme()/useTheme/return value of initTheme) BEFORE writing tests/helpers/real-theme.ts. Render targets to exercise: themeLine, commandBackground (src/render/stream-theme.ts:139,206); buildResultComponent, packDashboardLines, createDashboardWidgetFactory (src/render/dashboard.ts:360,208,295). NEVER destructure theme methods (this.fgColors) — always theme.fg(...) method-style; keep this regression test green."
+          }
+        ],
+        "recommendations": [
+          "Model runRedCheck(cwd, testTargets, opts) directly on runBuildGate's skeleton (src/build-runner.ts:932): detectProjectCommands(cwd) → branch on cmds.language → build scoped argv (cargo: resolveIntegrationStems(testTargets) → per-stem `cargo test -p <pkg> --test <stem>`; npm: `pm run test -- <files>` or direct `vitest run <files>`; pytest: `pytest <files>`) → spawnSync({cwd, timeout:resolveTimeoutMs(opts.timeoutMs), encoding:'utf8'}) → classify stdout/exit into ONE of red|green|broken|unknown. Wrap the ENTIRE body in try/catch; return 'unknown' on no runner, empty testTargets, spawn error, or parse ambiguity. Define a RedCheckOptions sharing {timeoutMs?, signal?} with GateOptions; export a `type RedStatus`.",
+          "Extract `touchedFilePaths(cwd, baseRef?): string[]` from detectTouchedCargoPackages (src/build-runner.ts:498-501) — it returns the raw union of `git diff --merge-base <ref> --name-only` + `git ls-files --others --exclude-standard` lines (never throws, [] on any error). Refactor detectTouchedCargoPackages to map CRATE_SEGMENT_RE over touchedFilePaths (zero behavior change, keeps the 9 touched-crates tests green). The npm in-scope classifier then consumes the raw path union — no new git spawns.",
+          "For npm/vitest/jest in-scope (Gap 4): add `parseFailingNpmTestFiles(combinedOutput): string[]` matching vitest `❯ <path>` and jest `FAIL <path>` markers. In runBuildGate, when an npm-family test step failed, compute touched = touchedFilePaths(cwd, SUPER_DEV_GATE_BASE_REF/opts.baseRef), classify each failing file OUT-of-scope if NOT in touched, populate BuildGateResult.outOfScopeErrors + set inScopePass exactly like the cargo path (:1098-1100). On ANY parse ambiguity (unrecognized runner output, path that doesn't resolve), treat as IN-SCOPE (conservative — never a false green). Unit-test with a stubbed failing-test stdout (mirror src/build-runner.test.ts:39 vi.mock).",
+          "Gap 3 is mostly done: RUST_SELF_VERIFY_DISCIPLINE already forbids --lib-only in buildImplementPrompt (rust-gated via rustDiscipline(s)). The real delta is buildTddPrompt — add the SAME no-`--lib`/full-`cargo test -p` + integration-target rule there (it accepts a langInstructions param but currently receives no rust discipline). This makes the RED phase itself run the tests/ integration binaries, so runRedCheck's red verdict covers integration, not just lib unit tests.",
+          "In implementation.ts (src/stages/implementation.ts:70): capture the tdd-guide agent's `.control` → {testFiles}. Introduce MAX_RED_RETRIES=2 INSIDE the existing attempt loop (do NOT change MAX_ATTEMPTS=3). Loop: while status==='green'|'broken', re-prompt tdd-guide with a hint ('your tests passed already / failed to compile — write genuinely-failing, non-broken tests') up to the cap. Proceed on 'red'|'unknown'. Log `Implementation ${phaseId} red-oracle: ${status} (ran: …)` each iteration. Augment the implementer prompt with 'tests confirmed-red; goal is to green them'. Never stall: unknown + retry-cap both proceed with a loud warning.",
+          "Before writing tests/helpers/real-theme.ts, DISCOVER the real pi Theme proxy accessor (the existing tests/stream-theme-class-theme.test.ts only fakes ClassTheme + calls initTheme() for the markdown global; it never gets the real proxy). Check @earendil-works/pi-coding-agent exports (likely getTheme()/useTheme() or a return value from initTheme()). withRealTheme<T>(fn:(theme:Theme)=>T) should initTheme() (idempotent) then hand the REAL proxy to fn so the WHOLE render layer (themeLine, commandBackground, buildResultComponent, packDashboardLines, createDashboardWidgetFactory output) is exercised against the real class-based Theme. Call theme.fg(...) method-style only.",
+          "Keep backward compatibility provable: greenfield (no runner/no tests) → runRedCheck 'unknown' → proceeds exactly as today; repos with no test failures → runRedCheck 'green' (no longer a proceed on its own — but that only triggers a re-prompt, and after MAX_RED_RETRIES it proceeds with a warning, so a greenfield-with-incidental-green-tests repo is unaffected in the end state); cargo inScopePass behavior untouched. Run `npm test` AND `npm run typecheck` to green before finishing — the build-runner suite is large (scoped-args, touched-crates, autoscope, inscope-classification, resolver-validation, nonregression, package-wiring, timeout, backward-compat-regression) and any helper-signature refactor MUST keep them green or update them in the same change."
+        ],
+        "filesAssessed": [
+          "package.json",
+          "README.md",
+          "tsconfig.json",
+          "vitest.config.ts",
+          "src/build-runner.ts",
+          "src/stages/implementation.ts",
+          "src/prompts.ts",
+          "src/render/dashboard.ts",
+          "src/render/stream-theme.ts",
+          "src/build-runner.test.ts",
+          "tests/stream-theme-class-theme.test.ts"
+        ],
+        "services": {},
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/05-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-20T13:26:54.876Z",
+      "agent": "spec",
+      "data": {
+        "title": "Technical Specification — Harden super-dev TDD/Implement/Build Cycle (RED oracle, no-`--lib` parity, scope-aware npm gate, render-layer test parity)",
+        "date": "2026-07-20",
+        "summary": "Pure-TypeScript bug-fix to pi-super-dev closing four proven gaps in the Stage 9 (tdd-guide → implementer → runBuildGate hard oracle) cycle. (Gap 1, CRITICAL) The TDD \"red\" phase is currently never verified — `src/stages/implementation.ts:70` calls the `tdd-guide` agent and DISCARDS the result, so \"TDD\" is really \"T+D\". We add a deterministic, never-throwing `runRedCheck(cwd, testTargets, opts)` oracle (status `red|green|broken|unknown`) modeled on the existing `runBuildGate` skeleton, reusing `detectProjectCommands`, `resolveTimeoutMs`, `resolveIntegrationStems`, and the cached cargo metadata; `implementation.ts` wires a bounded re-prompt loop (re-prompt tdd-guide on `green`/`broken`, ≤ `MAX_RED_RETRIES=2` within the existing attempt; proceed on `red`/`unknown`; loud warning on cap exhaustion). (Gap 3) `buildTddPrompt` already accepts a `langInstructions` arg but `implementation.ts` passes nothing, so the RED phase can miss `tests/` integration binaries — we pass the existing shared `rustDiscipline(setup)` (single `RUST_SELF_VERIFY_DISCIPLINE` source string) so both RED and implement prompts forbid `--lib`-only and require full `cargo test -p <pkg>` + `--test <stem>` integration targets. (Gap 4) The cargo `inScopePass`/`outOfScopeErrors` concept is cargo-only, so pre-existing npm/vitest/jest failures in untouched files block the gate; we extract a shared `touchedFilePaths(cwd, baseRef)` git helper (the existing `diff --merge-base` + `ls-files --others` union currently embedded in `detectTouchedCargoPackages` — no new git spawns), parse failing test-file paths from vitest `❯ <path>` / jest `FAIL <path>` markers, and classify in/out-of-scope for npm-family runners exactly like cargo, degrading conservatively to in-scope on any ambiguity. (Gap 2) The fgColors \"real runtime shape vs. mock\" bug class passed every gate because unit tests used a mock Theme while the real Theme is a class with `this.fgColors`; we deliver `tests/helpers/real-theme.ts` (`withRealTheme<T>(fn:(theme:Theme)=>T):T` exercising the REAL class-based proxy via `initTheme()`, method-style only — never destructured), a `tests/render/real-theme-parity.test.ts` whole-render-layer regression (themeLine, commandBackground, buildResultComponent, packDashboardLines, createDashboardWidgetFactory output), and `docs/testing-parity.md` codifying the convention. Every new gate/oracle/git helper degrades instead of throwing (red→unknown→proceed; parse ambiguity→conservative in-scope; git/spawn error→empty touched set→in-scope); greenfield repos and no-failure repos behave exactly as before; cargo `inScopePass` is byte-for-byte unchanged; `MAX_ATTEMPTS=3`, Stage 10 review, and Stage 11 integration are untouched; no new runtime deps. A fully-mechanical \"no framework mocks\" graph-based gate is explicitly future work (documented, not delivered). Verification: `npm run typecheck` strict-clean + `npm test` ALL green (existing scoped-args/touched-crates/autoscope/inscope-classification/resolver-validation/nonregression/package-wiring suites updated where signatures change, plus new red-oracle/parity/npm-inscope/implementation-red-loop suites).",
+        "architecture": "The change is confined to four source modules + the test layer of pi-super-dev. It preserves the dominant NEVER-THROW/degrade-to-safe-default invariant, reuses the existing typed interfaces (`ProjectCommands`, `BuildGateResult`, `GateOptions`), and adds three new typed boundaries. There is no long-running server — verification is `npm test` (vitest run) + `npm run typecheck` (tsc --noEmit).\n\n## Module-by-module technical decisions\n\n### A. `src/build-runner.ts` — three additions + one refactor\n\n1. **Shared git helper (refactor + extraction, Gap 4 foundation).** `detectTouchedCargoPackages(cwd, baseRef?)` (build-runner.ts:485) currently spawns `git -C <cwd> diff --merge-base <ref> --name-only` AND `git -C <cwd> ls-files --others --exclude-standard`, concatenates stdouts, then maps `CRATE_SEGMENT_RE` over the lines and `dedupePreservingOrder`s. EXTRACT the raw path union into a new exported function:\n   `export function touchedFilePaths(cwd: string, baseRef?: string): string[]` — returns the dedupePreservingOrder union of both git stdouts as RAW file paths (no crate filtering). Base-ref precedence: `baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF ?? \"main\"`. Whole body in try/catch → `[]`. Then refactor `detectTouchedCargoPackages` to map `CRATE_SEGMENT_RE` over `touchedFilePaths(cwd, baseRef)` (zero behavior change — keeps the 9 touched-crates/autoscope/nonregression tests green; keeps the \"bounded git spawns\" invariant: still exactly two git processes). This is the single source of the touched-file set for both cargo and npm in-scope classification.\n\n2. **RED oracle (Gap 1a, AC-01).** Add `export type RedStatus = \"red\" | \"green\" | \"broken\" | \"unknown\"` and `export interface RedCheckOptions { timeoutMs?: number; signal?: AbortSignal; }` (shares the {timeoutMs?, signal?} shape of `GateOptions`). Implement `export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckOptions): RedStatus` modeled on the `runBuildGate` skeleton (build-runner.ts:932):\n   - `const cmds = detectProjectCommands(cwd);` (returns `{language, ran[], pm?, ...}`; greenfield/no-manifest → `{language:'mixed', ran:[]}`).\n   - If `cmds` has no test runner OR `testTargets.length === 0` → return `\"unknown\"` (no spawn — greenfield cannot stall the pipeline).\n   - Build scoped argv per `cmds.language`, mirroring `runBuildGate`'s branching:\n     - `rust` → derive stems via `resolveIntegrationStems(cwd, testTargets)` (build-runner.ts:414; skips unresolvable); for each resolved `(pkg, stem)` run `cargo test -p <pkg> --test <stem>` (NO `--lib`); if no stems resolve, fall back to `cargo test -p <pkg>` for the touched packages.\n     - `frontend`/`backend` (npm) → if `cmds.pm`/vitest detected: `vitest run <testTargets>` (or `npm test -- <testTargets>` / `pnpm test -- <testTargets>` via `cmds.pm`).\n     - `python` → `pytest <testTargets>`.\n   - Execute via the existing envelope: `spawnSync(argv[0], argv.slice(1), { cwd, timeout: resolveTimeoutMs(opts?.timeoutMs), encoding: \"utf8\" })` (resolveTimeoutMs reads `SUPER_DEV_BUILD_TIMEOUT_MS`).\n   - Classify the COMBINED stdout+stderr+exit code into exactly one status using per-language heuristics:\n     - **cargo**: `\"broken\"` if output contains `error[E`, `could not compile`, or `no tests to run` with no test execution; `\"red\"` if exit!==0 AND a failure marker (`test result: FAILED.`, `FAILED`, `panicked`) appears AFTER successful compilation; `\"green\"` if exit===0 (all passed); `\"unknown\"` on ambiguous shape.\n     - **npm/vitest/jest**: `\"broken\"` on collection/parse errors (`SyntaxError`, `failed to load`, `No test files found` without a run); `\"red\"` if exit!==0 with a failing-test marker (`❯`, `FAIL`, `Tests:\\s+\\d+ failed`); `\"green\"` if exit===0; `\"unknown\"` on ambiguity.\n     - **pytest**: `\"red\"` if `failed`/`error` in summary with exit!==0; `\"green\"` if exit===0; `\"broken\"` on collection error (`ERROR collecting`); `\"unknown\"` on ambiguity.\n   - **The ENTIRE body is wrapped in try/catch**: any spawn error, timeout, or parse ambiguity → return `\"unknown\"` (or a conservative status) — NEVER throw. This is the load-bearing invariant mirrored from every existing helper.\n\n3. **npm in-scope classifier (Gap 4, AC-04).** Add `export function parseFailingNpmTestFiles(combinedOutput: string): string[]` matching vitest `❯\\s*(<path>)` and jest `^FAIL\\s+(<path>)` markers; returns deduped paths or `[]` on no match (never throws). In `runBuildGate`, after a FAILED npm/vitest/jest test step: `const touched = touchedFilePaths(cwd, opts?.gate?.baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF);` then `const failing = parseFailingNpmTestFiles(combined);` classify each failing file OUT-of-scope if NOT in `touched`; partition into `outOfScopeErrors` (out-of-scope) vs `errors` (in-scope); set `result.inScopePass = result.pass || (failing.length>0 && failing.every(f => !touched.has(f)))` and populate `result.outOfScopeErrors` — EXACTLY mirroring the cargo path at build-runner.ts:1098-1100 and reusing the existing `BuildGateResult` fields verbatim. On any parse ambiguity, empty `touched`, or unresolvable path → treat as IN-SCOPE (conservative; grants no false green). The cargo branch is untouched byte-for-byte (still uses `detectTouchedCargoPackages` + `classifyOutOfScopeErrors`). Because `implementation.ts:93` already treats `gate.pass || gate.inScopePass` as green, NO stage change is required for the npm path.\n\n### B. `src/stages/implementation.ts` — RED enforcement loop (Gap 1b, AC-02) + prompt wiring (Gap 3, AC-03)\n- Import `runRedCheck` and `type RedStatus` (alongside existing `runBuildGate, type GateOptions` at implementation.ts:14); add `const MAX_RED_RETRIES = 2;` (module-level, mirrors `MAX_ATTEMPTS = 3`, no new config surface).\n- Capture the tdd-guide agent result (currently DISCARDED at implementation.ts:70): `const tdd = await ctx.agent({...tdd-guide...});` and read `const testFiles = (tdd.control as { testFiles?: string[] } | null)?.testFiles ?? [];`.\n- Pass `rustDiscipline(setup)` as the `langInstructions` arg to `buildTddPrompt(...)` so the RED-phase prompt carries the no-`--lib` discipline (Gap 3 — buildTddPrompt already accepts the param; the shared `RUST_SELF_VERIFY_DISCIPLINE` const is the single source of truth). Requires `rustDiscipline` to be exported from prompts.ts if not already.\n- Bounded RED loop inside the existing `attempt` loop (does NOT change `MAX_ATTEMPTS=3` or the `gate.pass || gate.inScopePass` commit condition at :93):\n  ```\n  let redStatus: RedStatus = runRedCheck(worktreePath, testFiles, { signal: ctx.signal });\n  let retries = 0;\n  ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(\",\") || \"n/a\"})`);\n  while ((redStatus === \"green\" || redStatus === \"broken\") && retries < MAX_RED_RETRIES) {\n    retries++;\n    const retry = await ctx.agent({ id: `...tdd.red${retries}...`, agent:\"tdd-guide\", prompt: buildTddPrompt(..., rustDiscipline(setup)) + redRePromptHint(redStatus) });\n    const nextFiles = (retry.control as { testFiles?: string[] } | null)?.testFiles ?? testFiles;\n    redStatus = runRedCheck(worktreePath, nextFiles, { signal: ctx.signal });\n    ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${nextFiles.join(\",\") || \"n/a\"})`);\n  }\n  if (redStatus === \"green\" || redStatus === \"broken\") ctx.log(`Implementation ${phaseId} red-oracle WARNING: not confirmed-red after ${MAX_RED_RETRIES} retries — proceeding`);\n  // proceed to implementer (red OR unknown OR cap-exhausted)\n  ```\n  The hint helper `redRePromptHint(status)` returns: for `green` — \"Your tests passed already; write tests that GENUINELY fail against the unimplemented behavior\"; for `broken` — \"Your tests did not compile/collect; fix the test so it runs and fails\".\n- Augment the implementer prompt: when `redStatus === \"red\"`, append \"The TDD tests are CONFIRMED-red; your goal is to make them green.\" When `redStatus === \"unknown\"` or cap-exhausted, append a note that red status could not be confirmed.\n- NEVER stall: `unknown` proceeds immediately (no re-prompt); cap exhaustion proceeds with a loud warning. Worst-case cost per phase is bounded: `≤2 tdd-guide + ≤2 red-check + 1 implementer + 1 build-gate`.\n\n### C. `src/prompts.ts` — confirm shared source string (AC-03)\n- No text change to `RUST_SELF_VERIFY_DISCIPLINE` (prompts.ts:99) or `rustDiscipline(s)` (prompts.ts:105). The fix is in implementation.ts (pass `rustDiscipline(setup)` as `langInstructions`). Verify both `buildTddPrompt` and `buildImplementPrompt` reference the SAME const (single source of truth). Export `rustDiscipline` if implementation.ts needs it.\n\n### D. Render layer + tests (Gap 2, AC-05)\n- `tests/helpers/real-theme.ts`: `withRealTheme<T>(fn: (theme: Theme) => T): T` — calls `initTheme()` (idempotent), obtains the REAL pi Theme proxy from `@earendil-works/pi-coding-agent` (discover the accessor first — the existing `tests/stream-theme-class-theme.test.ts` only FAKE-builds a ClassTheme + seeds the markdown global, it never obtains the real proxy), passes it to `fn`. NEVER destructures theme methods (`this.fgColors` crash guard); callers use method-style `theme.fg(...)`.\n- `tests/render/real-theme-parity.test.ts`: runs `themeLine`, `commandBackground` (stream-theme.ts:139,206), `buildResultComponent`, `packDashboardLines`, `createDashboardWidgetFactory` output (dashboard.ts:360,208,295) through `withRealTheme`; asserts no-throw + non-empty ANSI output. Generalizes `tests/stream-theme-class-theme.test.ts` into a whole-render-layer regression.\n- `docs/testing-parity.md`: documents that any module wrapping a framework type behind a structural interface MUST have ≥1 parity test via `withRealTheme`/`initTheme`; mock-only coverage of a class-based dependency is a known false-green; a graph-based \"no framework mocks\" gate is future work.\n\n## File inventory\n- **Modify:** `src/build-runner.ts` (add `touchedFilePaths`, `RedStatus`, `RedCheckOptions`, `runRedCheck`, `parseFailingNpmTestFiles`; refactor `detectTouchedCargoPackages`; extend `runBuildGate` npm branch), `src/stages/implementation.ts` (RED loop + import + prompt wiring), `src/prompts.ts` (export `rustDiscipline` if needed), existing `src/build-runner.test.ts` where signatures affect it.\n- **Create:** `tests/helpers/real-theme.ts`, `tests/render/real-theme-parity.test.ts`, `docs/testing-parity.md`, plus new suites `tests/red-oracle.test.ts`, `tests/npm-inscope.test.ts`, `tests/implementation-red-loop.test.ts` (or colocated in existing test files per repo convention).\n- **Delete:** none. No config edits needed (vitest globs `tests/**` + `src/**`; tsconfig `include:[\"src\",\"tests\"]`).\n\n## Cross-cutting constraints honored\n- NEVER destructure pi Theme methods (class with `this.fgColors`); keep `tests/stream-theme-class-theme.test.ts` green.\n- NEVER throw from any new gate/oracle/git helper.\n- Backward compatible: greenfield → `unknown` → proceed; cargo `inScopePass` unchanged; `MAX_ATTEMPTS=3`, Stage 10/11 structure, `nodes.ts`/`workflow.ts`/`pipeline.ts` untouched; no new runtime deps; no new git spawns beyond the existing diff+untracked union (shared helper).",
+        "testingStrategy": "Verification is `npm run typecheck` (tsc --noEmit, strict, no `any` leaks) + `npm test` (vitest run). The repo is a library — no API/UI server. Every phase ships its own independently-runnable test suite; the final phase is the full-suite + regression gate. Test conventions mirror the existing suite: `vi.mock('node:child_process', () => ({ spawnSync:(cmd,argv)=>{...} }))` with a module-level mock-state object reset per test (src/build-runner.test.ts:39-40).\n\n**Per-phase testable units (each phase independently green):**\n- **Phase 1 (touchedFilePaths):** new unit tests — committed-diff paths, untracked-only paths, both-union dedup ordering, spawn error → `[]`, empty repo → `[]`, base-ref precedence. Regression: existing touched-crates/autoscope/nonregression suites stay green (zero behavior change from the refactor).\n- **Phase 2 (runRedCheck):** new `tests/red-oracle.test.ts` — `vi.mock` spawnSync stub returning fixed stdout/exit per case → assert `red` (cargo `test result: FAILED.` + exit≠0; vitest `❯` failing + exit≠0), `green` (exit 0), `broken` (cargo `error[E`/`could not compile`; vitest `SyntaxError`/collection error), `unknown` (no manifest / empty testTargets / spawn error / parse ambiguity). Assert NEVER throws (wrap a throwing spawnSync → expect `unknown`).\n- **Phase 3 (RED loop):** `tests/implementation-red-loop.test.ts` — `vi.mock` runRedCheck returning green→green→red (assert ≤`MAX_RED_RETRIES` re-prompts), green-after-cap (assert loud warning + proceed), unknown (assert immediate proceed, zero re-prompts), red (assert zero re-prompts + implementer prompt contains \"CONFIRMED-red\"). Assert `MAX_ATTEMPTS=3` outer loop and `gate.pass||gate.inScopePass` commit condition unchanged.\n- **Phase 4 (no-`--lib` parity):** prompt snapshot test — assert the tdd prompt for a `rust` setup contains the no-`--lib` clause + `cargo test --test <stem>` instruction, and a non-rust setup omits it; assert buildTddPrompt and buildImplementPrompt share the identical `RUST_SELF_VERIFY_DISCIPLINE` substring.\n- **Phase 5 (npm in-scope):** `tests/npm-inscope.test.ts` — stubbed failing vitest stdout (`❯ src/untouched.test.ts`) + stubbed git diff → assert `outOfScopeErrors` populated + `inScopePass=true`; a touched-file failure → `inScopePass=false` (blocks); unparseable output → conservative in-scope; `touchedFilePaths` spawn error → in-scope; cargo branch unchanged (existing inscope-classification suite still green byte-for-byte).\n- **Phase 6 (render parity):** `tests/render/real-theme-parity.test.ts` — `withRealTheme` exercising themeLine/commandBackground/buildResultComponent/packDashboardLines/createDashboardWidgetFactory output → no-throw + ANSI (escape `\\x1b`/`\\u001b`) output; `tests/stream-theme-class-theme.test.ts` stays green.\n\n**Final gate (Phase 7):** full `npm run typecheck` strict-clean + full `npm test` ALL green — existing build-runner suite (scoped-args, touched-crates, autoscope, inscope-classification, resolver-validation, nonregression, package-wiring, timeout, backward-compat-regression) updated wherever a helper-signature change affects it, plus all new suites. Regression sweep: dashboard widget, themed stream, scope-aware cargo gate, mid-run input injection, Markdown §3 artifacts unchanged; `nodes.ts`/`workflow.ts`/`pipeline.ts` untouched; `MAX_ATTEMPTS=3`; no new runtime deps. For THIS TS repo the gate is `npm test` + `npm run typecheck` (no cargo workspace).",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018",
+          "SCENARIO-019",
+          "SCENARIO-020",
+          "SCENARIO-021",
+          "SCENARIO-022"
+        ],
+        "phases": [
+          {
+            "name": "P1 — Extract shared touchedFilePaths git helper (Gap 4 foundation)",
+            "description": "Extract the raw git `diff --merge-base` + `ls-files --others` union currently embedded in `detectTouchedCargoPackages` (build-runner.ts:485) into a new exported `touchedFilePaths(cwd, baseRef?): string[]` that returns raw file paths (never throws, `[]` on error). Refactor `detectTouchedCargoPackages` to map `CRATE_SEGMENT_RE` over the new helper — zero behavior change. Independently testable: new touchedFilePaths unit tests + existing touched-crates/autospace/nonregression suites stay green. No dependency on other phases; foundation for P5."
+          },
+          {
+            "name": "P2 — Add runRedCheck RED oracle to build-runner.ts (Gap 1a)",
+            "description": "Add `RedStatus` type, `RedCheckOptions` interface, and `runRedCheck(cwd, testTargets, opts): RedStatus` modeled on the `runBuildGate` skeleton, reusing `detectProjectCommands`, `resolveTimeoutMs`, and `resolveIntegrationStems`; per-language scoped invocation (cargo per-stem, vitest/jest/npm, pytest); classify stdout+exit into red/green/broken/unknown; entire body try/catch → unknown (never throws); no runner/empty targets → unknown. Independently testable via new per-status `vi.mock` spawnSync suite. No dependency on other phases."
+          },
+          {
+            "name": "P3 — Wire RED enforcement loop into implementation.ts (Gap 1b)",
+            "description": "Depends on P2. Capture the tdd-guide result (currently discarded at implementation.ts:70), read `testFiles`, add `MAX_RED_RETRIES=2`, and implement the bounded re-prompt loop: while status is green/broken and retries < cap, re-prompt tdd-guide with a status-specific hint and re-run runRedCheck; proceed on red/unknown; loud warning on cap exhaustion; augment the implementer prompt with confirmed-red context. Log each `red-oracle` outcome. Never stall (unknown proceeds immediately; cap proceeds with warning). Independently testable via a stubbed-runRedCheck loop test. `MAX_ATTEMPTS=3` and `gate.pass||gate.inScopePass` unchanged."
+          },
+          {
+            "name": "P4 — Mirror no-`--lib` discipline into the TDD prompt (Gap 3)",
+            "description": "Pass `rustDiscipline(setup)` (the shared `RUST_SELF_VERIFY_DISCIPLINE` source string, Rust-gated) as the `langInstructions` arg to `buildTddPrompt` in implementation.ts:70 (buildTddPrompt already accepts the param; prompts.ts:99/105 unchanged text). Export `rustDiscipline` from prompts.ts if needed so both buildTddPrompt and buildImplementPrompt share the identical source string. Independently testable via a prompt snapshot test (rust setup contains no-`--lib` clause + integration-target instruction; non-rust omits it). No dependency on other phases."
+          },
+          {
+            "name": "P5 — Generalize in-scope/out-of-scope classification to npm/vitest/jest in runBuildGate (Gap 4)",
+            "description": "Depends on P1. Add `parseFailingNpmTestFiles(combinedOutput): string[]` (vitest `❯ <path>` / jest `FAIL <path>`; never throws). In `runBuildGate`, after a failed npm-family test step, compute `touchedFilePaths(cwd, baseRef)`, classify each failing file out-of-scope if absent from touched, populate `outOfScopeErrors`/`inScopePass` exactly like the cargo path (build-runner.ts:1098-1100), degrading conservatively to in-scope on any ambiguity/empty-touched. Cargo branch byte-for-byte unchanged. Independently testable via a stubbed failing-stdout + git-diff suite."
+          },
+          {
+            "name": "P6 — Render-layer Theme parity helper + whole-layer regression + convention doc (Gap 2)",
+            "description": "Discover the real pi Theme proxy accessor in @earendil-works/pi-coding-agent exports (the existing test only fakes ClassTheme). Create `tests/helpers/real-theme.ts` (`withRealTheme<T>(fn:(theme:Theme)=>T):T` via idempotent `initTheme()`, method-style only — never destructured) and `tests/render/real-theme-parity.test.ts` exercising themeLine/commandBackground/buildResultComponent/packDashboardLines/createDashboardWidgetFactory output (no-throw + ANSI), generalizing `tests/stream-theme-class-theme.test.ts`. Create `docs/testing-parity.md` documenting the parity convention + the future-work graph-based gate note. Independently testable; no dependency on other phases."
+          },
+          {
+            "name": "P7 — Full-suite integration, typecheck, and regression gate",
+            "description": "Run `npm run typecheck` (strict-clean, no `any` leaks across new boundaries) and the complete `npm test` (existing scoped-args/touched-crates/autoscope/inscope-classification/resolver-validation/nonregression/package-wiring suites — updated wherever signatures change — PLUS the new red-oracle/parity/npm-inscope/implementation-red-loop suites). Regression sweep: dashboard widget, themed stream, scope-aware cargo gate, mid-run input injection, Markdown §3 artifacts unchanged; nodes.ts/workflow.ts/pipeline.ts untouched; MAX_ATTEMPTS=3; Stage 10/11 structure unchanged; no new runtime deps. Depends on all prior phases."
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "P1",
+            "description": "In src/build-runner.ts add `export function touchedFilePaths(cwd: string, baseRef?: string): string[]` returning the dedupePreservingOrder union of `git -C <cwd> diff --merge-base <ref> --name-only` + `git -C <cwd> ls-files --others --exclude-standard` RAW paths; base-ref precedence `baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF ?? \"main\"`; whole body try/catch → `[]`."
+          },
+          {
+            "phase": "P1",
+            "description": "Refactor `detectTouchedCargoPackages` (build-runner.ts:485) to map `CRATE_SEGMENT_RE` over `touchedFilePaths(cwd, baseRef)` instead of spawning git directly; preserve dedupePreservingOrder; verify zero behavior change against the touched-crates/autospace/nonregression tests."
+          },
+          {
+            "phase": "P1",
+            "description": "Add touchedFilePaths unit tests (committed-diff paths, untracked-only paths, both-union dedup ordering, spawn error → [], empty repo → [], base-ref precedence) in src/build-runner.test.ts or tests/touched-file-paths.test.ts."
+          },
+          {
+            "phase": "P1",
+            "description": "Run `npm run typecheck` + `npm test`; confirm P1 is independently green and existing touched-crates/autospace/nonregression suites are unchanged."
+          },
+          {
+            "phase": "P2",
+            "description": "In src/build-runner.ts add `export type RedStatus = \"red\" | \"green\" | \"broken\" | \"unknown\"` and `export interface RedCheckOptions { timeoutMs?: number; signal?: AbortSignal; }` (shares GateOptions shape)."
+          },
+          {
+            "phase": "P2",
+            "description": "Implement `export function runRedCheck(cwd, testTargets, opts?): RedStatus` on the runBuildGate skeleton: detectProjectCommands(cwd) → no runner/empty testTargets → `unknown`; build scoped argv per language (cargo: resolveIntegrationStems → per-stem `cargo test -p <pkg> --test <stem>`, NO `--lib`, fallback `cargo test -p <pkg>`; npm: `vitest run <files>` or `pm test -- <files>`; python: `pytest <files>`) → spawnSync({cwd, timeout: resolveTimeoutMs(opts?.timeoutMs), encoding:\"utf8\"}) → classify combined stdout+stderr+exit."
+          },
+          {
+            "phase": "P2",
+            "description": "Define per-language classification heuristics: cargo broken=`error[E`/`could not compile`/`no tests to run`; red=exit≠0 + `test result: FAILED.`/`FAILED`/`panicked` after compile; green=exit 0; npm broken=`SyntaxError`/`failed to load`/collection error; red=exit≠0 + `❯`/`FAIL`/`Tests: N failed`; pytest red=`failed`/`error` summary+exit≠0; broken=`ERROR collecting`; green=exit 0; ambiguous→`unknown`."
+          },
+          {
+            "phase": "P2",
+            "description": "Wrap the ENTIRE runRedCheck body in try/catch → return `unknown` (never throw); confirm no spawn occurs for greenfield/empty-targets."
+          },
+          {
+            "phase": "P2",
+            "description": "Add tests/red-oracle.test.ts (or extend src/build-runner.test.ts) with `vi.mock` spawnSync stubs asserting red/green/broken/unknown classification per language, plus spawn-error→unknown and never-throws coverage."
+          },
+          {
+            "phase": "P2",
+            "description": "Run typecheck + the new red-oracle suite green (P2 independently testable)."
+          },
+          {
+            "phase": "P3",
+            "description": "In src/stages/implementation.ts import `runRedCheck` and `type RedStatus` (alongside runBuildGate/GateOptions at :14) and add module-level `const MAX_RED_RETRIES = 2;`."
+          },
+          {
+            "phase": "P3",
+            "description": "Capture the tdd-guide agent result at implementation.ts:70 into a const and read `testFiles = (tdd.control as { testFiles?: string[] } | null)?.testFiles ?? []`."
+          },
+          {
+            "phase": "P3",
+            "description": "Implement the bounded RED loop inside the existing attempt loop: call runRedCheck(worktreePath, testFiles, {signal:ctx.signal}); while (status==='green'||status==='broken') && retries<MAX_RED_RETRIES, re-prompt tdd-guide (id `...tdd.red{retries}...`) with a status-specific hint, re-read testFiles, re-run runRedCheck; log `Implementation ${phaseId} red-oracle: ${status} (ran: ${files.join(\",\")||\"n/a\"})` each iteration."
+          },
+          {
+            "phase": "P3",
+            "description": "Add a `redRePromptHint(status)` helper: green → \"tests passed already; write genuinely-failing tests\"; broken → \"tests did not compile/collect; fix so they run and fail\"."
+          },
+          {
+            "phase": "P3",
+            "description": "On red/unknown/cap-exhausted proceed to the implementer; append to the implementer prompt \"tests CONFIRMED-red; make them green\" when status==='red', else a note that red could not be confirmed; on cap exhaustion with still green/broken emit a loud warning log."
+          },
+          {
+            "phase": "P3",
+            "description": "Verify `unknown` proceeds immediately (zero re-prompts), `MAX_ATTEMPTS=3` outer loop and `gate.pass || gate.inScopePass` commit condition (:93) are unchanged."
+          },
+          {
+            "phase": "P3",
+            "description": "Add tests/implementation-red-loop.test.ts (or extend the implementation stage test) with a stubbed runRedCheck asserting: green→green→red yields ≤MAX_RED_RETRIES re-prompts; cap exhaustion warns + proceeds; unknown proceeds with zero re-prompts; red proceeds with zero re-prompts and implementer prompt contains CONFIRMED-red."
+          },
+          {
+            "phase": "P4",
+            "description": "In src/stages/implementation.ts:70 pass `rustDiscipline(setup)` as the `langInstructions` arg to buildTddPrompt so the RED-phase prompt carries the no-`--lib` discipline; export `rustDiscipline` from src/prompts.ts if not already exported."
+          },
+          {
+            "phase": "P4",
+            "description": "Confirm buildTddPrompt and buildImplementPrompt reference the SAME `RUST_SELF_VERIFY_DISCIPLINE` source string (prompts.ts:99) — single source of truth; no text change required."
+          },
+          {
+            "phase": "P4",
+            "description": "Add/extend a prompt snapshot test asserting the tdd prompt for a rust setup contains the no-`--lib` clause + `cargo test --test <stem>` integration-target instruction and that a non-rust setup omits it; assert buildTddPrompt and buildImplementPrompt share the identical discipline substring."
+          },
+          {
+            "phase": "P4",
+            "description": "Run typecheck + the prompt snapshot test green (P4 independently testable)."
+          },
+          {
+            "phase": "P5",
+            "description": "In src/build-runner.ts add `export function parseFailingNpmTestFiles(combinedOutput: string): string[]` matching vitest `❯\\s*(<path>)` and jest `^FAIL\\s+(<path>)` markers; return deduped paths or `[]`; never throw."
+          },
+          {
+            "phase": "P5",
+            "description": "In runBuildGate, after a FAILED npm/vitest/jest test step, compute `touched = touchedFilePaths(cwd, opts?.gate?.baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF)` and `failing = parseFailingNpmTestFiles(combined)`; classify each failing file out-of-scope if NOT in touched; partition into outOfScopeErrors vs errors; set `inScopePass = pass || (failing.length>0 && failing.every(f=>!touched.includes(f)))` mirroring build-runner.ts:1098-1100; populate outOfScopeErrors exactly like the cargo path."
+          },
+          {
+            "phase": "P5",
+            "description": "On any parse ambiguity, empty touched set, or unresolvable path → treat as IN-SCOPE (conservative; never a false green); ensure the function never throws on parse/git/spawn errors."
+          },
+          {
+            "phase": "P5",
+            "description": "Verify the cargo inScopePass path is byte-for-byte unchanged (cargo branch still uses detectTouchedCargoPackages + classifyOutOfScopeErrors)."
+          },
+          {
+            "phase": "P5",
+            "description": "Add tests/npm-inscope.test.ts with stubbed failing vitest stdout (`❯ src/untouched.test.ts`) + stubbed git diff asserting outOfScopeErrors populated + inScopePass=true; a touched-file failure → inScopePass=false; unparseable output → conservative in-scope; git spawn error → in-scope; cargo branch unchanged."
+          },
+          {
+            "phase": "P5",
+            "description": "Run typecheck + npm-inscope suite green and confirm existing inscope-classification/nonregression suites unchanged (P5 independently testable given P1)."
+          },
+          {
+            "phase": "P6",
+            "description": "Discover the real pi Theme proxy accessor in @earendil-works/pi-coding-agent exports (check getTheme/useTheme/initTheme return value); document the chosen accessor (the existing tests/stream-theme-class-theme.test.ts only fakes ClassTheme + seeds the markdown global)."
+          },
+          {
+            "phase": "P6",
+            "description": "Create tests/helpers/real-theme.ts exporting `withRealTheme<T>(fn:(theme:Theme)=>T):T` that calls initTheme() (idempotent), obtains the REAL proxy, and passes it to fn; NEVER destructure theme methods (method-style theme.fg(...) only)."
+          },
+          {
+            "phase": "P6",
+            "description": "Create tests/render/real-theme-parity.test.ts running themeLine, commandBackground (stream-theme.ts:139,206), buildResultComponent, packDashboardLines, and createDashboardWidgetFactory output (dashboard.ts:360,208,295) through withRealTheme; assert no-throw + non-empty ANSI (escape) output."
+          },
+          {
+            "phase": "P6",
+            "description": "Create docs/testing-parity.md: any module wrapping a framework type behind a structural interface MUST have ≥1 parity test via withRealTheme/initTheme; mock-only coverage of a class-based dependency is a known false-green; a fully-mechanical graph-based no-framework-mocks gate is future work (not delivered)."
+          },
+          {
+            "phase": "P6",
+            "description": "Keep tests/stream-theme-class-theme.test.ts green (no destructuring); run typecheck + parity suite green (P6 independently testable)."
+          },
+          {
+            "phase": "P7",
+            "description": "Run full `npm run typecheck` (strict-clean, no any leaks across ProjectCommands/BuildGateResult/RedStatus/RedCheckOptions boundaries) and full `npm test` — existing suites (scoped-args, touched-crates, autoscope, inscope-classification, resolver-validation, nonregression, package-wiring, timeout, backward-compat-regression) updated wherever signatures change, plus new red-oracle/parity/npm-inscope/implementation-red-loop suites."
+          },
+          {
+            "phase": "P7",
+            "description": "Regression sweep: confirm dashboard widget, themed stream, scope-aware cargo gate, mid-run input injection, and Markdown §3 artifacts behave unchanged; nodes.ts/workflow.ts/pipeline.ts untouched; MAX_ATTEMPTS=3 and Stage 10 review / Stage 11 integration structure unchanged; no new runtime dependencies."
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": []
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/06-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/07-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/08-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/06-specification.md",
+        "phaseCount": "7"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-20T13:31:19.610Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec Review — Harden super-dev TDD/Implement/Build Cycle (RED oracle, no-`--lib` parity, scope-aware npm gate, render-layer test parity)",
+        "date": "2026-07-20",
+        "verdict": "REVISIONS NEEDED",
+        "summary": "Pure-TS bug-fix spec for four gaps in the Stage 9 (tdd-guide→implementer→runBuildGate) cycle. The module/function/line grounding is strong overall (~85%): detectTouchedCargoPackages, runBuildGate, resolveTimeoutMs, resolveIntegrationStems, detectProjectCommands, the cargo inScopePass formula, and all five render-layer functions are exactly where cited, with correct shapes. The degrade-instead-of-throw invariant and MAX_ATTEMPTS=3/Stage 10-11-untouched constraints are honored. However two content defects will cause implementation failure if taken literally: (1) the central premise of Gap 3 is factually false — implementation.ts:70-71 ALREADY passes the route-specialist's languageInstructions as buildTddPrompt's langInstructions arg, so the literal prescribed fix (pass rustDiscipline(setup) as that arg) would CLOBBER specialist instructions, a silent regression; and (2) the runRedCheck cargo branch is ungrounded — resolveIntegrationStems returns stem strings only (no pkg), and runBuildGate runs stems as `cargo test --test <stem>` WITHOUT `-p`, contradicting the spec's `cargo test -p <pkg> --test <stem>` with no defined source for <pkg>. Secondary issues: the `Theme` type the parity helper depends on is not exported from the pi package and its accessor is deferred (\"discover first\"); the broken/red status boundary heuristics are not crisply measurable; and Gap 2's novelty is overstated since initTheme()-based real-accessor parity testing already exists in three render tests. Verdict REVISIONS NEEDED: the false Gap 3 premise and ungrounded cargo oracle are exactly the class of content defects that produce wrong implementations.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "high",
+            "title": "Gap 3 premise is factually false — implementation.ts already passes langInstructions; literal fix clobbers specialist output",
+            "detail": "Spec §B/C state 'buildTddPrompt already accepts a langInstructions arg but implementation.ts passes nothing' and prescribe 'Pass rustDiscipline(setup) as the langInstructions arg to buildTddPrompt'. Verified against src/stages/implementation.ts:70-71: `const lang = (specialist.value.languageInstructions as string) ?? \"\";` then `buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, lang)`. A non-empty value IS passed today (the route-specialist language instructions). Replacing it with `rustDiscipline(setup)` discards the specialist's per-task language instructions — a silent behavior regression for every non-Rust stack and for Rust tasks carrying specialist guidance. Fix direction: CONCATENATE (`lang + (lang?\"\\n\":\"\") + rustDiscipline(setup)`) or append, not replace. The spec's premise and its one-line fix are both wrong.",
+            "lens": "D6 Grounding / D2 Consistency",
+            "file": "src/stages/implementation.ts",
+            "line": "70-71"
+          },
+          {
+            "id": "F-02",
+            "severity": "high",
+            "title": "runRedCheck cargo branch ungrounded — resolveIntegrationStems returns stems only; no (pkg,stem) tuple source; contradicts runBuildGate",
+            "detail": "Spec §A.2 cargo branch: 'derive stems via resolveIntegrationStems(cwd, testTargets) ... for each resolved (pkg, stem) run cargo test -p <pkg> --test <stem> ... fall back to cargo test -p <pkg> for the touched packages'. Verified src/build-runner.ts:414 resolveIntegrationStems returns `string[]` (stems only, derived from file paths, never a package name) — there is no pkg in its return, so the (pkg,stem) iteration has no defined <pkg> source. Moreover runBuildGate itself runs integration stems as `cargo test --test <stem>` WITHOUT `-p` (per the CR-004/CR-008 comment), so the RED oracle's cargo invocation diverges from and contradicts the very build gate it is modeled on. The 'touched packages' fallback references detectTouchedCargoPackages output that runRedCheck never obtains. Recommend runRedCheck cargo branch mirror runBuildGate exactly (stems via `cargo test --test <stem>`, packages via the same detectTouchedCargoPackages→resolveCargoPackageNames tier) so the two oracles agree.",
+            "lens": "D6 Grounding / D3 Feasibility",
+            "file": "src/build-runner.ts",
+            "line": "414"
+          },
+          {
+            "id": "F-03",
+            "severity": "medium",
+            "title": "withRealTheme helper signature references a Theme type that is not exported by the pi package",
+            "detail": "Spec §D: withRealTheme<T>(fn:(theme:Theme)=>T):T 'exercising the REAL class-based proxy'. grep of @earendil-works/pi-coding-agent type declarations found no exported `Theme` type; the three existing render parity tests (dashboard-result.test.ts:35, dashboard-result-perkind.test.ts:37, regression-guard.test.ts:38) import only `initTheme` and exercise the `getMarkdownTheme()` MODULE GLOBAL, not a returned Theme object. The spec itself defers the accessor ('discover the accessor first'). The helper's `(theme:Theme)` parameter type is therefore ungrounded until that discovery is done; the signature should be left as discovered-accessor-typed or the spec must name the concrete accessor/type to import.",
+            "lens": "D6 Grounding / D8 Ambiguity",
+            "file": "tests/helpers/real-theme.ts"
+          },
+          {
+            "id": "F-04",
+            "severity": "medium",
+            "title": "Gap 2 novelty overstated — real-accessor (initTheme) parity testing already exists in three render tests",
+            "detail": "Spec §D frames the gap as 'the existing test only fakes ClassTheme ... never obtains the real proxy'. Verified initTheme() real-accessor parity is already an established pattern in src/render/dashboard-result.test.ts, dashboard-result-perkind.test.ts, and regression-guard.test.ts (beforeAll(() => initTheme())). The spec's premise that no real-Theme parity exists is inaccurate; the genuine residual gap is narrower (a whole-render-layer SWEEP + a documented convention), not the introduction of real-accessor testing itself. Re-scope the justification to avoid implementing a duplicate of existing coverage.",
+            "lens": "D2 Consistency / D5 Traceability",
+            "file": "tests/stream-theme-class-theme.test.ts"
+          },
+          {
+            "id": "F-05",
+            "severity": "medium",
+            "title": "broken/red status boundary heuristics are not crisply measurable",
+            "detail": "Spec §A.2 classification rules are stated in natural language without an operational test, e.g. cargo 'red if exit!==0 AND a failure marker ... appears AFTER successful compilation' and 'broken if ... no tests to run with no test execution'. There is no rule for detecting 'after successful compilation' or 'no test execution' from the COMBINED stdout+stderr blob — these require a state marker the spec does not define. Per-status stubbed tests (Phase 2) therefore cannot be authored deterministically against the stated boundary; implementers will invent their own marker logic. Specify the concrete precedence/regex sequence (e.g. 'broken if error[E|could not compile present; else red if exit≠0 & /test result: FAILED\\.|FAILED|panicked/ present; else green if exit=0; else unknown') so the red/broken tests are reproducible.",
+            "lens": "D4 Testability / D8 Ambiguity",
+            "file": "src/build-runner.ts"
+          },
+          {
+            "id": "F-06",
+            "severity": "medium",
+            "title": "ACs and SCENARIOs are referenced inline but not enumerated or cross-mapped in this spec",
+            "detail": "Spec cites AC-01..AC-05 inline (no 'Acceptance Criteria' section listing them) and lists SCENARIO-001..022 by ID only under 'BDD Scenario References' with no SCENARIO→AC→phase→task matrix in-document. The artifacts exist in the spec directory (01-requirements.md, 02-bdd-scenarios.md, 07-implementation-plan.md, 08-task-list.md), but the task header marked Plan/Tasks as N/A despite their presence, and this document does not embed or link the traceability. D5 traceability cannot be confirmed from the spec alone; at minimum an AC list with a SCENARIO→AC map should be present so the reviewer/implementation phase can verify every AC has a satisfying spec section and every SCENARIO has a phase.",
+            "lens": "D1 Completeness / D5 Traceability"
+          },
+          {
+            "id": "F-07",
+            "severity": "low",
+            "title": "RED-loop cost bound is stated per-attempt, not per-phase; redRePromptHint helper missing from file inventory",
+            "detail": "Spec §B claims worst-case '≤2 tdd-guide + ≤2 red-check + 1 implementer + 1 build-gate' but this is PER ATTEMPT inside MAX_ATTEMPTS=3; the true per-phase worst case is ~3× (up to 6 tdd-guide + 6 red-check + 3 implementer + 3 build-gate). The per-attempt framing could mislead sizing/review. Separately, the loop pseudocode calls redRePromptHint(status) but that helper is not listed in the 'File inventory → Create/Modify' list; add it to the inventory so it is not missed.",
+            "lens": "D7 Complexity / D2 Consistency",
+            "file": "src/stages/implementation.ts"
+          },
+          {
+            "id": "F-08",
+            "severity": "low",
+            "title": "runRedCheck reconstructs npm/pytest argv instead of reusing cmds.test — divergence from runBuildGate is unstated",
+            "detail": "runBuildGate executes tests via the existing `cmds.test` array (e.g. ['pytest','-q'], npm/pm scripts) detected by detectProjectCommands. Spec §A.2 instead has runRedCheck reconstruct argv from cmds.pm / vitest detection / explicit pytest <testTargets>, diverging from how the hard oracle invokes the same toolchain. The rationale (scoped per-file testTargets) is plausible but unstated; either reuse cmds.test where testTargets is empty, or document why the two gates intentionally invoke differently, to avoid drift between the RED oracle and the build gate.",
+            "lens": "D8 Ambiguity / D2 Consistency",
+            "file": "src/build-runner.ts"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "warn",
+            "notes": "Error/degrade paths (never-throw, red→unknown→proceed, empty-touched→in-scope) are thoroughly specified. Gap: AC-01..05 and SCENARIO-001..022 are referenced but not enumerated or mapped in-document; traceability lives only in sibling artifacts. Score 3/5."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "needs-work",
+            "notes": "Two substantive inconsistencies: Gap 3 premise ('implementation.ts passes nothing') contradicts code (it passes specialist langInstructions); runRedCheck cargo invocation (`cargo test -p <pkg> --test <stem>`) contradicts runBuildGate (`cargo test --test <stem>`). NFRs (typecheck strict, no new runtime deps) consistent. Score 3/5."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "warn",
+            "notes": "Core skeleton is feasible and reuses real helpers. Feasibility gap: runRedCheck cargo <pkg> has no defined source given resolveIntegrationStems returns stems only; Theme accessor for withRealTheme is deferred ('discover first'). Score 3/5."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "warn",
+            "notes": "Per-phase stubbed-stdout test suites are well enumerated; degrade/never-throw assertions are concrete. Gap: the cargo/npm broken-vs-red boundary rules are not crisply measurable (no operational marker for 'after successful compilation'), making deterministic red/broken test cases hard to author. Score 3/5."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "warn",
+            "notes": "Module→gap→AC→phase narrative is traceable in prose, but no AC list or SCENARIO→AC→phase matrix is embedded; 22 scenarios appear only as IDs. Sibling artifacts exist but are not linked/summarized here. Score 3/5."
+          },
+          {
+            "name": "D6 Grounding",
+            "status": "warn",
+            "notes": "~85% verified: detectTouchedCargoPackages(:485), runBuildGate(:932), resolveTimeoutMs(:84), resolveIntegrationStems(:414), detectProjectCommands(:852, mixed/greenfield shape), inScopePass(:1099), and all five render fns (stream-theme.ts:139/206; dashboard.ts:208/295/360) are accurate. Two HIGH grounding defects: false Gap 3 premise and ungrounded cargo (pkg,stem). Below the 90% bar. Score 3/5."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "pass",
+            "notes": "Proportional file inventory; degrades instead of throwing; shared git helper avoids new spawns; cargo branch byte-for-byte unchanged. Minor: per-phase cost bound understated (per-attempt framing) and redRePromptHint omitted from inventory. Score 4/5."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "warn",
+            "notes": "Degrade/precedence rules (base-ref ?? env ?? main; never-throw) are explicit. Ambiguity: Theme type/accessor undefined; broken/red heuristics imprecise; runRedCheck argv reconstruction diverges from cmds.test without rationale. Score 3/5."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/09-harden-tdd-build-cycle/docs/specifications/09-harden-tdd-build-cycle/09-spec-review.md"
+      }
+    }
+  }
+}
