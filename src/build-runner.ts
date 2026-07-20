@@ -45,14 +45,18 @@ import { join } from "node:path";
  *      default. Example: `SUPER_DEV_BUILD_TIMEOUT_MS=900000` gives 15 min.
  *
  *   2. `SUPER_DEV_BUILD_TEST_PACKAGES` — comma-separated cargo crate list to
- *      scope the `cargo test` invocation (`-p <pkg>` per entry) instead of
- *      running workspace-wide. Empty/missing → workspace-wide (unchanged).
- *      Parsed by {@link parseTestPackages} and applied by
- *      {@link scopedCargoTestArgs} ONLY when `detectProjectCommands` reports
- *      `language === "rust"` AND the list is non-empty, on a shallow copy of
- *      the detected commands so the pure detector is byte-identical.
- *      Precedence: `opts.testPackages` (provided, incl. explicit `[]` to force
- *      workspace-wide) > env var > workspace-wide.
+ *      scope the cargo gate (`cargo build`/`cargo test`/`cargo clippy`, all
+ *      three carrying `-p <pkg>` per entry) instead of running workspace-wide.
+ *      Empty/missing → workspace-wide (unchanged). Parsed by
+ *      {@link parseTestPackages} and applied by {@link scopedCargoBuildArgs}/
+ *      {@link scopedCargoTestArgs}/{@link scopedCargoClippyArgs} ONLY when
+ *      `detectProjectCommands` reports `language === "rust"` AND the resolved
+ *      set is non-empty, on a shallow copy of the detected commands so the
+ *      pure detector is byte-identical. FOUR-tier precedence (highest →
+ *      lowest): `opts.testPackages` (provided, incl. explicit `[]` to force
+ *      workspace-wide) > `SUPER_DEV_BUILD_TEST_PACKAGES` > auto-detected
+ *      touched crates ({@link detectTouchedCargoPackages}) > workspace-wide.
+ *      The git-diff spawn runs ONLY in the auto-detection tier.
  *      Example: `SUPER_DEV_BUILD_TEST_PACKAGES="crates/api,crates/store"`.
  *
  * Non-rust stacks (go/python/node/mixed) ignore the scoping var entirely,
@@ -413,20 +417,37 @@ export function runBuildGate(
 ): BuildGateResult {
 	const cmds0 = detectProjectCommands(cwd);
 	const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
-	// Resolve rust test-package scope with explicit precedence (AC-04):
-	//   1. opts.testPackages provided (incl. explicit [] = force workspace-wide);
-	//   2. process.env.SUPER_DEV_BUILD_TEST_PACKAGES (de-duplicated);
-	//   3. workspace-wide (no scoping).
-	const testPackages =
-		opts.testPackages !== undefined
-			? dedupePreservingOrder(opts.testPackages)
-			: parseTestPackages(process.env.SUPER_DEV_BUILD_TEST_PACKAGES);
-	// AC-03/AC-06: apply scoping ONLY when rust + non-empty packages exist, on a
-	// SHALLOW COPY so detectProjectCommands stays pure/byte-identical (the
-	// detector regression assertion still passes).
+	// AC-03: FOUR-tier package-set precedence (highest → lowest). The git-diff
+	// spawn runs ONLY in tier (iii) — it is SKIPPED whenever a higher tier
+	// supplies a value, so an override never wastes a process (SCENARIO-007).
+	//   (i)   opts.testPackages provided (incl. explicit [] = force workspace-wide);
+	//   (ii)  process.env.SUPER_DEV_BUILD_TEST_PACKAGES (set-but-empty ⇒ [] and
+	//         no spawn, preserving the pre-change env-set behaviour);
+	//   (iii) detectTouchedCargoPackages(cwd) — ONLY for rust repos (AC-01);
+	//   (iv)  [] → workspace-wide (no scoping).
+	let testPackages: string[];
+	if (opts.testPackages !== undefined) {
+		testPackages = dedupePreservingOrder(opts.testPackages);
+	} else if (process.env.SUPER_DEV_BUILD_TEST_PACKAGES !== undefined) {
+		testPackages = parseTestPackages(process.env.SUPER_DEV_BUILD_TEST_PACKAGES);
+	} else if (cmds0.language === "rust") {
+		testPackages = detectTouchedCargoPackages(cwd);
+	} else {
+		testPackages = [];
+	}
+	// AC-03/AC-06: scope ALL THREE cargo commands (build/test/typecheck) on a
+	// SHALLOW COPY when rust + a non-empty scope resolve; an empty set leaves cmds
+	// byte-identical to detectProjectCommands (the detector purity regression
+	// assertion still passes). SCENARIO-006 (all three carry -p) / SCENARIO-008
+	// (empty ⇒ byte-identical) / SCENARIO-007 (precedence + no-spawn).
 	const cmds =
-		cmds0.language === "rust" && testPackages.length > 0 && cmds0.test
-			? { ...cmds0, test: scopedCargoTestArgs(testPackages) }
+		cmds0.language === "rust" && testPackages.length > 0
+			? {
+					...cmds0,
+					build: scopedCargoBuildArgs(testPackages),
+					test: scopedCargoTestArgs(testPackages),
+					typecheck: scopedCargoClippyArgs(testPackages),
+				}
 			: cmds0;
 	const errors: string[] = [];
 	const ran: string[] = [];
