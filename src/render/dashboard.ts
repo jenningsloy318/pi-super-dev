@@ -210,6 +210,7 @@ export function packDashboardLines(
 	activity: string | undefined,
 	width: number,
 	theme?: DashboardTheme,
+	pendingInputCount: number = 0,
 ): string[] {
 	// F5: count only TERMINAL stages (ok/failed/skipped). The prior
 	// `!== "running"` rule counted never-started (pending/"·") stages as done,
@@ -227,6 +228,17 @@ export function packDashboardLines(
 
 	const a = truncateActivity(activity ?? "");
 	if (a) lines.push(truncLine(`▶ ${a}`, width));
+	// Phase 2 (AC-04 / AC-07): pending mid-run user-input count — surfaces how
+	// many interactive inputs are queued but not yet injected into a specialist.
+	// Pending-yet-to-be-injected; resets to 0 once drain() runs at the next spawn.
+	if (pendingInputCount > 0) {
+		lines.push(
+			truncLine(
+				`📥 ${pendingInputCount} mid-run input${pendingInputCount === 1 ? "" : "s"}`,
+				width,
+			),
+		);
+	}
 
 	const cols = 2;
 	// Adapt cell width to the actual terminal width — prevents overflow on narrow terminals.
@@ -261,9 +273,10 @@ export function buildDashboardWidget(
 	activity: string | undefined,
 	width: number,
 	theme?: DashboardTheme,
+	pendingInputCount: number = 0,
 ): Container {
 	const container = new Container();
-	for (const line of packDashboardLines(entries, activity, width, theme)) {
+	for (const line of packDashboardLines(entries, activity, width, theme, pendingInputCount)) {
 		container.addChild(new Text(line, 1, 0));
 	}
 	return container;
@@ -282,9 +295,10 @@ export function buildDashboardWidget(
 export function createDashboardWidgetFactory(
 	entries: Array<{ id: string; label: string; status: string }>,
 	activity: string | undefined,
+	pendingInputCount: number = 0,
 ): (tui: unknown, theme: DashboardTheme) => Container {
 	return (_tui, theme) =>
-		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme);
+		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme, pendingInputCount);
 }
 
 // ---------------------------------------------------------------------------

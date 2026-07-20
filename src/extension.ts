@@ -11,12 +11,12 @@
  *     invokes the `super_dev` tool.
  */
 
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import type { DashboardTheme } from "./render/dashboard.ts";
 import { createLiveStream } from "./render/live-stream.js";
-import type { TranscriptLine } from "./render/live-stream.js";
+import type { TranscriptLine, LiveStreamHandle } from "./render/live-stream.js";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,6 +33,121 @@ export { runWorkflow } from "./workflow.ts";
 
 const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
+
+/**
+ * Phase 1 (AC-01 / AC-02 / AC-03) — Mid-run input injection run-state singleton.
+ *
+ * `activeRun` is the single module-scoped source of truth for "a super_dev run
+ * is in progress." It is created on `execute()` entry (ctx stored on it) and
+ * nulled in the existing execute() `finally` alongside the dashboard-widget
+ * teardown, so run teardown and widget teardown stay unified (SCENARIO-002).
+ *
+ * The module-lifetime `pi.events.on("input", handler)` listener — registered
+ * EXACTLY ONCE in `activate(pi)`, never per-run — reads this singleton to
+ * decide {active-run + interactive}→handled / {else}→continue (AC-03), which
+ * also prevents listener leaks across runs (AC-01 / SCENARIO-001).
+ *
+ * Phase 1 ships ONLY the queue mechanics + guards. ACK surfaces (status pill,
+ * dashboard count, transcript LineKind) are added in Phase 2; the
+ * `userSteerProvider` drain seam is wired in Phase 3.
+ */
+export interface ActiveRun {
+	/** Pending mid-run user inputs not yet injected into a specialist prompt. */
+	queue: string[];
+	/** The execute() ctx (TUI guards + ACK surfaces use this — Phase 2). */
+	ctx?: ExtensionContext;
+	/** The live-stream handle (Phase 2 ACK: pushes the user-input transcript
+	 *  line). Optional so the Phase 1 idle-shape (no stream) still works. */
+	stream?: LiveStreamHandle;
+	/** Store interactive input. Empty/whitespace-only is skipped (SCENARIO-007). */
+	push(text: string): void;
+	/** Atomically return the pending inputs AND clear the queue (SCENARIO-013). */
+	drain(): string[];
+}
+
+let activeRun: ActiveRun | null = null;
+
+/** Bound on queued mid-run inputs so a single specialist spawn cannot be
+ *  token-bombed via a huge guidance prepend. Older entries are dropped first
+ *  (most-recent guidance wins — it reflects the user's latest intent). */
+const MAX_QUEUED_INPUTS = 20;
+
+/** Phase 4 (AC-08 / SCENARIO-017..018): the session-backend live-steer
+ *  forwarder, set by `runAgentViaSession`'s `onSteer` seam while a specialist
+ *  AgentSession is alive and nulled on dispose. The input handler nudges it
+ *  with the MOST-RECENT captured input only. `null` outside a session run
+ *  (idle / subprocess / browser backend) → no-throw no-op. */
+let activeSteerForwarder: ((text: string) => void) | null = null;
+
+/** Phase 2 (AC-04 / SCENARIO-008): ellipsize the queued-input preview to ~60
+ *  chars so the status pill stays one line even for long user messages. */
+function previewInput(text: string, max = 60): string {
+	const t = String(text ?? "");
+	return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/** Factory for the module-scoped ActiveRun (fresh queue per run — no leak).
+ *  Phase 2 adds the optional `stream` arg so push() can reach the live-stream's
+ *  `userInput` sink; omitting it preserves Phase 1 behavior (queue + no ACK). */
+export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandle): ActiveRun {
+	return {
+		queue: [],
+		ctx,
+		stream,
+		push(text: string): void {
+			// SCENARIO-007: never queue empty/whitespace-only input (no spurious
+			// guidance entry would be prepended downstream).
+			const t = String(text ?? "").trim();
+			if (!t) return;
+			this.queue.push(t);
+			// Bound the queue: drop the oldest entry when over capacity so a single
+			// specialist spawn can't be token-bombed (most-recent guidance wins).
+			if (this.queue.length > MAX_QUEUED_INPUTS) this.queue.shift();
+			// Phase 2 (AC-04 / AC-07): ACK surfaces — TUI-only AND stream-attached,
+			// each wrapped best-effort try/catch so a failing surface never aborts
+			// capture (SCENARIO-006 / SCENARIO-023). No stream ⇒ no ACK at all
+			// (keeps the Phase 1 idle shape byte-identical).
+			if (this.ctx?.mode === "tui" && this.stream) {
+				// (a) status pill — "📥 queued: <preview ~60ch>" (SCENARIO-008).
+				try { this.ctx?.ui?.setStatus?.("super-dev-input", `📥 queued: ${previewInput(t)}`); } catch { /* best-effort */ }
+				// (c) transcript line — flows through transcriptTail → renderResult
+				// unchanged (SCENARIO-009). (b) dashboard count is derived from
+				// queue.length by execute()'s renderDashboard() closure below.
+				try { this.stream.sink.userInput(t); } catch { /* best-effort */ }
+			}
+		},
+		drain(): string[] {
+			// SCENARIO-013: atomic return-and-clear. A second drain returns [] until
+			// new input arrives, so each captured input is injected exactly once.
+			const out = this.queue;
+			this.queue = [];
+			return out;
+		},
+	};
+}
+
+/** Set/clear the module singleton. Called on execute() entry (store ctx) and
+ * in the execute() finally (discard — unifies run + widget teardown). */
+export function setActiveRun(run: ActiveRun | null): void {
+	activeRun = run;
+}
+
+/** Phase 4 (AC-08 / SCENARIO-017..018): the bridge the session backend's
+ *  `onSteer` seam populates. `runAgentViaSession` calls this with a no-throw
+ *  forwarder bound to the live AgentSession on creation, and `null` on dispose
+ *  — so each captured input nudges the currently-running session specialist
+ *  with the MOST-RECENT input only (bounds context growth). Idle / subprocess /
+ *  browser backends never call it, so live steer is a documented no-throw
+ *  no-op and the Phase-3 queue path is the sole, identical delivery guarantee.
+ *  execute()'s finally clears it alongside activeRun (no stale leak). */
+export function setActiveSteerForwarder(fn: ((text: string) => void) | null): void {
+	activeSteerForwarder = fn;
+}
+
+/** Read the module singleton. Null when idle (no run in progress). */
+export function getActiveRun(): ActiveRun | null {
+	return activeRun;
+}
 
 /** Format a run summary honestly: success ✅ / partial ⚠️ / failed ❌. */
 function formatSummary(s: RunSummary, cwd?: string): string[] {
@@ -134,6 +249,40 @@ export {
 };
 
 export default function activate(pi: ExtensionAPI): void {
+	// Phase 1 (AC-01 / SCENARIO-001): register the mid-run input listener EXACTLY
+	// ONCE at module lifetime (inside activate, never per execute() call). The
+	// handler implements the {active-run + interactive}→handled / {else}→continue
+	// invariant (AC-03); returning {action:"handled"} for captured input tells pi
+	// NOT to re-queue it as a parent steer (SCENARIO-004). The whole body is
+	// try/catch-wrapped so any capture failure degrades to a safe no-op and the
+	// run always completes normally (SCENARIO-006 / SCENARIO-023).
+	// NOTE: `EventBus.on(channel, handler)` types the data payload as `unknown`
+	// (generic pub/sub). We contextually accept `unknown` and narrow to the
+	// `InputEvent` shape here — the "input" channel only ever carries an
+	// InputEvent. Any malformed payload falls through to the catch → {continue}.
+	pi.events.on("input", (data) => {
+		try {
+			// SCENARIO-002 / SCENARIO-003 / SCENARIO-019: idle (no run in progress)
+			// → pi owns the input entirely; nothing is captured.
+			if (activeRun == null) return { action: "continue" };
+			const event = data as InputEvent;
+			// SCENARIO-005 / SCENARIO-020: non-interactive sources (rpc/extension) are
+			// never captured — print/json/headless/RPC input flows through pi
+			// byte-identical to today.
+			if (event?.source !== "interactive") return { action: "continue" };
+			activeRun.push(event.text);
+			// Phase 4 (AC-08 / SCENARIO-017): best-effort live steer — nudge the
+			// currently-running session specialist with the MOST-RECENT input only
+			// (one forward per capture, bounds context growth). No-throw no-op when
+			// no session handle is reachable (idle / subprocess / browser backend);
+			// the Phase-3 queue path still guarantees delivery.
+			try { activeSteerForwarder?.(event.text); } catch { /* best-effort */ }
+			return { action: "handled" };
+		} catch {
+			return { action: "continue" };
+		}
+	});
+
 	pi.registerTool({
 		name: SUPER_DEV_TOOL,
 		label: "Super Dev",
@@ -212,7 +361,7 @@ export default function activate(pi: ExtensionAPI): void {
 					// in print/json/headless/RPC modes (AC-09 / AC-10).
 					ctx?.ui?.setWidget?.(
 						DASHBOARD_KEY,
-						createDashboardWidgetFactory(entries, dashboardActivity),
+						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0),
 						{ placement: "aboveEditor" },
 					);
 				} catch { /* best-effort */ }
@@ -236,6 +385,11 @@ export default function activate(pi: ExtensionAPI): void {
 				},
 			};
 			try {
+				// Set the run-state singleton on execute() entry via the exported setter
+				// (single write path). Guard overlapping runs: a non-null singleton here
+				// means a prior run never cleared its finally (reentrancy) — discard it.
+				if (activeRun != null) setActiveRun(null);
+				setActiveRun(createActiveRun(ctx, stream));
 				ensureSuperDevDirs();
 				startRun();
 				const summary = await runPipelineTask(task, {
@@ -245,6 +399,16 @@ export default function activate(pi: ExtensionAPI): void {
 					model: params.model as string | undefined,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
 					resume: typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined),
+				// Wire the mid-run input drain to the activeRun singleton. workflow.ts
+				// realAgent drains this ONCE per specialist spawn; empty while idle/after
+				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
+				userSteerProvider: () => getActiveRun()?.drain() ?? [],
+				// AC-08: wire the session-backend live-steer seam. runAgentViaSession
+				// invokes onSteer with a no-throw forwarder bound to the live AgentSession
+				// (or null on dispose / when steer() is absent); registering it here is
+				// what makes the input handler's live steer actually fire on the session
+				// backend. subprocess/browser never set a forwarder → documented no-op.
+				onSteer: setActiveSteerForwarder,
 				progress: sink,
 					signal,
 				});
@@ -276,10 +440,18 @@ export default function activate(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
 			} finally {
+				// Discard the run-state singleton via the exported setter (single write
+				// path), in the SAME cleanup that removes the run's dashboard widget — so
+				// run teardown + widget teardown stay unified (no leak across runs).
+				setActiveRun(null);
+				setActiveSteerForwarder(null);
 				// Always clear the dashboard widget + footer state when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
 				try { ctx?.ui?.setStatus?.("super-dev", undefined); } catch { /* best-effort */ }
+				// Phase 2 (AC-04 / SCENARIO-010): clear the mid-run input status pill in
+				// the same cleanup that nulls activeRun + the dashboard widget.
+				try { ctx?.ui?.setStatus?.("super-dev-input", undefined); } catch { /* best-effort */ }
 			}
 		},
 		// Pi-native result rendering: 3 sections. §1 detail logs DIMMED (thought-like,

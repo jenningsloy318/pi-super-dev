@@ -45,6 +45,11 @@ export interface LiveStreamSink {
 	phase(label: string): void;
 	log(message: string): void;
 	text(partial: string): void;
+	/** Phase 2 (AC-07 / SCENARIO-009): mid-run user input, tagged directly at
+	 *  the sink as `{ kind: "user-input", text: "📥 " + text }` so it flows
+	 *  through transcriptTail() → buildResultComponent → renderResult unchanged
+	 *  (same tagged-kind path as phase/thinking/trim). */
+	userInput(text: string): void;
 }
 
 /** Options for {@link createLiveStream}. */
@@ -127,6 +132,13 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// Live (typing) buffer — NOT committed until finalizeLive().
 		text: (partial: string): void => {
 			live = partial;
+		},
+		// Phase 2 (AC-07 / SCENARIO-009): tagged user-input line — same commit
+		// semantics as phase/log (flush any pending live buffer first), then push
+		// the `📥 `-prefixed raw text so it reaches diskLogText + themed flush.
+		userInput: (text: string): void => {
+			finalizeLive();
+			transcript.push({ kind: "user-input", text: `📥 ${text}` });
 		},
 	};
 
