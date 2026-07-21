@@ -1,0 +1,1110 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-21T14:25:46.340Z",
+      "agent": "requirements",
+      "data": {
+        "title": "Per-stage log sections: render each pipeline stage as its own themed section (streaming + renderResult)",
+        "date": "2026-07-21",
+        "type": "enhancement",
+        "priority": "high",
+        "executiveSummary": "Today every pipeline stage's log lines collapse into one flat rolling transcript (one onUpdate text blob in streaming + one merged `── detail log ──` block in buildResultComponent §1), even though stage TITLES are already themed and the dashboard already tracks per-stage status. This change tags each transcript entry with its stage, groups by stage, and renders each stage as its own headed, status-colored section — the pi-native tool-call-bubble look — in both the live streaming flush and the final renderResult. It is a pure TS change to this repo (no new deps, no control-flow / change-tracker / backend changes), backward-compatible for non-TUI and legacy tail shapes.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "The `TranscriptLine` shape (src/render/live-stream.ts) gains `stageId: string` and `stageLabel: string`. The live-stream sink tracks a `currentStageId`/`currentStageLabel` defaulting to `\"setup\"`/`\"pre-stage\"` before the first phase banner; `phase(label)` updates it on each banner. Every pushed entry (phase/log/thinking/trim/user-input) inherits the current stage tag. Implementation sub-phases emitted WITHIN Stage 9 collapse to stage `implementation` (no finer sub-phase grouping — don't over-engineer). Stage-id resolution MUST come from the structured dashboard `stage` event, NOT by parsing the human `▶ Stage N` label (see open questions)."
+          },
+          {
+            "id": "AC-02",
+            "statement": "A new pure helper `groupByStage(transcript): Array<{ stageId; stageLabel; status?; lines: Array<{kind,text}> }>` partitions tagged entries preserving first-appearance stage order. Untagged / legacy entries (missing `stageId`) collapse into a single fallback group; empty input → empty array. Each group's `status` is resolved from the dashboard tracker (running/ok/failed/skipped) where available, else `undefined`. Unit-tested (ordering, untagged fallback, empty, all-one-stage)."
+          },
+          {
+            "id": "AC-03",
+            "statement": "Streaming `flush()` (live-stream.ts → onUpdate body) renders a STACK of per-stage sections in TUI: each section has a status-themed header (running=accent/bold + spinner, ok=success, failed=error, skipped=warning/dim), then that stage's lines themed per-kind via `themeLine` and indented 2, with a blank line between sections. The running stage shows up to `RUNNING_TAIL_LINES` (~15) recent lines; completed stages render COMPACT (header + ≤`COMPLETED_TAIL_LINES` (~3) tail lines, or header-only) so the live view stays focused on active work; caps are named constants with a total cap. Per-stage trim notices (kind `trim`) are preserved per section. In non-TUI (ctx.mode !== \"tui\" or no theme) it emits RAW TEXT — plain `▶ Stage N` headers + indented logs, ZERO ANSI bytes (byte-clean; AC-08 no-leak contract preserved)."
+          },
+          {
+            "id": "AC-04",
+            "statement": "`buildResultComponent` (src/render/dashboard.ts) §1 is rebuilt into a STACK of per-stage blocks replacing the single merged dim log. Each block is a Container/Text: (a) a bold header Text themed by STATUS via method-style `theme.fg(...)` (e.g. `● Stage 9 — Implementation`); (b) the stage's log lines as Text children themed per-kind via `themeLine`; (c) a per-stage BACKGROUND via pi-tui `Text`'s 4th `customBgFn` arg colored by status — running→`theme.bg(\"toolPendingBg\")`, ok→`theme.bg(\"toolSuccessBg\")`, failed→`theme.bg(\"toolErrorBg\")`, skipped→none/dim — mirroring pi-native's tool-call bubbles using ONLY the public Text customBgFn API (do NOT import internal pi-core components). Failed/running stages render EXPANDED; completed stages render COMPACT (header + status + 1-line tail) so the final report is scannable. §2 (stage progress) and §3 (Markdown summary) are unchanged. Legacy `transcriptTail` (missing stage tags OR string entries) falls back to today's single-section behavior — no throw."
+          },
+          {
+            "id": "AC-05",
+            "statement": "`details.transcriptTail` (extension.ts → buildResultComponent) carries `{kind,text,stageId,stageLabel}[]` end-to-end. The `ResultDetails.transcriptTail` type is updated (additive — keep accepting legacy `string` entries). The change-tracker (spec-11), deliverable gate, change gate, mid-run input, scope-aware gate, and Markdown §3 are NOT disturbed and remain green."
+          },
+          {
+            "id": "AC-06",
+            "statement": "New tests added and green: `groupByStage` (ordering, untagged fallback, empty, all-one-stage); per-stage section rendering (correct header token per status, a background `customBgFn` present per stage, per-stage tail caps enforced); no-ANSI-in-non-TUI regression for both flush and buildResultComponent; and real-Theme parity for the new section rendering via `tests/helpers/real-theme.ts` `withRealTheme`. The class-Theme regression guards `tests/stream-theme-class-theme.test.ts` AND `tests/render/real-theme-parity.test.ts` MUST stay green (no destructured Theme methods — every new theme access calls method-style `theme.fg`/`theme.bg`/`theme.bold`)."
+          },
+          {
+            "id": "AC-07",
+            "statement": "`npm run typecheck` is strict-clean and `npm test` is ALL green (existing + new). No regression to: the dashboard widget (aboveEditor), themed stream LineKinds/classification, scope-aware gate, deliverable/change gates, mid-run input handling, or Markdown §3 summary."
+          }
+        ],
+        "nonFunctional": [
+          "Performance: per-stage tail budgets are bounded by named constants (RUNNING_TAIL_LINES ~15, COMPLETED_TAIL_LINES ~3, plus a TOTAL_CAP) so flush()/buildResultComponent cost stays O(total lines) and never grows unbounded; the existing flush throttle (FLUSH_MS=80) and dashboard throttle (WIDGET_MS=200) are preserved.",
+          "Theme safety (CRITICAL): the real pi `Theme` is a class whose `fg()`/`bg()` read `this.fgColors`/`this.bgColors`; NEVER destructure these methods. All new theme access calls method-style `theme.fg(...)`, `theme.bg(...)`, `theme.bold(...)` (or method-bound wrappers). Verified by real-Theme parity tests.",
+          "Backward compatibility: print/json/RPC/headless modes emit RAW TEXT with zero ANSI bytes — per-stage headers are plain `▶ Stage N`, logs indented; legacy `transcriptTail` shape (string entries / missing stage tags) falls back to a single merged section. No new runtime dependencies (reuse stream-theme LineKind/themeLine/commandBackground, the dashboard stage tracker, pi-tui Text/Container/Markdown + theme.bg tokens).",
+          "Maintainability: new pure helpers (groupByStage, the section builders) are unit-testable in isolation with lightweight structural theme mocks, matching the existing pure-helper discipline in stream-theme.ts/dashboard.ts.",
+          "Accessibility/scanability: completed stages render compact, failed/running expanded, so both the live view and the final report foreground active/failed work over noise."
+        ],
+        "openQuestions": [
+          "stageId resolution: phase banners carry human labels (`▶ Stage 9 — Implementation`) but the dashboard tracker keys on structured `stage.id` from the `stage` event. Which arrives first, and what is the canonical mapping? Recommended: thread the structured `stage.id`/`stage.label` from the `stage(info)` event into the sink (set currentStageId/Label there) rather than parsing the `▶` label string — avoids fragile regex and keeps the sink and dashboard tracker on the same key.",
+          "Per-stage background scope: confirm pi-tui applies a section-level background (Container bg) or whether the status background must be applied per Text line within the block via the 4th customBgFn arg. The task assumes per-Text customBgFn on header/lines; confirm this reproduces the canonical pi ToolExecutionComponent bubble look without importing internal pi-core components.",
+          "Running-stage animation in the FINAL renderResult: the spinner animates in the live streaming view, but renderResult is static. Confirm a static glyph (e.g. `●`) is correct for the running-but-not-yet-terminal case in the final report (a run that ended while a stage was still running).",
+          "Default per-stage tail cap values: are RUNNING_TAIL_LINES≈15 / COMPLETED_TAIL_LINES≈3 and the total cap acceptable defaults, or does the team want different budgets for very long implementation stages?"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-21T14:27:03.925Z",
+      "agent": "bdd",
+      "data": {
+        "title": "Per-Stage Log Sections: Tag, Group, and Render Each Pipeline Stage as Its Own Themed Section",
+        "date": "2026-07-21",
+        "source": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/01-requirements.md",
+        "features": [
+          {
+            "name": "Stage Tagging of Transcript Entries",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "Pre-stage entries tagged with default setup stage",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a pipeline run that has not yet emitted any stage banner",
+                "when": "a transcript entry is recorded before the first banner",
+                "then": "the entry is tagged with the default pre-stage stage identifier and label"
+              },
+              {
+                "id": "002",
+                "title": "Entries inherit the current stage after each banner",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a run mid-execution where a stage banner has fired",
+                "when": "subsequent log, thinking, trim, and user-input entries are recorded",
+                "then": "each entry inherits the current stage's identifier and label until the next banner"
+              },
+              {
+                "id": "003",
+                "title": "Implementation sub-phases collapse to a single stage",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "implementation sub-phase entries emitted within the implementation stage",
+                "when": "those sub-phase entries are recorded",
+                "then": "they collapse to the single implementation stage identifier without finer sub-phase grouping"
+              },
+              {
+                "id": "004",
+                "title": "Stage identifier resolved from structured event, not label parsing",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "the structured dashboard stage event carries the canonical stage identifier",
+                "when": "the stage tag is resolved",
+                "then": "the identifier comes from the structured stage event rather than by parsing the human-readable banner label"
+              }
+            ]
+          },
+          {
+            "name": "groupByStage Partitioning",
+            "scenarios": [
+              {
+                "id": "005",
+                "title": "Groups partitioned in first-appearance order",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "a transcript whose entries span multiple stages in execution order",
+                "when": "the transcript is grouped by stage",
+                "then": "groups appear in first-appearance order, each containing only that stage's lines"
+              },
+              {
+                "id": "006",
+                "title": "All-one-stage transcript yields a single group",
+                "acRef": "AC-02",
+                "priority": "medium",
+                "given": "a transcript whose entries all belong to one stage",
+                "when": "the transcript is grouped by stage",
+                "then": "a single group is returned containing all of that stage's lines"
+              },
+              {
+                "id": "007",
+                "title": "Untagged legacy entries collapse to a fallback group",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "legacy entries missing a stage identifier",
+                "when": "the transcript is grouped by stage",
+                "then": "those entries collapse into a single fallback group"
+              },
+              {
+                "id": "008",
+                "title": "Empty transcript yields an empty partition",
+                "acRef": "AC-02",
+                "priority": "medium",
+                "given": "an empty transcript",
+                "when": "the transcript is grouped by stage",
+                "then": "an empty array of groups is returned"
+              },
+              {
+                "id": "009",
+                "title": "Group status resolved from tracker or left unset",
+                "acRef": "AC-02",
+                "priority": "medium",
+                "given": "a dashboard tracker holding a status for some stages and none for others",
+                "when": "each group's status is resolved",
+                "then": "groups whose stage has a tracker status carry that status and the rest are left unset"
+              }
+            ]
+          },
+          {
+            "name": "Streaming Per-Stage Sections",
+            "scenarios": [
+              {
+                "id": "010",
+                "title": "Live flush renders a stack of per-stage sections in TUI",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a live stream in TUI mode with a theme available",
+                "when": "the stream is flushed",
+                "then": "a stack of per-stage sections is emitted",
+                "andClauses": [
+                  "each section has a status-themed header",
+                  "each section's lines are themed per kind and indented",
+                  "a blank line separates consecutive sections"
+                ]
+              },
+              {
+                "id": "011",
+                "title": "Running stage shows recent tail while completed stages render compact",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a running stage with many recent lines alongside completed stages",
+                "when": "the live view renders",
+                "then": "the running stage shows only its most recent bounded number of lines",
+                "andClauses": [
+                  "completed stages render compact with at most a small bounded tail or header only",
+                  "the per-stage line budgets are named constants with a total cap"
+                ]
+              },
+              {
+                "id": "012",
+                "title": "Per-stage trim notice preserved within its section",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "a stage's rendered tail was trimmed",
+                "when": "that stage's section renders",
+                "then": "a trim notice is preserved within that section rather than globally"
+              },
+              {
+                "id": "013",
+                "title": "Non-TUI flush emits raw text with zero ANSI bytes",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a live stream in a non-TUI mode or with no theme",
+                "when": "the stream is flushed",
+                "then": "raw text is emitted with plain stage headers and indented logs",
+                "andClauses": [
+                  "the output contains zero ANSI bytes preserving the byte-clean contract"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Result Component Per-Stage Blocks",
+            "scenarios": [
+              {
+                "id": "014",
+                "title": "Result section one becomes a stack of per-stage blocks",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "the final result details carry stage-tagged transcript lines",
+                "when": "the result component is built",
+                "then": "the first section is a stack of per-stage blocks replacing the single merged log",
+                "andClauses": [
+                  "each block has a bold status-themed header",
+                  "each block's lines are themed per kind"
+                ]
+              },
+              {
+                "id": "015",
+                "title": "Each stage block receives a status-colored background",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "a stage with a terminal or running status",
+                "when": "its block renders",
+                "then": "it receives a status-colored background via the public text custom background API",
+                "andClauses": [
+                  "the background color corresponds to the stage status without importing internal framework components"
+                ]
+              },
+              {
+                "id": "016",
+                "title": "Failed and running stages expand while completed stages render compact",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "a report with completed stages and at least one failed or running stage",
+                "when": "the report renders",
+                "then": "the failed and running stages expand while completed stages render compact",
+                "andClauses": [
+                  "the report remains scannable with active and failed work foregrounded"
+                ]
+              },
+              {
+                "id": "017",
+                "title": "Legacy transcript tail falls back to a single section",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "legacy transcript tail entries missing stage tags or string-shaped entries",
+                "when": "the result component is built",
+                "then": "it falls back to today's single merged section without throwing"
+              },
+              {
+                "id": "018",
+                "title": "Stage progress and markdown summary sections remain unchanged",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "the stage progress and markdown summary sections already exist",
+                "when": "the first section is rebuilt into per-stage blocks",
+                "then": "the stage progress and markdown summary sections remain unchanged"
+              }
+            ]
+          },
+          {
+            "name": "End-to-End Threading and Backward Compatibility",
+            "scenarios": [
+              {
+                "id": "019",
+                "title": "Stage tags carried end-to-end through transcript tail",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "transcript lines are tagged with stage identifier and label at the sink",
+                "when": "they flow through the result details transcript tail to the result component",
+                "then": "the stage tags are carried end-to-end"
+              },
+              {
+                "id": "020",
+                "title": "Additive type still accepts legacy string entries",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "the result details transcript tail type is updated additively",
+                "when": "legacy string-shaped entries are present in the tail",
+                "then": "the type still accepts them without breaking existing callers"
+              },
+              {
+                "id": "021",
+                "title": "Orthogonal gates and surfaces remain undisturbed",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "the change-tracker, deliverable gate, change gate, mid-run input handling, scope-aware gate, and markdown summary",
+                "when": "the stage-tagging change is applied",
+                "then": "none of those surfaces are disturbed and they remain green"
+              }
+            ]
+          },
+          {
+            "name": "Tests, Theme Safety, and Full Suite Green",
+            "scenarios": [
+              {
+                "id": "022",
+                "title": "New per-stage tests pass",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "new tests for stage grouping, per-stage section rendering, no-ANSI regression, and real-theme parity",
+                "when": "the test suite runs",
+                "then": "all of the new tests are green"
+              },
+              {
+                "id": "023",
+                "title": "All theme access uses method-style calls",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "all new theme color and background access",
+                "when": "theme styling is applied",
+                "then": "it calls method-style theme methods",
+                "andClauses": [
+                  "no theme methods are destructured",
+                  "the class-theme regression guards and real-theme parity tests remain green"
+                ]
+              },
+              {
+                "id": "024",
+                "title": "Typecheck and full test suite pass with no regression",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "the full codebase after the change",
+                "when": "the typecheck and the full test suite run",
+                "then": "typecheck is strict-clean and the full test suite is green",
+                "andClauses": [
+                  "the dashboard widget remains unaffected",
+                  "themed stream kinds and classification remain unaffected",
+                  "the scope-aware gate, deliverable and change gates, mid-run input handling, and markdown summary remain green"
+                ]
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "TranscriptLine gains stageId/stageLabel; sink tracks current stage defaulting to setup/pre-stage, updated on each banner; implementation sub-phases collapse to implementation; stage-id resolved from structured dashboard stage event not label parsing.",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002",
+              "SCENARIO-003",
+              "SCENARIO-004"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "groupByStage partitions tagged entries preserving first-appearance order; untagged/legacy collapse to one fallback group; empty -> empty array; status resolved from tracker or undefined; unit-tested.",
+            "scenarios": [
+              "SCENARIO-005",
+              "SCENARIO-006",
+              "SCENARIO-007",
+              "SCENARIO-008",
+              "SCENARIO-009"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "Streaming flush() renders a TUI stack of per-stage sections (status-themed headers, per-kind themed indented lines, blank separators, per-stage tail caps, trim notices); running stage expanded, completed compact; non-TUI emits raw text with zero ANSI.",
+            "scenarios": [
+              "SCENARIO-010",
+              "SCENARIO-011",
+              "SCENARIO-012",
+              "SCENARIO-013"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "buildResultComponent §1 becomes a stack of per-stage blocks (bold status-themed header, per-kind log lines, status-colored background via Text customBgFn); failed/running expanded, completed compact; §2/§3 unchanged; legacy tail falls back to single section.",
+            "scenarios": [
+              "SCENARIO-014",
+              "SCENARIO-015",
+              "SCENARIO-016",
+              "SCENARIO-017",
+              "SCENARIO-018"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "details.transcriptTail carries {kind,text,stageId,stageLabel}[] end-to-end; type updated additively to still accept legacy string entries; change-tracker/deliverable/change/mid-run input/scope-aware gates and Markdown §3 not disturbed.",
+            "scenarios": [
+              "SCENARIO-019",
+              "SCENARIO-020",
+              "SCENARIO-021"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "New tests green (groupByStage ordering/untagged/empty/all-one-stage; per-stage section rendering header+customBgFn+tail caps; no-ANSI-in-non-TUI regression for flush and buildResultComponent; real-Theme parity via withRealTheme); class-Theme guards stay green with method-style theme access.",
+            "scenarios": [
+              "SCENARIO-022",
+              "SCENARIO-023"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "npm run typecheck strict-clean; npm test all green (existing + new); no regression to dashboard widget, themed stream LineKinds/classification, scope-aware gate, deliverable/change gates, mid-run input, Markdown §3.",
+            "scenarios": [
+              "SCENARIO-024"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-21T14:35:05.329Z",
+      "agent": "research",
+      "data": {
+        "title": "Per-stage log sections: resolving the 7 prior open issues into a decision-ready brief",
+        "date": "2025-11-19",
+        "summary": "Every one of the 7 items the prior attempt left in `openIssues` is resolved against the actual code, each with a concrete low-risk fix — so this brief treats them as resolved findings, not open questions. (RESOLVED-1, ordering) Confirmed in src/nodes.ts: `ctx.events.emit(\"phase\", stage.label)` (L123) fires immediately BEFORE `ctx.events.emit(\"stage\", {id,label,status:\"running\"})` (L127), so a transcript line pushed by `sink.phase` would inherit the PREVIOUS `currentStageId`. Clean fix is sink-side: in `sink.stage(info)` update currentStageId/Label AND re-tag the most-recent transcript entry when it is a phase line matching `info.label` (zero control-flow change); optionally also swap the two adjacent emits as belt-and-suspenders. (RESOLVED-2, Stage-9 sub-phases) `stage` events emit ONLY from the top-level stage wrapper (L94 `record()` for skipped/ok/failed + L127 for running); the implementation stage is a single node emitting `stage` once with one `id`, and TDD red/green/refactor banners are `phase` lines that inherit `currentStageId=\"implementation\"` automatically — no collapse map is needed, satisfying the spec's \"don't over-engineer\" by construction. (RESOLVED-3, pi-tui bg API) `buildResultComponent` already builds `Text(content,0,0,customBgFn)` using the 4th public arg (via `commandBackground`, dashboard.ts L381); applying `theme.bg(\"toolSuccessBg\",…)`/`toolPendingBg`/`toolErrorBg` method-style as that 4th arg per-stage header (and optionally per body line) satisfies AC \"background customBgFn present per stage\" and is read directly by the existing `customBgFnOf(child)` parity helper — NO nested `Box(setBgFn)` is required. (RESOLVED-4, real-theme parity) `withRealTheme(fn)` exposes a real `Theme` class instance whose `bg` is a method (structurally satisfies `DashboardTheme.bg?`); every new status-bg call MUST be method-style `theme.bg(token,text)` (never destructured), the new §1 section test runs under `withRealTheme`, and `tests/stream-theme-class-theme.test.ts` (covers `commandBackground`→`theme.bg` at L67) is extended to also cover `buildResultComponent`'s new bg path. (RESOLVED-5, legacy fallback) Widening `transcriptTail` to `Array<{kind;text;stageId?;stageLabel?}|string>` is purely additive → TS-strict-clean; `groupByStage` assigns a single sentinel to all untagged/string entries → ONE fallback group (today's single dim block); empty → `[]`. (MINOR, perf — non-blocking, folded into Option 2 tradeoffs) Applying `customBgFn` to every body-line Text for a contiguous block look adds one fn-per-line — negligible, but verify render latency on a long multi-stage run if that path is chosen. (OUT OF SCOPE) Interactive collapse/expand (Ctrl+O) is explicitly deferred per spec; static compact-completed / expanded-running is sufficient. Net: all 7 resolved, no remaining blockers.",
+        "options": [
+          {
+            "name": "Phase-banner attribution: sink-side re-tag in sink.stage (RECOMMENDED primary)",
+            "tradeoffs": "Zero control-flow change (spec says don't touch control-flow); on `sink.stage(info)` set currentStageId/Label then re-tag the most-recent transcript entry when it's a phase line matching info.label. Verified safe because phase (nodes.ts L123) strictly precedes the running stage event (L127), so 'patch the last phase entry' is always the right line. Alternative is swapping the two adjacent emits so `stage:{running}` fires before `phase` (~2 lines, temporally correct) but that edits the control-flow emit site — keep it as optional belt-and-suspenders, not the primary fix. Tradeoff: sink-side re-tag adds one conditional per stage transition (negligible) and keeps nodes.ts untouched."
+          },
+          {
+            "name": "Per-stage background scope: customBgFn on header + each body-line Text (block look)",
+            "tradeoffs": "Most faithful to the pi-native tool-call bubble intent (each stage visually pops as a solid block). Pure public Text 4th-arg API (already proven by commandBackground in dashboard.ts L381), readable per-child by `customBgFnOf`. MINOR perf note (non-blocking): one fn-per-body-line added; negligible but worth a render-latency sanity check on a long multi-stage run. Fallback Option A (header-only customBgFn) is the safe minimum that still literally satisfies AC 'background customBgFn present per stage' and is the lower-risk choice if the block look proves fiddly."
+          },
+          {
+            "name": "Stage-9 implementation sub-phases: rely on single `stage` event, no collapse map (RECOMMENDED)",
+            "tradeoffs": "Verified by grep: only nodes.ts L94 (record) and L127 (running) emit `stage`, both in the top-level stage wrapper; implementation is one stage node emitting `stage` once with one `id`, so TDD red/green/refactor banners (all `phase` lines) inherit `currentStageId='implementation'` for free — the spec's 'collapse to implementation' is satisfied by construction. Matches the spec's explicit 'don't over-engineer'. Reserve an explicit collapse map (implTdd/implFix→implementation) only if a future change introduces nested stage emits, which the current code does not."
+          },
+          {
+            "name": "Legacy/untagged fallback: sentinel stageId='setup', stageLabel='pre-stage'",
+            "tradeoffs": "Additive type widening `Array<{kind;text;stageId?;stageLabel?}|string>` is TS-strict-clean (no breaking change to ResultDetails). groupByStage coalesces every untagged object-or-string entry into ONE group with the sentinel, so renderResult degrades to exactly today's single dim block; empty input → []. Choosing the sentinel label to mirror the live-stream default-before-first-banner convention ('setup'/'pre-stage') keeps streaming + result naming consistent; either label is acceptable and only affects the legacy fallback header text."
+          },
+          {
+            "name": "Real-Theme parity + class-Theme guard: method-style everywhere, extend both guards",
+            "tradeoffs": "`withRealTheme` hands a real `Theme` instance with `bg` as a method (satisfies `DashboardTheme.bg?`), so all new status-bg calls stay method-style `theme.bg(token,text)` — never `const {fg}=theme`. New §1 section test runs under `withRealTheme` asserting no `reading 'fgColors'/'bgColors'` throw; `tests/stream-theme-class-theme.test.ts` (commandBackground→bg at L67) is extended to cover `buildResultComponent`'s new bg path so any future destructuring is caught. `tests/render/real-theme-parity.test.ts` stays green. No widening of DashboardTheme.bg is needed (already optional with method syntax). Tradeoff: strictly method-style discipline everywhere is the cost of keeping both regression guards green."
+          }
+        ],
+        "openIssues": [],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/03-research-report.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-21T14:55:09.477Z",
+      "agent": "spec",
+      "data": {
+        "title": "Per-Stage Log Sections: Tag, Group, and Render Each Pipeline Stage as Its Own Themed Section",
+        "date": "2026-07-21",
+        "summary": "Render each pipeline STAGE as its OWN log section instead of merging all stage logs into one flat rolling transcript. Today stage titles are themed but every stage's lines collapse into one onUpdate text blob (streaming) and one merged dim `── detail log ──` block (renderResult §1). This change (1) tags every transcript entry with its stage at the sink, (2) adds a pure `groupByStage` partitioner preserving first-appearance order, (3) rebuilds the streaming `flush()` to emit a TUI stack of per-stage sections (status-colored headers + per-kind indented logs + per-stage tail caps) and raw byte-clean text in non-TUI, (4) rebuilds `buildResultComponent` §1 into a stack of per-stage blocks with status-themed bold headers + per-kind lines + a status-colored BACKGROUND via pi-tui Text's 4th `customBgFn` arg (mirroring pi-native tool-call bubbles), and (5) threads stage tags end-to-end through `details.transcriptTail`. Pure TS change to THIS repo (pi-super-dev). No new runtime deps; no control-flow / change-tracker / backend / dashboard-widget changes. Backward compatible: non-TUI output is zero-ANSI byte-clean; legacy `transcriptTail` shapes fall back to today's single-section behavior.",
+        "architecture": "The system is a 13-stage pi extension pipeline whose live-stream rendering is split across three pure modules: `src/render/live-stream.ts` (the transcript sink + mode-aware flush factory), `src/render/stream-theme.ts` (the classification + theming authority), and `src/render/dashboard.ts` (the widget + final result composition). The control-flow engine (`src/nodes.ts`) emits two adjacent events per stage — `ctx.events.emit(\"phase\", stage.label)` immediately followed by `ctx.events.emit(\"stage\", {id,label,status:\"running\"})` — and `src/extension.ts` wires both into the sink. This change touches ONLY the three render modules + the extension wiring; it does not alter control-flow emit sites, the change-tracker (spec-11), backend selection, or the aboveEditor dashboard widget.\n\nTHEME SAFETY CONTRACT (foundational, applies everywhere): the real pi `Theme` is a class whose `fg()`/`bg()` read `this.fgColors`/`this.bgColors`. Every existing accessor already wraps method-style via local `bold`/`fg` closures (e.g. `const fg = (c,t) => theme.fg(c,t)`). All NEW theme access — every status header color, every status background — must follow the SAME pattern: never `const {fg} = theme`. The `commandBackground` helper already proves the public `Text(content,0,0,customBgFn)` 4th-arg API works against a real class Theme, so the per-stage status background reuses that exact pattern.\n\nDESIGN PILLAR 1 — Stage tagging at the sink (AC-01). The `TranscriptLine` shape in `live-stream.ts` widens additively to `{ kind: LineKind; text: string; stageId: string; stageLabel: string }`. The factory gains a `currentStageId`/`currentStageLabel` pair defaulting to `\"setup\"`/`\"pre-stage\"` before the first banner. The `LiveStreamSink` interface gains a new `stage(info: {id,label,status?})` method that (a) sets the current stage id/label from the STRUCTURED dashboard `stage` event (NOT by parsing the `▶ Stage N` label), and (b) RE-TAGS the most-recent transcript entry when it is a `phase` line whose label matches `info.label`. This re-tag is the recommended fix for the emit ordering proven in research RESOLVED-1: because `phase` (nodes.ts L123) fires strictly BEFORE `stage:{running}` (L127), a phase line pushed by `sink.phase` would otherwise inherit the PREVIOUS `currentStageId`; the sink-side re-tag in `sink.stage` corrects exactly that one most-recent phase entry with zero control-flow change. Implementation sub-phases (TDD red/green/refactor banners, etc.) emit only `phase` lines and inherit `currentStageId=\"implementation\"` automatically — no collapse map is needed (research RESOLVED-2), satisfying the \"don't over-engineer\" directive by construction. Every push site — `phase`, `log`, `userInput`, and the `finalizeLive` thinking commit — stamps the current `stageId`/`stageLabel`.\n\nDESIGN PILLAR 2 — Pure groupByStage partitioner (AC-02). A new dependency-free module `src/render/stage-grouping.ts` exports `groupByStage(transcript, statusOf?: (stageId) => string | undefined): StageGroup[]` where `StageGroup = { stageId; stageLabel; status?; lines: Array<{kind,text}> }`. It partitions tagged entries preserving FIRST-APPEARANCE stage order, strips the stage tag from each emitted `lines` element (callers consume only `{kind,text}`), coalesces every untagged or string-shaped entry into ONE fallback sentinel group (`stageId:\"setup\"`, `stageLabel:\"pre-stage\"`), returns `[]` for empty input, and resolves each group's `status` (running/ok/failed/skipped) via the optional `statusOf` lookup keyed by `stageId` — `undefined` when the tracker has no entry. The lookup is injected (not imported) so the pure helper stays unit-testable in isolation, mirroring the existing pure-helper discipline in `stream-theme.ts`.\n\nDESIGN PILLAR 3 — Streaming per-stage sections (AC-03). `flush()` is rebuilt. It first builds the visible list (committed transcript + the un-finalized live `thinking` buffer, as today), then partitions it via `groupByStage`, then renders a STACK of per-stage sections. Each section is a status-themed header line followed by that stage's lines themed per-kind via `themeLine` and indented two spaces, with a blank line between sections. Per-stage tail budgets are named constants: `RUNNING_TAIL_LINES = 15`, `COMPLETED_TAIL_LINES = 3`, plus a `TOTAL_SECTION_CAP` bounding aggregate cost so flush stays O(visible lines). The RUNNING stage shows up to `RUNNING_TAIL_LINES` recent lines; COMPLETED stages render COMPACT (header + ≤`COMPLETED_TAIL_LINES` tail, or header-only when empty). When a stage's visible tail is trimmed, its OWN `trim` notice (kind `trim`) is prepended inside that section — never a single global notice. Header theming by status uses method-style wrappers: running → `theme.fg(\"accent\", bold(label))` with the animated braille glyph (via `runningGlyph(Math.floor(Date.now()/100))`); ok → `theme.fg(\"success\",...)`; failed → `theme.fg(\"error\",...)`; skipped → `theme.fg(\"warning\",...)`. In TUI each section header carries a leading `▌` bar in the status color for subtle visual distinction. The mode gate is unchanged: `mode === \"tui\" && theme` enables theming; EVERY other mode (print/json/RPC/headless, or no theme) emits RAW TEXT — plain `▶ Stage N` headers + indented logs, ZERO ANSI bytes (preserving the AC-08 no-leak byte-clean contract).\n\nDESIGN PILLAR 4 — renderResult per-stage blocks (AC-04, the high-impact surface). `buildResultComponent` §1 is rebuilt from a single dim log into a STACK of per-stage blocks via `groupByStage`, with a status resolver built from `details.stages` (mapped id→status; the dashboard tracker's canonical key). Each block is a `Container` of `Text` children: (a) a BOLD header `Text` themed by STATUS via method-style `theme.fg(...)` and prefixed with a status glyph — e.g. `● Stage 9 — Implementation` (running), `✓` (ok), `✗` (failed), `↷` (skipped); (b) the stage's log lines as `Text` children themed per-kind via `themeLine`; (c) a per-stage BACKGROUND applied through pi-tui `Text`'s 4th `customBgFn` arg colored by status — running → `theme.bg(\"toolPendingBg\", _)`, ok → `theme.bg(\"toolSuccessBg\", _)`, failed → `theme.bg(\"toolErrorBg\", _)`, skipped → none/dim — mirroring pi-native's tool-call bubbles using ONLY the public `Text` customBgFn API (no internal pi-core imports). Failed and running stages render EXPANDED (full per-kind line list); completed stages render COMPACT (header + status + a one-line tail) so the final report is scannable and foregrounds active/failed work. Legacy `transcriptTail` entries (missing `stageId`/`stageLabel`, or plain `string` entries) collapse via `groupByStage`'s sentinel fallback into a SINGLE section — exactly today's merged dim block — with no throw. §2 (stage progress) and §3 (Markdown summary) are UNCHANGED.\n\nDESIGN PILLAR 5 — End-to-end threading + additive types (AC-05). In `src/extension.ts`, the existing `stage: (info) => { ...dashboardStages.set(...) ... }` handler additionally calls `stream.sink.stage(info)` so the sink's current-stage state stays synchronized with the dashboard tracker (and re-tags the matching phase line). `ResultDetails.transcriptTail` in `dashboard.ts` widens ADDITIVELY to `Array<{ kind: LineKind; text: string; stageId?: string; stageLabel?: string } | string>` — optional fields + string tolerance keep every legacy caller strict-clean. The `renderResult` path threads `details.stages` (already built from `dashboardOrder` → `dashboardStages`) as the status resolver into `buildResultComponent`. The change-tracker (spec-11), deliverable/change gates, mid-run input handling, scope-aware gate, and Markdown §3 are orthogonal and untouched.\n\nNON-GOALS (explicitly out of scope): no interactive collapse/expand (Ctrl+O) — static compact-completed/expanded-running suffices (interactive expand noted as future); no control-flow, change-tracker, or backend changes; no dashboard-widget (aboveEditor) changes — it already shows per-stage status.",
+        "testingStrategy": "The change follows the repo's pure-helper testing discipline: pure modules (`stage-grouping.ts`, `stream-theme.ts`, `dashboard.ts`) are unit-tested with lightweight structural theme mocks, and the real pi `Theme` class is exercised ONLY through the parity guard `tests/helpers/real-theme.ts#withRealTheme`. Tests are layered by acceptance criterion and cross-reference BDD scenarios.\n\nUNIT — groupByStage (AC-02, SCENARIO-005..009): a new `tests/stage-grouping.test.ts` asserts (1) groups appear in first-appearance order, each containing only that stage's `{kind,text}` lines; (2) an all-one-stage transcript yields exactly one group; (3) untagged/legacy entries (missing `stageId`, or plain strings) collapse into the single sentinel fallback group; (4) empty input → `[]`; (5) `status` is resolved from the injected `statusOf` lookup where present, `undefined` otherwise.\n\nUNIT — stage tagging at the sink (AC-01, SCENARIO-001..004): a new `tests/live-stream-per-stage.test.ts` drives the factory sink through `phase`/`log`/`text`/`userInput`/`stage` events in isolation (no `execute`, no spawned pi children) and asserts pre-stage entries carry the default `\"setup\"`/`\"pre-stage\"` tag, subsequent entries inherit the current stage until the next `stage` event, implementation `phase` sub-banners collapse to the `\"implementation\"` stageId, and the `sink.stage` re-tag corrects the most-recent phase line for the phase-before-stage emit ordering.\n\nUNIT — streaming flush per-stage sections (AC-03, SCENARIO-010..013): asserts the TUI flush emits a STACK of per-stage sections (status-themed header + per-kind indented lines + blank separator), the running stage honors `RUNNING_TAIL_LINES` (~15), completed stages honor `COMPLETED_TAIL_LINES` (~3) or render header-only, per-stage `trim` notices appear inside their own section, and — critically for the AC-08 no-leak contract — a non-TUI flush (mode!==\"tui\" or no theme) emits RAW TEXT with ZERO ANSI escape bytes (asserted by scanning the output for `\\x1b`).\n\nUNIT — buildResultComponent per-stage blocks (AC-04, SCENARIO-014..018): a new `tests/render/per-stage-result.test.ts` asserts §1 is a stack of per-stage blocks, each block's header carries the correct status glyph/token, each block's Text children carry a background `customBgFn` (running→toolPendingBg, ok→toolSuccessBg, failed→toolErrorBg, skipped→none), failed/running blocks are expanded while completed blocks are compact, and legacy `transcriptTail` (string entries / missing stage tags) falls back to a single merged section without throwing. The existing `customBgFnOf(child)` parity helper (already used for command-bubble assertions) is reused to read the 4th-arg background function per child Text.\n\nREAL-THEME PARITY + CLASS-THEME GUARD (AC-06, SCENARIO-022..023): the new per-stage §1 section test runs under `withRealTheme` and asserts no `reading 'fgColors'/'bgColors'` throw — proving every new status-bg call is method-style. `tests/stream-theme-class-theme.test.ts` (which guards `commandBackground`→`theme.bg` at L67) is EXTENDED to also cover `buildResultComponent`'s new per-stage bg path so any future destructuring regression is caught. `tests/render/real-theme-parity.test.ts` stays green.\n\nNO-ANSI REGRESSION: explicit non-TUI assertions for BOTH `flush` and `buildResultComponent` (the latter exercised via a no-theme call) confirm byte-clean output.\n\nFULL SUITE GREEN (AC-07, SCENARIO-024): `npm run typecheck` must be strict-clean (additive type widening must not break legacy callers) and `npm test` must pass existing + new. Regression sentinels confirm NO disturbance to: the dashboard widget (aboveEditor), themed stream LineKinds/classification (`classifyLine`/`themeLine`/`commandBackground`), scope-aware gate, deliverable/change gates, mid-run input handling, and Markdown §3. Per-stage tail budgets are named constants guaranteeing flush/render cost stays O(visible lines) and never grows unbounded, with the existing throttles (`FLUSH_MS=80`, `WIDGET_MS=200`) preserved.",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018",
+          "SCENARIO-019",
+          "SCENARIO-020",
+          "SCENARIO-021",
+          "SCENARIO-022",
+          "SCENARIO-023",
+          "SCENARIO-024"
+        ],
+        "phases": [
+          {
+            "name": "Stage tagging at the sink",
+            "description": "AC-01 (SCENARIO-001..004). Widen `TranscriptLine` in `src/render/live-stream.ts` additively with `stageId: string` and `stageLabel: string`. Add `currentStageId`/`currentStageLabel` to the factory (defaults `\"setup\"`/`\"pre-stage\"`). Add a new `stage(info:{id,label,status?})` method to the `LiveStreamSink` interface and factory sink that sets the current stage from the STRUCTURED dashboard stage event (NOT by parsing the `▶ Stage N` label) AND re-tags the most-recent transcript entry when it is a `phase` line whose label matches `info.label` (the recommended sink-side fix for the phase-before-stage emit ordering proven in research RESOLVED-1). Stamp `stageId`/`stageLabel` on every push site: `phase`, `log`, `userInput`, and the `finalizeLive` thinking commit. Implementation sub-phase `phase` banners inherit `currentStageId=\"implementation\"` automatically (no collapse map — RESOLVED-2). Independently testable by driving the factory sink through phase/log/text/userInput/stage events in isolation and asserting each entry's tag. Domain: render-live-stream.",
+            " ": ", ",
+            "deliverables": {
+              "requireFiles": [
+                "src/render/live-stream.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "stageId"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "stageLabel"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "currentStageId"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "\"setup\"|'setup'"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "\"pre-stage\"|'pre-stage'"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "stage\\s*\\(\\s*info|stage\\s*:\\s*\\("
+                }
+              ],
+              "requireTests": [
+                "pre-stage entries tagged with default setup stage",
+                "entries inherit the current stage after each banner",
+                "implementation sub-phases collapse to implementation stage",
+                "sink.stage re-tags most-recent matching phase line"
+              ]
+            }
+          },
+          {
+            "name": "groupByStage pure partitioner",
+            "description": "AC-02 (SCENARIO-005..009). Add a new dependency-free module `src/render/stage-grouping.ts` exporting `groupByStage(transcript, statusOf?): StageGroup[]` where `StageGroup = { stageId; stageLabel; status?; lines: Array<{kind,text}> }`. Partitions tagged entries preserving FIRST-APPEARANCE order, strips stage tags from emitted `lines` (callers consume only `{kind,text}`), coalesces every untagged OR string-shaped entry into ONE sentinel fallback group (`stageId:\"setup\"`, `stageLabel:\"pre-stage\"`), returns `[]` for empty input, and resolves each group's status via an INJECTED `statusOf?: (stageId) => string | undefined` lookup (undefined when absent — keeps the helper pure/unit-testable, no dashboard import). Independently testable in isolation with synthetic tagged/untagged transcripts. Domain: render-stage-grouping. Depends on the widened `TranscriptLine` shape from Phase 1.",
+            "deliverables": {
+              "requireFiles": [
+                "src/render/stage-grouping.ts",
+                "tests/stage-grouping.test.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "src/render/stage-grouping.ts",
+                  "pattern": "export function groupByStage|export const groupByStage"
+                },
+                {
+                  "file": "src/render/stage-grouping.ts",
+                  "pattern": "stageId"
+                },
+                {
+                  "file": "src/render/stage-grouping.ts",
+                  "pattern": "stageLabel"
+                },
+                {
+                  "file": "src/render/stage-grouping.ts",
+                  "pattern": "statusOf"
+                }
+              ],
+              "requireTests": [
+                "groupByStage groups in first-appearance order",
+                "groupByStage all-one-stage yields one group",
+                "groupByStage untagged legacy entries collapse to fallback group",
+                "groupByStage empty input returns empty array",
+                "groupByStage status resolved from lookup or undefined"
+              ]
+            }
+          },
+          {
+            "name": "Streaming per-stage sections in flush()",
+            "description": "AC-03 (SCENARIO-010..013). Rebuild `flush()` in `src/render/live-stream.ts` to render a STACK of per-stage sections via `groupByStage`. Add named constants `RUNNING_TAIL_LINES = 15`, `COMPLETED_TAIL_LINES = 3`, and `TOTAL_SECTION_CAP`. Each section = a status-themed header line (running→accent+bold+animated braille glyph, ok→success, failed→error, skipped→warning/dim) followed by that stage's lines themed per-kind via `themeLine` and indented two spaces; a blank line separates sections. The running stage shows ≤`RUNNING_TAIL_LINES` recent lines; completed stages render COMPACT (header + ≤`COMPLETED_TAIL_LINES` tail, or header-only). Per-stage `trim` notices (kind `trim`) appear INSIDE their own section. TUI header carries a leading `▌` bar in the status color. Mode gate unchanged: `mode===\"tui\" && theme` enables theming; every other mode emits RAW TEXT (plain `▶ Stage N` headers + indented logs) with ZERO ANSI bytes (AC-08 byte-clean preserved). All theme access method-style via existing `fg`/`bold` wrappers. PARALLELIZABLE WITH Phase 4 (both depend only on Phases 1+2 and touch disjoint files). Independently testable by asserting section structure, tail caps, and the no-ANSI non-TUI regression. Domain: render-live-stream.",
+            "deliverables": {
+              "requireFiles": [
+                "src/render/live-stream.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "RUNNING_TAIL_LINES"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "COMPLETED_TAIL_LINES"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "TOTAL_SECTION_CAP"
+                },
+                {
+                  "file": "src/render/live-stream.ts",
+                  "pattern": "groupByStage"
+                }
+              ],
+              "requireTests": [
+                "flush renders stack of per-stage sections in TUI",
+                "running stage honors RUNNING_TAIL_LINES cap",
+                "completed stages render compact",
+                "per-stage trim notice preserved within section",
+                "non-TUI flush emits raw text with zero ANSI bytes"
+              ]
+            }
+          },
+          {
+            "name": "buildResultComponent per-stage blocks",
+            "description": "AC-04 (SCENARIO-014..018). Rebuild §1 of `buildResultComponent` in `src/render/dashboard.ts` into a STACK of per-stage blocks (replacing the single merged dim log) via `groupByStage`, with a `statusOf` resolver built from `details.stages` (mapped stageLabel→status, falling back to undefined). Each block = a `Container` of `Text` children: (a) a BOLD header `Text` themed by STATUS via method-style `theme.fg(...)`, prefixed with a status glyph (running `●`, ok `✓`, failed `✗`, skipped `↷`); (b) the stage's log lines as `Text` children themed per-kind via `themeLine`; (c) a per-stage BACKGROUND through pi-tui `Text`'s 4th `customBgFn` arg colored by status — running→`theme.bg(\"toolPendingBg\",_)`, ok→`theme.bg(\"toolSuccessBg\",_)`, failed→`theme.bg(\"toolErrorBg\",_)`, skipped→none/dim — mirroring pi-native tool bubbles via ONLY the public customBgFn API (no internal pi-core imports). Failed/running blocks render EXPANDED; completed blocks COMPACT (header + status + 1-line tail). Legacy `transcriptTail` (missing stage tags OR string entries) collapses via groupByStage's sentinel into a SINGLE merged section — no throw. §2 (stage progress) and §3 (Markdown summary) UNCHANGED. Widen `ResultDetails.transcriptTail` ADDITIVELY to `Array<{kind;text;stageId?;stageLabel?}|string>`. PARALLELIZABLE WITH Phase 3 (disjoint file). Independently testable by asserting block stack, status glyphs, per-child customBgFn presence, expand/compact behavior, and legacy fallback. Domain: render-dashboard.",
+            "deliverables": {
+              "requireFiles": [
+                "src/render/dashboard.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "src/render/dashboard.ts",
+                  "pattern": "toolPendingBg"
+                },
+                {
+                  "file": "src/render/dashboard.ts",
+                  "pattern": "toolSuccessBg"
+                },
+                {
+                  "file": "src/render/dashboard.ts",
+                  "pattern": "toolErrorBg"
+                },
+                {
+                  "file": "src/render/dashboard.ts",
+                  "pattern": "groupByStage"
+                },
+                {
+                  "file": "src/render/dashboard.ts",
+                  "pattern": "customBgFn"
+                }
+              ],
+              "requireTests": [
+                "result section one is stack of per-stage blocks",
+                "each stage block has status-colored customBgFn background",
+                "failed and running expanded completed compact",
+                "legacy transcript tail falls back to single section",
+                "stage progress and markdown sections unchanged"
+              ]
+            }
+          },
+          {
+            "name": "End-to-end threading + extension wiring",
+            "description": "AC-05 (SCENARIO-019..021). In `src/extension.ts`, extend the existing `stage: (info) => { dashboardOrder.push(...); dashboardStages.set(...); renderDashboard(); }` handler to ALSO call `stream.sink.stage(info)` so the sink's current-stage state (and phase-line re-tag) stays synchronized with the dashboard tracker — this is the single wiring point that makes stage tags resolve from the structured `stage.id` rather than label parsing. The `renderResult` path already builds `details.stages` from `dashboardOrder`→`dashboardStages`; thread it as the `statusOf` resolver into `buildResultComponent`. Confirm `details.transcriptTail` now carries `{kind,text,stageId,stageLabel}[]` end-to-end and the additive type still accepts legacy string entries. Verify NO disturbance to the change-tracker (spec-11), deliverable/change gates, mid-run input handling, scope-aware gate, or Markdown §3. Depends on Phases 1–4. Independently testable by an integration-style assertion that a synthetic stage→phase→log sequence produces stage-tagged transcriptTail and per-stage result blocks. Domain: render-extension-wiring.",
+            "deliverables": {
+              "requireFiles": [
+                "src/extension.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "stream\\.sink\\.stage"
+                },
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "transcriptTail"
+                },
+                {
+                  "file": "src/render/dashboard.ts",
+                  "pattern": "stageId\\?"
+                }
+              ],
+              "requireTests": [
+                "transcriptTail carries stage tags end to end",
+                "additive type still accepts legacy string entries",
+                "orthogonal gates and surfaces remain green"
+              ]
+            }
+          },
+          {
+            "name": "Tests, real-Theme parity, and full suite green",
+            "description": "AC-06 + AC-07 (SCENARIO-022..024). Extend `tests/stream-theme-class-theme.test.ts` to cover `buildResultComponent`'s new per-stage bg path (guard that status backgrounds call method-style `theme.bg`, never destructured). Extend `tests/render/real-theme-parity.test.ts` to run the new §1 section builder under `withRealTheme`, asserting no `reading 'fgColors'/'bgColors'` throw. Add `tests/render/per-stage-result.test.ts` (block stack, status glyphs, per-child customBgFn via existing `customBgFnOf` helper, expand/compact, legacy fallback) and `tests/live-stream-per-stage.test.ts` (sink tagging + flush sections + no-ANSI non-TUI regression). Confirm `npm run typecheck` is strict-clean and `npm test` is ALL green (existing + new), with explicit regression sentinels for the dashboard widget, themed stream LineKinds/classification, scope-aware gate, deliverable/change gates, mid-run input, and Markdown §3. Domain: render-tests. Depends on all prior phases.",
+            "deliverables": {
+              "requireFiles": [
+                "tests/render/per-stage-result.test.ts",
+                "tests/live-stream-per-stage.test.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "tests/stream-theme-class-theme.test.ts",
+                  "pattern": "buildResultComponent|toolPendingBg|toolSuccessBg|toolErrorBg"
+                },
+                {
+                  "file": "tests/render/real-theme-parity.test.ts",
+                  "pattern": "withRealTheme"
+                }
+              ],
+              "requireTests": [
+                "real-Theme parity for per-stage section rendering",
+                "class-Theme guard covers buildResultComponent per-stage bg path",
+                "no ANSI in non-TUI flush regression",
+                "no ANSI in non-TUI buildResultComponent regression",
+                "npm run typecheck strict-clean",
+                "npm test all green"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Stage tagging at the sink",
+            "description": "In src/render/live-stream.ts, widen `TranscriptLine` additively to `{ kind: LineKind; text: string; stageId: string; stageLabel: string }`."
+          },
+          {
+            "phase": "Stage tagging at the sink",
+            "description": "Add `currentStageId`/`currentStageLabel` factory state defaulting to `\"setup\"`/`\"pre-stage\"`."
+          },
+          {
+            "phase": "Stage tagging at the sink",
+            "description": "Add `stage(info: { id: string; label: string; status?: string })` to the `LiveStreamSink` interface and the factory sink; it sets current stage id/label AND re-tags the most-recent transcript entry when it is a `phase` line whose label matches `info.label` (RESOLVED-1 fix)."
+          },
+          {
+            "phase": "Stage tagging at the sink",
+            "description": "Stamp `stageId`/`stageLabel` on every push site: `phase`, `log`, `userInput`, and the `finalizeLive` thinking commit."
+          },
+          {
+            "phase": "Stage tagging at the sink",
+            "description": "Update `transcriptTail(size)` return type to the widened shape; ensure `getTranscript()`/`diskLogText()` stay correct."
+          },
+          {
+            "phase": "Stage tagging at the sink",
+            "description": "Add tests/live-stream-per-stage.test.ts driving the sink in isolation: pre-stage default tag, inherit-after-banner, implementation collapse, sink.stage re-tag of matching phase line."
+          },
+          {
+            "phase": "groupByStage pure partitioner",
+            "description": "Create src/render/stage-grouping.ts exporting `StageGroup = { stageId; stageLabel; status?; lines: Array<{kind,text}> }` and `groupByStage(transcript, statusOf?): StageGroup[]`."
+          },
+          {
+            "phase": "groupByStage pure partitioner",
+            "description": "Implement first-appearance-order partitioning; strip stage tags from emitted `lines`; coalesce untagged/string entries into one sentinel group (\"setup\"/\"pre-stage\"); return [] on empty."
+          },
+          {
+            "phase": "groupByStage pure partitioner",
+            "description": "Resolve each group `status` via injected `statusOf?: (stageId)=>string|undefined` (undefined when absent)."
+          },
+          {
+            "phase": "groupByStage pure partitioner",
+            "description": "Create tests/stage-grouping.test.ts: ordering, all-one-stage, untagged fallback, empty, status lookup present/absent."
+          },
+          {
+            "phase": "Streaming per-stage sections in flush()",
+            "description": "Add named constants `RUNNING_TAIL_LINES = 15`, `COMPLETED_TAIL_LINES = 3`, `TOTAL_SECTION_CAP` in live-stream.ts."
+          },
+          {
+            "phase": "Streaming per-stage sections in flush()",
+            "description": "Rebuild `flush()` to build the visible list (committed transcript + pending live buffer), partition via `groupByStage`, then render a STACK of per-stage sections (header + per-kind indented lines + blank separator)."
+          },
+          {
+            "phase": "Streaming per-stage sections in flush()",
+            "description": "Implement per-stage tail caps (running ≤ RUNNING_TAIL_LINES, completed ≤ COMPLETED_TAIL_LINES or header-only) and a per-stage `trim` notice inside each section."
+          },
+          {
+            "phase": "Streaming per-stage sections in flush()",
+            "description": "Theme headers by status method-style (running accent+bold+braille glyph via runningGlyph, ok success, failed error, skipped warning/dim) with a leading `▌` bar in the status color for TUI; non-TUI emits raw `▶ Stage N` + indented logs with zero ANSI."
+          },
+          {
+            "phase": "Streaming per-stage sections in flush()",
+            "description": "Extend tests/live-stream-per-stage.test.ts: TUI stack structure, running cap, completed compact, per-stage trim, and non-TUI zero-ANSI regression."
+          },
+          {
+            "phase": "buildResultComponent per-stage blocks",
+            "description": "Widen `ResultDetails.transcriptTail` in dashboard.ts additively to `Array<{ kind; text; stageId?; stageLabel? } | string>`."
+          },
+          {
+            "phase": "buildResultComponent per-stage blocks",
+            "description": "Build a `statusOf` resolver from `details.stages` (stageLabel→status) for groupByStage."
+          },
+          {
+            "phase": "buildResultComponent per-stage blocks",
+            "description": "Rebuild §1 into a stack of per-stage blocks (Container of Text): bold status-themed header + per-kind themed lines + per-stage background via Text 4th customBgFn (running toolPendingBg, ok toolSuccessBg, failed toolErrorBg, skipped none/dim)."
+          },
+          {
+            "phase": "buildResultComponent per-stage blocks",
+            "description": "Expand failed/running blocks; render completed blocks compact (header + status + 1-line tail). Legacy tail → single-section fallback. Keep §2/§3 unchanged."
+          },
+          {
+            "phase": "buildResultComponent per-stage blocks",
+            "description": "Create tests/render/per-stage-result.test.ts: block stack, status glyph per status, per-child customBgFn via customBgFnOf, expand/compact, legacy fallback, §2/§3 unchanged."
+          },
+          {
+            "phase": "End-to-end threading + extension wiring",
+            "description": "In src/extension.ts `stage: (info) => {...}` handler, also call `stream.sink.stage(info)` to sync sink current-stage with the dashboard tracker."
+          },
+          {
+            "phase": "End-to-end threading + extension wiring",
+            "description": "In renderResult, pass `details.stages`-derived `statusOf` resolver into `buildResultComponent`; confirm transcriptTail now carries stage tags end-to-end."
+          },
+          {
+            "phase": "End-to-end threading + extension wiring",
+            "description": "Verify additive type still accepts legacy string entries and that change-tracker/deliverable/change/mid-run-input/scope-aware gates + Markdown §3 remain green."
+          },
+          {
+            "phase": "Tests, real-Theme parity, and full suite green",
+            "description": "Extend tests/stream-theme-class-theme.test.ts to cover buildResultComponent per-stage bg path (method-style theme.bg guard)."
+          },
+          {
+            "phase": "Tests, real-Theme parity, and full suite green",
+            "description": "Extend tests/render/real-theme-parity.test.ts to run the new §1 builder under withRealTheme asserting no class-Theme throw."
+          },
+          {
+            "phase": "Tests, real-Theme parity, and full suite green",
+            "description": "Add non-TUI no-ANSI regression assertions for both flush and buildResultComponent."
+          },
+          {
+            "phase": "Tests, real-Theme parity, and full suite green",
+            "description": "Run `npm run typecheck` (strict-clean) and `npm test` (all green); add regression sentinels for dashboard widget, stream LineKinds/classification, scope-aware gate, deliverable/change gates, mid-run input, Markdown §3."
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": [
+            "tests/stage-grouping.test.ts",
+            "tests/live-stream-per-stage.test.ts",
+            "tests/render/per-stage-result.test.ts",
+            "tests/render/real-theme-parity.test.ts",
+            "tests/stream-theme-class-theme.test.ts"
+          ]
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/04-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/05-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/06-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/04-specification.md",
+        "phaseCount": "6"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-21T14:59:03.761Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec Review — Per-Stage Log Sections (spec-12)",
+        "date": "2026-07-21",
+        "verdict": "REVISIONS NEEDED",
+        "summary": "The spec is architecturally sound and exceptionally well-traced at the AC→scenario level (7/7 ACs covered, 24/24 scenarios mapped, additive types, no new deps, explicit NON-GOALS). The pure-helper discipline (groupByStage with injected statusOf, method-style theme access, byte-clean non-TUI regression) is feasible and matches existing repo patterns. HOWEVER, the grounding dimension fails the 90% bar: three named symbols the spec treats as pre-existing (`customBgFnOf`, `withRealTheme`, and the `toolSuccessBg`/`toolErrorBg` background tokens) are hallucinated or unverified against the actual codebase, and the headline `statusOf`→id→status resolver chain is broken at the `ResultDetails.stages` type boundary (typed `{label,status}` with no `id`). These are not cosmetic — two directly gate the load-bearing AC-04 status-background feature and the entire test harness. No ACs are uncovered (so not REJECTED), but with >3 HIGH findings and a sub-90% grounding score, the verdict is REVISIONS NEEDED before implementation.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "high",
+            "title": "Hallucinated test helper `customBgFnOf` — does not exist in the codebase",
+            "detail": "Testing Strategy + prior-stage Phase 6 state: 'the existing `customBgFnOf(child)` parity helper (already used for command-bubble assertions) is reused to read the 4th-arg background function per child Text.' Grep across src/ and tests/ finds NO `customBgFnOf`. The actual parity helper is an unexported LOCAL `function n(child)` inside `tests/render/dashboard-result-perkind.test.ts` (used as `n(found!.child)`). An implementer following the spec will search for `customBgFnOf`, fail, and either re-invent or break the AC-04/SCENARIO-015 assertions. Recommendation: rename the reference to the real local `n`, or extract/promote it to a named exported `customBgFnOf` and state that as an explicit sub-task (it is currently NOT 'existing'). Lens: D6 Grounding / D5 Traceability.",
+            "file": "docs/specifications/12-per-stage-log-sections/04-specification.md",
+            "line": "Testing Strategy / Phase 6"
+          },
+          {
+            "id": "F-02",
+            "severity": "high",
+            "title": "Hallucinated `withRealTheme` symbol — real harness exports `ln<T>`",
+            "detail": "Requirements AC-06, NFR 'Theme safety', and spec Testing Strategy all reference `tests/helpers/real-theme.ts#withRealTheme`. That module exports `export function ln<T>(fn: (theme: Theme) => T): T` — there is NO `withRealTheme`. The parity test itself imports `{ ln } from \"../helpers/real-theme.ts\"` and uses `ln((theme) => theme.bg(\"toolPendingBg\", \"x\"))`. Recommendation: replace every `withRealTheme` reference with the real `ln` harness (the this-bound generic Theme executor), or add an explicit `withRealTheme` alias task. As written, the referenced symbol cannot be imported. Lens: D6 Grounding.",
+            "file": "docs/specifications/12-per-stage-log-sections/01-requirements.md",
+            "line": "AC-06 / NFR; spec Testing Strategy"
+          },
+          {
+            "id": "F-03",
+            "severity": "high",
+            "title": "Unverified background tokens `toolSuccessBg` / `toolErrorBg` gate the headline AC-04 feature",
+            "detail": "AC-04, NFR, and PILLAR 4 pin the entire status-colored-background design on `theme.bg(\"toolPendingBg\"|\"toolSuccessBg\"|\"toolErrorBg\")`. Only `toolPendingBg` is referenced anywhere in the repo (once, in `tests/render/real-theme-parity.test.ts`, implying it is a valid real Theme token). `toolSuccessBg` and `toolErrorBg` have ZERO references in src/ or tests/ — their existence in the real pi Theme token set is unverified. If either is absent, AC-04/SCENARIO-015 is infeasible as written and the 'pi-native tool-bubble look' cannot be reproduced via the public API. Recommendation: before implementation, assert all three tokens resolve under the real Theme (extend the existing `ln((theme)=>theme.bg(\"toolSuccessBg\",...))` parity assertion); if any is missing, fall back to the proven single `\"n\"` token already used by `commandBackground` in `src/render/stream-theme.ts`. Lens: D6 Grounding / D3 Feasibility.",
+            "file": "docs/specifications/12-per-stage-log-sections/04-specification.md",
+            "line": "DESIGN PILLAR 4 / AC-04"
+          },
+          {
+            "id": "F-04",
+            "severity": "high",
+            "title": "Broken `statusOf` traceability — `ResultDetails.stages` has no `id` field",
+            "detail": "PILLAR 4 specifies a `statusOf` resolver 'mapped id→status' from `details.stages`, and `groupByStage`'s `statusOf?: (stageId)=>string` keys on stageId. But `ResultDetails.stages` is typed `Array<{ label: string; status: string }>` (src/render/dashboard.ts:322) with NO `id`, and `extension.ts` renderResult casts `d.stages` the same way (`Array<{label,status}>`, L462) even though the runtime object built at L429 (`{id,label,status}`) carries `id`. So an id→status Map cannot be constructed from the DECLARED type without a widening the spec never mentions (it only additively widens `transcriptTail`). Recommendation: explicitly widen `ResultDetails.stages` to `Array<{id;label;status}>` (additive, like transcriptTail), OR change the resolver to label→status and document the stageId↔stageLabel equivalence. Note prior-stage Phase 4 already self-contradicts by saying 'mapped stageLabel→status' while the spec body says 'id→status' — pick one and make the type match. Lens: D5 Traceability / D2 Consistency.",
+            "file": "src/render/dashboard.ts",
+            "line": "322"
+          },
+          {
+            "id": "F-05",
+            "severity": "medium",
+            "title": "Requirements↔spec contradiction: AC-01 says `phase(label)` updates the stage; spec resolves via the `stage` event",
+            "detail": "Requirements AC-01 states '`phase(label)` updates it on each banner.' The spec (PILLAR 1, SCENARIO-004, research RESOLVED-1) instead resolves stageId from the STRUCTURED `stage` event and RE-TAGS the most-recent phase line to fix the phase-before-stage emit ordering — `phase()` no longer sets the stage. The spec's design is correct and superior, but it silently supersedes a literal AC-01 requirement without flagging the deviation, leaving the traceability chain (AC-01 → spec) inconsistent. Recommendation: amend AC-01's wording to 'the structured `stage` event updates currentStageId/Label; `phase` is re-tagged for ordering' so AC↔spec agree. Lens: D2 Consistency / D5 Traceability.",
+            "file": "docs/specifications/12-per-stage-log-sections/01-requirements.md",
+            "line": "AC-01"
+          },
+          {
+            "id": "F-06",
+            "severity": "medium",
+            "title": "`TOTAL_SECTION_CAP` has no numeric value — testability/ambiguity gap",
+            "detail": "AC-03 and the NFR require 'a total cap' / 'TOTAL_CAP' bounding aggregate flush cost so it stays O(visible lines); the spec names `TOTAL_SECTION_CAP` but gives no numeric value anywhere, while sibling constants (`RUNNING_TAIL_LINES=15`, `COMPLETED_TAIL_LINES=3`) ARE numeric. An unquantified cap is not a measurable acceptance criterion (D4) and leaves an ambiguous default (D8). Recommendation: state an explicit value (e.g. cap total rendered section lines) and add a test asserting flush never exceeds it. Lens: D4 Testability / D8 Ambiguity.",
+            "file": "docs/specifications/12-per-stage-log-sections/04-specification.md",
+            "line": "DESIGN PILLAR 3 / AC-03"
+          },
+          {
+            "id": "F-07",
+            "severity": "low",
+            "title": "Stale nodes.ts line citation (L123 vs actual L126)",
+            "detail": "The spec cites the phase emit at 'nodes.ts L123' and stage at 'L127'. Actual sites: `ctx.events.emit(\"phase\", stage.label)` at src/nodes.ts:126 and `ctx.events.emit(\"stage\", {id,label,status:\"running\"})` at L127. The load-bearing ORDERING claim (phase strictly before stage) is CORRECT and verified; only the line citation is stale. Recommendation: update to L126/L127. Lens: D6 Grounding (cosmetic).",
+            "file": "src/nodes.ts",
+            "line": "126-127"
+          },
+          {
+            "id": "F-08",
+            "severity": "low",
+            "title": "Default `setup` stageId collides with the legacy-fallback sentinel",
+            "detail": "The default `currentStageId=\"setup\"` (genuine pre-stage entries) and the `groupByStage` legacy/untagged fallback sentinel (`stageId:\"setup\"`, `stageLabel:\"pre-stage\"`) are the SAME id. Consequently genuine pre-stage lines and legacy untagged/string entries merge into one indistinguishable 'pre-stage' section. This is acceptable for rendering (matches today's merged behavior, which is the stated goal) but conflates two semantics; a future reader may misread it. Recommendation: one-line note in the spec that this conflation is intentional (fallback deliberately reuses the setup id). Lens: D8 Ambiguity.",
+            "file": "docs/specifications/12-per-stage-log-sections/04-specification.md",
+            "line": "DESIGN PILLAR 1 / PILLAR 2"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "pass",
+            "notes": "All 7 ACs have a dedicated spec PILLAR; all 24 scenarios mapped to an AC; error/legacy fallback paths specified (SCENARIO-007/017/020); NFRs (perf caps, theme safety, backward-compat, maintainability) all addressed. Minor gaps: TOTAL_SECTION_CAP value unspecified (F-06); ResultDetails.stages id-widening not mentioned (F-04). Score 4/5."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "needs_work",
+            "notes": "stageId↔id↔label mapping has friction: statusOf keys on stageId but ResultDetails.stages is typed by {label,status} with no id (F-04); requirements AC-01 ('phase updates it') contradicts the spec's 'stage-event resolves it' design (F-05); prior-stage Phase 4 says stageLabel→status while spec body says id→status. Terminology otherwise uniform. Score 3/5."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "pass",
+            "notes": "Architecture fits the existing pure-helper discipline (groupByStage with injected statusOf mirrors stream-theme.ts); phases are explicitly parallelizable on disjoint files; additive type widening; no new runtime deps; no control-flow/change-tracker/backend/widget changes. Only feasibility risk is the unverified toolSuccessBg/toolErrorBg tokens (F-03). Score 4/5."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "needs_work",
+            "notes": "ACs are mostly measurable with named numeric constants (RUNNING_TAIL_LINES=15, COMPLETED_TAIL_LINES=3) and a concrete test file list per AC. But TOTAL_SECTION_CAP has no numeric value (F-06), and two referenced test helpers are wrong-named/non-existent (customBgFnOf F-01, withRealTheme F-02), so the stated test strategy cannot be executed verbatim. Score 3/5."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "needs_work",
+            "notes": "The AC→spec→scenario matrix is excellent and explicit (coverage summary 7/7 ACs, 24/24 scenarios, full traceability block). However the statusOf(stageId)→details.stages chain breaks at the type boundary because stages lacks `id` (F-04), and AC-01↔spec diverge on the stage-resolution mechanism (F-05). Score 3/5."
+          },
+          {
+            "name": "D6 Grounding",
+            "status": "fail",
+            "notes": "Score ~75-80% (below the 90% bar => HIGH). Verified: TranscriptLine {kind,text} shape, LiveStreamSink surface, nodes.ts phase-before-stage ordering, commandBackground/themeLine/classifyLine, buildResultComponent, ResultDetails.transcriptTail, extension.ts stage handler + dashboardStages, stream-theme-class-theme.test.ts:67, real-theme-parity.test.ts existence, Text 4th-arg customBgFn via commandBackground, toolPendingBg token (via parity test). FAILED/UNVERIFIED: customBgFnOf (F-01), withRealTheme (F-02), toolSuccessBg+toolErrorBg tokens (F-03), details.stages id field (F-04), stale nodes.ts line (F-07). Score 2/5."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "pass",
+            "notes": "Simplest viable approach throughout: additive type widening, dependency-free pure partitioner with injected statusOf (no dashboard import), explicitly rejects a collapse map (RESOLVED-2 'don't over-engineer'), reuses existing themeLine/commandBackground/customBgFn rather than inventing renderers, compact-completed/expanded-running avoids interactive Ctrl+O (correctly deferred as future). File count proportional to the change. No gold-plating. Score 5/5."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "needs_work",
+            "notes": "API shapes are mostly defined (TranscriptLine, StageGroup, statusOf signature, additive transcriptTail union). But: TOTAL_SECTION_CAP value unspecified (F-06); statusOf resolver mapping ambiguous id-vs-label (F-04); toolSuccessBg/toolErrorBg token semantics unverified (F-03); default `setup` id intentionally collides with the legacy sentinel (F-08, needs a one-line note). Score 3/5."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/07-spec-review.md"
+      }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-21T16:02:37.486Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "Per-Stage Log Sections (spec-12) — Implementation Summary",
+        "date": "2026-07-22",
+        "summary": "Bug-type frontend task to tag, group, and render each pipeline stage as its own themed section. Of 6 phases, 2 are committed & green, phase 3 is ~95% implemented but RED/uncommitted, and phases 4–6 never ran — so All Green = false.\n\nPHASE 1 — Stage tagging at the sink (AC-01), committed ea1f7c64: widened TranscriptLine additively to {kind;text;stageId;stageLabel}; added currentStageId/currentStageLabel factory state (default setup/pre-stage); added stage(info) to the LiveStreamSink that sets the current stage AND re-tags the most-recent matching phase line (RESOLVED-1 phase-before-stage fix); stamped tags on phase/log/userInput/finalizeLive; widened transcriptTail type; new isolation test tests/live-stream-per-stage.test.ts. GREEN.\n\nPHASE 2 — groupByStage pure partitioner (AC-02), committed c550323b: new src/render/stage-grouping.ts exporting StageGroup and groupByStage(transcript, statusOf?). First-appearance-order partitioning, strips stage tags from emitted lines, coalesces untagged/string entries into a setup/pre-stage sentinel, returns [] on empty, status resolved via injected statusOf (no dashboard import). New tests/stage-grouping.test.ts. GREEN.\n\nPHASE 3 — Streaming per-stage sections in flush() (AC-03/AC-04), UNCOMMITTED & RED: src/render/live-stream.ts modified to add named constants RUNNING_TAIL_LINES=15, COMPLETED_TAIL_LINES=3, TOTAL_SECTION_CAP=400; a stageStatus Map + stageReceived flag captured from the structured stage event; renderSectionHeader() (method-style fg/bold, ▌ status bar, runningGlyph for running, plain ▶<label> zero-ANSI when no theme); flush() rebuilt to partition via groupByStage and render a per-stage section stack with caps + per-stage trim notices. New RED test tests/live-stream-flush-sections.test.ts for SCENARIO-010..013.\n\nPHASES 4-6 NOT STARTED: buildResultComponent per-stage blocks (AC-04 dashboard side), end-to-end extension.ts wiring, and real-Theme parity / full-suite gate.\n\nTEST RESULTS: phases 1-2 green; phase 3 suite = 22 passed / 1 failed (of 23). The lone failure (SCENARIO-012): an empty COMPLETED stage must still synthesize a status-themed header, but flush() currently drops the EmptyCompleted header — this single blocker keeps phase 3 RED. Full suite / typecheck not re-run (run aborted at phase 3).\n\nDEVIATIONS FROM SPEC: (1) run stopped mid-implementation — only AC-01/AC-02 delivered; (2) the spec review (07) flagged REVISIONS NEEDED with grounding gaps that remain live for unstarted phases — hallucinated helpers customBgFnOf (real: local n(child)) and withRealTheme (real: ln<T>), unverified Theme tokens toolSuccessBg/toolErrorBg gating AC-04, and ResultDetails.stages typed {label,status} with NO id (breaks the statusOf(stageId) resolver — needs additive id widening, not done); (3) TOTAL_SECTION_CAP had no numeric value in spec (F-06); implementer chose 400; (4) AC-01 wording drift (F-05) — implementation followed the spec's stage-event-resolves-it design, superseding the literal phase-updates-it AC-01 text, which was not amended.\n\nNOTE: the pipeline's \"Files Modified: none\" reflects an empty-claim control artifact (implementation agent emitted bare control:{} for phase 3); change-tracker.jsonl gitActual records the real phase-3 changes — phase 3 simply never committed because its tests did not reach green.",
+        "phasesCompleted": "2/6",
+        "allGreen": "false",
+        "filesModified": [
+          "src/render/live-stream.ts",
+          "src/render/live-stream.test.ts",
+          "src/render/stage-grouping.ts",
+          "tests/live-stream-per-stage.test.ts",
+          "tests/live-stream-user-input.test.ts",
+          "tests/input-handler-phase2-ack.test.ts",
+          "tests/stage-grouping.test.ts",
+          "tests/live-stream-flush-sections.test.ts",
+          "docs/specifications/12-per-stage-log-sections/08-implementation-summary.md"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/08-implementation-summary.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-21T16:28:54.170Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review — Per-Stage Log Sections (spec-12)",
+        "date": "2025-07-22",
+        "verdict": "CONTEST",
+        "summary": "Reviewed the spec-12 per-stage-log-sections implementation across live-stream.ts (sink tagging + per-stage flush sections), stage-grouping.ts (pure partitioner), dashboard.ts (per-stage §1 blocks + customBgFn backgrounds), stream-theme.ts (shared statusFgToken), and extension.ts (stream.sink.stage(info) wiring + id-tagged details.stages). Verification: `npm run typecheck` is strict-clean; `npm test` is fully green (1361/1361 across 80 files, including the new per-stage/grouping/section tests). The linchpin AC-05 wiring is correct and verified — `details.stages` is built with `id` (extension.ts:437) so the buildResultComponent `statusOf` resolver actually resolves; `stream.sink` is in scope at the single wiring point (extension.ts:392). Backward-compatible legacy fallback (groupByStage sentinel + hasStageTags gate) and the no-ANSI non-TUI contract are intact. Destructive-action gate: PASS (pure render code, no irreversible ops). No production-failure, data-loss, or security-breach risk found, so this is not a REJECT. However, several medium-severity quality concerns warrant an author response before merge: an unthrottled per-log flush that now runs a full groupByStage+render on every line; a fragile heuristic in the sink's phase-line re-tag; a layering inversion (the shared DashboardTheme type lives in the dashboard aggregator and is consumed by lower-level primitives); an over-engineered four-knob cap system; and comment density well past the point of diminishing returns.",
+        "findings": [
+          {
+            "id": "ADV-01",
+            "severity": "medium",
+            "title": "flush() runs the full groupByStage + section-stack render on EVERY log/phase line (unthrottled hot path)",
+            "detail": "In extension.ts the `log` and `phase` handlers call `flush()` directly (lines 373-374: `renderDashboardThrottled()` is used for the dashboard widget, but `flush()` itself is NOT throttled). Pre-change, flush joined a bounded tail string; now each call partitions up to PARTITION_INPUT_CAP (4000) entries via groupByStage, synthesizes empty-stage headers, themes every line, and re-joins. On a chatty implementation stage emitting thousands of log lines this is O(4000) work per emitted line. The caps bound the worst case so it won't hang, but the per-log cost has materially increased on the streaming hot path. Recommend throttling flush() the same way renderDashboard is throttled, or debouncing section-stack renders. file: src/extension.ts:373-374, src/render/live-stream.ts flushSectionStack.",
+            "lens": "Skeptic"
+          },
+          {
+            "id": "ADV-02",
+            "severity": "medium",
+            "title": "sink stage() re-tag relies on a magic scan-back window of 4 — silent mis-grouping if control-flow emit ordering changes",
+            "detail": "The phase-before-stage correction (RESOLVED-1) scans back `Math.max(0, transcript.length - 4)` entries to find the most-recent matching phase line and re-tag it. This is an undocumented, un-enforced coupling between sink internals and control-flow's emit ordering: if control-flow ever emits >4 entries between `phase(▶ Stage N)` and `stage:{running}` (e.g. several interim log commits or finalizeLive pushes), the phase banner silently retains the PREVIOUS stage's tag and lands in the wrong section. Today control-flow guarantees adjacency so it works, but the assumption lives only in a comment. Recommend either (a) documenting the invariant as a contract on the sink.stage() JSDoc and adding a regression test that injects N>4 intervening entries to pin the failure mode, or (b) tracking the last phase line index explicitly instead of scanning. file: src/render/live-stream.ts sink.stage().",
+            "lens": "Skeptic"
+          },
+          {
+            "id": "ADV-03",
+            "severity": "medium",
+            "title": "Layering inversion: shared DashboardTheme type is defined in dashboard.ts and consumed by lower-level primitives",
+            "detail": "`DashboardTheme` (the theme contract now used by 3+ modules) is declared in dashboard.ts. As a result `stream-theme.ts` — a pure low-level theming primitive — does `import type { DashboardTheme } from \"./dashboard.js\"`, and `live-stream.ts` depends on `./dashboard.js` for BOTH the type and the `runningGlyph` VALUE. The stream-theme→dashboard side is `import type` (erased, so no runtime cycle and typecheck is clean), but it still inverts the natural layering: primitives should not reach into an aggregator module for a shared contract. Recommend hoisting `DashboardTheme` (and arguably the shared `runningGlyph`/`RUNNING_FRAMES` glyphs) into a neutral module (e.g. a `theme-types.ts` or into stream-theme.ts) so the dependency arrow points the right way. file: src/render/stream-theme.ts:25, src/render/live-stream.ts:31, src/render/dashboard.ts (DashboardTheme decl).",
+            "lens": "Architect"
+          },
+          {
+            "id": "ADV-04",
+            "severity": "low",
+            "title": "dashboard.ts is becoming a grab-bag: widget factory + result component + shared theme type + glyph/trunc utilities co-located",
+            "detail": "dashboard.ts now holds: the live-dashboard widget factory (createDashboardWidgetFactory/buildDashboardWidget), the completed-run result view (buildResultComponent + ResultDetails), the DashboardTheme type, the runningGlyph/runningSeed/RUNNING_FRAMES animation primitives, and the truncLine/padTruncate/truncateActivity utilities. Two distinct rendering surfaces (live widget vs completed-run result) plus shared infrastructure share one module, and every per-stage change lands here. Cohesion is declining. Consider splitting `dashboard-widget.ts` from `dashboard-result.ts` (with the shared theme-type/glyphs factored out per ADV-03). file: src/render/dashboard.ts.",
+            "lens": "Architect"
+          },
+          {
+            "id": "ADV-05",
+            "severity": "low",
+            "title": "Duplicated empty-stage synthesis + divergent expand/compact policy between the live and result surfaces",
+            "detail": "The 'synthesize a header-only group for a stage that emitted a stage event but zero log lines' logic is implemented TWICE: in live-stream.ts (stageMeta iteration) and in dashboard.ts (details.stages iteration). The expand/compact policies also differ and are not obviously consistent: the live view caps running at RUNNING_TAIL_LINES=15 and completed at COMPLETED_TAIL_LINES=3, while the result view expands ALL lines for failed/running and shows only the last 1 line for completed. These two surfaces will drift independently over time. Recommend extracting a shared 'stage presentation policy' helper, or at minimum documenting that the two are intentionally different. file: src/render/live-stream.ts flushSectionStack, src/render/dashboard.ts buildResultComponent.",
+            "lens": "Architect"
+          },
+          {
+            "id": "ADV-06",
+            "severity": "medium",
+            "title": "Four-knob cap system + 'drop-whole-leading-sections' accounting is over-engineered for the actual 13-stage scale",
+            "detail": "The live body is bounded by FOUR interlocking constants (RUNNING_TAIL_LINES=15, COMPLETED_TAIL_LINES=3, TOTAL_SECTION_CAP=400, PARTITION_INPUT_CAP=4000) plus a loop that drops whole leading sections while re-counting emitted separators ('this section + the separator after it'). The spec itself flags the 100-stage pathological case as hypothetical; the real pipeline is 13 stages. This is a lot of moving machinery — and a non-trivial accounting loop with a comment correcting a prior off-by-one — to defend against a case that does not occur in production. One aggregate cap (or simply trusting per-stage caps) would likely suffice. Recommend simplifying to at most two knobs and deleting the section-dropping accounting unless a concrete large-run workload is shown. file: src/render/live-stream.ts constants + flushSectionStack aggregate-cap loop.",
+            "lens": "Minimalist"
+          },
+          {
+            "id": "ADV-07",
+            "severity": "medium",
+            "title": "Comment density ~50%+ with spec-ID archaeology (RESOLVED-x, SCENARIO-xxx, AC-xx) — token-expensive and reader-hostile",
+            "detail": "live-stream.ts (~580 lines) and dashboard.ts carry extensive prose in which nearly every constant and branch cites spec scenario/resolution IDs meaningful only to the spec author (e.g. 'research RESOLVED-1', 'SCENARIO-012', 'AC-04/AC-05'). This is well past the point of diminishing returns: it inflates the files for reviewers and LLMs, and the cross-references will rot as the spec doc evolves. Keep the 'why' (especially the method-style theme.fg class-`this` gotcha, which is genuinely load-bearing) and drop the spec-archaeology. file: src/render/live-stream.ts, src/render/dashboard.ts throughout.",
+            "lens": "Minimalist"
+          },
+          {
+            "id": "ADV-08",
+            "severity": "low",
+            "title": "Dual flush paths (flushRollingTail vs flushSectionStack) gated by stageReceived — the sentinel group could unify them",
+            "detail": "flush() branches on `stageReceived`: pre-first-stage-event it emits the legacy rolling-tail joined text; after, the per-stage section stack. This produces a visible mid-run discontinuity (flat transcript → sectioned headers) and duplicates the trim-notice logic. Since groupByStage already coalesces everything into a single sentinel 'setup'/'pre-stage' group when no stage tags are present, a single section-stack path (sentinel group renders as one section) would remove the branch, the duplicated trim logic, and the mid-run visual jump. file: src/render/live-stream.ts flush()/flushRollingTail/flushSectionStack.",
+            "lens": "Minimalist"
+          },
+          {
+            "id": "ADV-09",
+            "severity": "low",
+            "title": "Cosmetic glyph/color mismatch in result view for untracked (undefined) status",
+            "detail": "In buildResultComponent, an untracked stage (status undefined) renders via stageBlockGlyph(undefined) → '·' (a dim neutral dot) but is COLORED via statusThemeToken(undefined) → statusFgToken(undefined) → 'accent' (the running/in-progress color). So the glyph says 'neutral' while the color says 'running'. The streaming view is internally consistent here (accent header + animated/● glyph). The result view's choice is defensible (do-not-mask-as-ok) but the glyph and color disagree. Recommend stageBlockGlyph(undefined) returning a glyph that matches the accent/in-progress intent (e.g. '●'), or documenting the intentional split. file: src/render/dashboard.ts stageBlockGlyph + statusThemeToken.",
+            "lens": "Skeptic"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/11-adversarial-review.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-21T16:28:14.562Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review — Per-Stage Log Sections (spec-12)",
+        "date": "2025-01-01",
+        "verdict": "Approved",
+        "summary": "The implementation faithfully realizes all seven acceptance criteria for rendering each pipeline stage as its own log section, with no Critical or High-severity defects. `npm run typecheck` is strict-clean and the full suite is green (80 files, 1361 tests), including the directly-scoped suites (stage-grouping 23, live-stream-per-stage 24, live-stream-flush-sections 23, per-stage-result 19, stream-theme-class-theme 4, real-theme-parity 27) and adjacent regression suites (dashboard, render). AC-01 widens `TranscriptLine` additively with `stageId`/`stageLabel`, stamps them at every push site (phase/log/userInput/finalizeLive), and adds a structured `stage(info)` method that resolves stage identity from `info.id` (never label parsing) plus a bounded re-tag scan to fix the phase-before-stage emit ordering. AC-02's `groupByStage` is a pure, dependency-free partitioner (first-appearance order, tag-stripping, sentinel coalescing for untagged/legacy strings, injected `statusOf`, empty→[]). AC-03 rebuilds `flush()` into a per-stage section stack with named tail caps (RUNNING_TAIL_LINES=15, COMPLETED_TAIL_LINES=3, TOTAL_SECTION_CAP=400, PARTITION_INPUT_CAP=4000), status-themed TUI headers (leading `▌`, animated braille for running) and byte-clean raw text in non-TUI. AC-04 rebuilds `buildResultComponent` §1 into status-themed bold header blocks with per-stage `customBgFn` backgrounds (toolPendingBg/Success/Error), failed/running expanded vs completed compact, and legacy fallback. AC-05 threads tags end-to-end via the single `stream.sink.stage(info)` wiring point. The CRITICAL theme constraint is honored everywhere (method-style `theme.fg/bg/bold` via local wrappers, never destructured), no new runtime deps were added, and backward compatibility for print/RPC/headless is preserved. Findings below are Medium/Low improvement-tier only.",
+        "findings": [
+          {
+            "id": "M1",
+            "severity": "Medium",
+            "title": "`hasStageTags` heuristic treats literal stageId \"setup\" as legacy, creating a live/result-view asymmetry",
+            "detail": "In buildResultComponent, `const hasStageTags = tail.some((e) => typeof e !== \"string\" && e.stageId !== undefined && e.stageId !== \"setup\")`. The sink's pre-banner default is stageId \"setup\", so this exclusion is intended to detect the sentinel. However it creates two problems: (1) ASYMMETRY — the streaming `flushSectionStack` path uses `groupByStage` directly, which treats \"setup\" as a normal stage id and renders it as its own section header in the LIVE view, but the COMPLETED result view collapses any \"setup\"-tagged entries back into the single merged legacy block; (2) LATENT MISCLASSIFICATION — if any real pipeline stage ever carries id \"setup\" (custom skipStages run, a future stage, or a stage whose control-flow id is literally \"setup\"), its tagged lines are silently demoted to the legacy single-section view in renderResult while still rendering per-stage in the live stream. Failure scenario: a run where the only tagged lines are pre-stage (setup) logs renders the new per-stage UI live but reverts to the old merged dim log on completion — visually inconsistent. Suggested fix: derive hasStageTags from a positive signal, e.g. `details.stages?.some(s => s.id !== undefined)` OR `tail.some(e => typeof e !== \"string\" && e.stageId !== undefined)` and let groupByStage's sentinel handle the pre-stage coalescing uniformly on both surfaces. Confidence ~0.6.",
+            "file": "src/render/dashboard.ts",
+            "line": "~410 (hasStageTags)"
+          },
+          {
+            "id": "L1",
+            "severity": "Low",
+            "title": "Aggregate cap keeps the LAST section, not necessarily the RUNNING section",
+            "detail": "In flushSectionStack, the TOTAL_SECTION_CAP trim loop condition is `start < sections.length - 1`, guaranteeing only that the final section survives. The spec intent (\"ALWAYS keeping at least the final (live / running) section\") assumes the running stage is last. Because the stageMeta synthesis appends header-only blocks for stages that emitted a `stage` event but produced zero lines, an empty COMPLETED stage can be appended AFTER the running stage, so under cap pressure the running stage could be dropped while a completed empty-stage header is retained. In practice the running stage receives the latest log lines so it is almost always last; this is an edge case. Suggested fix: when trimming, prefer retaining the section whose status is \"running\" (or undefined) over a trailing completed-empty synthesized block.",
+            "file": "src/render/live-stream.ts",
+            "line": "flushSectionStack aggregate-cap loop"
+          },
+          {
+            "id": "L2",
+            "severity": "Low",
+            "title": "Phase-line re-tag scan window is hardcoded to 4 entries",
+            "detail": "`sink.stage` scans back only `Math.max(0, transcript.length - 4)` entries to find and re-tag the most-recent matching phase line (RESOLVED-1 phase-before-stage ordering fix). If control-flow ever emits more than 4 transcript entries between `phase(label)` and `stage:{running}` (e.g. several rapid log commits or a thinking commit plus logs), the phase line will not be re-tagged and will inherit the PREVIOUS stage's id, misattributing that stage banner. The comment acknowledges the bounded window. Acceptable given the currently observed emit ordering (phase immediately precedes stage), but fragile if emit ordering changes. Suggested fix: scan back to the last phase line unconditionally (or to a more generous bound) and stop at the first entry already tagged with info.id.",
+            "file": "src/render/live-stream.ts",
+            "line": "sink.stage re-tag loop"
+          },
+          {
+            "id": "L3",
+            "severity": "Low",
+            "title": "Duplicated sentinel constants across stage-grouping and live-stream",
+            "detail": "`stage-grouping.ts` defines `SENTINEL_STAGE_ID = \"setup\"` / `SENTINEL_STAGE_LABEL = \"pre-stage\"` while `live-stream.ts` independently hardcodes the identical defaults (`currentStageId = \"setup\"`, `currentStageLabel = \"pre-stage\"`) and `dashboard.ts` repeats the \"setup\" literal in hasStageTags. The sentinel-coalescing contract relies on all three staying in sync; if one drifts, pre-stage tagged entries and legacy untagged entries silently stop coalescing. Suggested fix: export SENTINEL_STAGE_ID/SENTINEL_STAGE_LABEL from stage-grouping.ts and reuse at every site (including the hasStageTags check in M1).",
+            "file": "src/render/stage-grouping.ts",
+            "line": "SENTINEL_* constants"
+          },
+          {
+            "id": "L4",
+            "severity": "Low",
+            "title": "PARTITION_INPUT_CAP window-slicing can shift a stage's first-appearance header position across flushes",
+            "detail": "flushSectionStack slices `visible.slice(-PARTITION_INPUT_CAP)` (last 4000) before calling groupByStage. groupByStage assigns section order by FIRST APPEARANCE within the partitioned input, so for a very long run a stage whose earliest lines predate the 4000-line window will have its header position computed from within the window; as the window slides on subsequent flushes the header can appear to jump position. This is purely cosmetic (content is never dropped — completed stages render compact and the running tail is preserved) and only manifests on runs producing thousands of lines. No action required for correctness; noted for awareness.",
+            "file": "src/render/live-stream.ts",
+            "line": "flushSectionStack partition"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/11-code-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-21T16:32:38.361Z",
+      "agent": "docs",
+      "data": {
+        "title": "Per-Stage Log Sections (spec-12) — Documentation Update",
+        "date": "2026-07-22",
+        "summary": "Updated all spec-12 directory documents plus the project CHANGELOG to reflect the completed implementation. Verified the codebase state directly: `npm run typecheck` is strict-clean and `npm test` passes 1361/1361 (80 files), including the directly-scoped suites (stage-grouping 23, live-stream-per-stage 24, live-stream-flush-sections 23, per-stage-result 19, stream-theme-class-theme 4, real-theme-parity 27). All 6 phases are complete — phases 1–2 committed (ea1f7c64, c550323b), phases 3–6 + a code-review fix round in the working tree. Source changes: src/render/live-stream.ts (widened TranscriptLine + stage(info) + flushSectionStack + named caps RUNNING_TAIL_LINES=15/COMPLETED_TAIL_LINES=3/TOTAL_SECTION_CAP=400/PARTITION_INPUT_CAP=4000), new src/render/stage-grouping.ts (pure groupByStage), src/render/stream-theme.ts (new shared statusFgToken), src/render/dashboard.ts (buildResultComponent §1 per-stage blocks + customBgFn backgrounds + additive transcriptTail/stages widening), src/extension.ts (single stream.sink.stage(info) wiring). New tests: tests/stage-grouping.test.ts, tests/live-stream-per-stage.test.ts, tests/live-stream-flush-sections.test.ts, tests/render/per-stage-result.test.ts.",
+        "docsUpdated": "docs/specifications/12-per-stage-log-sections/06-task-list.md (marked all 27 tasks complete [x], added completion summary with file lists + test results); docs/specifications/12-per-stage-log-sections/05-implementation-plan.md (marked all 6 phases ✅ COMPLETE, added status banner); docs/specifications/12-per-stage-log-sections/08-implementation-summary.md (flipped to 6/6 phases + All Green:true; rewrote the stale phase-3-RED / phases-4-6-NOT-STARTED / DEVIATIONS sections to the final green narrative; corrected the empty-claim control-artifact NOTE); docs/specifications/12-per-stage-log-sections/04-specification.md (appended a full \"Deviations from Specification\" section D1–D6 plus deferred findings); CHANGELOG.md (added a spec-12 \"Added\" entry under [Unreleased]). Requirements (01), BDD scenarios (02), research (03), spec-review (07), and review docs (09/10/10/11) left as historical stage records — no deviations touched their acceptance criteria or scenarios.",
+        "deviationsDocumented": [
+          "D1 — Added PARTITION_INPUT_CAP = TOTAL_SECTION_CAP * 10 = 4000 (additive hot-path bound not in spec): slices visible.slice(-PARTITION_INPUT_CAP) before groupByStage so the streaming flush never re-partitions the unbounded transcript; no visible content dropped (older lines render compact/header-only via stageMeta synthesis). Cosmetic-only edge case noted in code-review L4.",
+          "D2 — Added shared statusFgToken(status) export in stream-theme.ts as the single source of truth for the status→color taxonomy, deduped from the three prior inline copies (live-stream header, dashboard header, dashboard bg); reduces the drift risk surfaced by code-review L3.",
+          "D3 — TOTAL_SECTION_CAP value chosen = 400 (spec F-06 left it unspecified); generous bound for the live stack, running stage tail always retained, no content loss.",
+          "D4 — AC-01 wording drift (F-05): implementation resolves stage identity from the structured stage event via sink.stage(info) per the spec body + research RESOLVED-1, superseding the older literal phase-updates-it AC-01 phrasing (which was not retroactively amended); behavior matches the spec body and tests assert the structured-event path.",
+          "D5 — Non-TUI live body is structurally richer than legacy flat text (▶ <label> headers + indented per-kind logs) but remains ZERO ANSI bytes (AC-08 byte-clean contract preserved and asserted by \\x1b scan); intentional per SCENARIO-013.",
+          "D6 — ResultDetails.stages widened additively with optional id (was {label,status} with no id, breaking the id→statusOf resolver); additive so legacy callers stay strict-clean; enables AC-04 per-stage background resolution.",
+          "Deferred (not deviations): M1 hasStageTags asymmetry + L1 aggregate-cap keep-last-section edge case left as-is (real runs end on the running stage); L2 phase-line re-tag window hardcoded to 4 (correct vs observed emit ordering); interactive collapse/expand (Ctrl+O) explicitly out of scope (NON-GOALS)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/docs/specifications/12-per-stage-log-sections/14-documentation.md"
+      }
+    }
+  }
+}

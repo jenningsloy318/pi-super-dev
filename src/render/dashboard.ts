@@ -18,7 +18,8 @@
 
 import { Container, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { themeLine, commandBackground, type LineKind } from "./stream-theme.js";
+import { themeLine, commandBackground, statusFgToken, type LineKind } from "./stream-theme.js";
+import { groupByStage, type StageGroup } from "./stage-grouping.js";
 
 /**
  * Structural subset of pi's `Theme` that the dashboard presentation layer
@@ -314,12 +315,56 @@ export function createDashboardWidgetFactory(
 export interface ResultDetails {
 	summaryLines?: string[];
 	/** Per-kind transcript tail (AC-06). Phase 2 carries `{kind,text}` end-to-end
-	 *  from the sink; a plain `string` element is tolerated (defaults to kind
-	 *  `log`) so existing string-based callers keep rendering. Phase 3 upgrades
-	 *  the §1 render to per-kind theming + command-bubble backgrounds. */
-	transcriptTail?: Array<{ kind: LineKind; text: string } | string>;
-	stages?: Array<{ label: string; status: string }>;
+	 *  from the sink; Phase 1 (AC-01) additively stamps `stageId` / `stageLabel`
+	 *  so Phase 4 can partition §1 into per-stage blocks. A plain `string`
+	 *  element (and an object missing stage tags) is tolerated — groupByStage
+	 *  coalesces such legacy entries into ONE merged sentinel section (no throw). */
+	transcriptTail?: Array<
+		{ kind: LineKind; text: string; stageId?: string; stageLabel?: string } | string
+	>;
+	/** Stage-progress rows (§2). `id` is OPTIONAL (additive) so a `statusOf`
+	 *  resolver can map stageId→status for the Phase-4 per-stage blocks; legacy
+	 *  callers that supply only {label,status} still satisfy the shape. */
+	stages?: Array<{ id?: string; label: string; status: string }>;
 	logPath?: string;
+}
+
+/** Status → foreground theme token for a Phase-4 per-stage block header.
+ *  Delegates to the shared `statusFgToken` (stream-theme.ts) so the result
+ *  view's status→color taxonomy is IDENTICAL to the streaming live view's —
+ *  one source of truth (previously duplicated). */
+function statusThemeToken(status: string | undefined): string {
+	return statusFgToken(status);
+}
+
+/** Status → static (non-animated) glyph prefix for a Phase-4 per-stage block
+ *  header. The result view is for a COMPLETED run, so the running stage uses
+ *  the stable filled-circle `●` rather than the live animated braille frame. */
+function stageBlockGlyph(status: string | undefined): string {
+	if (status === "ok") return "✓";
+	if (status === "failed") return "✗";
+	if (status === "skipped") return "↷";
+	if (status === "running") return "●";
+	return "·";
+}
+
+/**
+ * Per-stage tool-bubble BACKGROUND (AC-04 / SCENARIO-014..018). Mirrors
+ * pi-native tool bubbles via ONLY the public pi-tui `Text` 4th `customBgFn`
+ * argument — no internal pi-core imports. running→toolPendingBg,
+ * ok→toolSuccessBg, failed→toolErrorBg, skipped / unknown→none. Graceful-
+ * degrades to `undefined` when the theme lacks the optional `bg` member so
+ * non-TUI paths never attempt to paint a background (SCENARIO-005).
+ */
+function statusBackground(
+	status: string | undefined,
+	theme?: DashboardTheme,
+): ((text: string) => string) | undefined {
+	if (!theme?.bg) return undefined;
+	if (status === "running") return (text: string) => theme.bg!("toolPendingBg", text);
+	if (status === "ok") return (text: string) => theme.bg!("toolSuccessBg", text);
+	if (status === "failed") return (text: string) => theme.bg!("toolErrorBg", text);
+	return undefined;
 }
 
 /** Status → icon for §2 stage rows (mirrors the renderResult icon mapper). */
@@ -367,19 +412,77 @@ export function buildResultComponent(details: ResultDetails, theme?: DashboardTh
 	const fg = (color: string, text: string): string => (theme ? theme.fg(color, text) : text);
 	const container = new Container();
 
-	// §1 detail log — PER-KIND themed (AC-07 / SCENARIO-014). Each tail line is
-	// styled via themeLine(kind, text, theme) and COMMAND / COMMAND-DONE lines
-	// are emitted with a tool-bubble background (pi-tui Text's 4th `customBgFn`
-	// argument via commandBackground) so commands pop as tool bubbles while
-	// thinking/phase/error/log lines carry their pi-native foreground tokens. A
-	// plain-string tail element is tolerated and defaults to kind "log".
-	container.addChild(new Text(fg("dim", "── detail log (last 50 lines) ──"), 0, 0));
-	for (const line of details.transcriptTail ?? []) {
-		const kind: LineKind = typeof line === "string" ? "log" : line.kind;
-		const text = typeof line === "string" ? line : line.text;
-		const styled = themeLine(kind, text, theme);
-		const bgFn = commandBackground(kind, theme);
-		container.addChild(new Text(styled, 0, 0, bgFn));
+	// §1 detail log. Two rendering paths share this Container:
+	//   • LEGACY (no real stage tags) — the single merged DIM
+	//     "── detail log (last 50 lines) ──" view with per-kind themeLine +
+	//     command-bubble backgrounds. Pinned byte-for-byte by
+	//     dashboard-result.test.ts / dashboard-result-perkind.test.ts (the
+	//     SCENARIO-014 per-kind contract) so untagged tails render UNCHANGED.
+	//   • PHASE 4 (real stage tags present) — a STACK of per-stage blocks
+	//     (AC-04 / SCENARIO-014..018): a BOLD status-themed header (status-glyph
+	//     prefix) carrying a per-stage BACKGROUND via pi-tui Text's 4th
+	//     `customBgFn` arg (statusBackground), followed by the stage's log lines
+	//     themed per-kind via themeLine. Failed/running blocks render EXPANDED;
+	//     completed blocks render COMPACT (header + 1-line tail). Legacy
+	//     untagged / string entries collapse via groupByStage's sentinel into a
+	//     SINGLE merged block — no throw.
+	const tail = details.transcriptTail ?? [];
+	const hasStageTags = tail.some(
+		(e) => typeof e !== "string" && e.stageId !== undefined && e.stageId !== "setup",
+	);
+	if (!hasStageTags) {
+		container.addChild(new Text(fg("dim", "── detail log (last 50 lines) ──"), 0, 0));
+		for (const line of tail) {
+			const kind: LineKind = typeof line === "string" ? "log" : line.kind;
+			const text = typeof line === "string" ? line : line.text;
+			const styled = themeLine(kind, text, theme);
+			const bgFn = commandBackground(kind, theme);
+			container.addChild(new Text(styled, 0, 0, bgFn));
+		}
+	} else {
+		// statusOf resolves a group's status from its stageId via details.stages
+		// (id→status). SYMMETRIC with the streaming live view: an untracked stage
+		// (incl. the "setup" sentinel, which has no stage event) resolves to
+		// `undefined` → renders the accent in-progress treatment on BOTH surfaces —
+		// it is NOT forced to "ok"/green, which would mask a pre-stage failure.
+		const idToStatus = new Map<string, string>();
+		for (const s of details.stages ?? []) {
+			if (s.id !== undefined) idToStatus.set(s.id, s.status);
+		}
+		const statusOf = (stageId: string): string | undefined => idToStatus.get(stageId);
+		const groups = groupByStage(tail, statusOf);
+		// Consistency with the streaming view: synthesize a header-only block for
+		// every stage present in details.stages that produced ZERO transcriptTail
+		// lines, so its status still surfaces in the result view (mirrors the
+		// live-stream section stack's stageMeta synthesis in SCENARIO-012).
+		const presentStageIds = new Set(groups.map((g) => g.stageId));
+		for (const s of details.stages ?? []) {
+			if (s.id === undefined || presentStageIds.has(s.id)) continue;
+			const empty: StageGroup = { stageId: s.id, stageLabel: s.label, lines: [] };
+			if (s.status !== undefined) empty.status = s.status;
+			groups.push(empty);
+		}
+		for (const group of groups) {
+			const status = group.status;
+			const headerBg = statusBackground(status, theme);
+			const glyph = stageBlockGlyph(status);
+			const headerText = theme
+				? fg(statusThemeToken(status), `${glyph} ${bold(group.stageLabel)}`)
+				: `${glyph} ${group.stageLabel}`;
+			container.addChild(new Text(headerText, 0, 0, headerBg));
+			// Per-kind themed lines. command / command-done KEEP their tool-bubble
+			// background (commandBackground) so the SCENARIO-014 per-kind contract
+			// holds inside every stage block. Failed/running blocks EXPANDED
+			// (all lines); completed blocks COMPACT (≤ 1 tail line).
+			const expanded = status === "failed" || status === "running";
+			const lines = expanded ? group.lines : group.lines.slice(-1);
+			for (const line of lines) {
+				const styled = themeLine(line.kind, line.text, theme);
+				container.addChild(
+					new Text(`  ${styled}`, 0, 0, commandBackground(line.kind, theme)),
+				);
+			}
+		}
 	}
 	if (details.logPath) {
 		container.addChild(new Text(fg("dim", `(full log: ${details.logPath})`), 0, 0));

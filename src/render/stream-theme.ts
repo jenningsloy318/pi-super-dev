@@ -189,6 +189,32 @@ export function themeLine(kind: LineKind, text: string, theme?: DashboardTheme):
 }
 
 /**
+ * Map a pipeline stage status → its pi foreground theme token. Shared by the
+ * streaming live view (live-stream.ts `renderSectionHeader`) AND the
+ * completed-run result view (dashboard.ts per-stage block header) so BOTH
+ * surfaces render a given status identically — a single source of truth for
+ * the status→color taxonomy (previously duplicated in three places).
+ *
+ *   ok       → "success"
+ *   failed   → "error"
+ *   skipped  → "warning"
+ *   running  → "accent"
+ *   undefined / unknown → "accent"  (treated as in-progress)
+ *
+ * An UNTRACKED status (including the "pre-stage" sentinel) resolves to
+ * `accent` — NOT green/success — on BOTH surfaces, so an untracked stage is
+ * never silently masked as ok (which would hide pre-stage failures). This is
+ * the symmetric treatment that keeps the live view and the result view
+ * consistent for stages with no recorded status.
+ */
+export function statusFgToken(status: string | undefined): string {
+	if (status === "ok") return "success";
+	if (status === "failed") return "error";
+	if (status === "skipped") return "warning";
+	return "accent";
+}
+
+/**
  * Resolve the tool-bubble background paint function for a kind (SCENARIO-006).
  *
  *   command      → theme.bg("toolPendingBg", _)

@@ -382,6 +382,14 @@ export default function activate(pi: ExtensionAPI): void {
 					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.
 					if (!dashboardOrder.includes(info.id)) dashboardOrder.push(info.id);
 					dashboardStages.set(info.id, { label: info.label, status: info.status });
+					// Phase 5 (AC-05 / SCENARIO-019..021): mirror the structured `stage`
+					// event into the live-stream sink so its current-stage state (and the
+					// RESOLVED-1 phase-line re-tag) stays synchronized with the dashboard
+					// tracker. This is the SINGLE wiring point that makes stage tags
+					// resolve from the structured `stage.id` (not `▶ Stage N` label
+					// parsing) end-to-end — without it the Phase-3 per-stage section stack
+					// is unreachable in production and transcriptTail carries no tags.
+					stream.sink.stage(info);
 					renderDashboard(); // widget update
 				},
 			};
@@ -466,7 +474,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const d = (result.details ?? {}) as {
 				summaryLines?: string[];
 				transcriptTail?: TranscriptLine[];
-				stages?: Array<{ label: string; status: string }>;
+				stages?: Array<{ id?: string; label: string; status: string }>;
 				logPath?: string;
 			};
 			// During streaming (onUpdate), details are empty — fall back to plain content

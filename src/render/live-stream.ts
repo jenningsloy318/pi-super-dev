@@ -28,9 +28,10 @@
  * (no-ANSI-leak + TUI mirror).
  */
 
-import type { DashboardTheme } from "./dashboard.js";
-import { classifyLine, themeLine } from "./stream-theme.js";
+import { runningGlyph, type DashboardTheme } from "./dashboard.js";
+import { classifyLine, themeLine, statusFgToken } from "./stream-theme.js";
 import type { LineKind } from "./stream-theme.js";
+import { groupByStage, type StageGroup } from "./stage-grouping.js";
 
 /**
  * One committed transcript entry. `kind` is the classified content taxonomy
@@ -107,15 +108,92 @@ export interface LiveStreamHandle {
 	transcriptTail(size?: number): TranscriptLine[];
 }
 
-/**
- * Default rolling-tail window. A full run (100+ agents) produces thousands of
- * transcript lines; the live display keeps only the CURRENT activity visible
- * and the full log is persisted to disk at run end so nothing is lost.
- */
-const DEFAULT_TAIL_LINES = 400;
-
 /** Default tail size for the final `transcriptTail` snapshot (AC-06). */
 const DEFAULT_TAIL_SNAPSHOT = 50;
+
+// ─── AC-03 (SCENARIO-010..013): per-stage section tail budgets ───────────
+/**
+ * Max recent lines shown for the RUNNING stage's section. The live activity
+ * is foregrounded with a generous tail so in-flight work stays visible.
+ */
+export const RUNNING_TAIL_LINES = 15;
+/**
+ * Max tail lines shown for a COMPLETED (ok/failed/skipped) stage's section —
+ * completed work renders COMPACT so the live view stays scannable (header +
+ * ≤ this many tail lines, or header-only when the stage has no lines).
+ */
+export const COMPLETED_TAIL_LINES = 3;
+/**
+ * Aggregate bound on the total rendered body so flush stays O(visible lines)
+ * regardless of how many stages a run has (a 100-stage run would otherwise
+ * fan out 100 × per-stage tail lines). Applied as a final safety trim AFTER
+ * the per-stage caps; never interferes with small inputs.
+ */
+export const TOTAL_SECTION_CAP = 400;
+/**
+ * Hot-path bound on the transcript slice passed to `groupByStage` on every
+ * throttled flush. `groupByStage` is O(input) and `flush()` runs repeatedly
+ * across the whole run, so partitioning the FULL unbounded transcript on every
+ * flush is the streaming hot path's dominant cost. This caps the input to a
+ * generous recent window (10× the output cap) — older lines are already
+ * trimmed to ≤ `COMPLETED_TAIL_LINES` per completed stage, and a completed
+ * stage whose lines all predate the window still renders its header via the
+ * `stageMeta` synthesis (SCENARIO-012), so capping the input never drops
+ * visible content; it only bounds the worst-case partition cost on huge runs.
+ */
+export const PARTITION_INPUT_CAP = TOTAL_SECTION_CAP * 10;
+
+/** Leading status bar drawn in the section-header status color (TUI only). */
+const STATUS_BAR = "▌";
+
+/**
+ * AC-03 / AC-04: the synthetic per-stage (or legacy rolling-tail) trim notice.
+ * The contiguous `earlier lines trimmed` substring is asserted verbatim by the
+ * SCENARIO-009 rolling-tail tests and the SCENARIO-015 regression guard, so it
+ * must survive every render path. When `stageLabel` is supplied the notice is
+ * scoped to that stage's own section; otherwise it is the legacy global tail
+ * notice (byte-clean raw text, no stage qualifier).
+ */
+const trimNoticeText = (trimmed: number, stageLabel?: string): string =>
+	stageLabel
+		? `… ${trimmed} earlier lines trimmed in "${stageLabel}" (full log saved at run end) …`
+		: `… ${trimmed} earlier lines trimmed (full log saved at run end) …`;
+
+/**
+ * AC-03 (SCENARIO-010): render ONE per-stage section header line.
+ *
+ * - TUI (theme supplied): a status-themed header carrying a leading `▌` bar
+ *   in the status color. The RUNNING stage (and unknown / pre-stage status,
+ *   treated as in-progress) adds the animated braille glyph via
+ *   `runningGlyph(Math.floor(Date.now()/100))` and a BOLD label; ok → success,
+ *   failed → error, skipped → warning.
+ * - non-TUI (no theme): a plain `▶ <label>` header — byte-clean raw text with
+ *   ZERO ANSI (AC-08 no-leak contract preserved).
+ *
+ * Theme access is METHOD-style via local `fg`/`bold` wrappers (never
+ * destructured) so the class-based pi `Theme` (whose `fg()` reads
+ * `this.fgColors`) survives without a detached-`this` throw — pinned by the
+ * class-theme guard in tests/live-stream-flush-sections.test.ts.
+ */
+const renderSectionHeader = (
+	group: Pick<StageGroup, "stageLabel" | "status">,
+	theme: DashboardTheme | undefined,
+): string => {
+	if (!theme) return `▶ ${group.stageLabel}`;
+	const bold = (value: string): string =>
+		theme.bold ? theme.bold(value) : value;
+	const fg = (color: string, value: string): string => theme.fg(color, value);
+	const label = group.stageLabel;
+	const status = group.status;
+	const token = statusFgToken(status); // shared status→color taxonomy (dedup)
+	// Unknown / pre-stage status ⇒ treat as in-progress (running) so the
+	// sentinel "setup" section theming matches the live activity's accent.
+	if (status === undefined || status === "running") {
+		const glyph = runningGlyph(Math.floor(Date.now() / 100));
+		return fg(token, `${STATUS_BAR}${glyph} ${bold(label)}`);
+	}
+	return fg(token, `${STATUS_BAR} ${label}`);
+};
 
 /**
  * Create a live-stream handle. The transcript starts empty; the sink is the
@@ -126,7 +204,9 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	const onUpdate = opts.onUpdate;
 	const mode = opts.mode;
 	const theme = opts.theme;
-	const tailLines = opts.tailLines ?? DEFAULT_TAIL_LINES;
+	/** Rolling-tail window for the pre-stage legacy body (default 400). The
+	 *  per-stage section stack uses its OWN caps (RUNNING/COMPLETED_TAIL_LINES). */
+	const tailLines = opts.tailLines ?? 400;
 
 	const transcript: TranscriptLine[] = [];
 	let live = "";
@@ -136,6 +216,20 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	// event arrives (RESOLVED-1: resolved from info.id, never label parsing).
 	let currentStageId = "setup";
 	let currentStageLabel = "pre-stage";
+	// AC-03 / SCENARIO-010: stageId → { label, status? }, captured from the
+	// structured `stage` events the sink receives so flush can theme each
+	// section header WITHOUT importing the dashboard tracker (the pure
+	// groupByStage helper receives this map as its injected `statusOf`
+	// resolver). The LABEL is stored (not just status) so flush can SYNTHESIZE
+	// an empty header for a stage that emitted a `stage` event but produced
+	// ZERO log lines (SCENARIO-012). A Map, so iteration follows stage-event
+	// arrival order.
+	const stageMeta = new Map<string, { label: string; status?: string }>();
+	// AC-03: true once the first STRUCTURED `stage` event arrives. Until then the
+	// run is in its pre-stage window and flush() emits the legacy rolling-tail
+	// body (raw joined text, no section header, no indent) — preserving the
+	// AC-04/AC-05 + SCENARIO-015 byte-clean contract pinned by Phase 2 tests.
+	let stageReceived = false;
 
 	/** Commit any pending live buffer as a `{thinking}` line (SCENARIO-008).
 	 *  Stamps the CURRENT stage tag onto the committed entry (AC-01). */
@@ -199,31 +293,177 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// PREVIOUS stage. Only the single most-recent matching phase line is
 		// touched — older phase lines are left alone.
 		stage: (info: StageInfo): void => {
+			stageReceived = true;
 			currentStageId = info.id;
 			currentStageLabel = info.label;
-			const last = transcript[transcript.length - 1];
-			if (
-				last &&
-				last.kind === "phase" &&
-				last.text.startsWith("▶ ") &&
-				last.text.slice(2) === info.label
+			// Always record the label; update status only when the event carries
+			// one (a later `stage:{running}` then `stage:{ok}` for the same id
+			// keeps the latest terminal status).
+			const prev = stageMeta.get(info.id);
+			stageMeta.set(info.id, {
+				label: info.label,
+				status: info.status !== undefined ? info.status : prev?.status,
+			});
+			// Re-tag the most-recent matching phase line that still sits under the
+			// PREVIOUS stage (RESOLVED-1 phase-before-stage ordering). Scan back a
+			// SMALL window rather than only the literal last entry, so an
+			// intervening commit (e.g. a finalizeLive thinking push between the
+			// `phase` and the `stage:{running}`) does not silently defeat the
+			// correction. The first (most-recent) match wins; we stop early once an
+			// entry already tagged with this stage is reached.
+			for (
+				let i = transcript.length - 1;
+				i >= Math.max(0, transcript.length - 4);
+				i--
 			) {
-				last.stageId = info.id;
-				last.stageLabel = info.label;
+				const entry = transcript[i]!;
+				if (entry.stageId === info.id) break;
+				if (
+					entry.kind === "phase" &&
+					entry.text.startsWith("▶ ") &&
+					entry.text.slice(2) === info.label
+				) {
+					entry.stageId = info.id;
+					entry.stageLabel = info.label;
+					break;
+				}
 			}
 		},
 	};
 
-	/** Render a sequence of lines into the mode-aware body string.
-	 *  TUI + theme → per-kind themed; otherwise raw `line.text` joined by `\n`. */
-	const renderBody = (lines: TranscriptLine[]): string => {
+	/**
+	 * Legacy rolling-tail body (AC-04 / AC-05). Emitted while the run is in its
+	 * pre-stage window — before the first STRUCTURED `stage` event arrives.
+	 * Produces the byte-clean RAW-JOINED text in every non-TUI mode (body ===
+	 * joined `text`, NO section header, NO indentation) and the per-kind themed
+	 * body in TUI mode. A synthetic `{trim}` notice prefixes the last
+	 * `tailLines` entries when the visible window overflows. Preserves the
+	 * Phase 2 contract pinned by `live-stream.test.ts` and the SCENARIO-015
+	 * regression guard byte-for-byte.
+	 */
+	const flushRollingTail = (visible: TranscriptLine[]): void => {
 		const themed = mode === "tui" && theme;
-		return lines
-			.map((l) => (themed ? themeLine(l.kind, l.text, theme) : l.text))
-			.join("\n");
+		let shown: TranscriptLine[] = visible;
+		if (visible.length > tailLines) {
+			const trimmed = visible.length - tailLines;
+			shown = [
+				{
+					kind: "trim",
+					text: trimNoticeText(trimmed),
+					stageId: currentStageId,
+					stageLabel: currentStageLabel,
+				},
+				...visible.slice(-tailLines),
+			];
+		}
+		const bodyLines = shown.map((l) =>
+			themed ? themeLine(l.kind, l.text, theme) : l.text,
+		);
+		onUpdate?.(bodyLines.join("\n"));
 	};
 
-	/** SCENARIO-009: rolling tail + trim-notice. Emits the body via onUpdate. */
+	/**
+	 * AC-03 (SCENARIO-010..013): render a STACK of per-stage sections via
+	 * groupByStage — each a status-themed header + per-kind indented lines,
+	 * with per-stage tail caps and a per-stage trim notice. Takes over once a
+	 * real pipeline stage is known. The mode gate is unchanged: `mode === "tui"
+	 * && theme` enables theming; EVERY other mode (and no-theme) emits RAW TEXT
+	 * — byte-clean, zero ANSI (AC-08) — now structured as `▶ <label>` headers +
+	 * two-space-indented logs.
+	 */
+	const flushSectionStack = (visible: TranscriptLine[]): void => {
+		// Hot-path bound (PARTITION_INPUT_CAP): partition only a generous recent
+		// WINDOW of the transcript. Completed stages already render COMPACT
+		// (≤ COMPLETED_TAIL_LINES tail, or header-only via stageMeta synthesis),
+		// so slicing never drops visible content — it only bounds the O(input)
+		// partition cost on huge runs (the streaming hot path).
+		const partitioned =
+			visible.length > PARTITION_INPUT_CAP
+				? visible.slice(-PARTITION_INPUT_CAP)
+				: visible;
+		// Partition into per-stage sections in FIRST-APPEARANCE order; each
+		// group's status is resolved from the structured stage events captured
+		// at the sink (injected as `statusOf` — no dashboard import, pure helper).
+		const groups = groupByStage(partitioned, (id) => stageMeta.get(id)?.status);
+
+		// SCENARIO-012: synthesize an empty group for every stage that emitted a
+		// structured `stage` event but produced ZERO log lines — so its header
+		// STILL renders (header-only for a completed stage). `stageMeta` is a Map,
+		// so iteration follows stage-EVENT arrival order; stages absent from the
+		// line-partitioned `groups` append here (a stage with no lines has no
+		// natural line position, so appending is the faithful placement).
+		for (const [id, meta] of stageMeta) {
+			if (groups.some((g) => g.stageId === id)) continue;
+			const empty: StageGroup = { stageId: id, stageLabel: meta.label, lines: [] };
+			if (meta.status !== undefined) empty.status = meta.status;
+			groups.push(empty);
+		}
+
+		const themed = mode === "tui" && theme;
+		const themeArg = themed ? theme : undefined;
+
+		// Render each section into its OWN string[] so the aggregate cap can drop
+		// WHOLE leading sections — never slicing mid-section (which would leave
+		// dangling indented lines with no header) and never dropping a header
+		// while keeping its orphaned lines.
+		const sections: string[][] = groups.map((group) => {
+			const sec: string[] = [renderSectionHeader(group, themeArg)];
+
+			// Per-stage tail budget: running (incl. unknown / pre-stage) shows a
+			// generous recent tail; completed stages render COMPACT (header +
+			// ≤ COMPLETED_TAIL_LINES tail, or header-only when empty).
+			const isRunning =
+				group.status === undefined || group.status === "running";
+			const cap = isRunning ? RUNNING_TAIL_LINES : COMPLETED_TAIL_LINES;
+			let sectionLines: { kind: LineKind; text: string }[] = group.lines;
+			if (sectionLines.length > cap) {
+				const trimmed = sectionLines.length - cap;
+				// Per-stage trim notice appears INSIDE its own section (not a
+				// single global preamble) — SCENARIO-011.
+				sectionLines = [
+					{ kind: "trim", text: trimNoticeText(trimmed, group.stageLabel) },
+					...sectionLines.slice(-cap),
+				];
+			}
+			// Each line is themed per-kind (TUI) or raw (non-TUI) and indented
+			// TWO spaces under its header (SCENARIO-010).
+			for (const line of sectionLines) {
+				const rendered = themed
+					? themeLine(line.kind, line.text, theme)
+					: line.text;
+				sec.push(`  ${rendered}`);
+			}
+			return sec;
+		});
+
+		// Aggregate cap (TOTAL_SECTION_CAP): drop WHOLE leading sections (the
+		// oldest, typically completed) until the body fits, ALWAYS keeping at
+		// least the final (live / running) section. The budget counts each rendered
+		// line PLUS the blank separators actually EMITTED — there are
+		// (sections−1) of those, NOT one per section (the prior accounting counted a
+		// phantom trailing separator, inflating the budget by one).
+		const sectionLens = sections.map((s) => s.length);
+		let total =
+			sectionLens.reduce((sum, n) => sum + n, 0) + Math.max(0, sections.length - 1);
+		let start = 0;
+		while (start < sections.length - 1 && total > TOTAL_SECTION_CAP) {
+			total -= sectionLens[start]! + 1; // this section + the separator after it
+			start++;
+		}
+		const bodyLines: string[] = [];
+		for (let i = start; i < sections.length; i++) {
+			if (i > start) bodyLines.push("");
+			bodyLines.push(...sections[i]!);
+		}
+
+		onUpdate?.(bodyLines.join("\n"));
+	};
+
+	/** Render + emit the live body via `onUpdate`. Until the first structured
+	 *  `stage` event arrives the run is in its pre-stage window and the legacy
+	 *  rolling-tail body is emitted (preserving the AC-04/AC-05 + SCENARIO-015
+	 *  byte-clean contract); once a stage is known the per-stage section stack
+	 *  (SCENARIO-010..013) takes over. */
 	const flush = (): void => {
 		// The pending live buffer is included in the VISIBLE body (so the user
 		// sees in-flight typing) but is NOT committed to the transcript.
@@ -238,18 +478,15 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 				]
 			: [];
 		const visible = [...transcript, ...pending];
-		let display = visible;
-		if (visible.length > tailLines) {
-			const trimmed = visible.length - tailLines;
-			const notice: TranscriptLine = {
-				kind: "trim",
-				text: `… ${trimmed} earlier lines trimmed (full log saved at run end) …`,
-				stageId: currentStageId,
-				stageLabel: currentStageLabel,
-			};
-			display = [notice, ...visible.slice(-tailLines)];
+		if (visible.length === 0) {
+			onUpdate?.("");
+			return;
 		}
-		onUpdate?.(renderBody(display));
+		if (!stageReceived) {
+			flushRollingTail(visible);
+			return;
+		}
+		flushSectionStack(visible);
 	};
 
 	/** Committed transcript (the un-finalized live buffer is excluded). */

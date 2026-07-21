@@ -182,6 +182,30 @@ describe("render-layer Theme parity — REAL pi Theme proxy (Gap 2 / AC-05)", ()
 			expect(rendered).toContain("considering...");
 			expect(rendered).toMatch(ANSI);
 		});
+
+		it("per-stage block branch: tagged tail renders per-stage headers + status backgrounds via method-style theme.bg (no detached-`this` throw)", () => {
+			// Stage-tagged tail ⇒ the per-stage §1 branch (groupByStage). Each block
+		// header Text carries a status customBgFn that calls theme.bg(...) — must
+		// stay method-bound against the REAL class Theme (Gap 2 / AC-05 parity).
+			const tagged = {
+				summaryLines: ["## Summary", "done"],
+				transcriptTail: [
+					{ kind: "command" as const, text: "→ build", stageId: "impl", stageLabel: "Implementation" },
+					{ kind: "log" as const, text: "a tagged log line", stageId: "research", stageLabel: "Research" },
+				],
+				stages: [
+					{ id: "research", label: "Research", status: "ok" },
+					{ id: "impl", label: "Implementation", status: "failed" },
+				],
+			};
+			expect(() => withRealTheme((theme) => buildResultComponent(tagged, theme))).not.toThrow();
+			const rendered = withRealTheme((theme) =>
+				buildResultComponent(tagged, theme).render(120).join("\n"),
+			);
+			expect(rendered).toContain("Implementation");
+			expect(rendered).toContain("Research");
+			expect(rendered).toMatch(ANSI);
+		});
 	});
 
 	describe("dashboard.ts — packDashboardLines (SCENARIO-001/002)", () => {
