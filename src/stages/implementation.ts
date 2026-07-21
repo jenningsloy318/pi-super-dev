@@ -115,6 +115,30 @@ export function normalizeStringArray(v: unknown): string[] {
 	return [];
 }
 
+// §D auto-iterate convergence loop — per-phase green state + failure reasons
+// carried across outer iterations (the loop in stages/index.ts re-runs this
+// stage until allGreen). Without these, a re-run would re-attempt GREEN phases
+// (state-confusion churn); with them, green phases are skipped and a failed
+// phase's prior-iteration reasons are seeded into its next attempt 1.
+export interface PhaseStatusEntry {
+	id: string;
+	status: "green" | "failed";
+}
+export interface PhaseFailureEntry {
+	phaseId: string;
+	reasons: string[];
+}
+export function phaseStatusUpsert(arr: PhaseStatusEntry[], id: string, status: "green" | "failed"): void {
+	const i = arr.findIndex((p) => p.id === id);
+	if (i >= 0) arr[i] = { id, status };
+	else arr.push({ id, status });
+}
+export function lastFailuresUpsert(arr: PhaseFailureEntry[], phaseId: string, reasons: string[]): void {
+	const i = arr.findIndex((f) => f.phaseId === phaseId);
+	if (i >= 0) arr[i] = { phaseId, reasons };
+	else arr.push({ phaseId, reasons });
+}
+
 export const implementationStage: Stage = {
 	id: "implementation",
 	label: "Stage 9 — Implementation",
@@ -131,12 +155,27 @@ export const implementationStage: Stage = {
 			return { phasesCompleted: 0, totalPhases: 0, allGreen: false };
 		}
 		const setup = state.setup!;
+		// §D auto-iterate: carry per-phase green state + failure reasons from the
+		// PRIOR convergence iteration (state.implementation holds the last run's
+		// control). Green phases are skipped; a failed phase's prior reasons seed
+		// its next attempt 1 so iteration 2 targets the real failures.
+		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[] };
+		const phaseStatus: PhaseStatusEntry[] = Array.isArray(priorImpl.phaseStatus) ? priorImpl.phaseStatus.map((p) => ({ ...p })) : [];
+		const lastFailures: PhaseFailureEntry[] = Array.isArray(priorImpl.lastFailures) ? priorImpl.lastFailures.map((f) => ({ ...f, reasons: [...f.reasons] })) : [];
+		if (phaseStatus.length) ctx.log(`Implementation: resuming convergence iteration (${phaseStatus.filter((p) => p.status === "green").length}/${phases.length} phases already green)`);
 		let phasesCompleted = 0;
 		let allGreen = true;
 		const filesModified: string[] = [];
 
 		for (const [idx, phase] of phases.entries()) {
 			const phaseId = `phase-${pad(idx + 1)}`;
+			// §D: skip a phase already green in a prior convergence iteration (don't
+			// re-touch done work — the state-confusion churn §F fought).
+			if (phaseStatus.some((p) => p.id === phaseId && p.status === "green")) {
+				phasesCompleted++;
+				ctx.log(`Implementation ${phaseId} already green (prior convergence iteration) — skipping`);
+				continue;
+			}
 			let green = false;
 			let attemptErrors: string[] = [];
 			// AND-semantics (AC-03 → SCENARIO-011..015): the missing DELIVERABLE entries
@@ -223,6 +262,14 @@ export const implementationStage: Stage = {
 				// whether the tests are CONFIRMED-red or unverified.
 				const basePrompt = buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null);
 				const implParts: string[] = [basePrompt];
+				// §D: seed attempt 1 with the PRIOR convergence iteration's failure reasons
+				// so re-attempts target the real failures instead of resampling.
+				if (attempt === 1) {
+					const priorFail = lastFailures.find((f) => f.phaseId === phaseId);
+					if (priorFail?.reasons.length) {
+						implParts.push(`## Prior convergence-iteration failures — fix these\n${priorFail.reasons.map((r) => `- ${r}`).join("\n")}`);
+					}
+				}
 				if (attemptErrors.length) {
 					implParts.push(`## Previous attempt failed the build/test gate — fix these\n${attemptErrors.map((e) => `- ${e}`).join("\n")}`);
 				}
@@ -340,6 +387,8 @@ export const implementationStage: Stage = {
 				// both pass (the false-green killer, closed a second way).
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass) {
 					green = true;
+					phaseStatusUpsert(phaseStatus, phaseId, "green");
+					const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);
 					if (gate.pass) {
 						ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
 					} else {
@@ -356,6 +405,9 @@ export const implementationStage: Stage = {
 			// AC-04 → SCENARIO-008/009, review finding CR-MED). Never throws.
 			if (tracker) tracker.commitEnd("phase", phaseId);
 			if (!green) {
+				// §D: record the failure so the next convergence iteration targets it
+				phaseStatusUpsert(phaseStatus, phaseId, "failed");
+				lastFailuresUpsert(lastFailures, phaseId, [...attemptErrors, ...missingDeliverables.map((e) => `deliverable: ${e}`), ...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`)]);
 				ctx.log(`Implementation ${phaseId} failed after ${MAX_ATTEMPTS} attempts — terminating early`);
 				allGreen = false;
 				break;
@@ -370,6 +422,8 @@ export const implementationStage: Stage = {
 			totalPhases: phases.length,
 			allGreen,
 			filesModified,
+			phaseStatus,
+			lastFailures,
 			summary: allGreen ? `All ${phases.length} phases completed successfully` : `${phasesCompleted}/${phases.length} phases completed`,
 		};
 		if (ctx.budget.check()) {

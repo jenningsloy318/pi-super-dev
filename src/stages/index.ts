@@ -19,7 +19,7 @@
  *   docs ─► cleanup ─► branch[!blocked]→merge
  */
 
-import { task, sequence, branch, gate, gateValidator, noop } from "../nodes.ts";
+import { task, sequence, branch, gate, loop, gateValidator, noop } from "../nodes.ts";
 import type { ControlObj, PipelineState, Stage, StageContext, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
 import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
@@ -102,9 +102,16 @@ const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	return { pass: true, errors: [] };
 };
 
-/** Code review is approved when the merged verdict is Approved (with or without comments).
- *  (Predicate kept here for any pipeline-level checks; the verify-loop's own
- *  until/fix logic lives in src/stages/verify.ts.) */
+/** §D auto-iterate convergence loop (design report §D): re-run implementation
+ *  until all phases are green OR the convergence budget is exhausted. Combined
+ *  with the per-phase green-state carry in implementation.ts, a re-run SKIPS
+ *  already-green phases and re-attempts only the failed one(s), seeded with the
+ *  prior iteration's failure reasons. On exhaustion the run halts at the
+ *  `hasImplementation`/`canMerge` gates (partial status; resume is the human
+ *  recovery). Env-overridable via SUPER_DEV_MAX_CONVERGE_ITERS (default 2). */
+const MAX_CONVERGE_ITERS = Math.max(1, Number.parseInt(process.env.SUPER_DEV_MAX_CONVERGE_ITERS ?? "2", 10) || 2);
+const implAllGreen = (s: PipelineState) =>
+	((s.implementation as { allGreen?: boolean } | undefined)?.allGreen === true);
 
 // ─── Verify (Stage 10): unified review + fix loop ───────────────────────────
 // Extracted to src/stages/verify.ts. BOTH reviewers (code-review + adversarial)
@@ -135,7 +142,15 @@ const pipeline = sequence(
 		// judgment call whose findings flow forward to implementation/code-review.
 		// Blocking on it (the old fatal gate) aborted runs on a subjective verdict.
 		task(specReviewWriter),
-		task(implementationStage),
+		// §D auto-iterate convergence loop: re-run implementation until allGreen OR
+		// MAX_CONVERGE_ITERS exhausted (default 2). The per-phase green-state carry
+		// in implementation.ts skips already-green phases each iteration and seeds
+		// failed phases with the prior iteration's reasons. Budget-bounded via the
+		// while predicate; a throw inside the stage exits the loop (task → failed).
+		loop(
+			{ while: (s, c) => !implAllGreen(s) && c.budget.check(), times: MAX_CONVERGE_ITERS },
+			task(implementationStage),
+		),
 		// Verify (Stage 10) only runs when implementation actually produced phases;
 		// otherwise we'd burn spawns reviewing nothing. verifyNode = review (both
 		// code-review + adversarial reviewers → merge) → fix, looped until approved.
