@@ -38,14 +38,24 @@ describe("Phase 2 — userInput(text) sink pushes the tagged transcript line (AC
 		// RED today: `sink.userInput` is undefined → throws.
 		h.sink.userInput("focus on the auth bug");
 		const tail = h.getTranscript();
-		expect(tail).toContainEqual({ kind: "user-input", text: "📥 focus on the auth bug" });
+		expect(tail).toContainEqual({
+			kind: "user-input",
+			text: "📥 focus on the auth bug",
+			stageId: "setup",
+			stageLabel: "pre-stage",
+		});
 	});
 
 	it("userInput reaches transcriptTail() with the kind + 📥-prefixed text", () => {
 		const h = createLiveStream({});
 		h.sink.userInput("second input");
 		const tail = h.transcriptTail();
-		expect(tail.at(-1)).toEqual({ kind: "user-input", text: "📥 second input" });
+		expect(tail.at(-1)).toEqual({
+			kind: "user-input",
+			text: "📥 second input",
+			stageId: "setup",
+			stageLabel: "pre-stage",
+		});
 	});
 
 	it("preserves input order across multiple userInput calls", () => {

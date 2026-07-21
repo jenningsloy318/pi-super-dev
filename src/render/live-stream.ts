@@ -35,12 +35,27 @@ import type { LineKind } from "./stream-theme.js";
 /**
  * One committed transcript entry. `kind` is the classified content taxonomy
  * value; `text` is the RAW (un-themed, un-indented) line text — the disk log
- * and every non-TUI body render this field byte-for-byte.
+ * and every non-TUI body render this field byte-for-byte. `stageId` /
+ * `stageLabel` (AC-01 / SCENARIO-001..004) record which pipeline stage the
+ * line was emitted under; they are stamped at every push site from the
+ * factory's `currentStageId` / `currentStageLabel`.
  */
-export type TranscriptLine = { kind: LineKind; text: string };
+export type TranscriptLine = {
+	kind: LineKind;
+	text: string;
+	stageId: string;
+	stageLabel: string;
+};
 
-/** The minimal sink surface the factory owns (phase / log / text). The
- *  optional `stage` dashboard event stays in `extension.ts`. */
+/** Structured dashboard `stage` event payload — the ONLY source the sink
+ *  reads stage identity from (never the human-readable `▶ Stage N` label). */
+export interface StageInfo {
+	id: string;
+	label: string;
+	status?: string;
+}
+
+/** The minimal sink surface the factory owns (phase / log / text / stage). */
 export interface LiveStreamSink {
 	phase(label: string): void;
 	log(message: string): void;
@@ -50,6 +65,14 @@ export interface LiveStreamSink {
 	 *  through transcriptTail() → buildResultComponent → renderResult unchanged
 	 *  (same tagged-kind path as phase/thinking/trim). */
 	userInput(text: string): void;
+	/** AC-01 / SCENARIO-004: set the current stage from the STRUCTURED dashboard
+	 *  `stage` event (info.id is canonical — never parsed off the `▶ Stage N`
+	 *  label). ALSO re-tags the most-recent transcript entry when it is a `phase`
+	 *  line whose label matches info.label: control-flow emits `phase` strictly
+	 *  BEFORE `stage:{running}` (research RESOLVED-1), so without this sink-side
+	 *  correction that phase line would inherit the PREVIOUS stage. Only the
+	 *  single most-recent matching phase line is touched. */
+	stage(info: StageInfo): void;
 }
 
 /** Options for {@link createLiveStream}. */
@@ -108,10 +131,22 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	const transcript: TranscriptLine[] = [];
 	let live = "";
 
-	/** Commit any pending live buffer as a `{thinking}` line (SCENARIO-008). */
+	// AC-01 / SCENARIO-001: the stage the sink is currently emitting under.
+	// Defaults to the sentinel pre-stage until the first structured `stage`
+	// event arrives (RESOLVED-1: resolved from info.id, never label parsing).
+	let currentStageId = "setup";
+	let currentStageLabel = "pre-stage";
+
+	/** Commit any pending live buffer as a `{thinking}` line (SCENARIO-008).
+	 *  Stamps the CURRENT stage tag onto the committed entry (AC-01). */
 	const finalizeLive = (): void => {
 		if (live) {
-			transcript.push({ kind: "thinking", text: live });
+			transcript.push({
+				kind: "thinking",
+				text: live,
+				stageId: currentStageId,
+				stageLabel: currentStageLabel,
+			});
 			live = "";
 		}
 	};
@@ -120,14 +155,24 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// SCENARIO-008: phase marker carries the ▶ prefix text.
 		phase: (label: string): void => {
 			finalizeLive();
-			transcript.push({ kind: "phase", text: `▶ ${label}` });
+			transcript.push({
+				kind: "phase",
+				text: `▶ ${label}`,
+				stageId: currentStageId,
+				stageLabel: currentStageLabel,
+			});
 		},
 		// SCENARIO-008: log is classified by the single classifyLine authority;
 		// the RAW message is stored as text (no leading indent — classification
 		// trims leading whitespace itself).
 		log: (message: string): void => {
 			finalizeLive();
-			transcript.push({ kind: classifyLine(message), text: message });
+			transcript.push({
+				kind: classifyLine(message),
+				text: message,
+				stageId: currentStageId,
+				stageLabel: currentStageLabel,
+			});
 		},
 		// Live (typing) buffer — NOT committed until finalizeLive().
 		text: (partial: string): void => {
@@ -138,7 +183,34 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// the `📥 `-prefixed raw text so it reaches diskLogText + themed flush.
 		userInput: (text: string): void => {
 			finalizeLive();
-			transcript.push({ kind: "user-input", text: `📥 ${text}` });
+			transcript.push({
+				kind: "user-input",
+				text: `📥 ${text}`,
+				stageId: currentStageId,
+				stageLabel: currentStageLabel,
+			});
+		},
+		// AC-01 / SCENARIO-004: set the current stage from the STRUCTURED
+		// dashboard `stage` event (info.id is canonical — never parsed off the
+		// `▶ Stage N` label). ALSO re-tags the most-recent transcript entry when
+		// it is a `phase` line whose label matches info.label: control-flow emits
+		// `phase` strictly BEFORE `stage:{running}` (research RESOLVED-1), so
+		// without this sink-side correction that phase line would inherit the
+		// PREVIOUS stage. Only the single most-recent matching phase line is
+		// touched — older phase lines are left alone.
+		stage: (info: StageInfo): void => {
+			currentStageId = info.id;
+			currentStageLabel = info.label;
+			const last = transcript[transcript.length - 1];
+			if (
+				last &&
+				last.kind === "phase" &&
+				last.text.startsWith("▶ ") &&
+				last.text.slice(2) === info.label
+			) {
+				last.stageId = info.id;
+				last.stageLabel = info.label;
+			}
 		},
 	};
 
@@ -155,7 +227,16 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	const flush = (): void => {
 		// The pending live buffer is included in the VISIBLE body (so the user
 		// sees in-flight typing) but is NOT committed to the transcript.
-		const pending: TranscriptLine[] = live ? [{ kind: "thinking", text: live }] : [];
+		const pending: TranscriptLine[] = live
+			? [
+					{
+						kind: "thinking",
+						text: live,
+						stageId: currentStageId,
+						stageLabel: currentStageLabel,
+					},
+				]
+			: [];
 		const visible = [...transcript, ...pending];
 		let display = visible;
 		if (visible.length > tailLines) {
@@ -163,6 +244,8 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 			const notice: TranscriptLine = {
 				kind: "trim",
 				text: `… ${trimmed} earlier lines trimmed (full log saved at run end) …`,
+				stageId: currentStageId,
+				stageLabel: currentStageLabel,
 			};
 			display = [notice, ...visible.slice(-tailLines)];
 		}

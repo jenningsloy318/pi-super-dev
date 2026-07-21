@@ -68,7 +68,7 @@ describe("AC-04 sink-layer kind tagging (SCENARIO-008)", () => {
 		const h = createLiveStream({});
 		h.sink.phase("Requirements");
 		expect(h.getTranscript()).toEqual([
-			{ kind: "phase", text: "▶ Requirements" },
+			{ kind: "phase", text: "▶ Requirements", stageId: "setup", stageLabel: "pre-stage" },
 		]);
 	});
 
@@ -76,7 +76,7 @@ describe("AC-04 sink-layer kind tagging (SCENARIO-008)", () => {
 		const h = createLiveStream({});
 		h.sink.log("→ npm install");
 		expect(h.getTranscript()).toEqual([
-			{ kind: "command", text: "→ npm install" },
+			{ kind: "command", text: "→ npm install", stageId: "setup", stageLabel: "pre-stage" },
 		]);
 	});
 
@@ -90,13 +90,13 @@ describe("AC-04 sink-layer kind tagging (SCENARIO-008)", () => {
 	it("log(▶ marker) classifies as phase, not as a plain log", () => {
 		const h = createLiveStream({});
 		h.sink.log("▶ Research");
-		expect(h.getTranscript()[0]).toEqual({ kind: "phase", text: "▶ Research" });
+		expect(h.getTranscript()[0]).toEqual({ kind: "phase", text: "▶ Research", stageId: "setup", stageLabel: "pre-stage" });
 	});
 
 	it("log(plain message) classifies as log", () => {
 		const h = createLiveStream({});
 		h.sink.log("doing some work");
-		expect(h.getTranscript()[0]).toEqual({ kind: "log", text: "doing some work" });
+		expect(h.getTranscript()[0]).toEqual({ kind: "log", text: "doing some work", stageId: "setup", stageLabel: "pre-stage" });
 	});
 
 	it("log(success marker) classifies as log-success", () => {
@@ -122,7 +122,7 @@ describe("AC-04 sink-layer kind tagging (SCENARIO-008)", () => {
 		h.sink.text("thinking about it...");
 		h.finalizeLive();
 		expect(h.getTranscript()).toEqual([
-			{ kind: "thinking", text: "thinking about it..." },
+			{ kind: "thinking", text: "thinking about it...", stageId: "setup", stageLabel: "pre-stage" },
 		]);
 	});
 
@@ -133,8 +133,8 @@ describe("AC-04 sink-layer kind tagging (SCENARIO-008)", () => {
 		h.sink.text("part two");
 		h.finalizeLive();
 		expect(h.getTranscript()).toEqual([
-			{ kind: "thinking", text: "part one" },
-			{ kind: "thinking", text: "part two" },
+			{ kind: "thinking", text: "part one", stageId: "setup", stageLabel: "pre-stage" },
+			{ kind: "thinking", text: "part two", stageId: "setup", stageLabel: "pre-stage" },
 		]);
 	});
 
@@ -196,7 +196,9 @@ describe("AC-04 rolling tail + trim notice (SCENARIO-009)", () => {
 		h.flush();
 		const lines = cap.bodies.at(-1)!.split("\n");
 		expect(lines).toEqual(["▶ Spec", "still typing"]);
-		expect(h.getTranscript()).toEqual([{ kind: "phase", text: "▶ Spec" }]);
+		expect(h.getTranscript()).toEqual([
+			{ kind: "phase", text: "▶ Spec", stageId: "setup", stageLabel: "pre-stage" },
+		]);
 	});
 });
 
@@ -317,17 +319,17 @@ describe("AC-06 transcriptTail carries kinds end-to-end (SCENARIO-012/013)", () 
 		for (let i = 0; i < 60; i++) h.sink.log(`line ${i}`);
 		const tail = h.transcriptTail();
 		expect(tail).toHaveLength(50);
-		expect(tail[0]).toEqual({ kind: "log", text: "line 10" });
-		expect(tail[49]).toEqual({ kind: "log", text: "line 59" });
+		expect(tail[0]).toEqual({ kind: "log", text: "line 10", stageId: "setup", stageLabel: "pre-stage" });
+		expect(tail[49]).toEqual({ kind: "log", text: "line 59", stageId: "setup", stageLabel: "pre-stage" });
 	});
 
 	it("honours an explicit tail size", () => {
 		const h = createLiveStream({});
 		for (let i = 0; i < 10; i++) h.sink.log(`line ${i}`);
 		expect(h.transcriptTail(3)).toEqual([
-			{ kind: "log", text: "line 7" },
-			{ kind: "log", text: "line 8" },
-			{ kind: "log", text: "line 9" },
+			{ kind: "log", text: "line 7", stageId: "setup", stageLabel: "pre-stage" },
+			{ kind: "log", text: "line 8", stageId: "setup", stageLabel: "pre-stage" },
+			{ kind: "log", text: "line 9", stageId: "setup", stageLabel: "pre-stage" },
 		]);
 	});
 

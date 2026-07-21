@@ -85,6 +85,8 @@ describe("Phase 2 — push() ACK surfaces in TUI mode (AC-04 / SCENARIO-008 / SC
 		expect(stream.getTranscript()).toContainEqual({
 			kind: "user-input",
 			text: "📥 steer toward tests",
+			stageId: "setup",
+			stageLabel: "pre-stage",
 		});
 	});
 
