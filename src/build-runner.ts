@@ -114,8 +114,14 @@ export function cargoMetadataTimeoutMs(): number {
 	return DEFAULT_CARGO_METADATA_TIMEOUT_MS;
 }
 
-/** Dedupe a list of package names, preserving first-seen order. */
-function dedupePreservingOrder(items: string[]): string[] {
+/**
+ * Dedupe a list of strings, preserving first-seen order.
+ *
+ * Exported so {@link ChangeTracker} (src/tracking.ts) reuses the SAME
+ * first-seen dedup when UNIONing committed-diff paths with porcelain
+ * untracked paths (spec-11 AC-01 single source of truth — no duplication).
+ */
+export function dedupePreservingOrder(items: string[]): string[] {
 	const seen = new Set<string>();
 	const out: string[] = [];
 	for (const it of items) {
