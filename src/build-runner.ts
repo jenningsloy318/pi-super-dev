@@ -1833,6 +1833,64 @@ function loadTestList(
  * @param opts         Optional timeout/signal envelope.
  * @returns { pass, missing, ran }. Never throws.
  */
+
+/**
+ * Outcome of {@link computeChangeGate} — the git cross-check GATE verdict.
+ * `claimedNotChanged` is the EXHAUSTIVE list of created/modified claims git
+ * did NOT show (fed into the next implementer retry, SCENARIO-015).
+ */
+export interface ChangeGateResult {
+	pass: boolean;
+	claimedNotChanged: string[];
+}
+
+/**
+ * Compute the git cross-check GATE verdict from a tracker `ChangeRecord` (the
+ * phase end-record carrying the claimed-vs-actual cross-check). Co-located with
+ * the other deterministic gates. spec-11 AC-07, AC-08 → SCENARIO-013/014/016/017.
+ *
+ * Contract (the false-green killer, AC-08):
+ *   - `pass === false` iff `rec` is a non-null record with `!gitUnavailable`
+ *     AND a `crossCheck.claimedNotChanged` of length > 0 — a created/modified
+ *     claim git does NOT show.
+ *   - `changedNotClaimed` (under-reporting) is ADVISORY-only and NEVER affects
+ *     `pass` (SCENARIO-014).
+ *   - `gitUnavailable` (or no record → `rec == null`) → `pass = true` — never
+ *     block on infrastructure (SCENARIO-017).
+ *   - No claimed changes → empty `claimedNotChanged` → `pass = true`
+ *     (SCENARIO-016, trivial pass).
+ *   - NEVER throws (defensive against a malformed/untrusted record). Accepts
+ *     `unknown` so the wiring layer may pass a record of any shape; a record
+ *     missing the expected fields collapses to a trivial pass (no false block).
+ *
+ * @param rec The phase end-record (or `null` when no tracker / never ended).
+ * @returns `{ pass, claimedNotChanged }`. Never throws.
+ */
+export function computeChangeGate(rec: unknown): ChangeGateResult {
+	try {
+		if (rec == null || typeof rec !== "object") {
+			return { pass: true, claimedNotChanged: [] };
+		}
+		const r = rec as { gitUnavailable?: unknown; crossCheck?: unknown };
+		// Infrastructure could not be queried → cross-check unreliable → no block.
+		if (r.gitUnavailable) {
+			return { pass: true, claimedNotChanged: [] };
+		}
+		const cc = r.crossCheck;
+		if (cc == null || typeof cc !== "object") {
+			return { pass: true, claimedNotChanged: [] };
+		}
+		const claimedRaw = (cc as { claimedNotChanged?: unknown }).claimedNotChanged;
+		const claimed = Array.isArray(claimedRaw)
+			? claimedRaw.filter((x): x is string => typeof x === "string")
+			: [];
+		return { pass: claimed.length === 0, claimedNotChanged: claimed };
+	} catch {
+		// Defensive — never throw on a malformed/untrusted record.
+		return { pass: true, claimedNotChanged: [] };
+	}
+}
+
 export function runDeliverableCheck(
 	cwd: string,
 	deliverables: DeliverableContract | null | undefined,

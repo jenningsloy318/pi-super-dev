@@ -42,7 +42,10 @@ const mock = vi.hoisted(() => ({ implControl: null as Record<string, unknown> | 
 // Greenfield-safe oracle stack: RED oracle "unknown" (no re-prompts), build
 // gate clean PASS, deliverable check clean PASS. The ONLY variable is the
 // implementer's structured change control (scripted per-test via mock.implControl).
-vi.mock("../src/build-runner.ts", () => ({
+vi.mock("../src/build-runner.ts", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	return {
+		...actual,
 	runRedCheck: (): string => "unknown",
 	runBuildGate: () => ({
 		pass: true,
@@ -56,7 +59,8 @@ vi.mock("../src/build-runner.ts", () => ({
 	}),
 	runDeliverableCheck: () => ({ pass: true, missing: [] as string[], ran: [] as string[] }),
 	resetDeliverableCheckCache: () => {},
-}));
+	};
+});
 
 // Mock the only other filesystem-writing side effect (the summary render) so
 // the suite is fully disk-free and deterministic.

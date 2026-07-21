@@ -61,7 +61,10 @@ const mock = vi.hoisted(() => ({
 	deliverableDefault: { pass: true, missing: [] as string[], ran: [] as string[] },
 }));
 
-vi.mock("../src/build-runner.ts", () => ({
+vi.mock("../src/build-runner.ts", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	return {
+		...actual,
 	// Greenfield-safe RED oracle → no re-prompts, proceeds immediately.
 	runRedCheck: (): string => "unknown",
 	runBuildGate: () => {
@@ -75,7 +78,8 @@ vi.mock("../src/build-runner.ts", () => ({
 		return { ...r };
 	},
 	resetDeliverableCheckCache: () => {},
-}));
+	};
+});
 
 // Mock the only other filesystem-writing side effect (the summary render) so
 // the suite is fully disk-free and deterministic.

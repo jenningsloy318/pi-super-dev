@@ -1,0 +1,844 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-21T01:47:05.976Z",
+      "agent": "requirements",
+      "data": {
+        "title": "Git-snapshot change-tracker with per-stage/per-phase bracketing and a claimed-vs-actual cross-check gate",
+        "date": "2026-07-21",
+        "type": "enhancement",
+        "priority": "high",
+        "executiveSummary": "Replace the advisory flat `filesModified[]` with a structured `{filesCreated,filesModified,filesDeleted}` set and a new `src/tracking.ts` ChangeTracker that brackets EVERY stage (start+end) and EVERY phase (start+end) with a git snapshot, persisting an append-only `<specDir>/change-tracker.jsonl`. A git cross-check gate is AND-ed into phase-green (mirroring spec-10's deliverable AND): a phase that claims to create/modify a file git does not show changed hard-fails, closing the false-green root cause a second way. Tracking and spec-10 deliverable assertions collapse into one enforcement path (claimed.filesCreated auto-populates requireFiles); the whole subsystem never throws and degrades when git is unavailable.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "New `src/tracking.ts` exports a `ChangeTracker` constructed with `(specDir, worktreePath)`. `begin(unit: \"stage\"|\"phase\", id)` snapshots `git -C <wt> rev-parse HEAD` + `git -C <wt> status --porcelain` as the baseline; `end(unit, id, claimed?: {filesCreated,filesModified,filesDeleted})` re-snapshots and computes the DELTA as `git -C <wt> diff --name-status <beginHead>` (committed) UNION `git -C <wt> status --porcelain` (uncommitted/untracked), classifying into `gitActual:{created(A/+untracked), modified(M), deleted(D)}`, then CROSS-CHECKS vs `claimed` into `{claimedNotChanged[], changedNotClaimed[]}` and appends ONE jsonl line to `<specDir>/change-tracker.jsonl`. Reuses the existing `spawnSync` + `dedupePreservingOrder` git-union patterns from `src/build-runner.ts` (`touchedFilePaths`); no new runtime deps."
+          },
+          {
+            "id": "AC-02",
+            "statement": "ChangeTracker is NEVER-throws: every git op is try/caught; on git failure it records `{gitUnavailable:true}` and returns a non-blocking `ChangeRecord` (verdict continues), so infrastructure absence never aborts a run. Conservative parse: a claimed file counts as `claimedNotChanged` only when git clearly shows no change."
+          },
+          {
+            "id": "AC-03",
+            "statement": "Unit tests (mocked git) cover: created/modified/deleted classification; `claimedNotChanged` vs `changedNotClaimed`; git-unavailable → record-and-continue + non-blocking; begin/end bracketing emits start+end records; append-only jsonl (multiple `end` events → multiple lines, nothing overwritten)."
+          },
+          {
+            "id": "AC-04",
+            "statement": "ALL stages are bracketed (`tracker.begin(\"stage\", stageId)` / `tracker.end(\"stage\", stageId, claimed?)`) and implementation phases are ADDITIONALLY bracketed (`tracker.begin(\"phase\", phaseId)` before the attempt loop / `tracker.end(\"phase\", phaseId, claimedFromImplementer)` after). Implemented via a minimal-touch seam — PREFERRED an `ctx.events` \"stage\"/\"phase\" subscription or a runner-level wrapper (events already emitted in `src/nodes.ts` lines 98/126/127) over editing nodes.ts/workflow.ts/pipeline.ts internals. A synthetic-pipeline test asserts change-tracker.jsonl contains stage-start/stage-end for every stage AND phase-start/phase-end for the implementation stage, in correct nested order."
+          },
+          {
+            "id": "AC-05",
+            "statement": "Tracker is threaded via ONE consistent mechanism mirroring `activeRun`/`setActiveRun`/`getActiveRun` in `src/extension.ts` (module-level per-run singleton set on execute() entry from `state.setup` providing `specDir`+`worktreePath`, cleared in the same finally). No leak between runs."
+          },
+          {
+            "id": "AC-06",
+            "statement": "`buildImplementPrompt` (src/prompts.ts ~line 120) and the review/fix prompt (~line 140) change their output contract from `filesModified (array)` to `filesCreated (array), filesModified (array), filesDeleted (array)` with the instruction: \"Report the exact files you created/modified/deleted — these are git-cross-checked; claiming a file you didn't change fails the phase.\" implementation.ts (~line 159) parses the structured set but STILL accepts a legacy flat `filesModified` array (backward-tolerant)."
+          },
+          {
+            "id": "AC-07",
+            "statement": "A `changeGate` is computed in `src/stages/implementation.ts` after `runBuildGate` (~line 165) and `runDeliverableCheck` (~line 185). `changeGate.pass === false` iff `claimedNotChanged` is non-empty (a created/modified claim git does NOT show) — the false-green killer; `changedNotClaimed` is advisory-only (logged, never fails). Phase GREEN (line 194) becomes `(gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass`. A `claimedNotChanged` miss is fed into the next implementer attempt under a `## Claimed changes not present in git — actually create/wire these` section via the existing attemptErrors/missingDeliverables retry channel, respecting `MAX_ATTEMPTS`. Never throws; git-unavailable → `changeGate.pass = true`."
+          },
+          {
+            "id": "AC-08",
+            "statement": "Regression test (mirroring `tests/implementation.test.ts` / `build-runner-deliverable-check.test.ts` patterns): a phase returning `claimed:{filesCreated:[X]}` where git shows NO new file → `changeGate.pass === false` → phase is NOT green, even though the build gate and deliverable check pass. The stockfan Phase-5/6 false-green (claimed a file that was never created/wired) becomes impossible."
+          },
+          {
+            "id": "AC-09",
+            "statement": "Spec-10 bridge: before `runDeliverableCheck` is called, `claimed.filesCreated` is UNIONed with any spec-declared `deliverables.requireFiles`, so a file a phase claims to have created MUST exist — tracking and deliverable assertions reinforce rather than diverge."
+          },
+          {
+            "id": "AC-10",
+            "statement": "The phase end-record's `gitActual` is surfaced as evidence: a `📝 N files changed (C/M/D)` line in the implementation summary, and the flat `filesModified` accumulation (implementation.ts lines 92/159/219) is derived from the structured set so the existing summary writer (prompts.ts line 127) keeps working."
+          },
+          {
+            "id": "AC-11",
+            "statement": "`npm run typecheck` (tsc --noEmit) is clean and `npm test` (vitest run) is ALL green — existing suite plus new tracker/cross-check/structured-changes tests — with NO regression to runRedCheck, runDeliverableCheck, npm in-scope classification, scope-aware cargo gate, themed stream, mid-run input injection, dashboard, or real-theme parity (`tests/stream-theme-class-theme.test.ts`, `tests/render/real-theme-parity.test.ts` stay green). pi Theme methods are called method-style, NEVER destructured."
+          }
+        ],
+        "nonFunctional": [
+          "Never-throw invariant: the tracker, all git ops, the cross-check, and the changeGate must degrade gracefully — git unavailable → record `{gitUnavailable:true}` and continue; parse ambiguity → conservative (treat claimed as not-changed only when git clearly shows no change); the subsystem sits in the hot path of EVERY run and must never abort or widen a phase's GREEN.",
+          "Performance: git snapshots are bounded `spawnSync` calls (`rev-parse`, `status --porcelain`, `diff --name-status`) under the existing `resolveTimeoutMs` envelope; one append-only jsonl record per begin/end event (no rewrites, no cross-phase caching that could go stale); N stages × M phases yields bounded, linear I/O. No new runtime dependencies.",
+          "Backward compatibility: legacy flat `filesModified` arrays from older agents are accepted; non-git worktrees are recorded as `gitUnavailable` and unblock (`changeGate.pass = true`); phases with no claimed changes trivially pass; no changes to backend selection (subprocess/session) or control-flow (branch/parallel/loop) semantics.",
+          "Security/hygiene: the tracker writes only into `specDir`; git is spawned with discrete argv (`-C <wt> ...`, consistent with build-runner.ts Gap-4 hygiene) so file paths from agents cannot inject shell; the cross-check is one-directional (the AGENT claims, the framework verifies) — the framework never auto-generates claimed changes from git."
+        ],
+        "openQuestions": [
+          "Threading mechanism: confirm the module-level singleton mirroring `activeRun` (preferred, minimal touch) over a RunOptions/StageContext field — and verify behavior if two super-dev runs ever overlap in one process (today runs are serialized, but confirm the singleton is cleared in the execute() finally).",
+          "Record granularity: should `begin` events be persisted as `{event:\"start\"}` lines too (complete bracket trace) or only `end` records (smaller file)? The spec recommends start+end; confirm acceptable jsonl size for very long multi-phase runs.",
+          "Cross-check scope vs spec-declared deliverables: the spec says claimed-changes is one-directional enforcement — confirm that UNIONing `claimed.filesCreated` into `requireFiles` does not create a circular double-count (an agent that omits a required file the spec already declared is still caught by the spec-declared requireFiles).",
+          "Dashboard surfacing: is the `📝 N files changed (C/M/D)` line sufficient in the implementation summary, or does the dashboard also need a dedicated change-tracker panel consuming change-tracker.jsonl? (Listed as a future surfacing concern; out of scope for this cut unless confirmed.)"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-21T01:50:30.967Z",
+      "agent": "bdd",
+      "data": {
+        "title": "Git Change-Tracker Cross-Check Gate",
+        "date": "2026-07-21",
+        "source": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/01-requirements.md",
+        "features": [
+          {
+            "name": "ChangeTracker Module — baseline, delta, cross-check, durable file",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "Baseline captured when a stage or phase begins",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "A change tracker initialized for a worktree under version control",
+                "when": "tracking begins for a unit (a stage or a phase)",
+                "then": "the current git revision and the working-tree state are captured as the baseline for that unit",
+                "andClauses": [
+                  "And that baseline is held pending until the unit ends"
+                ]
+              },
+              {
+                "id": "002",
+                "title": "Actual changes are computed and classified at unit end",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "A unit whose baseline was captured at its start",
+                "when": "the unit ends along with the set of file changes the agent claimed",
+                "then": "the set of files actually changed since the baseline is computed from git",
+                "andClauses": [
+                  "And each changed file is classified as created, modified, or deleted",
+                  "And committed changes and uncommitted or untracked changes are both included"
+                ]
+              },
+              {
+                "id": "003",
+                "title": "Cross-check separates vacuous claims from unreported edits",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "A unit ends with a structured set of claimed file changes",
+                "when": "the claimed set is cross-checked against what git shows",
+                "then": "files the unit claimed to change but that git shows unchanged are flagged as claimed-but-not-changed",
+                "andClauses": [
+                  "And files git shows changed that the unit did not report are flagged as changed-but-not-claimed"
+                ]
+              },
+              {
+                "id": "004",
+                "title": "Every event is appended to a single durable tracking file",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "A run that has produced several begin and end events",
+                "when": "each event is recorded",
+                "then": "one line is appended per event to a single durable file located in the spec directory",
+                "andClauses": [
+                  "And no previously written line is ever overwritten or lost",
+                  "And each end record carries the actual changes, the claimed changes, the cross-check flags, and a verdict"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Never-Throw Resilience — git unavailable and ambiguous parses",
+            "scenarios": [
+              {
+                "id": "005",
+                "title": "Git unavailability is recorded without aborting the run",
+                "acRef": "AC-02",
+                "priority": "critical",
+                "given": "A worktree where git is not available or a git command fails",
+                "when": "the tracker attempts a snapshot",
+                "then": "the tracker records that git is unavailable",
+                "andClauses": [
+                  "And the run continues without throwing",
+                  "And the phase is not blocked by the infrastructure failure"
+                ]
+              },
+              {
+                "id": "006",
+                "title": "Ambiguous parse resolved conservatively",
+                "acRef": "AC-02",
+                "priority": "medium",
+                "given": "A claimed file whose git status cannot be clearly resolved",
+                "when": "the cross-check classifies the claim",
+                "then": "the claim is treated as not-changed only when git clearly shows no change",
+                "andClauses": [
+                  "And no false failure is introduced by parsing ambiguity"
+                ]
+              },
+              {
+                "id": "007",
+                "title": "Begin and end events bracket a unit completely",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "A unit that has a captured baseline",
+                "when": "the unit ends",
+                "then": "a start record and an end record are both present in the tracking file",
+                "andClauses": [
+                  "And multiple end events across a run each append their own line without collision"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Stage and Phase Bracketing — every stage, nested phases",
+            "scenarios": [
+              {
+                "id": "008",
+                "title": "Every stage produces a start and an end record",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "A pipeline composed of several stages",
+                "when": "the pipeline runs",
+                "then": "each stage contributes a stage-start record followed by a stage-end record in the tracking file"
+              },
+              {
+                "id": "009",
+                "title": "Implementation phases are nested inside their stage records in order",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "An implementation stage that executes several phases",
+                "when": "the stage runs",
+                "then": "phase-start and phase-end records appear nested between the stage-start and stage-end records in the correct order",
+                "andClauses": [
+                  "And each phase bracket wraps its attempt loop"
+                ]
+              },
+              {
+                "id": "010",
+                "title": "Tracker state is scoped to a single run",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "A tracker established as a per-run singleton at run entry using the spec directory and worktree path",
+                "when": "the run ends",
+                "then": "the tracker is cleared",
+                "andClauses": [
+                  "And no tracking state leaks into a subsequent run"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Structured Change Reporting — claimed create/modify/delete",
+            "scenarios": [
+              {
+                "id": "011",
+                "title": "Code-mutating agents report created, modified, and deleted files",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "An implementer or review/fix agent that changes files",
+                "when": "the agent reports its changes",
+                "then": "it reports separate sets of created, modified, and deleted files",
+                "andClauses": [
+                  "And the report is flagged as subject to git cross-check",
+                  "And claiming a file the agent did not change is stated to fail the phase"
+                ]
+              },
+              {
+                "id": "012",
+                "title": "Legacy flat change list is still accepted",
+                "acRef": "AC-06",
+                "priority": "medium",
+                "given": "An agent that returns only a legacy flat list of modified files",
+                "when": "the structured set is parsed",
+                "then": "the legacy list is accepted and normalized without error",
+                "andClauses": [
+                  "And the run does not regress for agents that have not adopted the structured contract"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Git Cross-Check Gate — false-green killer",
+            "scenarios": [
+              {
+                "id": "013",
+                "title": "Phase stays not-green when a claimed file was never changed",
+                "acRef": "AC-08",
+                "priority": "critical",
+                "given": "A phase whose agent claimed to create or modify a file that was never created or wired",
+                "when": "git shows that file was not changed",
+                "then": "the change gate fails",
+                "andClauses": [
+                  "And the phase is not green even when the build gate and deliverable check both pass",
+                  "And the historical false-green where a phase claims a file that never exists becomes impossible"
+                ]
+              },
+              {
+                "id": "014",
+                "title": "Unreported edits never fail a phase",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "A phase where git shows edits the agent did not report",
+                "when": "the cross-check runs",
+                "then": "the unreported edits are logged as advisory only",
+                "andClauses": [
+                  "And the change gate is not failed by under-reporting"
+                ]
+              },
+              {
+                "id": "015",
+                "title": "Missing claimed changes trigger a targeted retry within budget",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "A phase that failed the change gate because of claimed-but-not-changed files",
+                "when": "the phase retries",
+                "then": "the missing files are surfaced to the next attempt as changes that must actually be created or wired",
+                "andClauses": [
+                  "And the retry respects the maximum attempt count"
+                ]
+              },
+              {
+                "id": "016",
+                "title": "Phase with no claimed changes passes the gate trivially",
+                "acRef": "AC-07",
+                "priority": "low",
+                "given": "A phase that claims no created or modified files",
+                "when": "the change gate is evaluated",
+                "then": "the gate passes without blocking"
+              },
+              {
+                "id": "017",
+                "title": "Gate does not block when git infrastructure is unavailable",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "A phase evaluated where git is unavailable",
+                "when": "the change gate is computed",
+                "then": "the gate passes so the phase is not blocked by infrastructure failure",
+                "andClauses": [
+                  "And the gate never throws"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Deliverable Assertion Bridge — tracking reinforces spec-10",
+            "scenarios": [
+              {
+                "id": "018",
+                "title": "Claimed created files are enforced as required deliverables",
+                "acRef": "AC-09",
+                "priority": "high",
+                "given": "A phase that claims to have created a set of files",
+                "when": "the deliverable check is prepared",
+                "then": "the claimed created files are unioned with any spec-declared required files",
+                "andClauses": [
+                  "And each claimed created file must exist or the deliverable check fails"
+                ]
+              },
+              {
+                "id": "019",
+                "title": "Actual changes are surfaced as concise run evidence",
+                "acRef": "AC-10",
+                "priority": "medium",
+                "given": "A phase whose end record captured the real git changes",
+                "when": "the run produces its summary",
+                "then": "a concise count of created, modified, and deleted files is surfaced as evidence",
+                "andClauses": [
+                  "And the existing summary consumers continue to work from the structured set"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Quality and Non-Regression — typecheck, tests, theme parity",
+            "scenarios": [
+              {
+                "id": "020",
+                "title": "Typecheck and the full suite remain green with no regressions",
+                "acRef": "AC-11",
+                "priority": "critical",
+                "given": "The repository after the change tracker is integrated",
+                "when": "the typecheck and the full test suite run",
+                "then": "the typecheck is clean and every test passes",
+                "andClauses": [
+                  "And the red check, deliverable check, npm in-scope classification, themed stream, mid-run input, dashboard, and theme-parity behaviors do not regress",
+                  "And the pi Theme methods are called method-style and never destructured"
+                ]
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "ChangeTracker: begin snapshots baseline; end computes git delta (committed UNION uncommitted), classifies created/modified/deleted, cross-checks vs claimed into claimedNotChanged/changedNotClaimed, appends one jsonl line; reuses spawnSync + dedupePreservingOrder git-union patterns.",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002",
+              "SCENARIO-003",
+              "SCENARIO-004"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "Never-throws: every git op try/caught; git failure records {gitUnavailable:true} and returns a non-blocking record; conservative parse treats a claim as not-changed only when git clearly shows no change.",
+            "scenarios": [
+              "SCENARIO-005",
+              "SCENARIO-006"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "Unit tests (mocked git) cover classification, claimedNotChanged vs changedNotClaimed, git-unavailable record-and-continue, begin/end bracketing emits start+end records, append-only jsonl.",
+            "scenarios": [
+              "SCENARIO-004",
+              "SCENARIO-005",
+              "SCENARIO-007"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "All stages bracketed (stage start+end); implementation phases additionally bracketed (phase start+end) via minimal-touch event/runner seam; nested order asserted by a synthetic-pipeline test.",
+            "scenarios": [
+              "SCENARIO-008",
+              "SCENARIO-009"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "Tracker threaded via one consistent module-level per-run singleton mirroring activeRun, set at execute() entry from state.setup, cleared in finally; no leak between runs.",
+            "scenarios": [
+              "SCENARIO-010"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "buildImplementPrompt + review/fix prompt change output contract to filesCreated/filesModified/filesDeleted with git-cross-check instruction; implementation.ts parses the structured set but tolerates legacy flat filesModified.",
+            "scenarios": [
+              "SCENARIO-011",
+              "SCENARIO-012"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "changeGate computed after build+deliverable gates: pass===false iff claimedNotChanged non-empty; changedNotClaimed advisory-only; failures fed into retry via existing channel respecting MAX_ATTEMPTS; git-unavailable -> pass=true; never throws.",
+            "scenarios": [
+              "SCENARIO-014",
+              "SCENARIO-015",
+              "SCENARIO-016",
+              "SCENARIO-017"
+            ]
+          },
+          {
+            "acId": "AC-08",
+            "description": "Regression test: phase claiming filesCreated:[X] where git shows no new file -> changeGate.pass===false -> phase not green even if build and deliverable pass; false-green impossible.",
+            "scenarios": [
+              "SCENARIO-013"
+            ]
+          },
+          {
+            "acId": "AC-09",
+            "description": "Before runDeliverableCheck, claimed.filesCreated is unioned with spec-declared deliverables.requireFiles so a claimed-created file must exist.",
+            "scenarios": [
+              "SCENARIO-018"
+            ]
+          },
+          {
+            "acId": "AC-10",
+            "description": "Phase end-record gitActual surfaced as a 'N files changed (C/M/D)' summary line; flat filesModified accumulation derived from the structured set so existing summary writer keeps working.",
+            "scenarios": [
+              "SCENARIO-019"
+            ]
+          },
+          {
+            "acId": "AC-11",
+            "description": "npm run typecheck clean; npm test all green (existing + new); no regression to runRedCheck, runDeliverableCheck, npm in-scope, scope-aware cargo gate, themed stream, mid-run input, dashboard, real-theme parity; pi Theme called method-style, never destructured.",
+            "scenarios": [
+              "SCENARIO-020"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-21T02:04:56.310Z",
+      "agent": "research",
+      "data": {
+        "title": "Git-Snapshot Change-Tracker & Cross-Check Gate: Research Brief",
+        "date": "2025-11-19",
+        "summary": "The design is verified against the live codebase and every previously-open issue is resolved (see BP entries below). The four load-bearing seams all exist as the spec predicts: (1) `dedupePreservingOrder` at `src/build-runner.ts:118` is an unexported one-line-export fix (ISS-01 RESOLVED); (2) `touchedFilePaths` at `src/build-runner.ts:526` returns a FLAT `string[]` (committed `diff --name-only` UNION `ls-files --others`) and deliberately discards the git status letter, so it CANNOT classify created/modified/deleted — `tracking.ts` re-implements the two-bounded-spawns + dedupe-union PATTERN but with `diff --name-status <beginHead>` UNION `status --porcelain` to recover A/M/D (ISS-02 RESOLVED); (3) the cross-check is UNION-membership — a claimed file is `claimedNotChanged` only when absent from the full gitActual created∪modified set, not per-bucket (ISS-03 RESOLVED); (4) `changeGate` rides the existing `implParts` retry channel (`src/stages/implementation.ts:146-154`, the same channel `attemptErrors`/`missingDeliverables` use) via a decoupled `crossCheck()` that only adds a `## Claimed changes not present in git` section, with the stage seam being an `ctx.events` subscription and the phase seam being direct begin/end calls in implementation.ts threaded through the `activeRun`-mirror singleton (`src/extension.ts:68/131/148`, cleared in `finally` at :446) (ISS-04 RESOLVED). The phase-green AND-chain (`implementation.ts:194`) extends cleanly from `(gate.pass||gate.inScopePass) && deliverableCheck.pass` to `&& changeGate.pass`, mirroring spec-10's deliverable AND with asymmetric strictness: `claimedNotChanged` hard-fails (the false-green killer), `changedNotClaimed` is advisory-only (under-reporting ≠ false-green), and git-unavailability degrades to `changeGate.pass=true` (never blocks on infrastructure). The never-throw contract is established practice (`touchedFilePaths` try/catches to `[]`); the tracker records `{gitUnavailable:true}` and continues. No new runtime deps; the three git snapshots (rev-parse, status --porcelain, diff --name-status) reuse the existing discrete-argv `spawnSync` envelope with no `shell:true`. Sources: SRC-001 build-runner.ts:118; SRC-002 build-runner.ts:526; SRC-003 nodes.ts:95-98,126-127; SRC-004 extension.ts:68/131/148/446; SRC-005 implementation.ts:103-219 (159 parse, 165 build-gate, 184-194 green-AND, 153-154 implParts retry). Best practices: BP-001 never-throw git helpers (touchedFilePaths → [] on failure); BP-002 two bounded spawns + dedupe-union; BP-003 asymmetric cross-check (claim-vs-ground hard, ground-vs-claim advisory); BP-004 module singleton cleared in finally; BP-005 event-bus subscription over engine-internals edit.",
+        "options": [
+          {
+            "name": "A. Change-set extraction: new classified extractor (recommended) vs reuse touchedFilePaths",
+            "tradeoffs": "Reuse `touchedFilePaths` (SRC-002) would be DRY but it returns flat string[] via `diff --name-only` + `ls-files --others` and INTENTIONALLY strips the A/M/D status letter, so it cannot feed the created/modified/deleted split or the cross-check. RECOMMENDED: a sibling `classifyChangedFiles(cwd, beginHead)` in tracking.ts using `diff --name-status <beginHead>` UNION `status --porcelain` (A/?? → created, M → modified, D → deleted), reusing the same two-bounded-spawns + `dedupePreservingOrder` (SRC-001, one-line export fix) never-throw envelope (BP-001/BP-002). Tradeoff: ~40 lines of near-duplicate git plumbing; justified because classification is the tracker's core deliverable and --name-status/--porcelain semantics (status letters, R rename detection, copy markers) differ from --name-only. Keep argv discrete (no shell:true)."
+          },
+          {
+            "name": "B. Tracker threading: module-level singleton mirroring activeRun (recommended) vs RunOptions/StageContext vs ctx.events-only",
+            "tradeoffs": "The activeRun/setActiveRun/getActiveRun triplet in extension.ts (SRC-004) is the proven per-run-singleton pattern — set on execute() entry from state.setup (already carries specDir+worktreePath), cleared in the same finally (:446). RECOMMENDED mirroring it: setActiveTracker/getActiveTracker set where setActiveRun is already called, cleared alongside it — zero inter-run leak, zero RunOptions signature churn, and the implementation.ts phase seam reads it without threading a new arg through every stage.run(state,ctx). Tradeoff vs ctx.events-only: events can capture STAGE enter/exit (SRC-003) but CANNOT carry the implementer's `claimed` set (lives in impl.control inside the phase loop), so a pure-event design still needs a direct call in implementation.ts — hence the hybrid: events for stages, direct calls for phases. RunOptions threading is the most explicit but touches the most call sites; overkill given the singleton already works for mid-run input."
+          },
+          {
+            "name": "C. Stage-boundary capture: ctx.events subscription (recommended) vs runner-level wrapper vs nodes.ts edit",
+            "tradeoffs": "src/nodes.ts already emits `ctx.events.emit(\"stage\", {id,label,status:\"running\"})` at :127 (enter) and `ctx.events.emit(\"stage\", {id,label,status,error})` at :98 (exit, in the task-node closure, fired on both pass and fail). RECOMMENDED a thin tracker.onStageEvent subscriber wired once at execute() entry: status===\"running\" → begin(\"stage\",id), else → end(\"stage\",id) (claimed undefined for non-implementation stages — only gitActual evidence recorded). Fully decoupled from nodes.ts/workflow.ts/pipeline.ts internals (minimal-touch, satisfies AC-04's PREFERRED path, BP-005). Tradeoff: the event payload has no `claimed` field, so stage-level cross-check is unavailable — acceptable because the cross-check GATE is phase-scoped. A runner-level wrapper around stage.run would carry claimed but requires editing nodes.ts; reject unless events prove insufficient. Phase bracketing is NOT event-driven (the :126 phase emit is just a label marker) — two direct calls in implementation.ts: begin(\"phase\",phaseId) before the for-attempt loop, end(\"phase\",phaseId, claimed) after."
+          },
+          {
+            "name": "D. Cross-check strictness: asymmetric hard/advisory (recommended, spec-faithful) vs symmetric vs advisory-only",
+            "tradeoffs": "RECOMMENDED the spec's asymmetric rule (BP-003): changeGate.pass===false iff claimedNotChanged non-empty (a created/modified file git shows unchanged = vacuous claim = the Phase-5/6 false-green root cause), while changedNotClaimed (git edits the agent didn't report) is LOGGED only. Rationale: claiming-done-but-undone is a correctness defect (false green); unreported edits are under-reporting (advisory, common with format-on-save). Per-bucket matching (ISS-03, RESOLVED) is deliberately NOT used — a file claimed `created` but git shows `modified` is NOT a failure (the change exists; classification fuzziness from rename/copy would cause false alarms); only claimed-and-totally-absent fails. Tradeoff vs symmetric hard-fail: a stricter gate risks flapping on R/C rename codes — mitigate by normalizing rename-targets (R99\\told\\tnew → include new) before the union. Tradeoff vs advisory-only: loses the false-green killer, the entire point of the feature. Feed claimedNotChanged into implParts under `## Claimed changes not present in git — actually create/wire these`, reusing the exact missingDeliverables→implParts retry shape (SRC-005, lines 153-154), respecting MAX_ATTEMPTS."
+          }
+        ],
+        "openIssues": [
+          "All previously-open issues are RESOLVED and require no further research — documented here for traceability: ISS-01 (dedupePreservingOrder export): src/build-runner.ts:118 is an unexported `function` (grep-clean), confirmed one-line `export` addition; ISS-02 (touchedFilePaths cannot classify / tracking.ts re-implements the union): src/build-runner.ts:526 returns flat string[] via diff --name-only + ls-files --others, deliberately dropping the status letter, so tracking.ts needs its own diff --name-status + status --porcelain extractor reusing only the spawnSync+dedupe UNION pattern; ISS-03 (cross-check is UNION-membership not per-bucket): claimedNotChanged fires only when a claimed path is absent from the full gitActual created∪modified set (not created-vs-created / modified-vs-modified); ISS-04 (changeGate rides the existing implParts retry channel with a decoupled crossCheck()): the stage seam is a ctx.events \"stage\" subscription (nodes.ts:98 enter-via-running / 127 exit), the phase seam is direct begin/end calls in implementation.ts, and the tracker singleton is threaded via the activeRun-mirror pattern (extension.ts:68/131/148, cleared in finally :446). AC-04 stage seam confirmed viable via ctx.events. No new runtime deps; never-throw contract mirrors touchedFilePaths. No remaining open issues."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/03-research-report.md"
+      }
+    },
+    "debug": {
+      "timestamp": "2026-07-21T02:06:49.595Z",
+      "agent": "debug",
+      "data": {
+        "title": "False-GREEN root cause: implementation phase-green has no assertion tying the agent's claimed file changes to git ground-truth",
+        "date": "2025-07-28",
+        "summary": "On current `main` (worktree `11-git-change-tracker-crosscheck-gate`, branch ahead of nothing; only spec docs untracked; `src/tracking.ts` absent; no `change-tracker.jsonl` anywhere), an implementation phase goes GREEN on a VACUOUS file claim. The phase-GREEN decision in `src/stages/implementation.ts:194` is `(gate.pass || gate.inScopePass) && deliverableCheck.pass`. The implementer's claimed `filesModified` (parsed at `implementation.ts:159-160`, accumulated into the summary at `:92/:219`) is advisory-only and NEVER compared to git. `runDeliverableCheck` (`build-runner.ts:1789`) is spec-OPT-IN: when `phase.deliverables` is undefined it early-returns `{pass:true,missing:[]}` (SCENARIO-014 backward-compat), so a phase whose author declared no deliverables has NO assertion against its claimed file changes. The build gate passes trivially because a never-created/unreferenced file compiles clean (`runBuildGate` runs whatever exists). The conjunction of these three gaps is the false-green: a phase claims to create `src/tracking.ts` (or a stockfan `e2e_x.rs`), changes nothing in git, and still passes build + deliverables → GREEN. The summary then lies (\"Files Modified: src/tracking.ts\"). spec-10 closed this *partially* (opt-in deliverable assertions) but only for phases whose SPEC author declared deliverables; it left the AGENT's self-reported `filesModified` entirely unverified. This analysis confirms the \"before\" buggy state and defines the change-tracker cross-check gate (AC-01..AC-11) as the second, agent-claim-directional closure.",
+        "hypotheses": [
+          "H1 (70%, CONFIRMED): The implementer's `filesModified` claim is advisory-only and never verified against git ground-truth. Prediction: a phase returning `filesModified:[X]` where git shows no change to X still goes GREEN. Evidence: `implementation.ts:159-160` only ACCUMULATES the array into `filesModified[]`; `:194` phase-GREEN never reads it; `prompts.ts:127` surfaces it in the summary as an unverifiable string. No `git diff`/`status` cross-check exists anywhere in the phase loop.",
+          "H2 (20%, CONFIRMED): The deliverable oracle passes trivially for undeclared deliverables, removing the only existing assertion layer. Prediction: a phase with `deliverables===undefined` and a claimed-but-absent file → `deliverableCheck.pass===true`. Evidence: `implementation.ts:185` calls `runDeliverableCheck(setup.worktreePath, phase.deliverables, …)`; `build-runner.ts:1789` runDeliverableCheck early-returns `{pass:true}` when `deliverables` is undefined — exactly the stockfan Phase-5/6 shape (no deliverables declared, claim a file, never create it).",
+          "H3 (10%, CONFIRMED, contributing condition): The build gate cannot detect a hallucinated file. Prediction: `gate.pass===true` even though file X was never created. Evidence: `runBuildGate` compiles/whatever currently exists; a file the implementer CLAIMS to create but never references compiles fine (no missing-symbol error), so build-green is orthogonal to the claim. Note: H1/H2/H3 are not mutually exclusive — their CONJUNCTION is the root cause; H1 is the dominant missing piece this fix adds (the git ground-truth), H2 is the spec-10 layer it must not regress, H3 explains why build-green alone is insufficient."
+        ],
+        "rootCause": "Phase GREEN in `src/stages/implementation.ts:194` — `(gate.pass || gate.inScopePass) && deliverableCheck.pass` — has NO term binding the AGENT's self-reported file changes (`filesModified`, parsed `:159-160`) to git reality, and the only existing assertion (`runDeliverableCheck`) is opt-in by the spec author (undefined `deliverables` → trivial pass at `build-runner.ts:1789`). There is no per-phase git snapshot or delta, so three conditions collapse into one false-green: (1) the implementer claims `filesModified:[X]` but changes nothing in git; (2) the build passes because a non-existent/unreferenced file compiles clean; (3) deliverables pass trivially because none were declared. The claimed set is accumulated (`:92/:159-160/:219`) and echoed into the summary (`prompts.ts:127`) as an unverifiable string — pure advisory telemetry. Result: a phase can claim a deliverable it never produced and still be GREEN (the stockfan Phase-5/6 failure mode and the regression in AC-08). RECOMMENDED FIX (the spec, summarized): add `src/tracking.ts` `ChangeTracker` (begin/end at stage+phase granularity, git `rev-parse HEAD`+`status --porcelain` baseline then `diff --name-status <beginHead>` UNION `status --porcelain` delta, classify A/+untracked/M/D, never-throws → `<specDir>/change-tracker.jsonl`, reusing `spawnSync`+`dedupePreservingOrder` from `build-runner.ts:touchedFilePaths`); bracket ALL stages via an `ctx.events` \"stage\"/\"phase\" subscription (`nodes.ts:98/126/127` already emit them — minimal engine touch) and EACH phase in `implementation.ts` (begin before the attempt loop `:~140`, end after with the structured claim); switch `buildImplementPrompt` (`prompts.ts:120`) + review/fix prompt (`:140`) to structured `{filesCreated,filesModified,filesDeleted}` (legacy flat array tolerated); AND a `changeGate` into phase-green at `:194` where `claimedNotChanged` (claimed create/modify that git does NOT show) HARD-FAILS and is fed into the next attempt under `## Claimed changes not present in git — actually create/wire these` via the existing `attemptErrors`/`missingDeliverables` retry channel (respect `MAX_ATTEMPTS=:16`), `changedNotClaimed` is advisory-only, and git-unavailable → `changeGate.pass=true` (never block on infra); union `claimed.filesCreated` into deliverable `requireFiles` before `runDeliverableCheck` (`:185`) so spec-10 and tracking reinforce rather than diverge; thread the tracker via the `activeRun`/`setActiveRun`/`getActiveRun` module-singleton pattern (`extension.ts:68/131/148`) set from `state.setup` (specDirectory+worktreePath) in execute()'s entry and cleared in its finally (`extension.ts:391/446`). Theme methods stay method-style (no destructuring) to keep `tests/stream-theme-class-theme.test.ts` + `tests/render/real-theme-parity.test.ts` green.",
+        "reproductionSteps": [
+          "1. Confirm the buggy 'before' state on this worktree: `git status --short` shows only `docs/specifications/11-…/` untracked; `ls src/tracking.ts` → 'No such file'; `find . -name change-tracker.jsonl` → empty. (Verified during exploration.) The implementation has NOT started; main is the vulnerable baseline.",
+          "2. Construct a minimal reproduction WITHOUT the fix: a spec whose implementation phase declares NO `deliverables` (or deliverables that happen to pass) and an implementer agent stub returning `control:{filesModified:[\"src/tracking.ts\"], testsPassCount:1, summary:\"created tracking\"}` but NOT creating that file.",
+          "3. Invoke the implementation stage's phase loop (e.g. a vitest test mirroring `tests/implementation.test.ts` / `tests/build-runner-deliverable-check.test.ts` that drives `runImplementation` / the phase for-loop directly, or a tiny synthetic pipeline via the `task()` node in `src/nodes.ts`).",
+          "4. Observe the three collapsing conditions: (a) `runBuildGate(setup.worktreePath,…)` → `gate.pass===true` (file never referenced → compiles clean); (b) `runDeliverableCheck(setup.worktreePath, undefined,…)` → early-returns `{pass:true,missing:[]}` (SCENARIO-014); (c) `implementation.ts:194` `(gate.pass||gate.inScopePass) && deliverableCheck.pass` → `true` → `green=true`.",
+          "5. Confirm the advisory lie: `implementation.ts:159-160` accumulates `filesModified:[\"src/tracking.ts\"]` into the summary; `prompts.ts:127` echoes 'Files Modified: src/tracking.ts'. Meanwhile `git -C <worktree> status --porcelain` shows NO change to that path and the file is absent. Phase is GREEN on a vacuous claim — FALSE GREEN reproduced.",
+          "6. The FIX gates this (regression test = AC-08): after the change-tracker is added, the same phase returns structured `claimed:{filesCreated:[\"src/tracking.ts\"]}`; the phase-end `end(\"phase\", phaseId, claimed)` computes `git diff --name-status <beginHead>` UNION `git status --porcelain`, finds NO `A`/`??` entry for that path → `crossCheck.claimedNotChanged=[\"src/tracking.ts\"]` non-empty → `changeGate.pass===false` → phase-green becomes `… && changeGate.pass` = false → NOT green, and `claimedNotChanged` is fed into the next attempt under `## Claimed changes not present in git — actually create/wire these`. The false-green becomes impossible; the stockfan Phase-5/6 failure class is closed a second way.",
+          "7. Verify non-regression after the fix: `npm run typecheck` clean; `npm test` all green (existing ~1120 + new tracker/cross-check/structured-changes tests); `tests/stream-theme-class-theme.test.ts` and `tests/render/real-theme-parity.test.ts` stay green (Theme called method-style, never destructured)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/04-debug-analysis.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-21T02:09:23.118Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment — Git Change-Tracker & Cross-Check Gate (spec-11)",
+        "date": "2026-07-21",
+        "summary": "pi-super-dev is a self-contained TypeScript pi-extension/CLI pipeline (ESM, \"type\":\"module\", node ≥22.19, zero runtime deps — only peerDeps pi-coding-agent/typebox/pi-tui). The change-tracker fits cleanly into a mature, heavily-patterned codebase: a control-flow node algebra (src/nodes.ts) drives an EventEmitter-powered engine (src/workflow.ts) that emits \"stage\"/\"phase\" events; a deterministic oracle layer (src/build-runner.ts) already does robust, never-throwing git/spawn work with discrete-argv spawnSync and the exact committed-diff UNION untracked-files pattern the tracker needs; phase-green is already an AND-chain `(gate.pass||gate.inScopePass) && deliverableCheck.pass` with retry-prompt injection; and there is a canonical module-level per-run singleton pattern (activeRun in src/extension.ts) set in execute() entry / cleared in finally — the exact mechanism to thread a per-run ChangeTracker. There is NO HTTP API server or UI dev server in this repo; local verification is `npm run typecheck` (tsc --noEmit) and `npm test` (vitest run). The implementer's output contract is a single line in prompts.ts that returns `filesModified (array)` — advisory only — so the structured-set + cross-check gate is a small, surgical addition, not a rewrite.",
+        "patterns": [
+          {
+            "name": "Never-throw safe degradation on every git/spawn op",
+            "example": "src/build-runner.ts:538-573 (touchedFilePaths: try { spawnSync git diff + ls-files } catch { return [] }) — returns [] on non-git dir, ENOENT, non-string stdout, or any throw",
+            "consistency": "Universal in build-runner.ts (runBuildGate, runRedCheck, runDeliverableCheck all degrade to []/unknown/empty rather than throwing). The ChangeTracker MUST follow this: git unavailable → record {gitUnavailable:true} and continue, never block, never throw."
+          },
+          {
+            "name": "Discrete-argv spawnSync + timeout envelope, no shell",
+            "example": "src/build-runner.ts:538-545 (spawnSync(\"git\", [\"-C\", cwd, \"diff\", ...], { encoding:\"utf8\" }) — never shell:true; timeouts via resolveTimeoutMs)",
+            "consistency": "Every git subprocess in the module. The tracker's rev-parse / status --porcelain / diff --name-status <beginHead> spawns must use the identical discrete-argv form to keep path data out of any shell and to inherit the timeout discipline."
+          },
+          {
+            "name": "Git delta = committed-diff UNION untracked, deduped first-seen",
+            "example": "src/build-runner.ts:538-573 (git diff --merge-base <ref> --name-only UNION git ls-files --others --exclude-standard, then dedupePreservingOrder); dedupePreservingOrder defined at src/build-runner.ts:118",
+            "consistency": "This is the exact union logic the tracker's gitActual classification needs — but keyed off a stored beginHead (git diff --name-status <beginHead>) rather than a base ref, plus git status --porcelain for uncommitted. Reuse dedupePreservingOrder verbatim."
+          },
+          {
+            "name": "Phase-green AND-chain with retry-prompt injection (spec-10 pattern to mirror)",
+            "example": "src/stages/implementation.ts:194 (if ((gate.pass||gate.inScopePass) && deliverableCheck.pass) {...GREEN...}); failures injected at src/stages/implementation.ts:146-148 via implParts.push(`## Previous attempt failed...`) / `## Deliverables still missing — create/wire these`",
+            "consistency": "The changeGate MUST slot into this exact pattern: extend line 194 to `&& changeGate.pass`, and feed claimedNotChanged into implParts under a `## Claimed changes not present in git — actually create/wire these` block mirroring the deliverable-miss block at 148, bounded by MAX_ATTEMPTS (=3, src/stages/implementation.ts:16)."
+          },
+          {
+            "name": "Per-run module singleton, set in execute() entry / cleared in finally",
+            "example": "src/extension.ts:68 (let activeRun) / :141 (setActiveRun on execute() entry) / :149 (getActiveRun) / :391 (null in finally) — the mid-run-input feature's threading model",
+            "consistency": "The canonical mechanism for threading per-run state across stage boundaries without editing nodes.ts/workflow.ts/pipeline.ts internals. The ChangeTracker should mirror this exactly: module-level `let activeTracker`, setActiveTracker(specDir, worktreePath) in execute() entry, null in the same finally. state.setup.worktreePath + state.setup.specDirectory (src/types.ts:112-113, 292-293) supply both required paths."
+          },
+          {
+            "name": "Event-bus stage/phase seam (minimal engine touch)",
+            "example": "src/nodes.ts:126-127 (ctx.events.emit(\"phase\", stage.label) + emit(\"stage\", {id,label,status:\"running\"})) and :98 (emit \"stage\" with status after run); subscribed at src/workflow.ts:163-164 (ctx.events.on(\"stage\"/\"phase\"))",
+            "consistency": "PREFERRED over editing nodes.ts internals: subscribe the tracker to ctx.events for stage enter/exit boundaries, OR add a thin tracker.begin/end wrapper around stage.run at nodes.ts:127-129. Phases still bracket inside implementation.ts since phase events are coarse (only the stage label, per-node), not per-phase-id."
+          },
+          {
+            "name": "Output contract is a single templated prompt line (easy to upgrade)",
+            "example": "src/prompts.ts:120 (buildImplementPrompt ends: \"Output <control> JSON with: filesModified (array), testsPassCount (number), summary.\") and :140 (fix prompt: \"...with: filesModified (array), fixesApplied (number), summary.\")",
+            "consistency": "The structured-set change is a one-line edit in two prompt builders (buildImplementPrompt + the review/fix prompt), changing filesModified (array) → filesCreated (array), filesModified (array), filesDeleted (array). No other contract plumbing."
+          },
+          {
+            "name": "Hermetic vitest tests, one file per concern, fully mocked git/agent",
+            "example": "tests/implementation-deliverable-wiring.test.ts:24-40 (vi.mock(\"../src/build-runner.ts\"), stub runRedCheck to \"unknown\", mock renderAndWrite — disk-free); naming: build-runner-<feature>.test.ts / implementation-<feature>-wiring.test.ts",
+            "consistency": "1120 existing tests all follow this. New tracker tests must vi.mock spawnSync (or the tracker's git helper), assert change-tracker.jsonl content + append-only behavior, and follow build-runner-tracker.test.ts / implementation-crosscheck-gate.test.ts naming. .ts extensions in all imports; ESM import paths."
+          }
+        ],
+        "recommendations": [
+          "Mirror the activeRun singleton (src/extension.ts:68/141/149/391) for the ChangeTracker: a module-level `let activeTracker` in a new src/tracking.ts, set setActiveTracker(specDir, worktreePath) on execute() entry right after setActiveRun, nulled in the SAME finally. This threads both required paths (from state.setup, src/types.ts:112-113) with zero edits to nodes.ts/workflow.ts/pipeline.ts internals.",
+          "Reuse build-runner.ts's git primitives, do not re-implement: import dedupePreservingOrder and copy the two-spawn discrete-argv union shape (src/build-runner.ts:538-573). For the tracker's delta use `git diff --name-status <beginHead>` (status letters A/M/D map directly to created/modified/deleted) UNION `git status --porcelain`, wrapped in one try/catch that records {gitUnavailable:true} on any failure and continues (never throws, never blocks — the established never-throw contract).",
+          "Slot the changeGate into the existing phase-green AND at src/stages/implementation.ts:194 — extend to `(gate.pass||gate.inScopePass) && deliverableCheck.pass && changeGate.pass`. Feed claimedNotChanged into the next implementer retry under a `## Claimed changes not present in git — actually create/wire these` block, mirroring the missingDeliverables block at line 148, bounded by MAX_ATTEMPTS. changedNotClaimed stays advisory-only (ctx.log), and git-unavailable → changeGate.pass = true (don't block on infra).",
+          "Bracket phases inside implementation.ts around the `for (const [idx, phase] of phases.entries())` loop (src/stages/implementation.ts ~93): tracker.begin(\"phase\", phaseId) before the attempt loop, tracker.end(\"phase\", phaseId, claimedFromImplementer) after. Bracket ALL stages via a ctx.events subscription in src/workflow.ts:163-164 (stage enter/exit) — the minimal-touch seam — rather than editing nodes.ts stage.run internals. Emit begin events as {event:\"start\"} and end as {event:\"end\"} into <specDir>/change-tracker.jsonl so the bracket trace is complete.",
+          "Bridge to spec-10 by unioning claimed.filesCreated into the deliverable requireFiles before calling runDeliverableCheck (src/build-runner.ts:1830, DeliverableContract.requireFiles at :1588) — a claimed-created file must exist, so tracking and deliverable-assertions reinforce. Update the prompt contract line at src/prompts.ts:120 and :140 from `filesModified (array)` to the structured `filesCreated/filesModified/filesDeleted` set, with a one-line 'these are git-cross-checked; claiming a file you didn't change fails the phase' nudge. Accept legacy flat filesModified arrays defensively (tolerate both control shapes) — same defensive cast already used at src/stages/implementation.ts:159."
+        ],
+        "filesAssessed": [
+          "package.json",
+          "README.md",
+          "src/build-runner.ts",
+          "src/stages/implementation.ts",
+          "src/workflow.ts",
+          "src/nodes.ts",
+          "src/pipeline.ts",
+          "src/extension.ts",
+          "src/types.ts",
+          "src/prompts.ts",
+          "tests/implementation-deliverable-wiring.test.ts"
+        ],
+        "services": {},
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/05-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-21T02:13:47.992Z",
+      "agent": "spec",
+      "data": {
+        "title": "Git Change-Tracker with Per-Stage/Per-Phase Bracketing and a Claimed-vs-Actual Cross-Check Gate (spec-11)",
+        "date": "2026-07-21",
+        "summary": "Replace the advisory flat `filesModified: string[]` returned by code-mutating agents with a structured `{filesCreated, filesModified, filesDeleted}` set AND add a new `src/tracking.ts` `ChangeTracker` that brackets EVERY stage (start+end) and EVERY implementation phase (start+end) with a git snapshot, persisting an append-only `<specDir>/change-tracker.jsonl` of begin/end records. Each end record carries a git-derived `gitActual` change set, the agent's claimed set, and a one-directional cross-check (`claimedNotChanged` vs `changedNotClaimed`). A new `changeGate` is AND-ed into phase-green alongside the existing build gate and spec-10 deliverable check, so a phase that CLAIMS to create/modify a file git does NOT show changed hard-fails (the false-green root cause closed a second way), while `changedNotClaimed` (under-reporting) stays advisory. The whole subsystem NEVER throws and degrades when git is unavailable (`gitUnavailable` → record + `changeGate.pass = true`, never block). Tracking and spec-10 deliverable assertions collapse into one enforcement path: `claimed.filesCreated` auto-unions into `deliverables.requireFiles`, and the flat `filesModified` accumulation is derived from the structured set so existing summary/dashboard writers keep working. Pure TypeScript change to this repo (pi-super-dev), zero new runtime deps, discrete-argv `spawnSync` git ops under the existing timeout envelope. Verification: `npm run typecheck` clean and `npm test` all green (existing 1120 + new), with no regression to runRedCheck, runDeliverableCheck, npm in-scope classification, scope-aware cargo gate, themed stream, mid-run input injection, dashboard, or real-theme parity. Covers AC-01..AC-11 and SCENARIO-001..SCENARIO-020.",
+        "architecture": "## System context\n\npi-super-dev is a self-contained TypeScript (ESM, zero-runtime-deps) pi-extension/CLI driving a 13-stage pipeline. The pipeline is a tree of control-flow nodes (src/nodes.ts) executed by an EventEmitter-powered engine (src/workflow.ts); stages run via the `task()` leaf node which emits `ctx.events` \"stage\"/\"phase\" events around `stage.run`. A deterministic oracle layer (src/build-runner.ts) already performs robust, never-throwing git/spawn work using discrete-argv `spawnSync` and a committed-diff UNION untracked-files pattern (`touchedFilePaths`, `dedupePreservingOrder`). Phase-green is already an AND-chain in src/stages/implementation.ts: `(gate.pass || gate.inScopePass) && deliverableCheck.pass`, with retry-prompt injection (`attemptErrors`, `missingDeliverables` → `## ... still missing — create/wire these`) bounded by `MAX_ATTEMPTS = 3`. A canonical per-run module singleton (`activeRun`/`setActiveRun`/`getActiveRun` in src/extension.ts) is set on `execute()` entry and nulled in the `finally`. This spec slots the change-tracker cleanly into those existing patterns with minimal engine touch.\n\n## Core component: `src/tracking.ts` (NEW — AC-01, AC-02, AC-03)\n\nA per-run `ChangeTracker` class constructed with `(specDir: string, worktreePath: string)`. It owns a `Map<unitKey, Baseline>` of pending begin-baselines and writes a single durable append-only file `<specDir>/change-tracker.jsonl` (one record per begin/end event, never overwritten).\n\n**Public API (contract-first signatures):**\n```ts\ntype TrackerUnit = \"stage\" | \"phase\";\ninterface StructuredChanges { filesCreated: string[]; filesModified: string[]; filesDeleted: string[]; }\ninterface GitActual { created: string[]; modified: string[]; deleted: string[]; }\ninterface CrossCheck { claimedNotChanged: string[]; changedNotClaimed: string[]; }\ninterface ChangeRecord {\n  unit: TrackerUnit; id: string; event: \"start\" | \"end\"; ts: string;\n  beginHead: string | null; endHead: string | null;\n  gitActual: GitActual | null;\n  claimed: StructuredChanges | null;\n  crossCheck: CrossCheck | null;\n  verdict: \"ok\" | \"claimed-miss\" | \"git-unavailable\";\n  gitUnavailable?: boolean;\n}\nclass ChangeTracker {\n  constructor(specDir: string, worktreePath: string);\n  begin(unit: TrackerUnit, id: string): void;\n  end(unit: TrackerUnit, id: string, claimed?: StructuredChanges): ChangeRecord | null;\n  getRecord(unit: TrackerUnit, id: string): ChangeRecord | null;  // last end-record (gate reads crossCheck)\n}\n```\n\n**`begin(unit, id)`**: snapshot baseline = `git -C <wt> rev-parse HEAD` (committed ref) UNION `git -C <wt> status --porcelain` (working-tree state); stash both keyed by `${unit}:${id}`. Emits one `{event:\"start\", unit, id, ts, beginHead}` jsonl line (complete bracket trace — recommended per the open question).\n\n**`end(unit, id, claimed?)`**: re-snapshot; compute the DELTA as `git -C <wt> diff --name-status <beginHead>` (committed changes since begin, status letters `A`/`M`/`D` map directly to created/modified/deleted) UNION `git -C <wt> status --porcelain` (uncommitted/untracked — `??`→created, `M`/`MM`→modified, `D`/`DM`→deleted). Normalize porcelain XY-codes via an explicit `classifyPorcelain(xy: string)` mapping (no ambiguity: `??`=created, `D*`/`*D`=deleted, else modified). Union both with `dedupePreservingOrder` (exported from build-runner.ts — see §Reuse). Build `gitActual`, then cross-check: `claimedNotChanged = (claimed.filesCreated ∪ claimed.filesModified) \\ gitActual.{created∪modified}`, `changedNotClaimed = gitActual.{created∪modified∪deleted} \\ claimed.{all three}` (advisory). Append ONE `{event:\"end\", ...}` jsonl line. Return the `ChangeRecord`.\n\n**Never-throw invariant (AC-02):** the entire `begin`/`end` body and every git op is wrapped in one `try/catch`. On any git failure (ENOENT, non-zero exit, non-string stdout, spawn error, non-git dir) the record carries `{gitUnavailable: true, gitActual: null, crossCheck: null, verdict: \"git-unavailable\"}` and the method returns that record (never throws, never blocks). Conservative parse (SCENARIO-006): a claimed file is recorded as `claimedNotChanged` ONLY when `gitActual` was successfully computed and the file is absent from `gitActual.created∪modified` — if git was unavailable or the parse ambiguous, `claimedNotChanged` stays empty (no false failure).\n\n## Git primitives & reuse (AC-01 — no new runtime deps)\n\n- **Export `dedupePreservingOrder`** from `src/build-runner.ts` (currently module-private at ~line 112) and import it into `tracking.ts`. Single source of truth, no duplication.\n- The tracker's three git spawns (`rev-parse HEAD`, `status --porcelain`, `diff --name-status <beginHead>`) copy the EXACT discrete-argv `spawnSync` shape from `touchedFilePaths` (build-runner.ts ~538): `spawnSync(\"git\", [\"-C\", worktreePath, ...], { encoding: \"utf8\", timeout: resolveTimeoutMs(...) })`. Discrete argv (never `shell:true`) keeps agent-supplied file paths out of any shell (security/hygiene). A `gitSpawn(argv)` private helper centralizes the try/catch + the timeout envelope.\n- The committed-diff UNION untracked-files pattern is `touchedFilePaths`'s exact approach, but keyed off the stored `beginHead` instead of a base ref.\n\n## Threading: per-run singleton mirroring `activeRun` (AC-05)\n\nAdd `let activeTracker: ChangeTracker | null` + `setActiveTracker(t | null)` + `getActiveTracker(): ChangeTracker | null` to `src/tracking.ts` (exported; mirrors extension.ts:68/141/149). **Key design decision:** `state.setup` (which supplies `worktreePath` + `specDirectory`, src/types.ts:112-113) is NOT available at `execute()` entry — it is established inside the pipeline run. Therefore `setActiveTracker(new ChangeTracker(specDir, worktreePath))` is called in `src/pipeline.ts` (runPipelineTask) at the point `state.setup` is finalized (right after the setup stage populates the worktree + spec dir, before the producing stages run), guarded so a stale singleton from an overlapping run is discarded first (same guard activeRun uses). It is nulled in the same `finally` that nulls `activeRun` in `extension.ts` execute() (add `setActiveTracker(null)` adjacent to `setActiveRun(null)`). No leak between runs (SCENARIO-010). Stages/phases read it via `getActiveTracker()` and no-op when null (idle / non-git) — never throw.\n\n## Bracketing EVERY stage and EVERY phase (AC-04)\n\n**Stages — minimal-touch event seam (PREFERRED):** `task()` in `src/nodes.ts` already emits `ctx.events.emit(\"stage\", { id, label, status: \"running\" })` immediately before `stage.run` and `record(ctx, <terminal status>)` → `ctx.events.emit(\"stage\", {id,label,status})` after. Subscribe the tracker to the \"stage\" channel in `src/workflow.ts` (where `ctx.events.on(\"stage\"/\"phase\")` is ALREADY wired per code-assessment): on `status === \"running\"` → `tracker.begin(\"stage\", id)`; on terminal status (`ok`/`failed`/`skipped`) → `tracker.end(\"stage\", id)` (stages have no structured claim → `claimed = undefined`). This is the surgical seam: NO edit to nodes.ts/workflow.ts internals, only an added subscription block + the begin/end calls. (Fallback only if events lack stage id: a thin wrapper around `stage.run` in nodes.ts:127-129 — explicitly dis-preferred, documented as the contingency.)\n\n**Implementation phases — bracket inside `src/stages/implementation.ts`:** wrap each phase iteration `for (const [idx, phase] of phases.entries())` with `tracker.begin(\"phase\", phaseId)` (before the attempt loop) and `tracker.end(\"phase\", phaseId, claimedFromImplementer)` (after the loop, using the structured changes parsed from the last implementer control). Produces the required nesting: `stage-start → phase1-start → phase1-end → … → stage-end` (SCENARIO-009). `phaseId` already exists (`phase-${pad(idx+1)}`). Tracker calls are guarded by `const tracker = getActiveTracker(); if (tracker) { ... }`.\n\n## Structured change set (AC-06, AC-10)\n\n- **prompts.ts:** `buildImplementPrompt` (~line 120) and `buildFixPrompt` (~line 140) change their trailing contract line from `filesModified (array)` to `filesCreated (array), filesModified (array), filesDeleted (array)` with the one-line instruction: *\"Report the exact files you created/modified/deleted — these are git-cross-checked; claiming a file you did not change fails the phase.\"* `buildImplementationSummaryPrompt` (~line 127) is unchanged but now consumes the derived flat list (AC-10).\n- **implementation.ts:** add `parseStructuredChanges(control): StructuredChanges` that reads `filesCreated/filesModified/filesDeleted` when present, and backward-tolerates a legacy flat `filesModified` array (normalize into `filesModified`, leaving created/deleted empty). The per-attempt accumulation (implementation.ts ~line 92/159/219) derives the flat `filesModified[]` shown in the summary by unioning `filesCreated ∪ filesModified` (deleted excluded from the \"modified\" display) — so the existing summary writer keeps working byte-identically for unchanged agents (AC-10, SCENARIO-019). Add a `📝 N files changed (C/M/D)` evidence line to the summary, e.g. `📝 3 files changed (1C/2M/0D)` from the phase end-record's `gitActual`.\n\n## Git cross-check GATE (AC-07, AC-08) — the false-green killer\n\nIn `src/stages/implementation.ts`, after `runBuildGate` (~165) and `runDeliverableCheck` (~185), compute:\n```ts\nconst changeRec = tracker?.getRecord(\"phase\", phaseId) ?? null;\nconst changeGate = computeChangeGate(changeRec);   // never throws\n```\nwhere `computeChangeGate(rec)` returns `{pass: boolean, claimedNotChanged: string[]}`:\n- `pass === false` iff `rec != null && !rec.gitUnavailable && (rec.crossCheck?.claimedNotChanged?.length ?? 0) > 0` — a created/modified claim git does NOT show (the false-green killer, AC-08).\n- `changedNotClaimed` is advisory-only: logged via `ctx.log(...)`, never affects `pass` (SCENARIO-014 — under-reporting is not a false-green).\n- `gitUnavailable` (or no tracker) → `pass = true` (don't block on infrastructure, SCENARIO-017). Never throws.\n- No claimed changes → `claimedNotChanged` empty → `pass = true` (SCENARIO-016, trivial pass).\n\nPhase GREEN (implementation.ts ~line 194) becomes:\n```ts\nif ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass) { green = true; ... break; }\n```\nOn a `changeGate` miss, feed `claimedNotChanged` into the next implementer attempt via the EXISTING retry channel — a new `## Claimed changes not present in git — actually create/wire these` block pushed onto `implParts` (mirroring the `missingDeliverables` block at ~line 148), bounded by `MAX_ATTEMPTS`. So a claimed-but-never-created file (`claimed:{filesCreated:[X]}` with no new file in git) → `changeGate.pass === false` → phase NOT green even when build + deliverable both pass → the stockfan Phase-5/6 false-green becomes impossible (SCENARIO-013).\n\n## Spec-10 deliverable bridge (AC-09)\n\nBefore calling `runDeliverableCheck`, UNION `claimed.filesCreated` with any spec-declared `phase.deliverables.requireFiles` (build-runner.ts `DeliverableContract.requireFiles` ~line 1588) into the contract actually passed to `runDeliverableCheck`. So a file a phase claims to have created MUST exist — tracking and deliverable assertions reinforce. No circular double-count: if an agent omits a spec-required file, the spec-declared `requireFiles` still catches it independently (confirmed in the requirements open question).\n\n## Surfacing (AC-10)\n\nThe phase end-record's `gitActual` is the ground-truth evidence: the `📝 N files changed (C/M/D)` line in the implementation summary, and the flat `filesModified` accumulation is derived from the structured set. The dashboard continues to read the existing summary shape (no dashboard change required this cut; a dedicated change-tracker panel consuming `change-tracker.jsonl` is listed as future surfacing).\n\n## Constraints honored\n- NEVER destructure pi `Theme` methods (class with `this.fgColors`); call method-style — `tests/stream-theme-class-theme.test.ts` + `tests/render/real-theme-parity.test.ts` guard this and must stay green.\n- NEVER throw from the tracker, git ops, cross-check, or gate — always degrade.\n- Backward compatible: legacy flat `filesModified` arrays accepted; non-git worktrees recorded `gitUnavailable` and unblock; phases without claims trivially pass.\n- No new runtime deps; git spawns reuse `spawnSync` + `resolveTimeoutMs`; nothing cached across a phase.\n- Minimal engine touch: stage bracketing via an event subscription; phase bracketing inside implementation.ts; singleton set/clear in pipeline.ts + the existing finally.",
+        "testingStrategy": "The verification strategy is layered to match the three granularities of the feature (module → wiring → gate), with every test hermetic (fully-mocked git/agent, disk-free where possible), following the repo's vitest conventions (`vi.mock(\"../src/build-runner.ts\")`, stub runRedCheck/runDeliverableCheck, mock renderAndWrite; `.ts` import extensions; one file per concern; naming `build-runner-<feature>.test.ts` / `implementation-<feature>-wiring.test.ts`). Local gate: `npm run typecheck` (tsc --noEmit) clean + `npm test` (vitest run) ALL green. The repo has no Rust, so there is no cargo gate (gate field reflects this).\n\n**Layer 1 — ChangeTracker unit tests (`tests/tracking.test.ts`, AC-01/AC-02/AC-03 → SCENARIO-001..007):** `vi.mock(\"node:child_process\", ...)` to return scripted git outputs. Assert: (a) begin captures a baseline and holds it pending; (b) created/modified/deleted classification from `diff --name-status` (A→created, M→modified, D→deleted) UNION `status --porcelain` (`??`→created, `D`→deleted, `M`→modified); (c) `claimedNotChanged` (claim file `a.ts` created; git shows no `a.ts`) vs `changedNotClaimed` (git shows `b.ts` modified; agent didn't report) split correctly; (d) git-unavailable (mock throws / non-zero exit / non-string stdout) → record `{gitUnavailable:true}`, `verdict:\"git-unavailable\"`, method returns without throwing, no block; (e) conservative parse — ambiguous/unavailable parse leaves `claimedNotChanged` empty (no false failure, SCENARIO-006); (f) begin/end bracketing emits BOTH a `start` and an `end` jsonl line; (g) append-only — multiple `end` events produce multiple lines, nothing overwritten; (h) `dedupePreservingOrder` reuse collapses a path present in both committed-diff and porcelain to one entry at first-seen position.\n\n**Layer 2 — Parsing + prompt-contract + singleton tests (`tests/structured-changes.test.ts`, AC-05/AC-06 → SCENARIO-010..012):** (a) `parseStructuredChanges` reads `{filesCreated,filesModified,filesDeleted}` and normalizes a legacy flat `filesModified` array (created/deleted empty) without error; (b) snapshot assertions that `buildImplementPrompt` and `buildFixPrompt` end with the structured-set contract line and the cross-check warning text; (c) the flat summary `filesModified[]` derivation unions created+modified and excludes deleted; (d) singleton lifecycle — `setActiveTracker(t)` then `getActiveTracker()===t`; after `setActiveTracker(null)` (the finally path) a second call returns null (no leak, SCENARIO-010), and a stale singleton is discarded when a fresh one is set mid-run.\n\n**Layer 3 — Bracketing wiring test (`tests/tracker-bracketing.test.ts`, AC-04 → SCENARIO-008/009):** run a tiny synthetic pipeline of ≥2 task() stages plus the implementation stage (mocked agents that touch a temp git worktree via the real spawnSync, or assert on emitted jsonl via a tracker pointed at a temp specDir). Assert `change-tracker.jsonl` contains `stage-start`+`stage-end` for EVERY stage AND `phase-start`+`phase-end` for the implementation stage, in correct nested order (`stage-start → phase1-start → phase1-end → phase2-start → phase2-end → stage-end`). This validates the event subscription seam and the implementation.ts bracket placement without depending on a full real run.\n\n**Layer 4 — changeGate regression tests (`tests/implementation-crosscheck-gate.test.ts`, AC-07/AC-08 → SCENARIO-013..017):** mirror `tests/implementation.test.ts` / `build-runner-deliverable-check.test.ts`. `vi.mock` the build-runner (stub `runRedCheck`→\"unknown\", `runBuildGate`→{pass:true}, `runDeliverableCheck`→{pass:true}) so the ONLY variable is the changeGate. Scenarios: (a) **false-green killer** — phase returns `claimed:{filesCreated:[\"x.ts\"]}` but git shows NO new file → `changeGate.pass === false` → phase NOT green even though build+deliverable pass (SCENARIO-013, AC-08); (b) `changedNotClaimed` only (agent under-reported, git shows extra edits) → `changeGate.pass === true`, advisory logged, phase green (SCENARIO-014); (c) `claimedNotChanged` fed into the next implementer attempt under `## Claimed changes not present in git — actually create/wire these`, respecting `MAX_ATTEMPTS`, and a fix on retry → green (SCENARIO-015); (d) no claimed changes → trivial pass (SCENARIO-016); (e) `gitUnavailable` → `changeGate.pass === true`, no throw, no block (SCENARIO-017).\n\n**Layer 5 — Spec-10 bridge test (`tests/implementation-deliverable-bridge.test.ts` or extend the existing deliverable-wiring test, AC-09 → SCENARIO-018):** assert `claimed.filesCreated` is UNIONed into `requireFiles` before `runDeliverableCheck` is invoked (a created file that does not exist → deliverable miss), and that spec-declared `requireFiles` still independently catch an omitted file (no circular double-count). Add the `📝 N files changed (C/M/D)` summary-line assertion here too (AC-10 → SCENARIO-019).\n\n**Layer 6 — Non-regression (AC-11 → SCENARIO-020):** `npm run typecheck` clean; `npm test` all green with the existing 1120 tests untouched plus the new files above. Specifically confirm no regression to: runRedCheck wiring, runDeliverableCheck + cache reset, npm in-scope classification, scope-aware cargo gate, themed live stream, mid-run input injection (the `activeRun` singleton coexists with `activeTracker`), the dashboard widget, and real-theme parity (`tests/stream-theme-class-theme.test.ts`, `tests/render/real-theme-parity.test.ts` stay green — pi `Theme` called method-style, never destructured). A grep audit that no code added a destructured `Theme` method call closes the theme-parity constraint.\n\n**Coverage matrix:** SCENARIO-001/002/003/004 → Layer 1 (AC-01); SCENARIO-005/006 → Layer 1 git-unavailable + conservative parse (AC-02); SCENARIO-007 → Layer 1 bracketing + append-only (AC-03); SCENARIO-008/009 → Layer 3 (AC-04); SCENARIO-010 → Layer 2 singleton (AC-05); SCENARIO-011/012 → Layer 2 prompts/parse (AC-06); SCENARIO-013 → Layer 4(a) (AC-08); SCENARIO-014/015/016/017 → Layer 4 (AC-07); SCENARIO-018 → Layer 5 (AC-09); SCENARIO-019 → Layer 5 summary (AC-10); SCENARIO-020 → Layer 6 (AC-11). All 20 scenarios and 11 ACs covered; uncovered = 0.",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018",
+          "SCENARIO-019",
+          "SCENARIO-020"
+        ],
+        "phases": [
+          {
+            "name": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "DOMAIN: tracking. AC-01, AC-02, AC-03 → SCENARIO-001..007. Create the self-contained ChangeTracker class with begin/end at stage|phase granularity, the git baseline (rev-parse HEAD + status --porcelain), the delta computation (diff --name-status <beginHead> UNION status --porcelain), the created/modified/deleted classification (A→created, M→modified, D→deleted; porcelain ??→created, D→deleted, else modified via an explicit classifyPorcelain map), the one-directional cross-check (claimedNotChanged vs changedNotClaimed), the append-only <specDir>/change-tracker.jsonl writer (start + end records), and the never-throw contract (git failure → {gitUnavailable:true}, conservative parse leaves claimedNotChanged empty on ambiguity). Export the ChangeRecord/StructuredChanges/CrossCheck/TrackerUnit types and a private gitSpawn(argv) helper reusing spawnSync + resolveTimeoutMs. Export dedupePreservingOrder from src/build-runner.ts (currently module-private ~line 112) and import it. Independently testable: pure module + unit tests with mocked git, NO engine integration, NO dependency on later phases. Unit tests (tests/tracking.test.ts) cover classification, cross-check split, git-unavailable→record-and-continue, start+end bracketing, append-only jsonl, dedup positioning."
+          },
+          {
+            "name": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "DOMAIN: tracking, prompts, engine. AC-05, AC-06 → SCENARIO-010..012. DEPENDS ON Phase 1 (reuses its types/module). (a) Add the per-run singleton to src/tracking.ts mirroring activeRun: `let activeTracker`, `setActiveTracker(t|null)`, `getActiveTracker()`. (b) Wire setActiveTracker(new ChangeTracker(specDir, worktreePath)) in src/pipeline.ts (runPipelineTask) at the point state.setup (worktreePath + specDirectory, src/types.ts:112-113) is finalized — right after the setup stage populates them, before producing stages run, with a stale-singleton discard guard. Add setActiveTracker(null) in src/extension.ts execute()'s finally adjacent to setActiveRun(null). (c) prompts.ts: change buildImplementPrompt (~line 120) and buildFixPrompt (~line 140) trailing contract line from `filesModified (array)` to `filesCreated (array), filesModified (array), filesDeleted (array)` + the one-line 'these are git-cross-checked; claiming a file you did not change fails the phase' instruction. (d) implementation.ts: add parseStructuredChanges(control) (reads structured set, backward-tolerates legacy flat filesModified array → normalize into filesModified) and derive the flat summary filesModified[] from filesCreated ∪ filesModified (exclude deleted) at the accumulation points (~lines 92/159/219). buildImplementationSummaryPrompt unchanged. Independently testable: singleton lifecycle (no leak), structured-parse + legacy tolerance, prompt-contract snapshot assertions (tests/structured-changes.test.ts). Phase 1's module is exercised by the new parser/singleton without needing the gate (Phase 4)."
+          },
+          {
+            "name": "Phase 3 — Stage + phase bracketing wiring + summary surfacing",
+            "description": "DOMAIN: engine, tracking. AC-04, AC-10 → SCENARIO-008, SCENARIO-009, SCENARIO-019. DEPENDS ON Phases 1+2 (uses getActiveTracker() + the structured parse). (a) Stage bracketing via the minimal-touch event seam: in src/workflow.ts add a ctx.events 'stage' subscription — on status==='running' → getActiveTracker()?.begin('stage', id); on terminal status (ok/failed/skipped) → getActiveTracker()?.end('stage', id) (no claimed set for stages). NO edit to nodes.ts/workflow.ts/pipeline.ts internals beyond this subscription. Contingency (dis-preferred, documented): if the stage event lacks the id, wrap stage.run in a thin begin/end in nodes.ts:127-129. (b) Phase bracketing in src/stages/implementation.ts: tracker.begin('phase', phaseId) before the attempt loop and tracker.end('phase', phaseId, claimedFromImplementer) after it, both guarded by `const tracker = getActiveTracker(); if (tracker) ...`. Produces nested stage-start → phase1-start → phase1-end → … → stage-end. (c) Add the `📝 N files changed (C/M/D)` evidence line to the implementation summary derived from the phase end-record's gitActual. Independently testable: a synthetic-pipeline test (tests/tracker-bracketing.test.ts) asserts change-tracker.jsonl contains stage-start/stage-end for every stage AND phase-start/phase-end for the implementation stage in correct nested order."
+          },
+          {
+            "name": "Phase 4 — Git cross-check gate AND + spec-10 bridge + retry injection",
+            "description": "DOMAIN: gate, engine. AC-07, AC-08, AC-09 → SCENARIO-013..018. DEPENDS ON Phase 3 (reads the phase end-record crossCheck). (a) Add computeChangeGate(rec) helper (in src/tracking.ts or src/build-runner.ts — pick build-runner.ts for co-location with the other gates): returns {pass:boolean, claimedNotChanged:string[]} where pass===false iff rec && !rec.gitUnavailable && (rec.crossCheck?.claimedNotChanged?.length ?? 0) > 0; gitUnavailable/no-tracker → pass=true; never throws. (b) In src/stages/implementation.ts after runBuildGate (~165) and runDeliverableCheck (~185): const changeGate = computeChangeGate(tracker?.getRecord('phase', phaseId) ?? null). Extend phase-green (~line 194) to `&& changeGate.pass`. (c) Retry injection: on changeGate miss, push claimedNotChanged onto implParts as `## Claimed changes not present in git — actually create/wire these` (mirroring the missingDeliverables block at ~148), bounded by MAX_ATTEMPTS. changedNotClaimed stays advisory-only via ctx.log. (d) Spec-10 bridge (AC-09): before runDeliverableCheck, UNION claimed.filesCreated into the phase.deliverables.requireFiles actually passed to runDeliverableCheck (no circular double-count — spec-declared requireFiles still independent). Independently testable: regression test (tests/implementation-crosscheck-gate.test.ts) — phase claiming filesCreated:[X] where git shows no new file → changeGate.pass===false → phase NOT green even when build+deliverable pass (false-green killer); plus changedNotClaimed advisory-only, git-unavailable→no block, no-claim→trivial pass, retry-respects-MAX_ATTEMPTS."
+          },
+          {
+            "name": "Phase 5 — Quality gate: typecheck + full suite + no-regression audit",
+            "description": "DOMAIN: tests, tooling. AC-11 → SCENARIO-020. DEPENDS ON Phases 1-4 (all integrated). (a) Run npm run typecheck (tsc --noEmit) until clean — resolve any strict-mode errors introduced by new types (ChangeRecord, computeChangeGate return, parseStructuredChanges). (b) Run npm test (vitest run) until ALL green: the existing 1120 tests untouched + new tests from Phases 1-4 (tracking.test.ts, structured-changes.test.ts, tracker-bracketing.test.ts, implementation-crosscheck-gate.test.ts, deliverable-bridge assertions). (c) Non-regression confirmation: runRedCheck wiring, runDeliverableCheck + cache reset, npm in-scope classification, scope-aware cargo gate, themed live stream, mid-run input injection (activeRun singleton coexists with activeTracker), dashboard widget, and real-theme parity (tests/stream-theme-class-theme.test.ts, tests/render/real-theme-parity.test.ts) all stay green. (d) Theme audit: grep the diff for any destructured pi Theme method call (e.g. `const { fg } = theme`) and convert to method-style (`theme.fg(...)`) — the theme-parity tests guard this but a proactive grep closes it. Gate for this phase: npm run typecheck && npm test both exit 0."
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "Export `dedupePreservingOrder` from src/build-runner.ts (currently module-private function at ~line 112). Single edit: add `export` to the function declaration. No behavior change. File MODIFIED: src/build-runner.ts."
+          },
+          {
+            "phase": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "Create src/tracking.ts: export types TrackerUnit='stage'|'phase', StructuredChanges{filesCreated,filesModified,filesDeleted:string[]}, GitActual{created,modified,deleted:string[]}, CrossCheck{claimedNotChanged,changedNotClaimed:string[]}, ChangeRecord{unit,id,event:'start'|'end',ts,beginHead,endHead,gitActual|null,claimed|null,crossCheck|null,verdict:'ok'|'claimed-miss'|'git-unavailable',gitUnavailable?}. File CREATED: src/tracking.ts."
+          },
+          {
+            "phase": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "In src/tracking.ts add a private `gitSpawn(argv:string[])` helper wrapping `spawnSync('git',['-C',this.worktreePath,...argv],{encoding:'utf8',timeout:resolveTimeoutMs(...)})` (import resolveTimeoutMs from build-runner.ts; reuse the exact discrete-argv shape from touchedFilePaths). Returns `{ok:boolean,stdout:string}` and NEVER throws (try/catch around spawnSync; non-zero exit / error / non-string stdout → ok:false)."
+          },
+          {
+            "phase": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "In src/tracking.ts implement the ChangeTracker class: constructor(specDir,worktreePath); a `Map<string,Baseline>` pending baselines (key=`${unit}:${id}`, Baseline={head:string|null, ts:string}); `begin(unit,id)` snapshots `git rev-parse HEAD` + `git status --porcelain`, stashes the baseline, appends a `{event:'start'}` jsonl line (appendFileSync, one line, never overwrite), all in try/catch (git fail → baseline head=null)."
+          },
+          {
+            "phase": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "In src/tracking.ts implement `classifyPorcelain(xy:string):'created'|'modified'|'deleted'|null` (explicit map: startsWith '??'→created; second char 'D' or first char 'D'→deleted; any 'M' or 'A'→modified; else modified for non-empty recognized codes) and `classifyNameStatus(letter:string)` (A→created, M→modified, D→deleted, others→modified). Conservative, no ambiguity."
+          },
+          {
+            "phase": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "In src/tracking.ts implement `end(unit,id,claimed?)`: re-snapshot; compute delta = `git diff --name-status <beginHead>` (committed, parse `<LETTER>\\t<path>`) UNION `git status --porcelain` (parse XY + path), classify into gitActual via classifyNameStatus/classifyPorcelain, union with dedupePreservingOrder (imported from build-runner.ts); cross-check: claimedNotChanged = (claimed.filesCreated∪filesModified) − (gitActual.created∪modified), changedNotClaimed = gitActual.all − claimed.all (advisory); build ChangeRecord (verdict 'claimed-miss' if claimedNotChanged non-empty, else 'ok'); append ONE jsonl line; stash last end-record by (unit,id) for the gate; wrap whole body in try/catch → on git failure record {gitUnavailable:true, verdict:'git-unavailable'} and return it (never throw). Add `getRecord(unit,id)` returning the last end-record (null if none)."
+          },
+          {
+            "phase": "Phase 1 — ChangeTracker core module (src/tracking.ts)",
+            "description": "Create tests/tracking.test.ts: vi.mock node:child_process spawnSync with scripted git outputs. Cases: (a) begin holds baseline pending; (b) classification created/modified/deleted from diff --name-status + porcelain union; (c) claimedNotChanged vs changedNotClaimed split; (d) git-unavailable (throw/non-zero/non-string) → {gitUnavailable:true}, no throw, no block; (e) conservative parse — ambiguous/unavailable → claimedNotChanged empty; (f) start+end bracketing both present; (g) append-only — multiple ends → multiple lines nothing overwritten; (h) dedupe collapses a path in both sources to one first-seen entry. File CREATED: tests/tracking.test.ts."
+          },
+          {
+            "phase": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "In src/tracking.ts add the per-run singleton mirroring activeRun (extension.ts:68/141/149): `let activeTracker: ChangeTracker|null = null`, `export function setActiveTracker(t: ChangeTracker|null):void`, `export function getActiveTracker(): ChangeTracker|null`. No creation logic here (constructed in pipeline.ts). File MODIFIED: src/tracking.ts."
+          },
+          {
+            "phase": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "In src/pipeline.ts (runPipelineTask) call `setActiveTracker(new ChangeTracker(state.setup.specDirectory, state.setup.worktreePath))` at the point state.setup is finalized (after the setup stage / once specDir+worktreePath are known, before producing stages), with a stale-discard guard (`if (getActiveTracker()) setActiveTracker(null)` before constructing). Import ChangeTracker + setters from tracking.ts. File MODIFIED: src/pipeline.ts."
+          },
+          {
+            "phase": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "In src/extension.ts execute() finally block, add `setActiveTracker(null)` adjacent to `setActiveRun(null)` (~line 391) so teardown unifies with the run singleton and widget teardown (no leak across runs). Import setActiveTracker from tracking.ts. File MODIFIED: src/extension.ts."
+          },
+          {
+            "phase": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "In src/prompts.ts change buildImplementPrompt (~line 120) trailing contract from `Output <control> JSON with: filesModified (array), testsPassCount (number), summary.` to `Output <control> JSON with: filesCreated (array), filesModified (array), filesDeleted (number), testsPassCount (number), summary.` preceded by the one-line instruction 'Report the exact files you created/modified/deleted — these are git-cross-checked; claiming a file you did not change fails the phase.' File MODIFIED: src/prompts.ts."
+          },
+          {
+            "phase": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "In src/prompts.ts change buildFixPrompt (~line 140) trailing contract from `... filesModified (array), fixesApplied (number), summary.` to `... filesCreated (array), filesModified (array), filesDeleted (array), fixesApplied (number), summary.` with the same cross-check warning line. buildImplementationSummaryPrompt unchanged (consumes derived flat list). File MODIFIED: src/prompts.ts."
+          },
+          {
+            "phase": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "In src/stages/implementation.ts add `parseStructuredChanges(control: unknown): StructuredChanges` (reads filesCreated/filesModified/filesDeleted when present; backward-tolerates legacy flat filesModified array → filesModified, created/deleted empty; returns all-empty on null/undefined). Replace the per-attempt flat accumulation (~line 92/159) to derive `filesModified[]` = unique union of claimed.filesCreated ∪ claimed.filesModified (deleted excluded from display) so the existing summary shape is byte-identical for unchanged agents. File MODIFIED: src/stages/implementation.ts."
+          },
+          {
+            "phase": "Phase 2 — Per-run singleton threading + structured-change parsing + prompt contract",
+            "description": "Create tests/structured-changes.test.ts: (a) parseStructuredChanges reads structured set; (b) legacy flat filesModified normalized without error; (c) snapshot buildImplementPrompt + buildFixPrompt end with the structured-set contract + cross-check warning; (d) flat summary derivation unions created+modified, excludes deleted; (e) singleton lifecycle — setActiveTracker(t)/getActiveTracker()===t, setActiveTracker(null)→null (no leak), stale discarded. File CREATED: tests/structured-changes.test.ts."
+          },
+          {
+            "phase": "Phase 3 — Stage + phase bracketing wiring + summary surfacing",
+            "description": "In src/workflow.ts add a ctx.events 'stage' subscription (co-located with the existing 'stage'/'phase' on-handlers ~line 163): on status==='running' → `getActiveTracker()?.begin('stage', String(ev.id))`; on terminal status (ok|failed|skipped) → `getActiveTracker()?.end('stage', String(ev.id))`. Import getActiveTracker. Guarded no-op when tracker null (idle/non-git). This is the minimal-touch stage seam — NO nodes.ts/workflow.ts internal edits. Contingency documented (not implemented unless the event lacks id): wrap stage.run in nodes.ts:127-129. File MODIFIED: src/workflow.ts."
+          },
+          {
+            "phase": "Phase 3 — Stage + phase bracketing wiring + summary surfacing",
+            "description": "In src/stages/implementation.ts bracket each phase iteration: `const tracker = getActiveTracker(); if (tracker) tracker.begin('phase', phaseId);` immediately before the `for (let attempt=1...)` attempt loop, and `if (tracker) tracker.end('phase', phaseId, claimedFromImplementer)` immediately after the loop (claimedFromImplementer = the structured changes from the last implementer impl.control via parseStructuredChanges). Place inside the existing `for (const [idx, phase] of phases.entries())` so nesting is stage-start→phase-start→phase-end→stage-end. Import getActiveTracker + parseStructuredChanges. File MODIFIED: src/stages/implementation.ts."
+          },
+          {
+            "phase": "Phase 3 — Stage + phase bracketing wiring + summary surfacing",
+            "description": "In src/stages/implementation.ts add the `📝 N files changed (C/M/D)` evidence line to the implementation summary (or via buildImplementationSummaryPrompt data): read the phase end-record's gitActual from `tracker?.getRecord('phase', phaseId)`, count created/modified/deleted, format e.g. `📝 3 files changed (1C/2M/0D)`. Derive so the existing summary writer still works. File MODIFIED: src/stages/implementation.ts."
+          },
+          {
+            "phase": "Phase 3 — Stage + phase bracketing wiring + summary surfacing",
+            "description": "Create tests/tracker-bracketing.test.ts: run a tiny synthetic pipeline (≥2 task() stages + the implementation stage) against a temp git worktree + temp specDir, OR assert on emitted jsonl via a tracker pointed at a temp specDir with mocked ctx.events emission. Assert change-tracker.jsonl contains stage-start+stage-end for every stage AND phase-start+phase-end for the implementation stage, in correct nested order. File CREATED: tests/tracker-bracketing.test.ts."
+          },
+          {
+            "phase": "Phase 4 — Git cross-check gate AND + spec-10 bridge + retry injection",
+            "description": "Add `computeChangeGate(rec: ChangeRecord|null): {pass:boolean; claimedNotChanged:string[]}` in src/build-runner.ts (co-located with runBuildGate/runDeliverableCheck): pass===false iff rec && !rec.gitUnavailable && (rec.crossCheck?.claimedNotChanged?.length ?? 0) > 0; gitUnavailable/no-tracker → {pass:true, claimedNotChanged:[]}; never throws (wrap body in try/catch → {pass:true} on any error). Import ChangeRecord type from tracking.ts. File MODIFIED: src/build-runner.ts."
+          },
+          {
+            "phase": "Phase 4 — Git cross-check gate AND + spec-10 bridge + retry injection",
+            "description": "In src/stages/implementation.ts, after runDeliverableCheck (~line 185): `const changeGate = computeChangeGate(getActiveTracker()?.getRecord('phase', phaseId) ?? null);`. Extend phase-green (~line 194) to `if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass) {`. Import computeChangeGate. Add `ctx.log` for changedNotClaimed (advisory) when present. File MODIFIED: src/stages/implementation.ts."
+          },
+          {
+            "phase": "Phase 4 — Git cross-check gate AND + spec-10 bridge + retry injection",
+            "description": "In src/stages/implementation.ts retry injection: when `!changeGate.pass && changeGate.claimedNotChanged.length`, push onto implParts a `## Claimed changes not present in git — actually create/wire these` block listing claimedNotChanged (mirroring the missingDeliverables block at ~line 148), so the next attempt within the MAX_ATTEMPTS loop receives it. Reset per attempt like missingDeliverables. File MODIFIED: src/stages/implementation.ts."
+          },
+          {
+            "phase": "Phase 4 — Git cross-check gate AND + spec-10 bridge + retry injection",
+            "description": "Spec-10 bridge (AC-09): in src/stages/implementation.ts before calling runDeliverableCheck, UNION claimed.filesCreated (from parseStructuredChanges of the last implementer control) into the `phase.deliverables` actually passed to runDeliverableCheck — build a shallow-merged contract `{...phase.deliverables, requireFiles: dedupePreservingOrder([...(phase.deliverables?.requireFiles ?? []), ...claimed.filesCreated])}` and pass that. Spec-declared requireFiles remain independent (no circular double-count). Import dedupePreservingOrder. File MODIFIED: src/stages/implementation.ts."
+          },
+          {
+            "phase": "Phase 4 — Git cross-check gate AND + spec-10 bridge + retry injection",
+            "description": "Create tests/implementation-crosscheck-gate.test.ts: vi.mock build-runner (runRedCheck→'unknown', runBuildGate→{pass:true,inScopePass:true}, runDeliverableCheck→{pass:true,missing:[]}) so the ONLY variable is changeGate; mock renderAndWrite. Cases: (a) claimed:{filesCreated:['x.ts']} + git shows NO new file → changeGate.pass===false → phase NOT green (false-green killer); (b) changedNotClaimed only → pass===true, advisory logged; (c) claimedNotChanged → retry receives `## Claimed changes not present in git` block, respects MAX_ATTEMPTS, fix on retry → green; (d) no claimed → trivial pass; (e) gitUnavailable → pass===true, no throw, no block. File CREATED: tests/implementation-crosscheck-gate.test.ts."
+          },
+          {
+            "phase": "Phase 5 — Quality gate: typecheck + full suite + no-regression audit",
+            "description": "Run `npm run typecheck` (tsc --noEmit); resolve any strict-mode errors from new types (ChangeRecord, computeChangeGate return, parseStructuredChanges, the unioned deliverables contract). Confirm dedupePreservingOrder export doesn't break existing importers."
+          },
+          {
+            "phase": "Phase 5 — Quality gate: typecheck + full suite + no-regression audit",
+            "description": "Run `npm test` (vitest run); confirm ALL green — existing 1120 untouched + new (tracking, structured-changes, tracker-bracketing, implementation-crosscheck-gate) + the deliverable-bridge assertion. Fix any failures in the new or touched files."
+          },
+          {
+            "phase": "Phase 5 — Quality gate: typecheck + full suite + no-regression audit",
+            "description": "Non-regression audit: confirm runRedCheck, runDeliverableCheck + cache reset, npm in-scope classification, scope-aware cargo gate, themed live stream, mid-run input (activeRun singleton coexists with activeTracker), dashboard widget, real-theme parity (tests/stream-theme-class-theme.test.ts, tests/render/real-theme-parity.test.ts) all green. Grep the diff for any destructured pi Theme method (`const { ... } = theme`) and convert to method-style calls. Gate: `npm run typecheck && npm test` both exit 0."
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": []
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/06-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/07-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/08-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/06-specification.md",
+        "phaseCount": "5"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-21T02:17:24.529Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec-11 Review — Git Change-Tracker with Per-Stage/Per-Phase Bracketing and Claimed-vs-Actual Cross-Check Gate",
+        "date": "2026-07-21",
+        "verdict": "APPROVED WITH REVISIONS",
+        "summary": "Fagan-style content inspection of spec-11. The specification is exceptionally well-grounded: ~93% of file/line/API references verified against the actual codebase, with near-exact line citations in implementation.ts (phase loop @94, runBuildGate @165, runDeliverableCheck @185, phase-green @194), types.ts (state.setup @112-113), extension.ts (activeRun singleton @68/131/148, finally @442/446), nodes.ts (stage \"running\" emit @127 → stage.run @129, record() @98), workflow.ts (ctx.events.on stage/phase @163-164), prompts.ts (buildImplementPrompt @117/120, buildFixPrompt @135/140), and build-runner.ts (dedupePreservingOrder @118 module-private, touchedFilePaths @526, requireFiles @1588, resolveTimeoutMs @84). All 11 ACs map to spec sections; all 20 scenarios map to 6 concrete test layers in an explicit coverage matrix; zero uncovered. Architecture fits existing patterns (singleton mirror of activeRun, event-subscription seam for stage bracketing, AND-chain into phase-green, never-throw invariant). No critical defects. Two MEDIUM findings block a clean APPROVED: (1) the \"EXACT spawnSync shape from touchedFilePaths\" claim is inaccurate — touchedFilePaths' spawns omit the timeout the spec says it copies; (2) the setActiveTracker insertion point inside runPipelineTask is unspecified and the state.setup population locus could not be located in src, leaving the most complex wiring task under-specified. Three additional LOW findings address end-without-begin semantics, git-command divergence from touchedFilePaths, and unbounded jsonl growth. Grounding score ~93% (>90% threshold). Verdict: APPROVED WITH REVISIONS — address the two MEDIUM items before implementation to avoid a wrong insertion point and a misleading canonical-pattern citation.",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "medium",
+            "title": "D6 Grounding — touchedFilePaths spawn omits timeout; \"EXACT shape\" citation is inaccurate",
+            "detail": "Spec §\"Git primitives & reuse\" states the tracker copies \"the EXACT discrete-argv spawnSync shape from touchedFilePaths (build-runner.ts ~538): spawnSync(..., { encoding: 'utf8', timeout: resolveTimeoutMs(...) })\". Verified against source: touchedFilePaths' two spawns (build-runner.ts:538 `diff --merge-base` and :541 `ls-files --others`) pass ONLY `{ encoding: \"utf8\" }` — NO `timeout` field. The timeout envelope actually lives in the OTHER spawnSync call sites (build-runner.ts:1283, 1533, 1768, all using `timeout: timeoutMs` from `resolveTimeoutMs`). So the citation conflates two different shapes. Functional impact is low (adding a timeout to the tracker's spawns is safe and desirable), but the grounding claim is wrong and could mislead the implementer about which call site is the canonical pattern. Recommendation: cite the timeout-bearing spawnSync shape generically (the 1283/1533/1768 family) rather than touchedFilePaths, OR explicitly note that touchedFilePaths is being AUGMENTED with a timeout for the tracker. Lens: D6 Grounding.",
+            "file": "src/build-runner.ts",
+            "line": "538"
+          },
+          {
+            "id": "F2",
+            "severity": "medium",
+            "title": "D3/D8 — setActiveTracker insertion point in runPipelineTask is unspecified; state.setup locus unverified",
+            "detail": "Spec §\"Threading\" (AC-05) instructs: \"setActiveTracker(new ChangeTracker(specDir, worktreePath)) is called in src/pipeline.ts (runPipelineTask) at the point state.setup is finalized (right after the setup stage populates the worktree + spec dir, before the producing stages run)\". runPipelineTask exists at pipeline.ts:16 but builds/executes a node tree; no `state.setup =` assignment is locatable anywhere in src/ via search, and there is no named post-setup hook or line in runPipelineTask. Because setup runs as a node inside the tree, there is no clean synchronous \"right after setup\" insertion line in runPipelineTask itself — wiring there risks either reading setup before it is populated (undefined worktreePath/specDirectory) or missing the producing stages' brackets. This is the single most under-specified wiring point in the spec and directly affects Phase 2's testability (SCENARIO-010 singleton lifecycle assumes correct placement). Recommendation: name the concrete mechanism — e.g. subscribe to a terminal \"setup\" stage event, inject inside the setup stage node's return path, or add an explicit post-setup callback — and state whether the setup stage itself is intentionally excluded from bracketing (it will be, since the tracker is not yet active when setup's stage-start event fires). Lens: D3 Feasibility + D8 Ambiguity.",
+            "file": "src/pipeline.ts",
+            "line": "16"
+          },
+          {
+            "id": "F3",
+            "severity": "low",
+            "title": "D1/D8 — end() called without a matching begin() (null beginHead) behavior unspecified",
+            "detail": "ChangeRecord allows `beginHead: string | null`, and end() computes the delta via `git diff --name-status <beginHead>`. If end() fires for a unit with no prior begin() (null beginHead) — e.g. the setup stage whose stage-start event predates setActiveTracker, or any phase/stage that began before the singleton was wired — `diff --name-status <null>` is an invalid argv. The never-throw catch would swallow this and emit gitUnavailable:true, but that conflates \"no baseline captured\" with \"git broken\", producing a misleading verdict and a conservative pass that hides a real bracketing gap. Recommendation: specify end-without-begin explicitly (e.g. short-circuit to a record with gitActual=null, crossCheck=null, verdict=\"ok\", skip the diff spawn) so the jsonl trace distinguishes \"untracked\" from \"git-unavailable\". Matters for SCENARIO-008/009 nested-order correctness if any stage escapes bracketing. Lens: D1 Completeness + D8 Ambiguity.",
+            "file": "src/tracking.ts"
+          },
+          {
+            "id": "F4",
+            "severity": "low",
+            "title": "D6/D2 — tracker git command set diverges from touchedFilePaths; working-tree semantics not reconciled",
+            "detail": "The tracker uses `rev-parse HEAD` + `status --porcelain` + `diff --name-status <beginHead>`, while the reused touchedFilePaths (build-runner.ts:526) uses `diff --merge-base <ref> --name-only` + `ls-files --others --exclude-standard`. The spec calls this \"the committed-diff UNION untracked-files pattern keyed off beginHead instead of a base ref\" — a fair justification — but `status --porcelain` is strictly BROADER than `ls-files --others --exclude-standard`: porcelain also surfaces unstaged-modified AND staged-not-committed entries via XY-codes, so gitActual.created∪modified∪deleted will include working-tree state that touchedFilePaths' untracked-only union would not. This affects the crossCheck semantics (claimedNotChanged / changedNotClaimed) and the spec-10 deliverable bridge (claimed.filesCreated UNIONed into requireFiles). Recommendation: explicitly confirm `status --porcelain` is intentional (it is the right choice for per-phase bracketing since begin..end spans working-tree mutations, not just commits), state that classifyPorcelain covers the broader state intentionally, and note the deliberate divergence from touchedFilePaths' untracked-only model so the implementer does not \"harmonize\" them and silently narrow gitActual. Lens: D6 Grounding + D2 Consistency.",
+            "file": "src/build-runner.ts",
+            "line": "526"
+          },
+          {
+            "id": "F5",
+            "severity": "low",
+            "title": "D7/D1 — append-only change-tracker.jsonl has no growth/rotation/cleanup NFR",
+            "detail": "The tracker writes an append-only `<specDir>/change-tracker.jsonl` with one record per begin/end event. Across many runs/phases/attempts (MAX_ATTEMPTS=3 × phases × stages × runs) this file grows unboundedly inside specDir, and the spec lists no rotation, truncation-on-new-run, or size NFR. The spec-10/dashboard surfacing section explicitly defers a dedicated panel to \"future surfacing\", so today the file is write-only. Recommendation: add a one-line NFR — e.g. truncate-on-new-run (the singleton construction point, tied to F2's resolution, is a natural reset point) or a documented cap — so the file does not accumulate indefinitely and so test Layer 1/3 assertions on append-only behavior are scoped to a single run. Lens: D7 Complexity + D1 Completeness.",
+            "file": "src/tracking.ts"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "Pass (4/5)",
+            "notes": "All 11 ACs have spec sections; all 20 scenarios mapped to 6 test layers in an explicit coverage matrix (zero uncovered). Error/edge paths specified: never-throw invariant, gitUnavailable→pass, conservative parse, legacy tolerance, no-claim trivial pass, MAX_ATTEMPTS-bound retry. NFRs covered (zero new deps, backward compat, theme parity, no Rust/cargo gate). Gaps: no end-without-begin behavior (F3); no jsonl growth/rotation NFR (F5)."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "Pass (5/5)",
+            "notes": "Terminology uniform throughout (StructuredChanges, GitActual, CrossCheck, ChangeRecord, changeGate, claimedNotChanged/changedNotClaimed). API signatures contract-first and stable across sections. Line refs drift within tolerance (setActiveRun actual @131 vs spec ~141; dedupePreservingOrder @118 vs ~112). Git-command divergence from touchedFilePaths is the one consistency seam (F4)."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "Pass with notes (4/5)",
+            "notes": "Architecture fits existing patterns cleanly: singleton mirrors activeRun; stage bracketing via the real ctx.events.on(\"stage\") seam (workflow.ts:164); phase bracketing inside implementation.ts; changeGate AND-ed into the existing phase-green chain (gate.pass||inScopePass && deliverableCheck.pass). Spec-10 bridge explicitly avoids circular double-count. No circular deps. ONE feasibility risk: the setActiveTracker insertion point in runPipelineTask is not concretely specified and state.setup's population locus is unverified (F2)."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "Pass (5/5)",
+            "notes": "6 hermetic test layers with concrete mocking strategy (vi.mock node:child_process for git; stub runRedCheck/runBuildGate/runDeliverableCheck; mock renderAndWrite). Numeric thresholds explicit (MAX_ATTEMPTS=3, 1120 existing tests baseline). Each scenario has an assertable outcome (changeGate.pass boolean, jsonl line presence/order, no-throw, no-leak). Local gate: npm run typecheck && npm test both exit 0."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "Pass (5/5)",
+            "notes": "Full coverage matrix maps SCENARIO-001..020 → AC-01..011 → test layer → spec section. Phases 1-5 decompose cleanly onto ACs and dependencies are declared (Phase 2 depends on 1; 3 on 1+2; 4 on 3; 5 on 1-4). AC→spec, SCENARIO→task, plan→task-list chains all unbroken."
+          },
+          {
+            "name": "D6 Grounding",
+            "status": "Pass with notes (4/5)",
+            "notes": "~93% of references verified against source (above 90% gate). implementation.ts line refs near-exact (phase loop @94, runBuildGate @165, runDeliverableCheck @185, phase-green @194, accumulation @159, decl @92, return @219). types.ts state.setup @112-113 exact. extension.ts singleton @68/131/148, finally @442/446. nodes.ts stage emit @127/run @129/record @98. workflow.ts events @163-164. prompts.ts @117/120/126/135/140. build-runner.ts dedupePreservingOrder @118/touchedFilePaths @526/requireFiles @1588/resolveTimeoutMs @84. Deductions: touchedFilePaths spawn omits timeout so \"EXACT shape\" claim is wrong (F1); git-command divergence undocumented (F4); state.setup locus unverified (F2)."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "Pass (4/5)",
+            "notes": "One new self-contained module + minimal engine touch (event subscription + implementation.ts bracketing + singleton set/clear). Reuses dedupePreservingOrder (single source of truth, no duplication) and the existing gate AND-chain. Simplest viable approach (no new deps, discrete-argv spawnSync under existing timeout envelope). Only complexity concern: unbounded append-only jsonl with no rotation (F5)."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "Pass with notes (3/5)",
+            "notes": "API schemas fully defined (ChangeRecord, StructuredChanges, GitActual, CrossCheck, computeChangeGate return shape). State transitions explicit (begin→baseline, end→delta+crossCheck, gate→pass/claimedNotChanged). Error responses specified (gitUnavailable→record+pass, never-throw). Ambiguity gaps: setActiveTracker insertion point (F2) and end-without-begin/null-beginHead semantics (F3) are the two under-specified behaviors that could cause implementation drift."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/09-spec-review.md"
+      }
+    }
+  }
+}
