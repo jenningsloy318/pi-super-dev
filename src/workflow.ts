@@ -17,6 +17,7 @@ import { runHelper } from "./helpers.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
 import { extractControlKeys } from "./control.ts";
 import { knowledgeForAgent } from "./render/knowledge.ts";
+import { getActiveTracker } from "./tracking.ts";
 import type {
 	AgentCall,
 	AgentResult,
@@ -163,6 +164,23 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		ctx.events.on("phase", (label: unknown) => progress.phase(String(label)));
 		ctx.events.on("stage", (info: unknown) => progress.stage?.(info as StageProgressEvent));
 	}
+
+	// ChangeTracker stage bracketing (Phase 3a): open a record on stage start and
+	// close it on every terminal status, so change-tracker.jsonl always contains a
+	// stage-start/stage-end pair for every stage — independent of the progress
+	// sink wiring. SCENARIO-008 (no claimed set for stages).
+	ctx.events.on("stage", (info: unknown) => {
+		const stage = info as StageProgressEvent;
+		const tracker = getActiveTracker();
+		if (tracker && stage?.id) {
+			if (stage.status === "running") {
+				tracker.begin("stage", stage.id);
+			} else {
+				// Terminal NodeStatus: ok | skipped | failed | cancelled.
+				tracker.end("stage", stage.id);
+			}
+		}
+	});
 
 	let aborted = false;
 	let abortError: string | undefined;
