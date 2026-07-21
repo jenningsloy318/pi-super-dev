@@ -54,9 +54,17 @@ const mock = vi.hoisted(() => {
 	// stores it as the last end-record; getRecord() returns that last record
 	// (mirrors the real ChangeTracker's last-end-wins semantics). The claimed
 	// set handed to end() is captured for assertions.
+	// Mirrors the real ChangeTracker's phase path: begin() → probeEnd() per
+	// attempt (compute + store, no jsonl append) → commitEnd() once (persist).
+	// probeEnd() shifts the next queued ChangeRecord and stores it as the last
+	// end-record (last-end-wins); getRecord() returns that last record. The
+	// claimed set handed to probeEnd() is captured for assertions. commitEnd()
+	// is a no-op beyond a counter (the record is already stored by probeEnd).
 	const tracker = {
 		beginCalls: 0,
 		endCalls: 0,
+		probeCalls: 0,
+		commitCalls: 0,
 		getRecordCalls: 0,
 		recordQ: [] as Array<Record<string, unknown> | null>,
 		claimedByEnd: [] as Array<unknown>,
@@ -69,6 +77,19 @@ const mock = vi.hoisted(() => {
 			this.claimedByEnd.push(claimed ?? null);
 			this.lastEnd = this.recordQ.length ? (this.recordQ.shift() ?? null) : null;
 			return this.lastEnd;
+		},
+		// Phase path (AC-04 → SCENARIO-008/009): per-attempt probe — compute +
+		// store the freshest record WITHOUT appending a jsonl line.
+		probeEnd(_unit: string, _id: string, claimed?: unknown): Record<string, unknown> | null {
+			this.probeCalls++;
+			this.claimedByEnd.push(claimed ?? null);
+			this.lastEnd = this.recordQ.length ? (this.recordQ.shift() ?? null) : null;
+			return this.lastEnd;
+		},
+		// Phase path: close the bracket EXACTLY ONCE — persist the last probed
+		// record (already stored) as the single `end` jsonl line. No-op here.
+		commitEnd(_unit: string, _id: string): void {
+			this.commitCalls++;
 		},
 		getRecord(_unit: string, _id: string): Record<string, unknown> | null {
 			this.getRecordCalls++;
@@ -265,6 +286,8 @@ beforeEach(() => {
 	mock.lastChangeGateRec = null;
 	mock.tracker.beginCalls = 0;
 	mock.tracker.endCalls = 0;
+	mock.tracker.probeCalls = 0;
+	mock.tracker.commitCalls = 0;
 	mock.tracker.getRecordCalls = 0;
 	mock.tracker.recordQ.length = 0;
 	mock.tracker.claimedByEnd.length = 0;
@@ -295,7 +318,8 @@ describe("Phase 4 — changeGate AND-ed into phase-green (AC-07/AC-08)", () => {
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
 		// The gate was actually consulted (wiring present) and bounded by MAX_ATTEMPTS.
 		expect(mock.changeGateCalls).toBeGreaterThan(0);
-		expect(mock.tracker.getRecordCalls).toBeGreaterThan(0);
+		// The phase record was probed per-attempt (AC-04 phase path: probeEnd).
+		expect(mock.tracker.probeCalls).toBeGreaterThan(0);
 		// Retries respected the attempt budget (3 implementer attempts, no more).
 		const implAttempts = fake.agentIds.filter((id) => /\.impl\.a\d+$/.test(id));
 		expect(implAttempts.length).toBeLessThanOrEqual(3);
@@ -325,7 +349,8 @@ describe("Phase 4 — changeGate AND-ed into phase-green (AC-07/AC-08)", () => {
 		expect(hasLog(fake.logs, "GREEN on attempt 1")).toBe(true);
 		// The advisory unreported edit is surfaced somewhere in the logs.
 		expect(hasLog(fake.logs, "src/orphan.ts")).toBe(true);
-		expect(mock.tracker.getRecordCalls).toBeGreaterThan(0);
+		// The phase record was probed (AC-04 phase path: probeEnd).
+		expect(mock.tracker.probeCalls).toBeGreaterThan(0);
 	});
 
 	// ─── SCENARIO-015: targeted retry within budget (AC-07) ──────────────────

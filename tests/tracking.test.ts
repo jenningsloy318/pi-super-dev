@@ -437,3 +437,139 @@ describe("dedupePreservingOrder is exported from build-runner.ts (Phase 1 reuse)
 		expect(dedupePreservingOrder(["a", "b", "a", "c", "b"])).toEqual(["a", "b", "c"]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Review findings #4 + #5 (LOW) — porcelain classification + rename source.
+// classifyPorcelain is module-private; exercised via ChangeTracker.end →
+// buildGitActual with a scripted `status --porcelain` stdout.
+// ---------------------------------------------------------------------------
+
+describe("classifyPorcelain — staged-add / staged-copy / staged-rename → created (review #4)", () => {
+	it("classifies a staged add (`A <path>`) as created, not modified", () => {
+		// XY = "A " (added in index). Pre-fix this fell through to `modified`.
+		git({ head: "base", porcelain: "A \tsrc/new.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		const rec = t.end("stage", "s1");
+		expect(rec!.gitActual!.created).toContain("src/new.ts");
+		expect(rec!.gitActual!.modified).not.toContain("src/new.ts");
+	});
+
+	it("classifies a staged copy (`C <path>`) as created, not modified", () => {
+		// XY = "C " (copied in index). Pre-fix this fell through to `modified`.
+		git({ head: "base", porcelain: "C \tsrc/copy.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		const rec = t.end("stage", "s1");
+		expect(rec!.gitActual!.created).toContain("src/copy.ts");
+		expect(rec!.gitActual!.modified).not.toContain("src/copy.ts");
+	});
+
+	it("still classifies untracked (`??`) as created and deletions (`D `/` D`) as deleted", () => {
+		git({ head: "base", porcelain: "??\tsrc/u.ts\nD \tsrc/gone.ts\n M\tsrc/dirty.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		const rec = t.end("stage", "s1");
+		expect(rec!.gitActual!.created).toContain("src/u.ts");
+		expect(rec!.gitActual!.deleted).toContain("src/gone.ts");
+		expect(rec!.gitActual!.modified).toContain("src/dirty.ts");
+	});
+});
+
+describe("rename handling — deleted source captured, not dropped (review #5)", () => {
+	it("porcelain staged rename (`R  old -> new`) records BOTH old (deleted) and new (created)", () => {
+		// XY = "R " (staged rename). Pre-fix only `dst` was kept; `old` was dropped.
+		git({ head: "base", porcelain: "R  src/old.ts -> src/new.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		const rec = t.end("stage", "s1");
+		expect(rec!.gitActual!.created).toContain("src/new.ts");
+		expect(rec!.gitActual!.deleted).toContain("src/old.ts");
+	});
+
+	it("porcelain staged copy (`C  old -> new`) records the destination created, source NOT deleted", () => {
+		// XY = "C " (staged copy): source is unchanged, only the dest is new.
+		git({ head: "base", porcelain: "C  src/old.ts -> src/new.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		const rec = t.end("stage", "s1");
+		expect(rec!.gitActual!.created).toContain("src/new.ts");
+		expect(rec!.gitActual!.deleted).not.toContain("src/old.ts");
+	});
+
+	it("diff --name-status rename (`R100\told\tnew`) records BOTH old (deleted) and new (created)", () => {
+		git({ head: "base", diff: "R100\tsrc/old.ts\tsrc/new.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		const rec = t.end("stage", "s1");
+		expect(rec!.gitActual!.created).toContain("src/new.ts");
+		expect(rec!.gitActual!.deleted).toContain("src/old.ts");
+	});
+
+	it("diff --name-status copy (`C90\told\tnew`) records the destination created, source NOT deleted", () => {
+		git({ head: "base", diff: "C90\tsrc/old.ts\tsrc/new.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		const rec = t.end("stage", "s1");
+		expect(rec!.gitActual!.created).toContain("src/new.ts");
+		expect(rec!.gitActual!.deleted).not.toContain("src/old.ts");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Review finding CR-MED (MEDIUM) — single begin/end-per-phase nesting.
+// The implementation stage pattern: ONE begin, N per-attempt probeEnd (no
+// jsonl append), ONE commitEnd after the loop. The jsonl trace must contain
+// exactly one start + one end per phase regardless of attempt count.
+// ---------------------------------------------------------------------------
+
+describe("probeEnd + commitEnd — single begin/end-per-phase nesting (review CR-MED)", () => {
+	it("probeEnd does NOT append a jsonl line (per-attempt, no nesting break)", () => {
+		git({ head: "base", diff: "A\tsrc/a.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "p1");
+		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: [], filesDeleted: [] });
+		const recs = readRecords();
+		// Only the start line — NO end line from a probe.
+		expect(recs).toHaveLength(1);
+		expect(recs[0].event).toBe("start");
+	});
+
+	it("probeEnd still stores the freshest record so getRecord reads it pre-commit", () => {
+		git({ head: "base", diff: "A\tsrc/a.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "p1");
+		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: [], filesDeleted: [] });
+		const rec = t.getRecord("phase", "p1");
+		expect(rec).not.toBeNull();
+		expect(rec!.event).toBe("end");
+		expect(rec!.crossCheck).not.toBeNull();
+	});
+
+	it("ONE begin + N probeEnd + ONE commitEnd emits exactly one start + one end", () => {
+		git({ head: "base", diff: "A\tsrc/a.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "p1");
+		// Simulate 3 attempts (MAX_ATTEMPTS=3): each probes without appending.
+		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: [], filesDeleted: [] });
+		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: ["src/b.ts"], filesDeleted: [] });
+		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: ["src/b.ts", "src/c.ts"], filesDeleted: [] });
+		// Close the bracket exactly once.
+		t.commitEnd("phase", "p1");
+		const recs = readRecords();
+		expect(recs).toHaveLength(2);
+		expect(recs[0].event).toBe("start");
+		expect(recs[1].event).toBe("end");
+		expect(recs[0].id).toBe("p1");
+		expect(recs[1].id).toBe("p1");
+		// The persisted end-record carries the freshest claim (last probe wins).
+		expect(recs[1].claimed.filesModified).toEqual(["src/b.ts", "src/c.ts"]);
+	});
+
+	it("commitEnd is a no-op when no record was ever probed/ended (never throws)", () => {
+		git({ head: "base" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		expect(() => t.commitEnd("phase", "never-begun")).not.toThrow();
+		expect(readRecords()).toHaveLength(0);
+	});
+});

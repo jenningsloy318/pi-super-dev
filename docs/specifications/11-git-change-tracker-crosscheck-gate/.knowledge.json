@@ -839,6 +839,184 @@
         ],
         "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/09-spec-review.md"
       }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-21T03:53:00.857Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "Git Change-Tracker with per-stage/phase bracketing + claimed-vs-actual cross-check gate (spec-11)",
+        "date": "2026-07-21",
+        "summary": "spec-11 killed the false-green root cause a second way by replacing the advisory flat filesModified[] with a structured {filesCreated, filesModified, filesDeleted} set plus a git-snapshot ChangeTracker that brackets every stage and implementation phase, then AND-ed a claimed-vs-actual cross-check gate into phase-green. A phase that claims to create/modify a file git does not show changed now hard-fails, even when the build gate and deliverable check pass; the whole subsystem never throws and degrades to pass when git is unavailable.\n\nWhat was built, per phase:\n\n• Phase 1 — ChangeTracker core (NEW src/tracking.ts, ~386 lines): begin/end(unit: \"stage\"|\"phase\", id) brackets each unit with a git baseline (rev-parse HEAD + status --porcelain); end() recomputes the delta as `diff --name-status <beginHead>` UNION `status --porcelain`, classifies into gitActual {created(A/+untracked), modified(M), deleted(D)}, and one-directionally cross-checks vs claimed into {claimedNotChanged[], changedNotClaimed[]}, appending one line to an append-only <specDir>/change-tracker.jsonl. Reuses spawnSync + dedupePreservingOrder from src/build-runner.ts; no new deps. Never-throw: git failure records {gitUnavailable:true} and continues.\n\n• Phase 2 — Per-run singleton + structured-change parsing + prompt contract: added activeTracker/setActiveTracker/getActiveTracker mirroring activeRun; setActiveTracker(null) in src/extension.ts execute() finally. src/prompts.ts buildImplementPrompt/buildFixPrompt now request filesCreated/filesModified/filesDeleted with the \"git-cross-checked; claiming a file you didn't change fails the phase\" instruction. src/stages/implementation.ts gained parseStructuredChanges(control) with legacy flat-filesModified backward tolerance, deriving the flat summary list.\n\n• Phase 3 — Stage + phase bracketing + summary surfacing: src/workflow.ts subscribes to ctx.events 'stage' (running→begin, terminal→end); implementation.ts adds tracker.begin/end('phase', phaseId, claimed) around the attempt loop, producing correctly nested stage-start→phase-start→phase-end→stage-end records. A `📝 N files changed (C/M/D)` evidence line is surfaced from the phase end-record's gitActual.\n\n• Phase 4 — Git cross-check gate + spec-10 bridge + retry injection: computeChangeGate(rec) (co-located in src/build-runner.ts) returns pass===false iff a non-gitUnavailable record has non-empty claimedNotChanged; AND-ed into phase-green (~(gate||inScopePass) && deliverableCheck.pass && changeGate.pass). Misses are fed back into the next implementer attempt under a \"## Claimed changes not present in git — actually create/wire these\" section via the existing retry channel, bounded by MAX_ATTEMPTS; changedNotClaimed stays advisory-only. AC-09 spec-10 bridge UNIONs claimed.filesCreated into deliverables.requireFiles before runDeliverableCheck (no circular double-count).\n\n• Phase 5 — Quality gate: npm run typecheck (tsc --noEmit) is clean; npm test = 74 files / 1251 tests ALL GREEN (the untouched existing suite + 6 new test files: tracking.test.ts, structured-changes.test.ts, tracker-bracketing.test.ts, compute-change-gate.test.ts, implementation-crosscheck-gate.test.ts, change-tracker-nonregression.test.ts = 78 new tests). No regression to runRedCheck, runDeliverableCheck + cache reset, npm in-scope classification, scope-aware cargo gate, themed stream, mid-run input injection, dashboard, or real-theme parity; pi Theme methods used method-style (no destructuring).\n\nDeviations: none material — the design followed the spec's minimal-touch event-seam preference for stage bracketing (ctx.events subscription) rather than editing nodes.ts/pipeline.ts internals, and chose build-runner.ts for computeChangeGate co-location with the other gates, both as the plan permitted. The false-green that motivated the spec (a phase claiming a file never created/wired) is now provably impossible.\n\nTask type: bug (false-green prevention). UI scope: none — this is an engine/tracking enhancement; the only user-facing surface is the summary evidence line and change-tracker.jsonl.",
+        "phasesCompleted": "5/5 — Phase 1 (ChangeTracker core module src/tracking.ts), Phase 2 (per-run singleton threading + structured-change parsing + prompt contract), Phase 3 (stage + phase bracketing via ctx.events seam + summary surfacing), Phase 4 (git cross-check gate AND + spec-10 deliverable bridge + claimedNotChanged retry injection), Phase 5 (quality gate: typecheck clean + full suite green + no-regression audit).",
+        "allGreen": "true",
+        "filesModified": [
+          "src/tracking.ts",
+          "src/build-runner.ts",
+          "src/extension.ts",
+          "src/prompts.ts",
+          "src/workflow.ts",
+          "src/stages/setup.ts",
+          "src/stages/implementation.ts",
+          "src/stages/implementation.test.ts",
+          "tests/tracking.test.ts",
+          "tests/structured-changes.test.ts",
+          "tests/tracker-bracketing.test.ts",
+          "tests/compute-change-gate.test.ts",
+          "tests/implementation-crosscheck-gate.test.ts",
+          "tests/change-tracker-nonregression.test.ts",
+          "tests/implementation-deliverable-wiring.test.ts",
+          "tests/implementation-deliverable-wiring-edges.test.ts",
+          "tests/implementation-red-loop.test.ts",
+          "tests/implementation-red-loop-edges.test.ts",
+          "tests/implementation-tdd-rust-wiring.test.ts",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/01-requirements.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/02-bdd-scenarios.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/03-research-report.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/04-debug-analysis.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/05-code-assessment.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/06-specification.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/07-implementation-plan.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/08-task-list.md",
+          "docs/specifications/11-git-change-tracker-crosscheck-gate/09-spec-review.md"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/10-implementation-summary.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-21T04:18:49.797Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review — spec-11 Git Change-Tracker & Cross-Check Gate",
+        "date": "2026-07-21",
+        "verdict": "CONTEST",
+        "summary": "The implementation realizes spec-11's intent: a never-throws ChangeTracker (src/tracking.ts) brackets stage + phase units with git baselines/deltas, classifies created/modified/deleted (with rename/copy source-deletion fix), writes an append-only change-tracker.jsonl, exposes a per-run singleton, parses structured {filesCreated,filesModified,filesDeleted} with legacy-flat tolerance, and ANDs a one-directional changeGate (claimedNotChanged hard-fails, changedNotClaimed advisory, gitUnavailable→no-block) into phase-green — closing the false-green a second way for the single-attempt case. The contract is honored and degrade paths are safe (no production/data-loss/security risk → not REJECT). However three CONTEST-level gaps weaken the headline guarantees against the stated acceptance criteria: (1) the gate only cross-checks the CURRENT attempt's claim, so a phase that silently drops a previously-claimed file on retry evades the \"false-green killer\"; (2) the setup stage is literally NOT bracketed (stage-start fires before the singleton is installed), breaking AC-02's \"EVERY stage\" claim; (3) the cross-check uses exact string path equality with no normalization, risking false claimedNotChanged on ./prefix, trailing-slash, or case-insensitive-FS variants. Plus an orphaned phase-start on budget-abort and minor verbosity. Author response requested on F1–F3.",
+        "findings": [
+          {
+            "id": "AR-01",
+            "severity": "medium",
+            "title": "Cross-attempt claim evasion: dropping a claim on retry vacates the change-gate",
+            "lens": "Architect",
+            "file": "src/stages/implementation.ts",
+            "line": "~243 (probeEnd) + ~319 (commitEnd)",
+            "detail": "The false-green killer only holds for a claim that survives into the GREEN attempt. changeGate is computed from `tracker.probeEnd(\"phase\", phaseId, structured)` where `structured = parseStructuredChanges(impl.control)` is THIS attempt's parsed claim, and `claimedNotChanged = changeGate.claimedNotChanged` is reassigned each iteration. Scenario: attempt 1 claims filesCreated:[X] but git shows no X → gate fails, X is injected into the retry block. Attempt 2's implementer simply omits X from its claim → `structured.filesCreated` no longer contains X → cross-check's claimedNotChanged is empty → changeGate.pass===true → phase can go GREEN even though X was never created. The spec-10 deliverable bridge (src/stages/implementation.ts ~line 245) ALSO unions only the current attempt's `structured.filesCreated`, so a non-spec-declared claimed file is fully unenforced once retracted. AC-04's regression test only covers the single-attempt case. Recommend retaining the UNION of claimed.filesCreated across ALL attempts of the phase (or pinning the first claim) so retracting a claim cannot vacate enforcement; spec-declared requireFiles remain independently caught."
+          },
+          {
+            "id": "AR-02",
+            "severity": "medium",
+            "title": "The setup stage is NOT bracketed — literal violation of AC-02 \"stage-start/stage-end for EVERY stage\"",
+            "lens": "Skeptic",
+            "file": "src/nodes.ts",
+            "line": "127 (emit running) vs 129 (await stage.run); src/stages/setup.ts:37 (setActiveTracker)",
+            "detail": "The 'running' stage event is emitted at src/nodes.ts:127 BEFORE `await stage.run(state, ctx)` (line 129). setActiveTracker(...) is called INSIDE setup's runSetup body (src/stages/setup.ts:37), i.e. after the running event has already fired. Net effect for the setup stage: getActiveTracker() is null at 'running' → no begin(\"stage\",\"setup\"); by the time the terminal 'ok' event fires the singleton is set → tracker.end(\"stage\",\"setup\") writes an orphaned end-record whose beginHead is null (baseline missing) so the committed-diff delta is skipped and only `git status --porcelain` is recorded. AC-02/AC-02's synthetic-pipeline test asserts start+end for every stage — setup fails that literally. Recommend installing the tracker earlier (pipeline.ts runPipelineTask, before the workflow root runs) or explicitly accepting/excluding the setup stage from the 'every stage' claim."
+          },
+          {
+            "id": "AR-03",
+            "severity": "medium",
+            "title": "Cross-check uses exact string path equality — no normalization → false claimedNotChanged",
+            "lens": "Skeptic",
+            "file": "src/tracking.ts",
+            "line": "computeCrossCheck (gitCreatedOrModified Set / claimedCreatedOrModified.filter)",
+            "detail": "claimedNotChanged = claimedCreatedOrModified.filter(p => !gitCreatedOrModified.has(p)) is exact Set string membership. git emits repo-relative posix paths (src/foo.ts) from both `diff --name-status` and porcelain, but agents are free to report `./src/foo.ts`, `src/./foo.ts`, a trailing slash, backslashes, or a case variant. On case-insensitive filesystems (macOS APFS default, Windows) `Src/Foo.ts` vs `src/foo.ts` would falsely register as claimedNotChanged → false gate FAILURE. The spec's 'conservative parse' clause only covers git-unavailability, not path variance. This is the opposite-direction bug of the false-green killer: a real change mis-classified as a miss. Recommend normalizing both sides (path.posix.normalize + strip leading ./, and casefold on darwin/win32) before the set comparison."
+          },
+          {
+            "id": "AR-04",
+            "severity": "low",
+            "title": "Orphaned phase-start record on budget exhaustion (unbalanced jsonl)",
+            "lens": "Architect",
+            "file": "src/stages/implementation.ts",
+            "line": "147-148 (early return) vs ~317 (commitEnd after loop)",
+            "detail": "tracker.begin(\"phase\", phaseId) is called before the attempt loop (~line 143). On budget exhaustion the loop body does `return { phasesCompleted, ... summary: \"Budget exhausted\" }` at line 148 — a direct return from stage.run that SKIPS the post-loop `tracker.commitEnd(\"phase\", phaseId)`. Result: change-tracker.jsonl carries a phase-start record with no matching phase-end, breaking the 'single begin/end-per-phase nesting' invariant the probeEnd/commitEnd split was specifically introduced to preserve (review finding CR-MED). The stage-level end still fires so the run looks complete. Recommend wrapping the attempt loop in try/finally that always calls commitEnd, or moving commitEnd into a finally."
+          },
+          {
+            "id": "AR-05",
+            "severity": "low",
+            "title": "Partial git failure collapses the whole record to gitUnavailable",
+            "lens": "Skeptic",
+            "file": "src/tracking.ts",
+            "line": "computeEndRecord (single try/catch around endHead+diff+status)",
+            "detail": "computeEndRecord wraps rev-parse(endHead), diff --name-status, AND status --porcelain in ONE try/catch. If any one of the three throws (e.g. a transient porcelain spawn timeout, a partial stdout), the entire record degrades to {gitUnavailable:true} even though the committed diff was valid — silently discarding a correct cross-check and (correctly but wastefully) skipping the gate. No-block contract preserved, so impact is observability/coverage only. Recommend computing each git op in its own try/catch and unioning whatever subset succeeded, marking only the missing piece unavailable."
+          },
+          {
+            "id": "AR-06",
+            "severity": "low",
+            "title": "Verbosity / redundant doc blocks inflate token cost for every downstream agent",
+            "lens": "Minimalist",
+            "file": "src/tracking.ts",
+            "line": "end() method (~two stacked JSDoc blocks)",
+            "detail": "src/tracking.ts end() carries two stacked JSDoc comment blocks (the original plus a second describing the stage-vs-phase path), and implementation.ts/build-runner.ts are dense with inline SCENARIO-xxx provenance tags. The provenance is useful but these files are read by implementer/reviewer agents whose token budget is the dominant run cost (per learned.md). Recommend merging the duplicate end() JSDoc into one and trimming the most repetitive SCENARIO citations to a single header reference. Pure cleanup; no behavior change."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/12-adversarial-review.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-21T04:18:55.351Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review — spec-11 Git Change-Tracker + Cross-Check Gate",
+        "date": "2025-11-12",
+        "verdict": "Changes Requested",
+        "summary": "The spec-11 implementation is structurally faithful and the headline requirement is met: `src/tracking.ts` ships a never-throwing `ChangeTracker` with begin/end at stage|phase granularity, git baseline + delta (committed `diff --name-status <beginHead>` UNION `status --porcelain`), created/modified/deleted classification (with correct `A`/`C`/`R`→created and `D`→deleted handling plus rename-source capture), a one-directional cross-check, and an append-only `<specDir>/change-tracker.jsonl`. Bracketing is wired via the minimal-touch event seam (workflow.ts subscribes to `ctx.events` \"stage\"; implementation.ts begins/ends each phase), the structured `{filesCreated,filesModified,filesDeleted}` contract is in both implementer + fix prompts with legacy-flat tolerance, `computeChangeGate` is AND-ed into phase-green (`(gate.pass||gate.inScopePass) && deliverableCheck.pass && changeGate.pass`), `claimedNotChanged` is fed into the next retry, `changedNotClaimed` stays advisory, git-unavailable degrades to pass, and `claimed.filesCreated` unions into deliverable `requireFiles`. Stage brackets are balanced because `nodes.ts` `record()` emits the terminal \"stage\" event for ok/failed/skipped. Security is clean: every git op is discrete-argv `spawnSync` (no `shell:true`) under `resolveTimeoutMs()`, so agent paths never reach a shell. No new runtime deps. AC-01..AC-06 are satisfied by inspection.\n\nHowever, one HIGH-severity correctness gap blocks approval: the claimed-vs-actual cross-check is an EXACT string match with zero path normalization, and the implementer/fix prompts do not constrain the path format. Git emits repo-relative paths; an LLM that returns absolute, `./`-prefixed, or cwd-relative paths will be falsely classified as `claimedNotChanged`, flipping `changeGate.pass` to false and turning real GREEN phases RED — the precise inverse of the feature's \"be conservative, avoid false alarms\" intent. The unit tests pass because they use repo-relative paths, masking the risk. The remaining findings are minor (orphan end records on skipped stages, dangling phase-start on budget exhaustion, blocking spawnSync volume, singleton concurrency). No Critical; one High → Changes Requested.",
+        "findings": [
+          {
+            "id": "CR-01",
+            "severity": "High",
+            "title": "Cross-check has no path normalization; non-repo-relative LLM claims cause spurious changeGate FAIL (false-red on legitimate phases)",
+            "detail": "computeCrossCheck() compares claimed paths to gitActual paths with exact string equality (`gitCreatedOrModified.has(p)` / `claimedAll.has(p)`), and parseStructuredChanges() does no normalization. Git's `diff --name-status` and `status --porcelain` emit paths relative to the worktree root, but the implementer/fix prompts only say 'report the exact files you created/modified/deleted' with no format constraint. An LLM agent commonly returns absolute paths (`/home/.../src/foo.ts`), `./`-prefixed paths, or cwd-relative paths (and cwd need not equal the repo root). Any such mismatch makes a real change appear in `claimedNotChanged`, so `changeGate.pass === false` and a phase that genuinely created/modified the file is forced RED — the opposite of the feature's goal and a direct violation of the spec's repeated 'be conservative to avoid false alarms' requirement. This is silent in tests because they feed repo-relative paths. Fix: normalize both sides to repo-relative before comparison inside computeCrossCheck (strip leading `./`, strip a `worktreePath`/`cwd` prefix, collapse `\\`, reject empty), OR normalize once in parseStructuredChanges; and add a one-line prompt contract: 'Report file paths repo-relative to the worktree root.' Add a regression test: implementer returns `join(worktreePath, 'src/x.ts')` while git shows `src/x.ts` → crossCheck.claimedNotChanged must be empty.",
+            "file": "src/tracking.ts",
+            "line": "computeCrossCheck (~388-405); src/stages/implementation.ts parseStructuredChanges; src/prompts.ts GIT_CROSSCHECK_WARNING/buildImplementPrompt"
+          },
+          {
+            "id": "CR-02",
+            "severity": "Low",
+            "title": "Skipped stages emit a terminal 'stage' event with no preceding 'running' → orphan end record in change-tracker.jsonl",
+            "detail": "In nodes.ts `task()`, the disabled/budget-exhausted paths call `record(ctx, \"skipped\")` WITHOUT first emitting `{status:\"running\"}`. The workflow.ts stage subscription therefore calls `tracker.end(\"stage\", id)` for a unit that was never begun. computeEndRecord() then reads a missing baseline (defaults to `{beginHead:null}`) and appends an `{event:\"end\"}` line with no matching `{event:\"start\"}`. It does not corrupt the gate (stages carry no `claimed`), but it breaks the append-only trace's start/end pairing contract that SCENARIO-008 asserts for 'every stage'. Fix: in workflow.ts, only `end` when a begin was recorded (e.g. guard on a `began` Set, or call `tracker.end` only for `status==='ok'||'failed'`), or have nodes.ts emit 'running' before 'skipped'.",
+            "file": "src/workflow.ts",
+            "line": "175-181 (subscription); src/nodes.ts:108/113 record(ctx,\"skipped\")"
+          },
+          {
+            "id": "CR-03",
+            "severity": "Low",
+            "title": "Phase bracket left dangling (start without end) when budget exhausts inside the attempt loop",
+            "detail": "implementation.ts opens `tracker.begin(\"phase\", phaseId)` before the attempt loop, but the early `return` on `!ctx.budget.check()` inside the loop executes before `tracker.commitEnd(\"phase\", phaseId)` (which sits after the loop). Result: a `{event:\"start\"}` jsonl line with no matching `{event:\"end\"}` for the in-flight phase when a run is budget-killed mid-phase. Not gate-affecting (the run is terminating), but violates the single begin/end-per-phase nesting contract. Fix: wrap the phase body in try/finally with `tracker?.commitEnd(\"phase\", phaseId)` in finally, or call commitEnd before each early return.",
+            "file": "src/stages/implementation.ts",
+            "line": "attempt-loop early return on !ctx.budget.check()"
+          },
+          {
+            "id": "CR-04",
+            "severity": "Low",
+            "title": "Synchronous blocking git spawns on the event loop scale with phases × attempts",
+            "detail": "Each begin issues 1 spawnSync (rev-parse); each probeEnd/commitEnd/end issues 3 (rev-parse + diff --name-status + status --porcelain). For N phases × MAX_ATTEMPTS(3) that is ~1 + 3·3 ≈ 10 blocking spawns per phase, plus 2 per stage, all via spawnSync on the main thread. Local git is fast (~tens of ms each) so this is acceptable today, but it is pure synchronous I/O interleaved with an async pipeline; if stage count or attempts grow it will stall the event loop. No change required now — flagging for awareness; if it ever matters, switch to async `execFile` or cache the per-begin HEAD (it cannot change within a phase's begin/end bracket).",
+            "file": "src/tracking.ts",
+            "line": "gitSpawn:300-315"
+          },
+          {
+            "id": "CR-05",
+            "severity": "Low",
+            "title": "Per-run singleton is a blind overwrite, not a concurrency guard; overlapping runs in one process clobber each other",
+            "detail": "setup.ts does `setActiveTracker(new ChangeTracker(...))` unconditionally with a comment claiming a 'stale-singleton discard guard', but it is a blind overwrite. If two pi runs overlap in the same process (the activeRun pattern has the same shape), the second setup overwrites the first's tracker, so the first run's remaining phases write records to the second run's specDir and read the wrong worktreePath. This is accepted per the spec ('mirror the activeRun pattern'), so severity is Low, but the comment overstates the guarantee. Consider keying the singleton by runId or documenting the single-concurrent-run assumption explicitly.",
+            "file": "src/stages/setup.ts",
+            "line": "28-35 (setActiveTracker call)"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/13-code-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-21T04:26:50.261Z",
+      "agent": "docs",
+      "data": {
+        "title": "Docs (spec-11): git change-tracker + cross-check gate — reflect implementation, mark phases complete, document deviations",
+        "date": "2026-07-21",
+        "summary": "Updated all spec-11 directory documents and project-level docs to reflect the implemented git change-tracker + claimed-vs-actual cross-check gate. Verified against the merged code (src/tracking.ts: begin/end/probeEnd/commitEnd/getRecord + normalizeTrackerPath + activeTracker singleton; src/build-runner.ts: computeChangeGate + dedupePreservingOrder export; src/stages/implementation.ts: changeGate AND-ed into phase-green `(gate.pass||gate.inScopePass) && deliverableCheck.pass && changeGate.pass`, spec-10 claimed.filesCreated→requireFiles bridge, probeEnd-per-attempt + commitEnd-once; src/workflow.ts: ctx.events stage subscription; src/prompts.ts: structured filesCreated/Modified/Deleted contract; src/pipeline.ts + src/extension.ts: singleton lifecycle). All 5 phases confirmed complete via 4 commits (69866cff, 61f44571, ba80ddc1, 72595e60); npm run typecheck clean; npm test 74 files/1251 tests green. The implementation summary (10-implementation-summary.md) was already complete and accurate and required no change. README gained a \"Phase-green trust\" section and CHANGELOG an [Unreleased] Added entry documenting the false-green-killing cross-check, the structured-change contract, the spec-10 bridge, the never-throw/git-unavailable degradation, and the minimal-touch event seam.",
+        "docsUpdated": "README.md (new \"## Phase-green trust (claimed-vs-actual cross-check)\" section documenting the three-way phase-green AND, changeGate semantics, claimedNotChanged hard-fail vs changedNotClaimed advisory, spec-10 bridge, git-unavailable degradation, and summary evidence line); CHANGELOG.md (new \"Added — Git change-tracker with claimed-vs-actual cross-check gate (spec-11)\" entry under [Unreleased]); docs/specifications/11-git-change-tracker-crosscheck-gate/08-task-list.md (all 26 task checkboxes marked [x] complete, added COMPLETE status header + completion-notes section citing the 4 commits); docs/specifications/11-git-change-tracker-crosscheck-gate/07-implementation-plan.md (all 5 phase headers marked ✔ COMPLETE, added Status header + Phase outcomes section); docs/specifications/11-git-change-tracker-crosscheck-gate/06-specification.md (appended \"## Deviations from implementation\" with two deviations + non-deviations confirmation). 10-implementation-summary.md reviewed and left as-is (already accurate, including the post-review Fix-round-2 notes).",
+        "deviationsDocumented": [
+          "Deviation 1 — Phase end split into probeEnd + commitEnd (src/tracking.ts). Spec specified a single end(unit,id,claimed?) called once after the phase attempt loop; implementation uses probeEnd per-attempt (computes freshest cross-check, stashes last-record, does NOT persist) + commitEnd once after the loop (persists exactly the final record). Reason: the gate must read a cross-check on every attempt to drive the retry loop, but a single end would either lose the per-attempt signal or produce duplicate jsonl phase-end lines. Surfaced by code review CR-MED. Impact: none to false-green contract or jsonl record shape (stages still use single end unchanged).",
+          "Deviation 2 — computeCrossCheck normalizes paths before matching via new pure normalizeTrackerPath() in src/tracking.ts. Spec specified exact string equality for the claimedNotChanged set difference; implementation normalizes both sides (backslash→POSIX, collapse //, strip leading ./ and leading /, strip trailing /, case-preserving) while keeping original strings in output arrays. Reason: without normalization an LLM claim like ./src/x.ts, src//x.ts, or src\\x.ts would be spuriously flagged claimedNotChanged against git's repo-relative src/x.ts — a false-red changeGate FAIL, the opposite of the conservative posture SCENARIO-006 mandates. Surfaced by code review CR-HIGH. Impact: none to clean-path cases (33 tracking.test.ts cross-check cases unchanged).",
+          "Non-deviations confirmed against code and documented in the spec: stage bracketing via the ctx.events subscription seam (minimal touch, no nodes.ts/pipeline.ts internals); activeTracker singleton mirroring activeRun with set in pipeline.ts at state.setup finalization + clear in extension.ts execute() finally; computeChangeGate co-located in build-runner.ts with the spec's exact signature/semantics; structured-change contract in buildImplementPrompt/buildFixPrompt with legacy flat array tolerated by parseStructuredChanges; spec-10 claimed.filesCreated→requireFiles union with no circular double-count; zero new runtime deps via gitSpawn(argv) reusing spawnSync + resolveTimeoutMs."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/11-git-change-tracker-crosscheck-gate/docs/specifications/11-git-change-tracker-crosscheck-gate/15-documentation.md"
+      }
     }
   }
 }

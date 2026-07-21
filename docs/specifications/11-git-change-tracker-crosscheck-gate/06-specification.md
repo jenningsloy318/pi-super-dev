@@ -142,3 +142,30 @@ The verification strategy is layered to match the three granularities of the fea
 - SCENARIO-018
 - SCENARIO-019
 - SCENARIO-020
+
+## Deviations from implementation
+
+The implemented behavior matches the spec's enforcement contract (claimedNotChanged hard-fails AND-ed into phase-green; changedNotClaimed advisory; git-unavailable never blocks; never-throws; append-only jsonl; structured-change contract; spec-10 bridge). Two refinements were introduced during the code-review round. Both are conservative, fully test-covered, and do not change the false-green-killing semantics.
+
+### Deviation 1 — Phase end split into `probeEnd` + `commitEnd` (the phase bracket closes once)
+
+- **Original text (spec §Core component API + §Bracketing EVERY phase):** a single `end(unit, id, claimed?)` method, called once after the phase attempt loop with the structured changes parsed from the last implementer control. The phase bracket was `begin("phase", phaseId)` before the loop → `end("phase", phaseId, claimed)` after the loop.
+- **Changed text:** phases use a two-call end path: `probeEnd("phase", phaseId, claimed?)` is called at the end of **each attempt** (it computes the freshest cross-check and stashes the record in an internal last-record map but does **not** persist to jsonl), then `commitEnd("phase", phaseId)` is called **once** after the attempt loop to persist exactly the final record. Stages still use the single `end("stage", id)` path unchanged.
+- **Reason:** the gate (`computeChangeGate`) must read a cross-check on every attempt to drive the retry loop, but the spec's single-`end` design would either (a) compute the cross-check only on the final attempt — losing the per-attempt false-green signal that feeds `## Claimed changes not present in git` — or (b) persist one jsonl record per attempt, producing duplicate/overlapping phase-end lines that muddle the bracket trace. `probeEnd`/`commitEnd` gives every attempt a fresh cross-check **and** keeps the jsonl trace to exactly one phase-end record per phase (correct nesting: `stage-start → phase1-start → phase1-end → … → stage-end`). Surfaced by code review (finding CR-MED).
+- **Impact:** none to the false-green contract or the jsonl record shape (the persisted record is identical to what the spec's single `end` would have produced on the final attempt). New test surface: the synthetic-pipeline bracketing test and the gate regression test assert both the per-attempt probe and the single commit.
+
+### Deviation 2 — `computeCrossCheck` normalizes paths before matching (path-variant claims no longer false-red)
+
+- **Original text (spec §Core component `end()` + SCENARIO-013):** the cross-check used exact string equality — `claimedNotChanged = (claimed.filesCreated ∪ claimed.filesModified) \ gitActual.{created ∪ modified}`.
+- **Changed text:** matching now runs both sides through a pure `normalizeTrackerPath(p)` (backslash → POSIX `/`; collapse `//`; strip a leading `./`; strip a leading `/`; strip a trailing `/`; case-preserving) before the set difference, while the **output arrays still carry the original (un-normalized)** claim/git strings so retry prompts stay actionable.
+- **Reason:** without normalization an LLM claim like `./src/x.ts`, `src//x.ts`, `src\x.ts`, or `/src/x.ts` would be spuriously flagged `claimedNotChanged` against git's repo-relative `src/x.ts`, producing a false-red `changeGate` FAIL on a legitimate phase (the exact opposite of the conservative posture the spec mandates in SCENARIO-006). Surfaced by code review (finding CR-HIGH).
+- **Impact:** none to the clean-path cases (clean POSIX repo-relative paths normalize to themselves — the 33 `tracking.test.ts` cross-check cases are unchanged). Adds robustness against path-variant agent output without weakening the claimed-but-not-done killer.
+
+### Non-deviations (confirmed against code)
+
+- Stage bracketing via the `ctx.events` "stage" subscription seam in `src/workflow.ts` (minimal-touch, no nodes.ts/pipeline.ts internals edited) — exactly as the spec's PREFERRED path.
+- `setActiveTracker` wired in `src/pipeline.ts` at the `state.setup`-finalized point with a stale-discard guard; `setActiveTracker(null)` in `src/extension.ts` `execute()` `finally` adjacent to `setActiveRun(null)` — mirrors `activeRun` exactly.
+- `computeChangeGate` co-located in `src/build-runner.ts` with the other gates; signature `{pass: boolean; claimedNotChanged: string[]}`, `pass === false` iff `rec && !rec.gitUnavailable && (rec.crossCheck?.claimedNotChanged?.length ?? 0) > 0`, never throws.
+- Structured-change contract in `buildImplementPrompt`/`buildFixPrompt` (`filesCreated`/`filesModified`/`filesDeleted` + the cross-check warning); legacy flat `filesModified` arrays tolerated by `parseStructuredChanges`.
+- spec-10 bridge: `claimed.filesCreated` UNIONed into `deliverables.requireFiles` before `runDeliverableCheck`; spec-declared `requireFiles` remain independent (no circular double-count).
+- Zero new runtime deps; git spawns reuse `spawnSync` + `resolveTimeoutMs` via the `gitSpawn(argv)` helper.

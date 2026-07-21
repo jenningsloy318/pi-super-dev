@@ -105,6 +105,38 @@ interface Baseline {
 	beginHead: string | null;
 }
 
+/**
+ * Normalize a path for cross-check MATCHING (review finding #1, High):
+ * LLM-supplied claims frequently carry path artifacts that git's
+ * repo-relative paths never have — a leading `./`, Windows backslashes,
+ * repeated slashes, a trailing slash, or a leading worktree-root slash. Exact
+ * string equality then flags a legitimately-changed file as
+ * `claimedNotChanged` → a spurious false-red changeGate FAIL.
+ *
+ * This pure (no FS, no worktreePath) normalizer collapses those artifacts so
+ * `./src/x.ts`, `src//x.ts`, `src\\x.ts`, and `/src/x.ts` all match git's
+ * `src/x.ts`. It is INTENTIONALLY case-preserving (case sensitivity is
+ * filesystem-dependent; lowercasing would over-match on case-sensitive FSes
+ * and silently change behavior for the existing clean-path tests). Output
+ * arrays still carry the ORIGINAL claim/git strings (more actionable in the
+ * retry prompt); only the MATCH is normalization-aware.
+ */
+function normalizeTrackerPath(p: string): string {
+	let s = (p ?? "").trim();
+	if (s === "") return s;
+	// Windows-style separators → POSIX.
+	s = s.replace(/\\\\/gu, "/");
+	// Collapse repeated separators.
+	s = s.replace(/\/+/gu, "/");
+	// Strip a leading worktree-root slash → repo-relative.
+	while (s.startsWith("./")) s = s.slice(2);
+	if (s.startsWith("/")) s = s.slice(1);
+	// Strip a trailing slash (directory marker) — a file claim should match
+	// the file, not be penalized for a trailing slash.
+	if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+	return s;
+}
+
 const TRACKER_FILENAME = "change-tracker.jsonl";
 
 /**
@@ -112,11 +144,15 @@ const TRACKER_FILENAME = "change-tracker.jsonl";
  *
  * Explicit map (no ambiguity — SCENARIO-002/003 / AC-01):
  *  - `??` (untracked) → `created`
+ *  - a staged ADD (`A `, X-column `A`) or staged COPY (`C `, X-column `C`) →
+ *    `created` (review finding #4: these were misclassified as `modified`).
  *  - any `D` (`D*` / `*D`, staged or worktree deletion) → `deleted`
- *  - everything else (`M `, ` M`, `MM`, `A `, `R `, …) → `modified`
+ *  - everything else (`M `, ` M`, `MM`, `R `, …) → `modified`
  */
 function classifyPorcelain(xy: string): "created" | "modified" | "deleted" {
 	if (xy === "??") return "created";
+	// Staged add / staged copy / staged rename-destination → a NEW path exists.
+	if (xy[0] === "A" || xy[0] === "C" || xy[0] === "R") return "created";
 	if (xy[0] === "D" || xy[1] === "D") return "deleted";
 	return "modified";
 }
@@ -179,12 +215,63 @@ export class ChangeTracker {
 	 * leaves `claimedNotChanged` empty on ambiguity/unavailability
 	 * (SCENARIO-006 / AC-02).
 	 */
+	/**
+	 * End a bracket for `unit`:`id` (the STAGE path). Computes the delta,
+	 * cross-check, stores the record on the endRecords map (last wins) AND
+	 * appends ONE `{event:"end"}` jsonl line. Returns the record (never null,
+	 * never throws). See {@link probeEnd} / {@link commitEnd} for the PHASE
+	 * path which must NOT append per-attempt (single begin/end-per-phase
+	 * nesting contract, AC-04 → SCENARIO-008/009, review finding CR-MED).
+	 */
 	end(unit: TrackerUnit, id: string, claimed?: StructuredChanges): ChangeRecord | null {
+		const record = this.computeEndRecord(unit, id, claimed);
+		// Last end-record wins so the gate reads the freshest crossCheck.
+		this.endRecords.set(`${unit}:${id}`, record);
+		this.appendRecord(record);
+		return record;
+	}
+
+	/**
+	 * Probe (compute + store, but do NOT append) the end-record for
+	 * `unit`:`id`. The implementation stage probes per-attempt (SCENARIO-015)
+	 * so retry injection sees the freshest `claimedNotChanged` WITHOUT emitting
+	 * a separate `{event:"end"}` jsonl line per attempt — preserving the single
+	 * begin/end-per-phase nesting contract (AC-04 → SCENARIO-008/009, review
+	 * finding CR-MED). The bracket is closed exactly once via {@link commitEnd}
+	 * after the attempt loop. The freshest record is stored on the endRecords
+	 * map so {@link getRecord} / {@link commitEnd} read it. Never throws.
+	 */
+	probeEnd(unit: TrackerUnit, id: string, claimed?: StructuredChanges): ChangeRecord | null {
+		const record = this.computeEndRecord(unit, id, claimed);
+		this.endRecords.set(`${unit}:${id}`, record);
+		return record;
+	}
+
+	/**
+	 * Persist the LAST probed (or ended) record for `unit`:`id` as a single
+	 * `{event:"end"}` jsonl line. Used to close a phase's bracket EXACTLY ONCE
+	 * after the per-attempt {@link probeEnd} loop so the jsonl trace satisfies
+	 * the single begin/end-per-phase nesting contract (AC-04, review finding
+	 * CR-MED). Best-effort / never throws; no-op when no record was ever
+	 * computed for the unit (the append helper swallows fs errors).
+	 */
+	commitEnd(unit: TrackerUnit, id: string): void {
+		const record = this.endRecords.get(`${unit}:${id}`);
+		if (record) this.appendRecord(record);
+	}
+
+	/**
+	 * Compute the end-record (delta + cross-check + verdict) for `unit`:`id`
+	 * from the stored begin baseline. The never-throw / conservative-parse
+	 * contract lives here — every git failure maps to a `gitUnavailable`
+	 * record (SCENARIO-005/006). Does NOT touch the endRecords map or the
+	 * jsonl file; callers ({@link end} / {@link probeEnd}) decide persistence.
+	 */
+	private computeEndRecord(unit: TrackerUnit, id: string, claimed?: StructuredChanges): ChangeRecord {
 		const key = `${unit}:${id}`;
 		const baseline = this.baselines.get(key) ?? { beginHead: null };
 		const beginHead = baseline.beginHead;
 		const claimedOrNull = claimed ?? null;
-		let record: ChangeRecord;
 		try {
 			const endHeadRaw = this.gitSpawn(["rev-parse", "HEAD"]);
 			const endHead = endHeadRaw.trim() || null;
@@ -196,7 +283,7 @@ export class ChangeTracker {
 			const crossCheck = claimedOrNull ? this.computeCrossCheck(claimedOrNull, gitActual) : null;
 			const verdict: ChangeRecord["verdict"] =
 				crossCheck && crossCheck.claimedNotChanged.length > 0 ? "claimed-miss" : "ok";
-			record = {
+			return {
 				unit,
 				id,
 				event: "end",
@@ -210,7 +297,7 @@ export class ChangeTracker {
 			};
 		} catch {
 			// git unavailable: degrade, never throw, never block (AC-02).
-			record = {
+			return {
 				unit,
 				id,
 				event: "end",
@@ -224,10 +311,6 @@ export class ChangeTracker {
 				gitUnavailable: true,
 			};
 		}
-		this.appendRecord(record);
-		// Last end-record wins so the gate reads the freshest crossCheck.
-		this.endRecords.set(key, record);
-		return record;
 	}
 
 	/**
@@ -285,6 +368,18 @@ export class ChangeTracker {
 			if (trimmed === "") continue;
 			const parts = trimmed.split("\t");
 			const status = parts[0]?.[0] ?? "";
+			// Rename/copy: `R<score>\told\tnew` (or `C<score>\told\tnew`). A rename
+			// DELETES the source AND creates the destination; a copy creates the
+			// destination only (source unchanged). The deleted source MUST be
+			// captured or it is silently dropped from the advisory set (review
+			// finding #5 — previously only the destination was kept).
+			if (status === "R" || status === "C") {
+				const src = (parts[1] ?? "").trim();
+				const dst = (parts[parts.length - 1] ?? "").trim();
+				if (status === "R" && src !== "") entries.push({ path: src, kind: "deleted" });
+				if (dst !== "") entries.push({ path: dst, kind: "created" });
+				continue;
+			}
 			// For renames/copies the destination is the last tab field.
 			const path = (parts.length >= 2 ? parts[parts.length - 1] : "").trim();
 			if (path === "") continue;
@@ -300,10 +395,21 @@ export class ChangeTracker {
 			const trimmed = line.replace(/\s+$/u, "");
 			if (trimmed === "" || trimmed.length < 3) continue;
 			const xy = trimmed.slice(0, 2);
-			let path = trimmed.slice(3).trim();
+			const path = trimmed.slice(3).trim();
 			if (path === "") continue;
-			// Renames: "old -> new" — take the destination.
-			if (path.includes(" -> ")) path = path.split(" -> ").pop()!.trim();
+			// Renames/copies: porcelain renders them as `old -> new`. A staged
+			// rename (X='R') DELETES the source AND creates the destination; a
+			// copy (X='C') creates the destination only. The deleted source MUST
+			// be captured or it is silently dropped from the advisory set (review
+			// finding #5 — previously only the destination was kept).
+			if (path.includes(" -> ")) {
+				const segs = path.split(" -> ");
+				const src = (segs[0] ?? "").trim();
+				const dst = (segs[segs.length - 1] ?? "").trim();
+				if (xy[0] === "R" && src !== "") entries.push({ path: src, kind: "deleted" });
+				if (dst !== "") entries.push({ path: dst, kind: classifyPorcelain(xy) });
+				continue;
+			}
 			entries.push({ path, kind: classifyPorcelain(xy) });
 		}
 
@@ -338,14 +444,22 @@ export class ChangeTracker {
 			...claimed.filesModified,
 		]);
 		const gitAllChanged = dedupePreservingOrder([...git.created, ...git.modified, ...git.deleted]);
-		const gitCreatedOrModified = new Set<string>([...git.created, ...git.modified]);
-		const claimedAll = new Set<string>([
-			...claimed.filesCreated,
-			...claimed.filesModified,
-			...claimed.filesDeleted,
-		]);
-		const claimedNotChanged = claimedCreatedOrModified.filter((p) => !gitCreatedOrModified.has(p));
-		const changedNotClaimed = gitAllChanged.filter((p) => !claimedAll.has(p));
+		// Normalization-aware membership (review finding #1, High): match on the
+		// normalized form so LLM path artifacts (`./`, backslashes, `//`, leading
+		// `/`, trailing `/`) do NOT manufacture a false `claimedNotChanged` /
+		// `changedNotClaimed`. Output arrays still carry the ORIGINAL strings.
+		const gitCreatedOrModifiedN = new Set<string>(
+			[...git.created, ...git.modified].map(normalizeTrackerPath),
+		);
+		const claimedAllN = new Set<string>(
+			[...claimed.filesCreated, ...claimed.filesModified, ...claimed.filesDeleted].map(normalizeTrackerPath),
+		);
+		const claimedNotChanged = claimedCreatedOrModified.filter(
+			(p) => !gitCreatedOrModifiedN.has(normalizeTrackerPath(p)),
+		);
+		const changedNotClaimed = gitAllChanged.filter(
+			(p) => !claimedAllN.has(normalizeTrackerPath(p)),
+		);
 		return { claimedNotChanged, changedNotClaimed };
 	}
 

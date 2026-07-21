@@ -266,8 +266,12 @@ export const implementationStage: Stage = {
 				// on infrastructure. No tracker / never ended → null record → trivial pass.
 				let phaseChangeRec: ChangeRecord | null = null;
 				if (tracker) {
-					tracker.end("phase", phaseId, structured);
-					phaseChangeRec = tracker.getRecord("phase", phaseId);
+					// Per-attempt PROBE (compute + store, no jsonl append) so the retry
+					// injection sees the freshest claimedNotChanged (SCENARIO-015).
+					// The bracket is closed EXACTLY ONCE via commitEnd after the attempt
+					// loop so the jsonl trace keeps single begin/end-per-phase nesting
+					// (AC-04 → SCENARIO-008/009, review finding CR-MED).
+					phaseChangeRec = tracker.probeEnd("phase", phaseId, structured);
 				}
 				const changeGate = computeChangeGate(phaseChangeRec);
 				// Advisory-only (SCENARIO-014): files git shows changed that the agent did
@@ -307,6 +311,12 @@ export const implementationStage: Stage = {
 				}
 				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${[...gate.errors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "deliverables unmet"}`);
 			}
+			// Close the phase bracket EXACTLY ONCE after the attempt loop: the
+			// per-attempt probeEnd calls above computed the freshest cross-check
+			// without appending; commitEnd persists that final record as the
+			// single `end` jsonl line (single begin/end-per-phase nesting,
+			// AC-04 → SCENARIO-008/009, review finding CR-MED). Never throws.
+			if (tracker) tracker.commitEnd("phase", phaseId);
 			if (!green) {
 				ctx.log(`Implementation ${phaseId} failed after ${MAX_ATTEMPTS} attempts — terminating early`);
 				allGreen = false;
