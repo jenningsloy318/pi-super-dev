@@ -353,9 +353,9 @@ export function gate(opts: GateOptions, node: Node): Node {
 				}
 				const v = await opts.validate(state, ctx);
 				if (v.pass) {
+					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
 					ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
 					return { status: "ok", attempts: attempt };
-					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
 				}
 				lastErrors = v.errors;
 				auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: false, errors: v.errors } });

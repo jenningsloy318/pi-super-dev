@@ -263,6 +263,6 @@ export const integrationLoopNode: Node = {
 		}
 
 		ctx.log("Stage 11: integration testing max retries exhausted (non-fatal)");
-		return { status: "ok" };
+		return { status: "failed", error: "integration testing max retries exhausted" };
 	},
 };

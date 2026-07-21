@@ -55,15 +55,32 @@ const preMergeBuildStage: Stage = {
 		return { pass: r.pass, ran: r.ran, errors: r.errors };
 	},
 };
-const canMerge = (s: PipelineState) => {
+/** Merge is conservative (design report §C / audit Findings 1,2,4b): require an
+ *  AFFIRMATIVE build-gate pass (not merely "not failed" — a missing result is a
+ *  vacuous pass, the asymmetry the audit flagged vs `notBlocked` which correctly
+ *  treats missing as blocking), AND implementation completeness (allGreen), AND
+ *  review approval. Defense-in-depth: even if the tolerant sequence let a partial
+ *  impl reach here, it cannot merge. */
+export const canMerge = (s: PipelineState) => {
 	if (!notBlocked(s)) return false;
+	const impl = s.implementation as { allGreen?: boolean } | undefined;
+	if (impl?.allGreen !== true) return false; // completeness gate
+	if (!reviewApproved(s)) return false;     // defense-in-depth
 	const b = s.preMergeBuild as { pass?: boolean } | undefined;
-	return b?.pass !== false;
+	return b?.pass === true;                   // affirmative pass, not !== false
 };
 
-/** Only review when there is actually an implementation to review. */
-const hasImplementation = (s: PipelineState) =>
-	((s.implementation as { totalPhases?: number } | undefined)?.totalPhases ?? 0) > 0;
+/** Implementation is reviewable ONLY when it is COMPLETE (all phases green).
+ *  Design report §C / audit Finding 1: the gate-symmetry hole — every document
+ *  stage is wrapped in `gate(validate,attempts)`, but implementation had no
+ *  completeness gate, so `allGreen=false` flowed into review/test/merge of
+ *  PARTIAL code (the "merged 2/6 phases" false green). Now review/test are
+ *  skipped on a partial implementation; the run's status is `partial` and the
+ *  caller recovers via RESUME (not via Stage 10c finishing impl work). */
+export const hasImplementation = (s: PipelineState) => {
+	const i = s.implementation as { totalPhases?: number; allGreen?: boolean } | undefined;
+	return (i?.totalPhases ?? 0) > 0 && i?.allGreen === true;
+};
 
 /** Research is complete ONLY when a report exists AND all open issues are
  *  resolved. The gate retries (attempts:4, feedback-driven) loop the unresolved

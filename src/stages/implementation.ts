@@ -154,6 +154,30 @@ export const implementationStage: Stage = {
 			// computes the delta from phase start; the change-gate reads the freshest
 			// end-record. Never throws (tracker contract); no-op when no tracker active.
 			const tracker = getActiveTracker();
+			// §F #1 — pre-implement no-op detection (the state-confusion root cause):
+			// if this is a RESUME run (re-running over work a prior run already did)
+			// AND this phase DECLARES deliverables that are ALREADY satisfied, SKIP the
+			// implementer instead of re-touching done work and breaking it (systemic
+			// across 10+ runs — implementers said "implementation appears to already
+			// exist" then churned). Resume-gated so it NEVER interferes with a fresh
+			// run's per-attempt deliverable sequencing (the within-run, non-resume
+			// no-op is deferred — it needs the test stubs redesigned to model
+			// phase-start vs post-implementer state). Conservative: skips ONLY when
+			// deliverables are declared AND pass; the final pre-merge build gate
+			// still verifies the whole build.
+			const isResumeRun = !!(ctx.options.resume ?? ctx.options.resumeSpecIdentifier);
+			const phaseDeliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
+			if (isResumeRun && phaseDeliverables) {
+				resetDeliverableCheckCache();
+				let preCheck;
+				try { preCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables); }
+				catch { preCheck = { pass: false, missing: ["pre-check threw"], ran: [] }; }
+				if (preCheck.pass) {
+					ctx.log(`Implementation ${phaseId} no-op: deliverables already satisfied (${preCheck.ran.length} check(s) passed) — skipping implementer to avoid re-touching done work`);
+					phasesCompleted++;
+					continue; // next phase — no implementer, no commit (nothing new)
+				}
+			}
 			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 				if (!ctx.budget.check()) {
