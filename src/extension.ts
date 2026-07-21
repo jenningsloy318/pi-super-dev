@@ -24,6 +24,7 @@ import { ensureSuperDevDirs, startRun, getRunLogPath, getConfig } from "./render
 import { runReflectionAsync } from "./render/reflection.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath } from "./pi-spawn.ts";
+import { setActiveTracker } from "./tracking.ts";
 import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
 
 export { runPipelineTask } from "./pipeline.ts";
@@ -445,6 +446,10 @@ export default function activate(pi: ExtensionAPI): void {
 				// run teardown + widget teardown stay unified (no leak across runs).
 				setActiveRun(null);
 				setActiveSteerForwarder(null);
+				// spec-11 AC-05 / SCENARIO-010: clear the per-run ChangeTracker singleton
+				// in the SAME finally that nulls activeRun, so no tracker (and its
+				// in-memory baselines/end-records) leaks across runs. The setup stage
+				// installs it; every run clears it here on success OR failure.
 				// Always clear the dashboard widget + footer state when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
@@ -452,6 +457,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// Phase 2 (AC-04 / SCENARIO-010): clear the mid-run input status pill in
 				// the same cleanup that nulls activeRun + the dashboard widget.
 				try { ctx?.ui?.setStatus?.("super-dev-input", undefined); } catch { /* best-effort */ }
+				setActiveTracker(null);
 			}
 		},
 		// Pi-native result rendering: 3 sections. §1 detail logs DIMMED (thought-like,

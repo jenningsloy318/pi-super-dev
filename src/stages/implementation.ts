@@ -7,6 +7,7 @@
  */
 
 import type { ControlObj, Stage } from "../types.ts";
+import type { StructuredChanges } from "../tracking.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -69,6 +70,35 @@ function cratesFromErrors(errors: string[]): string[] {
 		while ((m = pkgRe.exec(block))) crates.push(m[1]);
 	}
 	return Array.from(new Set(crates));
+}
+
+/** Parse the implementer/fixer's claimed change set (spec-11 AC-06 →
+ *  SCENARIO-011/012). Accepts the STRUCTURED `{filesCreated, filesModified,
+ *  filesDeleted}` shape AND back-tolerates the legacy flat `filesModified`
+ *  array by reading it into `filesModified` (created/deleted empty).
+ *
+ *  NEVER throws (the implementer control is untrusted agent output):
+ *   - null/undefined/non-object/array control → empty StructuredChanges.
+ *   - a bucket whose value is not an array collapses that bucket to empty.
+ *   - non-string entries within a bucket array are dropped (defensive).
+ *  The gate reads `claimedNotChanged` off `(claimed.created ∪ claimed.modified)`
+ *  so a legacy flat `filesModified` is cross-checked exactly like a structured
+ *  modified set (no migration gap). */
+export function parseStructuredChanges(control: unknown): StructuredChanges {
+	const empty: StructuredChanges = { filesCreated: [], filesModified: [], filesDeleted: [] };
+	if (control == null || typeof control !== "object" || Array.isArray(control)) {
+		return empty;
+	}
+	const obj = control as Record<string, unknown>;
+	const pickStrings = (key: string): string[] => {
+		const v = obj[key];
+		return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+	};
+	return {
+		filesCreated: pickStrings("filesCreated"),
+		filesModified: pickStrings("filesModified"),
+		filesDeleted: pickStrings("filesDeleted"),
+	};
 }
 
 export const implementationStage: Stage = {
@@ -156,7 +186,14 @@ export const implementationStage: Stage = {
 				implParts.push(redImplementContext(redStatus, capExhausted));
 				const implPrompt = implParts.join("\n\n");
 				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
-				for (const f of ((impl.control as { filesModified?: unknown } | null)?.filesModified as string[] | undefined) ?? []) {
+				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
+				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads
+				// it (and back-tolerates the legacy flat filesModified array). The flat
+				// summary list derives from filesCreated ∪ filesModified — deleted is
+				// EXCLUDED (a deleted file is not a "modified" display entry). dedupe via
+				// the existing `filesModified.includes` guard (first-seen order preserved).
+				const structured = parseStructuredChanges(impl.control);
+				for (const f of [...structured.filesCreated, ...structured.filesModified]) {
 					if (!filesModified.includes(f)) filesModified.push(f);
 				}
 				// HARD test oracle: actually run build/test/typecheck instead of trusting

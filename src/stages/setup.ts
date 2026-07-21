@@ -8,6 +8,7 @@ import type { Stage } from "../types.ts";
 import { runSetup } from "../setup.ts";
 import { abbreviatePath } from "../pi-spawn.ts";
 import { summarizeSlug } from "../session-agent.ts";
+import { ChangeTracker, setActiveTracker } from "../tracking.ts";
 
 export const setupStage: Stage = {
 	id: "setup",
@@ -24,6 +25,13 @@ export const setupStage: Stage = {
 			} catch { /* fallback below */ }
 		}
 		const setup = runSetup(ctx.task, { cwd: ctx.options.cwd, skipWorktree: ctx.options.skipWorktree, slug, resumeSpecIdentifier: resumeId });
+		// spec-11 AC-05 / SCENARIO-010: install the per-run ChangeTracker singleton the
+		// instant the setup's `worktreePath` + `specDirectory` are finalized (here —
+		// the lifecycle point "right after the setup stage populates them, before
+		// producing stages run"). setActiveTracker overwrites any stale singleton
+		// left by an overlapping/aborted prior run (the discard guard). Cleared in
+		// src/extension.ts execute()'s finally alongside setActiveRun(null) so no
+		// tracker leaks across runs. Construction is side-effect-free (no git/fs).
 		const relWorktree = abbreviatePath(setup.worktreePath, cwd);
 		const relSpec = abbreviatePath(setup.specDirectory, setup.worktreePath) || ".";
 		ctx.log(`Setup: spec ${setup.specIdentifier} | ${setup.language}${setup.isWebUi ? " (Web UI)" : ""} | branch ${setup.defaultBranch}${resumeId ? " (resumed)" : ""}`);
