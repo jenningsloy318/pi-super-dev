@@ -36,7 +36,10 @@ import type {
 	StageContext,
 } from "../src/types.ts";
 
-vi.mock("../src/build-runner.ts", () => ({
+vi.mock("../src/build-runner.ts", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	return {
+		...actual,
 	runRedCheck: vi.fn((): string => "unknown"),
 	runBuildGate: vi.fn(() => ({
 		pass: true,
@@ -54,7 +57,8 @@ vi.mock("../src/build-runner.ts", () => ({
 		ran: [] as string[],
 	})),
 	resetDeliverableCheckCache: vi.fn(() => {}),
-}));
+	};
+});
 
 vi.mock("../src/render/render.ts", () => ({
 	renderAndWrite: vi.fn(),

@@ -25,7 +25,14 @@ const mock = vi.hoisted(() => ({
 	calls: 0,
 }));
 
-vi.mock("../build-runner.ts", () => ({
+vi.mock("../build-runner.ts", async (importOriginal) => {
+	// Spread the REAL exports so newly-added pure helpers the stage imports
+	// (e.g. `computeChangeGate`) are preserved verbatim — only the spawn-based
+	// gate/deliverable primitives below are overridden for this retry/verdict
+	// unit test. Without this, a new import is `undefined` on the mock and throws.
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	return {
+		...actual,
 	// RED oracle (Gap 1b/AC-02): the stage now calls runRedCheck on the
 	// tdd-guide result's `testFiles`. Stub it to "unknown" — the greenfield-safe
 	// status — so the RED loop issues ZERO re-prompts and proceeds immediately,
@@ -47,7 +54,8 @@ vi.mock("../build-runner.ts", () => ({
 	// and tests/implementation-deliverable-regression.test.ts.
 	runDeliverableCheck: (_cwd: string, _deliverables?: unknown, _opts?: unknown) => ({ pass: true, missing: [] as string[], ran: [] as string[] }),
 	resetDeliverableCheckCache: () => {},
-}));
+	};
+});
 
 import { implementationStage } from "./implementation.ts";
 

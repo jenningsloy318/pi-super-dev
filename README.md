@@ -155,6 +155,46 @@ pre-existing out-of-scope failures, and terminates early only on genuine
 in-scope failures. See the JSDoc on `DEFAULT_TIMEOUT_MS` for the full timeout
 fallback matrix.
 
+## Phase-green trust (claimed-vs-actual cross-check)
+
+Beyond the deterministic build/test/typecheck gate and the spec-declared
+**deliverable check** (Layer 2: `runDeliverableCheck(cwd, phase.deliverables)`
+AND-ed into phase-green), every run also captures a **git change-tracker**
+that brackets **every stage (start + end)** and **every implementation
+phase (start + end)** with a git snapshot, persisting an append-only
+`<specDir>/change-tracker.jsonl`. Each phase-end record carries a
+git-derived `gitActual {created, modified, deleted}`, the agent's claimed
+`{filesCreated, filesModified, filesDeleted}` (returned by the implementer
+and fix prompts under the structured `<control>` contract), and a
+**one-directional cross-check** (`claimedNotChanged` vs `changedNotClaimed`).
+
+A phase is GREEN only when **all three** gates pass:
+
+```
+(gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass
+```
+
+`changeGate.pass === false` iff the phase **claimed** to create or modify a
+file that git does **not** show changed — closing the false-green root cause
+a second way: a phase that claims to create/wire a file but changed nothing
+in git can no longer go green even when the build and deliverable checks
+both pass. `changedNotClaimed` (git edits the agent under-reported) stays
+**advisory** (logged, never fails) — only `claimedNotChanged` (claimed but
+not done) hard-fails, and the miss is fed back into the next implementer
+attempt as a `## Claimed changes not present in git` block, bounded by
+`MAX_ATTEMPTS`.
+
+The subsystem **never throws** and degrades when git is unavailable
+(`gitUnavailable` → record + `changeGate.pass = true`, never block), and is
+**backward compatible**: legacy flat `filesModified` arrays are still
+accepted, and non-git worktrees unblock. Tracking and deliverable
+assertions collapse into one enforcement path — `claimed.filesCreated`
+auto-unions into `deliverables.requireFiles` (a created file must exist),
+and a `📝 N files changed (C/M/D)` evidence line is surfaced in the
+implementation summary. See `src/tracking.ts` (`ChangeTracker`,
+`computeChangeGate` in `src/build-runner.ts`) and the spec-11 change-tracker
+specification in `docs/specifications/11-git-change-tracker-crosscheck-gate/`.
+
 ## Architecture
 
 ```

@@ -55,7 +55,10 @@ const mock = vi.hoisted(() => ({
 	deliverableDefault: { pass: true, missing: [] as string[], ran: [] as string[] },
 }));
 
-vi.mock("../src/build-runner.ts", () => ({
+vi.mock("../src/build-runner.ts", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	return {
+		...actual,
 	runRedCheck: (): string => "unknown",
 	runBuildGate: () => {
 		mock.gateCalls++;
@@ -68,7 +71,8 @@ vi.mock("../src/build-runner.ts", () => ({
 		return { ...r };
 	},
 	resetDeliverableCheckCache: () => {},
-}));
+	};
+});
 
 vi.mock("../src/render/render.ts", () => ({
 	renderAndWrite: vi.fn(),

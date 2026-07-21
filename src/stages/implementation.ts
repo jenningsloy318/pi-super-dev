@@ -7,11 +7,13 @@
  */
 
 import type { ControlObj, Stage } from "../types.ts";
+import { getActiveTracker } from "../tracking.ts";
+import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
-import { resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, runRedCheck, type GateOptions, type RedStatus } from "../build-runner.ts";
+import { computeChangeGate, resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
 
 const MAX_ATTEMPTS = 3;
 /** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
@@ -71,6 +73,35 @@ function cratesFromErrors(errors: string[]): string[] {
 	return Array.from(new Set(crates));
 }
 
+/** Parse the implementer/fixer's claimed change set (spec-11 AC-06 →
+ *  SCENARIO-011/012). Accepts the STRUCTURED `{filesCreated, filesModified,
+ *  filesDeleted}` shape AND back-tolerates the legacy flat `filesModified`
+ *  array by reading it into `filesModified` (created/deleted empty).
+ *
+ *  NEVER throws (the implementer control is untrusted agent output):
+ *   - null/undefined/non-object/array control → empty StructuredChanges.
+ *   - a bucket whose value is not an array collapses that bucket to empty.
+ *   - non-string entries within a bucket array are dropped (defensive).
+ *  The gate reads `claimedNotChanged` off `(claimed.created ∪ claimed.modified)`
+ *  so a legacy flat `filesModified` is cross-checked exactly like a structured
+ *  modified set (no migration gap). */
+export function parseStructuredChanges(control: unknown): StructuredChanges {
+	const empty: StructuredChanges = { filesCreated: [], filesModified: [], filesDeleted: [] };
+	if (control == null || typeof control !== "object" || Array.isArray(control)) {
+		return empty;
+	}
+	const obj = control as Record<string, unknown>;
+	const pickStrings = (key: string): string[] => {
+		const v = obj[key];
+		return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+	};
+	return {
+		filesCreated: pickStrings("filesCreated"),
+		filesModified: pickStrings("filesModified"),
+		filesDeleted: pickStrings("filesDeleted"),
+	};
+}
+
 export const implementationStage: Stage = {
 	id: "implementation",
 	label: "Stage 9 — Implementation",
@@ -100,6 +131,17 @@ export const implementationStage: Stage = {
 			// `## Deliverables still missing — create/wire these` block. Resets each
 			// attempt, mirroring `attemptErrors = gate.errors`.
 			let missingDeliverables: string[] = [];
+			// spec-11 AC-07 (SCENARIO-015): the change-gate's `claimedNotChanged` from
+			// the previous attempt — claimed files git did NOT show changed — fed into
+			// the next implementer retry under a `## Claimed changes not present in git`
+			// block. Resets each attempt, mirroring `missingDeliverables`.
+			let claimedNotChanged: string[] = [];
+			// Phase bracketing (spec-11 Phase 3, AC-04 → SCENARIO-008/009): snapshot the
+			// git baseline BEFORE the attempts so each per-attempt `tracker.end`
+			// computes the delta from phase start; the change-gate reads the freshest
+			// end-record. Never throws (tracker contract); no-op when no tracker active.
+			const tracker = getActiveTracker();
+			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 				if (!ctx.budget.check()) {
 					allGreen = false;
@@ -153,10 +195,24 @@ export const implementationStage: Stage = {
 				if (missingDeliverables.length) {
 					implParts.push(`## Deliverables still missing — create/wire these\n${missingDeliverables.map((e) => `- ${e}`).join("\n")}`);
 				}
+				// spec-11 AC-07 (SCENARIO-015): a previous attempt claimed a file git did
+				// NOT show changed — feed the specific paths so the implementer actually
+				// creates/wires them instead of resampling. Mirrors the deliverables block
+				// above and is bounded by MAX_ATTEMPTS via the surrounding attempt loop.
+				if (claimedNotChanged.length) {
+					implParts.push(`## Claimed changes not present in git — actually create/wire these\n${claimedNotChanged.map((e) => `- ${e}`).join("\n")}`);
+				}
 				implParts.push(redImplementContext(redStatus, capExhausted));
 				const implPrompt = implParts.join("\n\n");
 				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
-				for (const f of ((impl.control as { filesModified?: unknown } | null)?.filesModified as string[] | undefined) ?? []) {
+				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
+				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads
+				// it (and back-tolerates the legacy flat filesModified array). The flat
+				// summary list derives from filesCreated ∪ filesModified — deleted is
+				// EXCLUDED (a deleted file is not a "modified" display entry). dedupe via
+				// the existing `filesModified.includes` guard (first-seen order preserved).
+				const structured = parseStructuredChanges(impl.control);
+				for (const f of [...structured.filesCreated, ...structured.filesModified]) {
 					if (!filesModified.includes(f)) filesModified.push(f);
 				}
 				// HARD test oracle: actually run build/test/typecheck instead of trusting
@@ -182,16 +238,69 @@ export const implementationStage: Stage = {
 				// compile on a broken build + a poisoned cache). The cheap file/contains/
 				// not-contains checks still run; only the requireTests spawn is deferred.
 				const buildGreen = gate.pass || gate.inScopePass;
-				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phase.deliverables, { signal: ctx.signal, skipTests: !buildGreen });
+				// spec-10 deliverable bridge (AC-09 → SCENARIO-018): UNION the implementer's
+				// `claimed.filesCreated` into the spec-declared `requireFiles` so a file a
+				// phase CLAIMS to have created MUST also exist (tracking + deliverable
+				// assertions reinforce). Deduped UNION (first-seen order); the spec-declared
+				// contract is preserved verbatim — an omitted spec-required file is still
+				// caught independently (no circular double-count, SCENARIO-018b/018c).
+				const baseDeliverables = (phase.deliverables ?? {}) as DeliverableContract;
+				const bridgedDeliverables: DeliverableContract = {
+					...baseDeliverables,
+					// Deduped UNION preserving first-seen order (Set iteration is insertion
+					// order, first occurrence wins) — inlined so the stage does not depend
+					// on an un-mocked build-runner export (the bridge is pure data prep).
+					requireFiles: Array.from(new Set([
+						...(baseDeliverables.requireFiles ?? []),
+						...structured.filesCreated,
+					])),
+				};
+				const deliverableCheck = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: !buildGreen });
 				missingDeliverables = deliverableCheck.missing;
 				ctx.log(`Implementation ${phaseId} deliverable-check ${deliverableCheck.pass ? "PASS" : "FAIL"} (missing: ${deliverableCheck.missing.join("; ") || "none"}; ran: ${deliverableCheck.ran.join(", ") || "none"})`);
+				// Git cross-check GATE (AC-07, AC-08 → SCENARIO-013/014/015/016/017):
+				// snapshot the phase's actual-vs-claimed delta per-attempt (so a retry that
+				// wires the claimed file flips the verdict, SCENARIO-015), then collapse it
+				// into a boolean gate verdict AND-ed into phase-green. NEVER throws and
+				// degrades to a pass when git is unavailable (SCENARIO-017) — never block
+				// on infrastructure. No tracker / never ended → null record → trivial pass.
+				let phaseChangeRec: ChangeRecord | null = null;
+				if (tracker) {
+					// Per-attempt PROBE (compute + store, no jsonl append) so the retry
+					// injection sees the freshest claimedNotChanged (SCENARIO-015).
+					// The bracket is closed EXACTLY ONCE via commitEnd after the attempt
+					// loop so the jsonl trace keeps single begin/end-per-phase nesting
+					// (AC-04 → SCENARIO-008/009, review finding CR-MED).
+					phaseChangeRec = tracker.probeEnd("phase", phaseId, structured);
+				}
+				const changeGate = computeChangeGate(phaseChangeRec);
+				// Advisory-only (SCENARIO-014): files git shows changed that the agent did
+				// NOT report (under-reporting) are surfaced via ctx.log but NEVER fail the
+				// gate — under-reporting is not a false-green.
+				const advisory = phaseChangeRec?.crossCheck?.changedNotClaimed ?? [];
+				if (advisory.length) {
+					ctx.log(`Implementation ${phaseId} advisory: ${advisory.length} changed-not-claimed file(s): ${advisory.join(", ")}`);
+				}
+				// Evidence (AC-10 → SCENARIO-019): the ground-truth actual change counts
+				// surfaced as a concise `📝 N files changed (C/M/D)` line.
+				const ga = phaseChangeRec?.gitActual ?? null;
+				if (ga) {
+					const c = ga.created?.length ?? 0;
+					const m = ga.modified?.length ?? 0;
+					const d = ga.deleted?.length ?? 0;
+					ctx.log(`Implementation ${phaseId} 📝 ${c + m + d} files changed (${c}C/${m}M/${d}D)`);
+				}
+				claimedNotChanged = changeGate.claimedNotChanged;
 				// In-scope verdict (AC-05 → SCENARIO-012/013/014/025/027): the phase is GREEN
 				// when the gate fully passed OR when every failure is a pre-existing
 				// out-of-scope crate the branch never touched (gate.inScopePass). The
 				// `if (!green)` branch below therefore fires ONLY on genuine in-scope
 				// failures — neither pass nor inScopePass after MAX_ATTEMPTS — so
 				// pre-existing breakage elsewhere can no longer abort green in-scope work.
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
+				// spec-11 AC-07/AC-08 (SCENARIO-013): AND `changeGate.pass` so a
+				// claimed-but-never-changed file hard-fails EVEN WHEN build + deliverable
+				// both pass (the false-green killer, closed a second way).
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass) {
 					green = true;
 					if (gate.pass) {
 						ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
@@ -202,6 +311,12 @@ export const implementationStage: Stage = {
 				}
 				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${[...gate.errors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "deliverables unmet"}`);
 			}
+			// Close the phase bracket EXACTLY ONCE after the attempt loop: the
+			// per-attempt probeEnd calls above computed the freshest cross-check
+			// without appending; commitEnd persists that final record as the
+			// single `end` jsonl line (single begin/end-per-phase nesting,
+			// AC-04 → SCENARIO-008/009, review finding CR-MED). Never throws.
+			if (tracker) tracker.commitEnd("phase", phaseId);
 			if (!green) {
 				ctx.log(`Implementation ${phaseId} failed after ${MAX_ATTEMPTS} attempts — terminating early`);
 				allGreen = false;

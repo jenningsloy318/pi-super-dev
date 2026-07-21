@@ -98,6 +98,14 @@ export function buildTddPrompt(s: SetupControl, c: Classification | null, phase:
  *  is NO control-flow / nodes / workflow / pipeline change. */
 const RUST_SELF_VERIFY_DISCIPLINE = "When verifying a Rust crate, run `cargo test -p <pkg>` WITHOUT the `--lib` flag so the integration binaries under tests/ execute as well, PLUS any spec-mandated e2e or integration target. Do NOT declare green on `--lib`-only evidence: `--lib` skips the tests/ integration binaries, so it is never sufficient proof.";
 
+/** spec-11 AC-06 / SCENARIO-011: the implementer's + fixer's claimed change set
+ *  is now STRUCTURED (`{filesCreated, filesModified, filesDeleted}`) AND is
+ *  git-cross-checked by the per-run ChangeTracker. Claiming a file you did not
+ *  actually change in git fails the phase (the false-green killer). Appended to
+ *  `buildImplementPrompt` + `buildFixPrompt` so both green-phase agents carry
+ *  the identical contract (single source of truth). */
+const GIT_CROSSCHECK_WARNING = "These file claims are git-cross-checked: claiming a file you did not change fails the phase.";
+
 /** Return the Rust verification discipline ONLY for Rust projects (review
  *  finding: it was previously broadcast to ALL languages). Uses the
  *  SETUP-detected language (`s.language`, derived from repo manifests) so it is
@@ -117,7 +125,7 @@ export function rustDiscipline(s: SetupControl): string {
 export function buildImplementPrompt(s: SetupControl, c: Classification | null, phase: { name: string; description?: string }, specialist: R, specControl: R): string {
 	const li = (specialist?.languageInstructions as string) ?? "";
 	const rust = rustDiscipline(s);
-	return [ctxBlock(s, c), "", "## Implementation Phase", `- Phase: ${phase.name}`, `- Description: ${phase.description ?? ""}`, `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, "", li ? `## Language-Specific Instructions\n${li}\n` : "", "## Instructions", "Implement the code to make the failing tests pass (green phase of TDD).", "Follow existing patterns from the code assessment. Keep changes minimal and focused.", ...(rust ? [rust] : []), "", "Output <control> JSON with: filesModified (array), testsPassCount (number), summary."].join("\n");
+	return [ctxBlock(s, c), "", "## Implementation Phase", `- Phase: ${phase.name}`, `- Description: ${phase.description ?? ""}`, `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, "", li ? `## Language-Specific Instructions\n${li}\n` : "", "## Instructions", "Implement the code to make the failing tests pass (green phase of TDD).", "Follow existing patterns from the code assessment. Keep changes minimal and focused.", ...(rust ? [rust] : []), "", GIT_CROSSCHECK_WARNING, "Output <control> JSON with: filesCreated (array), filesModified (array), filesDeleted (array), testsPassCount (number), summary."].join("\n");
 }
 export function buildQaPrompt(s: SetupControl, c: Classification | null, phase: { name: string }): string {
 	const rust = rustDiscipline(s);
@@ -137,7 +145,7 @@ export function buildFixPrompt(s: SetupControl, c: Classification | null, findin
 	const tlist = (testFailures ?? []).map((f) => { const o = f as { method?: string; path?: string; reason?: string }; return `- ${o.method ?? ""} ${o.path ?? ""} — ${o.reason ?? JSON.stringify(f)}`; }).join("\n");
 	const parts = [ctxBlock(s, c), "", "## Code Review Findings to Address", list || "- (no specific findings)"];
 	if (tlist) parts.push("", "## API Test Failures to Address", tlist, "");
-	parts.push("", "## Instructions", "Fix the issues above. Make minimal, targeted changes.", "Run tests after each fix to ensure no regressions.", "Then update the existing `*-implementation-summary.md` in the spec directory: append a short note of what this fix round changed.", "", "Output <control> JSON with: filesModified (array), fixesApplied (number), summary.");
+	parts.push("", "## Instructions", "Fix the issues above. Make minimal, targeted changes.", "Run tests after each fix to ensure no regressions.", "Then update the existing `*-implementation-summary.md` in the spec directory: append a short note of what this fix round changed.", "", GIT_CROSSCHECK_WARNING, "Output <control> JSON with: filesCreated (array), filesModified (array), filesDeleted (array), fixesApplied (number), summary.");
 	return parts.join("\n");
 }
 
