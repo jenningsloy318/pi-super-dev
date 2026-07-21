@@ -102,6 +102,19 @@ export function parseStructuredChanges(control: unknown): StructuredChanges {
 	};
 }
 
+/** Normalize an agent-returned array field into a genuine `string[]`.
+ *  Agents unreliably return array-typed control fields as a bare string, an
+ *  object, a number, or null/undefined (the same shape-drift that
+ *  `normalizePhases` defends against for `spec.phases`). A bare `?? []` only
+ *  catches null/undefined — a string value sails through and later `.join()` /
+ *  spread / iteration crashes (`testFiles.join is not a function`). This helper
+ *  coerces defensively: array → string-filtered; bare string → `[v]`; else []. */
+export function normalizeStringArray(v: unknown): string[] {
+	if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+	if (typeof v === "string" && v.trim()) return [v.trim()];
+	return [];
+}
+
 export const implementationStage: Stage = {
 	id: "implementation",
 	label: "Stage 9 — Implementation",
@@ -164,14 +177,15 @@ export const implementationStage: Stage = {
 				// red/unknown we proceed immediately (greenfield cannot stall). Never
 				// throws (runRedCheck degrades to `unknown`); never exceeds the cap.
 				const tdd = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) });
-				let testFiles = (tdd.control as { testFiles?: string[] } | null)?.testFiles ?? [];
+				let testFiles = normalizeStringArray((tdd.control as { testFiles?: unknown } | null)?.testFiles);
 				let redStatus: RedStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
 				let retries = 0;
 				ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 				while ((redStatus === "green" || redStatus === "broken") && retries < MAX_RED_RETRIES) {
 					retries++;
 					const retry = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) + redRePromptHint(redStatus) });
-					testFiles = (retry.control as { testFiles?: string[] } | null)?.testFiles ?? testFiles;
+					const retryFilesRaw = (retry.control as { testFiles?: unknown } | null)?.testFiles;
+				testFiles = retryFilesRaw == null ? testFiles : normalizeStringArray(retryFilesRaw);
 					redStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
 					ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 				}
