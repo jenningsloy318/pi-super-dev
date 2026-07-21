@@ -339,13 +339,16 @@ function statusThemeToken(status: string | undefined): string {
 
 /** Status → static (non-animated) glyph prefix for a Phase-4 per-stage block
  *  header. The result view is for a COMPLETED run, so the running stage uses
- *  the stable filled-circle `●` rather than the live animated braille frame. */
+ *  the stable filled-circle `●` rather than the live animated braille frame.
+ *  Consistency (spec-12 review AR): an UNDEFINED status (unknown / never
+ *  reported terminal) is treated as in-progress `●` to MATCH the accent color
+ *  (`statusFgToken(undefined)`→"accent") — do-not-mask-as-ok. Previously the
+ *  glyph was the neutral `·` while the color was accent (disagreement). */
 function stageBlockGlyph(status: string | undefined): string {
 	if (status === "ok") return "✓";
 	if (status === "failed") return "✗";
 	if (status === "skipped") return "↷";
-	if (status === "running") return "●";
-	return "·";
+	return "●"; // running OR undefined (unknown) — in-progress, matches accent fg
 }
 
 /**
@@ -361,10 +364,10 @@ function statusBackground(
 	theme?: DashboardTheme,
 ): ((text: string) => string) | undefined {
 	if (!theme?.bg) return undefined;
-	if (status === "running") return (text: string) => theme.bg!("toolPendingBg", text);
+	if (status === "running" || status === undefined) return (text: string) => theme.bg!("toolPendingBg", text); // undefined = unknown/in-progress (matches accent fg + ● glyph) — do-not-mask-as-ok
 	if (status === "ok") return (text: string) => theme.bg!("toolSuccessBg", text);
 	if (status === "failed") return (text: string) => theme.bg!("toolErrorBg", text);
-	return undefined;
+	return undefined; // skipped → no background
 }
 
 /** Status → icon for §2 stage rows (mirrors the renderResult icon mapper). */
