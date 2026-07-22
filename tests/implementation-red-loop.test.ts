@@ -163,6 +163,7 @@ function mkCtx(opts: {
 		log(message: string) {
 			calls.logs.push(message);
 		},
+		phase() {},
 		events: new EventEmitter(),
 		results: [],
 	};

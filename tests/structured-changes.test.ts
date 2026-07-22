@@ -132,6 +132,7 @@ function mkCtx(): { ctx: StageContext; fake: FakeCtx } {
 			},
 		} satisfies Budget,
 		log() {},
+		phase() {},
 		events: new EventEmitter(),
 		results: [],
 	};

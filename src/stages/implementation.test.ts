@@ -101,6 +101,7 @@ const GATE_GENUINE_FAIL = {
 interface FakeCtx {
 	logs: string[];
 	agentIds: string[];
+	phases: string[];
 }
 
 /** Build a minimal PipelineState with one or more phases. */
@@ -125,7 +126,7 @@ function makeState(phases: Array<{ name: string; description?: string }>): Pipel
 
 /** Build a fake StageContext that records logs + agent ids and never spawns. */
 function makeCtx(): { ctx: StageContext; fake: FakeCtx } {
-	const fake: FakeCtx = { logs: [], agentIds: [] };
+	const fake: FakeCtx = { logs: [], agentIds: [], phases: [] };
 	const ctx = {
 		task: "t",
 		options: {},
@@ -133,6 +134,9 @@ function makeCtx(): { ctx: StageContext; fake: FakeCtx } {
 		budget: { check: () => true, spent: () => {}, count: 0 },
 		log: (m: string) => {
 			fake.logs.push(m);
+		},
+		phase: (label: string) => {
+			fake.phases.push(label);
 		},
 		events: { on() {}, off() {}, emit() {} },
 		results: [],

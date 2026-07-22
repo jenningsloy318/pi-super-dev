@@ -212,6 +212,7 @@ export function packDashboardLines(
 	width: number,
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
+	abortHint: string = "esc to abort",
 ): string[] {
 	// F5: count only TERMINAL stages (ok/failed/skipped). The prior
 	// `!== "running"` rule counted never-started (pending/"·") stages as done,
@@ -222,7 +223,7 @@ export function packDashboardLines(
 	const head = truncLine(
 		`super-dev · ${done}/${entries.length}${
 			running ? ` · ${statusGlyph(running.status, theme)} ${running.label}` : ""
-		}  (esc to abort)`,
+		}  (${abortHint})`,
 		width,
 	);
 	const lines = [head];
@@ -275,9 +276,10 @@ export function buildDashboardWidget(
 	width: number,
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
+	abortHint: string = "esc to abort",
 ): Container {
 	const container = new Container();
-	for (const line of packDashboardLines(entries, activity, width, theme, pendingInputCount)) {
+	for (const line of packDashboardLines(entries, activity, width, theme, pendingInputCount, abortHint)) {
 		container.addChild(new Text(line, 1, 0));
 	}
 	return container;
@@ -297,9 +299,10 @@ export function createDashboardWidgetFactory(
 	entries: Array<{ id: string; label: string; status: string }>,
 	activity: string | undefined,
 	pendingInputCount: number = 0,
+	abortHint: string = "esc to abort",
 ): (tui: unknown, theme: DashboardTheme) => Container {
 	return (_tui, theme) =>
-		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme, pendingInputCount);
+		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme, pendingInputCount, abortHint);
 }
 
 // ---------------------------------------------------------------------------

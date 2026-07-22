@@ -130,6 +130,7 @@ function mkCtx(opts: { tddControls?: ControlObj[] } = {}): { ctx: StageContext; 
 		},
 		budget: { count: 0, check: () => true, spent() { this.count++; } } satisfies Budget,
 		log() {},
+		phase() {},
 		events: new EventEmitter(),
 		results: [],
 	};

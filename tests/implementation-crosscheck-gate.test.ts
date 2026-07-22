@@ -267,6 +267,7 @@ function mkCtx(): { ctx: StageContext; fake: FakeCtx } {
 		log(message: string) {
 			fake.logs.push(message);
 		},
+		phase() {},
 		events: new EventEmitter(),
 		results: [],
 	};

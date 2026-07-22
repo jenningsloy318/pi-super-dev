@@ -46,6 +46,7 @@ function mkCtx(): StageContext {
 		},
 		budget,
 		log() {},
+		phase() {},
 		events: new EventEmitter(),
 		results: [],
 	};

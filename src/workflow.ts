@@ -53,6 +53,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 	const model = options.model;
 	const signal = options.signal;
+	// Single EventEmitter for the whole context: `ctx.phase()` emits on it and
+	// runWorkflow subscribes ("phase"/"stage") to route into the progress sink.
+	const events = new EventEmitter();
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
 		budget.spent();
@@ -146,7 +149,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		return results;
 	}
 
-	return { task, options, state, agent, helper, parallel, budget, log, events: new EventEmitter(), signal, results: [] };
+	return { task, options, state, agent, helper, parallel, budget, log, phase: (label: string) => events.emit("phase", label), events, signal, results: [] };
 }
 
 /** Run a workflow for a task. */

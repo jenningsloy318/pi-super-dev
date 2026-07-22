@@ -190,6 +190,13 @@ export interface StageContext {
 	parallel(calls: Array<() => Promise<AgentResult>>): Promise<AgentResult[]>;
 	budget: Budget;
 	log(message: string): void;
+	/** Announce a sub-phase of the current stage (pi-native): routes through the
+	 *  progress sink's `phase()` so it surfaces as the dashboard subtitle, the
+	 *  native working-message, AND a distinct `▶`-prefixed transcript line under
+	 *  the running stage's section. Used by the Implementation stage to show
+	 *  "Phase N/M: <name>" as the current phase being implemented. No-op-safe
+	 *  when no progress sink is wired (headless / unit tests). */
+	phase(label: string): void;
 	events: EventEmitter;
 	signal?: AbortSignal;
 	/** Every leaf-stage outcome, appended by `task()`. Used for honest summaries. */

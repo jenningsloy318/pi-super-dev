@@ -56,7 +56,7 @@ const mkCtx = (runLabel: string) => {
 		},
 		parallel: async (cs: Array<() => Promise<AgentResult>>) => Promise.all(cs.map((c) => c())),
 		budget: { check: () => true, spent: () => {}, count: 0 },
-		log: () => {}, events: { on: () => () => {}, emit: () => {} } as never, results: [],
+		log: () => {}, phase: () => {}, events: { on: () => () => {}, emit: () => {} } as never, results: [],
 	};
 	return { ctx, implPhases, runLabel };
 };
