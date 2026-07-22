@@ -169,12 +169,6 @@ export const implementationStage: Stage = {
 
 		for (const [idx, phase] of phases.entries()) {
 			const phaseId = `phase-${pad(idx + 1)}`;
-			// Pi-native sub-phase subtitle: announce WHICH phase is being implemented so
-			// the dashboard header/working-message and the live log's Implementation
-			// section show "Phase N/M: <name>" as the current activity (not just a
-			// generic log line). phase.name falls back to the phase id when unnamed.
-			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
-			ctx.phase(`Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`);
 			// §D: skip a phase already green in a prior convergence iteration (don't
 			// re-touch done work — the state-confusion churn §F fought).
 			if (phaseStatus.some((p) => p.id === phaseId && p.status === "green")) {
@@ -216,6 +210,13 @@ export const implementationStage: Stage = {
 				phasesCompleted++;
 				continue;
 			}
+			// Pi-native sub-phase subtitle: announce WHICH phase is being implemented
+			// AFTER the skip guards (so a skipped/already-green phase never flickers a
+			// subtitle it isn't working on). Surfaces "Phase N/M: <name>" as the
+			// dashboard header/working-message + a distinct ▶ line under the running
+			// stage's live-log section. phase.name falls back to the phase id.
+			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
+			ctx.phase(`Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`);
 			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 				if (!ctx.budget.check()) {

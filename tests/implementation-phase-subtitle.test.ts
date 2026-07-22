@@ -80,4 +80,15 @@ describe("Implementation stage — per-phase pi-native subtitle", () => {
 		await implementationStage.run(mkState([{}, { name: "Kept" }]), ctx);
 		expect(phaseCalls).toEqual(["Implementation — Phase 1/1: Kept"]);
 	});
+
+	it("does NOT announce a phase carried green from a prior convergence iteration", async () => {
+		// A convergence re-run seeds phaseStatus; an already-green phase is skipped
+		// BEFORE the subtitle fires, so it never flickers a subtitle for work it is
+		// not doing. Only the still-pending phase is announced.
+		const { ctx, phaseCalls } = mkCtx();
+		const state = mkState([{ name: "Done" }, { name: "Pending" }]);
+		(state as unknown as Record<string, unknown>).implementation = { phaseStatus: [{ id: "phase-01", status: "green" }] };
+		await implementationStage.run(state, ctx);
+		expect(phaseCalls).toEqual(["Implementation — Phase 2/2: Pending"]);
+	});
 });
