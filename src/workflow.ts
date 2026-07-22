@@ -100,6 +100,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// Per-call override; when absent each backend falls back to the
 			// role-based default (code-writing agents get a larger cap).
 			timeoutMs: call.timeoutMs,
+			// Phase 2: per-call thinking override. The subprocess backend reads
+			// `thinking` (buildSpawnArgs → --thinking via resolveThinking); the
+			// session backend reads `thinkingLevel` (applyThinkingLevel →
+			// session.setThinkingLevel). When absent, each backend falls back to
+			// SUPER_DEV_THINKING then the role default.
+			thinking: call.thinking,
+			thinkingLevel: call.thinking,
 			onProgress: {
 				event: (m: string) => log(m),
 				text: (partial: string) => options.progress?.text(partial),

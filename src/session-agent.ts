@@ -36,7 +36,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, isCodeWritingAgent } from "./pi-spawn.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveThinking, type ThinkingLevel } from "./pi-spawn.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,6 +117,22 @@ export function createSteerSink(): SteerSink {
 	};
 }
 
+/** Best-effort apply a thinking level to a live AgentSession (Phase 2). Calls
+ *  `session.setThinkingLevel(level)` guarded by try/catch so an older runtime
+ *  that lacks the method (or a model that rejects the level) never breaks the
+ *  run. No-ops when `level` is undefined. */
+export function applyThinkingLevel(session: unknown, level: ThinkingLevel | undefined): void {
+	if (level === undefined) return;
+	try {
+		const fn = (session as { setThinkingLevel?: unknown } | null | undefined)?.setThinkingLevel;
+		if (typeof fn === "function") {
+			(fn as (l: ThinkingLevel) => void).call(session, level);
+		}
+	} catch {
+		/* best-effort: older runtimes may lack the method or clamp the level */
+	}
+}
+
 export interface SessionAgentOptions {
 	agent: string;
 	prompt: string;
@@ -131,6 +147,10 @@ export interface SessionAgentOptions {
 	controlKeys?: string[];
 	schema?: unknown;
 	onProgress?: AgentProgress;
+	/** Optional per-agent thinking level (Phase 2). When set, the session backend
+	 *  best-effort calls `session.setThinkingLevel(level)` after createAgentSession
+	 *  (see applyThinkingLevel). Older runtimes may lack the method — tolerated. */
+	thinkingLevel?: ThinkingLevel;
 	/** Phase 4 (AC-08 / SCENARIO-017..018): best-effort live-steer seam. When
 	 *  provided, `runAgentViaSession` invokes `onSteer` with a no-throw forwarder
 	 *  bound to the live AgentSession as soon as the session is created (if it
@@ -354,6 +374,12 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		resourceLoader,
 		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
 	});
+
+	// Phase 2: best-effort apply the per-agent thinking level, resolved with the
+	// same precedence as the subprocess backend (per-call → SUPER_DEV_THINKING →
+	// role default). Tolerant of an older runtime that lacks setThinkingLevel or a
+	// model that rejects the level (applyThinkingLevel swallows any throw).
+	applyThinkingLevel(session, resolveThinking(opts.agent, opts.thinkingLevel));
 
 	// Phase 4 (AC-08 / SCENARIO-017..018): hand out a no-throw live-steer
 	// forwarder bound to this session when it exposes `steer()`; otherwise signal
