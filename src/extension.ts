@@ -432,11 +432,19 @@ export default function activate(pi: ExtensionAPI): void {
 			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
 			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
 			const sink: ProgressSink = {
+				// The dashboard `▶ <activity>` line is a STICKY current-phase indicator:
+				// it is updated ONLY by phase() — stage banners AND the implementation
+				// sub-phase subtitles ("Implementation — Phase 1/2: …"). It is deliberately
+				// NOT touched by the high-rate log()/text() events, so the current phase
+				// stays PINNED (like the `▌ Stage 9 — Implementation` section header)
+				// instead of rolling through every command — and the agent's streaming
+				// narration ("▶ I have the ACs injected…") never leaks into it. The
+				// detailed per-step log (red-oracle / build-gate / advisory) still scrolls
+				// in the stage's section body below.
 				phase: (label) => { stream.sink.phase(label); dashboardActivity = label; if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flush(); },
-				log: (message) => { stream.sink.log(message); dashboardActivity = message; renderDashboardThrottled(); flush(); },
+				log: (message) => { stream.sink.log(message); renderDashboardThrottled(); flush(); },
 				text: (partial) => {
 					stream.sink.text(partial);
-					dashboardActivity = partial;
 					const now = Date.now();
 					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; renderDashboardThrottled(); }
 				},
