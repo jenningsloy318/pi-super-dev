@@ -394,6 +394,20 @@ export default function activate(pi: ExtensionAPI): void {
 			const dashboardStages = new Map<string, { label: string; status: string }>();
 			const dashboardOrder: string[] = [];
 			let dashboardActivity = "";
+			// Proof-of-life state for the always-on widget: a run-start clock (ticking
+			// elapsed in the header) and a recent stage-log ring buffer. The recent log
+			// is surfaced in the widget ONLY for background runs (whose tool-result live
+			// log body is not visible), so the persistent panel still shows movement
+			// instead of looking dead. Foreground runs keep streaming logs via onUpdate.
+			const runStartMs = Date.now();
+			const recentLogs: string[] = [];
+			const RECENT_LOG_CAP = 40;
+			const pushRecent = (msg: string) => {
+				const t = String(msg ?? "").trim();
+				if (!t) return;
+				recentLogs.push(t);
+				if (recentLogs.length > RECENT_LOG_CAP) recentLogs.shift();
+			};
 			let lastWidget = 0;
 			const WIDGET_MS = 200;
 			const renderDashboard = () => {
@@ -424,7 +438,7 @@ export default function activate(pi: ExtensionAPI): void {
 					// in print/json/headless/RPC modes (AC-09 / AC-10).
 					ctx?.ui?.setWidget?.(
 						DASHBOARD_KEY,
-						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? "/super-dev-stop" : "esc to abort"),
+						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? "/super-dev-stop" : "esc to abort", { elapsedMs: Date.now() - runStartMs, recentLogs: activeRun?.background ? recentLogs : [] }),
 						{ placement: "aboveEditor" },
 					);
 				} catch { /* best-effort */ }
@@ -441,8 +455,8 @@ export default function activate(pi: ExtensionAPI): void {
 				// narration ("▶ I have the ACs injected…") never leaks into it. The
 				// detailed per-step log (red-oracle / build-gate / advisory) still scrolls
 				// in the stage's section body below.
-				phase: (label) => { stream.sink.phase(label); dashboardActivity = label; if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flush(); },
-				log: (message) => { stream.sink.log(message); renderDashboardThrottled(); flush(); },
+				phase: (label) => { stream.sink.phase(label); dashboardActivity = label; pushRecent(`▶ ${label}`); if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flush(); },
+				log: (message) => { stream.sink.log(message); pushRecent(message); renderDashboardThrottled(); flush(); },
 				text: (partial) => {
 					stream.sink.text(partial);
 					const now = Date.now();
@@ -464,12 +478,20 @@ export default function activate(pi: ExtensionAPI): void {
 				},
 			};
 			const doRun = async (runSignal: AbortSignal | undefined, background: boolean): Promise<ToolRunResult> => {
+			let heartbeat: ReturnType<typeof setInterval> | undefined;
 			try {
 				// Set the run-state singleton on execute() entry via the exported setter
 				// (single write path). Guard overlapping runs: a non-null singleton here
 				// means a prior run never cleared its finally (reentrancy) — discard it.
 				if (activeRun != null) setActiveRun(null);
 				setActiveRun(createActiveRun(ctx, stream, background));
+				// Heartbeat (TUI only): re-render the widget on a fixed cadence so the
+				// animated running glyph keeps spinning AND the elapsed clock keeps
+				// ticking even during long quiet agent turns (model thinking / a slow
+				// tool) when no sink event fires. Without this the widget froze and a
+				// live background run looked dead. Cleared in finally (no leak across
+				// runs). No-op in non-TUI modes (renderDashboard guards on ctx.mode).
+				if (ctx?.mode === "tui") heartbeat = setInterval(() => { try { renderDashboard(); } catch { /* best-effort */ } }, 250);
 				ensureSuperDevDirs();
 				startRun();
 				// Name the session after the task (pi-native) so it is identifiable in
@@ -529,6 +551,9 @@ export default function activate(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
 			} finally {
+				// Stop the proof-of-life heartbeat FIRST so no re-render fires after the
+				// widget is torn down below.
+				if (heartbeat) clearInterval(heartbeat);
 				// Discard the run-state singleton via the exported setter (single write
 				// path), in the SAME cleanup that removes the run's dashboard widget — so
 				// run teardown + widget teardown stay unified (no leak across runs).

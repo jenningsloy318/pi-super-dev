@@ -213,6 +213,7 @@ export function packDashboardLines(
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
+	opts: { elapsedMs?: number; recentLogs?: string[] } = {},
 ): string[] {
 	// F5: count only TERMINAL stages (ok/failed/skipped). The prior
 	// `!== "running"` rule counted never-started (pending/"·") stages as done,
@@ -220,8 +221,12 @@ export function packDashboardLines(
 	const TERMINAL = new Set(["ok", "failed", "skipped"]);
 	const done = entries.filter((e) => TERMINAL.has(e.status)).length;
 	const running = entries.find((e) => e.status === "running");
+	// Elapsed clock (only when supplied): a ticking `· 2m14s` is unmistakable
+	// proof-of-life for background runs whose live log body isn't visible. Omitted
+	// when undefined so the pure-function tests keep their exact header contract.
+	const elapsed = opts.elapsedMs != null ? ` · ${fmtElapsed(opts.elapsedMs)}` : "";
 	const head = truncLine(
-		`super-dev · ${done}/${entries.length}${
+		`super-dev · ${done}/${entries.length}${elapsed}${
 			running ? ` · ${statusGlyph(running.status, theme)} ${running.label}` : ""
 		}  (${abortHint})`,
 		width,
@@ -258,7 +263,35 @@ export function packDashboardLines(
 			truncLine(" ".repeat(indent) + (right ? cell(left!) + cell(right) : cell(left!)), width),
 		);
 	}
+	// Recent-activity tail (background runs only — the caller passes recentLogs
+	// solely when the tool-result live-log body is unavailable, i.e. detached
+	// background mode). Shows the last few structured stage log lines DIMMED so
+	// the user sees live progress in the persistent widget instead of a frozen,
+	// seemingly-dead panel. Foreground runs pass no recentLogs (their log body
+	// streams through the tool result), so this section never double-renders.
+	const recent = (opts.recentLogs ?? []).filter((r) => r && r.trim());
+	if (recent.length) {
+		lines.push(truncLine(theme ? theme.fg("dim", "── recent ──") : "── recent ──", width));
+		for (const r of recent.slice(-RECENT_LOG_TAIL)) {
+			const oneLine = r.replace(/\s+/g, " ").trim();
+			lines.push(truncLine(theme ? theme.fg("dim", `  ${oneLine}`) : `  ${oneLine}`, width));
+		}
+	}
 	return lines;
+}
+
+/** Max recent stage-log lines shown in the background-mode widget tail. */
+const RECENT_LOG_TAIL = 8;
+
+/** Format an elapsed duration compactly: `45s`, `2m14s`, `1h03m`. */
+function fmtElapsed(ms: number): string {
+	const total = Math.max(0, Math.floor(ms / 1000));
+	const h = Math.floor(total / 3600);
+	const m = Math.floor((total % 3600) / 60);
+	const s = total % 60;
+	if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
+	if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
+	return `${s}s`;
 }
 
 /**
@@ -277,9 +310,10 @@ export function buildDashboardWidget(
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
+	opts: { elapsedMs?: number; recentLogs?: string[] } = {},
 ): Container {
 	const container = new Container();
-	for (const line of packDashboardLines(entries, activity, width, theme, pendingInputCount, abortHint)) {
+	for (const line of packDashboardLines(entries, activity, width, theme, pendingInputCount, abortHint, opts)) {
 		container.addChild(new Text(line, 1, 0));
 	}
 	return container;
@@ -300,9 +334,10 @@ export function createDashboardWidgetFactory(
 	activity: string | undefined,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
+	opts: { elapsedMs?: number; recentLogs?: string[] } = {},
 ): (tui: unknown, theme: DashboardTheme) => Container {
 	return (_tui, theme) =>
-		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme, pendingInputCount, abortHint);
+		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme, pendingInputCount, abortHint, opts);
 }
 
 // ---------------------------------------------------------------------------

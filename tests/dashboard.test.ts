@@ -96,6 +96,46 @@ describe("packDashboardLines", () => {
 		expect(lines.filter((x) => x.startsWith("  ")).length).toBe(2);
 		for (let i = 0; i < 3; i++) expect(lines.some((l) => l.includes(`Stage ${i + 1} —`))).toBe(true);
 	});
+
+	it("header stays byte-identical when no elapsed clock is supplied", () => {
+		const lines = packDashboardLines(stages(5, 2), undefined, 80);
+		expect(lines[0]).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
+	});
+
+	it("header shows a ticking elapsed clock when elapsedMs is supplied", () => {
+		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: 134_000 });
+		// 134s → 2m14s, inserted after the done/total count
+		expect(lines[0]).toBe("super-dev · 4/5 · 2m14s · ● Stage 3 — Live  (esc to abort)");
+	});
+
+	it("formats sub-minute, minute, and hour elapsed spans", () => {
+		const at = (ms: number) => packDashboardLines(stages(1), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: ms })[0];
+		expect(at(45_000)).toContain("· 45s");
+		expect(at(125_000)).toContain("· 2m05s");
+		expect(at(3_780_000)).toContain("· 1h03m");
+	});
+
+	it("renders a dimmed recent-activity tail when recentLogs are supplied (background mode)", () => {
+		const logs = ["Implementation phase-01 red-oracle: red", "Implementation phase-01 build-gate PASS"];
+		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "/super-dev-stop", { recentLogs: logs });
+		expect(lines.some((l) => l.includes("── recent ──"))).toBe(true);
+		expect(lines.some((l) => l.includes("red-oracle: red"))).toBe(true);
+		expect(lines.some((l) => l.includes("build-gate PASS"))).toBe(true);
+	});
+
+	it("caps the recent tail at 8 lines (most-recent kept)", () => {
+		const logs = Array.from({ length: 20 }, (_, i) => `log line ${i + 1}`);
+		const lines = packDashboardLines(stages(2), undefined, 120, undefined, 0, "/super-dev-stop", { recentLogs: logs });
+		const shown = lines.filter((l) => /log line \d+/.test(l));
+		expect(shown.length).toBe(8);
+		expect(lines.some((l) => l.includes("log line 20"))).toBe(true); // newest kept
+		expect(lines.some((l) => l.includes("log line 12"))).toBe(false); // oldest trimmed
+	});
+
+	it("omits the recent tail entirely when no recentLogs (foreground mode)", () => {
+		const lines = packDashboardLines(stages(2), "writing x", 80);
+		expect(lines.some((l) => l.includes("── recent ──"))).toBe(false);
+	});
 });
 
 describe("formatDashboardLines: live-activity row (v2)", () => {
