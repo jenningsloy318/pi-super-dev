@@ -94,6 +94,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			model,
 			signal,
 			id: call.id,
+			// Per-call override; when absent each backend falls back to the
+			// role-based default (code-writing agents get a larger cap).
+			timeoutMs: call.timeoutMs,
 			onProgress: {
 				event: (m: string) => log(m),
 				text: (partial: string) => options.progress?.text(partial),

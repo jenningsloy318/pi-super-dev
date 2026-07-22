@@ -6,9 +6,27 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent } from "../src/pi-spawn.ts";
+import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
+
+describe("isCodeWritingAgent / defaultAgentTimeoutMs", () => {
+	it("classifies the code-writing agents", () => {
+		expect(isCodeWritingAgent("implementer")).toBe(true);
+		expect(isCodeWritingAgent("tdd-guide")).toBe(true);
+		expect(isCodeWritingAgent("research-agent")).toBe(false);
+		expect(isCodeWritingAgent("spec-writer")).toBe(false);
+		expect(isCodeWritingAgent("orchestrator")).toBe(false);
+	});
+	it("gives code-writing agents a strictly larger default timeout than doc writers", () => {
+		// Root-cause fix: the implementer must read a large file AND land+verify
+		// edits within one turn; the 480s doc-writer cap aborted it mid-exploration.
+		expect(defaultAgentTimeoutMs("implementer")).toBeGreaterThan(defaultAgentTimeoutMs("research-agent"));
+		expect(defaultAgentTimeoutMs("tdd-guide")).toBeGreaterThan(defaultAgentTimeoutMs("spec-writer"));
+		expect(defaultAgentTimeoutMs("research-agent")).toBe(480_000);
+		expect(defaultAgentTimeoutMs("implementer")).toBe(1_200_000);
+	});
+});
 
 describe("extractFinalAssistant", () => {
 	it("returns the assistant text from a single message_end", () => {

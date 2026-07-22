@@ -33,12 +33,36 @@ export function isBrowserAgent(agent: string): boolean {
 	return BROWSER_AGENTS.has(agent);
 }
 
+/** Agents whose deliverable is CODE EDITS to real source files (not a document).
+ *  These legitimately need to READ large existing files AND apply/verify edits
+ *  within one turn, so they get a much larger wall-clock budget + a code-centric
+ *  delivery discipline (see session-agent.ts). The doc-writer default (480s +
+ *  "explore ≤6, write the document") starves them: on a slow model, reading a
+ *  400+ line source file alone can exhaust 8 min BEFORE a single edit lands
+ *  (observed root cause of the recurring phase-03 zero-edit / edit-thrash
+ *  failures). */
+const CODE_WRITING_AGENTS = new Set(["implementer", "tdd-guide"]);
+
+export function isCodeWritingAgent(agent: string): boolean {
+	return CODE_WRITING_AGENTS.has(agent);
+}
+
 export function toolsForAgent(agent: string): string {
 	return BROWSER_AGENTS.has(agent) ? `${BASE_TOOLS},browser_execute` : BASE_TOOLS;
 }
 
 /** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
 const DEFAULT_SPAWN_TIMEOUT_MS = 480_000;
+/** Code-writing agents (implementer/tdd-guide) must read large existing files
+ *  AND land+verify edits in one turn; on a slow model the doc-writer cap aborts
+ *  them mid-exploration before any edit is written. Give them ~20 min. */
+const CODE_WRITING_TIMEOUT_MS = 1_200_000;
+
+/** The default wall-clock cap for an agent, by role. Overridable per-call via
+ *  AgentCall.timeoutMs (threaded through `common` in workflow.ts). */
+export function defaultAgentTimeoutMs(agent: string): number {
+	return isCodeWritingAgent(agent) ? CODE_WRITING_TIMEOUT_MS : DEFAULT_SPAWN_TIMEOUT_MS;
+}
 
 export interface SpawnAgentOptions {
 	agent: string;
@@ -70,7 +94,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 	writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
 
 	const args = buildSpawnArgs(opts, promptPath);
-	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS, opts.onProgress);
+	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent), opts.onProgress);
 	rmSync(tempDir, { recursive: true, force: true });
 	return result;
 }

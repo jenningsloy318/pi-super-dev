@@ -9,7 +9,27 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { missingKeys } from "../src/session-agent.ts";
+import { missingKeys, deliveryDisciplineFor } from "../src/session-agent.ts";
+
+describe("deliveryDisciplineFor", () => {
+	it("gives code-writing agents a code-centric discipline (edits, not a document)", () => {
+		const impl = deliveryDisciplineFor("implementer");
+		expect(impl).toMatch(/APPLIED SOURCE-CODE EDITS/);
+		// Must NOT tell the implementer its deliverable is a "document" nor cap it at ~6 calls.
+		expect(impl).not.toMatch(/written document/);
+		expect(impl).not.toMatch(/AT MOST ~6 tool calls/);
+		// Steers away from the edit-thrash failure mode.
+		expect(impl).toMatch(/whole-file `write`/);
+		expect(impl).toMatch(/source file MUST be modified/);
+		expect(deliveryDisciplineFor("tdd-guide")).toBe(impl);
+	});
+	it("keeps the doc-centric discipline for doc writers", () => {
+		const doc = deliveryDisciplineFor("research-agent");
+		expect(doc).toMatch(/written document/);
+		expect(doc).toMatch(/AT MOST ~6 tool calls/);
+		expect(doc).not.toMatch(/APPLIED SOURCE-CODE EDITS/);
+	});
+});
 
 describe("missingKeys", () => {
 	it("returns all keys when captured is null/undefined", () => {

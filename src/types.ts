@@ -57,6 +57,10 @@ export interface AgentCall {
 	 *  When provided, the structured_output tool uses this typed schema instead of
 	 *  the permissive Type.Any-per-key schema, so the model returns typed data. */
 	schema?: unknown;
+	/** Optional per-call wall-clock cap (ms). Overrides the role-based default
+	 *  (see defaultAgentTimeoutMs). Threaded into `common` and honored by both the
+	 *  session and subprocess backends. */
+	timeoutMs?: number;
 }
 
 export interface AgentResult extends SpawnResult {}

@@ -36,6 +36,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent } from "./pi-spawn.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,6 +162,41 @@ export function missingKeys(captured: Record<string, unknown> | null | undefined
 		const v = captured[k];
 		return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
 	});
+}
+
+/** Agent-aware delivery discipline preamble (OVERRIDES the ported agent prompts,
+ *  which demand Claude-grade exhaustive verification a slow model cannot afford).
+ *
+ *  Two shapes, because the deliverable differs by role:
+ *   - DOC writers (requirements/research/spec/…): deliverable is a document —
+ *     bound exploration hard and write early, because a timeout produces nothing.
+ *   - CODE writers (implementer/tdd-guide): deliverable is APPLIED source edits.
+ *     Capping exploration at ~6 calls starves them (reading one 400+ line file
+ *     is already several calls); the fix is to read ENOUGH, then land + verify
+ *     edits before the (now larger) clock runs out, and to prefer whole-file
+ *     `write` over many fragile exact-match `edit` calls on big files. Framing a
+ *     code edit as "writing a document" was the root cause of the recurring
+ *     zero-edit / edit-thrash phase failures. */
+export function deliveryDisciplineFor(agent: string): string {
+	if (isCodeWritingAgent(agent)) {
+		return [
+			"## Delivery discipline (OVERRIDES any contrary instruction above)",
+			"Your deliverable is APPLIED SOURCE-CODE EDITS — real changes to the real files, verified to build — followed by your structured_output call. A plan, an added test alone, or a description of edits you did NOT apply is a FAILURE.",
+			"- Read ONLY what you need to edit safely (the target file + the failing test + the types you touch). Do NOT read every file or re-read a file you already read.",
+			"- Then APPLY the edits early — well before you feel 'done' exploring. You have a generous but finite budget; an unfinished turn writes NOTHING to disk.",
+			"- When a single file needs several changes, prefer ONE whole-file `write` over many `edit` calls. Do NOT thrash on `edit` when its exact-match `oldText` keeps failing (tabs/whitespace); switch to `write` after the first miss. Never hand-patch indentation with `sed`.",
+			"- After applying edits, run the build/tests ONCE to confirm, fix any obvious break, then call structured_output and STOP. Do not loop on self-review.",
+			"- NEVER end your turn having only explored or only added a test: the source file MUST be modified before you finish.",
+		].join("\n");
+	}
+	return [
+		"## Delivery discipline (OVERRIDES any contrary instruction above)",
+		"You have a LIMITED time budget. The ONLY deliverable that matters is the written document + your structured_output call.",
+		"- Explore with AT MOST ~6 tool calls total (read/bash/grep/web). You do NOT need to read every file, run the full test suite, or verify every claim independently.",
+		"- Never re-read a file you already read. Never loop on self-auditing, self-scoring, or revision.",
+		"- START WRITING the document once you have the gist — well before you feel 'done' exploring. Written-but-imperfect beats thorough-but-unfinished (a timeout produces NOTHING).",
+		"- After writing, immediately call structured_output and STOP.",
+	].join("\n");
 }
 
 interface Capture {
@@ -294,7 +330,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const systemPrompt = loadAgentPrompt(opts.agent);
 	const keys = opts.controlKeys ?? [];
 	const capture: Capture = { called: false, value: undefined };
-	const timeoutMs = opts.timeoutMs ?? 480_000;
+	const timeoutMs = opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent);
 
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
@@ -343,15 +379,13 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	// Delivery discipline — the systemic fix for the recurring "agent explores for
 	// 10-27 tool calls then times out before writing" pattern. The ported agent
 	// prompts demand Claude-grade exhaustive verification; glm is slower and runs
-	// out of time. This preamble overrides that: bound exploration, write early.
-	const deliveryDiscipline = [
-		"## Delivery discipline (OVERRIDES any contrary instruction above)",
-		"You have a LIMITED time budget. The ONLY deliverable that matters is the written document + your structured_output call.",
-		"- Explore with AT MOST ~6 tool calls total (read/bash/grep/web). You do NOT need to read every file, run the full test suite, or verify every claim independently.",
-		"- Never re-read a file you already read. Never loop on self-auditing, self-scoring, or revision.",
-		"- START WRITING the document once you have the gist — well before you feel 'done' exploring. Written-but-imperfect beats thorough-but-unfinished (a timeout produces NOTHING).",
-		"- After writing, immediately call structured_output and STOP.",
-	].join("\n");
+	// out of time. This preamble overrides that. It is AGENT-AWARE: a doc-writer's
+	// deliverable is a document (explore ≤6, write early), but a CODE-writing
+	// agent's deliverable is applied source edits (read enough, then land+verify
+	// edits before the clock runs out). Applying the doc discipline to the
+	// implementer was the root cause of the recurring phase-N zero-edit and
+	// edit-thrash failures (see runs 2026-07-20 / 2026-07-22 phase-03).
+	const deliveryDiscipline = deliveryDisciplineFor(opts.agent);
 	const task = [systemPrompt, "", "## Task", opts.prompt, "", deliveryDiscipline, "", "## Final output", finalOutputLine].join("\n");
 
 	let correctiveNote = "";
