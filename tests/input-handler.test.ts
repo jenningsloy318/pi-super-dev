@@ -38,6 +38,9 @@ const activate = (ext as any).default as (pi: any) => void;
 const setActiveRun = (run: unknown): void => (ext as any).setActiveRun(run);
 const getActiveRun = (): unknown => (ext as any).getActiveRun();
 const createActiveRun = (ctx?: unknown): any => (ext as any).createActiveRun(ctx);
+const createBgActiveRun = (ctx?: unknown, stream?: unknown): any => (ext as any).createActiveRun(ctx, stream, true);
+const setActiveBgController = (c: unknown): void => (ext as any).setActiveBgController(c);
+const getActiveBgController = (): unknown => (ext as any).getActiveBgController();
 
 /** Minimal mock pi: captures the handler registered via events.on("input", h). */
 function makeMockPi() {
@@ -225,5 +228,63 @@ describe("Phase 1 — drain() atomic return-and-clear (AC-05 / SCENARIO-013)", (
 		expect(run.drain()).toEqual([]); // cleared — never double-injected
 		run.push("after");
 		expect(run.drain()).toEqual(["after"]); // only newly captured input
+	});
+});
+
+describe("Background runs — session stays fully interactive (accept commands mid-run)", () => {
+	let pi: ReturnType<typeof makeMockPi>;
+	let H: (e: any) => any;
+	beforeEach(() => {
+		resetRun();
+		try { setActiveBgController(null); } catch { /* not implemented yet */ }
+		pi = makeMockPi();
+		activate(pi);
+		H = pi.inputHandler()!;
+	});
+
+	it("a background run NEVER captures interactive input as steering (returns continue)", () => {
+		const run = createBgActiveRun();
+		setActiveRun(run);
+		// Both a slash-command and a plain prompt must pass through to pi so they
+		// execute DURING the detached run — the whole point of background mode.
+		expect(H(ev("/help", "interactive"))).toEqual({ action: "continue" });
+		expect(H(ev("what is the status?", "interactive"))).toEqual({ action: "continue" });
+		expect(run.drain()).toEqual([]); // nothing was swallowed as guidance
+		setActiveRun(null);
+	});
+
+	it("a FOREGROUND run still captures interactive input (steering preserved)", () => {
+		const run = createActiveRun(); // background defaults to false
+		setActiveRun(run);
+		expect(H(ev("focus on the parser", "interactive"))).toEqual({ action: "handled" });
+		expect(run.drain()).toEqual(["focus on the parser"]);
+		setActiveRun(null);
+	});
+
+	it("createActiveRun exposes the background flag it was constructed with", () => {
+		expect(createActiveRun().background).toBe(false);
+		expect(createBgActiveRun().background).toBe(true);
+	});
+});
+
+describe("Background-run abort controller singleton", () => {
+	beforeEach(() => { try { setActiveBgController(null); } catch { /* not implemented */ } });
+
+	it("is null when idle; stores and clears a controller", () => {
+		expect(getActiveBgController()).toBeNull();
+		const c = new AbortController();
+		setActiveBgController(c);
+		expect(getActiveBgController()).toBe(c);
+		setActiveBgController(null);
+		expect(getActiveBgController()).toBeNull();
+	});
+
+	it("aborting the stored controller signals cancellation (drives /super-dev-stop)", () => {
+		const c = new AbortController();
+		setActiveBgController(c);
+		expect(c.signal.aborted).toBe(false);
+		getActiveBgController() && (getActiveBgController() as AbortController).abort();
+		expect(c.signal.aborted).toBe(true);
+		setActiveBgController(null);
 	});
 });

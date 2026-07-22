@@ -55,6 +55,11 @@ const SUPER_DEV_COMMAND = "super-dev";
 export interface ActiveRun {
 	/** Pending mid-run user inputs not yet injected into a specialist prompt. */
 	queue: string[];
+	/** True when this run executes DETACHED in the background (the tool returned
+	 *  immediately). Background runs leave the session fully interactive, so the
+	 *  input listener never captures keystrokes as steering — every command / new
+	 *  turn flows through pi's normal pipeline and executes DURING the run. */
+	background?: boolean;
 	/** The execute() ctx (TUI guards + ACK surfaces use this — Phase 2). */
 	ctx?: ExtensionContext;
 	/** The live-stream handle (Phase 2 ACK: pushes the user-input transcript
@@ -90,9 +95,10 @@ function previewInput(text: string, max = 60): string {
 /** Factory for the module-scoped ActiveRun (fresh queue per run — no leak).
  *  Phase 2 adds the optional `stream` arg so push() can reach the live-stream's
  *  `userInput` sink; omitting it preserves Phase 1 behavior (queue + no ACK). */
-export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandle): ActiveRun {
+export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandle, background = false): ActiveRun {
 	return {
 		queue: [],
+		background,
 		ctx,
 		stream,
 		push(text: string): void {
@@ -143,6 +149,55 @@ export function setActiveRun(run: ActiveRun | null): void {
  *  execute()'s finally clears it alongside activeRun (no stale leak). */
 export function setActiveSteerForwarder(fn: ((text: string) => void) | null): void {
 	activeSteerForwarder = fn;
+}
+
+/**
+ * Background-run abort controller singleton.
+ *
+ * A background super_dev run is detached from the tool call (the tool returns
+ * "started" immediately), so it CANNOT use the turn's `signal` — that aborts the
+ * instant the turn ends. Instead the detached pipeline is driven by its own
+ * AbortController stored here, letting `/super-dev-stop` (command + shortcut)
+ * cancel an in-flight background run. Cleared in the detached task's `finally`.
+ */
+let activeBgController: AbortController | null = null;
+export function setActiveBgController(c: AbortController | null): void {
+	activeBgController = c;
+}
+export function getActiveBgController(): AbortController | null {
+	return activeBgController;
+}
+
+/** Tool-result shape shared by foreground return + background delivery. */
+interface ToolRunResult {
+	content: Array<{ type: "text"; text: string }>;
+	isError: boolean;
+	details: Record<string, unknown>;
+}
+
+/**
+ * Deliver the outcome of a DETACHED background run. The tool already returned
+ * "started" to the LLM, so the real summary is surfaced three pi-native ways,
+ * each best-effort so one failing surface never masks the others:
+ *   1. a toast via `ctx.ui.notify` (immediate, ephemeral);
+ *   2. a durable transcript card via `pi.appendEntry("super-dev-summary")` —
+ *      TUI-only, survives `/reload`, never sent to the LLM;
+ *   3. a `deliverAs: "nextTurn"` custom message so the AGENT learns the result
+ *      on the user's next prompt WITHOUT auto-triggering a turn.
+ */
+function deliverBackgroundResult(pi: ExtensionAPI, ctx: ExtensionContext | undefined, res: ToolRunResult): void {
+	const text = res?.content?.[0]?.text ?? "super-dev background run finished.";
+	const level: "info" | "warning" | "error" = res?.isError ? "error" : (text.startsWith("⚠️") ? "warning" : "info");
+	try { ctx?.ui?.notify?.(res?.isError ? "super-dev finished with errors" : "super-dev finished", level); } catch { /* best-effort */ }
+	try { pi.appendEntry?.("super-dev-summary", { text, isError: !!res?.isError, at: Date.now() }); } catch { /* best-effort */ }
+	// Custom message with deliverAs:"nextTurn" — the AGENT learns the outcome on
+	// the user's next prompt WITHOUT auto-triggering a turn (never sent mid-turn).
+	try {
+		pi.sendMessage?.(
+			{ customType: "super-dev-summary", content: `super-dev background run finished:\n${text}`, display: false },
+			{ deliverAs: "nextTurn" },
+		);
+	} catch { /* best-effort */ }
 }
 
 /** Read the module singleton. Null when idle (no run in progress). */
@@ -266,6 +321,12 @@ export default function activate(pi: ExtensionAPI): void {
 			// SCENARIO-002 / SCENARIO-003 / SCENARIO-019: idle (no run in progress)
 			// → pi owns the input entirely; nothing is captured.
 			if (activeRun == null) return { action: "continue" };
+			// Background runs free the session ENTIRELY: never swallow keystrokes as
+			// steering. Returning {continue} lets slash-commands and new prompts flow
+			// through pi's normal pipeline and run DURING the detached pipeline
+			// (mid-run steering is a foreground-only feature). This is the core of
+			// "accept new commands while super-dev is executing."
+			if (activeRun.background) return { action: "continue" };
 			const event = data as InputEvent;
 			// SCENARIO-005 / SCENARIO-020: non-interactive sources (rpc/extension) are
 			// never captured — print/json/headless/RPC input flows through pi
@@ -302,6 +363,7 @@ export default function activate(pi: ExtensionAPI): void {
 			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
 			resume: Type.Optional(Type.Boolean({ description: "Resume the most-recent interrupted run from where it left off (memoized replay). Default: false." })),
 			resumeSpecId: Type.Optional(Type.String({ description: "Resume a specific run by spec identifier (e.g. '07-foo-bar'). Overrides auto-pick." })),
+			background: Type.Optional(Type.Boolean({ description: "Run the pipeline DETACHED in the background so the session stays interactive (you can keep chatting and running commands during the run). Defaults to true in interactive TUI mode; set false to block until the pipeline finishes. Ignored (always blocking) in print/json/rpc modes." })),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const task = String(params.task ?? "").trim();
@@ -393,14 +455,21 @@ export default function activate(pi: ExtensionAPI): void {
 					renderDashboard(); // widget update
 				},
 			};
+			const doRun = async (runSignal: AbortSignal | undefined, background: boolean): Promise<ToolRunResult> => {
 			try {
 				// Set the run-state singleton on execute() entry via the exported setter
 				// (single write path). Guard overlapping runs: a non-null singleton here
 				// means a prior run never cleared its finally (reentrancy) — discard it.
 				if (activeRun != null) setActiveRun(null);
-				setActiveRun(createActiveRun(ctx, stream));
+				setActiveRun(createActiveRun(ctx, stream, background));
 				ensureSuperDevDirs();
 				startRun();
+				// Name the session after the task (pi-native) so it is identifiable in
+				// the session selector / `/tree`. Only set when the session is still
+				// unnamed so a user-chosen name is never clobbered; refined to the spec
+				// identifier once the run resolves one (below). Best-effort: never let a
+				// naming failure abort the run.
+				try { if (!pi.getSessionName()) pi.setSessionName(`super-dev: ${task.slice(0, 60)}`); } catch { /* best-effort */ }
 				const summary = await runPipelineTask(task, {
 					cwd: process.cwd(),
 					skipWorktree: params.skipWorktree === true,
@@ -419,8 +488,11 @@ export default function activate(pi: ExtensionAPI): void {
 				// backend. subprocess/browser never set a forwarder → documented no-op.
 				onSteer: setActiveSteerForwarder,
 				progress: sink,
-					signal,
+					signal: runSignal,
 				});
+				// Refine the session name to the resolved spec identifier (pi-native),
+				// which is a stable, human-meaningful slug (e.g. `07-oauth-login`).
+				try { if (summary.specIdentifier) pi.setSessionName(`super-dev: ${summary.specIdentifier}`); } catch { /* best-effort */ }
 				const summaryLines = formatSummary(summary, process.cwd());
 				finalizeLive(); // flush any pending live text into the transcript
 				// Preserve the FULL run log to disk (the live display is a rolling tail).
@@ -467,6 +539,30 @@ export default function activate(pi: ExtensionAPI): void {
 				try { ctx?.ui?.setStatus?.("super-dev-input", undefined); } catch { /* best-effort */ }
 				setActiveTracker(null);
 			}
+			};
+			// ── foreground vs. background dispatch ───────────────────────────────────
+			// In interactive TUI mode, DETACH the pipeline by default so the session
+			// stays live (user can chat + run commands DURING the run). The turn's
+			// `signal` would abort the instant the tool returns, so the detached run
+			// gets its OWN AbortController (stored for /super-dev-stop). print/json/rpc
+			// modes and an explicit `background:false` keep the original blocking path
+			// — byte-identical for automation / tests.
+			const runInBackground = ctx?.mode === "tui" && params.background !== false;
+			if (!runInBackground) return await doRun(signal, false);
+			if (getActiveRun()?.background) {
+				return { content: [{ type: "text", text: "⏳ A super-dev run is already active in the background. Wait for it to finish or stop it with /super-dev-stop." }], isError: true, details: {} };
+			}
+			const bgController = new AbortController();
+			setActiveBgController(bgController);
+			void doRun(bgController.signal, true)
+				.then((res) => deliverBackgroundResult(pi, ctx, res))
+				.catch((err) => { try { ctx?.ui?.notify?.(`super-dev background run crashed: ${err instanceof Error ? err.message : String(err)}`, "error"); } catch { /* best-effort */ } })
+				.finally(() => setActiveBgController(null));
+			return {
+				content: [{ type: "text", text: `🚀 super-dev started in the background for:\n  ${task.slice(0, 100)}\n\nProgress shows in the dashboard above the editor. Keep chatting or running commands — I'll post a summary card here when it finishes. Stop it any time with /super-dev-stop.` }],
+				isError: false,
+				details: { background: true },
+			};
 		},
 		// Pi-native result rendering: 3 sections. §1 detail logs DIMMED (thought-like,
 		// kept — not suppressed); §2 stage progress NORMAL (answer-like); §3 summary.
@@ -506,4 +602,52 @@ export default function activate(pi: ExtensionAPI): void {
 			pi.sendUserMessage(`Use the ${SUPER_DEV_TOOL} tool to run the full super-dev pipeline for this task: ${task}`);
 		},
 	});
+
+	// Durable transcript card for a finished BACKGROUND run (pi-native): rendered
+	// TUI-only, survives `/reload`, and is NEVER sent to the LLM. Populated by
+	// deliverBackgroundResult()'s pi.appendEntry("super-dev-summary", ...).
+	// Feature-detected: `registerEntryRenderer` exists in the pi runtime but is
+	// absent from the pinned 0.80.3 type surface, so we call it through a narrow
+	// capability type and no-op when unavailable (appendEntry still persists).
+	const piWithRenderer = pi as unknown as {
+		registerEntryRenderer?: (
+			customType: string,
+			renderer: (entry: { data?: unknown }, opts: unknown, theme: DashboardTheme) => Container,
+		) => void;
+	};
+	try {
+		piWithRenderer.registerEntryRenderer?.("super-dev-summary", (entry, _opts, theme) => {
+		const d = (entry.data ?? {}) as { text?: string; isError?: boolean };
+		const bold = (t: string): string => (theme?.bold ? theme.bold(t) : t);
+		const fg = (color: string, t: string): string => (theme ? theme.fg(color, t) : t);
+		const container = new Container();
+		const header = d.isError ? fg("error", bold("── super-dev (background) ─ finished with errors ──")) : bold("── super-dev (background) ─ finished ──");
+		container.addChild(new Text(header, 0, 0));
+		for (const line of String(d.text ?? "").split("\n")) container.addChild(new Text(line, 0, 0));
+		return container;
+		});
+	} catch { /* best-effort: entry renderer unavailable on this pi runtime */ }
+
+	// Stop an in-flight background run (pi-native command + shortcut). Aborts the
+	// detached run's OWN controller (not the turn signal, which is already gone).
+	pi.registerCommand("super-dev-stop", {
+		description: "Stop the in-progress background super-dev run.",
+		handler: async (_args, ctx) => {
+			const c = getActiveBgController();
+			if (!c) { ctx.ui.notify("No background super-dev run is active.", "info"); return; }
+			try { c.abort(); } catch { /* best-effort */ }
+			ctx.ui.notify("Stopping background super-dev run…", "warning");
+		},
+	});
+	try {
+		pi.registerShortcut("ctrl+shift+s", {
+			description: "Stop background super-dev run",
+			handler: async (ctx) => {
+				const c = getActiveBgController();
+				if (!c) { ctx.ui.notify("No background super-dev run is active.", "info"); return; }
+				try { c.abort(); } catch { /* best-effort */ }
+				ctx.ui.notify("Stopping background super-dev run…", "warning");
+			},
+		});
+	} catch { /* best-effort: the keybinding may be unavailable / conflicting */ }
 }
