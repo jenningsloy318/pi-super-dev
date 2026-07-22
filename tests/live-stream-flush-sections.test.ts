@@ -374,18 +374,14 @@ describe("AC-03 edge cases: aggregate cap, empty transcript, live buffer, per-se
 		expect(h0.body).toBe("");
 	});
 
-	it("includes the still-pending live buffer in its stage's section (before finalizeLive)", () => {
+	it("does NOT include the pending live buffer in the visible body (narration excluded)", () => {
 		const h0 = bodyHolder();
 		const h = createLiveStream({ mode: "tui", theme: mockTheme(), onUpdate: h0.onUpdate });
 		h.sink.stage({ id: "research", label: "ResearchA", status: "running" });
 		h.sink.text("partial-live-thinking-marker");
-		h.flush(); // NO finalizeLive — the buffer must still appear visibly.
+		h.flush(); // NO finalizeLive — the buffer is NOT shown (narration excluded from live view).
 		const body = h0.body;
-		expect(body).toContain("partial-live-thinking-marker");
-		expect(
-			lines(body).some((l) => l.startsWith("  ") && l.includes("partial-live-thinking-marker")),
-			"pending thinking line must be indented inside its stage's section",
-		).toBe(true);
+		expect(body).not.toContain("partial-live-thinking-marker");
 	});
 
 	it("emits a DISTINCT per-stage trim notice inside EACH trimmed section (not one global preamble)", () => {

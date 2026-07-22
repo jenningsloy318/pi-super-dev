@@ -465,19 +465,14 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	 *  byte-clean contract); once a stage is known the per-stage section stack
 	 *  (SCENARIO-010..013) takes over. */
 	const flush = (): void => {
-		// The pending live buffer is included in the VISIBLE body (so the user
-		// sees in-flight typing) but is NOT committed to the transcript.
-		const pending: TranscriptLine[] = live
-			? [
-					{
-						kind: "thinking",
-						text: live,
-						stageId: currentStageId,
-						stageLabel: currentStageLabel,
-					},
-				]
-			: [];
-		const visible = [...transcript, ...pending];
+		// The pending live (agent streaming text) buffer is EXCLUDED from the
+		// visible body — the stage's structured logs (phase markers, gate results,
+		// advisory lines) already show current operations; the agent's narration
+		// ("I have the ACs injected…") is noise that clutters the live view. The
+		// buffer is still finalized into the transcript via finalizeLive() for the
+		// full disk log + renderResult. The dashboard widget + footer working
+		// message show the current activity.
+		const visible = [...transcript];
 		if (visible.length === 0) {
 			onUpdate?.("");
 			return;

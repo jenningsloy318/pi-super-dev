@@ -188,14 +188,14 @@ describe("AC-04 rolling tail + trim notice (SCENARIO-009)", () => {
 		expect(lines[400]).toBe("l 401");
 	});
 
-	it("includes the pending live buffer in the visible body without committing it", () => {
+	it("does NOT include the pending live buffer in the visible body (narration excluded)", () => {
 		const cap = capture();
 		const h = createLiveStream({ onUpdate: cap.push, mode: "print" });
 		h.sink.phase("Spec");
 		h.sink.text("still typing"); // pending, not finalized
 		h.flush();
 		const lines = cap.bodies.at(-1)!.split("\n");
-		expect(lines).toEqual(["▶ Spec", "still typing"]);
+		expect(lines).toEqual(["▶ Spec"]); // "still typing" excluded — narration not shown in live view
 		expect(h.getTranscript()).toEqual([
 			{ kind: "phase", text: "▶ Spec", stageId: "setup", stageLabel: "pre-stage" },
 		]);
