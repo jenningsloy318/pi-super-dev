@@ -112,6 +112,38 @@ const fixStepReview = branch((s: PipelineState) => !reviewApproved(s), {
 	no: noop(),
 });
 
+/**
+ * GAP A: stable, order-independent signature over api+ui test failures
+ * (s.apiTest.failures + s.uiTest.failures). Mirrors findingsSignature — an
+ * empty failure set yields "" so a passing round never counts as a repeat.
+ */
+export const testFailuresSignature = (s: PipelineState): string => {
+	const api = ((s.apiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? [];
+	const ui = ((s.uiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? [];
+	const all = [...api, ...ui];
+	if (all.length === 0) return "";
+	return all.map((f) => `${String(f.file ?? "")}|${String(f.title ?? "")}|${String(f.message ?? "")}`).sort().join("\n");
+};
+
+/**
+ * GAP C: shared stagnation trigger for both loops. A loop is stagnant when the
+ * CURRENT non-empty signature byte-matches the previous round's, OR when the
+ * current non-zero finding/failure COUNT fails to decrease (n→n or n→n+1 scope
+ * drift). A genuinely converging sequence (5→3→1) never triggers. Callers own
+ * the history arrays; this pushes the current round then compares the last two.
+ */
+const detectStagnation = (sig: string, count: number, sigHist: string[], countHist: number[]): boolean => {
+	sigHist.push(sig);
+	countHist.push(count);
+	const n = sigHist.length;
+	if (n < 2) return false;
+	if (sig !== "" && sigHist[n - 1] === sigHist[n - 2]) return true; // identical-signature trigger
+	const prev = countHist[n - 2];
+	const cur = countHist[n - 1];
+	if (cur > 0 && prev > 0 && cur >= prev) return true; // non-decreasing-count trigger
+	return false;
+};
+
 /** Stagnation: same review-findings signature on 2 consecutive rounds → break. */
 export const findingsSignature = (s: PipelineState): string => {
 	const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
@@ -120,22 +152,26 @@ export const findingsSignature = (s: PipelineState): string => {
 };
 
 export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Promise<boolean> => {
-	const hist = ((s as Record<string, unknown>).__reviewSignatures as string[] | undefined) ?? [];
+	const sigHist = ((s as Record<string, unknown>).__reviewSignatures as string[] | undefined) ?? [];
+	const countHist = ((s as Record<string, unknown>).__reviewCounts as number[] | undefined) ?? [];
+	const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
 	const sig = findingsSignature(s);
-	hist.push(sig);
-	(s as Record<string, unknown>).__reviewSignatures = hist;
-	const stagnant = sig !== "" && hist.length >= 2 && hist[hist.length - 1] === hist[hist.length - 2];
+	// GAP C: identical-signature OR non-decreasing-count triggers stagnation.
+	const stagnant = detectStagnation(sig, findings.length, sigHist, countHist);
+	(s as Record<string, unknown>).__reviewSignatures = sigHist;
+	(s as Record<string, unknown>).__reviewCounts = countHist;
 	if (stagnant) {
-		const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
 		(s as Record<string, unknown>).__stagnated = {
-			rounds: hist.length,
+			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
 			findings: findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })),
 		};
-		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds — breaking early (non-fatal; ${hist.length} rounds)`);
+		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds — breaking early (non-fatal; ${sigHist.length} rounds)`);
 		return true;
 	}
-	return reviewApproved(s);
+	// GAP B: a successful exit requires review approval AND a green build gate.
+	// Approved+build-red keeps looping until stagnation or the times:3 cap.
+	return reviewApproved(s) && buildGreen(s);
 };
 
 /** Stage 10 — Review: review → fix → build gate, max 3. */
@@ -143,6 +179,31 @@ export const reviewLoopNode = loop(
 	{ until: reviewLoopUntil, times: 3 },
 	sequence([reviewStep, fixStepReview, buildGateStep]),
 );
+
+/**
+ * GAP D: the composed Stage 10 node = reviewLoopNode + one final
+ * budget-checked reviewStep epilogue on max-rounds EXHAUSTION (not approval,
+ * not stagnation), so the downstream reviewApproved merge gate reads the
+ * terminal fixed code. No extra fix runs; the epilogue is non-fatal (never
+ * throws). Mirrors the reviewLoopUntil/__stagnated non-fatal style.
+ */
+export const reviewStageNode: Node = {
+	kind: "reviewStage",
+	async run(state, ctx) {
+		const r = await reviewLoopNode.run(state, ctx);
+		if (r.status === "cancelled") return r;
+		const stagnated = (state as Record<string, unknown>).__stagnated;
+		if (!reviewApproved(state) && !stagnated && ctx.budget.check()) {
+			ctx.log("Stage 10: max rounds exhausted — final safety re-review (non-fatal)");
+			try {
+				await reviewStep.run(state, ctx);
+			} catch (err) {
+				ctx.log(`Stage 10: final re-review threw (non-fatal) — ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		return r;
+	},
+};
 
 // ─── Stage 11 — Integration Testing loop ────────────────────────────────────
 
@@ -235,6 +296,33 @@ export const integrationLoopNode: Node = {
 	async run(state, ctx) {
 		if (ctx.signal?.aborted) return { status: "cancelled" };
 
+		// GAP A/C: per-round test-failure signature + count history. When the same
+		// non-empty failure set repeats (or the failure count fails to decrease)
+		// across 2 consecutive rounds, record state.__testStagnated and break early
+		// (non-fatal). Mirrors reviewLoopUntil/__stagnated.
+		const testSigHist = ((state as Record<string, unknown>).__testSignatures as string[] | undefined) ?? [];
+		const testCountHist = ((state as Record<string, unknown>).__testCounts as number[] | undefined) ?? [];
+		(state as Record<string, unknown>).__testSignatures = testSigHist;
+		(state as Record<string, unknown>).__testCounts = testCountHist;
+		const testFailureCount = (s: PipelineState): number =>
+			(((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length +
+			(((s.uiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length;
+		const recordTestStagnation = (): boolean => {
+			const sig = testFailuresSignature(state);
+			if (!detectStagnation(sig, testFailureCount(state), testSigHist, testCountHist)) return false;
+			const failures = [
+				...(((state.apiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? []),
+				...(((state.uiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? []),
+			];
+			(state as Record<string, unknown>).__testStagnated = {
+				rounds: testSigHist.length,
+				signature: sig,
+				failures: failures.slice(0, 12).map((f) => ({ file: f.file ?? null, title: f.title ?? null, message: f.message ?? null })),
+			};
+			ctx.log(`Stage 11: test failures stagnant across 2 consecutive rounds — breaking early (non-fatal; ${testSigHist.length} rounds)`);
+			return true;
+		};
+
 		// 1. Initial test run (unconditional).
 		ctx.log("Stage 11 — Integration Testing: running initial tests");
 		const initResult = await testBlock.run(state, ctx);
@@ -243,6 +331,7 @@ export const integrationLoopNode: Node = {
 			ctx.log("Stage 11: integration passed on first run");
 			return { status: "ok" };
 		}
+		if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 
 		// 2. Retry loop: fix → re-review → build → re-test (max 2 retries = 3 total).
 		for (let attempt = 1; attempt <= 2; attempt++) {
@@ -260,6 +349,7 @@ export const integrationLoopNode: Node = {
 				ctx.log(`Stage 11: integration passed on retry ${attempt}`);
 				return { status: "ok" };
 			}
+			if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 		}
 
 		ctx.log("Stage 11: integration testing max retries exhausted (non-fatal)");
