@@ -959,3 +959,36 @@ export function runDeliverableCheck(
 		};
 	}
 }
+
+/**
+ * Lightweight REAL-FILESYSTEM check (no spawn, no test-lister) for whether a
+ * phase's declared deliverables are ALREADY satisfied. Used by the pre-implement
+ * no-op detection (§F #1) to skip the implementer when files/patterns already
+ * exist — kills the state-confusion churn (implementers re-touching done work).
+ *
+ * Unlike {@link runDeliverableCheck} this reads the REAL filesystem directly
+ * (existsSync + readFileSync), so it does NOT consume test-stub queues and is
+ * safe to run UNCONDITIONALLY (not just on resume). Returns false when no
+ * requireFiles are declared (can't determine no-op without file targets).
+ * NEVER throws.
+ */
+export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableContract): boolean {
+	try {
+		const files = deliverables.requireFiles;
+		if (!Array.isArray(files) || files.length === 0) return false;
+		for (const p of files) {
+			if (!existsSync(resolve(cwd, p))) return false;
+		}
+		for (const entry of deliverables.requireContains ?? []) {
+			const rd = readForDeliverable(cwd, entry.file);
+			if (!rd.ok || !tolerantMatch(entry.pattern, rd.text)) return false;
+		}
+		for (const entry of deliverables.requireNotContains ?? []) {
+			const rd = readForDeliverable(cwd, entry.file);
+			if (rd.ok && tolerantMatch(entry.pattern, rd.text)) return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}

@@ -124,6 +124,8 @@ const mock = vi.hoisted(() => {
 });
 
 vi.mock("../src/build-runner.ts", () => ({
+	// No-op detection: false in tests (no real deliverables on the mock fs).
+	deliverablesAlreadyMet: () => false,
 	// Greenfield-safe RED oracle → no re-prompts, proceeds immediately.
 	runRedCheck: (): string => "unknown",
 	runBuildGate: () => {

@@ -13,7 +13,7 @@ import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplement
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
-import { computeChangeGate, resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
+import { computeChangeGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
 
 const MAX_ATTEMPTS = 3;
 /** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
@@ -204,18 +204,11 @@ export const implementationStage: Stage = {
 			// phase-start vs post-implementer state). Conservative: skips ONLY when
 			// deliverables are declared AND pass; the final pre-merge build gate
 			// still verifies the whole build.
-			const isResumeRun = !!(ctx.options.resume ?? ctx.options.resumeSpecIdentifier);
 			const phaseDeliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
-			if (isResumeRun && phaseDeliverables) {
-				resetDeliverableCheckCache();
-				let preCheck;
-				try { preCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables); }
-				catch { preCheck = { pass: false, missing: ["pre-check threw"], ran: [] }; }
-				if (preCheck.pass) {
-					ctx.log(`Implementation ${phaseId} no-op: deliverables already satisfied (${preCheck.ran.length} check(s) passed) — skipping implementer to avoid re-touching done work`);
-					phasesCompleted++;
-					continue; // next phase — no implementer, no commit (nothing new)
-				}
+			if (phaseDeliverables && deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables)) {
+				ctx.log(`Implementation ${phaseId} no-op: deliverables already satisfied (files/patterns present) — skipping implementer`);
+				phasesCompleted++;
+				continue;
 			}
 			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {

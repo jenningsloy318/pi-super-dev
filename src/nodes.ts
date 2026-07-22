@@ -53,11 +53,12 @@ type Predicate = (state: PipelineState, ctx: StageContext) => boolean | Promise<
 type Validator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
 
 /** Run async functions with a concurrency cap, preserving order. */
-async function runConcurrent<T>(fns: Array<() => Promise<T>>, concurrency = Infinity): Promise<T[]> {
+async function runConcurrent<T>(fns: Array<() => Promise<T>>, concurrency = Infinity, signal?: AbortSignal): Promise<T[]> {
 	const results = [] as T[];
 	const queue = fns.map((fn, i) => [i, fn] as const);
 	async function worker(): Promise<void> {
 		while (queue.length > 0) {
+			if (signal?.aborted) return; // #6 sibling-cancellation: don't start remaining branches
 			const entry = queue.shift();
 			if (!entry) return;
 			const [i, fn] = entry;
@@ -231,9 +232,18 @@ export function parallel(branches: Node[], opts: ParallelOptions = {}): Node {
 		kind: "parallel",
 		async run(state, ctx) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
+			// #6 sibling-cancellation: when one branch returns cancelled, abort a sub-signal
+			// so remaining QUEUED branches are not started (in-flight branches run to completion
+			// — aborting an async fn without its own signal check is not possible).
+			const subAbort = new AbortController();
 			const results = await runConcurrent(
-				branches.map((b) => () => b.run(state, ctx)),
+				branches.map((b) => async () => {
+					const r = await b.run(state, ctx);
+					if (r.status === "cancelled") subAbort.abort(); // #6: signal siblings to stop
+					return r;
+				}),
 				opts.concurrency ?? ctx.options.maxConcurrency ?? Infinity,
+				subAbort.signal, // #6: workers check this before dequeuing
 			);
 			if (results.some((r) => r.status === "cancelled")) return { status: "cancelled" };
 			if (!opts.tolerant && results.some((r) => r.status === "failed")) {
