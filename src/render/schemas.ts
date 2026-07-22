@@ -87,6 +87,10 @@ export const ResearchData = Type.Object({
 	date: Type.String(),
 	summary: Type.String(),
 	options: Type.Array(Type.Object({ name: Type.String(), tradeoffs: Type.String() }), { minItems: 1 }),
+	// Real sources the research-agent searched/fetched online (URL + title). Optional
+	// so a run where web tools were unavailable still validates; the agent is
+	// instructed to leave it empty ONLY in that case and mark claims unverified.
+	sources: Type.Optional(Type.Array(Type.Object({ title: Type.String(), url: Type.String() }))),
 	openIssues: Type.Array(Type.String()),
 });
 export type ResearchData = Static<typeof ResearchData>;

@@ -16,6 +16,14 @@
 
 {{ o.tradeoffs }}
 {% endfor %}
+{% if sources and sources.length %}
+
+## Sources
+
+{% for s in sources %}
+- [{{ s.title }}]({{ s.url }})
+{% endfor %}
+{% endif %}
 {% if openIssues %}
 
 ## Open Issues

@@ -6,7 +6,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs } from "../src/pi-spawn.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, toolsForAgent, resolveExtensionEntry } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 
@@ -110,6 +113,51 @@ describe("buildSpawnArgs", () => {
 			expect(tools, agent).toContain("browser_execute");
 			expect(tools, agent).toContain("read,bash,edit,write,ffgrep,fffind");
 		}
+	});
+
+	it("research-agent KEEPS --no-extensions and loads ONLY pi-web-access + pi-mcp-adapter via -e, gaining web+mcp tools", () => {
+		const exts = ["/agent/npm/node_modules/pi-web-access/index.ts", "/agent/npm/node_modules/pi-mcp-adapter/index.ts"];
+		const args = buildSpawnArgs({ agent: "research-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md", exts);
+		// isolation preserved: --no-extensions STAYS (unlike the rushed drop-everything approach)
+		expect(args).toContain("--no-extensions");
+		// only the two named extensions are loaded explicitly
+		for (const e of exts) {
+			const i = args.indexOf(e);
+			expect(i).toBeGreaterThan(0);
+			expect(args[i - 1]).toBe("-e");
+		}
+		const tools = args[args.indexOf("--tools") + 1];
+		expect(tools).toContain("read,bash,edit,write,ffgrep,fffind");
+		expect(tools).toContain("web_search");
+		expect(tools).toContain("fetch_content");
+		expect(tools).toContain("get_search_content");
+		expect(tools).toContain("mcp");
+		expect(tools).not.toContain("browser_execute");
+	});
+});
+
+describe("web-research agent classification", () => {
+	it("needsWebResearch is true only for research-agent", () => {
+		expect(needsWebResearch("research-agent")).toBe(true);
+		expect(needsWebResearch("code-assessor")).toBe(false);
+		expect(needsWebResearch("implementer")).toBe(false);
+		expect(needsWebResearch("qa-agent")).toBe(false);
+	});
+
+	it("toolsForAgent gives web+mcp to research, browser tool to browser, base to the rest", () => {
+		expect(toolsForAgent("research-agent")).toBe("read,bash,edit,write,ffgrep,fffind,web_search,fetch_content,get_search_content,mcp");
+		expect(toolsForAgent("qa-agent")).toBe("read,bash,edit,write,ffgrep,fffind,browser_execute");
+		expect(toolsForAgent("spec-writer")).toBe("read,bash,edit,write,ffgrep,fffind");
+	});
+
+	it("resolveExtensionEntry returns the entry path when installed, null otherwise", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "sd-ext-"));
+		const pkgDir = join(tmp, "npm", "node_modules", "pi-web-access");
+		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(join(pkgDir, "index.ts"), "// stub");
+		expect(resolveExtensionEntry("pi-web-access", tmp)).toBe(join(pkgDir, "index.ts"));
+		expect(resolveExtensionEntry("pi-mcp-adapter", tmp)).toBeNull();
+		rmSync(tmp, { recursive: true, force: true });
 	});
 });
 

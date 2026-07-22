@@ -58,7 +58,21 @@ export function buildBddPrompt(s: SetupControl, c: Classification | null, task: 
 export function buildResearchPrompt(s: SetupControl, c: Classification | null, task: string, requirements: R, bdd: R, prev: R): string {
 	const parts = [ctxBlock(s, c), "", "## Upstream Artifacts", `- Requirements: ${(requirements?.docPath as string) ?? "N/A"}`, `- BDD Scenarios: ${(bdd?.docPath as string) ?? "N/A"}`];
 	if (prev?.docPath) { parts.push(`- Previous Research: ${prev.docPath as string}`); const oi = prev.openIssues as string[] | undefined; if (Array.isArray(oi) && oi.length) parts.push(`- Open Issues to resolve: ${oi.join(", ")}`); }
-	parts.push("", "## Task", task, "", "## Instructions", "Research best practices relevant to this task.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "## Data to return", "Return the research as structured data:", "- title: the research topic title", "- date: today's date", "- summary: one-paragraph summary", "- options: array of { name: string, tradeoffs: string } (at least 1)", "- openIssues: array of strings (empty if none)", "", "Output <control> JSON with: title, date, summary, options, openIssues.");
+	parts.push("", "## Task", task, "", "## Instructions",
+		"Do ONLINE RESEARCH to find the best EXTERNAL knowledge for THIS requirement and its BDD scenarios. This is NOT codebase analysis — analyzing the existing repository is the separate code-assessment stage's job. Your job is to bring in knowledge that is NOT already in this repo.",
+		"- Read the Requirements and BDD Scenarios docs above first, then derive the 2-4 research questions that actually matter for implementing them (frameworks/libraries, algorithms, protocols, security/perf pitfalls, applicable standards or spec versions, idiomatic patterns).",
+		"- USE THE WEB TOOLS: call `web_search` for each question (prefer several varied queries), then `fetch_content` on the most authoritative results (official docs, RFCs/standards, primary sources, high-quality community posts) to read the real content — do not rely on snippets alone. If MCP servers are configured, you may also use the `mcp` gateway (e.g. a library-docs server) to pull authoritative reference material.",
+		"- Ground every option and recommendation in what you FOUND online, tied back to the requirement/BDD it serves. Prefer current, version-accurate sources; note the date.",
+		"- If web tools are unavailable or a provider is not configured, say so explicitly, fall back to your own knowledge, and mark the affected claims as unverified — never fabricate sources or URLs.",
+		"The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.",
+		"", "## Data to return", "Return the research as structured data:",
+		"- title: the research topic title",
+		"- date: today's date",
+		"- summary: one-paragraph synthesis of what the online research concluded",
+		"- options: array of { name: string, tradeoffs: string } (at least 1), each grounded in a real source and the requirement/BDD it addresses",
+		"- sources: array of { title: string, url: string } — the real URLs you actually fetched/searched (empty ONLY if web tools were unavailable)",
+		"- openIssues: array of strings (empty if none)",
+		"", "Output <control> JSON with: title, date, summary, options, sources, openIssues.");
 	return parts.join("\n");
 }
 export function buildDebugPrompt(s: SetupControl, c: Classification | null, task: string, requirements: R, research: R): string {

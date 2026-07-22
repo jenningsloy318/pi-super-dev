@@ -20,6 +20,7 @@ vi.mock("../src/pi-spawn.ts", () => ({
 		return { text: "", control: {} };
 	}),
 	isBrowserAgent: vi.fn(() => false),
+	needsWebResearch: vi.fn(() => false),
 }));
 
 import { makeContext } from "../src/workflow.ts";

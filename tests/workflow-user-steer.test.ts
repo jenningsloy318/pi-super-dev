@@ -34,6 +34,7 @@ vi.mock("../src/pi-spawn.ts", () => ({
 		return { text: "", control: {} };
 	}),
 	isBrowserAgent: vi.fn(() => false),
+	needsWebResearch: vi.fn(() => false),
 }));
 // Deterministic knowledge string so the guidance block's position (AFTER
 // knowledge) is assertable independently of spec-dir fixture state. Real

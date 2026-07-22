@@ -11,8 +11,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
@@ -31,6 +31,59 @@ const BROWSER_AGENTS = new Set(["qa-agent", "ui-tester"]);
 
 export function isBrowserAgent(agent: string): boolean {
 	return BROWSER_AGENTS.has(agent);
+}
+
+/** Agents that perform ONLINE RESEARCH. They need pi's web tools
+ *  (`web_search` / `fetch_content` / `get_search_content` from the `pi-web-access`
+ *  extension) AND the MCP gateway (`mcp` from `pi-mcp-adapter`) so they can pull
+ *  EXTERNAL knowledge — best practices, library/framework docs, standards,
+ *  pitfalls — for the requirement + BDD, rather than re-analyzing the local
+ *  codebase (that is the code-assessment stage's job). Forced onto the SUBPROCESS
+ *  backend (see workflow.ts) so extensions load in an ISOLATED process, never in
+ *  the parent's in-process session. Crucially we KEEP `--no-extensions` and load
+ *  ONLY these two extensions via repeatable `-e <path>` (the documented
+ *  `pi --no-extensions -e ext` pattern), so no other global extension (super-dev
+ *  itself, intercom, etc.) is loaded; the `--tools` allowlist then restricts the
+ *  ACTIVE tool set to coding + web + mcp. */
+const WEB_RESEARCH_AGENTS = new Set(["research-agent"]);
+
+export function needsWebResearch(agent: string): boolean {
+	return WEB_RESEARCH_AGENTS.has(agent);
+}
+
+/** Web + MCP tool set for research agents. `web_search`/`fetch_content`/
+ *  `get_search_content` come from pi-web-access; `mcp` is the pi-mcp-adapter
+ *  gateway (lazy — servers connect only when called, and it degrades to a no-op
+ *  when no .mcp.json servers are configured). */
+const WEB_TOOLS = "web_search,fetch_content,get_search_content,mcp";
+
+/** The installed extensions a research agent explicitly loads via `-e`. Order
+ *  is irrelevant; each is resolved to its on-disk entry by researchExtensions(). */
+const RESEARCH_EXTENSION_PACKAGES = ["pi-web-access", "pi-mcp-adapter"];
+
+/** Resolve an installed pi extension package to its loadable entry file, or null
+ *  when it isn't installed. Uses pi's standard agent-dir npm layout
+ *  (`<agentDir>/npm/node_modules/<pkg>/index.ts`). Kept pure (agentDir injected)
+ *  so it is unit-testable against a temp fixture. Never throws. */
+export function resolveExtensionEntry(pkg: string, agentDir: string): string | null {
+	const entry = join(agentDir, "npm", "node_modules", pkg, "index.ts");
+	try { return existsSync(entry) ? entry : null; } catch { return null; }
+}
+
+/** Resolve the research extensions' entry paths (pi-web-access + pi-mcp-adapter)
+ *  from the pi agent dir. Missing packages are silently skipped so a partial
+ *  install degrades gracefully (the agent still gets whatever loaded). */
+export function researchExtensions(): string[] {
+	const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+	return RESEARCH_EXTENSION_PACKAGES
+		.map((p) => resolveExtensionEntry(p, agentDir))
+		.filter((p): p is string => p !== null);
+}
+
+export function toolsForAgent(agent: string): string {
+	if (isBrowserAgent(agent)) return `${BASE_TOOLS},browser_execute`;
+	if (needsWebResearch(agent)) return `${BASE_TOOLS},${WEB_TOOLS}`;
+	return BASE_TOOLS;
 }
 
 /** Agents whose deliverable is CODE EDITS to real source files (not a document).
@@ -101,10 +154,6 @@ export function resolveThinking(agent: string, perCall?: ThinkingLevel): Thinkin
 	return thinkingForAgent(agent);
 }
 
-export function toolsForAgent(agent: string): string {
-	return BROWSER_AGENTS.has(agent) ? `${BASE_TOOLS},browser_execute` : BASE_TOOLS;
-}
-
 /** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
 const DEFAULT_SPAWN_TIMEOUT_MS = 480_000;
 /** Code-writing agents (implementer/tdd-guide) must read large existing files
@@ -150,7 +199,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 	const promptPath = join(tempDir, "agent.md");
 	writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
 
-	const args = buildSpawnArgs(opts, promptPath);
+	const args = buildSpawnArgs(opts, promptPath, needsWebResearch(opts.agent) ? researchExtensions() : []);
 	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent), opts.onProgress);
 	rmSync(tempDir, { recursive: true, force: true });
 	return result;
@@ -164,9 +213,12 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
  *
  * Browser-capable agents (see BROWSER_AGENTS) omit `--no-extensions` so the
  * pi-browser-cdp-extension loads, and add `browser_execute` to the tool set.
- * The `--tools` allowlist still restricts active tools to the declared set.
+ * Web-research agents (see WEB_RESEARCH_AGENTS) instead KEEP `--no-extensions`
+ * and load ONLY pi-web-access + pi-mcp-adapter via repeatable `-e <path>`
+ * (`extraExtensions`), gaining `web_search`/`fetch_content`/`get_search_content`/
+ * `mcp`. The `--tools` allowlist still restricts active tools to the declared set.
  */
-export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string): string[] {
+export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extraExtensions: string[] = []): string[] {
 	const { command, args: prefix } = resolvePiBinary();
 	const browser = isBrowserAgent(opts.agent);
 	const args = [
@@ -174,10 +226,13 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string): str
 		...prefix,
 		"--mode", "json", "-p", "--no-session", "--no-skills",
 	];
-	// Browser agents need pi-browser-cdp-extension loaded, so they do NOT pass
-	// --no-extensions. The --tools allowlist below still restricts active tools
-	// to the declared set (so loading extensions doesn't enable e.g. `subagent`).
+	// Browser agents load pi-browser-cdp via discovery (they OMIT --no-extensions).
+	// Every other agent — including research — KEEPS --no-extensions for isolation.
+	// Research then loads ONLY its two extensions explicitly via `-e <path>` below
+	// (the documented `pi --no-extensions -e ext` pattern), so no other global
+	// extension is pulled in. The --tools allowlist still restricts ACTIVE tools.
 	if (!browser) args.push("--no-extensions");
+	for (const ext of extraExtensions) args.push("-e", ext);
 	args.push("--tools", toolsForAgent(opts.agent));
 	args.push("--system-prompt", promptPath);
 	if (opts.model) args.push("--model", opts.model);

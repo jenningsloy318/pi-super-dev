@@ -11,7 +11,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { spawnAgent, isBrowserAgent } from "./pi-spawn.ts";
+import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
@@ -127,7 +127,11 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// the default is session — only the subprocess path loads pi-browser-cdp-extension
 		// (so they get the `browser_execute` tool: CDP with auto-discovery). The session
 		// backend's createCodingTools doesn't expose browser tooling.
-		const backend = isBrowserAgent(call.agent)
+		// Web-research agents are ALSO forced onto the subprocess backend: they need
+		// pi's web tools (pi-web-access), which load via extension discovery in an
+		// ISOLATED process, never in the parent's in-process session (the session
+		// backend runs noExtensions + createCodingTools only, so it has no web tools).
+		const backend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
 			? "subprocess"
 			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
 		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
