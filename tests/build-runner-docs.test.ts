@@ -31,7 +31,7 @@ import { detectProjectCommands } from "../src/build-runner.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
-const SRC = readFileSync(join(ROOT, "src", "build-runner.ts"), "utf8");
+const SRC = ["detect", "scope", "gates"].map((m) => readFileSync(join(ROOT, "src", "build-runner", `${m}.ts`), "utf8")).join("\n");
 // Comments-stripped view for assertions that must target real code, not docs.
 const SRC_CODE = SRC
 	.replace(/\/\*[\s\S]*?\*\//g, "") // block comments

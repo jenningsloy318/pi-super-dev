@@ -45,7 +45,7 @@ import { classifyOutOfScopeErrors, resolveCargoPackageNames } from "../src/build
 const spawn = spawnSync as unknown as ReturnType<typeof vi.fn>;
 
 const REPO_ROOT = process.cwd();
-const SRC = readFileSync(join(REPO_ROOT, "src", "build-runner.ts"), "utf8");
+const SRC = ["detect", "scope", "gates"].map((m) => readFileSync(join(REPO_ROOT, "src", "build-runner", `${m}.ts`), "utf8")).join("\n");
 // Code-only view of the source: JSDoc/line comments stripped, so the static
 // guardrails assert against REAL code, not against prose that *describes* the
 // invariant (e.g. comments saying "no shell:true").
