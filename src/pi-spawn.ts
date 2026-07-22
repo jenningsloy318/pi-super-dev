@@ -47,6 +47,60 @@ export function isCodeWritingAgent(agent: string): boolean {
 	return CODE_WRITING_AGENTS.has(agent);
 }
 
+// ─── Per-agent thinking configuration (Phase 2) ─────────────────────────────
+
+/** The model thinking/reasoning levels understood by pi's `--thinking` flag and
+ *  `session.setThinkingLevel`. Ordered least→most effort. */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+/** Reasoning-heavy analysis agents: worth the extra token/latency cost of a
+ *  high thinking budget because their deliverable is judgement/analysis. */
+const REASONING_AGENTS = new Set([
+	"design",
+	"spec-writer",
+	"adversarial-reviewer",
+	"code-reviewer",
+	"debug",
+	"debugger",
+	"assessment",
+]);
+
+/** Mechanical bookkeeping agents: little reasoning needed (commits, cleanup,
+ *  slug summarization), so they think minimally to stay fast/cheap. */
+const MECHANICAL_AGENTS = new Set([
+	"commit",
+	"orchestrator-commit",
+	"cleanup",
+	"slug",
+	"slug-summarizer",
+]);
+
+/** Role-based default thinking level for an agent, mirroring isCodeWritingAgent.
+ *  Reasoning-heavy analysis agents think hard; code writers think medium;
+ *  mechanical bookkeeping agents think minimally; everything else defaults to
+ *  medium. */
+export function thinkingForAgent(agent: string): ThinkingLevel {
+	if (REASONING_AGENTS.has(agent)) return "high";
+	if (isCodeWritingAgent(agent)) return "medium";
+	if (MECHANICAL_AGENTS.has(agent)) return "minimal";
+	return "medium";
+}
+
+/** Narrow an arbitrary string to a ThinkingLevel (used for the env override). */
+function asThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
+	return value && (THINKING_LEVELS as readonly string[]).includes(value) ? (value as ThinkingLevel) : undefined;
+}
+
+/** Resolve the effective thinking level with precedence:
+ *  per-call override → SUPER_DEV_THINKING env override → role default. */
+export function resolveThinking(agent: string, perCall?: ThinkingLevel): ThinkingLevel {
+	if (perCall) return perCall;
+	const env = asThinkingLevel(process.env.SUPER_DEV_THINKING);
+	if (env) return env;
+	return thinkingForAgent(agent);
+}
+
 export function toolsForAgent(agent: string): string {
 	return BROWSER_AGENTS.has(agent) ? `${BASE_TOOLS},browser_execute` : BASE_TOOLS;
 }
@@ -72,6 +126,9 @@ export interface SpawnAgentOptions {
 	signal?: AbortSignal;
 	id?: string;
 	timeoutMs?: number;
+	/** Optional per-call thinking override (Phase 2). When absent, the resolved
+	 *  level falls back to SUPER_DEV_THINKING then the role default. */
+	thinking?: ThinkingLevel;
 	/** Ignored by the subprocess backend (it uses <control> text, not a schema).
 	 *  Accepted so the same `common` options object can feed both backends. */
 	controlKeys?: string[];
@@ -124,6 +181,7 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string): str
 	args.push("--tools", toolsForAgent(opts.agent));
 	args.push("--system-prompt", promptPath);
 	if (opts.model) args.push("--model", opts.model);
+	args.push("--thinking", resolveThinking(opts.agent, opts.thinking));
 	args.push(`Task: ${opts.prompt}`);
 	return args;
 }

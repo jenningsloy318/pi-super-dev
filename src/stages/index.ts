@@ -27,7 +27,7 @@ import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, type GateOptions } from "../build-runner.ts";
 import { implementationStage } from "./implementation.ts";
-import { reviewLoopNode, integrationLoopNode, reviewApproved } from "./verify.ts";
+import { reviewStageNode, integrationLoopNode, reviewApproved } from "./verify.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -154,7 +154,7 @@ const pipeline = sequence(
 		// Verify (Stage 10) only runs when implementation actually produced phases;
 		// otherwise we'd burn spawns reviewing nothing. verifyNode = review (both
 		// code-review + adversarial reviewers → merge) → fix, looped until approved.
-		branch(hasImplementation, { yes: sequence([reviewLoopNode, branch(reviewApproved, { yes: integrationLoopNode, no: noop() })]) }),
+		branch(hasImplementation, { yes: sequence([reviewStageNode, branch(reviewApproved, { yes: integrationLoopNode, no: noop() })]) }),
 		task(docsWriter),
 		task(cleanupTask),
 		// Pre-merge hard build gate (Gap A): don't merge broken code. Best-effort —

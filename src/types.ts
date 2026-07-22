@@ -61,6 +61,10 @@ export interface AgentCall {
 	 *  (see defaultAgentTimeoutMs). Threaded into `common` and honored by both the
 	 *  session and subprocess backends. */
 	timeoutMs?: number;
+	/** Optional per-call thinking override (Phase 2). Highest precedence; when
+	 *  absent the resolved level falls back to SUPER_DEV_THINKING then the role
+	 *  default. Threaded into `common` for both backends. */
+	thinking?: import("./pi-spawn.ts").ThinkingLevel;
 }
 
 export interface AgentResult extends SpawnResult {}

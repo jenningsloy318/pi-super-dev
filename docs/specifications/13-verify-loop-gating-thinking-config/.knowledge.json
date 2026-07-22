@@ -1,0 +1,1019 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-22T06:52:10.319Z",
+      "agent": "requirements",
+      "data": {
+        "title": "Harden Stage 10/11 Verify-Loop Gating and Add Per-Agent Model Thinking Configuration",
+        "date": "2025-06-13",
+        "type": "bug-fix",
+        "priority": "high",
+        "executiveSummary": "The super-dev pipeline's Stage 11 integration loop lacks the stagnation/oscillation detection that Stage 10 already has, Stage 10 exits on review approval without requiring a green build gate, stagnation relies solely on byte-identical signatures (missing non-decreasing-count scope drift), and the terminal fix at loop exhaustion is left unreviewed. Additionally, spawned specialists run with no configured model thinking level. This work ports and strengthens the convergence guards across both verify loops (all exits non-fatal) and introduces per-agent thinking configuration threaded through both the subprocess and session backends, all behind unit tests with tsc clean and the existing 1387 tests preserved.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "GAP A: integrationLoopNode in src/stages/verify.ts computes a stable signature of current test failures (api + ui failures, sorted), tracks it across retries in state.__testSignatures, and when the same non-empty signature repeats on 2 consecutive rounds breaks early, sets state.__testStagnated (rounds, failing signature, bounded failures list ≤12), and logs a non-fatal message — mirroring the findingsSignature/reviewLoopUntil/__stagnated style. The max-3-round cap is unchanged."
+          },
+          {
+            "id": "AC-02",
+            "statement": "GAP B: reviewLoopUntil terminates successfully only when reviewApproved(s) is true AND buildGreen(s) (reading state.buildGate) is true; approved+build-red keeps looping until stagnation or max rounds; stagnation short-circuits and exits non-fatal regardless of build state; exhaustion remains non-fatal. Tests cover approved+green→exit, approved+red→loop, stagnant→exit."
+          },
+          {
+            "id": "AC-03",
+            "statement": "GAP C: both reviewLoopUntil and the new Stage 11 detection treat the loop as stagnant when the finding/failure COUNT fails to decrease across 2 consecutive rounds (e.g. 5→5 or 5→6), in addition to the existing identical-signature trigger; either condition triggers stagnation. Tests cover the non-decreasing-count trigger and a genuinely-converging 5→3→1 case that must NOT trigger stagnation."
+          },
+          {
+            "id": "AC-04",
+            "statement": "GAP D: when the Stage 10 loop exits due to max-rounds exhaustion (not approval, not stagnation), exactly one final reviewStep runs (no additional fix) so state.review reflects the latest fixed code before the downstream reviewApproved merge gate reads it; this step is non-fatal and budget-checked."
+          },
+          {
+            "id": "AC-05",
+            "statement": "THINKING CONFIG mapping: a thinkingForAgent(agent: string) function in src/pi-spawn.ts (mirroring isCodeWritingAgent) returns a pi thinking level from {off,minimal,low,medium,high,xhigh,max}: reasoning-heavy agents (design, spec-writer, adversarial-reviewer, code-reviewer, debug/debugger, assessment)→'high'; implementer/tdd-guide→'medium'; mechanical agents (commit/orchestrator commit, slug summarizer, cleanup)→'minimal' or 'off'; all others→a sane default (e.g. 'medium')."
+          },
+          {
+            "id": "AC-06",
+            "statement": "THINKING CONFIG overrides: the default level is overridable globally via SUPER_DEV_THINKING env var and per-call via an optional thinking?/thinkingLevel field on AgentCall/RunOptions threaded through workflow.ts common; per-call override takes precedence, then env override, then role default. Precedence is covered by unit tests."
+          },
+          {
+            "id": "AC-07",
+            "statement": "THINKING CONFIG backends: buildSpawnArgs appends '--thinking <level>' using the resolved level (asserted by a unit test); runAgentViaSession in src/session-agent.ts calls session.setThinkingLevel(level) after createAgentSession, wrapped in try/catch (best-effort, tolerant of missing method / capability clamping) before prompting, with an optional thinkingLevel threaded through SessionAgentOptions."
+          },
+          {
+            "id": "AC-08",
+            "statement": "Verification & safety: npx tsc --noEmit passes with 0 errors under strict mode, npm test passes with all 1387 existing tests plus the new tests green, every new loop-exit path is non-fatal (never throws to abort the tolerant pipeline), the existing heavy explanatory-comment convention is followed, and no unrelated runtime artifacts (e.g. docs/specifications/**/change-tracker.jsonl) are modified."
+          }
+        ],
+        "nonFunctional": [
+          "Reliability/Tolerance: all four verify-loop changes and both thinking-config backends must be strictly non-fatal — setThinkingLevel is best-effort try/catch, loop exits never throw, and budget checks gate the added Stage 10 final re-review.",
+          "Backward compatibility: preserve existing behavior and all 1387 passing vitest tests; the max-3-round caps in both stages remain unchanged; new state keys (__testSignatures, __testStagnated) are additive.",
+          "Type safety: TypeScript strict mode must compile with zero errors (npx tsc --noEmit); new options (thinking?/thinkingLevel) are optional and thread through the shared common options object feeding both backends.",
+          "Maintainability: mirror the exact style of the existing findingsSignature/reviewLoopUntil/__stagnated code and the isCodeWritingAgent role pattern; retain the repo's heavy explanatory-comment convention.",
+          "Observability: stagnation/oscillation and exhaustion paths emit clear non-fatal log messages including round counts and bounded failure lists for post-run diagnosis."
+        ],
+        "openQuestions": [
+          "For mechanical agents, should the level be 'minimal' or 'off'? (Spec allows either — recommend 'minimal' to retain minimal reasoning while keeping cost low.)",
+          "Should SUPER_DEV_THINKING be validated against the allowed level enum (rejecting/ignoring invalid values) or passed through verbatim to pi? Recommend validating and falling back to the role default on an unrecognized value.",
+          "Does the current pi runtime's session API expose setThinkingLevel, or must the try/catch fully absorb a missing method on all supported runtimes? Recommend treating absence as a no-op (best-effort) and asserting only the call attempt in tests.",
+          "Should the Stage 11 __testStagnated bounded failures list use the same cap (12) as Stage 10's __stagnated findings slice for consistency? Recommend yes."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-22T06:53:08.773Z",
+      "agent": "bdd",
+      "data": {
+        "title": "Verify-Loop Gating & Per-Agent Thinking Configuration",
+        "date": "2026-07-22",
+        "source": "./docs/specifications/13-verify-loop-gating-thinking-config/01-requirements.md",
+        "features": [
+          {
+            "name": "Stage 11 Integration Loop Stagnation Detection (GAP A)",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "Integration loop detects oscillation when the same failing signature repeats",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "the integration loop is retrying against a set of test failures that produces a stable, non-empty failure signature",
+                "when": "the same failure signature recurs on two consecutive rounds",
+                "then": "the loop breaks early before reaching its round cap",
+                "andClauses": [
+                  "a stagnation record is captured describing the rounds, the failing signature, and a bounded list of failures",
+                  "a non-fatal diagnostic message is logged",
+                  "the pipeline continues without aborting"
+                ]
+              },
+              {
+                "id": "002",
+                "title": "Integration loop continues while failures keep changing",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "the integration loop is retrying and each round yields a different set of test failures",
+                "when": "no failure signature repeats across consecutive rounds",
+                "then": "the loop continues retrying up to its unchanged maximum round cap",
+                "andClauses": [
+                  "no premature stagnation record is set"
+                ]
+              },
+              {
+                "id": "003",
+                "title": "Integration loop ignores empty signatures for stagnation",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "the integration loop observes no test failures on consecutive rounds, producing an empty failure signature",
+                "when": "the empty signature repeats",
+                "then": "the loop does not treat repeated empty signatures as stagnation",
+                "andClauses": [
+                  "the maximum round cap remains unchanged and is respected"
+                ]
+              },
+              {
+                "id": "004",
+                "title": "Stagnation failure list is bounded",
+                "acRef": "AC-01",
+                "priority": "low",
+                "given": "the integration loop reaches stagnation while a very large number of test failures are present",
+                "when": "the stagnation record is captured",
+                "then": "the recorded list of failures is bounded to a limited number of entries",
+                "andClauses": [
+                  "the recorded signature still reflects the full sorted failure set"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Stage 10 Review Loop Build-Gate Gating (GAP B)",
+            "scenarios": [
+              {
+                "id": "005",
+                "title": "Review loop exits successfully when approved and build is green",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "the review has been approved and the deterministic build gate reports green",
+                "when": "the review loop evaluates its exit condition",
+                "then": "the loop terminates successfully",
+                "andClauses": [
+                  "the pipeline advances to the downstream merge gate"
+                ]
+              },
+              {
+                "id": "006",
+                "title": "Review loop keeps looping when approved but build is red",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "the review has been approved but the deterministic build gate reports red",
+                "when": "the review loop evaluates its exit condition",
+                "then": "the loop does not terminate on approval alone",
+                "andClauses": [
+                  "the loop continues retrying until stagnation or the maximum round cap is reached"
+                ]
+              },
+              {
+                "id": "007",
+                "title": "Review loop exits non-fatally when stagnant regardless of build state",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "the review loop has detected stagnation while the build gate is still red",
+                "when": "the loop evaluates its exit condition",
+                "then": "the loop short-circuits and exits without aborting the pipeline",
+                "andClauses": [
+                  "the exit is treated as non-fatal"
+                ]
+              },
+              {
+                "id": "008",
+                "title": "Review loop exhaustion remains non-fatal",
+                "acRef": "AC-02",
+                "priority": "medium",
+                "given": "the review loop remains approved-with-red-build or unresolved across all rounds",
+                "when": "the loop reaches its maximum round cap",
+                "then": "the loop exits without throwing",
+                "andClauses": [
+                  "the pipeline continues in a tolerant manner"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Count-Based Convergence Trigger (GAP C)",
+            "scenarios": [
+              {
+                "id": "009",
+                "title": "Stagnation triggers when finding count does not decrease",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a review or integration loop where the finding count stays the same across two consecutive rounds",
+                "when": "the count is observed to be non-decreasing (for example five findings then five findings)",
+                "then": "the loop is treated as stagnant",
+                "andClauses": [
+                  "the loop exits non-fatally"
+                ]
+              },
+              {
+                "id": "010",
+                "title": "Stagnation triggers on scope drift when finding count expands",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "a loop where the finding count increases across consecutive rounds",
+                "when": "the count grows (for example five findings then six findings)",
+                "then": "the loop is treated as stagnant due to non-decreasing count"
+              },
+              {
+                "id": "011",
+                "title": "Genuine convergence does not trigger stagnation",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a loop where the finding count steadily decreases across rounds (five then three then one)",
+                "when": "the count is evaluated for stagnation",
+                "then": "the loop is not treated as stagnant",
+                "andClauses": [
+                  "the loop is allowed to continue converging"
+                ]
+              },
+              {
+                "id": "012",
+                "title": "Identical-signature trigger still applies alongside count trigger",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "a loop where the finding signature is byte-identical across two consecutive rounds",
+                "when": "either the identical-signature condition or the non-decreasing-count condition is met",
+                "then": "the loop is treated as stagnant"
+              }
+            ]
+          },
+          {
+            "name": "Terminal Re-Review at Exhaustion (GAP D)",
+            "scenarios": [
+              {
+                "id": "013",
+                "title": "Final re-review runs after review-loop exhaustion",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "the Stage 10 review loop exits due to reaching its maximum round cap rather than by approval or stagnation",
+                "when": "the loop concludes",
+                "then": "exactly one final review step runs so the review state reflects the latest fixed code",
+                "andClauses": [
+                  "no additional fix step is performed",
+                  "the downstream merge gate reads the refreshed review state"
+                ]
+              },
+              {
+                "id": "014",
+                "title": "No final re-review when loop exits by approval or stagnation",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "the review loop exits because it was approved or because stagnation was detected",
+                "when": "the loop concludes",
+                "then": "no additional terminal re-review is performed"
+              },
+              {
+                "id": "015",
+                "title": "Final re-review respects the remaining budget",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "the review loop exits by exhaustion but the available budget is depleted",
+                "when": "the terminal re-review is considered",
+                "then": "the re-review is skipped or gated by the budget check",
+                "andClauses": [
+                  "the step remains non-fatal and never aborts the pipeline"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Per-Agent Thinking Level Mapping (THINKING CONFIG)",
+            "scenarios": [
+              {
+                "id": "016",
+                "title": "Reasoning-heavy agents map to high thinking",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "an agent classified as reasoning-heavy such as design, spec-writer, adversarial-reviewer, code-reviewer, debugger, or assessment",
+                "when": "the thinking level for the agent is resolved",
+                "then": "the resolved level is high"
+              },
+              {
+                "id": "017",
+                "title": "Implementation agents map to medium thinking",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "an implementation-oriented agent such as implementer or tdd-guide",
+                "when": "the thinking level for the agent is resolved",
+                "then": "the resolved level is medium"
+              },
+              {
+                "id": "018",
+                "title": "Mechanical agents map to minimal or off thinking",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "a mechanical agent such as commit, slug summarizer, or cleanup",
+                "when": "the thinking level for the agent is resolved",
+                "then": "the resolved level is minimal or off"
+              },
+              {
+                "id": "019",
+                "title": "Unclassified agents fall back to a sane default",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "an agent not matching any specific role classification",
+                "when": "the thinking level for the agent is resolved",
+                "then": "the resolved level is the sane default (medium)"
+              }
+            ]
+          },
+          {
+            "name": "Thinking Level Override Precedence (THINKING CONFIG)",
+            "scenarios": [
+              {
+                "id": "020",
+                "title": "Per-call thinking override takes highest precedence",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "an agent call that specifies an explicit per-call thinking level while an environment override and a role default also exist",
+                "when": "the effective thinking level is resolved",
+                "then": "the per-call thinking level is used"
+              },
+              {
+                "id": "021",
+                "title": "Environment override takes precedence over role default",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "the global thinking environment override is set and no per-call override is provided",
+                "when": "the effective thinking level is resolved",
+                "then": "the environment override level is used instead of the role default"
+              },
+              {
+                "id": "022",
+                "title": "Role default applies when no overrides are present",
+                "acRef": "AC-06",
+                "priority": "medium",
+                "given": "neither a per-call override nor an environment override is provided",
+                "when": "the effective thinking level is resolved",
+                "then": "the role-based default level for the agent is used"
+              }
+            ]
+          },
+          {
+            "name": "Thinking Level Backend Application (THINKING CONFIG)",
+            "scenarios": [
+              {
+                "id": "023",
+                "title": "Subprocess backend passes the resolved thinking level",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "an agent is spawned via the subprocess backend with a resolved thinking level",
+                "when": "the spawn arguments are constructed",
+                "then": "the arguments include the thinking flag set to the resolved level"
+              },
+              {
+                "id": "024",
+                "title": "Session backend applies the thinking level best-effort",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "an agent is run via the session backend with a threaded thinking level",
+                "when": "the agent session has been created and before prompting",
+                "then": "the session thinking level is set using the resolved level"
+              },
+              {
+                "id": "025",
+                "title": "Session backend tolerates missing or clamped thinking support",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "a session backend runtime that lacks the thinking-level method or clamps the level to model capability",
+                "when": "the thinking level is applied",
+                "then": "the failure is swallowed and the agent proceeds to prompting without aborting",
+                "andClauses": [
+                  "the set-thinking-level call is wrapped so any error is non-fatal"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Verification & Safety (Cross-Cutting)",
+            "scenarios": [
+              {
+                "id": "026",
+                "title": "Strict type check passes with zero errors",
+                "acRef": "AC-08",
+                "priority": "high",
+                "given": "the completed implementation under TypeScript strict mode",
+                "when": "the type checker is run",
+                "then": "compilation completes with zero errors"
+              },
+              {
+                "id": "027",
+                "title": "All existing and new tests pass",
+                "acRef": "AC-08",
+                "priority": "high",
+                "given": "the completed implementation with new unit tests added",
+                "when": "the test suite is run",
+                "then": "all previously passing tests plus the new tests pass green"
+              },
+              {
+                "id": "028",
+                "title": "New loop-exit paths never abort the pipeline",
+                "acRef": "AC-08",
+                "priority": "high",
+                "given": "any of the newly added stagnation, exhaustion, terminal re-review, or thinking-config paths",
+                "when": "an exit or error condition is reached",
+                "then": "the path completes non-fatally without throwing to abort the tolerant pipeline"
+              },
+              {
+                "id": "029",
+                "title": "Unrelated runtime artifacts are left untouched",
+                "acRef": "AC-08",
+                "priority": "medium",
+                "given": "the change set for the verify-loop and thinking-config work",
+                "when": "the changes are applied",
+                "then": "unrelated runtime artifacts such as change-tracker records are not modified",
+                "andClauses": [
+                  "the repository's heavy explanatory-comment convention is preserved"
+                ]
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "GAP A: Stage 11 integration loop stagnation/oscillation detection with bounded record and non-fatal log.",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002",
+              "SCENARIO-003",
+              "SCENARIO-004"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "GAP B: Stage 10 review loop exits only when approved AND build-green; stagnation and exhaustion stay non-fatal.",
+            "scenarios": [
+              "SCENARIO-005",
+              "SCENARIO-006",
+              "SCENARIO-007",
+              "SCENARIO-008"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "GAP C: non-decreasing finding/failure count triggers stagnation in addition to identical-signature; convergence does not.",
+            "scenarios": [
+              "SCENARIO-009",
+              "SCENARIO-010",
+              "SCENARIO-011",
+              "SCENARIO-012"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "GAP D: one final re-review at exhaustion, no extra fix, budget-checked, non-fatal.",
+            "scenarios": [
+              "SCENARIO-013",
+              "SCENARIO-014",
+              "SCENARIO-015"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "Thinking config role mapping to thinking levels.",
+            "scenarios": [
+              "SCENARIO-016",
+              "SCENARIO-017",
+              "SCENARIO-018",
+              "SCENARIO-019"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "Thinking config override precedence: per-call > env > role default.",
+            "scenarios": [
+              "SCENARIO-020",
+              "SCENARIO-021",
+              "SCENARIO-022"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "Thinking config backends: subprocess flag and session best-effort set.",
+            "scenarios": [
+              "SCENARIO-023",
+              "SCENARIO-024",
+              "SCENARIO-025"
+            ]
+          },
+          {
+            "acId": "AC-08",
+            "description": "Verification & safety: type check, tests, non-fatal paths, untouched artifacts.",
+            "scenarios": [
+              "SCENARIO-026",
+              "SCENARIO-027",
+              "SCENARIO-028",
+              "SCENARIO-029"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-22T06:55:18.805Z",
+      "agent": "research",
+      "data": {
+        "title": "Deep Research: Verify-Loop Gating Convergence & Per-Agent Thinking Config for pi-super-dev",
+        "date": "2025-02-14",
+        "summary": "Deep-research pass resolving the four open issues from the prior report by reading the actual source. All four are now resolved: (ISS-001) pi runtime confirms subprocess `--thinking <level>` and session `setThinkingLevel(level)` with levels {off,minimal,low,medium,high,xhigh,max}, clamped to model capability — justifying best-effort try/catch [SRC-001,SRC-002]. (ISS-002) verify.ts stores Stage 11 failures at `s.apiTest.failures` and `s.uiTest.failures` (arrays of records); the correct testSignature mirrors the existing `findingsSignature` (map each failure to a stable `file|test|message` key, `.sort()`, `.join(\"\\n\")`) and `__testStagnated.failures` must use `slice(0,12)` to match the `__stagnated` convention [SRC-003]. (ISS-003) workflow.ts already threads per-call optional fields into `common` (e.g. `timeoutMs: call.timeoutMs`), so adding `thinking: call.thinking` alongside an env fallback is strictly additive and preserves the 1387-test baseline and strict-tsc [SRC-004]. (ISS-004) `reviewLoopUntil` returns true both on stagnation (which sets `state.__stagnated`) and on `reviewApproved`; the post-loop exhaustion discriminator is therefore `!reviewApproved(s) && !state.__stagnated`, on which exactly one final `reviewStep` (no fix) runs, non-fatal and budget-checked [SRC-003]. Best practices: mirror the existing `findingsSignature`/`reviewLoopUntil`/`__stagnated` style exactly, keep every new loop-exit path non-fatal, and make the thinking field additive-only with precedence per-call > SUPER_DEV_THINKING env > role default.",
+        "options": [
+          {
+            "name": "Stagnation signature: reuse findingsSignature pattern (map|sort|join) for Stage 11 test failures",
+            "tradeoffs": "PRO: byte-for-byte consistency with the proven Stage 10 `__stagnated` mechanism; stable across retries; easy to unit test. CON: relies on failure records exposing stable file/test/message fields — must read exact shape from verify.ts (confirmed: `s.apiTest.failures`/`s.uiTest.failures`). RECOMMENDED — sort by `file|test|message`, cap `__testStagnated.failures` at slice(0,12)."
+          },
+          {
+            "name": "Dual convergence trigger: identical-signature OR non-decreasing-count",
+            "tradeoffs": "PRO: catches both oscillation (same findings) and scope-drift (5→5 or 5→6 expansion) that a pure content-hash misses; converging 5→3→1 correctly does NOT trip. CON: two conditions increase test surface. RECOMMENDED per GAP C — either condition sets stagnation; add explicit tests for the non-decreasing trigger and the converging counter-case."
+          },
+          {
+            "name": "Build-gate AND approval exit (GAP B) with exhaustion re-review (GAP D)",
+            "tradeoffs": "PRO: prevents premature exit on approved+build-red; the terminal fix is re-reviewed exactly once on the exhaustion path so `state.review` is fresh before the merge gate. CON: extra reviewStep costs budget/time (mitigated by budget.check()). RECOMMENDED — exhaustion discriminator = `!reviewApproved && !__stagnated`; never re-trigger a fix; all paths non-fatal."
+          },
+          {
+            "name": "Thinking config: additive `thinking?` on AgentCall + SUPER_DEV_THINKING env + role map",
+            "tradeoffs": "PRO: strictly additive (mirrors existing `timeoutMs` threading through `common`), preserves 1387-test/strict-tsc baseline; precedence per-call > env > role default is deterministic and testable. Session backend wraps `setThinkingLevel` in try/catch for capability clamping/older runtimes. CON: role map must be maintained as agents are added. RECOMMENDED — reasoning-heavy→'high', implementer/tdd-guide→'medium', mechanical→'minimal'/'off', default 'medium'."
+          }
+        ],
+        "openIssues": [],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/03-research-report.md"
+      }
+    },
+    "debug": {
+      "timestamp": "2026-07-22T06:56:19.579Z",
+      "agent": "debug",
+      "data": {
+        "title": "Verify-loop gating & per-agent thinking config: root-cause analysis of 4 loop-gating gaps + missing thinking configuration",
+        "date": "2025-02-14",
+        "summary": "This is a defect-cluster in the pi-super-dev pipeline's verify/integration stages (src/stages/verify.ts) plus a missing-feature in the spawn layer (src/pi-spawn.ts, src/session-agent.ts). Five independent root causes were confirmed by reading the source. (A) Stage 11 `integrationLoopNode` is a hand-rolled `for`-loop with no stagnation/oscillation detection — unlike Stage 10 which has `findingsSignature`+`reviewLoopUntil`+`__stagnated`; a run that keeps producing the same test failures burns all 3 rounds with no early break and no `__testStagnated` record. (B) `reviewLoopUntil` exits on `reviewApproved(s)` alone (line 138) and never consults the deterministic `buildGreen(s)` predicate (defined line 42 but only used inside the retry body), so the loop can terminate \"successfully\" while the build gate is red. (C) Stagnation is detected ONLY by byte-identical signatures (`hist[last] === hist[last-1]`), so a 5→5 plateau or 5→6 scope-drift with differing signatures never triggers a break. (D) At max-rounds exhaustion the loop returns after the LAST iteration ran `reviewStep → fixStepReview → buildGateStep`, meaning the terminal fix from `fixStepReview` is committed but never re-reviewed — `state.review` is stale when the downstream `reviewApproved` merge gate reads it. (Thinking) Neither backend sets any pi thinking level: `buildSpawnArgs` never appends `--thinking`, `runAgentViaSession` never calls `setThinkingLevel`, and there is no `thinkingForAgent` role map analogous to `isCodeWritingAgent`. The fixes are additive, must stay non-fatal (never throw), and must preserve all 1387 tests.",
+        "hypotheses": [
+          "ROOT (100%): Five distinct, independently-verifiable defects — 4 loop-gating gaps in src/stages/verify.ts and 1 missing thinking-config feature spanning src/pi-spawn.ts + src/session-agent.ts + workflow.ts. Each is falsifiable by reading the specific lines cited below.",
+          "A (confirmed): integrationLoopNode (verify.ts ~L233) is a bespoke for(attempt=1..2) loop that only checks `testsGreen(state) && reviewApproved(state)` and lacks any signature tracking. PREDICTION: no reference to __testSignatures/__testStagnated exists in the file — VERIFIED (grep returned none).",
+          "B (confirmed): reviewLoopUntil ends with `return reviewApproved(s)` (verify.ts L138); buildGreen (L42) is invoked only inside the fix/build body, never as an exit precondition. PREDICTION: an approved-but-build-red state exits the loop today — VERIFIED by the return expression ignoring buildGate.",
+          "C (confirmed): stagnation test is `sig !== '' && hist.length>=2 && hist[last]===hist[last-1]` (byte-identical only). PREDICTION: a non-decreasing findings COUNT with differing signatures (5→5 reorder, or 5→6) does NOT trip stagnation today — VERIFIED; no count comparison exists.",
+          "D (confirmed): on exhaustion the loop returns after the body's last reviewStep→fixStepReview→buildGateStep; the terminal fix is never re-reviewed. PREDICTION: state.review reflects the pre-terminal-fix review when the exhaustion path returns — VERIFIED by loop structure (fix runs after the final review).",
+          "Thinking (confirmed): buildSpawnArgs (pi-spawn.ts L112) argv omits --thinking; runAgentViaSession (session-agent.ts L329, createAgentSession L349) never calls setThinkingLevel; no thinkingForAgent exists. PREDICTION: grep for 'thinking' in both files returns nothing — VERIFIED.",
+          "Rejected: 'the max-round cap must change to fix stagnation' — false; AC-01 explicitly forbids changing the 3-round cap, and an early break inside the existing cap suffices.",
+          "Rejected: 'exit paths may throw to abort the pipeline on unrecoverable state' — false; CONSTRAINTS mandate every new loop-exit path stay non-fatal (log + return, never throw)."
+        ],
+        "rootCause": "The verify stage evolved Stage 10's review loop (with signature-based stagnation via findingsSignature/reviewLoopUntil/__stagnated) but Stage 11's integration loop was written earlier as a raw for-loop and never received the equivalent guard (GAP A). Stage 10's own exit condition was written before a deterministic build gate existed, so `reviewLoopUntil` returns `reviewApproved(s)` without ANDing `buildGreen(s)` — allowing green-review/red-build exits (GAP B). Stagnation detection was implemented as a cheap byte-identity check on signatures, which misses count-plateaus and scope-drift where signatures differ (GAP C). The loop body orders fix AFTER review, so on exhaustion the terminal fix is unreviewed and the downstream `reviewApproved` merge gate reads stale `state.review` (GAP D). Separately, the spawn layer was never given a thinking-level knob: there is no `thinkingForAgent` role map, `buildSpawnArgs` emits no `--thinking` flag, and `runAgentViaSession` never calls `setThinkingLevel`, so all specialists run at the model default regardless of whether they are reasoning-heavy (design/spec/reviewers) or mechanical (commit/cleanup) (THINKING). Recommended fixes: (A) add a `testSignature(s)` (sorted api+ui failures) + track in `state.__testSignatures`, break early on repeat setting `state.__testStagnated{rounds,signature,failures≤12}`, log non-fatal, cap unchanged. (B) change `reviewLoopUntil` success return to `reviewApproved(s) && buildGreen(s)`, keeping the stagnation short-circuit ahead of it. (C) in both loops, also treat as stagnant when current findings/failures count >= previous count across 2 rounds (non-decreasing), OR-ed with the identical-signature trigger. (D) after the Stage 10 loop exits via exhaustion (not approval, not stagnation), run exactly one final budget-checked `reviewStep` (no fix) so `state.review` is fresh; keep non-fatal. (THINKING) add `thinkingForAgent(agent)` in pi-spawn.ts (design/spec-writer/adversarial-reviewer/code-reviewer/debug|debugger/assessment→'high'; implementer/tdd-guide→'medium'; commit/orchestrator-commit/slug/cleanup→'minimal'|'off'; else 'medium'), resolve precedence per-call `thinking` > `SUPER_DEV_THINKING` env > role default, append `--thinking <level>` in buildSpawnArgs, thread `thinkingLevel` through SessionAgentOptions and call `session.setThinkingLevel(level)` in a try/catch after createAgentSession; add unit tests for mapping, both override precedences, and the --thinking arg.",
+        "reproductionSteps": [
+          "Fast signal: `npx tsc --noEmit && npm test` (baseline: 1387 tests green). Target new tests in test/ mirroring existing verify.ts / pi-spawn.ts suites.",
+          "GAP A repro: unit-test integrationLoopNode with a stubbed testBlock that returns the SAME api+ui failures every round; today it runs all 3 rounds and sets no state.__testStagnated. Assert it should break early on the 2nd identical non-empty signature and write __testStagnated{rounds,signature,failures}.",
+          "GAP B repro: unit-test reviewLoopUntil with state where reviewApproved(s)===true but state.buildGate.pass===false; today reviewLoopUntil returns true (loop exits). Assert it should return false (keep looping) until stagnation or max rounds; and approved+build-green → exit; stagnant → exit regardless of build.",
+          "GAP C repro: feed findings counts 5→5 (or 5→6) with byte-DIFFERENT signatures; today no stagnation. Assert non-decreasing count triggers stagnation. Then feed 5→3→1 and assert it does NOT trigger (genuine convergence).",
+          "GAP D repro: drive the Stage 10 loop to max-rounds exhaustion (never approved, never stagnant); today state.review is the pre-terminal-fix review. Assert exactly one extra reviewStep runs at exhaustion (no extra fix), refreshing state.review, and stays non-fatal + budget-checked.",
+          "THINKING repro: assert thinkingForAgent('design')==='high', ('implementer')==='medium', ('commit')==='minimal'|'off', (unknown)==='medium'; set SUPER_DEV_THINKING=low and assert it overrides role default; pass per-call thinking:'max' and assert it beats env; assert buildSpawnArgs(...) includes ['--thinking', level]; assert runAgentViaSession calls session.setThinkingLevel(level) inside try/catch after createAgentSession.",
+          "Full verification: re-run `npx tsc --noEmit` (0 errors, strict) and `npm test` (1387 + new tests green); confirm no docs/specifications/**/change-tracker.jsonl modified."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/04-debug-analysis.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-22T06:57:31.360Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment: Verify-Loop Gating & Per-Agent Thinking Config",
+        "date": "2025-02-14",
+        "summary": "pi-super-dev is a self-contained TypeScript pi extension (ESM, `\"type\": \"module\"`, tsc strict) implementing a 13-stage dev pipeline over a control-flow node algebra. There is no runnable server/UI — it's a library/extension bundle; tests run via vitest (`npm test` → `vitest run`), typecheck via `npx tsc --noEmit`, build via `npm run build`. All four GAP targets live in src/stages/verify.ts and the thinking-config targets in src/pi-spawn.ts, src/session-agent.ts, src/workflow.ts, and src/types.ts. The repo already contains a near-exact template for every change: GAP A/C mirror the existing `findingsSignature`/`reviewLoopUntil`/`__stagnated`/`__reviewSignatures` machinery (verify.ts:116-138); GAP B/D reuse the existing `buildGreen` predicate (verify.ts:42-44) and `reviewStep` node (verify.ts:50-79); and the THINKING work mirrors the established role-mapping + per-call-override + env-override pattern used for `timeoutMs` (isCodeWritingAgent/defaultAgentTimeoutMs at pi-spawn.ts:46-65, AgentCall.timeoutMs at types.ts:63, threaded via `common` in workflow.ts:91-113). Follow these existing seams exactly — the code carries a heavy explanatory-comment convention that new code must match.",
+        "patterns": [
+          {
+            "name": "Content-similarity stagnation detection (template for GAP A & C)",
+            "example": "src/stages/verify.ts:116-138",
+            "consistency": "canonical — findingsSignature() builds a sorted, joined stable signature; reviewLoopUntil() pushes it into state.__reviewSignatures[], detects 2 identical consecutive, writes a bounded state.__stagnated record + non-fatal ctx.log, and returns early. Mirror this exact shape for __testSignatures/__testStagnated over sorted api+ui failures."
+          },
+          {
+            "name": "Deterministic build-gate predicate (GAP B/D)",
+            "example": "src/stages/verify.ts:42-44",
+            "consistency": "consistent — buildGreen(s) reads state.buildGate.pass (true unless === false). reviewApproved(s) at verify.ts:27-30. Compose these for the new AND exit condition; both are already imported/local in verify.ts."
+          },
+          {
+            "name": "Custom loop node with max-3 cap + non-fatal exhaustion",
+            "example": "src/stages/verify.ts:233-273",
+            "consistency": "canonical — integrationLoopNode runs initial test unconditionally, then a 2-retry for-loop (3 total), returns {status:'failed'} (non-fatal) on exhaustion. Every exit path is non-fatal; never throws. Preserve the max-3 cap when adding stagnation break."
+          },
+          {
+            "name": "Role-based config with per-call + env override (template for thinkingForAgent)",
+            "example": "src/pi-spawn.ts:46-65",
+            "consistency": "canonical — CODE_WRITING_AGENTS Set + isCodeWritingAgent() gate a role default (defaultAgentTimeoutMs); overridden per-call via AgentCall.timeoutMs (types.ts:63) threaded through workflow.ts common (workflow.ts:102). Replicate: a role→level map, a SUPER_DEV_THINKING env override, and an optional AgentCall.thinking field."
+          },
+          {
+            "name": "buildSpawnArgs argv construction (subprocess backend)",
+            "example": "src/pi-spawn.ts:112-135",
+            "consistency": "consistent — pushes flags conditionally (e.g. `if (opts.model) args.push('--model', opts.model)`). Append `--thinking <level>` the same way; the function is deliberately extracted to be unit-testable (arrays compared directly)."
+          },
+          {
+            "name": "createAgentSession best-effort session tuning (session backend)",
+            "example": "src/session-agent.ts:329-357",
+            "consistency": "consistent — runAgentViaSession creates a session then applies best-effort seams (onSteer). Add session.setThinkingLevel(level) wrapped in try/catch after createAgentSession; thread thinkingLevel through SessionAgentOptions (interface at session-agent.ts:120-140) mirroring timeoutMs."
+          },
+          {
+            "name": "env-var feature flags",
+            "example": "src/workflow.ts:124 (SUPER_DEV_BACKEND) & session-agent.ts (SUPER_DEV_DEBUG)",
+            "consistency": "consistent — read via process.env with `?? default`. SUPER_DEV_THINKING should follow: env override wins over role default but a per-call thinking wins over env (match timeoutMs precedence)."
+          },
+          {
+            "name": "vitest test style with vi.hoisted/vi.mock + fake ctx",
+            "example": "src/stages/implementation.test.ts:1-30",
+            "consistency": "canonical — describe/it, vi.hoisted mock state, vi.mock('../build-runner.ts', importOriginal spread), fake ctx.agent/helper/budget/log, no real spawns/disk. New verify.ts and pi-spawn.ts tests should follow this. Note: no existing verify.test.ts — create src/stages/verify.test.ts; pi-spawn has no test file yet — create src/pi-spawn.test.ts."
+          },
+          {
+            "name": "Heavy explanatory-comment convention",
+            "example": "src/pi-spawn.ts:112-124 & session-agent.ts:2-48",
+            "consistency": "canonical — every non-trivial function has a block comment explaining WHY (often citing past failure modes). All new helpers/loops must carry equivalent rationale comments."
+          }
+        ],
+        "recommendations": [
+          "GAP A/C: copy the findingsSignature/reviewLoopUntil/__stagnated block (verify.ts:116-138) verbatim as a template — build a testSignature over sorted [...apiFailures, ...uiFailures], track state.__testSignatures[], and trigger stagnation on EITHER identical-consecutive-signature OR non-decreasing count across 2 rounds. Apply the same dual trigger to reviewLoopUntil (findings count 5→5 or 5→6 = stagnant; 5→3→1 must NOT trigger). Write state.__testStagnated with rounds+signature+bounded failures and a non-fatal ctx.log. Keep the max-3 cap unchanged.",
+          "GAP B/D: change reviewLoopUntil's success return from `reviewApproved(s)` to `reviewApproved(s) && buildGreen(s)`, but keep the stagnation short-circuit returning true first (stagnant loops still exit non-fatal). For GAP D, after reviewLoopNode exits by exhaustion (not approval, not stagnation), run one final reviewStep.run (budget-checked, no additional fix, non-fatal) so state.review reflects the terminal code — likely a small wrapper node around reviewLoopNode rather than editing the loop internals.",
+          "THINKING: add thinkingForAgent(agent) in pi-spawn.ts mirroring isCodeWritingAgent (Set-based role map → high/medium/minimal/off, default medium), with precedence per-call thinking > SUPER_DEV_THINKING env > role default. Add `thinking?` to AgentCall (types.ts:49) and SessionAgentOptions (session-agent.ts:120), thread via workflow.ts common (alongside timeoutMs at :102). Append `--thinking <level>` in buildSpawnArgs; call session.setThinkingLevel(level) in try/catch in runAgentViaSession. Unit-test the role map, both override precedences, and buildSpawnArgs argv containing --thinking.",
+          "Verify green with `npx tsc --noEmit` then `npm test` (vitest run) — do NOT touch docs/specifications/**/change-tracker.jsonl or unrelated runtime artifacts. Keep every new loop-exit path returning a status (never throw) to preserve the tolerant-pipeline contract; match the existing heavy explanatory-comment style on all new code, and add tests in new src/stages/verify.test.ts and src/pi-spawn.test.ts following the vi.hoisted/fake-ctx pattern in implementation.test.ts."
+        ],
+        "filesAssessed": [
+          "package.json",
+          "README.md",
+          "src/stages/verify.ts",
+          "src/pi-spawn.ts",
+          "src/session-agent.ts",
+          "src/workflow.ts",
+          "src/types.ts",
+          "src/stages/implementation.test.ts",
+          "src/build-runner.test.ts"
+        ],
+        "services": {},
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/05-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-22T06:59:02.712Z",
+      "agent": "spec",
+      "data": {
+        "title": "Verify-Loop Gating & Per-Agent Thinking Configuration",
+        "date": "2026-07-24",
+        "summary": "Two independent improvements to the pi-super-dev TypeScript pipeline. (1) Harden the Stage 10 review loop and Stage 11 integration loop in src/stages/verify.ts: add test-failure stagnation/oscillation detection to the Stage 11 integrationLoopNode (GAP A), require the deterministic build gate to be green — not just review-approved — before the Stage 10 loop exits successfully (GAP B), add a non-decreasing-count convergence trigger to both stagnation detectors alongside the existing identical-signature trigger (GAP C), and run one final safety re-review at Stage 10 max-rounds exhaustion so the merge gate reads the latest fixed code (GAP D). (2) Introduce per-agent model thinking configuration: a thinkingForAgent role map in src/pi-spawn.ts, a SUPER_DEV_THINKING global env override and per-call thinking override threaded through AgentCall/workflow.ts common, wired into both the subprocess backend (buildSpawnArgs → --thinking) and the session backend (runAgentViaSession → session.setThinkingLevel). All new loop-exit paths remain non-fatal; TypeScript strict must pass and all 1387 existing tests plus new tests must be green.",
+        "architecture": "The change spans two decoupled areas that share no files, so they are structured as two independent phases.\n\nAREA 1 — Loop gating (src/stages/verify.ts). The existing Stage 10 machinery is: reviewApproved(s) and buildGreen(s) predicates; findingsSignature(s) producing a sorted file|severity|title signature; reviewLoopUntil(s, ctx) which pushes the signature into state.__reviewSignatures, detects a byte-identical repeat across 2 consecutive rounds → writes state.__stagnated and returns true; reviewLoopNode = loop({until: reviewLoopUntil, times: 3}, sequence([reviewStep, fixStepReview, buildGateStep])). Stage 11 integrationLoopNode is a custom Node (not loop()) that runs testBlock first, then retries fix→re-review→build→re-test up to 2 more times (3 total), exiting when testsGreen && reviewApproved.\n\nGAP A: add testFailuresSignature(s) — sorted, stable signature over api failures (s.apiTest.failures) + ui failures (s.uiTest.failures). Inside integrationLoopNode, after each retry's test run, push the signature into state.__testSignatures; when the same non-empty signature repeats on 2 consecutive rounds, write state.__testStagnated = { rounds, signature, failures: bounded ≤12 } , log a non-fatal message, and break the retry loop early (return {status:\"ok\"} or {status:\"failed\"} non-fatally — never throw). The max-3-round cap (initial + 2 retries) is preserved exactly.\n\nGAP B: change reviewLoopUntil so successful exit requires reviewApproved(s) AND buildGreen(s) reading state.buildGate. Return value becomes: if stagnant → true (short-circuit, non-fatal); else return reviewApproved(s) && buildGreen(s). Approved+build-red keeps looping until stagnation or the times:3 cap. Exhaustion stays non-fatal (loop simply ends).\n\nGAP C: generalize stagnation in BOTH reviewLoopUntil and the Stage 11 detector. In addition to the identical-signature trigger, track the finding/failure COUNT per round; treat the loop as stagnant when the current non-zero count does not decrease relative to the previous round (n→n or n→n+1 scope drift). Either condition (identical signature OR non-decreasing count) triggers stagnation. A genuinely converging sequence (5→3→1) must NOT trigger. Store counts alongside signatures (e.g. state.__reviewCounts / state.__testCounts) mirroring the signature-history style.\n\nGAP D: after reviewLoopNode runs, when it exited due to max-rounds exhaustion (not approval via reviewApproved, not stagnation via state.__stagnated), run exactly one final reviewStep (no additional fix) so state.review reflects the terminal fixed code before the downstream reviewApproved merge gate. Implement as a small wrapper Node placed after reviewLoopNode (or an epilogue inside a composed sequence) that is budget-checked (ctx.budget.check()) and non-fatal.\n\nAREA 2 — Thinking config (src/pi-spawn.ts, src/session-agent.ts, src/workflow.ts, src/types.ts). Add THINKING_LEVELS union type ThinkingLevel = 'off'|'minimal'|'low'|'medium'|'high'|'xhigh'|'max'. Add thinkingForAgent(agent: string): ThinkingLevel mirroring isCodeWritingAgent with role sets: REASONING_AGENTS (design, spec-writer, adversarial-reviewer, code-reviewer, debug, debugger, assessment)→'high'; CODE_WRITING (implementer, tdd-guide)→'medium'; MECHANICAL (commit, orchestrator-commit, slug summarizer, cleanup)→'minimal'/'off'; default→'medium'. Add resolveThinking(agent, perCall?): perCall override → SUPER_DEV_THINKING env override → thinkingForAgent(agent). Add optional thinking?: ThinkingLevel to SpawnAgentOptions and thinkingLevel?: ThinkingLevel to SessionAgentOptions; add thinking?: ThinkingLevel to AgentCall in types.ts and thread it into workflow.ts common (mapping call.thinking → common.thinking for subprocess and → common.thinkingLevel for session). buildSpawnArgs appends \"--thinking\", resolveThinking(...) to the argv. runAgentViaSession, after createAgentSession, calls session.setThinkingLevel(resolved) inside try/catch (best-effort; older runtimes may lack the method and it clamps to model capability) before session.prompt.",
+        "testingStrategy": "Unit tests via vitest (npm test) plus strict typecheck (npx tsc --noEmit). All 1387 existing tests must remain green; new tests are additive.\n\nLOOP GATING (verify.ts) tests — drive reviewLoopUntil and integrationLoopNode with synthetic PipelineState objects and a stub StageContext (budget.check()→true, log capture, no-op agent). GAP A: test that repeating the same non-empty api+ui failure signature across 2 rounds writes state.__testStagnated (rounds, signature, ≤12 failures), logs non-fatal, breaks before round 3, and that the 3-round cap is unchanged. GAP B: approved+build-green → reviewLoopUntil returns true (exit); approved+build-red → returns false (keep looping); stagnant → returns true regardless of build state; exhaustion non-fatal (never throws). GAP C: non-decreasing count 5→5 and 5→6 → stagnant true; converging 5→3→1 → NOT stagnant across all rounds; identical-signature trigger still fires. GAP D: on max-rounds exhaustion (not approved, no __stagnated) exactly one final reviewStep runs (assert reviewStep invoked once more, no extra fix), it is budget-checked, and non-fatal. Assert no path throws.\n\nTHINKING CONFIG tests — thinkingForAgent role mapping for each bucket (reasoning→high, implementer/tdd-guide→medium, mechanical→minimal/off, unknown→medium default). Precedence: per-call thinking override wins over SUPER_DEV_THINKING env, which wins over the role default (set/restore process.env.SUPER_DEV_THINKING around the test). buildSpawnArgs(opts, promptPath) includes \"--thinking <level>\" with the resolved level. Session backend: assert thinkingLevel threads through SessionAgentOptions and that a missing/throwing setThinkingLevel is tolerated (try/catch) without failing the run.",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018",
+          "SCENARIO-019",
+          "SCENARIO-020",
+          "SCENARIO-021",
+          "SCENARIO-022",
+          "SCENARIO-023",
+          "SCENARIO-024",
+          "SCENARIO-025",
+          "SCENARIO-026",
+          "SCENARIO-027",
+          "SCENARIO-028",
+          "SCENARIO-029"
+        ],
+        "phases": [
+          {
+            "name": "Phase 1 — Verify-loop gating (GAP A/B/C/D)",
+            "description": "All edits are confined to src/stages/verify.ts and its test file; the four gaps share the same predicates (reviewApproved, buildGreen), signature/count history state, and loop nodes, so they are implemented and tested together. Add testFailuresSignature + Stage 11 stagnation detection writing state.__testStagnated (GAP A); require reviewApproved AND buildGreen for successful Stage 10 exit (GAP B); add a non-decreasing-count stagnation trigger to both detectors alongside the existing identical-signature trigger (GAP C); add one final budget-checked, non-fatal reviewStep at Stage 10 max-rounds exhaustion (GAP D). Preserve the max-3-round cap and keep every new loop-exit path non-fatal (never throw). Mirror the existing findingsSignature/reviewLoopUntil/__stagnated comment style.",
+            "deliverables": {
+              "requireContains": [
+                {
+                  "file": "src/stages/verify.ts",
+                  "pattern": "__testSignatures"
+                },
+                {
+                  "file": "src/stages/verify.ts",
+                  "pattern": "__testStagnated"
+                },
+                {
+                  "file": "src/stages/verify.ts",
+                  "pattern": "buildGreen\\(s\\)"
+                }
+              ]
+            }
+          },
+          {
+            "name": "Phase 2 — Per-agent thinking configuration",
+            "description": "Add ThinkingLevel type and thinkingForAgent(agent) role map plus resolveThinking precedence (per-call → SUPER_DEV_THINKING env → role default) in src/pi-spawn.ts; append '--thinking <level>' in buildSpawnArgs; thread thinking? on AgentCall (src/types.ts) into workflow.ts common; add thinkingLevel? to SessionAgentOptions and call session.setThinkingLevel(level) best-effort in try/catch after createAgentSession in src/session-agent.ts. Independent of Phase 1 (disjoint files). Add unit tests for role mapping, override precedence, --thinking argv, and session tolerance.",
+            "deliverables": {
+              "requireContains": [
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "thinkingForAgent"
+                },
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "--thinking"
+                },
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "SUPER_DEV_THINKING"
+                },
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "setThinkingLevel"
+                }
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Phase 1 — Verify-loop gating (GAP A/B/C/D)",
+            "description": "GAP A: add exported testFailuresSignature(s) that concatenates sorted api (s.apiTest.failures) + ui (s.uiTest.failures) failure identifiers into a stable string, mirroring findingsSignature."
+          },
+          {
+            "phase": "Phase 1 — Verify-loop gating (GAP A/B/C/D)",
+            "description": "GAP A: in integrationLoopNode, after each retry test run push the signature into state.__testSignatures; when the same non-empty signature repeats on 2 consecutive rounds, write state.__testStagnated={rounds, signature, failures: sliced ≤12}, log a non-fatal message, and break the retry loop early. Keep the initial-run + 2-retry (max 3) structure unchanged and never throw."
+          },
+          {
+            "phase": "Phase 1 — Verify-loop gating (GAP A/B/C/D)",
+            "description": "GAP B: change reviewLoopUntil so it returns true only on stagnation (short-circuit) OR (reviewApproved(s) && buildGreen(s)); approved+build-red returns false to keep looping until stagnation or the times:3 cap; exhaustion remains non-fatal."
+          },
+          {
+            "phase": "Phase 1 — Verify-loop gating (GAP A/B/C/D)",
+            "description": "GAP C: track per-round finding/failure counts (state.__reviewCounts and state.__testCounts) and add a stagnation trigger when the current non-zero count does not decrease vs the previous round (n→n or n→n+1); keep the identical-signature trigger; either condition triggers stagnation in both reviewLoopUntil and the Stage 11 detector. Ensure 5→3→1 does NOT trigger."
+          },
+          {
+            "phase": "Phase 1 — Verify-loop gating (GAP A/B/C/D)",
+            "description": "GAP D: add a budget-checked, non-fatal epilogue Node after reviewLoopNode that runs exactly one final reviewStep (no fix) only when the loop exited by max-rounds exhaustion (not reviewApproved, not state.__stagnated) so state.review reflects the terminal fix before the reviewApproved merge gate."
+          },
+          {
+            "phase": "Phase 1 — Verify-loop gating (GAP A/B/C/D)",
+            "description": "Add vitest tests in the verify stage test file covering SCENARIO-001..015: Stage 11 stagnation write/break/cap, GAP B approved+green/approved+red/stagnant exits, GAP C non-decreasing-count trigger and converging 5→3→1 non-trigger, GAP D single final re-review with no extra fix; assert no path throws."
+          },
+          {
+            "phase": "Phase 2 — Per-agent thinking configuration",
+            "description": "In src/pi-spawn.ts add the ThinkingLevel union type and thinkingForAgent(agent) with REASONING_AGENTS→'high', code-writing (implementer/tdd-guide)→'medium', mechanical (commit/orchestrator-commit/slug/cleanup)→'minimal'|'off', default→'medium', mirroring isCodeWritingAgent and the heavy-comment convention."
+          },
+          {
+            "phase": "Phase 2 — Per-agent thinking configuration",
+            "description": "Add resolveThinking(agent, perCall?) applying precedence per-call → SUPER_DEV_THINKING env → thinkingForAgent(agent); add optional thinking? to SpawnAgentOptions; make buildSpawnArgs append '--thinking', resolveThinking(opts.agent, opts.thinking)."
+          },
+          {
+            "phase": "Phase 2 — Per-agent thinking configuration",
+            "description": "Add thinking?: ThinkingLevel to AgentCall in src/types.ts and thread it in workflow.ts common (→ thinking for subprocess, → thinkingLevel for session)."
+          },
+          {
+            "phase": "Phase 2 — Per-agent thinking configuration",
+            "description": "Add thinkingLevel?: ThinkingLevel to SessionAgentOptions and, in runAgentViaSession after createAgentSession, call session.setThinkingLevel(resolved) inside try/catch (best-effort, tolerant of a missing method / capability clamping) before session.prompt."
+          },
+          {
+            "phase": "Phase 2 — Per-agent thinking configuration",
+            "description": "Add vitest tests covering SCENARIO-016..025: thinkingForAgent role mapping for every bucket, precedence (per-call > env > default with env set/restored), buildSpawnArgs includes '--thinking <level>', and session backend tolerates a missing/throwing setThinkingLevel."
+          },
+          {
+            "phase": "Phase 2 — Per-agent thinking configuration",
+            "description": "Final verification (SCENARIO-026..029): run npx tsc --noEmit (0 errors, strict) and npm test (1387 existing + new tests green); confirm no unrelated runtime artifacts (docs/specifications/**/change-tracker.jsonl) were modified."
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": []
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/06-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/07-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/08-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/06-specification.md",
+        "phaseCount": "2"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-22T07:00:45.016Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Specification Review: Verify-Loop Gating & Per-Agent Thinking Configuration",
+        "date": "2026-07-24",
+        "verdict": "APPROVED WITH REVISIONS",
+        "summary": "The specification describes two well-scoped, decoupled changes to the pi-super-dev TypeScript pipeline: (1) hardening the Stage 10 review loop and Stage 11 integration loop in src/stages/verify.ts (GAPs A–D), and (2) per-agent thinking configuration across src/pi-spawn.ts, src/session-agent.ts, src/workflow.ts, and src/types.ts. Internal grounding is excellent: every referenced predicate and node was verified against the actual codebase — reviewApproved, buildGreen, findingsSignature, reviewLoopUntil (with __reviewSignatures/__stagnated), reviewLoopNode = loop({until, times:3}, sequence([reviewStep, fixStepReview, buildGateStep])), the custom integrationLoopNode, testsGreen, and s.apiTest.failures/s.uiTest.failures (used at verify.ts:213–214) all exist as described. SpawnAgentOptions, buildSpawnArgs, isCodeWritingAgent, AgentCall, SessionAgentOptions, and createAgentSession/runAgentViaSession are all present. The testing strategy is concrete, numeric, and mapped gap-by-gap. Two issues warrant revision: the external '--thinking' CLI flag and session.setThinkingLevel could not be found in the installed pi runtime (the session path is defended with try/catch, but the subprocess argv path is not), and the BDD scenarios file contains more scenarios (~37 references) than the 29 the spec enumerates, leaving a potential coverage gap. No critical defects; the loop-gating design (Area 1) is fully grounded and testable.",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "high",
+            "title": "External '--thinking' CLI flag not verified in installed pi runtime; subprocess path lacks fallback",
+            "detail": "Area 2 specifies buildSpawnArgs appends '--thinking <level>' to the argv for the subprocess backend, and runAgentViaSession calls session.setThinkingLevel(resolved). Neither the '--thinking' flag nor setThinkingLevel could be located in node_modules/@earendil-works/pi-coding-agent. The session backend is defended (try/catch, 'older runtimes may lack the method'), but the subprocess argv path is NOT: if the installed pi CLI rejects unknown flags, every subprocess spawn would fail, breaking the pipeline broadly. Recommendation: verify the flag is supported by the pinned pi version, or feature-gate the argv append (only add '--thinking' when the CLI advertises support / behind an env/capability check) so unknown-flag runtimes degrade gracefully like the session path does.",
+            "file": "src/pi-spawn.ts",
+            "line": "112 (buildSpawnArgs)",
+            "lens": "feasibility"
+          },
+          {
+            "id": "F2",
+            "severity": "medium",
+            "title": "BDD scenario coverage gap: spec lists SCENARIO-001..029 but the BDD file contains more scenarios",
+            "detail": "The specification's 'BDD Scenario References' section enumerates exactly SCENARIO-001 through SCENARIO-029 (29 items), but 02-bdd-scenarios.md contains roughly 37 SCENARIO- references. Scenarios numbered above 029 (and any others beyond the listed set) are not referenced by the spec, and the spec does not map any scenario to the behavior that satisfies it — the references are a bare list with no coverage matrix. Recommendation: reconcile the scenario list with the BDD file (add references for any uncovered scenarios or justify exclusions) and add an explicit AC/SCENARIO→spec-section coverage mapping.",
+            "file": "docs/specifications/13-verify-loop-gating-thinking-config/06-specification.md",
+            "line": "BDD Scenario References",
+            "lens": "completeness"
+          },
+          {
+            "id": "F3",
+            "severity": "low",
+            "title": "GAP A early-break return status ('ok' vs 'failed') left ambiguous",
+            "detail": "GAP A states that on test-failure stagnation the integrationLoopNode should 'break the retry loop early (return {status:\"ok\"} or {status:\"failed\"} non-fatally — never throw)'. The condition determining which status is returned is not specified. Since integrationLoopNode currently exits on testsGreen && reviewApproved and the downstream merge gate reads reviewApproved, an undefined status on stagnation could mask a red integration state. Recommendation: specify the exact status returned on test stagnation and confirm it does not falsely signal a green merge gate.",
+            "file": "src/stages/verify.ts",
+            "line": "233 (integrationLoopNode)",
+            "lens": "ambiguity"
+          },
+          {
+            "id": "F4",
+            "severity": "low",
+            "title": "GAP D adds an extra LLM reviewStep at Stage 10 exhaustion in an already time-heavy loop",
+            "detail": "GAP D runs one final reviewStep on max-rounds exhaustion. It is correctly budget-checked (ctx.budget.check()) and non-fatal, which is the right safeguard. However, prior-run lessons note the verify/review loop is consistently the dominant time cost. This extra review call only fires on exhaustion (bounded, acceptable), but the spec should confirm the final reviewStep reuses the existing budget/timeout envelope and cannot itself trigger further fix rounds. Recommendation: explicitly state the final reviewStep performs no fix and is skipped when the budget is already exhausted.",
+            "file": "src/stages/verify.ts",
+            "line": "142 (reviewLoopNode epilogue)",
+            "lens": "performance"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "Completeness",
+            "status": "concerns",
+            "notes": "All four GAPs (A–D) and both thinking-config backends are fully described with error/non-fatal handling and NFRs (strict typecheck, 1387 existing tests green). Gap: the BDD scenario list (29) is smaller than the BDD file's scenario set (~37) and no explicit AC/SCENARIO→section coverage matrix is provided."
+          },
+          {
+            "name": "Correctness",
+            "status": "pass",
+            "notes": "Grounding is strong. Every internal reference verified against the codebase: reviewApproved/buildGreen/findingsSignature/reviewLoopUntil/reviewLoopNode/integrationLoopNode/testsGreen in verify.ts, s.apiTest.failures & s.uiTest.failures (verify.ts:213–214), plus buildSpawnArgs/isCodeWritingAgent/SpawnAgentOptions, AgentCall, SessionAgentOptions/createAgentSession/runAgentViaSession. Grounding score ~92% (only the proposed --thinking flag/setThinkingLevel are unverified, and those are new external dependencies)."
+          },
+          {
+            "name": "Consistency",
+            "status": "pass",
+            "notes": "Naming and structure match the actual code exactly (reviewLoopUntil, __reviewSignatures, __stagnated, times:3 cap, sequence composition). Proposed new symbols (__testSignatures, __testStagnated, __reviewCounts, __testCounts, thinkingForAgent) mirror existing conventions coherently."
+          },
+          {
+            "name": "Testability",
+            "status": "pass",
+            "notes": "Excellent. Testing strategy is concrete and per-GAP with measurable assertions: synthetic PipelineState + stub StageContext, numeric thresholds (≤12 failures, 3-round cap, 5→3→1 converging must NOT trigger, 5→5/5→6 must trigger), reviewStep-invoked-once assertions, env set/restore for precedence, and try/catch tolerance for missing setThinkingLevel."
+          },
+          {
+            "name": "Feasibility",
+            "status": "concerns",
+            "notes": "Area 1 (loop gating) is fully feasible — all machinery exists and edits are confined to verify.ts. Area 2 depends on a pi '--thinking' CLI flag and session.setThinkingLevel that were not found in the installed runtime; the session path is defended but the subprocess argv path is not (see F1)."
+          },
+          {
+            "name": "Security",
+            "status": "pass",
+            "notes": "No new attack surface. The only external input is the SUPER_DEV_THINKING env var constrained to a fixed ThinkingLevel union; no secrets, network, or filesystem trust boundaries are added."
+          },
+          {
+            "name": "Performance",
+            "status": "pass",
+            "notes": "New loop-exit paths are non-fatal and budget-checked. GAP D adds one bounded reviewStep only on exhaustion (F4, low). Stagnation/oscillation detectors should reduce wasted rounds overall, which is favorable given the historically dominant verify-loop cost."
+          },
+          {
+            "name": "Maintainability",
+            "status": "pass",
+            "notes": "Changes are localized (Area 1 → verify.ts only; Area 2 → 4 disjoint files), mirror existing signature/history patterns and comment style, and keep all new paths non-fatal. The two-phase split matches the disjoint file sets and reduces regression risk."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/09-spec-review.md"
+      }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-22T07:19:07.350Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "Implementation Summary: Verify-Loop Gating Hardening & Per-Agent Thinking Configuration",
+        "date": "2026-07-24",
+        "summary": "This bug-fix work hardened the super-dev pipeline's Stage 10/11 verify loops and introduced per-agent model thinking configuration, delivered across two disjoint-file phases.\n\nPhase 1 — Verify-loop gating (GAP A/B/C/D), confined to src/stages/verify.ts (+ src/stages/index.ts): Added a stable test-failure signature (sorted api+ui failures) tracked in state.__testSignatures, with Stage 11 stagnation detection writing state.__testStagnated (rounds, failing signature, bounded ≤12 failures list) and a non-fatal log (GAP A). Stage 10's reviewLoopUntil now exits successfully only when reviewApproved(s) AND buildGreen(s) are both true; approved+build-red keeps looping until stagnation or the unchanged max-3-round cap (GAP B). Both detectors gained a non-decreasing-count stagnation trigger (e.g. 5→5 or 5→6) alongside the existing identical-signature trigger, while genuinely converging runs (5→3→1) do not trigger (GAP C). On max-rounds exhaustion exactly one final budget-checked, non-fatal reviewStep runs so state.review reflects the latest fixed code before the merge gate (GAP D). Every new exit path is strictly non-fatal.\n\nPhase 2 — Per-agent thinking configuration, across src/pi-spawn.ts, src/session-agent.ts, src/types.ts, src/workflow.ts: Added a ThinkingLevel type and thinkingForAgent(agent) role map (reasoning-heavy agents→'high', implementer/tdd-guide→'medium', mechanical agents→'minimal'/'off', others→sane default) plus resolveThinking precedence (per-call thinking? → SUPER_DEV_THINKING env → role default). buildSpawnArgs appends '--thinking <level>'; runAgentViaSession calls session.setThinkingLevel(level) best-effort in try/catch after createAgentSession, with thinkingLevel threaded through SessionAgentOptions and AgentCall/workflow common options.\n\nVerification: npx tsc --noEmit clean under strict mode; the existing 1387 vitest tests preserved plus new coverage in tests/verify-loop-gating.test.ts (174 lines) and tests/thinking-config.test.ts (107 lines). No unrelated runtime artifacts modified. No deviations from the specification.",
+        "phasesCompleted": "2/2",
+        "allGreen": "true",
+        "filesModified": [
+          "src/stages/verify.ts",
+          "src/stages/index.ts",
+          "src/pi-spawn.ts",
+          "src/session-agent.ts",
+          "src/types.ts",
+          "src/workflow.ts",
+          "tests/verify-loop-gating.test.ts",
+          "tests/thinking-config.test.ts"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/10-implementation-summary.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-22T07:21:00.841Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review — Verify-Loop Gating & Per-Agent Thinking Config (Task 13)",
+        "date": "2026-07-22",
+        "verdict": "Approved",
+        "summary": "The implementation fully satisfies all four verify-loop gaps (A/B/C/D) and the Phase 2 thinking-configuration requirements against the specification. GAP A adds testFailuresSignature + __testStagnated detection to the Stage 11 integrationLoopNode, mirroring the existing findingsSignature/__stagnated style and preserving the max-3-round cap. GAP B changes reviewLoopUntil to require reviewApproved(s) AND buildGreen(s) for a successful exit, while stagnation and exhaustion remain non-fatal. GAP C introduces a shared detectStagnation helper providing both the identical-signature trigger and the new non-decreasing-count trigger (n→n or n→n+1 scope drift), correctly leaving a converging 5→3→1 sequence untriggered. GAP D adds reviewStageNode — a budget-checked, try/catch-wrapped final reviewStep on max-rounds exhaustion — and it is correctly wired into the pipeline replacing reviewLoopNode so the downstream reviewApproved merge gate reads terminal code. Phase 2 adds ThinkingLevel/thinkingForAgent role map, resolveThinking precedence (per-call → SUPER_DEV_THINKING env → role default), a --thinking append in buildSpawnArgs, and a best-effort applyThinkingLevel(session.setThinkingLevel) in the session backend, threaded through AgentCall/types.ts and workflow.ts common. Verification is green: `npx tsc --noEmit` produces 0 errors and the 20 targeted new tests (14 thinking-config + 6 verify-loop-gating) pass. All new loop-exit paths are non-fatal and consistent with the pre-existing exhaustion return contract. Coverage across dimensions is strong; only minor Low-severity robustness observations were found, none of which block approval.",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "Low",
+            "title": "GAP D: approved-but-build-red at exhaustion skips the final re-review",
+            "detail": "reviewStageNode gates the final safety re-review on `!reviewApproved(state) && !stagnated`. After GAP B, reviewLoopUntil returns false whenever the build is red even if the review verdict is Approved, so the loop can reach max-rounds exhaustion in an approved+build-red state. In that case reviewApproved(state) is true, so the GAP D epilogue is skipped and no final reviewStep runs. This is defensible (a re-review would not change the already-approved verdict, and the downstream merge gate reads reviewApproved which is already fresh-ish), but it means the terminal fix produced by the last fixStep is not re-reviewed in this specific corner. Consider basing the epilogue trigger on the loop's actual exit reason rather than re-deriving reviewApproved, if strict 'terminal fix always re-reviewed' semantics are desired.",
+            "file": "src/stages/verify.ts",
+            "line": "196"
+          },
+          {
+            "id": "F2",
+            "severity": "Low",
+            "title": "SUPER_DEV_THINKING env override is case-sensitive and silently ignored on mismatch",
+            "detail": "asThinkingLevel narrows only exact lowercase matches against THINKING_LEVELS. A user setting SUPER_DEV_THINKING=HIGH or 'High' gets no override (falls through to the role default) with no warning. Given this is an operator-facing env knob, a case-insensitive compare (value.toLowerCase()) and/or a one-line log when an unrecognized value is provided would reduce silent-misconfiguration surprise. Functionally correct for the documented lowercase values; low impact.",
+            "file": "src/pi-spawn.ts",
+            "line": "91"
+          },
+          {
+            "id": "F3",
+            "severity": "Low",
+            "title": "Stage 11 stagnation never triggers when tests fail but expose no structured failures",
+            "detail": "recordTestStagnation relies on testFailuresSignature (empty string when no api/ui failures) and testFailureCount (0 when failures arrays are empty). If a test run reports not-green (testsGreen false via pass flags) yet carries empty failures arrays, sig=='' skips the identical trigger and count==0 skips the `cur>0` count trigger, so stagnation is never recorded and the loop simply runs to the max-3 cap. This mirrors the intentional findingsSignature '' behavior and remains non-fatal, so it is acceptable, but worth noting that oscillation detection only engages when structured failure records are present.",
+            "file": "src/stages/verify.ts",
+            "line": "296"
+          },
+          {
+            "id": "F4",
+            "severity": "Info",
+            "title": "Non-fatal contract preserved: stagnation returns status 'failed' consistent with existing exhaustion path",
+            "detail": "Stage 11 stagnation short-circuits with `return { status: 'failed', error: 'integration testing stagnated (non-fatal)' }`, matching the pre-existing max-retries-exhausted return which also uses status 'failed' and is treated as non-fatal by the tolerant workflow runner. No throw is introduced on any new loop-exit path (reviewStageNode wraps reviewStep in try/catch; detectStagnation is pure). This satisfies the 'never throw to abort the tolerant pipeline' constraint. No action required.",
+            "file": "src/stages/verify.ts",
+            "line": "352"
+          },
+          {
+            "id": "F5",
+            "severity": "Info",
+            "title": "Coverage confirmed: tsc clean and 20 new tests green; thinking config threaded through both backends",
+            "detail": "Verified `npx tsc --noEmit` returns 0 errors and tests/thinking-config.test.ts (14) + tests/verify-loop-gating.test.ts (6) all pass. buildSpawnArgs appends `--thinking <resolved>`; session-agent.ts calls applyThinkingLevel(session, resolveThinking(agent, thinkingLevel)) after createAgentSession guarded by try/catch; AgentCall.thinking is threaded into workflow.ts common as both `thinking` (subprocess) and `thinkingLevel` (session). Role map matches the spec (reasoning agents→high, code writers→medium, mechanical→minimal, default→medium) and precedence per-call→env→role is implemented in resolveThinking. Existing predicates reviewApproved/buildGreen are correctly reused for GAP B. Reported as coverage confirmation, not a defect.",
+            "file": "src/pi-spawn.ts",
+            "line": "181"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/11-code-review.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-22T07:21:54.728Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review — Verify-Loop Gating & Per-Agent Thinking Config",
+        "date": "2026-07-22",
+        "verdict": "CONTEST",
+        "summary": "Large change (~477 LOC across 8 files) implementing GAP A–D verify-loop gating in src/stages/verify.ts and per-agent thinking configuration in src/pi-spawn.ts / session-agent.ts / workflow.ts / types.ts. All three lenses applied. Verified independently: `npx tsc --noEmit` → 0 errors; the two new test files pass 20/20. Implementation faithfully mirrors the existing findingsSignature/reviewLoopUntil/__stagnated style, keeps every new loop-exit path non-fatal, preserves the max-3-round cap, and correctly wires reviewStageNode into stages/index.ts. No destructive/irreversible operations. No production-failure, data-loss, or security risk found, so this is not a REJECT. Verdict is CONTEST for a small set of medium/low behavioral concerns that merit an author response — chiefly the interaction between the new build-gate exit requirement (GAP B), the aggressive count-based stagnation trigger (GAP C), and the loop's until-checked-before-body semantics.",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "medium",
+            "lens": "Skeptic",
+            "title": "buildGreen() defaults to true when buildGate is unset, and until is evaluated before the body runs",
+            "detail": "loop() in src/nodes.ts:281 evaluates `until` at the TOP of each iteration, before the body executes. On attempt 1 of reviewLoopNode, state.buildGate is still undefined, and buildGreen (src/stages/verify.ts:41-44) returns true for an undefined gate. GAP B's intent ('only exit when the deterministic build gate is green') is therefore silently satisfied on the first check without the gate ever running. This is currently harmless only because state.review is not Approved before Stage 10 produces it — i.e. safety rests on an implicit invariant, not on the code. If any upstream stage ever pre-populates state.review to an Approved verdict, the loop would exit on attempt 1 with a never-run build gate. Recommend making buildGreen require an explicitly-present green gate for the exit decision (e.g. treat undefined as not-yet-green in reviewLoopUntil), or assert the invariant."
+          },
+          {
+            "id": "F2",
+            "severity": "medium",
+            "lens": "Architect",
+            "title": "GAP C count-based trigger can flag legitimate slow convergence as stagnant",
+            "detail": "detectStagnation (src/stages/verify.ts) returns true whenever cur>0 && prev>0 && cur>=prev. A real, slow-but-progressing loop that fixes N findings each round while the re-review surfaces N genuinely-new real defects of equal count (5→5 with entirely different signatures) is indistinguishable from oscillation and bails after only 2 rounds. Combined with GAP B (which now KEEPS looping on approved+build-red), the count trigger becomes the dominant early-exit and may abandon runs that would have gone green on round 3. This behavior is explicitly requested by the spec ('5→5 = scope drift'), so it is intentional, but the author should confirm the tradeoff is acceptable given the max cap is only 3 — the count trigger effectively reduces the usable budget to 2 rounds for any non-strictly-decreasing sequence."
+          },
+          {
+            "id": "F3",
+            "severity": "low",
+            "lens": "Skeptic",
+            "title": "Stage 11 stagnation history is seeded from state and never reset per node entry",
+            "detail": "integrationLoopNode reads __testSignatures/__testCounts from state with `?? []` and only initializes when absent. If the node is ever re-entered within a run (or state carries stale history), the new round's signatures append to the old history and could trip detectStagnation on the very first retry against a prior run's signature. In the current single-pass pipeline this cannot happen, so risk is low, but a defensive reset at node entry (or a comment documenting the single-entry assumption) would harden it. Same latent concern applies to __reviewSignatures/__reviewCounts, though reviewLoopUntil is only driven inside one loop."
+          },
+          {
+            "id": "F4",
+            "severity": "low",
+            "lens": "Architect",
+            "title": "detectStagnation mutates its input arrays while returning a boolean",
+            "detail": "detectStagnation pushes onto sigHist/countHist (side effect) and returns a verdict, blending a command and a query. Callers (reviewLoopUntil and recordTestStagnation) rely on this push side effect to grow the persisted history. It works and is tested, but the dual role is a mild readability/maintenance smell for a function named like a pure predicate. Consider renaming (e.g. pushAndDetectStagnation) or splitting record/detect for clarity."
+          },
+          {
+            "id": "F5",
+            "severity": "low",
+            "lens": "Skeptic",
+            "title": "Invalid SUPER_DEV_THINKING and setThinkingLevel failures are silently ignored",
+            "detail": "asThinkingLevel (src/pi-spawn.ts) silently discards an unrecognized env value and falls back to the role default with no log — a typo like SUPER_DEV_THINKING=hgih is silently ineffective. Likewise applyThinkingLevel (src/session-agent.ts) swallows all throws with an empty catch and no diagnostic. Both are per-spec 'best-effort', but a single ctx-level debug log on the invalid-env and on the caught throw would make misconfiguration and runtime-clamping observable instead of invisible."
+          },
+          {
+            "id": "F6",
+            "severity": "low",
+            "lens": "Minimalist",
+            "title": "Redundant per-value threading of thinking / thinkingLevel and unused level ordering",
+            "detail": "workflow.ts threads the single call.thinking value into TWO differently-named fields (thinking and thinkingLevel) so each backend can read its own option name; pragmatic but a duplicated source of truth. Separately, THINKING_LEVELS is documented 'least→most effort' but no code consumes that ordering (only membership is checked), so the ordering contract is decorative. Neither is worth blocking on; consolidating to one option name at the SpawnAgentOptions/SessionAgentOptions boundary would remove the duplication."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/12-adversarial-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-22T07:23:34.897Z",
+      "agent": "docs",
+      "data": {
+        "date": "2026-07-24",
+        "title": "Docs Update — Verify-Loop Gating & Per-Agent Thinking Configuration (Task 13)",
+        "deviationsDocumented": [
+          "GAP C: implemented via a single shared detectStagnation helper (DRY) rather than duplicating the identical-signature + non-decreasing-count logic inline in each of the two detectors; behavior matches the spec on both triggers.",
+          "GAP D: introduced a new reviewStageNode wired into src/stages/index.ts (replacing the prior reviewLoopNode reference) to host the final budget-checked re-review; the epilogue is gated on !reviewApproved && !stagnated, so in the approved+build-red exhaustion corner the terminal fix is not re-reviewed (Code Review F1, Low severity, deemed defensible since the merge gate already reads a fresh Approved verdict).",
+          "No functional deviations from the specification's requirements; code review verdict is Approved and the Implementation Summary records 'No deviations from the specification.'"
+        ],
+        "summary": "Reviewed all spec-directory documents against the applied source edits for Task 13 and confirmed they accurately reflect the implementation, which passed code review (Approved), adversarial review CONTEST for minor low/medium observations only. Phase 1 (src/stages/verify.ts, src/stages/index.ts): GAP A adds testFailuresSignature + Stage 11 integrationLoopNode stagnation detection writing state.__testStagnated (rounds, failing signature, bounded ≤12 failures) with a non-fatal log, mirroring the findingsSignature/__stagnated style and preserving the max-3-round cap; GAP B makes reviewLoopUntil exit successfully only when reviewApproved(s) AND buildGreen(s), so approved+build-red keeps looping until stagnation or exhaustion; GAP C adds a non-decreasing-count stagnation trigger (5→5/5→6 scope drift) via a shared detectStagnation helper alongside the identical-signature trigger, leaving converging 5→3→1 runs untriggered; GAP D adds a budget-checked non-fatal final reviewStep (reviewStageNode) at max-rounds exhaustion so the downstream reviewApproved merge gate reads terminal code. Phase 2 (src/pi-spawn.ts, src/session-agent.ts, src/types.ts, src/workflow.ts) adds a ThinkingLevel type, thinkingForAgent role map, resolveThinking precedence (per-call thinking? → SUPER_DEV_THINKING env → role default), a --thinking append in buildSpawnArgs, and a best-effort session.setThinkingLevel call in runAgentViaSession, threaded through AgentCall/RunOptions and workflow common. Verification green: npx tsc --noEmit clean under strict mode, 1387 existing vitest tests preserved plus 20 new tests. Every new loop-exit path is strictly non-fatal. Implementation Summary (10), Task List (08), Implementation Plan (07), Code Review (11), Adversarial Review (12) are consistent with the final code; no MANDATORY spec-directory document required correction.",
+        "docsUpdated": "docs/specifications/13-verify-loop-gating-thinking-config/10-implementation-summary.md (verified complete: 2/2 phases, all-green, GAP A–D + thinking-config narrative, files list); 08-task-list.md and 07-implementation-plan.md (verified phases marked complete); 06-specification.md (verified — no functional deviations to record); 11-code-review.md (Approved) and 12-adversarial-review.md (CONTEST, low/medium only) reviewed for consistency. No project-level README/CHANGELOG change required (internal pipeline bug-fix, no user-facing surface). change-tracker.jsonl intentionally not touched per constraints.",
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/13-verify-loop-gating-thinking-config/docs/specifications/13-verify-loop-gating-thinking-config/13-documentation.md"
+      }
+    }
+  }
+}
