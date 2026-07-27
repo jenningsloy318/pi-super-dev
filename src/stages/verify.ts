@@ -261,8 +261,14 @@ const uiTestStep: Node = {
 };
 
 /** Test block: bringup → api test → ui test → teardown (always). */
+// api-test and ui-test hit INDEPENDENT running services, are read-only w.r.t.
+// the source tree, and write distinct state keys (apiTest/uiTest) — so they run
+// CONCURRENTLY (resume-safe via BUG-1's structural cache keys). `tolerant` so a
+// failed branch still lets the other land its result; the integration loop's
+// testsGreen already tolerates a missing apiTest/uiTest. bringup stays first
+// (sequence), teardown in finally regardless.
 const testBlock = tryCatch(
-	sequence([task(bringupTask), apiTestStep, uiTestStep]),
+	sequence([task(bringupTask), parallel([apiTestStep, uiTestStep], { tolerant: true })]),
 	{ finally: teardownNode() },
 );
 
