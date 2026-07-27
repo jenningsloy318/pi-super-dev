@@ -34,6 +34,17 @@ export { runWorkflow } from "./workflow.ts";
 
 const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
+/** Keyboard shortcut that stops an in-flight BACKGROUND super-dev run.
+ *
+ *  Deliberately NOT `ctrl+shift+s` — that binding is owned by the
+ *  `pi-web-access` extension (its web-search curator / "Review search results"
+ *  action, a default in `DEFAULT_SHORTCUTS`). Registering it here would collide
+ *  and, per pi's last-writer-wins resolution, silently shadow that feature.
+ *  `ctrl+shift+x` is free across pi core defaults (`ctrl+shift+p`/`ctrl+shift+o`
+ *  are the only core `ctrl+shift+<letter>` bindings) and every installed
+ *  extension, and reads as a natural "stop/cancel" gesture (close to the old
+ *  `s` key on the keyboard so existing muscle memory isn't badly disrupted). */
+const SUPER_DEV_STOP_SHORTCUT = "ctrl+shift+x";
 
 /**
  * Phase 1 (AC-01 / AC-02 / AC-03) — Mid-run input injection run-state singleton.
@@ -438,7 +449,7 @@ export default function activate(pi: ExtensionAPI): void {
 					// in print/json/headless/RPC modes (AC-09 / AC-10).
 					ctx?.ui?.setWidget?.(
 						DASHBOARD_KEY,
-						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? "/super-dev-stop" : "esc to abort", { elapsedMs: Date.now() - runStartMs, recentLogs: activeRun?.background ? recentLogs : [] }),
+						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? `/super-dev-stop (${SUPER_DEV_STOP_SHORTCUT})` : "esc to abort", { elapsedMs: Date.now() - runStartMs, recentLogs: activeRun?.background ? recentLogs : [] }),
 						{ placement: "aboveEditor" },
 					);
 				} catch { /* best-effort */ }
@@ -673,7 +684,7 @@ export default function activate(pi: ExtensionAPI): void {
 		},
 	});
 	try {
-		pi.registerShortcut("ctrl+shift+s", {
+		pi.registerShortcut(SUPER_DEV_STOP_SHORTCUT, {
 			description: "Stop background super-dev run",
 			handler: async (ctx) => {
 				const c = getActiveBgController();
