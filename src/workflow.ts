@@ -11,6 +11,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
@@ -53,6 +54,12 @@ function makeBudget(maxAgents: number): Budget {
 		},
 	};
 }
+
+/** BUG-1: the structural scope stack. `parallel`/`map` push a marker (e.g.
+ *  `parallel[0]`) per branch/iteration; the resume memoizer reads the current
+ *  path to key agent calls by STRUCTURAL position (order-independent) instead
+ *  of a fragile sequential counter. Module-level so one run shares one stack. */
+const scopeAls = new AsyncLocalStorage<string[]>();
 
 function makeContext(state: PipelineState, task: string, options: RunOptions, log: (m: string) => void): StageContext {
 	const budget = makeBudget(options.maxAgents ?? DEFAULT_MAX_AGENTS);
@@ -152,7 +159,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	// The lazy getSpecDir is because state.setup is populated only after the setup
 	// stage runs (the first node).
 	const agent = options.resumeCache
-		? createMemoizingAgent(realAgent, options.resumeCache, () => state.setup?.specDirectory ?? "", log)
+		? createMemoizingAgent(realAgent, options.resumeCache, () => state.setup?.specDirectory ?? "", log, () => scopeAls.getStore() ?? [])
 		: realAgent;
 	async function helper(call: HelperCall): Promise<HelperResult> {
 		return runHelper(call);
@@ -171,7 +178,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		return results;
 	}
 
-	return { task, options, state, agent, helper, parallel, budget, log, phase: (label: string) => events.emit("phase", label), events, signal, results: [] };
+	return { task, options, state, agent, helper, parallel, budget, log, phase: (label: string) => events.emit("phase", label), withScope: <T>(marker: string, fn: () => Promise<T>): Promise<T> => { const parent = scopeAls.getStore() ?? []; return scopeAls.run([...parent, marker], fn); }, events, signal, results: [] };
 }
 
 /** Run a workflow for a task. */

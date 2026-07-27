@@ -147,9 +147,9 @@ describe("workflow agent() mid-run user guidance injection (SCENARIO-013..016)",
 
 	it("SCENARIO-015: a memoized replay (resume cache hit) does NOT re-invoke the provider / re-inject", async () => {
 		// Pre-populate the resume cache so the FIRST invocation is a cache HIT.
-		// createMemoizingAgent's key is `<call.id>#<seq>`; seq starts at 1.
+		// createMemoizingAgent's key is `<call.id>@<scope>#<occurrence>`; no parallel scope => root, occ starts at 1.
 		const cached: AgentResult = { text: "CACHED TEXT", control: {} };
-		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}#1`, cached]]);
+		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}@root#1`, cached]]);
 		const { provider, callCount } = makeProviderSpy(["should-not-be-injected-on-replay"]);
 		const ctx = mkCtx({}, { userSteerProvider: provider, resumeCache });
 
@@ -162,7 +162,7 @@ describe("workflow agent() mid-run user guidance injection (SCENARIO-013..016)",
 	it("SCENARIO-015: after a cache hit, a fresh (uncached) spawn drains and injects once", async () => {
 		const cached: AgentResult = { text: "CACHED TEXT", control: {} };
 		// Only the first call is cached; the second (different id, seq=2) misses.
-		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}#1`, cached]]);
+		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}@root#1`, cached]]);
 		const { provider, callCount } = makeProviderSpy(["live steer after resume"]);
 		const ctx = mkCtx({}, { userSteerProvider: provider, resumeCache });
 

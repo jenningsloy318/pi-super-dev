@@ -130,7 +130,7 @@ describe("findResumableSpec + specDirFor", () => {
 
 describe("createMemoizingAgent", () => {
 	it("returns the cached result without calling the real agent (hit)", async () => {
-		const cache = new Map<string, AgentResult>([["x#1", result({ hit: true })]]);
+		const cache = new Map<string, AgentResult>([["x@root#1", result({ hit: true })]]);
 		let calls = 0;
 		const agent = createMemoizingAgent(async () => { calls++; return result({ hit: false }); }, cache, () => "/tmp", () => {});
 		const r = await agent(call("x"));
@@ -145,9 +145,9 @@ describe("createMemoizingAgent", () => {
 			const agent = createMemoizingAgent(async () => result({ ran: true }), cache, () => specDir, () => {});
 			const r = await agent(call("x"));
 			expect(r.control).toEqual({ ran: true });
-			expect(cache.get("x#1")?.control).toEqual({ ran: true });
+			expect(cache.get("x@root#1")?.control).toEqual({ ran: true });
 			// captured to disk too
-			expect(loadResumeCache(specDir).get("x#1")?.control).toEqual({ ran: true });
+			expect(loadResumeCache(specDir).get("x@root#1")?.control).toEqual({ ran: true });
 		} finally { rmSync(specDir, { recursive: true, force: true }); }
 	});
 
@@ -156,7 +156,7 @@ describe("createMemoizingAgent", () => {
 		// SAME call.id. Pre-seed the cache as if iteration 1 completed (seq=1)
 		// and iteration 2 was interrupted (seq=2 missing).
 		const cache = new Map<string, AgentResult>([
-			["pipeline.verify.code-review#1", result({ iter: 1 })],
+			["pipeline.verify.code-review@root#1", result({ iter: 1 })],
 		]);
 		const seen: number[] = [];
 		const agent = createMemoizingAgent(

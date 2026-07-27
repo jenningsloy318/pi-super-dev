@@ -111,6 +111,14 @@ export function isFatalAbort(err: unknown): boolean {
 	return err instanceof FatalAbort || (err instanceof Error && (err as { fatal?: boolean }).fatal === true);
 }
 
+/** Run `fn` inside a structural scope marker (BUG-1). `parallel`/`map` call this
+ *  per branch/iteration so concurrent branches get distinct, order-independent
+ *  scope paths for resume cache keys. Falls back to running `fn` directly when
+ *  the context doesn't provide `withScope` (e.g. minimal unit-test contexts). */
+function scopeRun<T>(ctx: StageContext, marker: string, fn: () => Promise<T>): Promise<T> {
+	return ctx.withScope ? ctx.withScope(marker, fn) : fn();
+}
+
 // ─── task ───────────────────────────────────────────────────────────────────
 
 /** Lift a `Stage` into a leaf node. Stores the return value under `state[id]`. */
@@ -261,8 +269,8 @@ export function parallel(branches: Node[], opts: ParallelOptions = {}): Node {
 			// — aborting an async fn without its own signal check is not possible).
 			const subAbort = new AbortController();
 			const results = await runConcurrent(
-				branches.map((b) => async () => {
-					const r = await b.run(state, ctx);
+				branches.map((b, i) => async () => {
+					const r = await scopeRun(ctx, `parallel[${i}]`, () => b.run(state, ctx));
 					if (r.status === "cancelled") subAbort.abort(); // #6: signal siblings to stop
 					return r;
 				}),
@@ -452,9 +460,9 @@ export function map(opts: MapOptions, body: Node): Node {
 			}
 			const items = await opts.over(state, ctx);
 			const results = await runConcurrent(
-				items.map((item) => async () => {
+				items.map((item, i) => async () => {
 					(state as Record<string, unknown>)[opts.as] = item;
-					return body.run(state, ctx);
+					return scopeRun(ctx, `map[${i}]`, () => body.run(state, ctx));
 				}),
 				opts.concurrency ?? 1,
 			);

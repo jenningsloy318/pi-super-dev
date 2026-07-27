@@ -207,6 +207,15 @@ export interface StageContext {
 	 *  "Phase N/M: <name>" as the current phase being implemented. No-op-safe
 	 *  when no progress sink is wired (headless / unit tests). */
 	phase(label: string): void;
+	/** Push a structural scope marker (e.g. `parallel[0]`, `map[2]`) onto an
+	 *  AsyncLocalStorage stack for the duration of `fn`, so concurrent branches
+	 *  get DISTINCT, order-independent scope paths. The resume cache keys agent
+	 *  calls by their structural position (`callId@scopePath#occurrence`), which
+	 *  is deterministic regardless of await interleaving — the fix for the
+	 *  fragile sequential `seq` counter (BUG-1). Optional: control-flow nodes
+	 *  fall back to running `fn` directly when absent (test contexts that don't
+	 *  exercise resume). */
+	withScope?<T>(marker: string, fn: () => Promise<T>): Promise<T>;
 	events: EventEmitter;
 	signal?: AbortSignal;
 	/** Every leaf-stage outcome, appended by `task()`. Used for honest summaries. */

@@ -124,24 +124,38 @@ export function findResumableSpec(cwd: string): string | undefined {
 // ─── the memoizing agent wrapper (testable) ──────────────────────────────────
 
 /**
- * Wrap a real agent executor with a resume-cache memoizer. `seq` is a monotonic
- * counter incremented at every invocation; the cache key is `<callId>#<seq>`.
- * Invocation order is deterministic (the workflow's `parallel()` shifts from a
- * FIFO queue in single-threaded JS), so `seq` matches on replay — even for
- * loop iterations whose call.id repeats (e.g. the verify-loop's code-review).
- * Always WRITES results (so any run is resumable); READS (memoizes) only when the
- * cache was pre-loaded (resume). `getSpecDir` is lazy because `state.setup` is
- * only populated after the setup stage runs.
+ * Wrap a real agent executor with a resume-cache memoizer. The cache key is
+ * the call's STRUCTURAL position — `callId@scopePath#occurrence` — NOT a
+ * sequential invocation counter. Structural identity is order-independent:
+ * `parallel`/`map` push a scope marker per branch/iteration (via ctx.withScope
+ * → AsyncLocalStorage), so concurrent branches get distinct keys regardless of
+ * which `ctx.agent` fires first. This is the fix for BUG-1: the old `++seq`
+ * counter was only incidentally deterministic (it held iff `ctx.agent` was the
+ * first await in every parallel branch — a fragile invariant).
+ *
+ * `occurrence` is scoped to (callId, scopePath): it disambiguates repeated
+ * calls at the same structural position (loop iterations, gate re-runs), which
+ * are sequential within their scope and thus deterministic. Always WRITES
+ * results (so any run is resumable); READS (memoizes) only when the cache was
+ * pre-loaded (resume). `getSpecDir` is lazy because `state.setup` is only
+ * populated after the setup stage runs. `getScope` defaults to [] (root) so
+ * callers/tests that don't thread scopes still get deterministic `@root#N` keys.
  */
 export function createMemoizingAgent(
 	realAgent: (call: AgentCall) => Promise<AgentResult>,
 	cache: Map<string, AgentResult>,
 	getSpecDir: () => string,
 	log?: (m: string) => void,
+	getScope: () => string[] = () => [],
 ): (call: AgentCall) => Promise<AgentResult> {
-	let seq = 0;
+	const occ = new Map<string, number>();
 	return async (call: AgentCall): Promise<AgentResult> => {
-		const key = `${call.id ?? "agent"}#${++seq}`;
+		const id = call.id ?? "agent";
+		const scope = getScope().join("/") || "root";
+		const occKey = `${id}\u0000${scope}`;
+		const n = (occ.get(occKey) ?? 0) + 1;
+		occ.set(occKey, n);
+		const key = `${id}@${scope}#${n}`;
 		const hit = cache.get(key);
 		if (hit) {
 			log?.(`resumed (cached): ${call.id ?? key}`);
