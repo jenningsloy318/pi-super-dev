@@ -61,6 +61,49 @@ function makeBudget(maxAgents: number): Budget {
  *  of a fragile sequential counter. Module-level so one run shares one stack. */
 const scopeAls = new AsyncLocalStorage<string[]>();
 
+/** Signal-aware sleep (local — workflow.ts doesn't import nodes' sleep). */
+function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve();
+		const t = setTimeout(resolve, ms);
+		signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+	});
+}
+
+/** Transient (retryable) agent errors: rate limits, overload, 5xx, connection
+ *  resets. Retried with backoff INSIDE one agent call — not counted as a fresh
+ *  gate attempt (which burned the budget when a model 429'd on every attempt). */
+const TRANSIENT_RE = /\b(429|rate.?limit|overload|too many requests|service unavailable|503|502|520|521|522|524|ECONNRESET|ETIMEDOUT|socket hang up)\b/i;
+function isTransientAgentError(error?: string): boolean {
+	return !!error && TRANSIENT_RE.test(error);
+}
+
+/** Transient-retry backoff schedule (ms). Read LAZILY so tests can set
+ *  SUPER_DEV_TRANSIENT_RETRY_MS before invoking. Default: 2s, 4s, 8s. */
+function transientRetryMs(): number[] {
+	return (process.env.SUPER_DEV_TRANSIENT_RETRY_MS ?? "2000,4000,8000")
+		.split(",").map((x) => Number.parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
+}
+
+/** Run an agent backend call, retrying transient errors with exponential backoff.
+ *  One logical agent call = one budget unit (budget.spent is called once by
+ *  realAgent; retries are internal). */
+async function runWithTransientRetry<T extends { error?: string }>(
+	exec: () => Promise<T>, signal: AbortSignal | undefined, log: (m: string) => void,
+): Promise<T> {
+	const delays = transientRetryMs();
+	let last: T;
+	for (let attempt = 0; ; attempt++) {
+		last = await exec();
+		if (!isTransientAgentError(last.error)) return last;
+		if (attempt >= delays.length) return last; // exhausted -> surface the transient error
+		const delay = delays[attempt];
+		log(`agent transient error (429/overload) — retrying in ${delay}ms (attempt ${attempt + 1}/${delays.length}): ${last.error}`);
+		await sleepMs(delay, signal);
+		if (signal?.aborted) return last;
+	}
+}
+
 function makeContext(state: PipelineState, task: string, options: RunOptions, log: (m: string) => void): StageContext {
 	const budget = makeBudget(options.maxAgents ?? DEFAULT_MAX_AGENTS);
 	const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
@@ -152,7 +195,8 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const backend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
 			? "subprocess"
 			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
-		return backend === "session" ? runAgentViaSession(common) : spawnAgent(common);
+		const exec = backend === "session" ? () => runAgentViaSession(common) : () => spawnAgent(common);
+		return runWithTransientRetry(exec, signal, (m) => log(m));
 	}
 	// Resume (v0.3.0): always CAPTURE agent results so any interrupted run is
 	// resumable; MEMOIZE (return cached) when options.resumeCache was pre-loaded.
