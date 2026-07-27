@@ -82,12 +82,19 @@ export const hasImplementation = (s: PipelineState) => {
 	return (i?.totalPhases ?? 0) > 0 && i?.allGreen === true;
 };
 
-/** Research is complete ONLY when a report exists AND all open issues are
- *  resolved. The gate retries (attempts:4, feedback-driven) loop the unresolved
- *  issues back into the next research attempt (Deep Research Mode), so the
- *  agent targets each one. Non-fatal exhaustion: if truly unresolvable after 4
- *  attempts, the pipeline proceeds with them documented. */
-const researchComplete = async (s: PipelineState, ctx: StageContext) => {
+/** A research report is COMPLETE when it exists on disk. Open issues are
+ *  NORMAL research output — the agent is explicitly instructed to flag genuine
+ *  open questions/contradictions for the next stage (agents/research-agent.md
+ *  "Flag issues"). Treating `openIssues.length > 0` as a gate FAILURE made an
+ *  honest agent with any unresolvable question (e.g. an unreleased library
+ *  version) exhaust all 4 attempts — the ROOT CAUSE of "Research gate
+ *  exhausted". Open issues now flow forward as documented signal (matching how
+ *  the requirements gate treats `openQuestions`), not a blocker. The only hard
+ *  failure is "no report produced" (genuine timeout/no-output), which — now
+ *  that this gate is fatal — aborts the run honestly instead of cascading.
+ *  AUDIT: this is the only gate with the "honest agent can't pass" anti-pattern;
+ *  requirements/bdd/spec check structural minimums the agent can always add. */
+export const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const r = s.research as { docPath?: string; openIssues?: unknown[] } | undefined;
 	if (!r || !r.docPath) {
 		ctx.log("Research: no report produced (agent returned nothing or timed out)");
@@ -96,8 +103,7 @@ const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const open = (r.openIssues as unknown[]) ?? [];
 	if (open.length > 0) {
 		const preview = open.slice(0, 3).map((o) => String(o).slice(0, 80)).join("; ");
-		ctx.log(`Research: ${open.length} open issue(s) unresolved — retrying to resolve: ${preview}`);
-		return { pass: false, errors: [`${open.length} open issue(s) must be resolved before proceeding: ${open.map((o) => String(o)).join("; ")}`] };
+		ctx.log(`Research: ${open.length} open issue(s) documented (flowing forward as signal, not blocking): ${preview}`);
 	}
 	return { pass: true, errors: [] };
 };
