@@ -258,6 +258,9 @@ export interface NodeResult {
 export interface Node {
 	kind: string;
 	label?: string;
+	/** The stage id (task nodes only). Used by duplicate-id detection in `parallel`
+	 *  so two concurrent tasks can't silently clobber the same `state[id]`. */
+	id?: string;
 	run(state: PipelineState, ctx: StageContext): Promise<NodeResult>;
 }
 

@@ -130,6 +130,7 @@ export function task(stage: Stage): Node {
 	return {
 		kind: "task",
 		label: stage.label,
+		id: stage.id,
 		async run(state, ctx) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
 			if (stage.enabled && !stage.enabled(state)) {
@@ -264,6 +265,13 @@ export function parallel(branches: Node[], opts: ParallelOptions = {}): Node {
 		kind: "parallel",
 		async run(state, ctx) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
+			// Duplicate-id guard: two concurrent task nodes with the same stage.id
+			// would silently clobber state[id] (last-write-wins, nondeterministic).
+			const ids = branches.map((b) => b.id).filter((x): x is string => !!x);
+			if (new Set(ids).size !== ids.length) {
+				const dup = ids.find((x, i) => ids.indexOf(x) !== i);
+				throw new Error(`parallel(): duplicate stage id "${dup}" — concurrent tasks sharing a state key would clobber each other. Use distinct ids.`);
+			}
 			// #6 sibling-cancellation: when one branch returns cancelled, abort a sub-signal
 			// so remaining QUEUED branches are not started (in-flight branches run to completion
 			// — aborting an async fn without its own signal check is not possible).

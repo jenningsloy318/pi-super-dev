@@ -131,6 +131,12 @@ describe("branch / choose", () => {
 });
 
 describe("parallel", () => {
+	it("rejects duplicate stage ids among branches (concurrent state clobber guard)", async () => {
+		// Two task nodes with the same stage.id in a parallel would silently clobber
+		// state[id] (last-write-wins, nondeterministic). Fail loud instead.
+		const dup = parallel([task(mockTask("shared", () => 1)), task(mockTask("shared", () => 2))]);
+		await expect(dup.run({}, mkCtx())).rejects.toThrow(/duplicate stage id "shared"/);
+	});
 	it("runs branches concurrently and joins into a key", async () => {
 		const p = parallel(
 			[
