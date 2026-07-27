@@ -12,7 +12,7 @@ import type { NodeResult, PipelineState, Stage, StageContext } from "../src/type
 
 function fakeCtx(): { ctx: StageContext; events: EventEmitter } {
 	const events = new EventEmitter();
-	const budget = { count: 0, max: 100, check: () => true, spent() { this.count++; } };
+	const budget = { count: 0, max: 100, check: () => true, spent() { this.count++; return true; } };
 	const ctx = {
 		task: "t", options: {}, state: {} as PipelineState,
 		events,

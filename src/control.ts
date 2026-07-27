@@ -6,7 +6,13 @@
 
 import type { ControlObj } from "./types.ts";
 
-const CONTROL_TAG_RE = /<control>\s*([\s\S]*?)\s<\/control>/i;
+// NOTE: trailing `\s*` (zero-or-more) — NOT `\s` (exactly one). A single
+// trailing whitespace char made `<control>{...}</control>` (compact JSON,
+// no trailing space) miss the primary tag path and silently fall through to
+// the weaker last-JSON-object fallback. The function still returned the
+// right object, but relying on the fallback is fragile (a prose `{...}`
+// after the block could win). Zero-or-more is the obviously-intended match.
+const CONTROL_TAG_RE = /<control>\s*([\s\S]*?)\s*<\/control>/i;
 
 export function extractControl(text: string): ControlObj | null {
 	if (!text) return null;

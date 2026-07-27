@@ -11,7 +11,7 @@
  * observable results are the convergence signal.
  */
 
-import { loop, sequence, parallel, branch, noop, task, tryCatch } from "../nodes.ts";
+import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
 import { runBuildGate, type GateOptions } from "../build-runner.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
@@ -198,6 +198,9 @@ export const reviewStageNode: Node = {
 			try {
 				await reviewStep.run(state, ctx);
 			} catch (err) {
+				// FatalAbort (a nested fatal gate's exhaustion) must propagate to
+				// runWorkflow — never be swallowed by this non-fatal epilogue.
+				if (isFatalAbort(err)) throw err;
 				ctx.log(`Stage 10: final re-review threw (non-fatal) — ${err instanceof Error ? err.message : String(err)}`);
 			}
 		}

@@ -262,6 +262,7 @@ function mkCtx(): { ctx: StageContext; fake: FakeCtx } {
 			check: () => true,
 			spent() {
 				this.count++;
+				return true;
 			},
 		} satisfies Budget,
 		log(message: string) {

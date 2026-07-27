@@ -8,7 +8,8 @@ import { EventEmitter } from "node:events";
 import {
 	task, sequence, branch, choose, parallel, loop, retry, gate, map, wait, tryCatch, noop,
 } from "../src/nodes.ts";
-import type { AgentCall, AgentResult, Budget, PipelineState, Stage, StageContext } from "../src/types.ts";
+import { FatalAbort } from "../src/nodes.ts";
+import type { AgentCall, AgentResult, Budget, Node, PipelineState, Stage, StageContext } from "../src/types.ts";
 
 /** A Stage whose `run` is an arbitrary pure function of state (no agent calls). */
 function mockTask(id: string, fn: (s: PipelineState, ctx: StageContext) => unknown): Stage {
@@ -31,7 +32,7 @@ function mkCtx(): StageContext {
 	const budget: Budget = {
 		count: 0,
 		check: () => true,
-		spent() { this.count++; },
+		spent() { this.count++; return true; },
 	};
 	return {
 		task: "",
@@ -211,6 +212,32 @@ describe("gate", () => {
 		const r = await gate({ validate: () => ({ pass: true, errors: [] }), attempts: 2 }, node).run({}, mkCtx());
 		expect(r.status).toBe("failed");
 	});
+	it("a FATAL gate THROWS FatalAbort on exhaustion (does not silently return failed)", async () => {
+		// The fix for "failed but still go on": a foundational doc gate that cannot
+		// produce its artifact after all attempts must abort the run honestly.
+		const node = task(mockTask("g", () => 1));
+		await expect(
+			gate({ validate: () => ({ pass: false, errors: ["no doc produced"] }), feedbackKey: "g", attempts: 2, fatal: true }, node).run({}, mkCtx()),
+		).rejects.toThrow(/no doc produced/);
+	});
+	it("a non-fatal gate still returns failed on exhaustion (default resilience preserved)", async () => {
+		const node = task(mockTask("g", () => 1));
+		const r = await gate({ validate: () => ({ pass: false, errors: ["x"] }), attempts: 2 }, node).run({}, mkCtx());
+		expect(r.status).toBe("failed");
+	});
+	it("clears state.__feedback[key] when validation finally passes (BUG-6)", async () => {
+		// A gate that fails on attempt 1 (sets __feedback.g) then passes on attempt 2
+		// must DELETE __feedback.g on success — otherwise stale failure feedback
+		// persists and would be re-prepended if the gated stage were ever looped.
+		let n = 0;
+		const node = task(mockTask("g", () => ++n));
+		const g = gate({ validate: () => ({ pass: n >= 2, errors: n < 2 ? ["not-yet"] : [] }), feedbackKey: "g", attempts: 5 }, node);
+		const state: PipelineState = {};
+		await g.run(state, mkCtx());
+		expect(n).toBe(2); // ran twice: fail then pass
+		const fb = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
+		expect(fb?.g ?? []).toEqual([]); // cleared on pass (absent key → [])
+	});
 });
 
 describe("sequence tolerant catches throws", () => {
@@ -228,6 +255,13 @@ describe("sequence tolerant catches throws", () => {
 	it("a non-tolerant sequence still propagates the throw", async () => {
 		await expect(sequence([thrower as any], {}).run({}, mkCtx())).rejects.toThrow("kaboom");
 	});
+	it("a tolerant sequence RE-THROWS a FatalAbort (foundational gates abort honestly)", async () => {
+		// The fix for cascading failures: even a {tolerant:true} pipeline must not
+		// swallow a fatal gate exhaustion. It re-throws so runWorkflow aborts.
+		const fatal = gate({ validate: () => ({ pass: false, errors: ["research gate exhausted"] }), attempts: 1, fatal: true }, task(mockTask("g", () => 1)));
+		const next = task(mockTask("next", () => { throw new Error("downstream should NOT run"); }));
+		await expect(sequence([fatal, next], { tolerant: true }).run({}, mkCtx())).rejects.toThrow(/research gate exhausted/);
+	});
 });
 
 describe("map", () => {
@@ -237,6 +271,31 @@ describe("map", () => {
 		const r = await m.run({}, mkCtx());
 		expect(r.status).toBe("ok");
 		expect((r.value as unknown[]).length).toBe(3);
+	});
+	it("throws on concurrency > 1 (shared state[as] is unsafe — BUG-5)", async () => {
+		// The API only exposes the current item via the SHARED key state[as],
+		// so concurrent iterations race and corrupt. Rather than silently produce
+		// wrong results, fail loud. (Safe fan-out with isolation is a future
+		// per-item-arg API; today map is single-threaded by default.)
+		const body = task(mockTask("item", (s) => (s.item as number) * 2));
+		const m = map({ over: () => [1, 2], as: "item", concurrency: 2 }, body);
+		await expect(m.run({}, mkCtx())).rejects.toThrow(/concurrency.*1/i);
+	});
+});
+
+describe("FatalAbort propagation invariant (foundational gates must always abort)", () => {
+	// The FatalAbort contract: a fatal gate's exhaustion must reach runWorkflow,
+	// never be swallowed into {status:"failed"} by an intermediate handler.
+	it("task() re-throws a FatalAbort from its stage body (does not convert to failed)", async () => {
+		const boom: Stage = { id: "s", label: "s", async run() { throw new FatalAbort("nested gate exhausted"); } };
+		await expect(task(boom).run({}, mkCtx())).rejects.toThrow("nested gate exhausted");
+	});
+	it("tryCatch re-throws a FatalAbort AND still runs finally (teardown guarantee)", async () => {
+		let finallyRan = false;
+		const body: Node = { kind: "x", run: async () => { throw new FatalAbort("abort"); } };
+		const fin: Node = { kind: "f", run: async () => { finallyRan = true; return { status: "ok" }; } };
+		await expect(tryCatch(body, { finally: fin }).run({}, mkCtx())).rejects.toThrow("abort");
+		expect(finallyRan).toBe(true);
 	});
 });
 

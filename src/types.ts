@@ -83,7 +83,13 @@ export interface HelperResult {
 
 export interface Budget {
 	check(): boolean;
-	spent(): void;
+	/** Atomically reserve one agent slot. Increments only when under the cap
+	 *  and returns whether the reservation succeeded. This is the hard gate —
+	 *  `realAgent` bails when it returns false — so concurrent branches cannot
+	 *  exceed `maxAgents` via the check-then-await race that a read-only
+	 *  `check()` + post-hoc `spent()` left open (BUG-4). `check()` remains a
+	 *  read-only peek for stage-body guards. */
+	spent(): boolean;
 	count: number;
 }
 

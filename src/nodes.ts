@@ -90,6 +90,27 @@ const NOOP_RESULT: NodeResult = { status: "ok" };
 const failed = (error: string): NodeResult => ({ status: "failed", error });
 const cancelled = (): NodeResult => ({ status: "cancelled" });
 
+// ─── Fatal abort (foundational-gate exhaustion) ─────────────────────────────
+
+/** Thrown by a `gate({ fatal: true })` on EXHAUSTION. A tolerant `sequence`
+ *  RE-THROWS this (it does not swallow it), so a foundational stage that cannot
+ *  produce its artifact aborts the run honestly instead of feeding garbage to
+ *  every downstream stage — the "failed but still go on" cascading-failure gap.
+ *  `runWorkflow` catches it like any throw → status "failed" + the real reason;
+ *  resume replays cached calls. */
+export class FatalAbort extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "FatalAbort";
+	}
+}
+
+/** True for a `FatalAbort` (or any error marked fatal). Used by `sequence` to
+ *  decide whether a tolerant pipeline must re-throw despite {tolerant:true}. */
+export function isFatalAbort(err: unknown): boolean {
+	return err instanceof FatalAbort || (err instanceof Error && (err as { fatal?: boolean }).fatal === true);
+}
+
 // ─── task ───────────────────────────────────────────────────────────────────
 
 /** Lift a `Stage` into a leaf node. Stores the return value under `state[id]`. */
@@ -137,6 +158,9 @@ export function task(stage: Stage): Node {
 				const error = err instanceof Error ? err.message : String(err);
 				record(ctx, "failed", error);
 				auditAppend({ stage: stage.id, error });
+				// FatalAbort (a nested fatal gate's exhaustion) must ALWAYS propagate — never
+				// be converted to {status:"failed"}, which a tolerant sequence would swallow.
+				if (isFatalAbort(err)) throw err;
 				if (stage.fatal) throw err;
 				return { status: "failed", error };
 			}
@@ -166,7 +190,7 @@ export function sequence(children: Node[], opts: SequenceOptions = {}): Node {
 					// `tolerant` and discarded every prior stage's artifacts). Tolerant
 					// means tolerant — convert throws to failed and continue.
 					const error = err instanceof Error ? err.message : String(err);
-					if (!opts.tolerant) throw err;
+					if (!opts.tolerant || isFatalAbort(err)) throw err;
 					ctx.log(`sequence: stage threw — ${error} (tolerant: continuing)`);
 					r = { status: "failed", error };
 				}
@@ -329,6 +353,14 @@ export interface GateOptions {
 	/** Stage id; the gate stores the validator's errors under state.__feedback[feedbackKey]
 	 *  so the next retry's agent prompt includes them (see workflow.ts agent()). */
 	feedbackKey?: string;
+	/** When true, EXHAUSTION throws a `FatalAbort` instead of returning `{status:"failed"}`.
+	 *  A fatal abort propagates PAST tolerant sequences (they re-throw it), so a
+	 *  foundational stage that cannot produce its artifact aborts the run
+	 *  honestly instead of feeding garbage to every downstream stage (the
+	 *  "failed but still go on" cascading-failure gap). Use for load-bearing doc
+	 *  stages (requirements/bdd/research/spec). Non-fatal exhaustion (default)
+	 *  returns failed so a tolerant pipeline can limp on with best-effort. */
+	fatal?: boolean;
 }
 
 /**
@@ -363,6 +395,13 @@ export function gate(opts: GateOptions, node: Node): Node {
 				}
 				const v = await opts.validate(state, ctx);
 				if (v.pass) {
+					// BUG-6: clear the feedback entry on success so stale failure errors
+					// don't persist + get re-prepended if this gate (or a sibling sharing
+					// the key) is ever re-run (loop/converge). No-op when none was set.
+					if (opts.feedbackKey) {
+						const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
+						if (all && opts.feedbackKey in all) delete all[opts.feedbackKey];
+					}
 					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
 					ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
 					return { status: "ok", attempts: attempt };
@@ -377,7 +416,8 @@ export function gate(opts: GateOptions, node: Node): Node {
 				}
 			}
 			const msg = `gate${label} could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
-			ctx.log(`gate: EXHAUSTED (non-fatal) — proceeding with best-available artifact`);
+			ctx.log(`gate: EXHAUSTED${opts.fatal ? " (FATAL — aborting run)" : " (non-fatal)"} — ${opts.fatal ? "aborting" : "proceeding with best-available artifact"}`);
+			if (opts.fatal) throw new FatalAbort(msg);
 			return { status: "failed", error: msg, attempts: max };
 		},
 	};
@@ -403,6 +443,13 @@ export function map(opts: MapOptions, body: Node): Node {
 		kind: "map",
 		async run(state, ctx) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
+			// BUG-5: the API exposes the current item ONLY via the shared key
+			// state[as], so concurrency > 1 races and silently corrupts. Fail loud
+			// instead of producing wrong results. (A safe concurrent map needs a
+			// future per-item-arg body signature; today map is single-threaded.)
+			if ((opts.concurrency ?? 1) > 1) {
+				throw new Error("map() concurrency > 1 is unsafe: the current item is passed via shared state[as] and concurrent iterations would race. Use concurrency: 1 (the default).");
+			}
 			const items = await opts.over(state, ctx);
 			const results = await runConcurrent(
 				items.map((item) => async () => {
@@ -483,6 +530,11 @@ export function tryCatch(body: Node, opts: TryCatchOptions = {}): Node {
 				if (opts.finally) await opts.finally.run(state, ctx);
 				return r;
 			} catch (err) {
+				// FatalAbort must propagate (run finally first for the teardown guarantee).
+				if (isFatalAbort(err)) {
+					if (opts.finally) await opts.finally.run(state, ctx);
+					throw err;
+				}
 				const error = err instanceof Error ? err.message : String(err);
 				(state as Record<string, unknown>).__lastError = error;
 				ctx.log(`tryCatch: caught error — ${error}`);

@@ -7,7 +7,8 @@
 import { describe, it, expect } from "vitest";
 import { SUPER_DEV_WORKFLOW } from "../src/stages/index.ts";
 import { runWorkflow } from "../src/workflow.ts";
-import type { Node, NodeResult, PipelineState } from "../src/types.ts";
+import { gate, task, sequence } from "../src/nodes.ts";
+import type { Node, NodeResult, PipelineState, Stage } from "../src/types.ts";
 
 describe("SUPER_DEV_WORKFLOW composition", () => {
 	it("is the super-dev workflow", () => {
@@ -35,6 +36,37 @@ function seed(patch: Partial<PipelineState>): Node {
 }
 
 const wf = (root: Node) => ({ id: "test", root });
+
+describe("runWorkflow fatal-gate abort (cascading-failure fix)", () => {
+	// The fix for "failed but still go on": a foundational doc gate that exhausts
+	// must abort the run honestly, NOT feed garbage to downstream stages.
+	const mockStage = (id: string, fn: (s: PipelineState) => unknown): Stage =>
+		({ id, label: id, async run(s) { return fn(s); } });
+
+	it("a FATAL foundational gate exhaustion aborts with status 'failed' + the real reason", async () => {
+		let n = 0;
+		const writer = task(mockStage("requirements", () => ++n));
+		const fatalReqGate = gate(
+			{ validate: () => ({ pass: false, errors: ["no requirements doc produced"] }), feedbackKey: "requirements", attempts: 2, fatal: true },
+			writer,
+		);
+		const downstream = task(mockStage("downstream", () => { throw new Error("downstream must NOT run after a fatal gate"); }));
+		const wf = { id: "t", root: sequence([fatalReqGate, downstream], { tolerant: true }) };
+		const s = await runWorkflow(wf, "task");
+		expect(s.status).toBe("failed");
+		expect(s.error).toMatch(/no requirements doc produced/);
+	});
+
+	it("a NON-fatal gate exhaustion still yields 'failed' overall when no implementation results", async () => {
+		// Non-fatal exhaustion returns {status:failed}; the tolerant pipeline
+		// continues but produces no implementation → overall status 'failed'.
+		const writer = task(mockStage("g", () => 1));
+		const softGate = gate({ validate: () => ({ pass: false, errors: ["soft"] }), attempts: 1 }, writer);
+		const wf = { id: "t", root: sequence([softGate], { tolerant: true }) };
+		const s = await runWorkflow(wf, "task");
+		expect(s.status).toBe("failed"); // no implementation produced
+	});
+});
 
 describe("runWorkflow honest status", () => {
 	it("reports 'failed' + error when the root throws (fatal gate abort)", async () => {

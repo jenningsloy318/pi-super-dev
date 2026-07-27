@@ -158,6 +158,7 @@ function mkCtx(opts: {
 			check: opts.budgetCheck ?? (() => true),
 			spent() {
 				this.count++;
+				return true;
 			},
 		} satisfies Budget,
 		log(message: string) {

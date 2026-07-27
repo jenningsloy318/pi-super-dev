@@ -128,7 +128,7 @@ function mkCtx(opts: { tddControls?: ControlObj[] } = {}): { ctx: StageContext; 
 		async parallel(cbs) {
 			return Promise.all(cbs.map((c) => c()));
 		},
-		budget: { count: 0, check: () => true, spent() { this.count++; } } satisfies Budget,
+		budget: { count: 0, check: () => true, spent() { this.count++; return true; } } satisfies Budget,
 		log() {},
 		phase() {},
 		events: new EventEmitter(),

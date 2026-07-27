@@ -42,7 +42,7 @@ function mkCtx() {
 			return { text: "ok", control: {} };
 		},
 		parallel: async (cs: Array<() => Promise<AgentResult>>) => Promise.all(cs.map((c) => c())),
-		budget: { check: () => true, spent() { this.count++; }, count: 0 } satisfies Budget,
+		budget: { check: () => true, spent() { this.count++; return true; }, count: 0 } satisfies Budget,
 		log: () => {},
 		phase: (label: string) => { phaseCalls.push(label); events.push(`phase:${label}`); },
 		events: { on: () => () => {}, emit: () => {} } as never,

@@ -126,18 +126,24 @@ const pipeline = sequence(
 		task(classifyStage),
 		// Quality-gate loops: write → validate → re-write until the gate passes.
 		// Retries CONVERGE (the validator's errors are fed into the next attempt's
-		// prompt) and exhaustion is NON-FATAL (the pipeline proceeds with the
-		// best-available artifact rather than discarding every prior stage's work).
-		// Spec review is intentionally NOT gated — its verdict is signal, not a block.
-		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), feedbackKey: "requirements", attempts: 4 }, task(requirementsWriter)),
-		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), feedbackKey: "bdd", attempts: 4 }, task(bddWriter)),
-		gate({ validate: researchComplete, feedbackKey: "research", attempts: 4 }, task(researchWriter)),
+		// prompt). The FOUNDATIONAL doc gates (requirements/bdd/research/spec) are
+		// FATAL on exhaustion: a foundational artifact that can't be produced after
+		// 4 converging attempts means every downstream stage would work off garbage
+		// (the "failed but still go on" cascading-failure gap). A fatal exhaustion
+		// throws FatalAbort, which propagates past this tolerant sequence so
+		// runWorkflow aborts honestly with the real reason (resume replays cached
+		// calls). Later loops (implementation/review) stay non-fatal — exhaustion
+		// there yields a `partial` status, not garbage. Spec review is intentionally
+		// NOT gated — its verdict is signal, not a block.
+		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), feedbackKey: "requirements", attempts: 4, fatal: true }, task(requirementsWriter)),
+		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), feedbackKey: "bdd", attempts: 4, fatal: true }, task(bddWriter)),
+		gate({ validate: researchComplete, feedbackKey: "research", attempts: 4, fatal: true }, task(researchWriter)),
 		// Conditional branch: debug analysis only for bug fixes.
 		branch(isBug, { yes: task(debugWriter) }),
 		task(assessmentWriter),
 		task(designStage),
 		task(prototypeStage),
-		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), feedbackKey: "spec", attempts: 4 }, task(specWriter)),
+		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), feedbackKey: "spec", attempts: 4, fatal: true }, task(specWriter)),
 		// Spec review is SIGNAL, not a gate: a "Changes Requested" verdict is a
 		// judgment call whose findings flow forward to implementation/code-review.
 		// Blocking on it (the old fatal gate) aborted runs on a subjective verdict.

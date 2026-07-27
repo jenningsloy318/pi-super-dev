@@ -172,7 +172,7 @@ function mkCtx(): { ctx: StageContext; fake: FakeCtx } {
 		async parallel(cbs) {
 			return Promise.all(cbs.map((c) => c()));
 		},
-		budget: { count: 0, check: () => true, spent() { this.count++; } } satisfies Budget,
+		budget: { count: 0, check: () => true, spent() { this.count++; return true; } } satisfies Budget,
 		log(message: string) {
 			fake.logs.push(message);
 		},

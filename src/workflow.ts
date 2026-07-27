@@ -41,9 +41,15 @@ function makeBudget(maxAgents: number): Budget {
 	return {
 		count: 0,
 		check: () => s.count < s.max,
-		spent() {
+		// BUG-4: atomic reservation. Increments ONLY when under the cap and returns
+		// whether it succeeded, so concurrent branches can't both pass a read-only
+		// check() and then both spend past the limit. `count` reflects actual
+		// reservations (accurate `agentsSpawned` reporting).
+		spent(): boolean {
+			if (s.count >= s.max) return false;
 			s.count++;
 			this.count = s.count;
+			return true;
 		},
 	};
 }
@@ -58,7 +64,12 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	const events = new EventEmitter();
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
-		budget.spent();
+		// BUG-4: atomic reservation — bail BEFORE doing any work when the cap is hit,
+		// so concurrent branches can't exceed maxAgents. (Stage bodies still peek
+		// `check()` to avoid constructing a prompt when obviously over budget.)
+		if (!budget.spent()) {
+			return { text: "", control: null, error: "budget exhausted (maxAgents reached)" };
+		}
 		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
 		// First-principles retry convergence: if a gate rejected a prior attempt,
 		// it stored structured errors under state.__feedback[stageId]. Prepend them

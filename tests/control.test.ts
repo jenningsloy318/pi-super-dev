@@ -69,6 +69,20 @@ describe("extractControl", () => {
 		expect(extractControl(t)).toEqual({ a: 1, b: [1, 2] });
 	});
 
+	it("parses a <control> tag with NO trailing whitespace before </control>", () => {
+		// Regression: the tag regex used to require exactly one `\s` before
+		// `</control>`, so compact JSON like `{"a":1}</control>` missed the
+		// primary tag path and only parsed via the weaker last-JSON-object
+		// fallback. The regex must accept zero-or-more trailing whitespace.
+		const t = 'before\n<control>{"docPath": "y.md", "acCount": 7}</control>\nafter';
+		expect(extractControl(t)).toEqual({ docPath: "y.md", acCount: 7 });
+	});
+
+	it("parses a <control> tag with leading+trailing whitespace", () => {
+		const t = '<control>\n  {"v": 1}\n</control>';
+		expect(extractControl(t)).toEqual({ v: 1 });
+	});
+
 	it("returns null when nothing parses", () => {
 		expect(extractControl("just prose, no object")).toBeNull();
 		expect(extractControl("")).toBeNull();
