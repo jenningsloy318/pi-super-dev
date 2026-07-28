@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, toolsForAgent, resolveExtensionEntry, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
+import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 /** Minimal inherited-model object for tests (only provider+id are read by buildSpawnArgs). */
@@ -99,43 +99,34 @@ describe("buildSpawnArgs", () => {
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
 
-	it("non-browser agents load ambient extensions (no --no-extensions) with the base tool set", () => {
+	it("non-browser agents inherit ALL tools (no --tools allowlist) and exclude only super_dev", () => {
 		const args = buildSpawnArgs({ agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
 		expect(args).not.toContain("--no-extensions");
-		const tools = args[args.indexOf("--tools") + 1];
-		expect(tools).toBe("read,bash,edit,write,ffgrep,fffind");
-		expect(tools).not.toContain("browser_execute");
+		expect(args).not.toContain("--tools");
+		expect(args[args.indexOf("--exclude-tools") + 1]).toBe("super_dev");
 	});
 
-	it("browser agents (qa-agent, ui-tester) drop --no-extensions and gain browser_execute", () => {
+	it("browser agents (qa-agent, ui-tester) inherit ALL tools (no --tools allowlist) and exclude only super_dev", () => {
 		for (const agent of ["qa-agent", "ui-tester"]) {
 			const args = buildSpawnArgs({ agent, prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
 			expect(args, agent).not.toContain("--no-extensions");
-			const tools = args[args.indexOf("--tools") + 1];
-			expect(tools, agent).toContain("browser_execute");
-			expect(tools, agent).toContain("read,bash,edit,write,ffgrep,fffind");
+			expect(args, agent).not.toContain("--tools");
+			expect(args[args.indexOf("--exclude-tools") + 1], agent).toBe("super_dev");
 		}
 	});
 
-	it("research-agent loads ambient extensions (no --no-extensions) AND its -e role extensions, gaining web+mcp tools", () => {
+	it("research-agent loads ambient extensions (no --no-extensions) + its -e role extensions, inheriting ALL tools", () => {
 		const exts = ["/agent/npm/node_modules/pi-web-access/index.ts", "/agent/npm/node_modules/pi-mcp-adapter/index.ts"];
 		const args = buildSpawnArgs({ agent: "research-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md", exts);
-		// ambient extensions now load by default (no --no-extensions); the -e
-		// role extensions are still attached as belt-and-suspenders.
 		expect(args).not.toContain("--no-extensions");
+		expect(args).not.toContain("--tools");
+		expect(args[args.indexOf("--exclude-tools") + 1]).toBe("super_dev");
 		// the two named role extensions are still loaded explicitly via -e
 		for (const e of exts) {
 			const i = args.indexOf(e);
 			expect(i).toBeGreaterThan(0);
 			expect(args[i - 1]).toBe("-e");
 		}
-		const tools = args[args.indexOf("--tools") + 1];
-		expect(tools).toContain("read,bash,edit,write,ffgrep,fffind");
-		expect(tools).toContain("web_search");
-		expect(tools).toContain("fetch_content");
-		expect(tools).toContain("get_search_content");
-		expect(tools).toContain("mcp");
-		expect(tools).not.toContain("browser_execute");
 	});
 });
 
@@ -147,11 +138,6 @@ describe("web-research agent classification", () => {
 		expect(needsWebResearch("qa-agent")).toBe(false);
 	});
 
-	it("toolsForAgent gives web+mcp to research, browser tool to browser, base to the rest", () => {
-		expect(toolsForAgent("research-agent")).toBe("read,bash,edit,write,ffgrep,fffind,web_search,fetch_content,get_search_content,mcp");
-		expect(toolsForAgent("qa-agent")).toBe("read,bash,edit,write,ffgrep,fffind,browser_execute");
-		expect(toolsForAgent("spec-writer")).toBe("read,bash,edit,write,ffgrep,fffind");
-	});
 
 	it("resolveExtensionEntry returns the entry path when installed, null otherwise", () => {
 		const tmp = mkdtempSync(join(tmpdir(), "sd-ext-"));
@@ -288,7 +274,7 @@ describe("buildSpawnArgs — model resolution chain [AC-02 / SCENARIO-003, SCENA
 });
 
 describe("buildSpawnArgs — ambient extensions load by default (no --no-extensions for any agent)", () => {
-	it("non-browser agents do NOT carry --no-extensions (ambient loads; recursion guarded by the --tools allowlist)", () => {
+	it("non-browser agents do NOT carry --no-extensions (ambient loads; recursion guarded by --exclude-tools super_dev)", () => {
 		const args = buildSpawnArgs({ agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
 		expect(args).not.toContain("--no-extensions");
 	});

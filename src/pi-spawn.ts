@@ -19,12 +19,10 @@ import { extractControl } from "./control.ts";
 import { safetyPreamble } from "./safety.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
-const BASE_TOOLS = "read,bash,edit,write,ffgrep,fffind";
-
 /** Agents that drive a browser for UI testing. They receive the `browser_execute`
- *  tool and load extensions (so pi-browser-cdp-extension is available). The
- *  `--tools` allowlist keeps every non-allowlisted extension tool (e.g.
- *  `super_dev`) disabled, so this stays recursion-safe. Browser connection uses AUTO-DISCOVERY —
+ *  tool and load extensions (so pi-browser-cdp-extension is available).
+ *  Recursion is prevented by `--exclude-tools super_dev` (this extension's own
+ *  spawner tool stays uncallable). Browser connection uses AUTO-DISCOVERY —
  *  `await session.connect()` with no args finds any Chrome started with
  *  `--remote-debugging-port`; see agents/qa-agent.md. */
 const BROWSER_AGENTS = new Set(["qa-agent", "ui-tester"]);
@@ -43,20 +41,14 @@ export function isBrowserAgent(agent: string): boolean {
  *  the parent's in-process session. Ambient extensions now load by default (no
  *  `--no-extensions`); these two web/MCP extensions are ALSO attached via
  *  repeatable `-e <path>` as belt-and-suspenders so the web tools are present
- *  even if ambient discovery missed them. Recursion is prevented by the
- *  `--tools` allowlist (`super_dev` is never in BASE_TOOLS), and the ACTIVE tool
- *  set is restricted to coding + web + mcp. */
+ *  even if ambient discovery missed them. Recursion is prevented by
+ *  `--exclude-tools super_dev` (the spawner tool stays uncallable); all other
+ *  tools (built-in + extension + MCP) inherit active. */
 const WEB_RESEARCH_AGENTS = new Set(["research-agent"]);
 
 export function needsWebResearch(agent: string): boolean {
 	return WEB_RESEARCH_AGENTS.has(agent);
 }
-
-/** Web + MCP tool set for research agents. `web_search`/`fetch_content`/
- *  `get_search_content` come from pi-web-access; `mcp` is the pi-mcp-adapter
- *  gateway (lazy — servers connect only when called, and it degrades to a no-op
- *  when no .mcp.json servers are configured). */
-const WEB_TOOLS = "web_search,fetch_content,get_search_content,mcp";
 
 /** The installed extensions a research agent explicitly loads via `-e`. Order
  *  is irrelevant; each is resolved to its on-disk entry by researchExtensions(). */
@@ -81,11 +73,6 @@ export function researchExtensions(): string[] {
 		.filter((p): p is string => p !== null);
 }
 
-export function toolsForAgent(agent: string): string {
-	if (isBrowserAgent(agent)) return `${BASE_TOOLS},browser_execute`;
-	if (needsWebResearch(agent)) return `${BASE_TOOLS},${WEB_TOOLS}`;
-	return BASE_TOOLS;
-}
 
 /** Agents whose deliverable is CODE EDITS to real source files (not a document).
  *  These legitimately need to READ large existing files AND apply/verify edits
@@ -257,16 +244,15 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
  * All agents load ambient (global + project) extensions by default (no
  * `--no-extensions`), matching pi-subagents' default (its
  * `disableAmbientExtensions` is false unless an explicit extensions list or
- * denyExtensions is given). Recursion is prevented by the `--tools` allowlist
- * below — `super_dev` is never in BASE_TOOLS, so it stays UNCALLABLE even though
- * super-dev itself loads (the same mechanism pi-subagents uses to keep its
- * `subagent` tool out of children). Browser agents additionally get
- * `browser_execute`; research agents additionally load pi-web-access +
+ * denyExtensions is given). Recursion is prevented by `--exclude-tools super_dev`
+ * (this extension's own spawner tool stays uncallable even though super-dev
+ * itself loads) — the subprocess counterpart of the session backend's
+ * excludeTools. All other tools (built-in + extension + MCP) inherit active.
+ * Browser agents additionally get `browser_execute`; research agents additionally load pi-web-access +
  * pi-mcp-adapter via `-e`.
  */
 export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extraExtensions: string[] = []): string[] {
 	const { command, args: prefix } = resolvePiBinary();
-	const browser = isBrowserAgent(opts.agent);
 	const args = [
 		command, // ← the executable ("pi" on PATH, or `node` re-invoking the host entry)
 		...prefix,
@@ -276,13 +262,14 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 	// default (no --no-extensions) — matches pi-subagents' default, so an
 	// inherited parent model that resolves from an extension-registered provider
 	// no longer silently fails, and newly-installed useful extensions are picked
-	// up automatically. Recursion is prevented by the --tools allowlist below
-	// (super_dev is never in BASE_TOOLS, so it can't be called even though
-	// super-dev itself loads) — the same mechanism pi-subagents uses to keep its
-	// `subagent` tool out of children. Browser/research agents additionally pull
-	// their role extensions via the -e paths below.
+	// up automatically. Recursion is prevented solely by `--exclude-tools super_dev`
+	// below (this extension's own spawner tool stays uncallable) — the subprocess
+	// counterpart of the session backend's excludeTools:["super_dev"]. Browser/
+	// research agents additionally pull their role extensions via the -e paths below.
 	for (const ext of extraExtensions) args.push("-e", ext);
-	args.push("--tools", toolsForAgent(opts.agent));
+	// Inherit ALL tools (built-in + extension + MCP) — NO allowlist, so newly added
+	// MCP/extension tools are picked up automatically without editing a whitelist.
+	args.push("--exclude-tools", "super_dev");
 	args.push("--system-prompt", promptPath);
 	// Model precedence: explicit param → SUPER_DEV_MODEL env → INHERITED
 	// main-session model (the parent's qualified `provider/id`, derived from the
