@@ -23,6 +23,7 @@ import {
 	defineTool,
 	getAgentDir,
 	DefaultResourceLoader,
+	ModelRuntime,
 	type ToolDefinition,
 	SessionManager,
 	SettingsManager,
@@ -36,7 +37,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveThinking, type ThinkingLevel } from "./pi-spawn.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +134,48 @@ export function applyThinkingLevel(session: unknown, level: ThinkingLevel | unde
 	}
 }
 
+// ─── Phase 1 (Feature 1): session-backend model inheritance ──────────────────
+
+/** The `Model<any>` createAgentSession's `model` option expects, derived from
+ *  its own typed signature so we never reach for the (transitive)
+ *  @earendil-works/pi-ai Model type directly. */
+type SessionModelOption = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["model"]>;
+
+/** Split a "provider/model-id" reference into its provider and model-id parts.
+ *  A bare id (no slash) yields provider = the whole string and an empty model id. */
+function splitModelRef(ref: string): { provider: string; modelId: string } {
+	const slash = ref.indexOf("/");
+	if (slash < 0) return { provider: ref, modelId: "" };
+	return { provider: ref.slice(0, slash), modelId: ref.slice(slash + 1) };
+}
+
+/** Resolve an inherited/explicit model id to a Model<any> for createAgentSession
+ *  (Phase 1, Feature 1). Best-effort and no-throw:
+ *   - When a ModelRuntime is available, resolve the id against the agent-dir
+ *     catalog — a known id yields a concrete Model<any>; an UNKNOWN id falls
+ *     through to the SDK/settings default (SCENARIO-008).
+ *   - When no runtime is available (older runtime / mocked SDK), hand the
+ *     resolved id to createAgentSession as a Model descriptor so the SDK can
+ *     resolve it against its own catalog; the run never throws here (the SDK is
+ *     the authority on whether the id resolves). */
+async function resolveSessionModel(id: string | undefined): Promise<SessionModelOption | undefined> {
+	if (!id) return undefined;
+	const { provider, modelId } = splitModelRef(id);
+	try {
+		const runtime = await ModelRuntime.create();
+		const m = runtime.getModel(provider, modelId);
+		if (m) return m;
+		// Known runtime, unknown id → fall through to the SDK/settings default (SCENARIO-008).
+		return undefined;
+	} catch {
+		// Runtime unavailable (older runtime / mocked SDK): best-effort — hand the
+		// resolved id to createAgentSession as a Model descriptor. Single cast (NOT
+		// `as unknown as`): the option's Model<any> accepts the descriptor shape and
+		// the SDK is the authority on whether the id resolves.
+		return { id: modelId || id, provider } as SessionModelOption;
+	}
+}
+
 export interface SessionAgentOptions {
 	agent: string;
 	prompt: string;
@@ -151,6 +194,17 @@ export interface SessionAgentOptions {
 	 *  best-effort calls `session.setThinkingLevel(level)` after createAgentSession
 	 *  (see applyThinkingLevel). Older runtimes may lack the method — tolerated. */
 	thinkingLevel?: ThinkingLevel;
+	/** Phase 1 (Feature 1): DEFAULT model id inherited from the live main session
+	 *  (ctx.model.id), threaded through RunOptions → realAgent.common. ADDITIVE —
+	 *  loses to `model`, to a SUPER_DEV_MODEL env override, and to a per-call
+	 *  override; resolved to a Model<any> and passed to createAgentSession, with a
+	 *  no-throw fall-through to the SDK/settings default when the id cannot be
+	 *  resolved. */
+	inheritedModel?: string;
+	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
+	 *  session (ctx.thinkingLevel). ADDITIVE — loses to a per-call override and
+	 *  to SUPER_DEV_THINKING env, but wins over the role default. */
+	inheritedThinking?: ThinkingLevel;
 	/** Phase 4 (AC-08 / SCENARIO-017..018): best-effort live-steer seam. When
 	 *  provided, `runAgentViaSession` invokes `onSteer` with a no-throw forwarder
 	 *  bound to the live AgentSession as soon as the session is created (if it
@@ -366,6 +420,23 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		extensionFactories: [createSafetyExtensionFactory()],
 	});
 	await resourceLoader.reload();
+	// Phase 1 (Feature 1): resolve the model + thinking level ONCE with the
+	// widened precedence (explicit → SUPER_DEV_* env → INHERITED → role/SDK
+	// default). `creationThinking` is the EXPLICIT-OR-INHERITED level (NO
+	// role-default fallback) — it reaches createAgentSession ONLY when the main
+	// session's level actually resolves, preserving the byte-identical baseline
+	// (no creation option) otherwise (SCENARIO-002). `resolvedModel` is
+	// best-effort and no-throw: an inherited id that cannot resolve to a Model
+	// falls through to the SDK/settings default (SCENARIO-008). The retained
+	// applyThinkingLevel is guarded against double-application below (SCENARIO-007).
+	const creationThinking = resolveExplicitThinking(opts.thinkingLevel, opts.inheritedThinking);
+	let resolvedModel: SessionModelOption | undefined;
+	try {
+		resolvedModel = await resolveSessionModel(resolveModel(opts.model, opts.inheritedModel));
+	} catch {
+		resolvedModel = undefined;
+	}
+
 	const { session } = await createAgentSession({
 		cwd: opts.cwd,
 		agentDir,
@@ -373,13 +444,21 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		settingsManager,
 		resourceLoader,
 		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
+		// Conditionally threaded so a run with NO resolvable model/thinking is
+		// byte-identical to today (neither creation option is set — SCENARIO-002/004).
+		...(resolvedModel ? { model: resolvedModel } : {}),
+		...(creationThinking ? { thinkingLevel: creationThinking } : {}),
 	});
 
-	// Phase 2: best-effort apply the per-agent thinking level, resolved with the
-	// same precedence as the subprocess backend (per-call → SUPER_DEV_THINKING →
-	// role default). Tolerant of an older runtime that lacks setThinkingLevel or a
-	// model that rejects the level (applyThinkingLevel swallows any throw).
-	applyThinkingLevel(session, resolveThinking(opts.agent, opts.thinkingLevel));
+	// Phase 2 (Feature 1): best-effort apply the per-agent thinking level — now a
+	// SECOND line of defense, since the canonical path is createAgentSession's
+	// `thinkingLevel` option. Guarded against double-application: when creation
+	// already received the level, do NOT re-apply (SCENARIO-007). When nothing
+	// resolved at creation (role-default territory), apply the FULL widened
+	// resolution (incl. the role default) best-effort. Tolerant of an older
+	// runtime that lacks setThinkingLevel or a model that rejects the level
+	// (applyThinkingLevel swallows any throw).
+	if (!creationThinking) applyThinkingLevel(session, resolveThinking(opts.agent, opts.thinkingLevel, opts.inheritedThinking));
 
 	// Phase 4 (AC-08 / SCENARIO-017..018): hand out a no-throw live-steer
 	// forwarder bound to this session when it exposes `steer()`; otherwise signal

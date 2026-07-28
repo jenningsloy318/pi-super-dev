@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { ensureSuperDevDirs, startRun, getRunLogPath, getConfig } from "./render/super-dev-dir.ts";
 import { runReflectionAsync } from "./render/reflection.ts";
 import { runPipelineTask } from "./pipeline.ts";
-import { abbreviatePath } from "./pi-spawn.ts";
+import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
 import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
 
@@ -511,11 +511,31 @@ export default function activate(pi: ExtensionAPI): void {
 				// identifier once the run resolves one (below). Best-effort: never let a
 				// naming failure abort the run.
 				try { if (!pi.getSessionName()) pi.setSessionName(`super-dev: ${task.slice(0, 60)}`); } catch { /* best-effort */ }
+				// Phase 1 (Feature 1): defensively capture the live main session's model
+				// id (ctx.model?.id) + thinking level (ctx.thinkingLevel) BEFORE
+				// runPipelineTask, then thread them as ADDITIVE DEFAULTS so every spawned
+				// specialist inherits them when no explicit param/env override is supplied
+				// (SCENARIO-001). try/catch + a ctx guard — an older/non-TUI ctx exposes
+				// neither and degrades byte-identically to today (SCENARIO-002):
+				// undefined inherited fields lose to every higher-precedence tier.
+				let inheritedModel: string | undefined;
+				let inheritedThinking: ThinkingLevel | undefined;
+				try {
+					if (ctx) {
+						inheritedModel = ctx.model?.id;
+						inheritedThinking = ctx.thinkingLevel;
+					}
+				} catch {
+					inheritedModel = undefined;
+					inheritedThinking = undefined;
+				}
 				const summary = await runPipelineTask(task, {
 					cwd: process.cwd(),
 					skipWorktree: params.skipWorktree === true,
 					skipStages: params.skipStages as string[] | undefined,
 					model: params.model as string | undefined,
+					inheritedModel,
+					inheritedThinking,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
 					resume: typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined),
 				// Wire the mid-run input drain to the activeRun singleton. workflow.ts
