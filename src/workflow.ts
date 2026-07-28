@@ -156,12 +156,12 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
 			schema: call.schema,
 			model,
-			// Phase 1 (Feature 1): thread the inherited DEFAULTS (live main-session
-			// model + thinking level) through the shared `common` object so BOTH
-			// backends receive them. ADDITIVE — each backend resolves them BELOW an
-			// explicit param/env override (see pi-spawn.resolveModel/resolveThinking
-			// and session-agent.resolveSessionModel). SCENARIO-001/005/006.
-			inheritedModel: options.inheritedModel,
+			// Thread the inherited DEFAULTS (live main-session model object +
+			// thinking level) through the shared `common` object so BOTH backends
+			// receive them. ADDITIVE — each backend applies them BELOW an explicit
+			// param/env override (see pi-spawn.resolveModel/resolveThinking and
+			// session-agent.runAgentViaSession). SCENARIO-001/005/006.
+			inheritedModelObject: options.inheritedModelObject,
 			inheritedThinking: options.inheritedThinking,
 			signal,
 			id: call.id,

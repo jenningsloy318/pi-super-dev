@@ -139,7 +139,7 @@ export function applyThinkingLevel(session: unknown, level: ThinkingLevel | unde
 /** The `Model<any>` createAgentSession's `model` option expects, derived from
  *  its own typed signature so we never reach for the (transitive)
  *  @earendil-works/pi-ai Model type directly. */
-type SessionModelOption = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["model"]>;
+export type SessionModelOption = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["model"]>;
 
 /** Module-level cache for the resolved ModelRuntime (AR-03). The model
  *  catalog does not change within a run, so `create()` is resolved ONCE per
@@ -157,52 +157,26 @@ function getModelRuntime(): Promise<ModelRuntime> {
 	return runtimeCache;
 }
 
-/** Split a "provider/model-id" reference into its provider and model-id parts.
- *  A bare id (no slash) yields an EMPTY provider so the caller can fall back to
- *  a full-catalog scan (resolveSessionModel) rather than handing the catalog a
- *  degenerate provider==id lookup (resolves F-3 / AR-04). */
-function splitModelRef(ref: string): { provider: string; modelId: string } {
-	const slash = ref.indexOf("/");
-	if (slash < 0) return { provider: "", modelId: ref };
-	return { provider: ref.slice(0, slash), modelId: ref.slice(slash + 1) };
-}
-
-/** Resolve an inherited/explicit model id to a Model<any> for createAgentSession
- *  (Phase 1, Feature 1). Best-effort and no-throw:
- *   - When a ModelRuntime is available, resolve the id against the cached
- *     catalog. The standard "provider/model-id" form resolves directly via
- *     getModel; a BARE id (no slash, or an unfamiliar provider prefix) falls
- *     back to a full-catalog scan by model id. A known id yields a concrete
- *     Model<any>; an UNKNOWN id falls through to the SDK/settings default
- *     (SCENARIO-008).
- *   - When no runtime is available (older runtime / mocked SDK), return
- *     undefined so createAgentSession omits `model` and uses the SDK/settings
- *     default. Never hand it a degenerate (incomplete) Model descriptor — that
- *     was a type-unsound `as SessionModelOption` cast on a {id,provider}-only
- *     object which would throw confusingly if the SDK touched any other field
- *     (resolves F-2). */
-async function resolveSessionModel(id: string | undefined): Promise<SessionModelOption | undefined> {
+/** Resolve an EXPLICIT (user/env-supplied) qualified model ref to a Model<any>
+ *  for createAgentSession. Provider-scoped ONLY: a qualified "provider/model-id"
+ *  resolves via getModel within the named provider; a BARE id (no slash) returns
+ *  undefined so createAgentSession falls to the SDK/settings default rather than
+ *  ambiguously matching some other provider's same-named model. This mirrors
+ *  pi-subagents' rule that a qualified query "never silently switches providers"
+ *  (security/cost-sensitive). The INHERITED main-session model is NOT resolved
+ *  here — it is passed through WHOLESALE as a Model<any> object (see
+ *  runAgentViaSession), avoiding re-resolution entirely. Best-effort, no-throw. */
+async function resolveExplicitSessionModel(id: string | undefined): Promise<SessionModelOption | undefined> {
 	if (!id) return undefined;
-	const { provider, modelId } = splitModelRef(id);
+	const slash = id.indexOf("/");
+	if (slash < 0) return undefined; // bare explicit id → don't guess; fall to settings default
+	const provider = id.slice(0, slash);
+	const modelId = id.slice(slash + 1);
 	try {
 		const runtime = await getModelRuntime();
-		// Standard "provider/model-id" form: resolve directly.
-		if (provider) {
-			const m = runtime.getModel(provider, modelId);
-			if (m) return m;
-		}
-		// Bare id (no slash) OR an unknown provider/model pair: scan the full
-		// catalog for a model whose id matches, so a bare slug or an unfamiliar
-		// provider prefix still resolves when the catalog knows it. A non-matching
-		// id falls through to the SDK/settings default (SCENARIO-008).
-		const all = runtime.getModels();
-		const byId = all.find((m) => (m as { id?: string }).id === id);
-		return byId;
+		return runtime.getModel(provider, modelId) ?? undefined;
 	} catch {
-		// Runtime unavailable (older runtime / mocked SDK): no-throw fall-through
-		// to the SDK/settings default. Let createAgentSession omit `model` and use
-		// its own catalog/settings rather than a degenerate descriptor (F-2).
-		return undefined;
+		return undefined; // runtime unavailable → SDK/settings default
 	}
 }
 
@@ -224,13 +198,14 @@ export interface SessionAgentOptions {
 	 *  best-effort calls `session.setThinkingLevel(level)` after createAgentSession
 	 *  (see applyThinkingLevel). Older runtimes may lack the method — tolerated. */
 	thinkingLevel?: ThinkingLevel;
-	/** Phase 1 (Feature 1): DEFAULT model id inherited from the live main session
-	 *  (ctx.model.id), threaded through RunOptions → realAgent.common. ADDITIVE —
-	 *  loses to `model`, to a SUPER_DEV_MODEL env override, and to a per-call
-	 *  override; resolved to a Model<any> and passed to createAgentSession, with a
-	 *  no-throw fall-through to the SDK/settings default when the id cannot be
-	 *  resolved. */
-	inheritedModel?: string;
+	/** The FULL main-session model object (ctx.model), threaded through RunOptions
+	 *  → realAgent.common. Used WHOLESALE — passed directly to createAgentSession
+	 *  so the specialist runs on the EXACT model the parent is on (same provider,
+	 *  headers, baseUrl). ADDITIVE — loses to an explicit `model` string override
+	 *  and to SUPER_DEV_MODEL, but wins over the SDK/settings default. Carrying
+	 *  the object (not a bare id) preserves the provider — which is what the prior
+	 *  bare-id re-resolution lost (the opencode mis-resolution root cause). */
+	inheritedModelObject?: SessionModelOption;
 	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
 	 *  session (ctx.thinkingLevel). ADDITIVE — loses to a per-call override and
 	 *  to SUPER_DEV_THINKING env, but wins over the role default. */
@@ -523,11 +498,19 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	// falls through to the SDK/settings default (SCENARIO-008). The retained
 	// applyThinkingLevel is guarded against double-application below (SCENARIO-007).
 	const creationThinking = resolveExplicitThinking(opts.thinkingLevel, opts.inheritedThinking);
+	// Model resolution (inherit-wholesale): an EXPLICIT override (opts.model /
+	// SUPER_DEV_MODEL) is resolved provider-scoped via resolveExplicitSessionModel;
+	// otherwise the inherited main-session model object is passed DIRECTLY — no
+	// re-resolution, so the specialist uses the parent's exact model (same
+	// provider/headers). When neither resolves, createAgentSession omits `model`
+	// and uses the SDK/settings default (byte-identical to the pre-inheritance
+	// baseline).
 	let resolvedModel: SessionModelOption | undefined;
 	try {
-		resolvedModel = await resolveSessionModel(resolveModel(opts.model, opts.inheritedModel));
+		const explicitModel = resolveModel(opts.model);
+		resolvedModel = explicitModel ? await resolveExplicitSessionModel(explicitModel) : opts.inheritedModelObject;
 	} catch {
-		resolvedModel = undefined;
+		resolvedModel = opts.inheritedModelObject;
 	}
 
 	const { session } = await createAgentSession({

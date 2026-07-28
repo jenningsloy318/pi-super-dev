@@ -10,7 +10,7 @@
  * options object and dispatches it to either `spawnAgent` (subprocess) or
  * `runAgentViaSession` (session). The additive inheritance DEFAULTS must reach
  * BOTH backends through that single `common` seam — so the test asserts the
- * object handed to the backend carries `inheritedModel` / `inheritedThinking`
+ * object handed to the backend carries `inheritedModelObject` / `inheritedThinking`
  * exactly as they arrived on `RunOptions`.
  *
  * Harness mirrors tests/workflow-user-steer.test.ts: both backends are mocked to
@@ -65,17 +65,19 @@ describe("realAgent threads inherited model/thinking into BOTH backend calls (AC
 		expect(captured.session!.inheritedThinking).toBe("xhigh");
 	});
 
-	it("SCENARIO-001: options.inheritedModel flows into the session backend's common object", async () => {
-		await mkCtx({}, { inheritedModel: "openai/gpt-4o" }).agent(BASE_CALL);
+	it("SCENARIO-001: options.inheritedModelObject flows into the session backend's common object", async () => {
+		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/session-agent.ts").SessionModelOption;
+		await mkCtx({}, { inheritedModelObject: m }).agent(BASE_CALL);
 		expect(captured.session).toBeDefined();
-		expect(captured.session!.inheritedModel).toBe("openai/gpt-4o");
+		expect(captured.session!.inheritedModelObject).toBe(m);
 	});
 
 	it("SCENARIO-006: inherited model AND thinking reach the SUBPROCESS backend through the same common seam", async () => {
 		// Force the subprocess backend explicitly so both paths are covered.
-		await mkCtx({}, { backend: "subprocess", inheritedModel: "glm/glm-5.2", inheritedThinking: "high" }).agent(BASE_CALL);
+		const m = { provider: "glm", id: "glm-5.2" } as unknown as import("../src/session-agent.ts").SessionModelOption;
+		await mkCtx({}, { backend: "subprocess", inheritedModelObject: m, inheritedThinking: "high" }).agent(BASE_CALL);
 		expect(captured.subprocess).toBeDefined();
-		expect(captured.subprocess!.inheritedModel).toBe("glm/glm-5.2");
+		expect(captured.subprocess!.inheritedModelObject).toBe(m);
 		expect(captured.subprocess!.inheritedThinking).toBe("high");
 	});
 
@@ -91,11 +93,11 @@ describe("realAgent threads inherited model/thinking into BOTH backend calls (AC
 	});
 
 	it("SCENARIO-002: absent inherited fields do not throw and pass through undefined (older/non-TUI ctx)", async () => {
-		// No inheritedModel/inheritedThinking on options → realAgent must still run,
+		// No inheritedModelObject/inheritedThinking on options → realAgent must still run,
 		// and the backend call receives undefined for both (byte-identical baseline).
 		await expect(mkCtx({}).agent(BASE_CALL)).resolves.toBeDefined();
 		expect(captured.session).toBeDefined();
-		expect(captured.session!.inheritedModel).toBeUndefined();
+		expect(captured.session!.inheritedModelObject).toBeUndefined();
 		expect(captured.session!.inheritedThinking).toBeUndefined();
 	});
 });

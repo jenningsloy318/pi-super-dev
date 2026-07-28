@@ -511,22 +511,22 @@ export default function activate(pi: ExtensionAPI): void {
 				// identifier once the run resolves one (below). Best-effort: never let a
 				// naming failure abort the run.
 				try { if (!pi.getSessionName()) pi.setSessionName(`super-dev: ${task.slice(0, 60)}`); } catch { /* best-effort */ }
-				// Phase 1 (Feature 1): defensively capture the live main session's model
-				// id (ctx.model?.id) + thinking level (ctx.thinkingLevel) BEFORE
-				// runPipelineTask, then thread them as ADDITIVE DEFAULTS so every spawned
-				// specialist inherits them when no explicit param/env override is supplied
-				// (SCENARIO-001). try/catch + a ctx guard — an older/non-TUI ctx exposes
-				// neither and degrades byte-identically to today (SCENARIO-002):
-				// undefined inherited fields lose to every higher-precedence tier.
-				let inheritedModel: string | undefined;
+				// Capture the live main session's FULL model object (ctx.model) + thinking
+				// level BEFORE runPipelineTask, then thread them as ADDITIVE DEFAULTS so
+				// every spawned specialist inherits the parent's EXACT model (same
+				// provider/headers/baseUrl) when no explicit param/env override is supplied
+				// (SCENARIO-001). The FULL object — not ctx.model.id — is captured: a bare
+				// id drops the provider, and re-resolving it ambiguously matched a different
+				// provider's same-named model (the opencode mis-resolution bug).
+				// try/catch + a ctx guard — an older/non-TUI ctx exposes neither and
+				// degrades byte-identically to today (SCENARIO-002).
+				let inheritedModelObject: import("./session-agent.ts").SessionModelOption | undefined;
 				let inheritedThinking: ThinkingLevel | undefined;
 				try {
-					if (ctx) {
-						inheritedModel = ctx.model?.id;
-						inheritedThinking = ctx.thinkingLevel;
-					}
+					if (ctx?.model?.id && ctx.model.provider) inheritedModelObject = ctx.model;
+					inheritedThinking = ctx?.thinkingLevel;
 				} catch {
-					inheritedModel = undefined;
+					inheritedModelObject = undefined;
 					inheritedThinking = undefined;
 				}
 				const summary = await runPipelineTask(task, {
@@ -534,7 +534,7 @@ export default function activate(pi: ExtensionAPI): void {
 					skipWorktree: params.skipWorktree === true,
 					skipStages: params.skipStages as string[] | undefined,
 					model: params.model as string | undefined,
-					inheritedModel,
+					inheritedModelObject,
 					inheritedThinking,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
 					resume: typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined),

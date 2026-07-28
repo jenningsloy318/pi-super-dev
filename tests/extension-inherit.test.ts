@@ -1,8 +1,8 @@
 /**
  * Phase 1 (Feature 1) — extension.execute() main-session capture (RED→GREEN tests).
  *
- * AC-01 → SCENARIO-001 (capture ctx.model?.id + ctx.thinkingLevel BEFORE
- *          runPipelineTask and thread them as additive `inheritedModel` /
+ * AC-01 → SCENARIO-001 (capture ctx.model (full object) + ctx.thinkingLevel BEFORE
+ *          runPipelineTask and thread them as additive `inheritedModelObject` /
  *          `inheritedThinking` defaults),
  *          SCENARIO-002 (an older/non-TUI ctx that exposes no model/thinking
  *          does not throw and threads undefined for both — byte-identical
@@ -115,7 +115,7 @@ function setupTool() {
 describe("extension.execute() threads ctx.model/thinking into runPipelineTask as inherited defaults (AC-01 / SCENARIO-001)", () => {
 	beforeEach(cap.reset);
 
-	it("SCENARIO-001: a ctx with a live model + thinking level is captured and threaded as inheritedModel/inheritedThinking", async () => {
+	it("SCENARIO-001: a ctx with a live model + thinking level is captured and threaded as inheritedModelObject/inheritedThinking", async () => {
 		const { execute } = setupTool();
 		await execute(
 			"call-1",
@@ -123,11 +123,11 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 			undefined, // signal — foreground blocking path (mode != tui)
 			undefined, // onUpdate
 			// ctx exposes the live main-session model id + thinking level.
-			{ mode: undefined, model: { id: "openai/gpt-4o" }, thinkingLevel: "xhigh" },
+			{ mode: undefined, model: { id: "gpt-4o", provider: "openai" }, thinkingLevel: "xhigh" },
 		);
 		const opts = cap.opts();
 		expect(opts).toBeDefined();
-		expect(opts!.inheritedModel).toBe("openai/gpt-4o");
+		expect(opts!.inheritedModelObject).toEqual({ id: "gpt-4o", provider: "openai" });
 		expect(opts!.inheritedThinking).toBe("xhigh");
 	});
 
@@ -138,7 +138,7 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 			{ task: "build the thing", model: "anthropic/claude-opus-4-5" },
 			undefined,
 			undefined,
-			{ mode: undefined, model: { id: "openai/gpt-4o" }, thinkingLevel: "high" },
+			{ mode: undefined, model: { id: "gpt-4o", provider: "openai" }, thinkingLevel: "high" },
 		);
 		const opts = cap.opts();
 		expect(opts).toBeDefined();
@@ -146,7 +146,7 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		// alongside as a DEFAULT (it loses downstream, but is present for specialists
 		// that supply no explicit model).
 		expect(opts!.model).toBe("anthropic/claude-opus-4-5");
-		expect(opts!.inheritedModel).toBe("openai/gpt-4o");
+		expect(opts!.inheritedModelObject).toEqual({ id: "gpt-4o", provider: "openai" });
 		expect(opts!.inheritedThinking).toBe("high");
 	});
 });
@@ -162,7 +162,7 @@ describe("extension.execute() degrades when the ctx exposes no model/thinking (A
 		const opts = cap.opts();
 		expect(opts).toBeDefined();
 		// Byte-identical baseline: undefined inherited fields lose to every tier.
-		expect(opts!.inheritedModel).toBeUndefined();
+		expect(opts!.inheritedModelObject).toBeUndefined();
 		expect(opts!.inheritedThinking).toBeUndefined();
 	});
 
@@ -172,6 +172,6 @@ describe("extension.execute() degrades when the ctx exposes no model/thinking (A
 		expect(res).toBeDefined();
 		const opts = cap.opts();
 		expect(opts).toBeDefined();
-		expect(opts!.inheritedModel).toBeUndefined();
+		expect(opts!.inheritedModelObject).toBeUndefined();
 	});
 });

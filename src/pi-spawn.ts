@@ -173,19 +173,16 @@ export function resolveExplicitThinking(perCall?: ThinkingLevel, inherited?: Thi
 	return inherited;
 }
 
-/** Resolve the effective model id with precedence (Phase 1, Feature 1):
- *  explicit param → SUPER_DEV_MODEL env (NEW) → INHERITED main-session model id
- *  (`inherited`) → undefined (SDK/settings default). Returns undefined when no
- *  tier supplies a value, so `--model` is pushed ONLY when one resolves —
- *  preserving the buildSpawnArgs no-default rule (SCENARIO-003 explicit,
- *  SCENARIO-004 baseline). */
-export function resolveModel(explicit?: string, inherited?: string): string | undefined {
+/** Resolve an EXPLICIT model id with precedence: explicit param → SUPER_DEV_MODEL
+ *  env → undefined. The INHERITED main-session model is NOT handled here — it is
+ *  an object threaded separately (inheritedModelObject) and derived into a
+ *  qualified `provider/id` in buildSpawnArgs. Returns undefined when no explicit
+ *  tier supplies a value (SCENARIO-003/004 — preserves the no-default rule). */
+export function resolveModel(explicit?: string): string | undefined {
 	const ex = explicit?.trim();
 	if (ex) return ex;
 	const env = process.env.SUPER_DEV_MODEL?.trim();
-	if (env) return env;
-	const inh = inherited?.trim();
-	return inh || undefined;
+	return env || undefined;
 }
 
 /** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
@@ -212,13 +209,13 @@ export interface SpawnAgentOptions {
 	/** Optional per-call thinking override (Phase 2). When absent, the resolved
 	 *  level falls back to SUPER_DEV_THINKING then the role default. */
 	thinking?: ThinkingLevel;
-	/** Phase 1 (Feature 1): DEFAULT model id inherited from the live main session
-	 *  (ctx.model.id), threaded through RunOptions → realAgent.common → both
-	 *  backends. ADDITIVE — loses to `model`, to a SUPER_DEV_MODEL env override,
-	 *  and to a per-call override; wins over the SDK/settings default. The
-	 *  subprocess backend resolves it into `--model` only when no higher-
-	 *  precedence model resolves. */
-	inheritedModel?: string;
+	/** The FULL main-session model object (ctx.model), threaded through RunOptions
+	 *  → realAgent.common → both backends. The subprocess backend derives the
+	 *  parent's qualified `provider/id` from it for `--model` (never a bare id, so
+	 *  the child resolves the SAME provider the parent is on). ADDITIVE — loses to
+	 *  an explicit `model`/SUPER_DEV_MODEL override; wins over the SDK/settings
+	 *  default. */
+	inheritedModelObject?: import("./session-agent.ts").SessionModelOption;
 	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
 	 *  session (ctx.thinkingLevel). ADDITIVE — loses to a per-call override and
 	 *  to SUPER_DEV_THINKING env, but wins over the role default. */
@@ -280,10 +277,16 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 	for (const ext of extraExtensions) args.push("-e", ext);
 	args.push("--tools", toolsForAgent(opts.agent));
 	args.push("--system-prompt", promptPath);
-	// Phase 1 (Feature 1): model precedence explicit → SUPER_DEV_MODEL env →
-	// inheritedModel → SDK/settings default. `--model` is pushed ONLY when a model
-	// resolves from any tier (SCENARIO-003/004), preserving the no-default rule.
-	const resolvedModel = resolveModel(opts.model, opts.inheritedModel);
+	// Model precedence: explicit param → SUPER_DEV_MODEL env → INHERITED
+	// main-session model (the parent's qualified `provider/id`, derived from the
+	// ctx.model object) → SDK/settings default. `--model` is pushed ONLY when a
+	// model resolves from any tier (SCENARIO-003/004), preserving the no-default
+	// rule. The inherited ref is QUALIFIED (provider/id) — never a bare id — so
+	// the child resolves the SAME provider the parent is on (mirrors pi-subagents'
+	// INHERIT_MODEL → provider/id; closes the bare-id opencode mis-resolution).
+	const explicitModel = resolveModel(opts.model);
+	const inheritedRef = opts.inheritedModelObject ? `${opts.inheritedModelObject.provider}/${opts.inheritedModelObject.id}` : undefined;
+	const resolvedModel = explicitModel ?? inheritedRef;
 	if (resolvedModel) args.push("--model", resolvedModel);
 	// Phase 1 (Feature 1): widened thinking precedence per-call → SUPER_DEV_THINKING
 	// → inheritedThinking → role default (SCENARIO-005/006).

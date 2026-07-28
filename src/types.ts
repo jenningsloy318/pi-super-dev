@@ -278,11 +278,12 @@ export interface RunOptions {
 	skipWorktree?: boolean;
 	skipStages?: string[];
 	model?: string;
-	/** Phase 1 (Feature 1): DEFAULT model id inherited from the live main session
-	 *  (ctx.model.id), threaded from extension.execute() → realAgent.common →
-	 *  both backends. ADDITIVE — never clobbers `model`, a SUPER_DEV_MODEL env
-	 *  override, or a per-call override; wins over the SDK/settings default. */
-	inheritedModel?: string;
+	/** The FULL main-session model object (ctx.model), threaded from
+	 *  extension.execute() → realAgent.common → both backends. The session backend
+	 *  passes it wholesale to createAgentSession; the subprocess backend derives
+	 *  the qualified `provider/id` for `--model`. ADDITIVE — never clobbers `model`
+	 *  or a SUPER_DEV_MODEL env override; wins over the SDK/settings default. */
+	inheritedModelObject?: import("./session-agent.ts").SessionModelOption;
 	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
 	 *  session (ctx.thinkingLevel). ADDITIVE — never clobbers a per-call override
 	 *  or a SUPER_DEV_THINKING env var, but wins over the role default. */

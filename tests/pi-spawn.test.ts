@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, toolsForAgent, resolveExtensionEntry, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
+/** Minimal inherited-model object for tests (only provider+id are read by buildSpawnArgs). */
+const inheritedModel = (provider: string, id: string) => ({ provider, id } as unknown as import("../src/session-agent.ts").SessionModelOption);
 
 describe("isCodeWritingAgent / defaultAgentTimeoutMs", () => {
 	it("classifies the code-writing agents", () => {
@@ -187,7 +189,7 @@ describe("summarizeToolCall", () => {
 // These pin the contract for main-session model/thinking inheritance BEFORE the
 // Phase 1 implementation lands. They typecheck (the additive types + the widened
 // resolveThinking signature exist as a scaffold) but FAIL because the bodies do
-// not yet consult the INHERITED tier / the SUPER_DEV_MODEL env / inheritedModel.
+// not yet consult the INHERITED tier / the SUPER_DEV_MODEL env / inheritedModelObject.
 
 const saveEnv = (...keys: string[]) => {
 	const snapshot: Record<string, string | undefined> = {};
@@ -252,15 +254,15 @@ describe("buildSpawnArgs — model resolution chain [AC-02 / SCENARIO-003, SCENA
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
 
-	it("SUPER_DEV_MODEL env wins over inheritedModel when no explicit model (NEW env tier)", () => {
+	it("SUPER_DEV_MODEL env wins over the inherited model object when no explicit model (NEW env tier)", () => {
 		process.env.SUPER_DEV_MODEL = "anthropic/claude-opus-4-5";
-		const args = buildSpawnArgs({ ...base, inheritedModel: "glm/glm-5.2" }, "/tmp/agent.md");
+		const args = buildSpawnArgs({ ...base, inheritedModelObject: inheritedModel("glm", "glm-5.2") }, "/tmp/agent.md");
 		expect(args).toContain("--model");
 		expect(args[args.indexOf("--model") + 1]).toBe("anthropic/claude-opus-4-5");
 	});
 
-	it("inheritedModel wins over the SDK/settings default when no explicit model and no SUPER_DEV_MODEL env", () => {
-		const args = buildSpawnArgs({ ...base, inheritedModel: "openai/gpt-4o" }, "/tmp/agent.md");
+	it("the inherited model object is derived into a qualified provider/id --model when no explicit model and no SUPER_DEV_MODEL env", () => {
+		const args = buildSpawnArgs({ ...base, inheritedModelObject: inheritedModel("openai", "gpt-4o") }, "/tmp/agent.md");
 		expect(args).toContain("--model");
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
@@ -271,7 +273,7 @@ describe("buildSpawnArgs — model resolution chain [AC-02 / SCENARIO-003, SCENA
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
 
-	it("emits --model from SUPER_DEV_MODEL env alone when no explicit model and no inheritedModel", () => {
+	it("emits --model from SUPER_DEV_MODEL env alone when no explicit model and no inherited model object", () => {
 		process.env.SUPER_DEV_MODEL = "openai/gpt-4o";
 		const args = buildSpawnArgs(base, "/tmp/agent.md");
 		expect(args).toContain("--model");

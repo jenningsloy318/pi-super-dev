@@ -62,9 +62,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	}),
 	SessionManager: { inMemory: vi.fn(() => ({})) },
 	SettingsManager: { create: vi.fn(() => ({})) },
-	// ModelRuntime is now consulted by resolveSessionModel (F-2 fix removed the
-	// type-unsound descriptor cast from the catch branch, so a known id must
-	// resolve via the catalog). getModel resolves the standard
+	// ModelRuntime is consulted by resolveExplicitSessionModel for EXPLICIT
+	// qualified overrides (provider-scoped). getModel resolves the standard
 	// "openai/gpt-4o" pair to a concrete model; anything else returns undefined
 	// and getModels() returns [] so an unknown id falls through to the SDK
 	// default (SCENARIO-008) without throwing.
@@ -146,13 +145,14 @@ describe("runAgentViaSession passes resolved model + thinkingLevel to createAgen
 		expect(opts!.model).toBeDefined();
 	});
 
-	it("an inherited model id reaches createAgentSession as a `model` option when no explicit override", async () => {
+	it("an inherited model object reaches createAgentSession as the `model` option (wholesale) when no explicit override", async () => {
+		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/session-agent.ts").SessionModelOption;
 		await SessionAgent.runAgentViaSession({
-			agent: "spec-writer", prompt: "do the work", cwd: "/tmp", inheritedModel: "openai/gpt-4o",
+			agent: "spec-writer", prompt: "do the work", cwd: "/tmp", inheritedModelObject: m,
 		} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);
 		const opts = sdk.createOpts();
 		expect(opts).toBeDefined();
-		expect(opts!.model).toBeDefined();
+		expect(opts!.model).toBe(m);
 	});
 });
 
@@ -188,14 +188,15 @@ describe("runAgentViaSession degrades without throwing (AC-01 / AC-04 / SCENARIO
 		expect(opts!.thinkingLevel).toBeUndefined();
 	});
 
-	it("SCENARIO-008: an inherited model id that cannot be resolved completes without throwing", async () => {
-		// In the mocked SDK there is no real model registry, so an inherited id
-		// cannot resolve to a Model<any> — the run must fall through (no throw).
+	it("SCENARIO-008: an explicit model that cannot be resolved falls through to the settings default without throwing", async () => {
+		// A qualified-but-unknown explicit id resolves to nothing via the
+		// provider-scoped resolver; the run falls through (no model option) and
+		// must not surface an error/abort. (Inherited models are objects passed
+		// wholesale, so they always resolve — only explicit ids can fail to.)
 		const res = await SessionAgent.runAgentViaSession({
-			agent: "spec-writer", prompt: "do the work", cwd: "/tmp", inheritedModel: "unresolvable/provider-id",
+			agent: "spec-writer", prompt: "do the work", cwd: "/tmp", model: "no-such-provider/bogus-id",
 		} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);
 		expect(res).toBeDefined();
-		// The run must not surface an error / abort when the inherited id cannot resolve.
 		expect(res.error).toBeUndefined();
 	});
 });
