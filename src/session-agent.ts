@@ -23,11 +23,12 @@ import {
 	defineTool,
 	getAgentDir,
 	DefaultResourceLoader,
+	ModelRuntime,
 	type ToolDefinition,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type TSchema } from "typebox";
+import { Type, IsObject, IsOptional, type TSchema } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -36,7 +37,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveThinking, type ThinkingLevel } from "./pi-spawn.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +134,78 @@ export function applyThinkingLevel(session: unknown, level: ThinkingLevel | unde
 	}
 }
 
+// ─── Phase 1 (Feature 1): session-backend model inheritance ──────────────────
+
+/** The `Model<any>` createAgentSession's `model` option expects, derived from
+ *  its own typed signature so we never reach for the (transitive)
+ *  @earendil-works/pi-ai Model type directly. */
+type SessionModelOption = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["model"]>;
+
+/** Module-level cache for the resolved ModelRuntime (AR-03). The model
+ *  catalog does not change within a run, so `create()` is resolved ONCE per
+ *  process and shared across every session-backend specialist spawn — it never
+ *  pays a per-spawn catalog-resolution cost. The promise is cleared on
+ *  rejection so a transient create() failure can be retried by a later spawn. */
+let runtimeCache: Promise<ModelRuntime> | undefined;
+function getModelRuntime(): Promise<ModelRuntime> {
+	if (!runtimeCache) {
+		runtimeCache = ModelRuntime.create().catch((err) => {
+			runtimeCache = undefined; // allow a later spawn to retry
+			throw err;
+		});
+	}
+	return runtimeCache;
+}
+
+/** Split a "provider/model-id" reference into its provider and model-id parts.
+ *  A bare id (no slash) yields an EMPTY provider so the caller can fall back to
+ *  a full-catalog scan (resolveSessionModel) rather than handing the catalog a
+ *  degenerate provider==id lookup (resolves F-3 / AR-04). */
+function splitModelRef(ref: string): { provider: string; modelId: string } {
+	const slash = ref.indexOf("/");
+	if (slash < 0) return { provider: "", modelId: ref };
+	return { provider: ref.slice(0, slash), modelId: ref.slice(slash + 1) };
+}
+
+/** Resolve an inherited/explicit model id to a Model<any> for createAgentSession
+ *  (Phase 1, Feature 1). Best-effort and no-throw:
+ *   - When a ModelRuntime is available, resolve the id against the cached
+ *     catalog. The standard "provider/model-id" form resolves directly via
+ *     getModel; a BARE id (no slash, or an unfamiliar provider prefix) falls
+ *     back to a full-catalog scan by model id. A known id yields a concrete
+ *     Model<any>; an UNKNOWN id falls through to the SDK/settings default
+ *     (SCENARIO-008).
+ *   - When no runtime is available (older runtime / mocked SDK), return
+ *     undefined so createAgentSession omits `model` and uses the SDK/settings
+ *     default. Never hand it a degenerate (incomplete) Model descriptor — that
+ *     was a type-unsound `as SessionModelOption` cast on a {id,provider}-only
+ *     object which would throw confusingly if the SDK touched any other field
+ *     (resolves F-2). */
+async function resolveSessionModel(id: string | undefined): Promise<SessionModelOption | undefined> {
+	if (!id) return undefined;
+	const { provider, modelId } = splitModelRef(id);
+	try {
+		const runtime = await getModelRuntime();
+		// Standard "provider/model-id" form: resolve directly.
+		if (provider) {
+			const m = runtime.getModel(provider, modelId);
+			if (m) return m;
+		}
+		// Bare id (no slash) OR an unknown provider/model pair: scan the full
+		// catalog for a model whose id matches, so a bare slug or an unfamiliar
+		// provider prefix still resolves when the catalog knows it. A non-matching
+		// id falls through to the SDK/settings default (SCENARIO-008).
+		const all = runtime.getModels();
+		const byId = all.find((m) => (m as { id?: string }).id === id);
+		return byId;
+	} catch {
+		// Runtime unavailable (older runtime / mocked SDK): no-throw fall-through
+		// to the SDK/settings default. Let createAgentSession omit `model` and use
+		// its own catalog/settings rather than a degenerate descriptor (F-2).
+		return undefined;
+	}
+}
+
 export interface SessionAgentOptions {
 	agent: string;
 	prompt: string;
@@ -151,6 +224,17 @@ export interface SessionAgentOptions {
 	 *  best-effort calls `session.setThinkingLevel(level)` after createAgentSession
 	 *  (see applyThinkingLevel). Older runtimes may lack the method — tolerated. */
 	thinkingLevel?: ThinkingLevel;
+	/** Phase 1 (Feature 1): DEFAULT model id inherited from the live main session
+	 *  (ctx.model.id), threaded through RunOptions → realAgent.common. ADDITIVE —
+	 *  loses to `model`, to a SUPER_DEV_MODEL env override, and to a per-call
+	 *  override; resolved to a Model<any> and passed to createAgentSession, with a
+	 *  no-throw fall-through to the SDK/settings default when the id cannot be
+	 *  resolved. */
+	inheritedModel?: string;
+	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
+	 *  session (ctx.thinkingLevel). ADDITIVE — loses to a per-call override and
+	 *  to SUPER_DEV_THINKING env, but wins over the role default. */
+	inheritedThinking?: ThinkingLevel;
 	/** Phase 4 (AC-08 / SCENARIO-017..018): best-effort live-steer seam. When
 	 *  provided, `runAgentViaSession` invokes `onSteer` with a no-throw forwarder
 	 *  bound to the live AgentSession as soon as the session is created (if it
@@ -173,6 +257,50 @@ function controlSchema(keys: string[]) {
 	const props: Record<string, ReturnType<typeof Type.Any>> = {};
 	for (const k of keys) props[k] = Type.Optional(Type.Any());
 	return Type.Object(props, { additionalProperties: true });
+}
+
+/** A built typebox Object as it exists at runtime: the `~kind: 'Object'` shape
+ *  carrying the options spread (`additionalProperties`) and the `required` array.
+ *  Used to inspect a confirmed Object without leaning on TObject's generic
+ *  (over-narrowed) `required` typing. */
+type BuiltObject = {
+	additionalProperties?: unknown;
+	required?: unknown;
+	properties?: Record<PropertyKey, unknown>;
+};
+
+/** Phase 2 (Feature 2 / SCENARIO-009..013): true ONLY for a typebox Object with
+ *  ≥1 required non-Optional key AND `additionalProperties === false`. Gates
+ *  `constrainedSampling` so it is NEVER attached to a permissive/open schema
+ *  (the all-Optional `controlSchema`, or any unknown-key schema) — those stay
+ *  the byte-identical fallback. No-throw on non-schema input. */
+export function isStrictCapable(schema: unknown): boolean {
+	if (!IsObject(schema)) return false;
+	// `IsObject` confirmed `~kind === 'Object'`; read the runtime fields via a
+	// single structural cast (NOT `as unknown as`). `additionalProperties` comes
+	// from the TypeBox options spread; `required`/`properties` are built fields.
+	const obj = schema as BuiltObject;
+	if (obj.additionalProperties !== false) return false;
+	const required = obj.required;
+	if (!Array.isArray(required) || required.length === 0) return false;
+	// ≥1 required key whose declared property is NOT Optional.
+	return required.some((key) => {
+		const prop = obj.properties?.[key];
+		return prop != null && !IsOptional(prop);
+	});
+}
+
+/** Phase 2 (Feature 2): the strict-capable schema variant for stages with
+ *  well-defined keys. A CLOSED object (`additionalProperties: false`) with every
+ *  key REQUIRED (non-Optional). Values stay Any-typed to preserve the
+ *  `controlSchema` value-permissiveness (a numeric/array control value is never
+ *  rejected by tool validation) — only the object is closed and the keys are
+ *  required, which is exactly what makes it strict-capable. Pass this as
+ *  `SessionAgentOptions.schema` to opt a stage into constrained sampling. */
+export function strictControlSchema(keys: string[]) {
+	const props: Record<string, ReturnType<typeof Type.Any>> = {};
+	for (const k of keys) props[k] = Type.Any();
+	return Type.Object(props, { additionalProperties: false });
 }
 
 /** Which declared keys are missing/blank in the captured control object. */
@@ -219,17 +347,30 @@ export function deliveryDisciplineFor(agent: string): string {
 	].join("\n");
 }
 
-interface Capture {
+export interface Capture {
 	called: boolean;
 	value: unknown;
 }
 
 /** Build the terminating structured_output tool that captures the result.
  *  The schema DECLARES the expected keys (see controlSchema) so the model
- *  fills them instead of dumping everything into one field. */
-function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown): ToolDefinition {
+ *  fills them instead of dumping everything into one field.
+ *
+ *  Phase 2 (Feature 2 / SCENARIO-009..013): the effective schema is the
+ *  caller-provided schema when given, else the permissive controlSchema
+ *  fallback. `constrainedSampling: { type: "json_schema", strict: "prefer" }`
+ *  is attached to the ToolDefinition ONLY when the effective schema is
+ *  strict-capable (`isStrictCapable`). It is NEVER attached to the permissive
+ *  controlSchema (all-Optional + additionalProperties:true) or any open /
+ *  unknown-key schema — so the non-capable-provider/permissive-schema path
+ *  (`missingKeys()` + the single corrective re-prompt) stays byte-identical as
+ *  the fallback. */
+export function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown): ToolDefinition {
 	const fieldList = keys.length ? keys.join(", ") : "the fields the task requested";
-	return defineTool({
+	// The effective schema: caller-provided (may be strict-capable) or the
+	// permissive controlSchema fallback (byte-identical to today).
+	const effective = (schema as TSchema | undefined) ?? controlSchema(keys);
+	const tool: ToolDefinition = defineTool({
 		name: "structured_output",
 		label: "Structured Output",
 		description: `Return the final result object. It MUST include every one of these keys: ${fieldList}.`,
@@ -238,7 +379,7 @@ function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown
 			`structured_output is the final answer channel; call it exactly once when the task is complete. Your object MUST contain ALL of: ${fieldList}.`,
 			"Do not write a prose final answer after calling structured_output.",
 		],
-		parameters: (schema as TSchema | undefined) ?? controlSchema(keys),
+		parameters: effective,
 		async execute(_toolCallId, params) {
 			capture.value = { ...((capture.value ?? {}) as Record<string, unknown>), ...(params as Record<string, unknown>) };
 			capture.called = true;
@@ -249,6 +390,12 @@ function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown
 			};
 		},
 	});
+	// constrainedSampling is attached ONLY when the effective schema is
+	// strict-capable — gated here, never on the permissive/open shape.
+	if (isStrictCapable(effective)) {
+		tool.constrainedSampling = { type: "json_schema", strict: "prefer" };
+	}
+	return tool;
 }
 
 /** Live progress forwarding from session events → the sink. Session events
@@ -366,6 +513,23 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		extensionFactories: [createSafetyExtensionFactory()],
 	});
 	await resourceLoader.reload();
+	// Phase 1 (Feature 1): resolve the model + thinking level ONCE with the
+	// widened precedence (explicit → SUPER_DEV_* env → INHERITED → role/SDK
+	// default). `creationThinking` is the EXPLICIT-OR-INHERITED level (NO
+	// role-default fallback) — it reaches createAgentSession ONLY when the main
+	// session's level actually resolves, preserving the byte-identical baseline
+	// (no creation option) otherwise (SCENARIO-002). `resolvedModel` is
+	// best-effort and no-throw: an inherited id that cannot resolve to a Model
+	// falls through to the SDK/settings default (SCENARIO-008). The retained
+	// applyThinkingLevel is guarded against double-application below (SCENARIO-007).
+	const creationThinking = resolveExplicitThinking(opts.thinkingLevel, opts.inheritedThinking);
+	let resolvedModel: SessionModelOption | undefined;
+	try {
+		resolvedModel = await resolveSessionModel(resolveModel(opts.model, opts.inheritedModel));
+	} catch {
+		resolvedModel = undefined;
+	}
+
 	const { session } = await createAgentSession({
 		cwd: opts.cwd,
 		agentDir,
@@ -373,13 +537,21 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		settingsManager,
 		resourceLoader,
 		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
+		// Conditionally threaded so a run with NO resolvable model/thinking is
+		// byte-identical to today (neither creation option is set — SCENARIO-002/004).
+		...(resolvedModel ? { model: resolvedModel } : {}),
+		...(creationThinking ? { thinkingLevel: creationThinking } : {}),
 	});
 
-	// Phase 2: best-effort apply the per-agent thinking level, resolved with the
-	// same precedence as the subprocess backend (per-call → SUPER_DEV_THINKING →
-	// role default). Tolerant of an older runtime that lacks setThinkingLevel or a
-	// model that rejects the level (applyThinkingLevel swallows any throw).
-	applyThinkingLevel(session, resolveThinking(opts.agent, opts.thinkingLevel));
+	// Phase 2 (Feature 1): best-effort apply the per-agent thinking level — now a
+	// SECOND line of defense, since the canonical path is createAgentSession's
+	// `thinkingLevel` option. Guarded against double-application: when creation
+	// already received the level, do NOT re-apply (SCENARIO-007). When nothing
+	// resolved at creation (role-default territory), apply the FULL widened
+	// resolution (incl. the role default) best-effort. Tolerant of an older
+	// runtime that lacks setThinkingLevel or a model that rejects the level
+	// (applyThinkingLevel swallows any throw).
+	if (!creationThinking) applyThinkingLevel(session, resolveThinking(opts.agent, opts.thinkingLevel, opts.inheritedThinking));
 
 	// Phase 4 (AC-08 / SCENARIO-017..018): hand out a no-throw live-steer
 	// forwarder bound to this session when it exposes `steer()`; otherwise signal

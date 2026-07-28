@@ -156,16 +156,25 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
 			schema: call.schema,
 			model,
+			// Phase 1 (Feature 1): thread the inherited DEFAULTS (live main-session
+			// model + thinking level) through the shared `common` object so BOTH
+			// backends receive them. ADDITIVE — each backend resolves them BELOW an
+			// explicit param/env override (see pi-spawn.resolveModel/resolveThinking
+			// and session-agent.resolveSessionModel). SCENARIO-001/005/006.
+			inheritedModel: options.inheritedModel,
+			inheritedThinking: options.inheritedThinking,
 			signal,
 			id: call.id,
 			// Per-call override; when absent each backend falls back to the
 			// role-based default (code-writing agents get a larger cap).
 			timeoutMs: call.timeoutMs,
-			// Phase 2: per-call thinking override. The subprocess backend reads
-			// `thinking` (buildSpawnArgs → --thinking via resolveThinking); the
-			// session backend reads `thinkingLevel` (applyThinkingLevel →
-			// session.setThinkingLevel). When absent, each backend falls back to
-			// SUPER_DEV_THINKING then the role default.
+			// Per-call thinking override. Both backends read the SAME per-call value:
+			// the subprocess backend reads `thinking` (buildSpawnArgs → --thinking via
+			// resolveThinking); the session backend reads `thinkingLevel`
+			// (applyThinkingLevel → session.setThinkingLevel). They are intentionally
+			// aliased to the same `call.thinking` so one `common` object feeds both
+			// backends; when absent, each backend falls back to SUPER_DEV_THINKING
+			// then the role default.
 			thinking: call.thinking,
 			thinkingLevel: call.thinking,
 			onProgress: {

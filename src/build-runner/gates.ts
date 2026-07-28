@@ -110,6 +110,28 @@ export interface BuildGateResult {
 	 * preserving the pre-change abort semantics exactly.
 	 */
 	inScopePass: boolean;
+	/**
+	 * pi session/model correlation tag (AC-10 / SCENARIO-016,017). Present ONLY
+	 * when at least one of `process.env.PI_SESSION_ID` / `process.env.PI_MODEL`
+	 * is set (defensive read; never throws). Plain ASCII, no control codes.
+	 * When both are absent this field is OMITTED entirely so the captured build
+	 * run is byte-identical to today. Observability-only: never influences
+	 * pass/fail, command construction, or timeout behavior.
+	 */
+	correlation?: { sessionId?: string; model?: string };
+}
+
+/** Format the build-gate correlation tag as a plain-ASCII `# pi-session=<id>
+ *  model=<model>` log line, or null when the result carries no correlation
+ *  (both env vars were absent). Consumers log this so the tag is OBSERVABLE in
+ *  the run trace — without an emission path the captured correlation field is
+ *  write-only (AR-02). Plain ASCII, no control codes; observability-only. */
+export function buildGateCorrelationLine(r: BuildGateResult): string | null {
+	if (!r.correlation) return null;
+	const parts: string[] = [];
+	if (r.correlation.sessionId) parts.push(`pi-session=${r.correlation.sessionId}`);
+	if (r.correlation.model) parts.push(`model=${r.correlation.model}`);
+	return parts.length ? `# ${parts.join(" ")}` : null;
 }
 
 /**
@@ -317,6 +339,28 @@ export function runBuildGate(
 			: classifyOutOfScopeNpmErrors(errors, cwd);
 	const inScopePass =
 		pass || (errors.length > 0 && outOfScopeErrors.length === errors.length);
+	// AC-10 / SCENARIO-016,017: pi session/model correlation tag. Defensive read
+	// of the bash-session env vars pi 0.82.0 exposes to built-in bash tools. The
+	// field is OMITTED entirely when BOTH are absent so the captured build run is
+	// byte-identical to today (SCENARIO-017); populated additively (only the keys
+	// whose env var is set) when at least one is present (SCENARIO-016). Plain
+	// ASCII values copied verbatim — no control codes synthesized. Observability-
+	// only: it NEVER touches pass/fail, command construction, or timeouts. The
+	// read is try-guarded so a hostile `process.env` proxy cannot stall the gate.
+	let correlation: { sessionId?: string; model?: string } | undefined;
+	try {
+		const sid = process.env.PI_SESSION_ID;
+		const mdl = process.env.PI_MODEL;
+		if (sid || mdl) {
+			correlation = {
+				...(sid ? { sessionId: sid } : {}),
+				...(mdl ? { model: mdl } : {}),
+			};
+		}
+	} catch {
+		// NEVER throw — degrade to absent (byte-identical) on any read failure.
+		correlation = undefined;
+	}
 	return {
 		pass,
 		buildSuccess,
@@ -326,6 +370,7 @@ export function runBuildGate(
 		errors,
 		outOfScopeErrors,
 		inScopePass,
+		...(correlation ? { correlation } : {}),
 	};
 }
 

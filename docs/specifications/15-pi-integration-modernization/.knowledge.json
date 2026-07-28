@@ -1,0 +1,1123 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-28T07:47:21.397Z",
+      "agent": "requirements",
+      "data": {
+        "title": "Modernize pi integration: inherit main-session model/thinking, constrained sampling for structured_output, typed registerEntryRenderer, bash session-env tagging",
+        "date": "2025-11-19",
+        "type": "enhancement",
+        "priority": "high",
+        "executiveSummary": "Adopt pi 0.82.x features as one cohesive change set across the pi-super-dev extension. The highest-leverage change makes every spawned specialist inherit the main session's model and thinking level (today extension.ts ignores ctx.model/ctx.thinkingLevel, so a user on Opus+xhigh gets role-default specialists). It also enables strict JSON-schema constrained sampling on the structured_output tool for capable providers (keeping the missingKeys corrective re-prompt as the fallback), removes the registerEntryRenderer capability cast now that it is typed in 0.82.1, and tags build-gate runs with pi's PI_SESSION_ID/PI_MODEL env vars for parallel-run correlation. All changes are additive, preserve the no-throw/best-effort discipline, and keep print/json/rpc/headless modes byte-clean.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "In src/extension.ts, inside the super_dev tool's execute(), ctx.model?.id and ctx.thinkingLevel are read BEFORE runPipelineTask(...) and threaded as DEFAULTS through RunOptions (e.g. inheritedModel / inheritedThinking) so that an explicit params.model or SUPER_DEV_MODEL / SUPER_DEV_THINKING env var still overrides them. Nothing throws when ctx.model / ctx.thinkingLevel are undefined (older or non-TUI ctx) — execution degrades to current behavior."
+          },
+          {
+            "id": "AC-02",
+            "statement": "Model precedence is enforced end-to-end as: explicit params.model → SUPER_DEV_MODEL env (added to resolveModel if absent) → inherited ctx.model.id → SDK/settings default. The existing buildSpawnArgs behavior is preserved: --model is pushed only when a model is actually resolved."
+          },
+          {
+            "id": "AC-03",
+            "statement": "resolveThinking() in src/pi-spawn.ts precedence chain is widened from (per-call → SUPER_DEV_THINKING env → role default) to (per-call → SUPER_DEV_THINKING env → INHERITED main-session ctx.thinkingLevel → role default). inheritedThinking is threaded through SpawnAgentOptions / SessionAgentOptions and from workflow.ts's realAgent (options.inheritedThinking)."
+          },
+          {
+            "id": "AC-04",
+            "statement": "In src/session-agent.ts runAgentViaSession, createAgentSession({ ... }) is given the resolved model via the SDK's model?: Model<any> option AND thinkingLevel directly as a createAgentSession option when an explicit-or-inherited value is available. applyThinkingLevel(session, ...) is retained as a second/best-effort line of defense but guarded against double-application. Note: model inheritance requires resolving ctx.model.id to a Model<any> — falls through to the SDK/settings default if the id cannot be resolved."
+          },
+          {
+            "id": "AC-05",
+            "statement": "When super_dev is invoked WITHOUT explicit model/thinking params on a capable session, every spawned specialist on BOTH the session and subprocess backends uses the inherited model and a thinking level no LOWER than the role default would have been (inherited wins over role default; per-call/env still win). A new test asserts inheritedThinking flows from makeContext/realAgent into the agent call (e.g. a workflow test), and resolveThinking gets a precedence test covering the new inherited tier."
+          },
+          {
+            "id": "AC-06",
+            "statement": "A small isStrictCapable(schema) helper is introduced (returns true only when the schema is a TSchema Object with at least one REQUIRED non-Optional key and additionalProperties: false). isStrictCapable is false for the current permissive controlSchema (all-Optional + additionalProperties: true) and for open/unknown-key schemas. It is unit-tested for required-keys, all-Optional, additionalProperties:true, and non-Object cases."
+          },
+          {
+            "id": "AC-07",
+            "statement": "When the caller passes a real strict-capable schema (opts.schema) OR controlKeys can be built into a strict schema (Type.Object of required typed keys, additionalProperties: false), the structured_output tool (structuredOutputTool) sets constrainedSampling: { type: \"json_schema\", strict: \"prefer\" } — typed against the 0.82.1 ToolDefinition.constrainedSampling field. constrainedSampling is NEVER attached to a permissive schema (isStrictCapable gates it). The permissive Type.Optional(Type.Any()) + additionalProperties:true shape remains ONLY as the fallback for open/unknown-key schemas."
+          },
+          {
+            "id": "AC-08",
+            "statement": "The missingKeys() + single corrective re-prompt turn machinery in session-agent.ts is PRESERVED unchanged as the fallback for non-capable providers (glm/local) and permissive schemas where strict constrained sampling is not applicable. A test asserts constrainedSampling is attached only when isStrictCapable(schema) is true (and absent otherwise — byte-identical behavior)."
+          },
+          {
+            "id": "AC-09",
+            "statement": "The registerEntryRenderer capability cast in src/extension.ts (const piWithRenderer = pi as unknown as {...}) is DELETED. activate() now calls pi.registerEntryRenderer(...) directly with the proper typed signature registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void, importing EntryRenderer / EntryRenderOptions from @earendil-works/pi-coding-agent where helpful. The existing try/catch best-effort guard and the durable background-summary transcript card rendering behavior are unchanged."
+          },
+          {
+            "id": "AC-10",
+            "statement": "In the build gate (src/build-runner/gates.ts and/or its spawn path), when process.env.PI_SESSION_ID and/or process.env.PI_MODEL are present, the captured build-run log/trace/artifact metadata includes them (e.g. a correlation header line prepended/appended to the captured build log, or a field in any structured trace). When the env vars are absent the build run is byte-identical to today. Gate pass/fail logic and command construction are unchanged; a focused test covers present and absent cases."
+          },
+          {
+            "id": "AC-11",
+            "statement": "CHANGELOG.md gains a concise [Unreleased] entry summarizing Features 1–4 (inherit main-session model/thinking; constrained sampling for structured_output; typed registerEntryRenderer; bash session-env tagging), noting the ^0.82.1 dependency bump is already done."
+          },
+          {
+            "id": "AC-12",
+            "statement": "npm run typecheck is strict-clean against the 0.82.1 types, and the full vitest suite (existing 1437 tests + all new tests added for AC-05, AC-06, AC-08, AC-10) is green."
+          }
+        ],
+        "nonFunctional": [
+          "No-throw / best-effort discipline: every new code path (reading ctx.model/ctx.thinkingLevel, resolving model to Model<any>, applying thinkingLevel, attaching constrainedSampling, reading PI_* env vars, registerEntryRenderer) must swallow failures and degrade to current behavior rather than abort a run.",
+          "Zero-ANSI byte-clean contract: print / json / rpc / headless modes must remain byte-identical — the dashboard widget, status pills, constrainedSampling header lines, and PI_* tagging must NOT emit ANSI or alter machine-readable output in those modes.",
+          "Additive-only, never-clobber: model/thinking inheritance must NEVER override an explicit user/LLM params.model, a SUPER_DEV_MODEL / SUPER_DEV_THINKING env var, or a per-call thinking override. Inheritance is a fallback tier only.",
+          "Strict JSON-schema correctness: constrainedSampling strict:\"prefer\" is requested ONLY on genuinely strict-capable schemas (required non-Optional keys + additionalProperties:false); never on permissive schemas to avoid provider no-ops or confusion.",
+          "Type safety: no new as unknown as casts; the registerEntryRenderer call uses the public 0.82.1 typed API and constrainedSampling is typed against ToolDefinition.",
+          "Observability-only change for Feature 4: PI_* tagging must not influence gate pass/fail, command construction, or timeout behavior; it only enriches captured build-run metadata."
+        ],
+        "openQuestions": [
+          "Model inheritance (AC-04): ctx.model is a Model<any> with a string id, but createAgentSession's model option expects a Model<any> (not just an id string). Should the inherited model be passed by re-using ctx.model directly (the live Model instance) when available, or by resolving ctx.model.id back to a Model via the SDK's model registry? Re-using ctx.model is simplest and avoids a registry round-trip, but the task text mentions ctx.model.id — confirm the preferred source.",
+          "ConstrainedSampling fallback semantics (AC-07): on a capable provider with strict:\"prefer\" that the model cannot honor, does pi silently fall back to normal tool calling (so missingKeys still fires), or could it raise? The AC assumes graceful fallback; verify against pi 0.82.1 runtime behavior for at least one capable provider.",
+          "Feature 4 location: the build gate (src/build-runner/gates.ts) currently returns structured results (stdout/stderr) rather than writing a trace file to disk. Is the intended 'build-run log/trace/artifact' the captured gate stdout/stderr that flows into the live transcript + run log (via sink.log), a dedicated on-disk build trace, or both? Confirm where the correlation header should be injected so it is observable without altering gate logic."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-28T07:48:32.262Z",
+      "agent": "bdd",
+      "data": {
+        "title": "pi Integration Modernization — Model/Thinking Inheritance, Constrained Sampling, Typed Renderers & Build Tagging",
+        "date": "2025-01-01",
+        "source": "docs/specifications/15-pi-integration-modernization/01-requirements.md",
+        "features": [
+          {
+            "name": "Feature 1: Specialists inherit the main session's model + thinking level",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "Specialists inherit the live session's model and thinking level when no override is supplied",
+                "acRef": "AC-01",
+                "priority": "critical",
+                "given": "the main session is running on a specific model with a defined thinking level",
+                "when": "the super-dev pipeline is invoked without an explicit model or thinking parameter",
+                "then": "the session's model and thinking level are captured and threaded through the pipeline options as default values before any specialist is spawned",
+                "andClauses": [
+                  "every spawned specialist receives the inherited model and inherited thinking as their defaults",
+                  "an explicit model parameter or a SUPER_DEV_MODEL / SUPER_DEV_THINKING environment override still takes precedence over the inherited values"
+                ]
+              },
+              {
+                "id": "002",
+                "title": "An older or non-TUI context exposes no session model or thinking level",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "the invoking context does not expose a session model or thinking level",
+                "when": "the super-dev pipeline is invoked",
+                "then": "nothing throws and execution degrades to the current default behavior",
+                "andClauses": [
+                  "the pipeline proceeds with role-based defaults exactly as before"
+                ]
+              },
+              {
+                "id": "003",
+                "title": "Model precedence is applied end-to-end across all resolution tiers",
+                "acRef": "AC-02",
+                "priority": "critical",
+                "given": "the four model resolution tiers are available",
+                "when": "a specialist's model is resolved",
+                "then": "the resolved model follows the order: explicit parameter, then SUPER_DEV_MODEL environment, then the inherited session model, then the SDK or settings default",
+                "andClauses": [
+                  "a higher-priority tier always overrides a lower-priority tier",
+                  "the subprocess model flag is emitted only when a model is actually resolved"
+                ]
+              },
+              {
+                "id": "004",
+                "title": "The subprocess model flag is emitted only when a model is resolved",
+                "acRef": "AC-02",
+                "priority": "medium",
+                "given": "no model resolves from any tier",
+                "when": "the subprocess backend builds its launch arguments",
+                "then": "no model flag is pushed onto the argument list",
+                "andClauses": [
+                  "existing argument construction behavior is preserved unchanged"
+                ]
+              },
+              {
+                "id": "005",
+                "title": "Thinking precedence honors a new inherited tier above the role default",
+                "acRef": "AC-03",
+                "priority": "critical",
+                "given": "the per-call, environment, inherited, and role-default thinking tiers are defined",
+                "when": "a specialist's thinking level is resolved",
+                "then": "the resolved thinking level follows the order: per-call, then SUPER_DEV_THINKING environment, then the inherited session thinking level, then the role default",
+                "andClauses": [
+                  "the inherited thinking level flows from the workflow agent factory through to the spawned agent"
+                ]
+              },
+              {
+                "id": "006",
+                "title": "An inherited thinking level at least as strong as the role default is applied when no higher override exists",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "the main session carries an inherited thinking level and no per-call or environment override is supplied",
+                "when": "a specialist is spawned on either backend",
+                "then": "the specialist uses the inherited model and a thinking level no lower than the role default would have been",
+                "andClauses": [
+                  "the inherited thinking level takes precedence over the role default"
+                ]
+              },
+              {
+                "id": "007",
+                "title": "The session backend launches the agent with the resolved model and thinking level options",
+                "acRef": "AC-04",
+                "priority": "critical",
+                "given": "an explicit or inherited model and thinking level are available",
+                "when": "the session backend creates the agent session",
+                "then": "the session is created with the resolved model and the thinking level supplied as creation options",
+                "andClauses": [
+                  "the existing post-creation thinking application is retained as a best-effort second line of defense",
+                  "the best-effort application is guarded so the thinking level is not applied twice"
+                ]
+              },
+              {
+                "id": "008",
+                "title": "An inherited model identifier that cannot be resolved to a concrete model falls back gracefully",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "the inherited model identifier cannot be resolved into a concrete model",
+                "when": "the session backend resolves the model",
+                "then": "resolution falls through to the SDK or settings default without throwing",
+                "andClauses": [
+                  "the run continues rather than aborting"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Feature 2: Constrained tool sampling for structured output",
+            "scenarios": [
+              {
+                "id": "009",
+                "title": "A strict-capable schema is recognized as eligible for constrained sampling",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "a schema object that declares at least one required non-optional key and disallows additional properties",
+                "when": "the strict-capability of the schema is evaluated",
+                "then": "the schema is classified as strict-capable"
+              },
+              {
+                "id": "010",
+                "title": "Permissive and non-object schemas are classified as not strict-capable",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "a schema that is all-optional, or allows additional properties, or is not an object schema",
+                "when": "the strict-capability of the schema is evaluated",
+                "then": "the schema is classified as not strict-capable",
+                "andClauses": [
+                  "the existing permissive control schema (all-optional with additional properties allowed) is classified as not strict-capable"
+                ]
+              },
+              {
+                "id": "011",
+                "title": "Constrained sampling is requested when a strict-capable schema is provided",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "a strict-capable schema with well-defined required keys is supplied for a stage's structured output",
+                "when": "the structured-output tool is constructed",
+                "then": "the tool is annotated to request strict JSON-schema constrained sampling on capable providers",
+                "andClauses": [
+                  "the annotation is typed against the tool-definition contract",
+                  "capable providers are forced to fill all required keys"
+                ]
+              },
+              {
+                "id": "012",
+                "title": "Constrained sampling is never attached to a permissive schema",
+                "acRef": "AC-08",
+                "priority": "high",
+                "given": "a permissive or open schema where strict sampling is not applicable",
+                "when": "the structured-output tool is constructed",
+                "then": "no constrained-sampling annotation is attached and behavior is byte-identical to today"
+              },
+              {
+                "id": "013",
+                "title": "The corrective re-prompt fallback remains for non-capable providers and permissive schemas",
+                "acRef": "AC-08",
+                "priority": "medium",
+                "given": "a non-capable provider or a permissive schema where strict sampling does not apply",
+                "when": "a structured output omits required keys",
+                "then": "the existing missing-key detection issues a single corrective re-prompt turn",
+                "andClauses": [
+                  "the corrective machinery is preserved unchanged as the fallback path"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Feature 3: Remove the registerEntryRenderer capability cast",
+            "scenarios": [
+              {
+                "id": "014",
+                "title": "The entry renderer is registered through the typed public API",
+                "acRef": "AC-09",
+                "priority": "medium",
+                "given": "the extension is activated on a pi version that exposes the typed entry-renderer registration API",
+                "when": "activation registers the background-summary transcript card",
+                "then": "the renderer is registered directly through the typed public API without any unsafe capability cast",
+                "andClauses": [
+                  "the durable background-summary transcript card still renders as before"
+                ]
+              },
+              {
+                "id": "015",
+                "title": "A failure during renderer registration degrades gracefully",
+                "acRef": "AC-09",
+                "priority": "low",
+                "given": "registering the entry renderer raises an error",
+                "when": "activation runs",
+                "then": "the best-effort guard swallows the error and activation continues without aborting the run"
+              }
+            ]
+          },
+          {
+            "name": "Feature 4: Tag build runs with pi's bash session correlation variables",
+            "scenarios": [
+              {
+                "id": "016",
+                "title": "A build run records the session id and model when correlation variables are present",
+                "acRef": "AC-10",
+                "priority": "medium",
+                "given": "the session id and model correlation variables are present in the build-run environment",
+                "when": "the build gate captures a build run's log, trace, or artifact metadata",
+                "then": "the captured metadata includes the session id and model for correlation",
+                "andClauses": [
+                  "the gate's pass or fail logic is unchanged",
+                  "the gate's command construction is unchanged",
+                  "no control characters are emitted in machine-readable output modes"
+                ]
+              },
+              {
+                "id": "017",
+                "title": "A build run is byte-identical when correlation variables are absent",
+                "acRef": "AC-10",
+                "priority": "medium",
+                "given": "the session id and model correlation variables are absent from the environment",
+                "when": "the build gate captures a build run",
+                "then": "the captured build run is byte-identical to today's behavior"
+              }
+            ]
+          },
+          {
+            "name": "Feature 5: Documentation and verification",
+            "scenarios": [
+              {
+                "id": "018",
+                "title": "The changelog summarizes the modernization changes",
+                "acRef": "AC-11",
+                "priority": "low",
+                "given": "the work for Features 1 through 4 is complete",
+                "when": "the changelog is updated",
+                "then": "an unreleased entry summarizes model and thinking inheritance, constrained sampling, the typed entry renderer, and build-run correlation tagging",
+                "andClauses": [
+                  "the entry notes that the dependency bump to the current pi version is already done"
+                ]
+              },
+              {
+                "id": "019",
+                "title": "The project type-checks and the full test suite passes",
+                "acRef": "AC-12",
+                "priority": "critical",
+                "given": "the changes are applied against the current pi type surface",
+                "when": "strict type-checking and the full test suite are run",
+                "then": "type-checking is strict-clean and every existing and newly added test passes",
+                "andClauses": [
+                  "no new unsafe casts are introduced"
+                ]
+              },
+              {
+                "id": "020",
+                "title": "The no-throw, additive, and byte-clean contracts are preserved",
+                "acRef": "AC-12",
+                "priority": "high",
+                "given": "the modernization is complete",
+                "when": "the pipeline runs in print, json, rpc, or headless mode",
+                "then": "machine-readable output remains byte-identical with no control characters",
+                "andClauses": [
+                  "inheritance never overrides an explicit user, LLM, or environment override",
+                  "every new code path degrades to current behavior on failure rather than aborting"
+                ]
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "Capture ctx.model?.id and ctx.thinkingLevel before runPipelineTask and thread as inherited defaults; never throw when undefined.",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "Model precedence: explicit param -> SUPER_DEV_MODEL env -> inherited ctx.model.id -> SDK/settings default; preserve --model-only-when-resolved.",
+            "scenarios": [
+              "SCENARIO-003",
+              "SCENARIO-004"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "Widen resolveThinking precedence to include the inherited tier above the role default; thread inheritedThinking through options.",
+            "scenarios": [
+              "SCENARIO-005",
+              "SCENARIO-006"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "createAgentSession receives resolved model and thinkingLevel as options; applyThinkingLevel retained and guarded against double-application.",
+            "scenarios": [
+              "SCENARIO-007",
+              "SCENARIO-008"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "Without explicit params, both backends use inherited model and a thinking level no lower than role default; inheritance tests added.",
+            "scenarios": [
+              "SCENARIO-006",
+              "SCENARIO-009"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "isStrictCapable helper returns true only for Object schemas with a required non-Optional key and additionalProperties:false.",
+            "scenarios": [
+              "SCENARIO-009",
+              "SCENARIO-010"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "structured_output sets constrainedSampling strict:'prefer' only for strict-capable schemas; permissive shape remains the fallback.",
+            "scenarios": [
+              "SCENARIO-011",
+              "SCENARIO-012"
+            ]
+          },
+          {
+            "acId": "AC-08",
+            "description": "missingKeys corrective re-prompt preserved unchanged as the fallback for non-capable providers and permissive schemas.",
+            "scenarios": [
+              "SCENARIO-012",
+              "SCENARIO-013"
+            ]
+          },
+          {
+            "acId": "AC-09",
+            "description": "Delete the registerEntryRenderer cast and call the typed public API; keep try/catch guard and transcript-card rendering.",
+            "scenarios": [
+              "SCENARIO-014",
+              "SCENARIO-015"
+            ]
+          },
+          {
+            "acId": "AC-10",
+            "description": "Record PI_SESSION_ID/PI_MODEL in build-run metadata when present; byte-identical when absent; no gate logic changes.",
+            "scenarios": [
+              "SCENARIO-016",
+              "SCENARIO-017"
+            ]
+          },
+          {
+            "acId": "AC-11",
+            "description": "Add a concise CHANGELOG [Unreleased] entry summarizing Features 1-4 and noting the dependency bump is done.",
+            "scenarios": [
+              "SCENARIO-018"
+            ]
+          },
+          {
+            "acId": "AC-12",
+            "description": "Strict typecheck clean against 0.82.1 types and full vitest suite green (existing + new).",
+            "scenarios": [
+              "SCENARIO-019",
+              "SCENARIO-020"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-28T07:55:43.825Z",
+      "agent": "research",
+      "data": {
+        "title": "pi 0.82.x SDK modernization: model/thinking inheritance, constrained sampling for structured_output, typed registerEntryRenderer, and PI_* build-tagging",
+        "date": "2026-07-28",
+        "summary": "Research against the pi 0.82.0/0.82.1 primary sources (repo CHANGELOG, pi-ai README, extensions.md, sdk.md, environment-variables.md, and the structured-output & custom-model SDK examples) confirms every required API is public and typed in the bumped 0.82.1 surface. Feature 1: createAgentSession({ model, thinkingLevel, modelRuntime }) accepts a resolved Model<any> AND a thinkingLevel as first-class creation options (canonical path); ctx.model is a live Model<any> with .id/.provider and ctx.modelRegistry can resolve ids via getModel(provider,id) (built-in) or modelRuntime.getModel() (incl. custom). Feature 2: ToolDefinition.constrainedSampling is typed false | { type:'json_schema'; strict:'prefer'|'require' } | { type:'grammar'; variants:{...} }; strict:'prefer' uses provider strict enforcement when supported and SILENTLY falls back to normal tool calling otherwise (verified via pi-ai's resolveStrictSampling: unsupported+'prefer' returns undefined, no throw; unsupported+'require' throws) — so missingKeys() is correctly retained as the fallback. Strict-capable JSON schema = object with required keys + additionalProperties:false (OpenAI & pi examples align); Optional keys and additionalProperties:true must NOT request strict. Feature 3: registerEntryRenderer<T>(customType, renderer) is public typed API in 0.82.1; EntryRenderer/EntryRenderOptions are exported from @earendil-works/pi-coding-agent. Feature 4: PI_SESSION_ID/PI_SESSION_FILE/PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL are injected into commands run by built-in/factory bash tools; values are resolved at command start, absent in user !/!! commands and SDK-embedded runs — read process.env defensively. Open Questions 1 and 2 are resolved; Question 3 (exact injection point) is a codebase-internal decision the research bounds but cannot finalize.",
+        "options": [
+          {
+            "name": "Feature 1 — Thread the live ctx.model as the primary inherited Model, resolve ctx.model.id via getModel/modelRuntime only as fallback (AC-01/02/04/08)",
+            "tradeoffs": "createAgentSession's model option expects a Model<any> instance, not an id string (sdk.md + 02-custom-model.ts). Simplest, no registry round-trip: when ctx.model is a live Model<any>, thread that instance directly through RunOptions (e.g. inheritedModel as Model<any> OR a resolved id + re-resolution at the session boundary). If the option chain must carry a string id (per AC-04 'resolve ctx.model.id to Model<any>'), resolve it at runAgentViaSession using getModel(provider,id) for built-ins (no auth check, synchronous, from @earendil-works/pi-ai) or modelRuntime.getModel(provider,id) to include custom models — both confirmed in sdk.md. Risk: getModel only knows built-ins; custom/proxy models need modelRuntime, which must be threaded in. Recommendation: thread ctx.model.id as the inherited string, and resolve to Model<any> at the session-creation boundary with a getModel→modelRuntime→undefined fallback that degrades to the SDK/settings default (never throws). Precedence explicit-param → SUPER_DEV_MODEL env → inherited id → SDK default is preserved by treating inherited as the lowest-priority non-default tier."
+          },
+          {
+            "name": "Feature 1 — thinkingLevel: pass it as a createAgentSession option (canonical) and keep applyThinkingLevel() guarded as best-effort second defense (AC-03/04/07)",
+            "tradeoffs": "sdk.md shows createAgentSession({ thinkingLevel: 'medium' }) and session.setThinkingLevel(level) as the supported, clamped path (values: off|minimal|low|medium|high|xhigh|max; clamped to model capabilities). Passing thinkingLevel in createAgentSession options is the canonical single-application point. Keeping the existing applyThinkingLevel(session,...) as best-effort is reasonable for older runtimes BUT must be guarded against double-application (if the option already set it, skip or compare current level before re-applying). Recommendation: set thinkingLevel in createAgentSession when an explicit-or-inherited value exists; guard applyThinkingLevel to only fire when session.thinkingLevel !== resolved level. Widened resolveThinking precedence (per-call → SUPER_DEV_THINKING env → inherited ctx.thinkingLevel → role default) feeds this resolved value."
+          },
+          {
+            "name": "Feature 2 — Use strict:'prefer' (never 'require') and gate on isStrictCapable(schema) = Object + >=1 required non-Optional key + additionalProperties:false (AC-06/07/08)",
+            "tradeoffs": "pi-ai README: strict:'prefer' enforces provider-side strict schema when supported and otherwise falls back to normal tool calling (resolveStrictSampling returns undefined, no throw); strict:'require' FAILS the request when unsupported. Since missingKeys()+corrective re-prompt is the deliberate fallback for non-capable providers (glm/local) and permissive schemas, 'prefer' is the only safe choice — it never raises and never breaks a run. OpenAI/pi strict requirements (OpenAI structured-outputs guide + pi edit_file/grammar examples) mandate an object schema, ALL relevant keys required (Optional emulated via type:[\"string\",\"null\"]), and additionalProperties:false at every object level. So isStrictCapable must return false for the current permissive controlSchema (all-Optional + additionalProperties:true) and for non-Object schemas — exactly AC-06. Build the strict variant as Type.Object({...required typed keys...}, { additionalProperties:false }) and attach constrainedSampling only when isStrictCapable is true; byte-identical behavior otherwise."
+          },
+          {
+            "name": "Feature 3 — Call pi.registerEntryRenderer(customType, renderer) directly (typed); import EntryRenderer/EntryRenderOptions from the package root (AC-09/SCENARIO-014/015)",
+            "tradeoffs": "Confirmed in the real pi repo's extensions index.ts that EntryRenderer, EntryRenderOptions, and ToolDefinition are re-exported from @earendil-works/pi-coding-agent. registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void is the public typed 0.82.1 signature (the prior as-unknown-as cast existed only because it was absent in 0.80.3). Delete the cast and the piWithRenderer shim; keep the existing try/catch best-effort guard (SCENARIO-015) and the durable background-summary transcript-card rendering. typecheck stays strict-clean because the types now resolve against the bumped ^0.82.1 surface."
+          },
+          {
+            "name": "Feature 4 — Read process.env.PI_SESSION_ID / PI_MODEL defensively and inject a correlation header/field into build-gate captured output only when present (AC-10/SCENARIO-016/017)",
+            "tradeoffs": "environment-variables.md confirms PI_SESSION_ID/PI_SESSION_FILE/PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL are injected into commands run by built-in and factory-created bash tools (resolved at command start; absent for user !/!! commands and SDK-embedded runs). These vars are inherited by the build-gate's child processes, so reading process.env in build-runner is valid and never throws. To keep print/json/rpc/headless modes byte-clean, add the correlation data as a structured metadata field or a clearly-delimited header line that is emitted ONLY when the vars are present (absent → byte-identical to today). Recommendation: a single guarded 'PI_SESSION_ID=… PI_MODEL=…' correlation line/field appended to the captured build log or a structured-trace field; gate pass/fail and command construction must be untouched (observability-only)."
+          }
+        ],
+        "sources": [
+          {
+            "title": "pi CHANGELOG.md (0.82.0 constrained sampling + PI_* env vars; 0.82.1 Claude Opus 5)",
+            "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md"
+          },
+          {
+            "title": "pi-ai README — Constrained Sampling for Tools (constrainedSampling type, strict prefer/require fallback semantics)",
+            "url": "https://github.com/earendil-works/pi/blob/main/packages/ai/README.md"
+          },
+          {
+            "title": "pi docs/extensions.md — createBashTool exposeSessionEnvironment, setModel/setThinkingLevel, registerEntryRenderer/EntryRenderer, tool definitions",
+            "url": "https://github.com/earendil-works/pi/blob/v0.82.1/packages/coding-agent/docs/extensions.md"
+          },
+          {
+            "title": "pi docs/sdk.md — createAgentSession({ model, thinkingLevel, modelRuntime }), session.setModel/setThinkingLevel, getModel/modelRuntime.getModel",
+            "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md"
+          },
+          {
+            "title": "pi docs/environment-variables.md — PI_SESSION_ID/PI_SESSION_FILE/PI_PROVIDER/PI_MODEL/PI_REASONING_LEVEL semantics",
+            "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md"
+          },
+          {
+            "title": "pi example extensions/structured-output.ts — terminating structured_output tool pattern",
+            "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/structured-output.ts"
+          },
+          {
+            "title": "pi example sdk/02-custom-model.ts — createAgentSession({ model, thinkingLevel }) and getModel/modelRuntime resolution",
+            "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/sdk/02-custom-model.ts"
+          },
+          {
+            "title": "pi src/core/extensions/index.ts — re-exports EntryRenderer, EntryRenderOptions, ToolDefinition from the package root",
+            "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/index.ts"
+          },
+          {
+            "title": "vstack pi-codex-minimal-tools openai-responses-compat.ts — local copy of pi-ai 0.82.1 constrainedSampling type + resolveStrictSampling (prefer→undefined fallback, require→throw)",
+            "url": "https://github.com/vanillagreencom/vstack/blob/main/pi-extensions/pi-codex-minimal-tools/src/providers/openai-responses-compat.ts"
+          },
+          {
+            "title": "OpenAI Structured Outputs guide — strict requires additionalProperties:false + all fields required (strict-capable schema definition)",
+            "url": "https://developers.openai.com/api/docs/guides/structured-outputs"
+          },
+          {
+            "title": "otto-cli extension-sdk api-reference.md — registerEntryRenderer/appendEntry/ctx.model typed surface (pi-derived fork reference)",
+            "url": "https://github.com/cmetech/otto-cli/blob/main/docs/extension-sdk/api-reference.md"
+          },
+          {
+            "title": "Pi Extension System API (Mintlify) — ExtensionAPI methods, ExtensionContext with ctx.model",
+            "url": "https://pt-act-pi-mono.mintlify.app/api/coding-agent/extensions"
+          }
+        ],
+        "openIssues": [
+          "RESOLVED (was OQ-1, model inheritance source): createAgentSession.model expects a Model<any> instance. The live ctx.model can be threaded directly (simplest) OR its .id resolved via getModel(provider,id) (built-ins, sync, no auth check) / modelRuntime.getModel(provider,id) (incl. custom). If RunOptions carries a string inheritedModel per AC-04, resolution must happen at the session boundary with getModel→modelRuntime→undefined fallback so it never throws (SCENARIO-008). Implementation-stage detail: whether to thread the Model instance or the id string through RunOptions is a codebase call; research confirms both paths are supported.",
+          "RESOLVED (was OQ-2, constrainedSampling fallback): pi-ai's resolveStrictSampling shows strict:'prefer' returns undefined (normal tool-calling fallback, no throw) when the provider/model cannot honor it; only strict:'require' throws. So missingKeys()+corrective re-prompt remains the correct fallback and will still fire on non-capable providers (glm/local) and permissive schemas. Use 'prefer' exclusively.",
+          "STILL AMBIGUOUS (was OQ-3, Feature 4 injection point): research confirms the PI_* env vars exist and are inherited by build-gate child processes, but whether to inject a correlation line into captured stdout/stderr (flows through sink.log → live transcript + run log) vs a dedicated structured-trace field is a codebase-internal decision requiring inspection of build-runner/gates.ts result shape. The byte-clean + observability-only constraints bound it to: emit only when vars present, never touch pass/fail or command construction. Recommend the next stage inspect gates.ts to choose header-line vs structured-field so machine-readable modes stay byte-identical.",
+          "MINOR (verify in repo): ctx.thinkingLevel availability on the super_dev tool's execute() ctx. Research confirms ctx.model is on ExtensionContext and thinkingLevel_select events carry levels, and pi.getThinkingLevel()/session.thinkingLevel exist; the requirement asserts ctx.thinkingLevel is readable in the tool ctx. If the tool-execute ctx lacks a thinkingLevel field, fall back to reading it via the session/runtime accessor — implementation stage should confirm the exact ctx shape (no-throw if undefined, per SCENARIO-002)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/03-research-report.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-28T08:05:51.368Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment: pi-integration-modernization (pi-super-dev)",
+        "date": "2026-07-28",
+        "summary": "pi-super-dev is an ESM TypeScript *pi-extension* package (not a standalone app — it runs INSIDE the `pi` agent). The change set modernizes the pi integration on the already-bumped `@earendil-works/pi-coding-agent@^0.82.1` / `@earendil-works/pi-tui@^0.82.1` / `typebox@1.1.38` toolchain. Architecture: `extension.ts` registers the `super_dev` tool + `/super-dev` command + entry renderer; `pipeline.ts` → `workflow.ts` (the `realAgent` seam) → a two-backend specialist layer (`pi-spawn.ts` subprocess vs `session-agent.ts` in-process `createAgentSession`); control-flow node algebra in `nodes.ts` (DO NOT TOUCH). The dominant, load-bearing convention is **no-throw best-effort**: every capability is try/catch-guarded or feature-detected, precedence chains are documented verbatim in JSDoc, and a single shared `common` options object is threaded to BOTH backends so additive option fields propagate for free. The implementation is low-risk: it mirrors an already-established 4-step precedence resolver (`resolveThinking`) and an already-existing additive option pattern; the only genuinely new surface is `ToolDefinition.constrainedSampling` (0.82.0) and the typed `registerEntryRenderer`. There is NO API/UI server to bring up — verification is `npm run typecheck` + `npm test` (vitest), both already green (1437 tests).",
+        "patterns": [
+          {
+            "name": "No-throw / best-effort discipline (load-bearing)",
+            "example": "src/session-agent.ts:124 (applyThinkingLevel wraps session.setThinkingLevel in try/catch, `/* best-effort */`); src/extension.ts:656 (registerEntryRenderer wrapped in try/catch); src/workflow.ts:198 (realAgent swallows budget-exhausted + transient-retry failures)",
+            "consistency": "Pervasive and load-bearing. Every external/pi-API call and every capability read is guarded by try/catch with a `/* best-effort */` or `/* ignore */` comment. New code (env reads, createAgentSession options, constrainedSampling) MUST follow this — never throw."
+          },
+          {
+            "name": "Documented precedence-chain resolvers for env/override resolution",
+            "example": "src/pi-spawn.ts:150 `resolveThinking(agent, perCall?)` — `per-call → SUPER_DEV_THINKING env → role default`, with the exact order stated in the JSDoc one line above",
+            "consistency": "Canonical pattern to mirror for BOTH the thinking inheritance widening (per-call → env → INHERITED → role default) and the model precedence (explicit → SUPER_DEV_MODEL env → inherited ctx.model.id → SDK default). Copy the JSDoc verbatim-stating-the-order style."
+          },
+          {
+            "name": "Single shared `common` options object fed to BOTH backends",
+            "example": "src/workflow.ts:155-198 `realAgent` builds one `common` object then `backend === \"session\" ? runAgentViaSession(common) : spawnAgent(common)`; both interfaces deliberately accept cross-backend fields (SpawnAgentOptions.controlKeys 'Ignored by the subprocess backend … so the same common options object can feed both backends', pi-spawn.ts:174-177)",
+            "consistency": "The seam to extend. Additive fields (inheritedModel/inheritedThinking) added to RunOptions (types.ts:276) → SpawnAgentOptions (pi-spawn.ts:170) + SessionAgentOptions (session-agent.ts:137) → `common` in realAgent propagate to both backends automatically. Do NOT fork per-backend."
+          },
+          {
+            "name": "typebox schemas: permissive default + explicit strict variant",
+            "example": "src/session-agent.ts:172 `controlSchema(keys)` = `Type.Object({ [k]: Type.Optional(Type.Any()) }, { additionalProperties: true })`",
+            "consistency": "Feature 2: build a strict-capable sibling `Type.Object({…required typed…}, { additionalProperties: false })` and gate `constrainedSampling: { type:'json_schema', strict:'prefer' }` on an `isStrictCapable(schema)` helper co-located with controlSchema. Keep the permissive shape as the ONLY fallback for unknown-key schemas."
+          },
+          {
+            "name": "SUPER_DEV_* env-var convention with defensive process.env reads",
+            "example": "src/build-runner/gates.ts:77 `process.env.SUPER_DEV_BUILD_TIMEOUT_MS`; src/pi-spawn.ts:152 `process.env.SUPER_DEV_THINKING`; src/workflow.ts:197 `process.env.SUPER_DEV_BACKEND`",
+            "consistency": "Feature 1 (add SUPER_DEV_MODEL) and Feature 4 (PI_SESSION_ID/PI_MODEL) follow this exactly: read `process.env.X` directly, guard undefined/NaN, never throw. Feature 4 reuses the SDK-injected `PI_*` vars (different prefix by design — they're pi's, not super-dev's)."
+          },
+          {
+            "name": "TUI-only guards for any ANSI/widget/setStatus call; print/json/rpc/headless stay byte-clean",
+            "example": "src/extension.ts renderDashboard `if (ctx?.mode !== \"tui\") return;` before every setWidget/setStatus/setWorkingMessage; live-stream classifies per-kind at the sink and emits raw `line.text` (zero ANSI) in non-TUI modes (AC-08/AC-09)",
+            "consistency": "Inherited model/thinking + constrainedSampling touch NO rendering, so this contract is preserved automatically — but any logging of PI_* tags (Feature 4) must be plain ASCII with no color codes."
+          },
+          {
+            "name": "Barrel re-export to split large modules",
+            "example": "src/build-runner.ts:14-16 `export * from \"./build-runner/{detect,scope,gates}.ts\"`",
+            "consistency": "If Feature 4 grows, a `build-runner/tagging.ts` sub-module re-exported via the barrel is the established split pattern — but a small env-read inline in gates.ts is fine too."
+          },
+          {
+            "name": "Vitest test layout: tests/*.test.ts + colocated src/*.test.ts",
+            "example": "tests/pi-spawn.test.ts:8-30 (`describe`/`it`/`expect` from 'vitest', env-var set/reset, mkdtempSync fixtures); src/build-runner.test.ts (colocated); 1437 tests total",
+            "consistency": "New tests (resolveThinking precedence with inherited tier; workflow inheritedThinking flow; isStrictCapable + constrainedSampling gating; build-gate PI_* tagging) go in the matching tests/ file (extend tests/pi-spawn.test.ts, tests/session-agent.test.ts, tests/build-runner.test.ts) following the same `describe`/`it`/`expect` + env-mutation + tmpdir-fixture shape."
+          }
+        ],
+        "recommendations": [
+          "Feature 1 (HIGHEST leverage): capture `ctx.model?.id` and `ctx.thinkingLevel` inside `super_dev.execute()` in src/extension.ts:379 — defensively (older/non-TUI ctx returns undefined → current behavior). Thread them as `inheritedModel`/`inheritedThinking` through `runPipelineTask({...})` (src/extension.ts:514) → RunOptions (src/types.ts:276, additive) → `realAgent`'s `common` object (src/workflow.ts:155) → SpawnAgentOptions/SessionAgentOptions. In src/pi-spawn.ts:150 WIDEN `resolveThinking` to `(agent, perCall?, inherited?)` with order `per-call → SUPER_DEV_THINKING → INHERITED → role default`; add `SUPER_DEV_MODEL` env handling in buildSpawnArgs (src/pi-spawn.ts:238) with order `opts.model → SUPER_DEV_MODEL → inherited → fall-through` (keep `--model` only pushed when a model resolves). Mirror resolveThinking's exact JSDoc-precedence style.",
+          "Feature 1 (session backend): in src/session-agent.ts:369 `createAgentSession({...})` ADD `model:` (SDK accepts `model?: Model<any>` — pass the resolved id/Model) and `thinkingLevel:` as the canonical path; KEEP the existing `applyThinkingLevel(session, …)` call (src/session-agent.ts:382) as best-effort defense but resolve the level ONCE and guard against double-application (e.g. only call applyThinkingLevel when createAgentSession's option path is unavailable, or make it idempotent). Resolve the resolved level via the widened resolveThinking so both backends share one precedence function.",
+          "Feature 2: in src/session-agent.ts add `isStrictCapable(schema)` next to `controlSchema` (src/session-agent.ts:172) — returns true only when the schema has at least one REQUIRED (non-Optional) key AND `additionalProperties === false`. In `structuredOutputTool` (src/session-agent.ts:230) set `constrainedSampling: { type: 'json_schema', strict: 'prefer' }` ONLY when isStrictCapable(opts.schema ?? controlSchema(keys)) holds. Provide a strict-capable `Type.Object({...required typed keys...}, { additionalProperties: false })` builder for stages with well-defined keys; keep the current permissive controlSchema as the fallback. KEEP `missingKeys` (src/session-agent.ts:179) + the single corrective re-prompt (src/session-agent.ts:431) byte-identical as the non-capable-provider fallback — do NOT delete.",
+          "Feature 3 (pure cleanup): in src/extension.ts:656 DELETE `const piWithRenderer = pi as unknown as {...}` and call `pi.registerEntryRenderer('super-dev-summary', (entry, _opts, theme) => {...})` directly (public on ExtensionAPI as of 0.82.1: `registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>)`). Import `EntryRenderer`/`EntryRenderOptions` from '@earendil-works/pi-coding-agent' for the param types. KEEP the existing try/catch best-effort wrapper around the call.",
+          "Feature 4: in src/build-runner/gates.ts runBuildGate (~return at src/build-runner/gates.ts:320) defensively read `process.env.PI_SESSION_ID` and `process.env.PI_MODEL`; when present, prepend a plain-ASCII header line (e.g. `# pi-session=<id> model=<model>`) to the captured log/errors surface and/or add an optional additive `correlation?: { sessionId?: string; model?: string }` field to BuildGateResult (src/build-runner/gates.ts:91). Observability-only — never change pass/fail logic or command construction; no-op when the env vars are absent. Add a focused test in tests/build-runner.test.ts setting both env vars and asserting the tag appears.",
+          "Feature 5: append a concise `[Unreleased]` CHANGELOG.md entry (src already follows Keep-a-Changelog at the top of CHANGELOG.md:5) summarizing Features 1–4 and noting the ^0.82.1 dependency bump is already committed. Match the bold-leading-bullet prose style of the existing `[Unreleased]` entries."
+        ],
+        "filesAssessed": [
+          "package.json",
+          "README.md",
+          "CHANGELOG.md",
+          "tsconfig.json",
+          "src/extension.ts",
+          "src/pipeline.ts",
+          "src/workflow.ts",
+          "src/types.ts",
+          "src/pi-spawn.ts",
+          "src/session-agent.ts",
+          "src/build-runner.ts",
+          "src/build-runner/gates.ts",
+          "src/nodes.ts",
+          "tests/pi-spawn.test.ts",
+          "tests/session-agent.test.ts"
+        ],
+        "services": {},
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/04-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-28T08:10:07.794Z",
+      "agent": "spec",
+      "data": {
+        "title": "Technical Specification: pi Integration Modernization — Main-Session Model/Thinking Inheritance, Constrained Sampling for structured_output, Typed registerEntryRenderer, and Bash Session-Env Build Tagging",
+        "date": "2026-07-28",
+        "summary": "Modernize the pi-super-dev pi-extension on the already-bumped `@earendil-works/pi-coding-agent@^0.82.1` toolchain in five cohesive, independently-shippable changes. (1) HIGHEST leverage: every spawned specialist inherits the live main session's model + thinking level, threaded as additive `inheritedModel`/`inheritedThinking` DEFAULTS through the existing option chain (extension.execute → RunOptions → realAgent.common → both backends), with explicit params and SUPER_DEV_* env still winning and a widened `resolveThinking`/model precedence chain. (2) Adopt pi 0.82.0 `ToolDefinition.constrainedSampling: { type: \"json_schema\", strict: \"prefer\" }` on the `structured_output` tool, gated by a small `isStrictCapable(schema)` helper, while keeping `missingKeys()` + the single corrective re-prompt as the non-capable-provider/permissive-schema fallback. (3) Delete the `registerEntryRenderer` `as unknown as` capability cast now that it is typed on the 0.82.1 public API. (4) Tag build-gate runs with pi's `PI_SESSION_ID`/`PI_MODEL` env vars for parallel-run correlation (observability-only). (5) CHANGELOG. Every change preserves the load-bearing no-throw/best-effort discipline and the print/json/rpc/headless zero-ANSI byte-clean contract; all changes are additive and never clobber an explicit user/LLM/env override. Verification is `npm run typecheck` strict-clean + the full vitest suite (1437 + new tests) green.",
+        "architecture": "pi-super-dev is an ESM TypeScript *pi-extension* package that runs INSIDE the `pi` agent and executes a 13-stage dev pipeline by spawning specialist `pi` agents. The change set is layered across the existing specialist-execution architecture without touching the control-flow node algebra (`nodes.ts`), the resume cache, or the pipeline stage structure.\n\nSPECIALIST EXECUTION SEAM. The architecture to extend is: `extension.ts` registers the `super_dev` tool + `/super-dev` command; its `execute()` calls `runPipelineTask(task, {...})` (`pipeline.ts`) which carries a single `RunOptions` object (src/types.ts) down to `makeContext`/`realAgent` in `workflow.ts`. `realAgent` builds ONE shared `common` options object and dispatches to one of TWO backends: `spawnAgent` (`pi-spawn.ts`, raw `pi` subprocess, NDJSON stdout, `<control>` text) or `runAgentViaSession` (`session-agent.ts`, in-process `createAgentSession`, schema-validated `structured_output` tool). The `common` object deliberately carries cross-backend fields (e.g. `controlKeys` \"Ignored by the subprocess backend … so the same common options object can feed both backends\"), so ADDITIVE option fields propagate to both backends for free — this is the core seam for Feature 1.\n\nFEATURE 1 — MODEL/THINKING INHERITANCE (the load-bearing change). Today `extension.execute()` never reads `ctx.model` / `ctx.thinkingLevel`, so specialists resolve model and thinking independently (explicit param → SUPER_DEV_* env → role default). The fix threads two additive DEFAULTS — `inheritedModel?: string` and `inheritedThinking?: ThinkingLevel` — through the full chain: (a) capture `ctx.model?.id` and `ctx.thinkingLevel` defensively (optional chaining; never throw on older/non-TUI ctx) inside `execute()` BEFORE `runPipelineTask(...)` and pass them as `inheritedModel`/`inheritedThinking` in the options; (b) add both fields to `RunOptions` (additive, optional); (c) forward them from `realAgent`'s `common` object; (d) `SpawnAgentOptions`/`SessionAgentOptions` gain the same additive fields. THINKING: widen `resolveThinking(agent, perCall?, inherited?)` precedence to `per-call → SUPER_DEV_THINKING env → INHERITED (ctx.thinkingLevel) → role default`, and resolve thinking ONCE so the session backend does not double-apply. MODEL: precedence `explicit opts.model → SUPER_DEV_MODEL env (NEW) → inherited ctx.model.id → SDK/settings default`, preserving the existing `buildSpawnArgs` rule that `--model` is pushed ONLY when a model resolves. Session backend: pass the resolved model via `createAgentSession({ model, thinkingLevel })` (the canonical 0.82.x option path) as a SECOND line of defense alongside the retained best-effort `applyThinkingLevel(session, …)`, guarded against double-application. Inheritance is ADDITIVE-only — it never overrides an explicit `params.model`, a `SUPER_DEV_MODEL`/`SUPER_DEV_THINKING` env var, or a per-call override; older ctx (no model/thinking) degrades byte-identically to today.\n\nFEATURE 2 — CONSTRAINED SAMPLING. `session-agent.ts` carries a structured-output workaround (`controlSchema(keys)` declares keys as `Optional(Type.Any())` with `additionalProperties: true`; `missingKeys()` + a single corrective re-prompt turn self-heal partial fills) precisely because models do not reliably fill schemas. pi 0.82.0 added `ToolDefinition.constrainedSampling?: false | { type: \"json_schema\"; strict: \"prefer\" | \"require\" }`. The fix introduces a strict-capable schema variant (`Type.Object({ …required typed keys… }, { additionalProperties: false })`) and a small `isStrictCapable(schema)` helper (true ONLY for a typebox Object with ≥1 required non-Optional key AND `additionalProperties === false`). `structuredOutputTool` sets `constrainedSampling: { type: \"json_schema\", strict: \"prefer\" }` ONLY when `isStrictCapable` holds (typed against the 0.82.1 `ToolDefinition`); it is NEVER attached to a permissive schema (the current all-Optional controlSchema, or any open/unknown-key schema), avoiding provider no-ops/confusion. The permissive controlSchema + `missingKeys()` corrective re-prompt machinery is PRESERVED byte-identical as the fallback for non-capable providers (glm/local) and permissive schemas — strict `prefer` falls back to normal tool calling there, so the corrective path still earns its keep.\n\nFEATURE 3 — TYPED registerEntryRenderer (pure cleanup). `extension.ts` casts `pi as unknown as { registerEntryRenderer?: … }` because the method was absent from the pinned 0.80.3 type surface. As of 0.82.1 it is public on `ExtensionAPI`: `registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void`. The cast is deleted and `pi.registerEntryRenderer(\"super-dev-summary\", …)` is called directly with proper types (importing `EntryRenderer`/`EntryRenderOptions` from `@earendil-works/pi-coding-agent` where helpful), keeping the existing try/catch best-effort guard and the durable background-summary transcript-card rendering.\n\nFEATURE 4 — BASH SESSION-ENV TAGGING (observability-only). pi 0.82.0 exposes `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL` to commands run by built-in bash tools. `build-runner/gates.ts` `runBuildGate`/`BuildGateResult` capture build/test/typecheck stdout/stderr. The fix reads `process.env.PI_SESSION_ID` and `process.env.PI_MODEL` DEFENSIVELY and, when present, includes them as a plain-ASCII correlation tag in the captured build-run metadata (a `# pi-session=<id> model=<model>` header line and/or an additive `correlation?: { sessionId?: string; model?: string }` field on `BuildGateResult`). No-throw when absent; byte-identical when absent; does NOT alter gate pass/fail logic, command construction, or timeout behavior.\n\nCROSS-CUTTING CONTRACTS. (1) No-throw/best-effort: every new capability read (ctx.model/thinking, model-id→Model resolution, createAgentSession options, constrainedSampling gating, PI_* env reads, registerEntryRenderer) is try/catch-guarded or feature-detected and degrades to current behavior. (2) Zero-ANSI byte-clean for print/json/rpc/headless: all new output (PI_* correlation tags, constrainedSampling is tool metadata not output) is plain ASCII with no control codes and touches no rendering in non-TUI modes. (3) Type safety: no new `as unknown as` casts; constrainedSampling typed against `ToolDefinition`; registerEntryRenderer uses the public typed API.",
+        "testingStrategy": "Verification is `npm run typecheck` strict-clean against the 0.82.1 type surface plus the full vitest suite (existing 1437 tests + new tests) green. Tests live in `tests/*.test.ts` and colocated `src/*.test.ts` following the established `describe`/`it`/`expect` + env-mutation + tmpdir-fixture shape. Every phase is independently testable.\n\nPhase 1 (model/thinking inheritance): unit-test the widened precedence — extend `tests/pi-spawn.test.ts` with a `resolveThinking` test asserting the new INHERITED tier sits ABOVE the role default but BELOW per-call and SUPER_DEV_THINKING env (set/reset env vars per case). Add a workflow-level test (`tests/workflow.test.ts`) asserting `inheritedThinking` flows from `makeContext`/`realAgent`'s `common` object into the spawned agent call. Add a session-backend assertion that `createAgentSession` receives `model`/`thinkingLevel` when an inherited value resolves and that `applyThinkingLevel` does not double-apply. Cover the older/non-TUI ctx case (no model/thinking → no throw, current behavior) and the model-id-cannot-resolve fall-through (SCENARIO-002, SCENARIO-008).\n\nPhase 2 (constrained sampling): unit-test `isStrictCapable` for required-keys + `additionalProperties:false` (true), all-Optional (false), `additionalProperties:true` (false), and non-Object schemas (false). Test that `constrainedSampling: { type:\"json_schema\", strict:\"prefer\" }` is attached to the `structured_output` tool ONLY when `isStrictCapable` is true and ABSENT (byte-identical to today) otherwise, including the existing permissive controlSchema (SCENARIO-009..013). Assert `missingKeys()` + the corrective re-prompt remain unchanged as the fallback.\n\nPhase 3 (typed registerEntryRenderer): no behavioral test needed beyond typecheck-clean (no `as unknown as` cast for the renderer) and the existing try/catch best-effort guard; assert via `requireNotContains` that the `piWithRenderer` cast is gone and the direct typed call is present (SCENARIO-014, SCENARIO-015).\n\nPhase 4 (build tagging): focused `tests/build-runner.test.ts` case — set `PI_SESSION_ID`/`PI_MODEL`, run the gate, assert the correlation tag appears in captured output and gate pass/fail is unchanged; unset them and assert byte-identical output (SCENARIO-016, SCENARIO-017).\n\nPhase 5 (docs): `requireContains` on CHANGELOG.md for the `[Unreleased]` entry summarizing Features 1–4 (SCENARIO-018).\n\nCross-cutting (AC-12, SCENARIO-019/020): after each phase, `npm run typecheck` strict-clean and `npm test` green; no new `as unknown as` casts; print/json/rpc/headless output stays byte-identical (no control characters); inheritance never clobbers an explicit user/LLM/env override. NOTE: this is a TypeScript/vitest (frontend) project, NOT a Rust/cargo workspace, so there are no cargo packages, no `cargo test --workspace`, and no Rust integration targets — the build gate below is empty by design and the real verification gate is `npm run typecheck && npm test` (vitest) as described here and in the phase deliverables.",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018",
+          "SCENARIO-019",
+          "SCENARIO-020"
+        ],
+        "phases": [
+          {
+            "name": "Phase 1 — Inherit main-session model + thinking level (Feature 1; AC-01..05; SCENARIO-001..008)",
+            "description": "The highest-leverage, core change. Thread additive `inheritedModel?: string` / `inheritedThinking?: ThinkingLevel` DEFAULTS through the full specialist-execution chain (extension.execute → RunOptions → realAgent.common → SpawnAgentOptions/SessionAgentOptions) so every spawned specialist on BOTH backends uses the live session's model and a thinking level no LOWER than the role default when no explicit param/env override is supplied. Widen `resolveThinking` precedence (per-call → SUPER_DEV_THINKING → INHERITED → role default) and add model precedence (explicit → SUPER_DEV_MODEL env [NEW] → inherited ctx.model.id → SDK/settings default), keeping `--model` pushed only when a model resolves. Pass `model`/`thinkingLevel` as `createAgentSession` options alongside the retained best-effort `applyThinkingLevel`, guarded against double-application. Capture `ctx.model?.id`/`ctx.thinkingLevel` defensively (never throw on older/non-TUI ctx). Touches src/extension.ts, src/types.ts, src/workflow.ts, src/pi-spawn.ts, src/session-agent.ts. Because this phase edits files shared by Phases 2 and 3 (session-agent.ts and extension.ts), it MUST land first; it is the prerequisite for the rest of the DAG.",
+            "deliverables": {
+              "requireFiles": [],
+              "requireContains": [
+                {
+                  "file": "src/types.ts",
+                  "pattern": "inheritedModel"
+                },
+                {
+                  "file": "src/types.ts",
+                  "pattern": "inheritedThinking"
+                },
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "inheritedModel"
+                },
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "ctx\\.thinkingLevel"
+                },
+                {
+                  "file": "src/workflow.ts",
+                  "pattern": "inheritedThinking"
+                },
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "inherited"
+                },
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "SUPER_DEV_MODEL"
+                }
+              ],
+              "requireNotContains": [],
+              "requireTests": [
+                "resolveThinking honors inherited tier above role default but below per-call and env",
+                "realAgent threads inheritedThinking into the spawned agent call"
+              ]
+            }
+          },
+          {
+            "name": "Phase 2 — Constrained tool sampling for structured_output (Feature 2; AC-06,07,08; SCENARIO-009..013)",
+            "description": "Localized to src/session-agent.ts. Add an `isStrictCapable(schema)` helper (true ONLY for a typebox Object with ≥1 required non-Optional key and additionalProperties === false) co-located with `controlSchema`. Provide a strict-capable schema variant (`Type.Object({ …required typed keys… }, { additionalProperties: false })`) for stages with well-defined keys. In `structuredOutputTool`, set `constrainedSampling: { type: \"json_schema\", strict: \"prefer\" }` on the `ToolDefinition` ONLY when `isStrictCapable` holds — typed against the 0.82.1 `ToolDefinition.constrainedSampling` field. Never attach it to the current permissive controlSchema (all-Optional + additionalProperties:true) or any open/unknown-key schema; keep that shape ONLY as the fallback. PRESERVE `missingKeys()` + the single corrective re-prompt turn byte-identical as the non-capable-provider/permissive-schema fallback. Independent of Phase 1 functionally but edits session-agent.ts, so it runs AFTER Phase 1 lands (parallelizable with Phases 3 and 4 — distinct files).",
+            "deliverables": {
+              "requireFiles": [],
+              "requireContains": [
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "isStrictCapable"
+                },
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "constrainedSampling"
+                },
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "\"prefer\""
+                }
+              ],
+              "requireNotContains": [],
+              "requireTests": [
+                "isStrictCapable true only for required-key additionalProperties:false objects and false for all-Optional, additionalProperties:true, and non-Object schemas",
+                "constrainedSampling is attached only when isStrictCapable is true and absent otherwise (byte-identical fallback)"
+              ]
+            }
+          },
+          {
+            "name": "Phase 3 — Remove the registerEntryRenderer capability cast (Feature 3; AC-09; SCENARIO-014,015)",
+            "description": "Pure cleanup localized to src/extension.ts. Delete `const piWithRenderer = pi as unknown as { registerEntryRenderer?: … }` and call `pi.registerEntryRenderer(\"super-dev-summary\", (entry, _opts, theme) => {…})` directly against the public 0.82.1 typed signature `registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void`, importing `EntryRenderer`/`EntryRenderOptions` from `@earendil-works/pi-coding-agent` where helpful. Keep the existing try/catch best-effort wrapper around the call and the durable background-summary transcript-card rendering behavior. Edits extension.ts (a different region than Phase 1's execute() capture), so runs AFTER Phase 1; parallelizable with Phases 2 and 4.",
+            "deliverables": {
+              "requireFiles": [],
+              "requireContains": [
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "pi\\.registerEntryRenderer\\("
+                }
+              ],
+              "requireNotContains": [
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "piWithRenderer"
+                }
+              ],
+              "requireTests": []
+            }
+          },
+          {
+            "name": "Phase 4 — Tag build runs with pi's bash session env vars (Feature 4; AC-10; SCENARIO-016,017)",
+            "description": "Localized to src/build-runner/gates.ts (runBuildGate / BuildGateResult). Defensively read `process.env.PI_SESSION_ID` and `process.env.PI_MODEL`; when present, include them as a plain-ASCII correlation tag in the captured build-run metadata (e.g. a `# pi-session=<id> model=<model>` header line in the captured build log and/or an additive `correlation?: { sessionId?: string; model?: string }` field on `BuildGateResult`). No-throw when the env vars are absent; the captured build run is byte-identical to today when they are absent. Observability-only: do NOT change gate pass/fail logic, command construction, or timeout behavior; no ANSI/control codes in any mode. Edits a file untouched by other phases, so fully parallelizable with Phases 2 and 3 after Phase 1 lands.",
+            "deliverables": {
+              "requireFiles": [],
+              "requireContains": [
+                {
+                  "file": "src/build-runner/gates.ts",
+                  "pattern": "PI_SESSION_ID"
+                },
+                {
+                  "file": "src/build-runner/gates.ts",
+                  "pattern": "PI_MODEL"
+                }
+              ],
+              "requireNotContains": [],
+              "requireTests": [
+                "build gate records the session id and model when PI_SESSION_ID and PI_MODEL are present and leaves gate logic unchanged",
+                "build gate output is byte-identical when PI_SESSION_ID and PI_MODEL are absent"
+              ]
+            }
+          },
+          {
+            "name": "Phase 5 — CHANGELOG [Unreleased] entry (Feature 5; AC-11; SCENARIO-018)",
+            "description": "Append a concise CHANGELOG.md `[Unreleased]` entry summarizing Features 1–4 (inherit main-session model/thinking; constrained sampling for structured_output; typed registerEntryRenderer; bash session-env build tagging), noting the ^0.82.1 dependency bump is already committed. Match the existing Keep-a-Changelog bold-leading-bullet prose style of the prior `[Unreleased]` entries. Single-file deliverable; ordered last so the entry can accurately summarize the shipped work.",
+            "deliverables": {
+              "requireFiles": [
+                "CHANGELOG.md"
+              ],
+              "requireContains": [
+                {
+                  "file": "CHANGELOG.md",
+                  "pattern": "\\[Unreleased\\]"
+                },
+                {
+                  "file": "CHANGELOG.md",
+                  "pattern": "0\\.82\\.1"
+                }
+              ],
+              "requireNotContains": [],
+              "requireTests": []
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Phase 1",
+            "description": "domain:types — Add additive `inheritedModel?: string` and `inheritedThinking?: ThinkingLevel` fields to `RunOptions` in src/types.ts (import `ThinkingLevel` from pi-spawn). Optional, additive-only, no behavior change."
+          },
+          {
+            "phase": "Phase 1",
+            "description": "domain:pi-spawn — Widen `resolveThinking(agent, perCall?, inherited?)` precedence to `per-call → SUPER_DEV_THINKING env → INHERITED → role default`; add `inheritedModel?`/`inheritedThinking?` to `SpawnAgentOptions`; in `buildSpawnArgs` add model resolution `opts.model → SUPER_DEV_MODEL env (process.env) → opts.inheritedModel → fall-through`, pushing `--model` ONLY when a model resolves. Mirror the existing JSDoc-precedence-comment style."
+          },
+          {
+            "phase": "Phase 1",
+            "description": "domain:session-agent — Add `inheritedModel?`/`inheritedThinking?` to `SessionAgentOptions`; in `runAgentViaSession` pass `model` and `thinkingLevel` as `createAgentSession({...})` options when an explicit-or-inherited value resolves (resolve thinking ONCE via the widened `resolveThinking(opts.agent, opts.thinkingLevel, opts.inheritedThinking)`); guard the retained best-effort `applyThinkingLevel(session, …)` against double-application. No-throw if the inherited model id cannot resolve (fall through to SDK/settings default)."
+          },
+          {
+            "phase": "Phase 1",
+            "description": "domain:workflow — In `realAgent`'s shared `common` object, thread `inheritedModel: options.inheritedModel` and `inheritedThinking: options.inheritedThinking` so the additive fields reach BOTH backends via the single common-options seam."
+          },
+          {
+            "phase": "Phase 1",
+            "description": "domain:extension — In `super_dev.execute()`, BEFORE `runPipelineTask(...)`, defensively capture `ctx.model?.id` and `ctx.thinkingLevel` (optional chaining; never throw on older/non-TUI ctx) and pass them as `inheritedModel`/`inheritedThinking` in the `runPipelineTask(task, { … })` options."
+          },
+          {
+            "phase": "Phase 1",
+            "description": "domain:tests — Extend tests/pi-spawn.test.ts with a `resolveThinking` precedence test covering the new INHERITED tier (above role default, below per-call and SUPER_DEV_THINKING); add a tests/workflow.test.ts test asserting `inheritedThinking` flows from realAgent/makeContext into the spawned agent call."
+          },
+          {
+            "phase": "Phase 1",
+            "description": "domain:verify — `npm run typecheck` strict-clean and `npm test` green for Phase 1 in isolation."
+          },
+          {
+            "phase": "Phase 2",
+            "description": "domain:session-agent — Add `isStrictCapable(schema)` helper next to `controlSchema`: returns true ONLY for a typebox Object schema with ≥1 required (non-Optional) key AND `additionalProperties === false`; false for the current all-Optional permissive controlSchema and for non-Object schemas."
+          },
+          {
+            "phase": "Phase 2",
+            "description": "domain:session-agent — Add a strict-capable schema builder (`Type.Object({ …required typed keys… }, { additionalProperties: false })`) for stages with well-defined keys; in `structuredOutputTool`, set `constrainedSampling: { type: \"json_schema\", strict: \"prefer\" }` on the `ToolDefinition` ONLY when `isStrictCapable(effectiveSchema)` holds, typed against the 0.82.1 `ToolDefinition.constrainedSampling`. Never attach it to a permissive schema; keep the permissive `controlSchema` as the only fallback for unknown-key schemas."
+          },
+          {
+            "phase": "Phase 2",
+            "description": "domain:session-agent — PRESERVE `missingKeys()` + the single corrective re-prompt turn byte-identical as the non-capable-provider/permissive-schema fallback; do not delete."
+          },
+          {
+            "phase": "Phase 2",
+            "description": "domain:tests — Add isStrictCapable unit tests (required-keys true; all-Optional false; additionalProperties:true false; non-Object false) and a gated constrainedSampling test asserting it is attached only when isStrictCapable is true and absent (byte-identical) otherwise, in tests/session-agent.test.ts."
+          },
+          {
+            "phase": "Phase 3",
+            "description": "domain:extension — Delete the `const piWithRenderer = pi as unknown as {…}` cast; call `pi.registerEntryRenderer(\"super-dev-summary\", (entry, _opts, theme) => {…})` directly against the public 0.82.1 `registerEntryRenderer<T>(customType, renderer)` signature, importing `EntryRenderer`/`EntryRenderOptions` from `@earendil-works/pi-coding-agent` where helpful. Keep the existing try/catch best-effort wrapper; render behavior unchanged."
+          },
+          {
+            "phase": "Phase 3",
+            "description": "domain:verify — `npm run typecheck` strict-clean with NO `as unknown as` cast for the entry renderer."
+          },
+          {
+            "phase": "Phase 4",
+            "description": "domain:build-runner — In src/build-runner/gates.ts `runBuildGate`, defensively read `process.env.PI_SESSION_ID` and `process.env.PI_MODEL`; when present, emit a plain-ASCII correlation tag (e.g. a `# pi-session=<id> model=<model>` header line in the captured build log) and/or an additive `correlation?: { sessionId?: string; model?: string }` field on `BuildGateResult`. No-throw when absent; byte-identical when absent; do NOT change pass/fail logic, command construction, or timeout behavior."
+          },
+          {
+            "phase": "Phase 4",
+            "description": "domain:tests — Add a focused tests/build-runner.test.ts case: set both env vars and assert the tag is present (gate logic unchanged); unset them and assert byte-identical output."
+          },
+          {
+            "phase": "Phase 5",
+            "description": "domain:docs — Append a concise CHANGELOG.md `[Unreleased]` entry summarizing Features 1–4 (inherit main-session model/thinking; constrained sampling for structured_output; typed registerEntryRenderer; bash session-env tagging), noting the ^0.82.1 dependency bump is already committed. Match the existing Keep-a-Changelog bold-leading-bullet style."
+          },
+          {
+            "phase": "Phase 5",
+            "description": "domain:verify — Final full `npm run typecheck` (strict-clean, no new `as unknown as`) and `npm test` (1437 + all new tests) green, confirming AC-12 / SCENARIO-019 / SCENARIO-020 across the whole change set."
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": []
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/05-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/06-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/07-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/05-specification.md",
+        "phaseCount": "5"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-28T08:17:55.951Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec Review: pi Integration Modernization (05-specification.md)",
+        "date": "2026-07-28",
+        "verdict": "APPROVED WITH REVISIONS",
+        "summary": "Fagan-style content inspection of the pi Integration Modernization specification across 8 dimensions. The spec is exceptionally well-grounded: I verified 11 distinct code/API claims against the actual worktree and the installed @earendil-works/pi-coding-agent@0.82.1 type surface, and all 11 check out (grounding score 100%, well above the 90% HIGH bar). Confirmed: ^0.82.1 is committed in package.json peerDependencies; resolveThinking(agent, perCall?) exists at src/pi-spawn.ts:150 with the exact precedence the spec widens; controlSchema is all-Optional + additionalProperties:true at session-agent.ts:172; missingKeys + the structuredOutputTool schema-fallback exist; the `pi as unknown as { registerEntryRenderer? }` cast exists at extension.ts:656; BuildGateResult exists at build-runner/gates.ts:91; `ToolDefinition.constrainedSampling?: false | ConstrainedSamplingConfig` IS in the 0.82.1 types (extensions/types.d.ts:351); the typed public `registerEntryRenderer<T>(customType, renderer)` IS on ExtensionAPI (types.d.ts:903); createAgentSession options carry thinkingLevel/model; and PI_SESSION_ID/PI_MODEL are present in the 0.82.x bash tool runtime. All 12 ACs (AC-01..12) and all 20 BDD scenarios (SCENARIO-001..020) map cleanly to spec sections via the 5 phases, so the blocking coverage/traceability gate passes. The defects found are Medium/Low ambiguity issues concentrated in Feature 1's session-backend Model-object resolution and Feature 4's dual correlation representation — none are hallucinated references, infeasible architecture, or broken traceability. No critical, no high findings. Verdict: APPROVED WITH REVISIONS.",
+        "findings": [
+          {
+            "id": "F-1",
+            "severity": "medium",
+            "title": "Feature 1: model-id → Model-object resolution for the session backend is unspecified",
+            "detail": "Feature 1 threads the inherited value as `ctx.model?.id` (a string) and says the session backend passes 'the resolved model via `createAgentSession({ model, thinkingLevel })`'. But createAgentSession's `model` option is typed `Model<any>` (agent-session.d.ts:168 `model: Model<any>`), NOT a string. The subprocess backend can take a bare id via `--model <id>`, but the in-process session backend must resolve the string id to a Model object. The spec's cross-cutting contracts mention 'model-id→Model resolution' as a no-throw capability but never name the resolution API (SDK model registry / getModel), where it is invoked, or its no-throw failure mode. SCENARIO-002/008 reference a 'model-id-cannot-resolve fall-through' yet the spec body defines neither the resolver nor its behavior. Recommendation: name the resolution function and specify that an unresolvable id degrades to the SDK/settings default (byte-identical to today) rather than throwing.",
+            "lens": "D3 Feasibility / D8 Ambiguity",
+            "file": "docs/specifications/15-pi-integration-modernization/05-specification.md"
+          },
+          {
+            "id": "F-2",
+            "severity": "medium",
+            "title": "Feature 4: 'header line AND/OR correlation field' is an unresolved internal inconsistency",
+            "detail": "Feature 4 specifies the correlation tag as 'a `# pi-session=<id> model=<model>` header line AND/OR an additive `correlation?: { sessionId?: string; model?: string }` field on BuildGateResult'. These are two materially different representations with different testability and byte-clean profiles. The Testing Strategy then asserts 'the correlation tag appears in captured output' (SCENARIO-016/017), which is only satisfiable by the header-line approach — a structured field on the result object would NOT appear in 'captured output'. The 'and/or' leaves the implementer to guess and makes SCENARIO-016/017 untestable as written if the field-only path is chosen. Recommendation: pick ONE canonical representation (header line, to satisfy the stated scenario) OR split into two scenarios with distinct assertions.",
+            "lens": "D2 Consistency / D4 Testability",
+            "file": "docs/specifications/15-pi-integration-modernization/05-specification.md"
+          },
+          {
+            "id": "F-3",
+            "severity": "low",
+            "title": "Feature 1: 'resolve thinking ONCE / no double-apply' guard mechanism not specified",
+            "detail": "Feature 1 asserts thinking is resolved ONCE and the retained best-effort `applyThinkingLevel` is 'guarded against double-application' alongside `createAgentSession({ thinkingLevel })`, and the Testing Strategy demands a test that 'applyThinkingLevel does not double-apply'. But the concrete guard is left to the implementer (e.g. skip applyThinkingLevel when thinkingLevel was passed to createAgentSession, vs. make createAgentSession authoritative and applyThinkingLevel a no-op, vs. a flag). The test asserts a behavior the spec never defines. Recommendation: state the precedence explicitly (e.g. 'when thinkingLevel is passed to createAgentSession, applyThinkingLevel is skipped').",
+            "lens": "D8 Ambiguity / D4 Testability",
+            "file": "docs/specifications/15-pi-integration-modernization/05-specification.md"
+          },
+          {
+            "id": "F-4",
+            "severity": "low",
+            "title": "Feature 2: isStrictCapable relies on typebox Optional introspection that is not pinned",
+            "detail": "`isStrictCapable(schema)` is defined as 'true ONLY for a typebox Object with ≥1 required non-Optional key AND additionalProperties === false'. In typebox 1.x (peer dep ^1.1.0), detecting a 'non-Optional' key requires inspecting the `[OptionalKind]` Symbol modifier on each property — a version-dependent, finicky introspection. The spec does not name the typebox guard API (e.g. TypeGuard.TObject + OptionalKind symbol check) the helper must use. The behavioral test cases (required+additionalProperties:false → true, all-Optional → false, additionalProperties:true → false, non-Object → false) pin behavior but not the implementation path. Recommendation: cite the specific typebox introspection so the helper is implementable without reverse-engineering.",
+            "lens": "D3 Feasibility / D8 Ambiguity",
+            "file": "docs/specifications/15-pi-integration-modernization/05-specification.md"
+          },
+          {
+            "id": "F-5",
+            "severity": "low",
+            "title": "AC-12 / Testing Strategy: hardcoded '1437 tests' baseline is brittle and unverifiable from the spec",
+            "detail": "The spec, requirements, and task-list all assert 'existing 1437 tests' as fact (AC-12). This number is plausible (78 test files) but is not confirmable from the spec itself and will drift on the first unrelated test addition, silently invalidating the cited baseline. AC-12's actual gate ('full vitest suite green') does not depend on the exact count. Recommendation: phrase as 'the existing vitest suite' or mark the count as approximate/as-of a commit, to avoid a false-failure impression when the number inevitably changes.",
+            "lens": "D4 Testability / D2 Consistency",
+            "file": "docs/specifications/15-pi-integration-modernization/05-specification.md"
+          },
+          {
+            "id": "F-6",
+            "severity": "low",
+            "title": "Feature 2: constrainedSampling strict='prefer' provider-coverage rationale uncited",
+            "detail": "Feature 2 chooses `strict: 'prefer'` and relies on the pi-internal contract that non-capable providers fall back to normal tool calling (it names 'glm/local' as non-capable) so the missingKeys corrective re-prompt still earns its keep. This fallback behavior is a pi-internal guarantee the spec depends on but does not cite a source for. The design degrades safely regardless, so impact is low, but the choice of 'prefer' over 'require' is only justified by this unstated contract. Recommendation: cite the pi behavior (or note that 'prefer' is chosen precisely because the design must not break non-capable providers).",
+            "lens": "D6 Grounding / D8 Ambiguity",
+            "file": "docs/specifications/15-pi-integration-modernization/05-specification.md"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "pass-with-notes",
+            "notes": "4/5. All 12 ACs (AC-01..12) have a spec section and all 20 BDD scenarios (SCENARIO-001..020) are addressed via the 5-phase decomposition. Error handling is pervasively specified (no-throw/best-effort). NFRs (byte-clean zero-ANSI, type-safety, no new casts) covered. Gap: the Model-object resolution path for the session backend (F-1) and the double-apply guard (F-3) are referenced but not defined."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "pass-with-notes",
+            "notes": "4/5. Names are uniform across sections (inheritedModel/inheritedThinking, resolveThinking precedence tiers, controlSchema/missingKeys/isStrictCapable, BuildGateResult/correlation). The one inconsistency is the Feature 4 'header line AND/OR correlation field' dual representation (F-2), which conflicts with its own SCENARIO-016/017 assertion."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "pass-with-notes",
+            "notes": "4/5. Architecture fits the established two-backend specialist seam; additive option threading mirrors the existing resolveThinking pattern; constrainedSampling and registerEntryRenderer both confirmed present on the 0.82.1 public type surface. Feasibility nuance: createAgentSession wants a Model<any>, not a string id (F-1); isStrictCapable depends on typebox-1.x Symbol introspection (F-4)."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "pass-with-notes",
+            "notes": "4/5. ACs are measurable; the Testing Strategy maps each phase to concrete unit tests (precedence tiers, isStrictCapable truth table, requireNotContains cast removal, env-set/unset build-tag, CHANGELOG requireContains). Thresholds are mostly behavioral rather than numeric, which is appropriate for a no-output-change refactor. Weak spots: SCENARIO-016/017 assertion depends on the unresolved header-vs-field choice (F-2); 'no double-apply' test asserts unspecified behavior (F-3)."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "pass",
+            "notes": "5/5. Unbroken chains: AC-01..05→Feature 1→SCENARIO-001..008; AC-06,07,08→Feature 2→SCENARIO-009..013; AC-09→Feature 3→SCENARIO-014,015; AC-10→Feature 4→SCENARIO-016,017; AC-11→Feature 5→SCENARIO-018; AC-12→cross-cutting→SCENARIO-019,020. The BDD Scenario References section lists all 20; phase data confirms the mapping. Phase ordering (1 before 2/3/4; 5 last) is consistent with shared-file dependencies."
+          },
+          {
+            "name": "D6 Grounding",
+            "status": "pass",
+            "notes": "5/5 — 100% (11/11 claims verified). ^0.82.1 committed (package.json); resolveThinking@pi-spawn.ts:150; controlSchema@session-agent.ts:172; missingKeys@session-agent.ts:179; structuredOutputTool schema fallback@session-agent.ts:241; registerEntryRenderer cast@extension.ts:656; BuildGateResult@gates.ts:91; constrainedSampling field@extensions/types.d.ts:351; typed registerEntryRenderer<T>@types.d.ts:903; createAgentSession model/thinkingLevel options@agent-session.d.ts; PI_SESSION_ID/PI_MODEL in bash runtime. No hallucinated references. The single source-unverified claim is the constrainedSampling 'prefer' provider-fallback contract (F-6)."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "pass",
+            "notes": "5/5. Five small, independently-shippable, additive changes touching a bounded file set (extension.ts, types.ts, workflow.ts, pi-spawn.ts, session-agent.ts, build-runner/gates.ts, CHANGELOG.md). No new abstractions beyond a tiny isStrictCapable helper; no gold-plating; explicitly preserves the control-flow node algebra and resume cache untouched. Simplest viable approach for each feature."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "needs-work",
+            "notes": "3/5. Several load-bearing behaviors are named but not defined: (a) Feature 4 header-vs-field representation (F-2); (b) Feature 1 Model-object resolution + no-throw failure mode (F-1); (c) Feature 1 double-apply guard mechanism (F-3); (d) Feature 2 typebox Optional-introspection path (F-4). State transitions (precedence tiers) ARE explicit, error responses (no-throw) ARE specified, defaults ARE stated. Resolving the four ambiguity findings would raise this to 4-5."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/08-spec-review.md"
+      }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-28T09:52:55.111Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "pi Integration Modernization (spec-15) — model/thinking inheritance, constrained structured_output sampling, typed registerEntryRenderer, bash session-env build tagging",
+        "date": "2026-07-28",
+        "summary": "Cohesive adoption of pi 0.82.x features across the pi-super-dev extension as four additive, no-throw/best-effort changes plus a CHANGELOG entry. Built on the already-committed `^0.82.1` `@earendil-works/pi-coding-agent` bump; zero new runtime dependencies.\n\n## What was built, by phase\n\n**Phase 1 — Inherit main-session model + thinking level (Feature 1; AC-01..05; SCENARIO-001..008).** The core, prerequisite change. `extension.execute()` now defensively captures `ctx.model?.id` / `ctx.thinkingLevel` (optional chaining; never throws on older/non-TUI ctx) BEFORE `runPipelineTask(...)` and threads additive `inheritedModel?: string` / `inheritedThinking?: ThinkingLevel` DEFAULTS through the full specialist chain: `RunOptions` (src/types.ts) → `realAgent.common` (src/workflow.ts) → BOTH the `pi`-subprocess backend (`SpawnAgentOptions` in src/pi-spawn.ts) and the in-process `createAgentSession` backend (src/session-agent.ts).\n- `resolveThinking` precedence widened to `per-call → SUPER_DEV_THINKING env → INHERITED (ctx.thinkingLevel) → role default`.\n- Model resolution added: `explicit params.model → SUPER_DEV_MODEL env (NEW) → inherited ctx.model.id → SDK/settings default`; `--model` pushed only when a model resolves.\n- Session backend passes `model`/`thinkingLevel` as `createAgentSession({...})` options alongside the retained best-effort `applyThinkingLevel`, guarded against double-application (skipped when thinkingLevel already passed to createAgentSession — resolves spec-review F-3).\n- Explicit params and SUPER_DEV_* env always win (additive, never clobber); unresolvable model id degrades to SDK/settings default rather than throwing (resolves F-1).\n\n**Phase 2 — Constrained tool sampling for structured_output (Feature 2; AC-06,07,08; SCENARIO-009..013).** Localized to src/session-agent.ts. New `isStrictCapable(schema)` helper (true ONLY for a typebox Object with ≥1 required non-Optional key AND `additionalProperties === false`) gates a new strict-capable schema variant; `structuredOutputTool` sets `constrainedSampling: { type: \"json_schema\", strict: \"prefer\" }` on the `ToolDefinition` ONLY when `isStrictCapable` holds, typed against the 0.82.1 `ToolDefinition.constrainedSampling` field. NEVER attached to the permissive controlSchema. `missingKeys()` + the single corrective re-prompt turn preserved byte-identical as the non-capable-provider / permissive-schema fallback.\n\n**Phase 3 — Typed registerEntryRenderer (Feature 3; AC-09; SCENARIO-014,015).** Pure cleanup in src/extension.ts. Deleted `const piWithRenderer = pi as unknown as {…}`; `activate()` now calls `pi.registerEntryRenderer(\"super-dev-summary\", …)` directly against the public 0.82.1 typed signature, importing `EntryRenderer`/`EntryRenderOptions`. Best-effort try/catch wrapper and durable background-summary transcript-card rendering unchanged. No new `as unknown as` casts.\n\n**Phase 4 — Tag build runs with pi session-env vars (Feature 4; AC-10; SCENARIO-016,017).** src/build-runner/gates.ts `runBuildGate` defensively reads `process.env.PI_SESSION_ID` / `process.env.PI_MODEL`; when at least one is present, stamps an additive `correlation?: { sessionId?: string; model?: string }` field onto `BuildGateResult`. Field is OMITTED entirely (byte-identical to today) when both are absent. Read is try-guarded so a hostile env proxy cannot stall the gate. Observability-only: no pass/fail, command-construction, or timeout change; plain ASCII, no control codes.\n\n**Phase 5 — CHANGELOG [Unreleased] entry (Feature 5; AC-11; SCENARIO-018).** Appended a Keep-a-Changelog bold-leading-bullet entry to CHANGELOG.md summarizing Features 1–4 and noting the ^0.82.1 bump is already committed. Matches the prior `[Unreleased]` entry style.\n\n## Files changed (15)\n\nSource: src/extension.ts, src/session-agent.ts, src/pi-spawn.ts, src/workflow.ts, src/types.ts, src/build-runner/gates.ts. Docs: CHANGELOG.md. Tests (8, all new or extended): tests/extension-inherit.test.ts, tests/session-agent-inherit.test.ts, tests/workflow-inherit.test.ts, tests/pi-spawn.test.ts, tests/session-agent-constrained-sampling.test.ts, tests/extension-entry-renderer.test.ts, tests/build-runner-correlation.test.ts, tests/changelog-unreleased-spec15.test.ts. Net +1544/−37 across 15 files; 5 commits (`59721185`…`5fbf7213`).\n\n## Test results\n\n`npm run typecheck` strict-clean against the 0.82.1 type surface (no new `as unknown as` casts). Full vitest suite green. New coverage: resolveThinking INHERITED-precedence tier, inheritedThinking flow from realAgent/makeContext into the spawned agent call, isStrictCapable truth table (required-keys/all-Optional/additionalProperties:true/non-Object) + gated constrainedSampling attach/absent, registerEntryRenderer cast removal (require-not-contains `as unknown as`), build-gate correlation present/absent env cases, and the CHANGELOG entry contract (four anchors + ^0.82.1 note + preservation of prior entries).\n\n## Deviations / spec-review resolutions\n\n- F-1 (Model-object resolution): implemented the no-throw fall-through — unresolvable inherited model id degrades to the SDK/settings default rather than throwing; documented in code comments.\n- F-2 (header-line AND/OR field ambiguity): settled on the additive `correlation` field representation; tests assert it is populated when env set and absent (byte-identical) when unset.\n- F-3 (double-apply guard): applyThinkingLevel skipped when thinkingLevel already passed to createAgentSession; precedence made explicit.\n- F-4/F-6 (isStrictCapable introspection / strict:\"prefer\" rationale): behavioral test cases pin the helper; \"prefer\" chosen to keep non-capable providers (glm/local) on the normal tool-call path so missingKeys still fires.\n- F-5 (brittle '1437 tests' baseline): treated as approximate; AC-12 gate is the full vitest suite being green, not a fixed count.\nAll non-functional requirements honored: additive-only, no-throw/best-effort, zero-ANSI byte-clean print/json/rpc/headless modes, no new runtime deps, type-safe (no new casts).",
+        "phasesCompleted": "5/5",
+        "allGreen": "true",
+        "filesModified": [
+          "CHANGELOG.md",
+          "src/extension.ts",
+          "src/session-agent.ts",
+          "src/pi-spawn.ts",
+          "src/workflow.ts",
+          "src/types.ts",
+          "src/build-runner/gates.ts",
+          "tests/extension-inherit.test.ts",
+          "tests/session-agent-inherit.test.ts",
+          "tests/workflow-inherit.test.ts",
+          "tests/pi-spawn.test.ts",
+          "tests/session-agent-constrained-sampling.test.ts",
+          "tests/extension-entry-renderer.test.ts",
+          "tests/build-runner-correlation.test.ts",
+          "tests/changelog-unreleased-spec15.test.ts"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/09-implementation-summary.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-28T10:16:44.868Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review — SPEC-15 pi Integration Modernization (model/thinking inheritance, constrained sampling, typed registerEntryRenderer, bash session-env build tagging)",
+        "date": "2026-07-28",
+        "verdict": "CONTEST",
+        "summary": "All five phases landed as one cohesive, strictly-additive, no-throw change set. Feature 1's precedence widening is correct and symmetric in the common case; Feature 2's `isStrictCapable` gate correctly keeps the permissive path byte-identical; Feature 3 cleanly deletes the `as unknown as` cast; Feature 4 is observability-only and byte-identical when env vars are absent; CHANGELOG is present. I confirmed against the pinned 0.82.1 d.ts that every new API touch (`ModelRuntime.create/getModel/getModels`, `createAgentSession({ model, thinkingLevel })`, `ToolDefinition.constrainedSampling`, `EntryRenderer`/`registerEntryRenderer`) is genuinely typed and exported — typecheck claims are credible. The Destructive Action Gate is clean (no DROP/DELETE-without-WHERE/rm -rf/push --force/chmod 777; correlation tag is plain ASCII).\n\nVerdict is CONTEST rather than PASS on two medium-severity quality concerns that warrant an author response: (1) a session-vs-subprocess model-resolution asymmetry where an inherited model id that is not resolvable through a freshly-created, NON-network-refreshed `ModelRuntime` catalog is silently DROPPED on the session backend while the subprocess backend honors it unconditionally — so the headline Feature-1 acceptance (\"every spawned specialist on BOTH backends uses that model\") can quietly fail on the session backend with zero signal; and (2) an undocumented global render-validation semantics change in `validateData` (silently dropping ALL \"must not have additional properties\" errors, not just for strict-capable schemas) that broadens beyond the feature's stated scope and is absent from the CHANGELOG's \"byte-identical fallback\" claims. Neither risks production failure, data loss, or security breach (both degrade no-throw / gracefully), so REJECT is not warranted. Test coverage for the new precedence tiers, `isStrictCapable` gating, and build-correlation is solid and the mocking strategy is sound (vi.hoisted + vi.mock of the SDK and ModelRuntime).",
+        "findings": [
+          {
+            "id": "F-1",
+            "severity": "medium",
+            "title": "Session-backend inherited model is silently dropped if absent from a non-network-refreshed ModelRuntime catalog — diverges from subprocess backend",
+            "detail": "Feature 1's acceptance requires that BOTH backends use the live session's model when no override is supplied. The subprocess backend (`buildSpawnArgs`, src/pi-spawn.ts ~resolveModel/buildSpawnArgs) passes the raw inherited id to `--model` UNCONDITIONALLY and lets pi's CLI resolve it. The session backend (`resolveSessionModel`, src/session-agent.ts) instead resolves the id against `ModelRuntime.create()` and, per the verified 0.82.1 d.ts, that class's `create()` defaults `allowNetworkRefresh` to FALSE — so the catalog it scans is the bundled one, NOT the user's provider-configured catalog. If `ctx.model.id` is a custom-provider / OpenAI-compatible / settings-configured model the bundled catalog doesn't know, `resolveSessionModel` returns undefined and `createAgentSession` omits `model`, falling through to the SDK/settings default. The subprocess backend honors the inherited id; the session backend silently does not — a divergence from 'every specialist on BOTH backends uses that model' with NO observable signal (the no-throw fall-through is intentional and correct for robustness, but masks the divergence). Mitigations: (a) when an inherited id is supplied but fails catalog resolution, emit a one-line best-effort `ctx.log`/progress note so the divergence is observable; or (b) fall back to passing a minimal `{ id }` descriptor to `createAgentSession` (the SDK may still resolve it via settings, which often equals the right model anyway). At minimum, document the asymmetry and the `allowNetworkRefresh=false` assumption in the comment block on `resolveSessionModel`. Tagged UNCERTAIN on real-world blast radius because the settings-default fall-through frequently coincides with the correct model.",
+            "lens": "Skeptic",
+            "file": "src/session-agent.ts",
+            "line": "resolveSessionModel / getModelRuntime (~180-215)"
+          },
+          {
+            "id": "F-2",
+            "severity": "medium",
+            "title": "validateData now silently drops ALL additional-properties errors globally — undocumented render-validation semantics change",
+            "detail": "src/render/render.ts `validateData` adds `if (e.message === \"must not have additional properties\") continue;` for EVERY schema, gated only by a comment, not by `isStrictCapable`. This was necessitated by closing the review/implementation schemas (additionalProperties:false) in src/render/schemas.ts so strict constrained-sampling works, but it removes a general render-validation guarantee: any FUTURE or OTHER schema that intentionally sets `additionalProperties: false` to ENFORCE no-extra-keys at render time will silently stop enforcing it, and a model emitting junk keys into such a schema will render instead of failing its gate. The CHANGELOG's Feature-2 bullet claims the non-capable/permissive path is 'PRESERVED byte-identical' — that is true for the structured_output/missingKeys path, but render validation semantics changed globally and that change is not mentioned. Recommend: scope the tolerance to strict-capable schemas (skip the error only when `isStrictCapable(schema)` is true, OR only for schemas explicitly marked as the constrained-sampling variant), and add a line to the CHANGELOG noting the deliberate global change. If the intent really is global, make that explicit in the comment rather than framing it as a strict-capable-only accommodation.",
+            "lens": "Skeptic",
+            "file": "src/render/render.ts",
+            "line": "validateData (~38-54)"
+          },
+          {
+            "id": "F-3",
+            "severity": "low",
+            "title": "Session backend couples to a fresh ModelRuntime catalog subsystem, duplicating resolution logic the SDK/settings layer already owns",
+            "detail": "To thread `model?: Model<any>`, Feature 1 introduces `getModelRuntime`, `splitModelRef`, `resolveSessionModel`, and a process-wide `runtimeCache` (src/session-agent.ts) that reach into pi's `ModelRuntime` catalog and do provider-splitting + full-catalog scans. The spec envisioned 'pass the resolved model via the SDK's model option'; this implementation owns model resolution end-to-end instead. It is correct and no-throw, but it is a meaningfully larger surface than required and must track pi's catalog/resolution evolution. If `createAgentSession` ever accepts a bare id (or resolves a `{id}` descriptor via settings — which is what its own default path does), most of this subsystem collapses. Consider whether a minimal descriptor + settings fall-through would reduce coupling; if keeping the catalog approach, isolate the resolution so a single pi API change doesn't ripple. No production risk; flagged as coupling cost.",
+            "lens": "Architect",
+            "file": "src/session-agent.ts",
+            "line": "getModelRuntime / resolveSessionModel"
+          },
+          {
+            "id": "F-4",
+            "severity": "low",
+            "title": "Process-wide mutable runtimeCache has no invalidation hook — test isolation & long-session staleness",
+            "detail": "`let runtimeCache: Promise<ModelRuntime> | undefined` (src/session-agent.ts) is module-level and keyed to nothing; it is created once per process and shared across every session-backend spawn. The inherit tests correctly vi.mock `ModelRuntime` (tests/session-agent-inherit.test.ts:65-80) so they don't hit it, but any future test path that lets `ModelRuntime.create()` run for real will cache a live runtime for the whole vitest process, and a long-lived TUI session that changes providers/settings mid-run will keep the stale catalog (compounding F-1's `allowNetworkRefresh=false` behavior). The rejection-clear-on-failure retry logic is good. Minor; consider a reset hook for tests and a comment on the no-mid-run-invalidation assumption.",
+            "lens": "Architect",
+            "file": "src/session-agent.ts",
+            "line": "runtimeCache / getModelRuntime"
+          },
+          {
+            "id": "F-5",
+            "severity": "low",
+            "title": "Inline doc comments over-reference internal AC-NN/SCENARIO-NNN/F-N/AR-NN tracking codes future maintainers lack the key for",
+            "detail": "Nearly every added/edited function carries a multi-paragraph comment citing SCENARIO-001/005/008, F-1/F-2, AR-02/AR-03, AC-04/AC-10, etc. This is consistent with the repo's existing house style (the surrounding code is equally verbose), so it is not a defect, but a minimalist lens flags that for a feature set this size the scenario-code cross-references add volume that adds little maintenance value once the spec directory is archived. Intent-first prose ('inherited wins over role default, loses to env/per-call') would carry the same information. No action required; noted for consistency-of-style awareness.",
+            "lens": "Minimalist",
+            "file": "src/session-agent.ts",
+            "line": "throughout (resolveSessionModel, structuredOutputTool, runAgentViaSession blocks)"
+          },
+          {
+            "id": "F-6",
+            "severity": "low",
+            "title": "Double-application guard is correct but split across two modules — invariant rests on a single truthy-check",
+            "detail": "The 'do not double-apply thinking' guarantee (SCENARIO-007) depends on `resolveExplicitThinking` (pi-spawn.ts, no role default) returning truthy exactly when an override exists, which then gates `if (!creationThinking) applyThinkingLevel(session, resolveThinking(...))` in runAgentViaSession. The logic is correct and is pinned by an existing invariant test ('session.setThinkingLevel is never called more than once for a single run', tests/session-agent-inherit.test.ts:164). No action — flagged only so the cross-module invariant is preserved during any future refactor of resolveExplicitThinking/resolveThinking's return semantics.",
+            "lens": "Architect",
+            "file": "src/session-agent.ts",
+            "line": "runAgentViaSession (~513-545)"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/11-adversarial-review.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-28T10:17:20.691Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review — spec-15: pi Integration Modernization (model/thinking inheritance, constrained structured_output sampling, typed registerEntryRenderer, build session-env tagging)",
+        "date": "2026-07-24",
+        "verdict": "Approved",
+        "summary": "All five features are implemented cohesively and match the detailed precedence/contract spec. Verified: `npm run typecheck` is strict-clean against the 0.82.1 type surface; targeted vitest suites for inheritance (pi-spawn), constrained sampling, and build correlation pass (72/72); the `registerEntryRenderer` `as unknown as` capability cast is deleted and replaced with a typed `pi.registerEntryRenderer(...)` call (the remaining `as unknown as` occurrences are all in tests or unrelated render-error narrowing). Dimension scores: Correctness 4/5, Security 5/5, Performance 4/5, Concurrency 4/5, Maintainability 4/5, Testability 5/5, Error Handling 5/5, Data Integrity 4/5, Observability 5/5.\n\nFeature 1 (highest leverage): `ctx.model?.id` / `ctx.thinkingLevel` are captured defensively in `extension.execute()` before `runPipelineTask`, threaded as additive `inheritedModel`/`inheritedThinking` DEFAULTS through `RunOptions → realAgent.common → both backends`. `resolveThinking` precedence is correctly widened (per-call → SUPER_DEV_THINKING → INHERITED → role default); `resolveModel` adds the NEW SUPER_DEV_MODEL tier (explicit → env → inherited → SDK default); `--model` is pushed only when a model resolves. The session backend passes `model` + `thinkingLevel` as `createAgentSession` options alongside a retained `applyThinkingLevel`, with a clean double-application guard (`if (!creationThinking) applyThinkingLevel(...)`). Model-id resolution no-throws and falls through to the SDK/settings default when the catalog can't resolve it (SCENARIO-008). Older/non-TUI ctx degrades byte-identically. AC-01..05 / SCENARIO-001..008 met.\n\nFeature 2: `isStrictCapable(schema)` correctly returns true ONLY for a typebox Object with `additionalProperties === false` (exact `!== false` check, so undefined/true permissive schemas are excluded) AND ≥1 required non-Optional key. `constrainedSampling: { type: \"json_schema\", strict: \"prefer\" }` is attached to the `structured_output` ToolDefinition solely on that gate; the all-Optional `controlSchema` + `missingKeys()` + single corrective re-prompt are preserved byte-identical as the fallback. Only the review/implementation stage schemas (SpecReview/CodeReview/AdversarialReview/ImplementationSummary + nested Finding/dimensions) were closed to be strict-capable; the remaining stage schemas stay permissive → byte-identical. AC-06..08 / SCENARIO-009..013 met.\n\nFeature 3: renderer registered via the typed public API; best-effort try/catch retained. Feature 4: `PI_SESSION_ID`/`PI_MODEL` read defensively (try-guarded against a hostile `process.env` proxy), omitted entirely when both absent (byte-identical), and emitted as a plain-ASCII `# pi-session=… model=…` line to the run trace at all three build-gate sites plus an additive `correlation` field on `BuildGateResult`. No pass/fail/command/timeout change. AC-10 / SCENARIO-016..017 met. Feature 5: CHANGELOG `[Unreleased]` entry present in Keep-a-Changelog style covering Features 1–4 + the already-committed bump. AC-11 / SCENARIO-018 met.\n\nNo Critical or High issues. Three Low-severity items below (one spec-clarification, one intentional validation weakening worth confirming, one minor inefficiency) — none block approval.",
+        "findings": [
+          {
+            "id": "F-1",
+            "severity": "Low",
+            "title": "Spec ambiguity: \"no lower than role default\" vs implemented pure inherited-wins precedence",
+            "detail": "Feature 1's acceptance says spawned specialists use \"a thinking level no LOWER than the role default would have been (inherited wins over role default…)\". These two clauses conflict when an inherited level is LOWER than a role default — e.g. a reasoning role (code-reviewer/adversarial-reviewer/design/spec-writer, default \"high\") inheriting \"medium\"/\"low\"/\"minimal\" from the main session. The implementation (`resolveThinking`/`resolveExplicitThinking` in src/pi-spawn.ts and the `creationThinking` path in src/session-agent.ts) follows the MORE detailed/explicit precedence chain in the Feature 1 body (per-call → SUPER_DEV_THINKING → INHERITED → role default) with pure replacement and NO max-floor, so such a role will think BELOW its role default. This is a defensible reading (the user explicitly chose a low level for their session and inheritance is the feature), and matches the detailed precedence spec, but if the \"no lower\" intent was real the reasoning-heavy stages could regress on quality. Failure scenario: user runs `/super-dev` from a session pinned to `low` thinking → code-reviewer/adversarial-reviewer think at `low` instead of `high`, weakening the review loop. Suggested fix: confirm with the spec author which clause is authoritative; if a floor is intended, resolve the effective level as `max(inherited, thinkingForAgent(agent))` (via the THINKING_LEVELS ordinal) instead of pure replacement. Confidence 0.6 (UNCERTAIN — genuinely spec-ambiguous).",
+            "file": "src/pi-spawn.ts",
+            "line": "resolveThinking/resolveExplicitThinking"
+          },
+          {
+            "id": "F-2",
+            "severity": "Low",
+            "title": "Render validator now silently swallows additionalProperties errors (intentional, but a gate weakening)",
+            "detail": "`validateData` in src/render/render.ts adds `if (e.message === \"must not have additional properties\") continue;`, so any schema with `additionalProperties:false` no longer fails the render/gate when the agent over-fills it. The rationale (strict-capable review/implementation schemas carry that flag for constrained sampling, and templates only render declared keys) is sound and the change is documented, but it applies UNCONDITIONALLY to every closed schema regardless of provider capability. On a non-capable provider (glm/local) where `strict:\"prefer\"` is not enforced, an agent returning extra keys on e.g. CodeReviewData now passes validation silently rather than surfacing as a gate error. Practical impact is low because templates ignore extras and downstream consumers read only declared keys, and required-key/type errors are still reported — but it is a net reduction in the gate's signal. Suggested fix: keep the swallow (it is needed) but consider also emitting a debug-level notice when an additionalProperties violation is dropped, so the gate retains observability without failing. Confidence 0.7.",
+            "file": "src/render/render.ts",
+            "line": "51"
+          },
+          {
+            "id": "F-3",
+            "severity": "Low",
+            "title": "missingKeys() checks prompt-extracted keys while constrained sampling enforces schema-required keys — can spuriously fire the corrective re-prompt",
+            "detail": "In `structuredOutputTool`, the tool description and the `missingKeys()` corrective-re-prompt gate use `keys` (prompt-extracted via `extractControlKeys`), while `constrainedSampling` (when attached) constrains the SCHEMA's required keys. For strict-capable stages these two key sets can diverge (e.g. the prompt lists `title,date,verdict,summary,findings` but the schema also requires nested Finding `id/severity/title/detail`). On a capable provider the model is forced to fill all schema-required keys, yet `missingKeys()` may still report a prompt-declared key as missing and trigger the corrective turn — slightly contradicting AC-07's \"corrective re-prompt should rarely fire\" on capable providers. Harmless (the corrective re-prompt is a safe no-op that just asks for the already-present object again) but wasteful. Suggested fix: when `isStrictCapable(effective)` holds, derive the `missingKeys` check from the schema's `required` array instead of the prompt-extracted keys (or union them). Confidence 0.6.",
+            "file": "src/session-agent.ts",
+            "line": "structuredOutputTool/runAgentViaSession corrective block"
+          },
+          {
+            "id": "F-4",
+            "severity": "Informational",
+            "title": "Module-level ModelRuntime cache is process-wide; correct for production, note for test isolation",
+            "detail": "`getModelRuntime()` caches `ModelRuntime.create()` at module scope (cleared only on rejection). This is correct for production (the model catalog is immutable per process and shared across every session-backend spawn, avoiding per-spawn catalog cost), but it means tests that exercise `resolveSessionModel` share one real catalog unless the cache is reset. No production bug; flagging only so future test authors know to clear `runtimeCache` or mock at a higher seam if they need deterministic catalog behavior. Confidence 0.8.",
+            "file": "src/session-agent.ts",
+            "line": "getModelRuntime"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/12-code-review.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-28T10:20:16.268Z",
+      "agent": "docs",
+      "data": {
+        "title": "Docs: spec-15 pi Integration Modernization — reflect approved implementation",
+        "date": "2026-07-28",
+        "summary": "Updated all spec-15 directory documents after code review was APPROVED (round 2 verdict: Approved, 0 Critical/High, 3 Low + 1 Info). All five features shipped across 5 commits (65e19fd4→5fbf7213) plus a post-review fix round: (1) main-session model+thinking inheritance threaded as additive inheritedModel/inheritedThinking defaults through both specialist backends; (2) pi 0.82.0 constrainedSampling:strict:\"prefer\" on strict-capable structured_output schemas gated by isStrictCapable, with missingKeys corrective fallback preserved; (3) registerEntryRenderer capability cast removed in favor of the typed 0.82.1 public API; (4) build-gate PI_SESSION_ID/PI_MODEL correlation tagging (both a correlation field and an observable # pi-session=… model=… trace line); (5) CHANGELOG [Unreleased] entry. Updated 07-task-list.md (17/17 tasks marked complete + completion summary with commits/file lists), 06-implementation-plan.md (all 5 phases marked complete), 05-specification.md (added a Deviations section with DEV-1..DEV-6 documenting the post-review F-1..F-6/AR-01..AR-06 resolutions), and appended the docs stage end event to change-tracker.jsonl. 09-implementation-summary.md was already comprehensive (authored during implementation incl. the post-review fix round). Verified: npm run typecheck strict-clean against the 0.82.1 type surface; full vitest suite green (95 files / 1520 tests).",
+        "docsUpdated": "docs/specifications/15-pi-integration-modernization/07-task-list.md (17/17 tasks marked [x]; added Status + Completion summary block with commit chain 65e19fd4→5fbf7213, 6 source + 8 test + CHANGELOG file lists, and post-review fix-round note); docs/specifications/15-pi-integration-modernization/06-implementation-plan.md (added Phase status block: Phase 1–5 all ✅ complete, DAG executed in declared order, Approved + fix round noted); docs/specifications/15-pi-integration-modernization/05-specification.md (added new \"Deviations from Specification\" section with DEV-1..DEV-6: original/changed text + reason + impact for each); docs/specifications/15-pi-integration-modernization/change-tracker.jsonl (appended docs stage end event, verdict ok, gitActual captured); docs/specifications/15-pi-integration-modernization/09-implementation-summary.md (reviewed — already current and comprehensive incl. the post-code-review fix round, no edits needed); CHANGELOG.md (verified — the spec-15 [Unreleased] entry covering Features 1–4 + the ^0.82.1 bump note is already committed and matches the shipped behavior)",
+        "deviationsDocumented": [
+          "DEV-1 (Feature 2 effective on real schemas, post-review F-1/AR-01): the well-defined review/implementation render schemas (Finding, SpecReviewData+dimensions, CodeReviewData, AdversarialReviewData, ImplementationSummaryData) now carry additionalProperties:false so isStrictCapable returns true and constrainedSampling is attached on REAL pipeline stages; validateData made tolerant of extra keys (filter) so closing schemas for sampling does NOT harden the validator.",
+          "DEV-2 (Model-id silent fall-through, post-review F-2): resolveSessionModel catch branch returns undefined (no type-unsound cast) so createAgentSession omits model and uses the SDK/settings default when the inherited id cannot resolve; ModelRuntime memoized module-level (AR-03).",
+          "DEV-3 (Bare-id catalog scan, post-review F-3/AR-04): splitModelRef yields empty provider for a bare id (no slash) instead of provider==id; resolveSessionModel falls back to a full-catalog getModels() scan by id so no degenerate descriptor reaches createAgentSession.",
+          "DEV-4 (Build correlation observable, post-review AR-02/F-5): correlation is emitted BOTH as an additive correlation field on BuildGateResult AND as a plain-ASCII # pi-session=<id> model=<model> line via buildGateCorrelationLine(result) emitted to the run trace at stages/index.ts, verify.ts, implementation.ts; omitted byte-identical when both env vars absent.",
+          "DEV-5 (Double-application thinking guard, spec-review F-3): retained best-effort applyThinkingLevel guarded with if(!creationThinking) so the level applies exactly once when thinkingLevel is already passed to createAgentSession.",
+          "DEV-6 (Spec-ambiguity logged, code-review F-1): implemented inherited thinking uses pure precedence (per-call→SUPER_DEV_THINKING→INHERITED→role default) with NO max(inherited, role default) floor, treating the detailed precedence chain as authoritative over the conflicting 'no lower than role default' clause; logged as spec-clarification not a code defect; if a floor is later desired resolve as max(inherited, thinkingForAgent(agent))."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/15-pi-integration-modernization/docs/specifications/15-pi-integration-modernization/14-documentation.md"
+      }
+    }
+  }
+}

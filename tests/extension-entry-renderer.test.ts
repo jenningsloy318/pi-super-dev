@@ -1,0 +1,194 @@
+/**
+ * Phase 3 (Feature 3) — typed registerEntryRenderer (RED→GREEN tests).
+ *
+ * AC-09 → SCENARIO-014 (the background-summary transcript-card renderer is
+ *          registered DIRECTLY through the typed public `pi.registerEntryRenderer`
+ *          API — the `pi as unknown as { registerEntryRenderer?: … }` capability
+ *          cast is GONE, and the typed call `pi.registerEntryRenderer("super-dev-summary", …)`
+ *          is PRESENT), and the durable transcript-card rendering behavior is
+ *          preserved;
+ *          SCENARIO-015 (a failure during renderer registration is swallowed by
+ *          the best-effort try/catch guard and activation continues without
+ *          aborting the run).
+ *
+ * Harness mirrors tests/extension-inherit.test.ts: the heavy transitive import
+ * graph of src/extension.ts (pipeline / workflow engine / node algebra / render
+ * modules / pi-tui Container+Text) is mocked so the REAL `activate(pi)` runs
+ * without a model or a TUI, and the registered entry renderer + commands are
+ * observed directly.
+ */
+import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// The exact source under test is asserted (requireNotContains / requireContains)
+// so the removal of the capability cast is enforced as a regression gate that
+// cannot be silently reintroduced (the spec's recommended Phase-3 assertion).
+const EXTENSION_SRC = readFileSync(
+	fileURLToPath(new URL("../src/extension.ts", import.meta.url)),
+	"utf8",
+);
+
+// The pi-tui Container/Text mocks capture every added child (the renderer builds
+// a Container of Text children) so the preserved rendering behavior is verified
+// end-to-end without pulling in the real TUI.
+const tui = vi.hoisted(() => {
+	const created: Array<{ kind: "Container" } | { kind: "Text"; text: string }> = [];
+	return {
+		reset: () => { created.length = 0; },
+		record: (c: { kind: "Container" } | { kind: "Text"; text: string }) => { created.push(c); },
+		created: () => created,
+	};
+});
+
+vi.mock("../src/pipeline.ts", () => ({
+	runPipelineTask: vi.fn(async () => ({
+		status: "success",
+		specIdentifier: undefined,
+		worktreePath: "/tmp",
+		state: {},
+		agentsSpawned: 0,
+		failedStages: [],
+		error: undefined,
+	})),
+}));
+
+// Re-exports in extension.ts would otherwise pull in the real engine graph.
+vi.mock("../src/workflow.ts", () => ({ runWorkflow: vi.fn(() => ({})) }));
+vi.mock("../src/nodes.ts", () => ({}));
+vi.mock("../src/stages/index.ts", () => ({ SUPER_DEV_WORKFLOW: {} }));
+
+vi.mock("../src/pi-spawn.ts", () => ({
+	abbreviatePath: vi.fn((p: string) => p),
+	spawnAgent: vi.fn(async () => ({ text: "", control: null })),
+}));
+
+vi.mock("../src/render/live-stream.js", () => ({
+	createLiveStream: vi.fn(() => ({
+		sink: { phase: () => {}, log: () => {}, text: () => {}, stage: () => {} },
+		finalizeLive: () => {},
+		flush: () => {},
+		diskLogText: () => "",
+		transcriptTail: () => [],
+	})),
+}));
+
+vi.mock("../src/render/dashboard.ts", () => ({
+	packDashboardLines: vi.fn(() => []),
+	padTruncate: vi.fn((s: string) => s),
+	truncateActivity: vi.fn((s: string) => s),
+	buildDashboardWidget: vi.fn(() => ({})),
+	createDashboardWidgetFactory: vi.fn(() => () => ({})),
+	buildResultComponent: vi.fn(() => ({})),
+}));
+
+vi.mock("../src/render/super-dev-dir.ts", () => ({
+	ensureSuperDevDirs: vi.fn(() => {}),
+	startRun: vi.fn(() => {}),
+	getRunLogPath: vi.fn(() => ""),
+	getConfig: vi.fn(() => ({})),
+}));
+
+vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn(() => {}) }));
+vi.mock("../src/tracking.ts", () => ({ setActiveTracker: vi.fn(() => {}) }));
+
+vi.mock("@earendil-works/pi-tui", () => ({
+	Container: class {
+		children: unknown[] = [];
+		addChild(c: unknown) { this.children.push(c); }
+	},
+	Text: class {
+		text: string;
+		constructor(text: string) { this.text = text; tui.record({ kind: "Text", text }); }
+	},
+}));
+
+import activate from "../src/extension.ts";
+
+interface CapturedRenderer {
+	customType: string;
+	renderer: (...args: unknown[]) => unknown;
+}
+
+function setup(opts: { registerEntryRendererThrows?: boolean } = {}) {
+	const registerEntryRenderer: CapturedRenderer[] = [];
+	const registerCommand: string[] = [];
+	const pi: Record<string, unknown> = {
+		events: { on: vi.fn(() => () => {}) },
+		registerTool: vi.fn(),
+		registerCommand: vi.fn((name: string) => { registerCommand.push(name); }),
+		registerShortcut: vi.fn(),
+		registerEntryRenderer: opts.registerEntryRendererThrows
+			? vi.fn(() => { throw new Error("renderer registration unavailable"); })
+			: vi.fn((customType: string, renderer: (...a: unknown[]) => unknown) => {
+				registerEntryRenderer.push({ customType, renderer });
+			}),
+		getSessionName: vi.fn(() => ""),
+		setSessionName: vi.fn(),
+		appendEntry: vi.fn(),
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+	};
+	activate(pi as never);
+	return { registerEntryRenderer, registerCommand };
+}
+
+describe("Phase 3 (Feature 3 / AC-09) — typed registerEntryRenderer", () => {
+	describe("SCENARIO-014: the renderer is registered through the typed public API (no capability cast)", () => {
+		it("the source no longer declares the `piWithRenderer` capability alias", () => {
+			expect(EXTENSION_SRC).not.toContain("piWithRenderer");
+		});
+
+		it("the source no longer casts `pi` through an unsafe `as unknown as` capability type", () => {
+			expect(EXTENSION_SRC).not.toContain("as unknown as");
+		});
+
+		it("the source no longer declares the narrow `registerEntryRenderer?:` capability shape", () => {
+			expect(EXTENSION_SRC).not.toMatch(/registerEntryRenderer\?:/);
+		});
+
+		it('the source calls the typed public API directly: `pi.registerEntryRenderer("super-dev-summary", …)`', () => {
+			expect(EXTENSION_SRC).toContain('pi.registerEntryRenderer("super-dev-summary"');
+		});
+
+		it("activate(pi) registers exactly one entry renderer, for the `super-dev-summary` customType, via the typed pi API", () => {
+			const { registerEntryRenderer } = setup();
+			expect(registerEntryRenderer).toHaveLength(1);
+			expect(registerEntryRenderer[0].customType).toBe("super-dev-summary");
+			expect(typeof registerEntryRenderer[0].renderer).toBe("function");
+		});
+
+		it("the registered renderer still renders the durable background-summary transcript card (behavior preserved)", () => {
+			tui.reset();
+			const { registerEntryRenderer } = setup();
+			const { renderer } = registerEntryRenderer[0];
+			const theme: { bold: (t: string) => string; fg: (c: string, t: string) => string } = {
+				bold: (t) => `*${t}*`,
+				fg: (_c, t) => t,
+			};
+			const out = renderer(
+				{ data: { text: "line one\nline two", isError: true } },
+				{ expanded: true },
+				theme,
+			) as { children: Array<{ text: string }> };
+			// Returns a Component (the Container) and builds the same children as
+			// before: an isError-aware header followed by each body line.
+			expect(out).toBeTruthy();
+			expect(Array.isArray(out.children)).toBe(true);
+			const texts = out.children.map((c) => c.text);
+			expect(texts[0]).toContain("finished with errors");
+			expect(texts.slice(1)).toEqual(["line one", "line two"]);
+		});
+	});
+
+	describe("SCENARIO-015: a renderer-registration failure degrades gracefully", () => {
+		it("a thrown error inside registerEntryRenderer is swallowed and activation does not throw", () => {
+			expect(() => setup({ registerEntryRendererThrows: true })).not.toThrow();
+		});
+
+		it("activation still registers the post-renderer `super-dev-stop` command when the renderer throws (continues)", () => {
+			const { registerCommand } = setup({ registerEntryRendererThrows: true });
+			expect(registerCommand).toContain("super-dev-stop");
+		});
+	});
+});

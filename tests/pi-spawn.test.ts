@@ -5,11 +5,11 @@
  * agent ends on a trailing tool-call turn or is killed mid-stream.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, toolsForAgent, resolveExtensionEntry } from "../src/pi-spawn.ts";
+import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, toolsForAgent, resolveExtensionEntry, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 
@@ -179,6 +179,108 @@ describe("summarizeToolCall", () => {
 	});
 	it("falls back to the tool name for unknown tools", () => {
 		expect(summarizeToolCall("mystery", { x: 1 })).toBe("mystery");
+	});
+});
+
+// ─── Phase 1 (Feature 1): widened thinking + model precedence [RED] ───────
+//
+// These pin the contract for main-session model/thinking inheritance BEFORE the
+// Phase 1 implementation lands. They typecheck (the additive types + the widened
+// resolveThinking signature exist as a scaffold) but FAIL because the bodies do
+// not yet consult the INHERITED tier / the SUPER_DEV_MODEL env / inheritedModel.
+
+const saveEnv = (...keys: string[]) => {
+	const snapshot: Record<string, string | undefined> = {};
+	for (const k of keys) snapshot[k] = process.env[k];
+	return {
+		clear: () => { for (const k of keys) delete process.env[k]; },
+		restore: () => {
+			for (const k of keys) {
+				if (snapshot[k] === undefined) delete process.env[k];
+				else process.env[k] = snapshot[k] as string;
+			}
+		},
+	};
+};
+
+describe("resolveThinking — widened precedence (INHERITED tier) [AC-03 / SCENARIO-005, SCENARIO-006]", () => {
+	const env = saveEnv("SUPER_DEV_THINKING");
+	beforeEach(env.clear);
+	afterEach(env.restore);
+
+	it("per-call override wins over SUPER_DEV_THINKING env, the INHERITED level, and the role default", () => {
+		process.env.SUPER_DEV_THINKING = "low";
+		// "design" role default is "high"; inherited "xhigh" must NOT win over per-call.
+		expect(resolveThinking("design", "minimal", "xhigh")).toBe("minimal");
+	});
+
+	it("SUPER_DEV_THINKING env wins over the INHERITED level when no per-call override", () => {
+		process.env.SUPER_DEV_THINKING = "low";
+		// The INHERITED tier sits BELOW the env tier in the widened chain.
+		expect(resolveThinking("design", undefined, "xhigh")).toBe("low");
+	});
+
+	it("INHERITED main-session level wins over the role default when no per-call/env override (SCENARIO-006)", () => {
+		// "design" role default is "high"; the INHERITED tier sits ABOVE the default.
+		expect(resolveThinking("design", undefined, "xhigh")).toBe("xhigh");
+		// "slug" role default is "minimal"; an inherited "high" lifts the specialist.
+		expect(resolveThinking("slug", undefined, "high")).toBe("high");
+	});
+
+	it("falls back to the role default when nothing (per-call/env/inherited) is supplied", () => {
+		expect(resolveThinking("design")).toBe("high");
+		expect(resolveThinking("implementer")).toBe("medium");
+	});
+
+	it("the widened signature stays backward-compatible with the legacy 2-arg call shape", () => {
+		// Existing call sites (buildSpawnArgs, runAgentViaSession) still pass only
+		// (agent, perCall) and must keep resolving identically to before.
+		expect(resolveThinking("code-reviewer")).toBe("high");
+		expect(resolveThinking("code-reviewer", "off")).toBe("off");
+	});
+});
+
+describe("buildSpawnArgs — model resolution chain [AC-02 / SCENARIO-003, SCENARIO-004]", () => {
+	const env = saveEnv("SUPER_DEV_MODEL", "SUPER_DEV_THINKING");
+	beforeEach(env.clear);
+	afterEach(env.restore);
+	const base = { agent: "requirements-clarifier", prompt: "do X", cwd: "/tmp" };
+
+	it("emits --model from an explicit opts.model (highest precedence tier)", () => {
+		const args = buildSpawnArgs({ ...base, model: "openai/gpt-4o" }, "/tmp/agent.md");
+		expect(args).toContain("--model");
+		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
+	});
+
+	it("SUPER_DEV_MODEL env wins over inheritedModel when no explicit model (NEW env tier)", () => {
+		process.env.SUPER_DEV_MODEL = "anthropic/claude-opus-4-5";
+		const args = buildSpawnArgs({ ...base, inheritedModel: "glm/glm-5.2" }, "/tmp/agent.md");
+		expect(args).toContain("--model");
+		expect(args[args.indexOf("--model") + 1]).toBe("anthropic/claude-opus-4-5");
+	});
+
+	it("inheritedModel wins over the SDK/settings default when no explicit model and no SUPER_DEV_MODEL env", () => {
+		const args = buildSpawnArgs({ ...base, inheritedModel: "openai/gpt-4o" }, "/tmp/agent.md");
+		expect(args).toContain("--model");
+		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
+	});
+
+	it("explicit opts.model wins over SUPER_DEV_MODEL env (precedence: explicit > env)", () => {
+		process.env.SUPER_DEV_MODEL = "anthropic/claude-opus-4-5";
+		const args = buildSpawnArgs({ ...base, model: "openai/gpt-4o" }, "/tmp/agent.md");
+		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
+	});
+
+	it("emits --model from SUPER_DEV_MODEL env alone when no explicit model and no inheritedModel", () => {
+		process.env.SUPER_DEV_MODEL = "openai/gpt-4o";
+		const args = buildSpawnArgs(base, "/tmp/agent.md");
+		expect(args).toContain("--model");
+		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
+	});
+
+	it("emits NO --model when no model resolves from any tier (SCENARIO-004 baseline)", () => {
+		const args = buildSpawnArgs(base, "/tmp/agent.md");
+		expect(args).not.toContain("--model");
 	});
 });
 

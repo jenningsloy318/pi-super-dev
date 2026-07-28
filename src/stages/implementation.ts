@@ -13,7 +13,7 @@ import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplement
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
-import { computeChangeGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
+import { computeChangeGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
 
 const MAX_ATTEMPTS = 3;
 /** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
@@ -306,6 +306,9 @@ export const implementationStage: Stage = {
 				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
+				// AR-02: emit the pi session/model correlation tag to the run trace.
+				const corr = buildGateCorrelationLine(gate);
+				if (corr) ctx.log(corr);
 				// DELIVERABLE CONTRACT (AC-03 → SCENARIO-011..015): a build-green phase can
 				// deliver NOTHING (a never-created file compiles fine, an unwired call site
 				// is still a valid public fn, a dead `_ => {}` router arm passes its own

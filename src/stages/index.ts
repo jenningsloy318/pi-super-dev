@@ -25,7 +25,7 @@ import { setupStage } from "./setup.ts";
 import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
-import { runBuildGate, type GateOptions } from "../build-runner.ts";
+import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { implementationStage } from "./implementation.ts";
 import { reviewStageNode, integrationLoopNode, reviewApproved } from "./verify.ts";
 
@@ -52,6 +52,11 @@ const preMergeBuildStage: Stage = {
 		const setup = state.setup!;
 		const r = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 		ctx.log(`Pre-merge build-gate ${r.pass ? "PASS" : "FAIL"} (ran: ${r.ran.join(", ") || "no commands"})${r.pass ? "" : " — merge will be skipped"}`);
+		// AR-02: emit the pi session/model correlation tag to the run trace so the
+		// captured correlation field is observable (not write-only). No-op when the
+		// env vars are absent (byte-identical to today).
+		const corr = buildGateCorrelationLine(r);
+		if (corr) ctx.log(corr);
 		return { pass: r.pass, ran: r.ran, errors: r.errors };
 	},
 };

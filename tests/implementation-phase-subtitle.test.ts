@@ -14,6 +14,7 @@ import type { StageContext, RunOptions, PipelineState, AgentResult, HelperResult
 const gate = { pass: true, inScopePass: true, errors: [] as string[], ran: [] as string[], outOfScopeErrors: [] as string[] };
 vi.mock("../src/build-runner.ts", () => ({
 	runBuildGate: () => gate,
+	buildGateCorrelationLine: () => null,
 	runRedCheck: () => "red",
 	runDeliverableCheck: () => ({ pass: true, missing: [], ran: [] }),
 	deliverablesAlreadyMet: () => false,

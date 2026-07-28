@@ -278,6 +278,15 @@ export interface RunOptions {
 	skipWorktree?: boolean;
 	skipStages?: string[];
 	model?: string;
+	/** Phase 1 (Feature 1): DEFAULT model id inherited from the live main session
+	 *  (ctx.model.id), threaded from extension.execute() → realAgent.common →
+	 *  both backends. ADDITIVE — never clobbers `model`, a SUPER_DEV_MODEL env
+	 *  override, or a per-call override; wins over the SDK/settings default. */
+	inheritedModel?: string;
+	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
+	 *  session (ctx.thinkingLevel). ADDITIVE — never clobbers a per-call override
+	 *  or a SUPER_DEV_THINKING env var, but wins over the role default. */
+	inheritedThinking?: import("./pi-spawn.ts").ThinkingLevel;
 	maxAgents?: number;
 	maxConcurrency?: number;
 	progress?: ProgressSink;
