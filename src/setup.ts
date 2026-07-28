@@ -7,6 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { clearKnowledge } from "./render/knowledge.ts";
+import { clearUserNotes } from "./render/user-notes.ts";
 import { join, resolve } from "node:path";
 
 /** Load KEY=VALUE pairs from a `.env` file into `process.env` so spawned
@@ -182,7 +183,10 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	// Fresh run: clear accumulated knowledge. Resume: PRESERVE it (the memoizing
 	// replay overwrites keyed entries as stages re-run, so no duplication; and the
 	// resumed call's knowledge-injection needs prior-stage data intact).
-	if (!options.resumeSpecIdentifier) clearKnowledge(specDirectory);
+	if (!options.resumeSpecIdentifier) {
+		clearKnowledge(specDirectory);
+		clearUserNotes(specDirectory);
+	}
 
 	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo };
 }

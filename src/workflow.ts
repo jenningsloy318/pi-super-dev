@@ -18,6 +18,7 @@ import { runHelper } from "./helpers.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
 import { extractControlKeys } from "./control.ts";
 import { knowledgeForAgent } from "./render/knowledge.ts";
+import { appendUserNotes, userNotesForAgent } from "./render/user-notes.ts";
 import { getActiveTracker } from "./tracking.ts";
 import type {
 	AgentCall,
@@ -137,21 +138,22 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const promptWithKnowledge = knowledge
 			? `${prompt}\n\n## Prior-stage data (auto-injected)\n${knowledge}`
 			: prompt;
-		// Phase 3 (AC-05 / AC-06 / SCENARIO-013..016): drain mid-run user input
-		// captured live during execution ONCE per spawn, and when non-empty
-		// prepend a `## Mid-run user guidance` block AFTER feedback AND knowledge
-		// so it remains the most-visible tail of the prompt. Draining here (inside
-		// `realAgent`, NOT the memoizing wrapper at the bottom of makeContext)
-		// means a cached/replayed spawn during resume does NOT re-drain — each
-		// captured input is injected exactly once. An empty drain is byte-identical
-		// to the no-feature baseline.
-		const midRun = options.userSteerProvider ? options.userSteerProvider() : [];
-		const promptWithGuidance = midRun.length
-			? `${promptWithKnowledge}\n\n## Mid-run user guidance (added during execution)\n${midRun.map((t, i) => `(${i + 1}) ${t}`).join("\n")}\n\nIncorporate this into your work.`
+		// Drain captured mid-run user input ONCE per spawn and PERSIST it to
+		// `.user-notes.json` (durable, resume-safe). Then inject the ACCUMULATED
+		// notes (incl. the just-appended ones) into THIS agent's prompt — so every
+		// subsequent stage sees all user context added so far, not just the next
+		// agent. Draining here (inside realAgent, not the memoizing wrapper) means a
+		// cached/replayed spawn during resume does NOT re-drain. Non-interrupting:
+		// a note typed during agent N is picked up at the N+1 boundary.
+		const drained = options.userSteerProvider ? options.userSteerProvider() : [];
+		appendUserNotes(state.setup?.specDirectory, drained);
+		const userNotes = userNotesForAgent(state.setup?.specDirectory);
+		const promptWithNotes = userNotes
+			? `${promptWithKnowledge}\n\n## User context (added during the run)\n${userNotes}`
 			: promptWithKnowledge;
 		const common = {
 			agent: call.agent,
-			prompt: promptWithGuidance,
+			prompt: promptWithNotes,
 			cwd: agentCwd,
 			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
 			schema: call.schema,
@@ -181,10 +183,6 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				event: (m: string) => log(m),
 				text: (partial: string) => options.progress?.text(partial),
 			},
-			// Phase 4 (AC-08): thread the session-backend live-steer seam through to
-			// runAgentViaSession. Only consulted by the session backend; the
-			// subprocess/browser path ignores it (queue path is the guaranteed contract).
-			onSteer: options.onSteer,
 		};
 		// Backend selectable. Default is 'session' (in-process createAgentSession):
 		// same SDK we peer-depend on, structured output via a schema, no spawn/

@@ -225,7 +225,7 @@ describe("SCENARIO-022 — class-theme regression covers the 'user-input' kind",
 		// SCENARIO-020 byte-identical guarantee: the classifier is unchanged, so a
 		// stray "📥 …" line still classifies as a plain log — user-input is only
 		// ever pushed directly with its kind at the live-stream sink.
-		for (const text of ["📥 queued: hi", "📥 foo", "(1) pivot to auth", "Mid-run user guidance"]) {
+		for (const text of ["📥 queued: hi", "📥 foo", "(1) pivot to auth", "User context (added during the run)"]) {
 			expect(classifyLine(text)).not.toBe("user-input");
 		}
 	});

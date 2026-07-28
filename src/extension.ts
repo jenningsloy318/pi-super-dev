@@ -67,9 +67,10 @@ export interface ActiveRun {
 	/** Pending mid-run user inputs not yet injected into a specialist prompt. */
 	queue: string[];
 	/** True when this run executes DETACHED in the background (the tool returned
-	 *  immediately). Background runs leave the session fully interactive, so the
-	 *  input listener never captures keystrokes as steering — every command / new
-	 *  turn flows through pi's normal pipeline and executes DURING the run. */
+	 *  immediately). Both foreground AND background runs now capture free-text
+	 *  typed during the run as mid-run user context (persisted to .user-notes.json
+	 *  and injected into every subsequent stage); slash-commands still pass
+	 *  through so /super-dev-stop etc. work. See the input handler in activate(). */
 	background?: boolean;
 	/** The execute() ctx (TUI guards + ACK surfaces use this — Phase 2). */
 	ctx?: ExtensionContext;
@@ -88,13 +89,6 @@ let activeRun: ActiveRun | null = null;
  *  token-bombed via a huge guidance prepend. Older entries are dropped first
  *  (most-recent guidance wins — it reflects the user's latest intent). */
 const MAX_QUEUED_INPUTS = 20;
-
-/** Phase 4 (AC-08 / SCENARIO-017..018): the session-backend live-steer
- *  forwarder, set by `runAgentViaSession`'s `onSteer` seam while a specialist
- *  AgentSession is alive and nulled on dispose. The input handler nudges it
- *  with the MOST-RECENT captured input only. `null` outside a session run
- *  (idle / subprocess / browser backend) → no-throw no-op. */
-let activeSteerForwarder: ((text: string) => void) | null = null;
 
 /** Phase 2 (AC-04 / SCENARIO-008): ellipsize the queued-input preview to ~60
  *  chars so the status pill stays one line even for long user messages. */
@@ -148,18 +142,6 @@ export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandl
  * in the execute() finally (discard — unifies run + widget teardown). */
 export function setActiveRun(run: ActiveRun | null): void {
 	activeRun = run;
-}
-
-/** Phase 4 (AC-08 / SCENARIO-017..018): the bridge the session backend's
- *  `onSteer` seam populates. `runAgentViaSession` calls this with a no-throw
- *  forwarder bound to the live AgentSession on creation, and `null` on dispose
- *  — so each captured input nudges the currently-running session specialist
- *  with the MOST-RECENT input only (bounds context growth). Idle / subprocess /
- *  browser backends never call it, so live steer is a documented no-throw
- *  no-op and the Phase-3 queue path is the sole, identical delivery guarantee.
- *  execute()'s finally clears it alongside activeRun (no stale leak). */
-export function setActiveSteerForwarder(fn: ((text: string) => void) | null): void {
-	activeSteerForwarder = fn;
 }
 
 /**
@@ -329,27 +311,22 @@ export default function activate(pi: ExtensionAPI): void {
 	// InputEvent. Any malformed payload falls through to the catch → {continue}.
 	pi.events.on("input", (data) => {
 		try {
-			// SCENARIO-002 / SCENARIO-003 / SCENARIO-019: idle (no run in progress)
-			// → pi owns the input entirely; nothing is captured.
+			// idle (no run in progress) → pi owns the input entirely.
 			if (activeRun == null) return { action: "continue" };
-			// Background runs free the session ENTIRELY: never swallow keystrokes as
-			// steering. Returning {continue} lets slash-commands and new prompts flow
-			// through pi's normal pipeline and run DURING the detached pipeline
-			// (mid-run steering is a foreground-only feature). This is the core of
-			// "accept new commands while super-dev is executing."
-			if (activeRun.background) return { action: "continue" };
 			const event = data as InputEvent;
-			// SCENARIO-005 / SCENARIO-020: non-interactive sources (rpc/extension) are
-			// never captured — print/json/headless/RPC input flows through pi
-			// byte-identical to today.
+			// non-interactive sources (rpc/extension/print/json/headless) are never
+			// captured — they flow through pi byte-identical to today.
 			if (event?.source !== "interactive") return { action: "continue" };
-			activeRun.push(event.text);
-			// Phase 4 (AC-08 / SCENARIO-017): best-effort live steer — nudge the
-			// currently-running session specialist with the MOST-RECENT input only
-			// (one forward per capture, bounds context growth). No-throw no-op when
-			// no session handle is reachable (idle / subprocess / browser backend);
-			// the Phase-3 queue path still guarantees delivery.
-			try { activeSteerForwarder?.(event.text); } catch { /* best-effort */ }
+			// Slash-commands pass through so /super-dev-stop, /reload, /model, etc.
+			// still work during a run. Everything else typed during an active run is
+			// captured as mid-run user context: it is drained + persisted into
+			// .user-notes.json and injected into EVERY subsequent stage (durable,
+			// resume-safe). This applies to BOTH foreground and background runs —
+			// returning {handled} tells pi NOT to also queue it as a normal turn.
+			// Coerce safely so a missing/blank `text` can never crash the handler.
+			const text = typeof event?.text === "string" ? event.text : "";
+			if (text.trimStart().startsWith("/")) return { action: "continue" };
+			activeRun.push(text);
 			return { action: "handled" };
 		} catch {
 			return { action: "continue" };
@@ -542,12 +519,6 @@ export default function activate(pi: ExtensionAPI): void {
 				// realAgent drains this ONCE per specialist spawn; empty while idle/after
 				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
 				userSteerProvider: () => getActiveRun()?.drain() ?? [],
-				// AC-08: wire the session-backend live-steer seam. runAgentViaSession
-				// invokes onSteer with a no-throw forwarder bound to the live AgentSession
-				// (or null on dispose / when steer() is absent); registering it here is
-				// what makes the input handler's live steer actually fire on the session
-				// backend. subprocess/browser never set a forwarder → documented no-op.
-				onSteer: setActiveSteerForwarder,
 				progress: sink,
 					signal: runSignal,
 				});
@@ -589,7 +560,6 @@ export default function activate(pi: ExtensionAPI): void {
 				// path), in the SAME cleanup that removes the run's dashboard widget — so
 				// run teardown + widget teardown stay unified (no leak across runs).
 				setActiveRun(null);
-				setActiveSteerForwarder(null);
 				// spec-11 AC-05 / SCENARIO-010: clear the per-run ChangeTracker singleton
 				// in the SAME finally that nulls activeRun, so no tracker (and its
 				// in-memory baselines/end-records) leaks across runs. The setup stage

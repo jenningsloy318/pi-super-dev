@@ -242,14 +242,18 @@ describe("Background runs — session stays fully interactive (accept commands m
 		H = pi.inputHandler()!;
 	});
 
-	it("a background run NEVER captures interactive input as steering (returns continue)", () => {
+	it("a background run captures free-text input (same as foreground) but passes slash-commands through", () => {
 		const run = createBgActiveRun();
 		setActiveRun(run);
-		// Both a slash-command and a plain prompt must pass through to pi so they
-		// execute DURING the detached run — the whole point of background mode.
-		expect(H(ev("/help", "interactive"))).toEqual({ action: "continue" });
-		expect(H(ev("what is the status?", "interactive"))).toEqual({ action: "continue" });
-		expect(run.drain()).toEqual([]); // nothing was swallowed as guidance
+		// Slash-commands pass through so /super-dev-stop, /reload, /model, etc. still
+		// work during a run (leading slash, even whitespace-prefixed).
+		expect(H(ev("/super-dev-stop", "interactive"))).toEqual({ action: "continue" });
+		expect(H(ev("   /help   ", "interactive"))).toEqual({ action: "continue" });
+		// Free-text typed during an active (background) run is captured as mid-run
+		// user context and drained + persisted into .user-notes.json for every
+		// subsequent stage. {handled} tells pi NOT to also queue it as a normal turn.
+		expect(H(ev("also handle the empty-list edge case", "interactive"))).toEqual({ action: "handled" });
+		expect(run.drain()).toEqual(["also handle the empty-list edge case"]);
 		setActiveRun(null);
 	});
 

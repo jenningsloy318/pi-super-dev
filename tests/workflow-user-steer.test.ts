@@ -1,24 +1,19 @@
 /**
- * Phase 3 — Queue injection at the realAgent spawn seam (RED tests).
+ * Mid-run user context — durable injection at the realAgent spawn seam.
  *
- * Verifies the delivery guarantee for mid-run captured input:
- *  - SCENARIO-013: the `userSteerProvider` (an atomic drain) returns all
- *    pending inputs together and clears, returning `[]` when no run is active.
- *  - SCENARIO-014: a non-empty drain is injected as a
- *    `## Mid-run user guidance (added during execution)` block with `(1)…(2)…`
- *    enumeration and an "Incorporate this into your work." instruction, AFTER
- *    the knowledge prepend so it stays the most-visible tail of the prompt.
- *  - SCENARIO-015: each input is injected exactly once — draining happens
- *    inside `realAgent`, NOT the memoizing wrapper, so a cached/replayed spawn
- *    during resume does NOT re-invoke the provider / re-inject.
- *  - SCENARIO-016: an empty drain produces NO guidance block and a
- *    byte-identical prompt to the no-feature baseline.
+ * Verifies the delivery path for free-text typed during a run:
+ *  - the `userSteerProvider` (atomic drain) is persisted via `appendUserNotes`
+ *    (to `.user-notes.json`),
+ *  - the accumulated notes (`userNotesForAgent`) are prepended as a
+ *    `## User context (added during the run)` block AFTER knowledge,
+ *  - draining happens inside `realAgent` (once per fresh spawn; not on a
+ *    resume-cache hit),
+ *  - empty notes → no block, byte-identical to the no-feature baseline.
  *
- * Harness mirrors tests/workflow-feedback.test.ts: the session/subprocess
- * backends are mocked to capture the resolved prompt, and knowledge is mocked
- * so positioning after the knowledge prepend is assertable.
+ * user-notes is MOCKED here so the wiring is asserted deterministically; the
+ * file mechanics (append→read round-trip) are covered by tests/user-notes.test.ts.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const captured: { prompt?: string } = {};
 vi.mock("../src/session-agent.ts", () => ({
@@ -36,22 +31,25 @@ vi.mock("../src/pi-spawn.ts", () => ({
 	isBrowserAgent: vi.fn(() => false),
 	needsWebResearch: vi.fn(() => false),
 }));
-// Deterministic knowledge string so the guidance block's position (AFTER
-// knowledge) is assertable independently of spec-dir fixture state. Real
-// `knowledgeForAgent` returns the extracted *body*; workflow.ts prepends the
-// `## Prior-stage data` header itself, so the mock returns the BODY only.
-// KNOWLEDGE_MARKER is the full header+body the workflow ends up prepending,
-// used by the positioning + byte-identical baseline assertions.
 const KNOWLEDGE_BODY = "KNOWLEDGE-FROM-PRIOR-STAGE";
 const KNOWLEDGE_MARKER = "## Prior-stage data (auto-injected)\nKNOWLEDGE-FROM-PRIOR-STAGE";
 vi.mock("../src/render/knowledge.ts", () => ({
 	knowledgeForAgent: vi.fn(() => KNOWLEDGE_BODY),
 }));
+// user-notes mocked: appendUserNotes records its args; userNotesForAgent returns
+// a controlled body (default empty so the baseline path is byte-identical).
+vi.mock("../src/render/user-notes.ts", () => ({
+	appendUserNotes: vi.fn(),
+	userNotesForAgent: vi.fn(() => ""),
+}));
 
 import { makeContext } from "../src/workflow.ts";
+import { appendUserNotes, userNotesForAgent } from "../src/render/user-notes.ts";
 import type { AgentCall, AgentResult, PipelineState, RunOptions } from "../src/types.ts";
 
-/** Captures how many times + with what result the provider was drained. */
+const appendSpy = vi.mocked(appendUserNotes);
+const notesSpy = vi.mocked(userNotesForAgent);
+
 function makeProviderSpy(initial: string[] = []) {
 	const calls: number[] = [];
 	let queue = [...initial];
@@ -62,7 +60,6 @@ function makeProviderSpy(initial: string[] = []) {
 			queue = [];
 			return out;
 		},
-		// mirror the atomic drain contract: returns contents, clears, returns [] next.
 		callCount: () => calls.length,
 		refill: (items: string[]) => {
 			queue = [...items];
@@ -75,106 +72,83 @@ const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
 
 const BASE_CALL: AgentCall = { id: "pipeline.spec", agent: "spec-writer", prompt: "BASE PROMPT" };
 
-describe("workflow agent() mid-run user guidance injection (SCENARIO-013..016)", () => {
-	it("SCENARIO-013: a drain provider returns all pending inputs together and clears (atomic)", () => {
-		// Models activeRun.drain(): first call returns everything captured, the
-		// second returns [] until refilled. This is the provider makeContext will
-		// be wired to via options.userSteerProvider.
-		const { provider, refill } = makeProviderSpy(["first steer", "second steer"]);
-		expect(provider()).toEqual(["first steer", "second steer"]);
-		expect(provider()).toEqual([]); // cleared — no items until new capture
-		refill(["late input"]);
-		expect(provider()).toEqual(["late input"]);
+describe("workflow agent() durable user-context injection", () => {
+	beforeEach(() => {
+		captured.prompt = undefined;
+		appendSpy.mockClear();
+		notesSpy.mockClear();
+		notesSpy.mockReturnValue(""); // baseline: no notes
+	});
+
+	it("the drain provider is atomic (returns all + clears)", () => {
+		const { provider, refill } = makeProviderSpy(["first", "second"]);
+		expect(provider()).toEqual(["first", "second"]);
 		expect(provider()).toEqual([]);
+		refill(["late"]);
+		expect(provider()).toEqual(["late"]);
 	});
 
-	it("SCENARIO-013: options.userSteerProvider is a documented RunOptions field", () => {
-		// Existence of the type-level contract (AC-05). At runtime makeContext
-		// only drains when present.
-		const opts = { userSteerProvider: () => ["x"] } as RunOptions;
-		expect(typeof opts.userSteerProvider).toBe("function");
-	});
-
-	it("SCENARIO-014: non-empty drain prepends a guidance block listing each input, instructing incorporation", async () => {
+	it("a non-empty drain is PERSISTED via appendUserNotes and the accumulated notes are prepended", async () => {
+		notesSpy.mockReturnValue("(1) Add a retry to the fetch\n(2) Log the status code");
 		const { provider } = makeProviderSpy(["Add a retry to the fetch", "Log the status code"]);
-		await mkCtx({}, { userSteerProvider: provider }).agent({
-			...BASE_CALL,
-			prompt: "ORIG PROMPT",
-		});
+		await mkCtx({}, { userSteerProvider: provider }).agent({ ...BASE_CALL, prompt: "ORIG PROMPT" });
+		// the drained items reached the persistent store
+		expect(appendSpy).toHaveBeenCalledTimes(1);
+		expect(appendSpy.mock.calls[0]![1]).toEqual(["Add a retry to the fetch", "Log the status code"]);
+		// and the accumulated notes are injected under the durable header
 		expect(captured.prompt).toMatch(/ORIG PROMPT/);
-		expect(captured.prompt).toMatch(/## Mid-run user guidance \(added during execution\)/);
+		expect(captured.prompt).toMatch(/## User context \(added during the run\)/);
 		expect(captured.prompt).toMatch(/\(1\) Add a retry to the fetch/);
 		expect(captured.prompt).toMatch(/\(2\) Log the status code/);
-		expect(captured.prompt).toMatch(/Incorporate this into your work\./);
 	});
 
-	it("SCENARIO-014: the guidance block appears AFTER the feedback and knowledge prepends (tail-most)", async () => {
-		// Feedback prepend is driven by state.__feedback; knowledge by the mock.
+	it("the user-context block appears AFTER the feedback and knowledge prepends", async () => {
 		const state = { __feedback: { spec: ["fix AC-1"] } } as unknown as PipelineState;
+		notesSpy.mockReturnValue("(1) steer one");
 		const { provider } = makeProviderSpy(["steer one"]);
 		await mkCtx(state, { userSteerProvider: provider }).agent(BASE_CALL);
 		const p = captured.prompt!;
 		const fbIdx = p.indexOf("Previous attempt rejected");
 		const knowIdx = p.indexOf(KNOWLEDGE_MARKER);
-		const guideIdx = p.indexOf("## Mid-run user guidance (added during execution)");
+		const ctxIdx = p.indexOf("## User context (added during the run)");
 		expect(fbIdx).toBeGreaterThanOrEqual(0);
-		expect(knowIdx).toBeGreaterThan(fbIdx); // knowledge after feedback (existing order)
-		expect(guideIdx).toBeGreaterThan(knowIdx); // guidance is the LAST prepend
+		expect(knowIdx).toBeGreaterThan(fbIdx);
+		expect(ctxIdx).toBeGreaterThan(knowIdx); // user context is the LAST prepend
 	});
 
-	it("SCENARIO-016: an empty drain produces NO guidance block and a byte-identical baseline prompt", async () => {
-		const baselineCtx = mkCtx({}); // no userSteerProvider at all → baseline
-		await baselineCtx.agent({ ...BASE_CALL, prompt: "NEUTRAL" });
+	it("empty notes → NO block, byte-identical to the no-feature baseline", async () => {
+		// baseline: no provider, userNotesForAgent returns ""
+		await mkCtx({}).agent({ ...BASE_CALL, prompt: "NEUTRAL" });
 		const baseline = captured.prompt!;
-
-		// Now with a provider that drains empty: must equal the no-feature baseline.
+		// with a provider that drains empty + still-empty notes: identical
 		const { provider } = makeProviderSpy([]);
 		await mkCtx({}, { userSteerProvider: provider }).agent({ ...BASE_CALL, prompt: "NEUTRAL" });
 		expect(captured.prompt).toBe(baseline);
-		expect(captured.prompt).not.toMatch(/Mid-run user guidance/);
+		expect(captured.prompt).not.toMatch(/User context/);
 		expect(captured.prompt).toBe("NEUTRAL\n\n" + KNOWLEDGE_MARKER);
 	});
 
-	it("SCENARIO-015: drains exactly once per fresh spawn (realAgent, not the memoizing wrapper)", async () => {
+	it("drains exactly once per fresh spawn (realAgent, not the memoizing wrapper)", async () => {
 		const { provider, callCount } = makeProviderSpy(["a", "b"]);
-		const ctx = mkCtx({}, { userSteerProvider: provider }); // no resumeCache → realAgent
+		const ctx = mkCtx({}, { userSteerProvider: provider });
 		await ctx.agent(BASE_CALL);
 		await ctx.agent({ ...BASE_CALL, id: "pipeline.second" });
-		expect(callCount()).toBe(2); // once per spawn
-		// and each spawn saw both items (drain clears, so refill happens between
-		// only if a real capture occurred — here refill proves a fresh drain each time)
+		expect(callCount()).toBe(2);
 	});
 
-	it("SCENARIO-015: a memoized replay (resume cache hit) does NOT re-invoke the provider / re-inject", async () => {
-		// Pre-populate the resume cache so the FIRST invocation is a cache HIT.
-		// createMemoizingAgent's key is `<call.id>@<scope>#<occurrence>`; no parallel scope => root, occ starts at 1.
+	it("a memoized replay (resume cache hit) does NOT re-drain / re-persist", async () => {
 		const cached: AgentResult = { text: "CACHED TEXT", control: {} };
 		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}@root#1`, cached]]);
-		const { provider, callCount } = makeProviderSpy(["should-not-be-injected-on-replay"]);
+		const { provider, callCount } = makeProviderSpy(["should-not-persist-on-replay"]);
 		const ctx = mkCtx({}, { userSteerProvider: provider, resumeCache });
-
 		const result = await ctx.agent(BASE_CALL);
-		// Cache hit → realAgent never ran → provider never drained.
 		expect(result).toBe(cached);
 		expect(callCount()).toBe(0);
+		expect(appendSpy).not.toHaveBeenCalled();
 	});
 
-	it("SCENARIO-015: after a cache hit, a fresh (uncached) spawn drains and injects once", async () => {
-		const cached: AgentResult = { text: "CACHED TEXT", control: {} };
-		// Only the first call is cached; the second (different id, seq=2) misses.
-		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}@root#1`, cached]]);
-		const { provider, callCount } = makeProviderSpy(["live steer after resume"]);
-		const ctx = mkCtx({}, { userSteerProvider: provider, resumeCache });
-
-		await ctx.agent(BASE_CALL); // HIT — no drain
-		expect(callCount()).toBe(0);
-		await ctx.agent({ ...BASE_CALL, id: "pipeline.fresh" }); // MISS — drain once
-		expect(callCount()).toBe(1);
-		expect(captured.prompt).toMatch(/\(1\) live steer after resume/);
-	});
-
-	it("makeContext tolerates a missing userSteerProvider (no feature) without throwing", async () => {
+	it("makeContext tolerates a missing userSteerProvider without throwing", async () => {
 		await expect(mkCtx({}).agent(BASE_CALL)).resolves.toBeDefined();
-		expect(captured.prompt).not.toMatch(/Mid-run user guidance/);
+		expect(captured.prompt).not.toMatch(/User context/);
 	});
 });
