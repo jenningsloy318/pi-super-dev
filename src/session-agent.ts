@@ -37,7 +37,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
+import { defaultAgentTimeoutMs, inheritExtensions, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -478,13 +478,23 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
 	// Safety (Gap 4.3): inject a `tool_call` hook that hard-blockks dangerous
 	// commands + secret-file overwrites, and suppress ambient global-extension
-	// discovery (noExtensions:true). Inline factories still load (verified C9),
-	// so the child is both guarded AND deterministic (no user global extensions).
+	// discovery by default (noExtensions = !inheritExtensions(), i.e. true unless
+	// SUPER_DEV_INHERIT_EXTENSIONS opts in — see the loader below). Inline
+	// factories still load (verified C9), so the child is both guarded AND
+	// deterministic (no user global extensions) in the baseline.
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: opts.cwd,
 		agentDir,
 		settingsManager,
-		noExtensions: true,
+		// Default OFF (determinism + isolation): the child gets ONLY the inline
+		// safety factory unless SUPER_DEV_INHERIT_EXTENSIONS opts it into ambient
+		// (global + project) extension discovery — closing the gap where a child's
+		// fresh runtime cannot resolve an extension-registered provider/model.
+		// Opt-in trade-off: this pulls in EVERY user global extension (incl.
+		// super-dev itself); spawned specialists receive no interactive input, so
+		// the pipeline still cannot self-trigger. Inline factories always load
+		// (verified C9), so the child stays guarded AND (by default) deterministic.
+		noExtensions: !inheritExtensions(),
 		extensionFactories: [createSafetyExtensionFactory()],
 	});
 	await resourceLoader.reload();
