@@ -271,6 +271,66 @@ export interface Workflow {
 	root: Node;
 }
 
+// ─── HITL escalation primitives (spec-18 / AC-01) ─────────────────────────
+// Pure additions — zero pipeline behavior change until a firing point
+// consumes ctx.options.escalate. Threaded exactly like userSteerProvider so
+// every node/stage/gate reaches it via the already-shared StageContext.options.
+
+/** The kind of unrecoverable blocker the pipeline hit (SCENARIO-001 / AC-01). */
+export type EscalationKind = "stagnation" | "gate-exhaustion" | "design-conflict";
+
+/**
+ * Whether the user may "accept" the finding and continue. Hard blockers
+ * (e.g. a failed build gate) are terminal — `accept-limitation` is never
+ * offered for them. Soft blockers (review/test findings, stagnation) may be
+ * accepted. Defaults to "soft"; firing points set "hard" for build failures.
+ */
+export type EscalationSeverity = "soft" | "hard";
+
+/** A single finding surfaced for stagnation/review escalation (advisory). */
+export interface EscalationFinding {
+	file?: string | null;
+	severity?: string | null;
+	title?: string | null;
+}
+
+/** The failure payload passed to {@link Escalate} (carries rich, LIVE context). */
+export interface EscalationFailure {
+	kind: EscalationKind;
+	stage?: string;
+	message: string;
+	specDirectory?: string;
+	worktreePath?: string;
+	findings?: EscalationFinding[];
+	severity?: EscalationSeverity;
+}
+
+/** The user's chosen recovery action (SCENARIO-002 / AC-01). */
+export type EscalationChoice =
+	| "retry-with-guidance"
+	| "revise-manually"
+	| "accept-limitation"
+	| "abandon";
+
+/**
+ * A decision returned by {@link Escalate}. `undefined` = no decision
+ * (treat as fail-with-report — the pre-existing abort/break path).
+ */
+export interface EscalationDecision {
+	choice: EscalationChoice;
+	/** Free-text guidance injected into the next specialist attempt
+	 *  (retry-with-guidance only). */
+	guidance?: string;
+}
+
+/**
+ * Inline pause-ask-continue hook fired BEFORE an unrecoverable throw/break.
+ * Returns `undefined` on dismissal, timeout, non-interactive mode, or any error
+ * (the impl NEVER throws). A firing point that receives `undefined` proceeds
+ * to the pre-existing fail/abort path.
+ */
+export type Escalate = (failure: EscalationFailure) => Promise<EscalationDecision | undefined>;
+
 // ─── Run options + summary ──────────────────────────────────────────────────
 
 export interface RunOptions {
@@ -316,6 +376,10 @@ export interface RunOptions {
 	 *  `realAgent`, NOT the memoizing wrapper). Optional — omitting it disables
 	 *  the feature and prompts stay byte-identical to the no-feature baseline. */
 	userSteerProvider?: () => string[];
+	/** Inline HITL escalation hook (AC-01). Supplied by extension.ts; reachable
+	 *  as ctx.options.escalate with NO workflow.ts edit (StageContext.options is
+	 *  RunOptions). Additive — undefined/absent ⇒ byte-identical to today. */
+	escalate?: Escalate;
 }
 
 /** Honest, derived overall outcome of a run. */

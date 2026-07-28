@@ -498,3 +498,58 @@ export function setActiveTracker(tracker: ChangeTracker | null): void {
 export function getActiveTracker(): ChangeTracker | null {
 	return activeTracker;
 }
+
+// -------------------------------------------------------------------------
+// Worktree-scoped rollback primitive (spec-18 / AC-05, AC-10 → SCENARIO-010/012)
+// -------------------------------------------------------------------------
+
+/** Outcome of {@link rollbackWorktreeTo}. Never thrown — failures degrade to `{ok:false, error}`. */
+export interface RollbackResult {
+	ok: boolean;
+	error?: string;
+}
+
+/**
+ * Worktree-scoped rollback to a known-good ref. Runs `git reset --hard <commit>`
+ * then `git clean -fd` inside `worktreePath` ONLY — never touches the user's
+ * main checkout (AC-05 / SCENARIO-010). Linked git worktrees have independent
+ * HEADs and working trees, so this can never reach the main checkout.
+ *
+ * NEVER throws: any failure (non-git dir, missing worktree, git error, invalid
+ * ref) returns `{ ok:false, error }` and the caller proceeds (the run degrades
+ * to fail-with-report — AC-10 / SCENARIO-012). The whole body is wrapped in a
+ * single try/catch, mirroring the {@link ChangeTracker} never-throw discipline.
+ *
+ * Reuses the EXACT discrete-argv `spawnSync("git", ["-C", worktreePath, ...])`
+ * shape from {@link ChangeTracker.gitSpawn} — **never `shell:true`** — so it
+ * sidesteps the `src/safety.ts` denylist (which only matches shell command
+ * strings); agent-supplied paths never reach a shell.
+ *
+ * @param worktreePath absolute path to the super-dev worktree.
+ * @param commit ref to reset to; defaults to `HEAD` (the pre-stage baseline).
+ */
+export function rollbackWorktreeTo(
+	worktreePath: string | undefined,
+	commit: string = "HEAD",
+): RollbackResult {
+	if (!worktreePath) return { ok: false, error: "no worktreePath" };
+	try {
+		const reset = spawnSync("git", ["-C", worktreePath, "reset", "--hard", commit], {
+			encoding: "utf8",
+			timeout: resolveTimeoutMs(),
+		});
+		if (reset.error || reset.status !== 0) {
+			return { ok: false, error: `git reset failed: ${String(reset.error ?? reset.stderr ?? reset.status)}` };
+		}
+		const clean = spawnSync("git", ["-C", worktreePath, "clean", "-fd"], {
+			encoding: "utf8",
+			timeout: resolveTimeoutMs(),
+		});
+		if (clean.error || clean.status !== 0) {
+			return { ok: false, error: `git clean failed: ${String(clean.error ?? clean.stderr ?? clean.status)}` };
+		}
+		return { ok: true };
+	} catch (err) {
+		return { ok: false, error: String(err) };
+	}
+}
