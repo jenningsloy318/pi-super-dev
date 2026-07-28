@@ -133,6 +133,10 @@ vi.mock("../src/build-runner.ts", () => ({
 		const r = mock.gateQ.length ? mock.gateQ.shift()! : mock.gateDefault;
 		return { ...r };
 	},
+	// Observability-only correlation line: stubbed null (mocked gate results
+	// carry no correlation); the real helper is unit-tested in
+	// tests/build-runner-correlation.test.ts.
+	buildGateCorrelationLine: () => null,
 	runDeliverableCheck: (
 		_cwd: string,
 		deliverables: unknown,

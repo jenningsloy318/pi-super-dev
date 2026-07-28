@@ -141,38 +141,68 @@ export function applyThinkingLevel(session: unknown, level: ThinkingLevel | unde
  *  @earendil-works/pi-ai Model type directly. */
 type SessionModelOption = NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["model"]>;
 
+/** Module-level cache for the resolved ModelRuntime (AR-03). The model
+ *  catalog does not change within a run, so `create()` is resolved ONCE per
+ *  process and shared across every session-backend specialist spawn — it never
+ *  pays a per-spawn catalog-resolution cost. The promise is cleared on
+ *  rejection so a transient create() failure can be retried by a later spawn. */
+let runtimeCache: Promise<ModelRuntime> | undefined;
+function getModelRuntime(): Promise<ModelRuntime> {
+	if (!runtimeCache) {
+		runtimeCache = ModelRuntime.create().catch((err) => {
+			runtimeCache = undefined; // allow a later spawn to retry
+			throw err;
+		});
+	}
+	return runtimeCache;
+}
+
 /** Split a "provider/model-id" reference into its provider and model-id parts.
- *  A bare id (no slash) yields provider = the whole string and an empty model id. */
+ *  A bare id (no slash) yields an EMPTY provider so the caller can fall back to
+ *  a full-catalog scan (resolveSessionModel) rather than handing the catalog a
+ *  degenerate provider==id lookup (resolves F-3 / AR-04). */
 function splitModelRef(ref: string): { provider: string; modelId: string } {
 	const slash = ref.indexOf("/");
-	if (slash < 0) return { provider: ref, modelId: "" };
+	if (slash < 0) return { provider: "", modelId: ref };
 	return { provider: ref.slice(0, slash), modelId: ref.slice(slash + 1) };
 }
 
 /** Resolve an inherited/explicit model id to a Model<any> for createAgentSession
  *  (Phase 1, Feature 1). Best-effort and no-throw:
- *   - When a ModelRuntime is available, resolve the id against the agent-dir
- *     catalog — a known id yields a concrete Model<any>; an UNKNOWN id falls
- *     through to the SDK/settings default (SCENARIO-008).
- *   - When no runtime is available (older runtime / mocked SDK), hand the
- *     resolved id to createAgentSession as a Model descriptor so the SDK can
- *     resolve it against its own catalog; the run never throws here (the SDK is
- *     the authority on whether the id resolves). */
+ *   - When a ModelRuntime is available, resolve the id against the cached
+ *     catalog. The standard "provider/model-id" form resolves directly via
+ *     getModel; a BARE id (no slash, or an unfamiliar provider prefix) falls
+ *     back to a full-catalog scan by model id. A known id yields a concrete
+ *     Model<any>; an UNKNOWN id falls through to the SDK/settings default
+ *     (SCENARIO-008).
+ *   - When no runtime is available (older runtime / mocked SDK), return
+ *     undefined so createAgentSession omits `model` and uses the SDK/settings
+ *     default. Never hand it a degenerate (incomplete) Model descriptor — that
+ *     was a type-unsound `as SessionModelOption` cast on a {id,provider}-only
+ *     object which would throw confusingly if the SDK touched any other field
+ *     (resolves F-2). */
 async function resolveSessionModel(id: string | undefined): Promise<SessionModelOption | undefined> {
 	if (!id) return undefined;
 	const { provider, modelId } = splitModelRef(id);
 	try {
-		const runtime = await ModelRuntime.create();
-		const m = runtime.getModel(provider, modelId);
-		if (m) return m;
-		// Known runtime, unknown id → fall through to the SDK/settings default (SCENARIO-008).
-		return undefined;
+		const runtime = await getModelRuntime();
+		// Standard "provider/model-id" form: resolve directly.
+		if (provider) {
+			const m = runtime.getModel(provider, modelId);
+			if (m) return m;
+		}
+		// Bare id (no slash) OR an unknown provider/model pair: scan the full
+		// catalog for a model whose id matches, so a bare slug or an unfamiliar
+		// provider prefix still resolves when the catalog knows it. A non-matching
+		// id falls through to the SDK/settings default (SCENARIO-008).
+		const all = runtime.getModels();
+		const byId = all.find((m) => (m as { id?: string }).id === id);
+		return byId;
 	} catch {
-		// Runtime unavailable (older runtime / mocked SDK): best-effort — hand the
-		// resolved id to createAgentSession as a Model descriptor. Single cast (NOT
-		// `as unknown as`): the option's Model<any> accepts the descriptor shape and
-		// the SDK is the authority on whether the id resolves.
-		return { id: modelId || id, provider } as SessionModelOption;
+		// Runtime unavailable (older runtime / mocked SDK): no-throw fall-through
+		// to the SDK/settings default. Let createAgentSession omit `model` and use
+		// its own catalog/settings rather than a degenerate descriptor (F-2).
+		return undefined;
 	}
 }
 

@@ -97,6 +97,12 @@ export type ResearchData = Static<typeof ResearchData>;
 
 // ─── Reviews (spec-review, code-review, adversarial-review) ───────────────────
 
+// CLOSED (`additionalProperties: false`) so the well-defined review schemas that
+// embed it (SpecReviewData/CodeReviewData/AdversarialReviewData) are STRICT-
+// CAPABLE end-to-end: `isStrictCapable` returns true for them and the
+// structured_output tool attaches constrained sampling, AND a capable
+// provider's strict mode recurses into the nested findings without seeing open
+// slots to dump into. Optional keys (lens/file/line) stay optional.
 const Finding = Type.Object({
 	id: Type.String(),
 	severity: Type.String(),
@@ -105,43 +111,51 @@ const Finding = Type.Object({
 	lens: Type.Optional(Type.String()),
 	file: Type.Optional(Type.String()),
 	line: Type.Optional(Type.String()),
-});
+}, { additionalProperties: false });
 
+// CLOSED (`additionalProperties: false`) so this stage schema is STRICT-CAPABLE
+// (≥1 required non-Optional key + additionalProperties:false) and the
+// structured_output tool attaches constrained sampling in production (Feature 2).
+// The nested dimensions element is also closed so a provider's strict mode can
+// not dump extra keys inside it either.
 export const SpecReviewData = Type.Object({
 	title: Type.String(),
 	date: Type.String(),
 	verdict: Type.String(),
 	summary: Type.String(),
 	findings: Type.Array(Finding),
-	dimensions: Type.Array(Type.Object({ name: Type.String(), status: Type.String(), notes: Type.String() })),
-});
+	dimensions: Type.Array(Type.Object({ name: Type.String(), status: Type.String(), notes: Type.String() }, { additionalProperties: false })),
+}, { additionalProperties: false });
 export type SpecReviewDataT = Static<typeof SpecReviewData>;
 
+// CLOSED so this stage schema is STRICT-CAPABLE in production (Feature 2).
 export const CodeReviewData = Type.Object({
 	title: Type.String(),
 	date: Type.String(),
 	verdict: Type.String(),
 	summary: Type.String(),
 	findings: Type.Array(Finding),
-});
+}, { additionalProperties: false });
 export type CodeReviewDataT = Static<typeof CodeReviewData>;
 
+// CLOSED so this stage schema is STRICT-CAPABLE in production (Feature 2).
 export const AdversarialReviewData = Type.Object({
 	title: Type.String(),
 	date: Type.String(),
 	verdict: Type.String(),
 	summary: Type.String(),
 	findings: Type.Array(Finding),
-});
+}, { additionalProperties: false });
 export type AdversarialReviewDataT = Static<typeof AdversarialReviewData>;
 
 // ─── Remaining stages (batch 3) ─────────────────────────────────────────────
 
+// CLOSED so this stage schema is STRICT-CAPABLE in production (Feature 2).
 export const ImplementationSummaryData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
 	phasesCompleted: Type.String(), allGreen: Type.String(),
 	filesModified: Type.Array(Type.String()),
-});
+}, { additionalProperties: false });
 export const DebugData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
 	hypotheses: Type.Array(Type.String()), rootCause: Type.String(),

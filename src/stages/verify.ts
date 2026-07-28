@@ -13,7 +13,7 @@
 
 import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
-import { runBuildGate, type GateOptions } from "../build-runner.ts";
+import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -86,6 +86,9 @@ const buildGateStep = task({
 		if (!ctx.budget.check()) return undefined;
 		const r = runBuildGate(setupOf(s).worktreePath, { gate: (s.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 		if (!r.pass && r.ran.length) ctx.log(`build-gate FAIL (ran: ${r.ran.join(", ")}): ${r.errors.join("; ")}`);
+		// AR-02: emit the pi session/model correlation tag to the run trace.
+		const corr = buildGateCorrelationLine(r);
+		if (corr) ctx.log(corr);
 		return { pass: r.pass, ran: r.ran, errors: r.errors };
 	},
 });

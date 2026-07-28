@@ -34,11 +34,20 @@ export interface RenderResult {
 	errors: string[];
 }
 
-/** Validate data against a TypeBox schema. Returns error strings (empty = valid). */
+/** Validate data against a TypeBox schema. Returns error strings (empty = valid).
+ *
+ *  Extra/unknown keys are TOLERATED: some stage schemas carry
+ *  `additionalProperties: false` so they are STRICT-CAPABLE for the
+ *  structured_output tool's constrained sampling (Feature 2) — that flag is
+ *  NOT a render-validator directive. The templates render only the declared
+ *  keys, so an extra key the model emitted is harmless to the doc; rejecting it
+ *  here would fail a render (and its gate) on a harmless property. Required-key
+ *  and type errors are still reported as before. */
 export function validateData(schema: StageModel["schema"], data: unknown): string[] {
 	const errors: string[] = [];
 	for (const err of Value.Errors(schema, data)) {
 		const e = err as unknown as { path?: string; message: string };
+		if (e.message === "must not have additional properties") continue;
 		errors.push(`${e.path ?? "$"}: ${e.message}`);
 	}
 	return errors;

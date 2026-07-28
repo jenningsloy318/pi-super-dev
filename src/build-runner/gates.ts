@@ -121,6 +121,19 @@ export interface BuildGateResult {
 	correlation?: { sessionId?: string; model?: string };
 }
 
+/** Format the build-gate correlation tag as a plain-ASCII `# pi-session=<id>
+ *  model=<model>` log line, or null when the result carries no correlation
+ *  (both env vars were absent). Consumers log this so the tag is OBSERVABLE in
+ *  the run trace — without an emission path the captured correlation field is
+ *  write-only (AR-02). Plain ASCII, no control codes; observability-only. */
+export function buildGateCorrelationLine(r: BuildGateResult): string | null {
+	if (!r.correlation) return null;
+	const parts: string[] = [];
+	if (r.correlation.sessionId) parts.push(`pi-session=${r.correlation.sessionId}`);
+	if (r.correlation.model) parts.push(`model=${r.correlation.model}`);
+	return parts.length ? `# ${parts.join(" ")}` : null;
+}
+
 /**
  * Spec-declared cargo build-gate contract (Layer D, AC-04..08). Optional. On
  * a rust repo, when present this is the HIGHEST-precedence scope source:

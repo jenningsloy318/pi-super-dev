@@ -62,6 +62,21 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	}),
 	SessionManager: { inMemory: vi.fn(() => ({})) },
 	SettingsManager: { create: vi.fn(() => ({})) },
+	// ModelRuntime is now consulted by resolveSessionModel (F-2 fix removed the
+	// type-unsound descriptor cast from the catch branch, so a known id must
+	// resolve via the catalog). getModel resolves the standard
+	// "openai/gpt-4o" pair to a concrete model; anything else returns undefined
+	// and getModels() returns [] so an unknown id falls through to the SDK
+	// default (SCENARIO-008) without throwing.
+	ModelRuntime: {
+		create: vi.fn(async () => ({
+			getModel: vi.fn((providerId: string, modelId: string) =>
+				providerId === "openai" && modelId === "gpt-4o"
+					? { id: "openai/gpt-4o", providerId: "openai" }
+					: undefined),
+			getModels: vi.fn(() => []),
+		})),
+	},
 }));
 vi.mock("../src/agents.ts", () => ({ loadAgentPrompt: vi.fn(() => "SYSTEM-PROMPT") }));
 vi.mock("../src/control.ts", () => ({ extractControl: vi.fn(() => null) }));

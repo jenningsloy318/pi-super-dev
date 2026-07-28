@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runBuildGate, type BuildGateResult } from "../src/build-runner.ts";
+import { runBuildGate, buildGateCorrelationLine, type BuildGateResult } from "../src/build-runner.ts";
 
 function tmpProj(setup: (dir: string) => void): string {
 	const dir = mkdtempSync(join(tmpdir(), "sd-build-corr-"));
@@ -183,5 +183,22 @@ describe("runBuildGate — PI session/model correlation tagging (AC-10, SCENARIO
 		} finally {
 			rmSync(d, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("buildGateCorrelationLine (AR-02: makes the tag observable)", () => {
+	it("returns null when the result carries no correlation", () => {
+		const r: BuildGateResult = { pass: true, buildSuccess: true, allTestsPass: true, typecheckSuccess: true, ran: [], errors: [], outOfScopeErrors: [], inScopePass: true };
+		expect(buildGateCorrelationLine(r)).toBeNull();
+	});
+
+	it("formats a plain-ASCII `# pi-session=<id> model=<model>` line when both are present", () => {
+		const r: BuildGateResult = { pass: true, buildSuccess: true, allTestsPass: true, typecheckSuccess: true, ran: [], errors: [], outOfScopeErrors: [], inScopePass: true, correlation: { sessionId: "s-1", model: "openai/gpt-4o" } };
+		expect(buildGateCorrelationLine(r)).toBe("# pi-session=s-1 model=openai/gpt-4o");
+	});
+
+	it("emits only the present key when just the session id is set", () => {
+		const r: BuildGateResult = { pass: true, buildSuccess: true, allTestsPass: true, typecheckSuccess: true, ran: [], errors: [], outOfScopeErrors: [], inScopePass: true, correlation: { sessionId: "s-2" } };
+		expect(buildGateCorrelationLine(r)).toBe("# pi-session=s-2");
 	});
 });

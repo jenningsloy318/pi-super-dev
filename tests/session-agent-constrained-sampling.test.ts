@@ -24,6 +24,12 @@ import {
 	missingKeys,
 	type Capture,
 } from "../src/session-agent.ts";
+import {
+	CodeReviewData,
+	SpecReviewData,
+	AdversarialReviewData,
+	ImplementationSummaryData,
+} from "../src/render/schemas.ts";
 
 // ─── schemas in the test vocabulary ─────────────────────────────────────────
 const strictSchema = Type.Object(
@@ -167,5 +173,24 @@ describe("missingKeys + permissive fallback preserved byte-identical (SCENARIO-0
 		expect(missingKeys(undefined, ["a", "b"])).toEqual(["a", "b"]);
 		expect(missingKeys({ a: 1, b: "" }, ["a", "b"])).toEqual(["b"]);
 		expect(missingKeys({ a: 1, b: "x" }, ["a", "b"])).toEqual([]);
+	});
+});
+
+describe("production stage schemas are strict-capable (F1/AR-01: Feature 2 is ACTIVE)", () => {
+	// The headline acceptance criterion of Feature 2: a real pipeline stage with
+	// a well-defined required-key schema gets constrained sampling in production.
+	// Before this fix every render schema was an open Type.Object (additionalProperties
+	// omitted), so isStrictCapable returned false for ALL of them and
+	// constrainedSampling never attached. These schemas are now CLOSED.
+	it("the well-defined review/summary schemas are strict-capable", () => {
+		expect(isStrictCapable(CodeReviewData)).toBe(true);
+		expect(isStrictCapable(SpecReviewData)).toBe(true);
+		expect(isStrictCapable(AdversarialReviewData)).toBe(true);
+		expect(isStrictCapable(ImplementationSummaryData)).toBe(true);
+	});
+
+	it("structuredOutputTool attaches constrainedSampling when given a real stage schema", () => {
+		const tool = structuredOutputTool({ called: false, value: undefined }, ["title", "verdict", "findings"], CodeReviewData);
+		expect(tool.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
 	});
 });
