@@ -2,7 +2,7 @@
  * Spawns `pi` child processes to run specialist agents — the single primitive
  * that replaces pi-workflow's agent engine. Verified invocation:
  *
- *   pi --mode json -p --no-session --no-skills [--no-extensions] \
+ *   pi --mode json -p --no-session --no-skills \
  *      --tools read,bash,edit,write,ffgrep,fffind \
  *      [--model <provider/id>] --system-prompt <temp-file> "Task: <prompt>"
  *
@@ -23,8 +23,8 @@ const BASE_TOOLS = "read,bash,edit,write,ffgrep,fffind";
 
 /** Agents that drive a browser for UI testing. They receive the `browser_execute`
  *  tool and load extensions (so pi-browser-cdp-extension is available). The
- *  `--tools` allowlist still keeps every other extension tool (e.g. `subagent`)
- *  disabled, so this stays isolated. Browser connection uses AUTO-DISCOVERY —
+ *  `--tools` allowlist keeps every non-allowlisted extension tool (e.g.
+ *  `super_dev`) disabled, so this stays recursion-safe. Browser connection uses AUTO-DISCOVERY —
  *  `await session.connect()` with no args finds any Chrome started with
  *  `--remote-debugging-port`; see agents/qa-agent.md. */
 const BROWSER_AGENTS = new Set(["qa-agent", "ui-tester"]);
@@ -40,11 +40,12 @@ export function isBrowserAgent(agent: string): boolean {
  *  pitfalls — for the requirement + BDD, rather than re-analyzing the local
  *  codebase (that is the code-assessment stage's job). Forced onto the SUBPROCESS
  *  backend (see workflow.ts) so extensions load in an ISOLATED process, never in
- *  the parent's in-process session. Crucially we KEEP `--no-extensions` and load
- *  ONLY these two extensions via repeatable `-e <path>` (the documented
- *  `pi --no-extensions -e ext` pattern), so no other global extension (super-dev
- *  itself, intercom, etc.) is loaded; the `--tools` allowlist then restricts the
- *  ACTIVE tool set to coding + web + mcp. */
+ *  the parent's in-process session. Ambient extensions now load by default (no
+ *  `--no-extensions`); these two web/MCP extensions are ALSO attached via
+ *  repeatable `-e <path>` as belt-and-suspenders so the web tools are present
+ *  even if ambient discovery missed them. Recursion is prevented by the
+ *  `--tools` allowlist (`super_dev` is never in BASE_TOOLS), and the ACTIVE tool
+ *  set is restricted to coding + web + mcp. */
 const WEB_RESEARCH_AGENTS = new Set(["research-agent"]);
 
 export function needsWebResearch(agent: string): boolean {
