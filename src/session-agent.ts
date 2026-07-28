@@ -28,7 +28,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type TSchema } from "typebox";
+import { Type, IsObject, IsOptional, type TSchema } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -229,6 +229,50 @@ function controlSchema(keys: string[]) {
 	return Type.Object(props, { additionalProperties: true });
 }
 
+/** A built typebox Object as it exists at runtime: the `~kind: 'Object'` shape
+ *  carrying the options spread (`additionalProperties`) and the `required` array.
+ *  Used to inspect a confirmed Object without leaning on TObject's generic
+ *  (over-narrowed) `required` typing. */
+type BuiltObject = {
+	additionalProperties?: unknown;
+	required?: unknown;
+	properties?: Record<PropertyKey, unknown>;
+};
+
+/** Phase 2 (Feature 2 / SCENARIO-009..013): true ONLY for a typebox Object with
+ *  ≥1 required non-Optional key AND `additionalProperties === false`. Gates
+ *  `constrainedSampling` so it is NEVER attached to a permissive/open schema
+ *  (the all-Optional `controlSchema`, or any unknown-key schema) — those stay
+ *  the byte-identical fallback. No-throw on non-schema input. */
+export function isStrictCapable(schema: unknown): boolean {
+	if (!IsObject(schema)) return false;
+	// `IsObject` confirmed `~kind === 'Object'`; read the runtime fields via a
+	// single structural cast (NOT `as unknown as`). `additionalProperties` comes
+	// from the TypeBox options spread; `required`/`properties` are built fields.
+	const obj = schema as BuiltObject;
+	if (obj.additionalProperties !== false) return false;
+	const required = obj.required;
+	if (!Array.isArray(required) || required.length === 0) return false;
+	// ≥1 required key whose declared property is NOT Optional.
+	return required.some((key) => {
+		const prop = obj.properties?.[key];
+		return prop != null && !IsOptional(prop);
+	});
+}
+
+/** Phase 2 (Feature 2): the strict-capable schema variant for stages with
+ *  well-defined keys. A CLOSED object (`additionalProperties: false`) with every
+ *  key REQUIRED (non-Optional). Values stay Any-typed to preserve the
+ *  `controlSchema` value-permissiveness (a numeric/array control value is never
+ *  rejected by tool validation) — only the object is closed and the keys are
+ *  required, which is exactly what makes it strict-capable. Pass this as
+ *  `SessionAgentOptions.schema` to opt a stage into constrained sampling. */
+export function strictControlSchema(keys: string[]) {
+	const props: Record<string, ReturnType<typeof Type.Any>> = {};
+	for (const k of keys) props[k] = Type.Any();
+	return Type.Object(props, { additionalProperties: false });
+}
+
 /** Which declared keys are missing/blank in the captured control object. */
 export function missingKeys(captured: Record<string, unknown> | null | undefined, keys: string[]): string[] {
 	if (!captured) return keys;
@@ -273,17 +317,30 @@ export function deliveryDisciplineFor(agent: string): string {
 	].join("\n");
 }
 
-interface Capture {
+export interface Capture {
 	called: boolean;
 	value: unknown;
 }
 
 /** Build the terminating structured_output tool that captures the result.
  *  The schema DECLARES the expected keys (see controlSchema) so the model
- *  fills them instead of dumping everything into one field. */
-function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown): ToolDefinition {
+ *  fills them instead of dumping everything into one field.
+ *
+ *  Phase 2 (Feature 2 / SCENARIO-009..013): the effective schema is the
+ *  caller-provided schema when given, else the permissive controlSchema
+ *  fallback. `constrainedSampling: { type: "json_schema", strict: "prefer" }`
+ *  is attached to the ToolDefinition ONLY when the effective schema is
+ *  strict-capable (`isStrictCapable`). It is NEVER attached to the permissive
+ *  controlSchema (all-Optional + additionalProperties:true) or any open /
+ *  unknown-key schema — so the non-capable-provider/permissive-schema path
+ *  (`missingKeys()` + the single corrective re-prompt) stays byte-identical as
+ *  the fallback. */
+export function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown): ToolDefinition {
 	const fieldList = keys.length ? keys.join(", ") : "the fields the task requested";
-	return defineTool({
+	// The effective schema: caller-provided (may be strict-capable) or the
+	// permissive controlSchema fallback (byte-identical to today).
+	const effective = (schema as TSchema | undefined) ?? controlSchema(keys);
+	const tool: ToolDefinition = defineTool({
 		name: "structured_output",
 		label: "Structured Output",
 		description: `Return the final result object. It MUST include every one of these keys: ${fieldList}.`,
@@ -292,7 +349,7 @@ function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown
 			`structured_output is the final answer channel; call it exactly once when the task is complete. Your object MUST contain ALL of: ${fieldList}.`,
 			"Do not write a prose final answer after calling structured_output.",
 		],
-		parameters: (schema as TSchema | undefined) ?? controlSchema(keys),
+		parameters: effective,
 		async execute(_toolCallId, params) {
 			capture.value = { ...((capture.value ?? {}) as Record<string, unknown>), ...(params as Record<string, unknown>) };
 			capture.called = true;
@@ -303,6 +360,12 @@ function structuredOutputTool(capture: Capture, keys: string[], schema?: unknown
 			};
 		},
 	});
+	// constrainedSampling is attached ONLY when the effective schema is
+	// strict-capable — gated here, never on the permissive/open shape.
+	if (isStrictCapable(effective)) {
+		tool.constrainedSampling = { type: "json_schema", strict: "prefer" };
+	}
+	return tool;
 }
 
 /** Live progress forwarding from session events → the sink. Session events
