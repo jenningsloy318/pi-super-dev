@@ -185,26 +185,6 @@ export function resolveModel(explicit?: string): string | undefined {
 	return env || undefined;
 }
 
-/** Whether spawned specialists should INHERIT ambient (global + project)
- *  extensions. Default OFF (determinism + isolation): the child gets only the
- *  inline safety factory unless this env var opts it in. Mirrors the `.trim()` +
- *  anchored `/^(...)$/i` idiom used by the other SUPER_DEV_* reads: recognizes
- *  `1|true|yes|on` (case-insensitive, whitespace-trimmed); everything else —
- *  unset/empty/`0`/`false`/garbage — degrades to OFF WITHOUT throwing. The
- *  leading `Boolean(env && ...)` short-circuits before `.trim()` when the var
- *  is undefined, so malformed input can never raise.
- *
- *  Opt-in trade-off (documented at BOTH wiring points): a child that performs
- *  ambient extension discovery can resolve an extension-registered provider/model
- *  (closing the gap where the child's fresh runtime otherwise lacks it), but it
- *  ALSO pulls in EVERY user global extension — including super-dev itself.
- *  Spawning specialists receive no interactive user input, so the pipeline still
- *  cannot self-trigger even with super-dev loaded; the determinism cost is
- *  limited to ambient provider/tool registration, not interactive behavior. */
-export function inheritExtensions(): boolean {
-	return Boolean(process.env.SUPER_DEV_INHERIT_EXTENSIONS && /^(1|true|yes|on)$/i.test(process.env.SUPER_DEV_INHERIT_EXTENSIONS.trim()));
-}
-
 /** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
 const DEFAULT_SPAWN_TIMEOUT_MS = 480_000;
 /** Code-writing agents (implementer/tdd-guide) must read large existing files
@@ -273,12 +253,15 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
  * previous version dropped `command` and tried to exec "--mode", causing
  * `spawn --mode ENOENT` on every single agent spawn.)
  *
- * Browser-capable agents (see BROWSER_AGENTS) omit `--no-extensions` so the
- * pi-browser-cdp-extension loads, and add `browser_execute` to the tool set.
- * Web-research agents (see WEB_RESEARCH_AGENTS) instead KEEP `--no-extensions`
- * and load ONLY pi-web-access + pi-mcp-adapter via repeatable `-e <path>`
- * (`extraExtensions`), gaining `web_search`/`fetch_content`/`get_search_content`/
- * `mcp`. The `--tools` allowlist still restricts active tools to the declared set.
+ * All agents load ambient (global + project) extensions by default (no
+ * `--no-extensions`), matching pi-subagents' default (its
+ * `disableAmbientExtensions` is false unless an explicit extensions list or
+ * denyExtensions is given). Recursion is prevented by the `--tools` allowlist
+ * below — `super_dev` is never in BASE_TOOLS, so it stays UNCALLABLE even though
+ * super-dev itself loads (the same mechanism pi-subagents uses to keep its
+ * `subagent` tool out of children). Browser agents additionally get
+ * `browser_execute`; research agents additionally load pi-web-access +
+ * pi-mcp-adapter via `-e`.
  */
 export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extraExtensions: string[] = []): string[] {
 	const { command, args: prefix } = resolvePiBinary();
@@ -288,18 +271,15 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 		...prefix,
 		"--mode", "json", "-p", "--no-session", "--no-skills",
 	];
-	// Extensions: browser-capable agents OMIT --no-extensions so pi-browser-cdp
-	// loads via discovery. Every other agent — including research — KEEPS
-	// --no-extensions for isolation UNLESS SUPER_DEV_INHERIT_EXTENSIONS opts the
-	// child into ambient (global + project) extension discovery, closing the gap
-	// where a child's fresh runtime cannot resolve an extension-registered
-	// provider/model. Research still loads ONLY its two extensions explicitly via
-	// `-e <path>` below (the documented `pi --no-extensions -e ext` pattern), so
-	// no other global extension is pulled in; the --tools allowlist still
-	// restricts ACTIVE tools. Opt-in trade-off: this pulls in EVERY user global
-	// extension (incl. super-dev itself); spawned specialists get no interactive
-	// input, so the pipeline still cannot self-trigger.
-	if (!browser && !inheritExtensions()) args.push("--no-extensions");
+	// Extensions: ALL agents load ambient (global + project) extensions by
+	// default (no --no-extensions) — matches pi-subagents' default, so an
+	// inherited parent model that resolves from an extension-registered provider
+	// no longer silently fails, and newly-installed useful extensions are picked
+	// up automatically. Recursion is prevented by the --tools allowlist below
+	// (super_dev is never in BASE_TOOLS, so it can't be called even though
+	// super-dev itself loads) — the same mechanism pi-subagents uses to keep its
+	// `subagent` tool out of children. Browser/research agents additionally pull
+	// their role extensions via the -e paths below.
 	for (const ext of extraExtensions) args.push("-e", ext);
 	args.push("--tools", toolsForAgent(opts.agent));
 	args.push("--system-prompt", promptPath);

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, toolsForAgent, resolveExtensionEntry, resolveThinking, inheritExtensions, type ThinkingLevel } from "../src/pi-spawn.ts";
+import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, toolsForAgent, resolveExtensionEntry, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 /** Minimal inherited-model object for tests (only provider+id are read by buildSpawnArgs). */
@@ -99,9 +99,9 @@ describe("buildSpawnArgs", () => {
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
 
-	it("non-browser agents keep --no-extensions and the base tool set", () => {
+	it("non-browser agents load ambient extensions (no --no-extensions) with the base tool set", () => {
 		const args = buildSpawnArgs({ agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(args).toContain("--no-extensions");
+		expect(args).not.toContain("--no-extensions");
 		const tools = args[args.indexOf("--tools") + 1];
 		expect(tools).toBe("read,bash,edit,write,ffgrep,fffind");
 		expect(tools).not.toContain("browser_execute");
@@ -117,12 +117,13 @@ describe("buildSpawnArgs", () => {
 		}
 	});
 
-	it("research-agent KEEPS --no-extensions and loads ONLY pi-web-access + pi-mcp-adapter via -e, gaining web+mcp tools", () => {
+	it("research-agent loads ambient extensions (no --no-extensions) AND its -e role extensions, gaining web+mcp tools", () => {
 		const exts = ["/agent/npm/node_modules/pi-web-access/index.ts", "/agent/npm/node_modules/pi-mcp-adapter/index.ts"];
 		const args = buildSpawnArgs({ agent: "research-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md", exts);
-		// isolation preserved: --no-extensions STAYS (unlike the rushed drop-everything approach)
-		expect(args).toContain("--no-extensions");
-		// only the two named extensions are loaded explicitly
+		// ambient extensions now load by default (no --no-extensions); the -e
+		// role extensions are still attached as belt-and-suspenders.
+		expect(args).not.toContain("--no-extensions");
+		// the two named role extensions are still loaded explicitly via -e
 		for (const e of exts) {
 			const i = args.indexOf(e);
 			expect(i).toBeGreaterThan(0);
@@ -286,82 +287,20 @@ describe("buildSpawnArgs — model resolution chain [AC-02 / SCENARIO-003, SCENA
 	});
 });
 
-describe("inheritExtensions — SUPER_DEV_INHERIT_EXTENSIONS parsing [AC-01 / SCENARIO-001, SCENARIO-002, SCENARIO-003, SCENARIO-011, SCENARIO-016]", () => {
-	const env = saveEnv("SUPER_DEV_INHERIT_EXTENSIONS");
-	beforeEach(env.clear);
-	afterEach(env.restore);
-
-	it("is DISABLED by default when the env var is unset (byte-identical baseline)", () => {
-		expect(inheritExtensions()).toBe(false);
-	});
-
-	it("is DISABLED for an empty string (no throw)", () => {
-		process.env.SUPER_DEV_INHERIT_EXTENSIONS = "";
-		expect(() => inheritExtensions()).not.toThrow();
-		expect(inheritExtensions()).toBe(false);
-	});
-
-	for (const v of ["1", "true", "yes", "on"]) {
-		it(`is ENABLED for the canonical truthy token "${v}"`, () => {
-			process.env.SUPER_DEV_INHERIT_EXTENSIONS = v;
-			expect(inheritExtensions()).toBe(true);
-		});
-	}
-
-	it("is ENABLED for mixed-case truthy tokens", () => {
-		for (const v of ["True", "On", "YES", "tRuE"]) {
-			process.env.SUPER_DEV_INHERIT_EXTENSIONS = v;
-			expect(inheritExtensions(), v).toBe(true);
-		}
-	});
-
-	it("is ENABLED despite surrounding whitespace (trimmed)", () => {
-		process.env.SUPER_DEV_INHERIT_EXTENSIONS = "  YES  ";
-		expect(inheritExtensions()).toBe(true);
-	});
-
-	for (const v of ["0", "false", "off", "no", "2", "maybe", "random"]) {
-		it(`is DISABLED (no throw) for the unrecognized/garbage value "${v}"`, () => {
-			process.env.SUPER_DEV_INHERIT_EXTENSIONS = v;
-			expect(() => inheritExtensions()).not.toThrow();
-			expect(inheritExtensions()).toBe(false);
-		});
-	}
-});
-
-describe("buildSpawnArgs — SUPER_DEV_INHERIT_EXTENSIONS wiring [AC-01..AC-05 / SCENARIO-004, SCENARIO-005, SCENARIO-006, SCENARIO-010]", () => {
-	const env = saveEnv("SUPER_DEV_INHERIT_EXTENSIONS");
-	beforeEach(env.clear);
-	afterEach(env.restore);
-	const nonBrowser = { agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" };
-
-	it("non-browser agent KEEPS --no-extensions when the opt-in is unset (byte-identical baseline)", () => {
-		const args = buildSpawnArgs(nonBrowser, "/tmp/a.md");
-		expect(args).toContain("--no-extensions");
-	});
-
-	it("non-browser agent DROPS --no-extensions when SUPER_DEV_INHERIT_EXTENSIONS=1 (opt-in)", () => {
-		process.env.SUPER_DEV_INHERIT_EXTENSIONS = "1";
-		const args = buildSpawnArgs(nonBrowser, "/tmp/a.md");
+describe("buildSpawnArgs — ambient extensions load by default (no --no-extensions for any agent)", () => {
+	it("non-browser agents do NOT carry --no-extensions (ambient loads; recursion guarded by the --tools allowlist)", () => {
+		const args = buildSpawnArgs({ agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
 		expect(args).not.toContain("--no-extensions");
 	});
-
-	it("non-browser agent KEEPS --no-extensions for every falsy/garbage env value (byte-identical baseline)", () => {
-		for (const v of ["0", "false", "off", "no", "2", "maybe", "random"]) {
-			process.env.SUPER_DEV_INHERIT_EXTENSIONS = v;
-			const args = buildSpawnArgs(nonBrowser, "/tmp/a.md");
-			expect(args, `SUPER_DEV_INHERIT_EXTENSIONS=${v}`).toContain("--no-extensions");
-		}
+	it("research-agent does NOT carry --no-extensions (loads ambient + its -e role extensions)", () => {
+		const exts = ["/agent/npm/node_modules/pi-web-access/index.ts"];
+		const args = buildSpawnArgs({ agent: "research-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md", exts);
+		expect(args).not.toContain("--no-extensions");
+		for (const e of exts) expect(args[args.indexOf(e) - 1]).toBe("-e");
 	});
-
-	it("browser agent (qa-agent) NEVER carries --no-extensions, regardless of opt-in state (invariant branch)", () => {
-		// opt-in OFF — browser branch already omits the flag
-		const off = buildSpawnArgs({ agent: "qa-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(off).not.toContain("--no-extensions");
-		// opt-in ON — the `!browser` guard makes browser-agent behavior invariant
-		process.env.SUPER_DEV_INHERIT_EXTENSIONS = "1";
-		const on = buildSpawnArgs({ agent: "qa-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(on).not.toContain("--no-extensions");
+	it("browser agents do NOT carry --no-extensions", () => {
+		const args = buildSpawnArgs({ agent: "qa-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
+		expect(args).not.toContain("--no-extensions");
 	});
 });
 

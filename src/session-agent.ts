@@ -37,7 +37,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, inheritExtensions, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -477,24 +477,23 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
 	// Safety (Gap 4.3): inject a `tool_call` hook that hard-blockks dangerous
-	// commands + secret-file overwrites, and suppress ambient global-extension
-	// discovery by default (noExtensions = !inheritExtensions(), i.e. true unless
-	// SUPER_DEV_INHERIT_EXTENSIONS opts in — see the loader below). Inline
-	// factories still load (verified C9), so the child is both guarded AND
-	// deterministic (no user global extensions) in the baseline.
+	// commands + secret-file overwrites. Ambient (global + project) extension
+	// discovery is ENABLED by default (noExtensions: false) — this matches
+	// pi-subagents' default (its `disableAmbientExtensions` is false unless an
+	// explicit extensions list or denyExtensions is given), so an inherited
+	// parent model that resolves from an extension-registered provider no longer
+	// silently fails in the child's runtime, and newly-installed useful
+	// extensions are picked up automatically. Recursion is prevented NOT by
+	// suppressing extensions but by excluding this extension's own spawner tool
+	// from children (see `excludeTools: ["super_dev"]` on createAgentSession
+	// below) — the same mechanism pi-subagents uses (its `subagent` tool is kept
+	// out of children's active tools via the tools allowlist / capability
+	// ceiling). The inline safety factory still loads (verified C9).
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: opts.cwd,
 		agentDir,
 		settingsManager,
-		// Default OFF (determinism + isolation): the child gets ONLY the inline
-		// safety factory unless SUPER_DEV_INHERIT_EXTENSIONS opts it into ambient
-		// (global + project) extension discovery — closing the gap where a child's
-		// fresh runtime cannot resolve an extension-registered provider/model.
-		// Opt-in trade-off: this pulls in EVERY user global extension (incl.
-		// super-dev itself); spawned specialists receive no interactive input, so
-		// the pipeline still cannot self-trigger. Inline factories always load
-		// (verified C9), so the child stays guarded AND (by default) deterministic.
-		noExtensions: !inheritExtensions(),
+		noExtensions: false,
 		extensionFactories: [createSafetyExtensionFactory()],
 	});
 	await resourceLoader.reload();
@@ -530,6 +529,14 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		settingsManager,
 		resourceLoader,
 		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
+		// Recursion guard: ambient extensions now load by default (noExtensions:
+		// false above), which includes super-dev itself — whose `activate()`
+		// registers the `super_dev` spawner tool. Excluding it from the ACTIVE
+		// tool set keeps specialists from calling super_dev (nested pipeline /
+		// blowup) while leaving super-dev's other (inert in a headless child)
+		// registrations harmless. Mirrors pi-subagents excluding its `subagent`
+		// tool from children. (Other ambient tools stay active + useful.)
+		excludeTools: ["super_dev"],
 		// Conditionally threaded so a run with NO resolvable model/thinking is
 		// byte-identical to today (neither creation option is set — SCENARIO-002/004).
 		...(resolvedModel ? { model: resolvedModel } : {}),

@@ -1,13 +1,13 @@
 /**
  * Phase: CHANGELOG `[Unreleased]` entry for spec-17
- * (SUPER_DEV_INHERIT_EXTENSIONS opt-in) — RED→GREEN tests.
+ * (ambient extension inheritance + excludeTools) — RED→GREEN tests.
  *
  * AC-07 → SCENARIO-012: the CHANGELOG.md `[Unreleased]` section gains a
  * Keep-a-Changelog `### Added` bullet summarizing the opt-in. The bullet's
  * bold (`**...**`) span text MUST carry the contract anchor token `inherit`
  * (so the shared `boldBulletAnchored` regex of
  * tests/changelog-unreleased-spec15.test.ts matches it), and the prose MUST
- * surface the opt-in's env var `SUPER_DEV_INHERIT_EXTENSIONS`. No previously
+ * surface the recursion-safe self-exclusion (`excludeTools` + `super_dev`). No previously
  * matched anchor / bullet may be removed or reordered.
  *
  * These are pure file-content assertions typed against CHANGELOG.md. They are
@@ -47,15 +47,16 @@ const UNRELEASED = unreleasedSection(CHANGELOG);
 const BOLD_BULLET_ANCHORED =
 	/(^|\n)- \*\*[^*\n]*(inherit|model|thinking|constrain|structured[-_ ]?output|registerEntryRenderer|PI_SESSION_ID|PI_MODEL)[^*\n]*\*\*/i;
 
-describe("CHANGELOG [Unreleased] entry for spec-17 (SUPER_DEV_INHERIT_EXTENSIONS opt-in)", () => {
-	describe("AC-07 / SCENARIO-012: a new ### Added bullet summarizes the opt-in", () => {
+describe("CHANGELOG [Unreleased] entry for spec-17 (ambient extension inheritance + excludeTools)", () => {
+	describe("AC-07 / SCENARIO-012: a new ### Added bullet summarizes the change", () => {
 		it("the CHANGELOG still carries an `[Unreleased]` section (placement guard)", () => {
 			expect(UNRELEASED.length).toBeGreaterThan(0);
 			expect(UNRELEASED.startsWith("## [Unreleased]")).toBe(true);
 		});
 
-		it("the entry surfaces the SUPER_DEV_INHERIT_EXTENSIONS opt-in env var", () => {
-			expect(UNRELEASED).toMatch(/SUPER_DEV_INHERIT_EXTENSIONS/);
+		it("the entry documents the recursion-safe self-exclusion (excludeTools + super_dev)", () => {
+			expect(UNRELEASED).toMatch(/excludeTools/);
+			expect(UNRELEASED).toMatch(/super_dev/);
 		});
 
 		it("the entry is tagged spec-17 so it is attributable", () => {
@@ -72,13 +73,13 @@ describe("CHANGELOG [Unreleased] entry for spec-17 (SUPER_DEV_INHERIT_EXTENSIONS
 		});
 
 		it("the spec-17 bullet is itself a bold-leading bullet whose bold span carries `inherit`", () => {
-			// The specific spec-17 bullet: a bold bullet that mentions the opt-in
-			// env var AND whose bold span carries `inherit` (extensions/provider
-			// alone must NOT satisfy the contract).
+			// The specific spec-17 bullet: a bold bullet that mentions the
+			// recursion-safe self-exclusion (excludeTools) AND whose bold span
+			// carries `inherit` (extensions/provider alone must NOT satisfy).
 			const lines = UNRELEASED.split("\n");
 			const spec17BoldBullet = lines.some((line) => {
 				if (!/^\s*-\s+\*\*/.test(line)) return false;
-				if (!/SUPER_DEV_INHERIT_EXTENSIONS/.test(line)) return false;
+				if (!/excludeTools/.test(line)) return false;
 				const boldSpan = line.match(/\*\*([^*]*)\*\*/);
 				if (!boldSpan) return false;
 				return /inherit/i.test(boldSpan[1]);
