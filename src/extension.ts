@@ -11,7 +11,7 @@
  *     invokes the `super_dev` tool.
  */
 
-import type { ExtensionAPI, Theme, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme, ExtensionContext, InputEvent, EntryRenderer } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import type { DashboardTheme } from "./render/dashboard.ts";
@@ -670,26 +670,26 @@ export default function activate(pi: ExtensionAPI): void {
 	// Durable transcript card for a finished BACKGROUND run (pi-native): rendered
 	// TUI-only, survives `/reload`, and is NEVER sent to the LLM. Populated by
 	// deliverBackgroundResult()'s pi.appendEntry("super-dev-summary", ...).
-	// Feature-detected: `registerEntryRenderer` exists in the pi runtime but is
-	// absent from the pinned 0.80.3 type surface, so we call it through a narrow
-	// capability type and no-op when unavailable (appendEntry still persists).
-	const piWithRenderer = pi as unknown as {
-		registerEntryRenderer?: (
-			customType: string,
-			renderer: (entry: { data?: unknown }, opts: unknown, theme: DashboardTheme) => Container,
-		) => void;
-	};
-	try {
-		piWithRenderer.registerEntryRenderer?.("super-dev-summary", (entry, _opts, theme) => {
-		const d = (entry.data ?? {}) as { text?: string; isError?: boolean };
-		const bold = (t: string): string => (theme?.bold ? theme.bold(t) : t);
-		const fg = (color: string, t: string): string => (theme ? theme.fg(color, t) : t);
+	// Feature 3 (AC-09 / SCENARIO-014,015): `registerEntryRenderer` is now public
+	// on the 0.82.1 ExtensionAPI type surface, so the unsafe capability cast that
+	// the old 0.80.3 pin required is gone — the renderer is registered directly
+	// through the typed public API `registerEntryRenderer<T>(customType, renderer:
+	// EntryRenderer<T>)`. The try/catch best-effort guard is retained so a
+	// registration failure degrades gracefully (appendEntry still persists the
+	// durable card) and activation continues.
+	type SummaryEntryData = { text?: string; isError?: boolean };
+	const summaryRenderer: EntryRenderer<SummaryEntryData> = (entry, _opts, theme) => {
+		const d: SummaryEntryData = entry.data ?? {};
 		const container = new Container();
-		const header = d.isError ? fg("error", bold("── super-dev (background) ─ finished with errors ──")) : bold("── super-dev (background) ─ finished ──");
+		const header = d.isError
+			? theme.fg("error", theme.bold("── super-dev (background) ─ finished with errors ──"))
+			: theme.bold("── super-dev (background) ─ finished ──");
 		container.addChild(new Text(header, 0, 0));
 		for (const line of String(d.text ?? "").split("\n")) container.addChild(new Text(line, 0, 0));
 		return container;
-		});
+	};
+	try {
+		pi.registerEntryRenderer("super-dev-summary", summaryRenderer);
 	} catch { /* best-effort: entry renderer unavailable on this pi runtime */ }
 
 	// Stop an in-flight background run (pi-native command + shortcut). Aborts the
