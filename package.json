@@ -53,17 +53,17 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "typebox": "^1.1.0",
+    "@earendil-works/pi-tui": "^0.82.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
     "@types/node": "^22.0.0",
-    "typebox": "*",
+    "typebox": "1.1.38",
     "typescript": "^5.4",
     "vitest": "^3.0",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "^0.82.1"
   },
   "engines": {
     "node": ">=22.19.0"
