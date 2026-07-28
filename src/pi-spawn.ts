@@ -185,6 +185,26 @@ export function resolveModel(explicit?: string): string | undefined {
 	return env || undefined;
 }
 
+/** Whether spawned specialists should INHERIT ambient (global + project)
+ *  extensions. Default OFF (determinism + isolation): the child gets only the
+ *  inline safety factory unless this env var opts it in. Mirrors the `.trim()` +
+ *  anchored `/^(...)$/i` idiom used by the other SUPER_DEV_* reads: recognizes
+ *  `1|true|yes|on` (case-insensitive, whitespace-trimmed); everything else —
+ *  unset/empty/`0`/`false`/garbage — degrades to OFF WITHOUT throwing. The
+ *  leading `Boolean(env && ...)` short-circuits before `.trim()` when the var
+ *  is undefined, so malformed input can never raise.
+ *
+ *  Opt-in trade-off (documented at BOTH wiring points): a child that performs
+ *  ambient extension discovery can resolve an extension-registered provider/model
+ *  (closing the gap where the child's fresh runtime otherwise lacks it), but it
+ *  ALSO pulls in EVERY user global extension — including super-dev itself.
+ *  Spawning specialists receive no interactive user input, so the pipeline still
+ *  cannot self-trigger even with super-dev loaded; the determinism cost is
+ *  limited to ambient provider/tool registration, not interactive behavior. */
+export function inheritExtensions(): boolean {
+	return Boolean(process.env.SUPER_DEV_INHERIT_EXTENSIONS && /^(1|true|yes|on)$/i.test(process.env.SUPER_DEV_INHERIT_EXTENSIONS.trim()));
+}
+
 /** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
 const DEFAULT_SPAWN_TIMEOUT_MS = 480_000;
 /** Code-writing agents (implementer/tdd-guide) must read large existing files
@@ -268,12 +288,18 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 		...prefix,
 		"--mode", "json", "-p", "--no-session", "--no-skills",
 	];
-	// Browser agents load pi-browser-cdp via discovery (they OMIT --no-extensions).
-	// Every other agent — including research — KEEPS --no-extensions for isolation.
-	// Research then loads ONLY its two extensions explicitly via `-e <path>` below
-	// (the documented `pi --no-extensions -e ext` pattern), so no other global
-	// extension is pulled in. The --tools allowlist still restricts ACTIVE tools.
-	if (!browser) args.push("--no-extensions");
+	// Extensions: browser-capable agents OMIT --no-extensions so pi-browser-cdp
+	// loads via discovery. Every other agent — including research — KEEPS
+	// --no-extensions for isolation UNLESS SUPER_DEV_INHERIT_EXTENSIONS opts the
+	// child into ambient (global + project) extension discovery, closing the gap
+	// where a child's fresh runtime cannot resolve an extension-registered
+	// provider/model. Research still loads ONLY its two extensions explicitly via
+	// `-e <path>` below (the documented `pi --no-extensions -e ext` pattern), so
+	// no other global extension is pulled in; the --tools allowlist still
+	// restricts ACTIVE tools. Opt-in trade-off: this pulls in EVERY user global
+	// extension (incl. super-dev itself); spawned specialists get no interactive
+	// input, so the pipeline still cannot self-trigger.
+	if (!browser && !inheritExtensions()) args.push("--no-extensions");
 	for (const ext of extraExtensions) args.push("-e", ext);
 	args.push("--tools", toolsForAgent(opts.agent));
 	args.push("--system-prompt", promptPath);

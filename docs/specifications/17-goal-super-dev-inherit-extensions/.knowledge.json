@@ -1,0 +1,929 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-28T13:44:44.372Z",
+      "agent": "requirements",
+      "data": {
+        "title": "SUPER_DEV_INHERIT_EXTENSIONS opt-in: let spawned specialists load ambient extension-registered providers",
+        "date": "2026-07-28",
+        "type": "bug-fix",
+        "priority": "high",
+        "executiveSummary": "Specialist `pi` agents spawned by the pipeline both deliberately suppress ambient extensions (`--no-extensions` in the subprocess backend at `src/pi-spawn.ts:276`; `noExtensions: true` in the session backend at `src/session-agent.ts:487`) for determinism + isolation. The spec-15 model-inheritance work now passes the parent's full `ctx.model` object to children, but if that model comes from an extension-registered provider (e.g. pi 0.81+ `pi.registerProvider(...)` or a llama.cpp router extension), the child cannot resolve it because the provider is never registered in the child's fresh model runtime — inheritance silently degrades to the settings default. This adds an env-var opt-in `SUPER_DEV_INHERIT_EXTENSIONS` (truthy → enable), defaulting OFF for byte-identical current behavior, that lifts extension suppression in BOTH backends so extension-sourced providers/models become visible to children.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "A new exported helper `inheritExtensions()` lives in `src/pi-spawn.ts` (alongside the existing `SUPER_DEV_MODEL` / `SUPER_DEV_THINKING` / `SUPER_DEV_BACKEND` env reads) and returns `true` ONLY when `process.env.SUPER_DEV_INHERIT_EXTENSIONS` is set to a truthy token — `1`, `true`, `yes`, `on` (case-insensitive, whitespace-trimmed) — and `false` for unset, empty, `0`, `false`, or any unrecognized/garbage value."
+          },
+          {
+            "id": "AC-02",
+            "statement": "Subprocess backend: the `buildSpawnArgs` guard at `src/pi-spawn.ts:276` becomes `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\");`. With the opt-in OFF (default), behavior is byte-identical to today (every non-browser agent gets `--no-extensions`); with it ON, non-browser agents OMIT `--no-extensions` so ambient global+project extensions load."
+          },
+          {
+            "id": "AC-03",
+            "statement": "Session backend: the `DefaultResourceLoader` construction at `src/session-agent.ts:487` changes `noExtensions: true` to `noExtensions: !inheritExtensions()` (importing `inheritExtensions` from `./pi-spawn.ts`). The safety factory remains in `extensionFactories` either way (unchanged). With the opt-in OFF, byte-identical to today (`noExtensions: true`); ON → `noExtensions: false` loads ambient extensions while the inline safety factory still loads."
+          },
+          {
+            "id": "AC-04",
+            "statement": "Browser-agent behavior is unchanged in BOTH opt-in states: browser-capable agents never receive `--no-extensions` (the `!browser` guard already skips them) and the opt-in does not alter that path."
+          },
+          {
+            "id": "AC-05",
+            "statement": "Concise trade-off code comments are present at BOTH wiring points (`buildSpawnArgs` guard and the session-backend loader) stating: opting in loses determinism (the child loads ALL user extensions, potentially super-dev itself — though specialists receive no user input so they will not self-trigger the pipeline) and is intended for users whose model stack depends on an extension-registered provider."
+          },
+          {
+            "id": "AC-06",
+            "statement": "Focused tests added: (a) a `pi-spawn` test asserting `--no-extensions` IS present for a normal agent when the opt-in is OFF and ABSENT when ON, and that browser agents never get `--no-extensions` regardless of the opt-in; (b) a unit test for `inheritExtensions()` parsing covering truthy (`1`/`true`/`yes`/`on`, mixed case, padded) and falsy (unset, `0`/`false`/empty/garbage). If the session-backend loader construction is isolatable, add a parallel assertion; otherwise the `inheritExtensions()` unit test plus the documented wiring is sufficient."
+          },
+          {
+            "id": "AC-07",
+            "statement": "A new `[Unreleased]` CHANGELOG.md `### Added` entry summarizes the opt-in, with its first bullet as a `**bold**` bullet whose text contains one of the changelog-contract-test anchors (`inherit`/`extensions`/`provider`); `tests/changelog-unreleased-spec15.test.ts` stays green (the new entry must not remove or reorder the anchors the test already matches, e.g. `/inherit/i`, `### Added`, the bold-bullet regex, and the preserved prior bullets)."
+          },
+          {
+            "id": "AC-08",
+            "statement": "`npm run typecheck` is strict-clean and the full `npm test` suite (existing + new) is green against the `^0.82.1` type surface."
+          },
+          {
+            "id": "AC-09",
+            "statement": "Non-goals honored: the opt-in defaults OFF (current isolation/determinism never changes unless the env var is explicitly set); the safety factory, the `inheritedModelObject` model-inheritance path, the control-flow node algebra, the resume cache, and the pipeline stage structure are untouched; every existing no-throw/best-effort guard and the print/json/rpc/headless zero-ANSI contract are preserved."
+          }
+        ],
+        "nonFunctional": [
+          "Isolation/determinism contract: default-OFF means spawned specialists remain in a clean, ambient-extension-free environment unless the user explicitly opts in — a deliberate security/isolation boundary (specialists receive no user input and must not self-trigger the pipeline), preserved byte-identically when the env var is absent or falsy.",
+          "Additive, zero-new-runtime-dependency change; a single env read (`process.env.SUPER_DEV_INHERIT_EXTENSIONS`) with a cheap regex/Boolean parse, no hot-path or I/O impact.",
+          "No-throw/best-effort preserved at both wiring points; an absent or malformed env value degrades cleanly to the current OFF behavior rather than erroring.",
+          "When opted in, specialists lose isolation: they load ALL user-installed global+project extensions (potential blast radius / non-determinism), which is acceptable only because the documented intent is a user-model-stack escape hatch.",
+          "print/json/rpc/headless output stays ZERO-ANSI byte-clean — the change touches no rendering, sink, or transcript path."
+        ],
+        "openQuestions": [
+          "Should the opt-in also be surfaced as a structured `RunOptions`/config flag (not just an env var) for discoverability, or is the env-var-only escape hatch (consistent with `SUPER_DEV_MODEL`/`SUPER_DEV_THINKING`/`SUPER_DEV_BACKEND`) the agreed scope? Task specifies env-var only — confirmed non-goal unless overridden.",
+          "Should README/`docs/` (e.g. an env-vars reference) be updated to document `SUPER_DEV_INHERIT_EXTENSIONS`, or is the in-code trade-off comment + CHANGELOG entry sufficient? Other `SUPER_DEV_*` vars like `SUPER_DEV_CARGO_METADATA_TIMEOUT_MS` are README-documented, suggesting parity would be consistent."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-28T13:45:25.517Z",
+      "agent": "bdd",
+      "data": {
+        "title": "SUPER_DEV_INHERIT_EXTENSIONS Opt-in (Gap #3)",
+        "date": "2025-11-19",
+        "source": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/01-requirements.md",
+        "features": [
+          {
+            "name": "Extension-Inheritance Opt-in Parsing (inheritExtensions helper)",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "A recognized truthy opt-in token enables extension inheritance",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "the SUPER_DEV_INHERIT_EXTENSIONS opt-in is set to a recognized truthy token (one of 1, true, yes, or on)",
+                "when": "a specialist is spawned",
+                "then": "the inheritance helper reports inheritance as ENABLED so ambient extensions are eligible to load in that specialist"
+              },
+              {
+                "id": "002",
+                "title": "Truthiness is tolerant of letter case and surrounding whitespace",
+                "acRef": "AC-01",
+                "priority": "medium",
+                "given": "the opt-in token is supplied in mixed case with surrounding whitespace (for example \"  YES  \" or \"On\")",
+                "when": "the inheritance helper parses the opt-in",
+                "then": "inheritance is still reported as ENABLED"
+              },
+              {
+                "id": "003",
+                "title": "An absent, empty, false, or unrecognized value leaves inheritance OFF",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "the opt-in is unset, empty, or set to a false or unrecognized value (0, false, off-equivalent, or arbitrary garbage)",
+                "when": "the inheritance helper parses the opt-in",
+                "then": "inheritance is reported as DISABLED, matching the existing isolated default"
+              }
+            ]
+          },
+          {
+            "name": "Subprocess Backend Isolation Control",
+            "scenarios": [
+              {
+                "id": "004",
+                "title": "With the opt-in OFF, a non-browser specialist stays extension-free (byte-identical baseline)",
+                "acRef": "AC-02",
+                "priority": "critical",
+                "given": "the opt-in is OFF and a non-browser specialist is requested",
+                "when": "the subprocess backend prepares the specialist's launch arguments",
+                "then": "the specialist is launched with ambient extensions suppressed, identical to the current behavior"
+              },
+              {
+                "id": "005",
+                "title": "With the opt-in ON, a non-browser specialist loads ambient extensions",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "the opt-in is ON and a non-browser specialist is requested",
+                "when": "the subprocess backend prepares the specialist's launch arguments",
+                "then": "ambient extension suppression is omitted so the user's global and project extensions load in that specialist"
+              },
+              {
+                "id": "006",
+                "title": "A browser-capable specialist never has extensions suppressed regardless of the opt-in",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "a browser-capable specialist is requested, in either opt-in state",
+                "when": "the subprocess backend prepares the specialist's launch arguments",
+                "then": "ambient extension suppression is never applied to that specialist",
+                "andClauses": [
+                  "this behavior is unchanged by the opt-in in either direction"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Session Backend Isolation Control",
+            "scenarios": [
+              {
+                "id": "007",
+                "title": "With the opt-in OFF, the session specialist loads only the inline safety factory (byte-identical baseline)",
+                "acRef": "AC-03",
+                "priority": "critical",
+                "given": "the opt-in is OFF and a session-backend specialist is created",
+                "when": "the resource loader for the specialist is constructed",
+                "then": "ambient extensions remain suppressed while the inline safety factory still loads, identical to the current behavior"
+              },
+              {
+                "id": "008",
+                "title": "With the opt-in ON, the session specialist loads ambient extensions alongside the safety factory",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "the opt-in is ON and a session-backend specialist is created",
+                "when": "the resource loader for the specialist is constructed",
+                "then": "ambient global and project extensions are loaded",
+                "andClauses": [
+                  "the inline safety factory continues to load unchanged"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Trade-off Documentation at Wiring Points",
+            "scenarios": [
+              {
+                "id": "009",
+                "title": "Each wiring point documents the determinism trade-off and intended use",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "the source at both the subprocess guard and the session-backend loader",
+                "when": "a maintainer reads the wiring point",
+                "then": "a concise comment explains that opting in loses determinism because the child loads ALL user extensions",
+                "andClauses": [
+                  "the comment notes that specialists receive no user input so they will not self-trigger the pipeline",
+                  "the comment states the opt-in is intended for users whose model stack depends on an extension-registered provider"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Focused Test Coverage",
+            "scenarios": [
+              {
+                "id": "010",
+                "title": "The subprocess flag presence is asserted per opt-in state and agent type",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "focused subprocess-backend tests exist for extension suppression",
+                "when": "the tests assert on a non-browser specialist across opt-in OFF and ON",
+                "then": "suppression is present when OFF and absent when ON",
+                "andClauses": [
+                  "the tests assert browser-capable specialists never receive suppression regardless of the opt-in"
+                ]
+              },
+              {
+                "id": "011",
+                "title": "The parsing helper is unit-tested for truthy and falsy inputs",
+                "acRef": "AC-06",
+                "priority": "high",
+                "given": "a unit test for the inheritance parsing helper",
+                "when": "it exercises truthy tokens (including mixed case and padded) and falsy inputs (unset, 0, false, empty, garbage)",
+                "then": "it reports ENABLED for every recognized truthy token and DISABLED for every falsy or unrecognized input"
+              }
+            ]
+          },
+          {
+            "name": "CHANGELOG Contract",
+            "scenarios": [
+              {
+                "id": "012",
+                "title": "A new Added entry summarizes the opt-in without breaking the existing contract",
+                "acRef": "AC-07",
+                "priority": "medium",
+                "given": "the CHANGELOG's [Unreleased] section under ### Added",
+                "when": "the opt-in is documented",
+                "then": "the first new bullet is a bold bullet whose text contains an anchor such as inherit, extensions, or provider",
+                "andClauses": [
+                  "the changelog contract test remains green",
+                  "the previously matched anchors and bullets are not removed or reordered"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Quality Gates",
+            "scenarios": [
+              {
+                "id": "013",
+                "title": "Typecheck is strict-clean and the full test suite is green",
+                "acRef": "AC-08",
+                "priority": "critical",
+                "given": "the repository on the ^0.82.1 type surface",
+                "when": "the typecheck and the full test suite (existing plus new) are run",
+                "then": "typecheck is strict-clean and every test passes"
+              }
+            ]
+          },
+          {
+            "name": "Non-Goals and Boundary Preservation",
+            "scenarios": [
+              {
+                "id": "014",
+                "title": "The isolation boundary is preserved unless the user explicitly opts in",
+                "acRef": "AC-09",
+                "priority": "critical",
+                "given": "the opt-in is not explicitly set",
+                "when": "any specialist is spawned through either backend",
+                "then": "current isolation and determinism behavior is unchanged byte-for-byte"
+              },
+              {
+                "id": "015",
+                "title": "Unchanged subsystems and output contracts remain untouched",
+                "acRef": "AC-09",
+                "priority": "high",
+                "given": "the change is applied",
+                "when": "the diff is reviewed",
+                "then": "the safety factory, the inherited model object path, the control-flow node algebra, the resume cache, and the pipeline stage structure are all untouched",
+                "andClauses": [
+                  "every existing no-throw best-effort guard is preserved",
+                  "print, json, rpc, and headless output remain zero-ANSI byte-clean"
+                ]
+              },
+              {
+                "id": "016",
+                "title": "A malformed opt-in degrades cleanly to the OFF behavior rather than erroring",
+                "acRef": "AC-09",
+                "priority": "medium",
+                "given": "the opt-in is set to a malformed or garbage value",
+                "when": "a specialist is spawned through either backend",
+                "then": "the no-throw best-effort guard treats the value as OFF and the specialist behaves identically to the isolated default"
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "Exported inheritExtensions() helper returns true only for truthy tokens (1/true/yes/on, case-insensitive, trimmed) and false otherwise",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002",
+              "SCENARIO-003"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "Subprocess buildSpawnArgs guard becomes (!browser && !inheritExtensions()); OFF byte-identical, ON omits suppression",
+            "scenarios": [
+              "SCENARIO-004",
+              "SCENARIO-005",
+              "SCENARIO-006"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "Session DefaultResourceLoader uses noExtensions: !inheritExtensions(); safety factory unchanged",
+            "scenarios": [
+              "SCENARIO-007",
+              "SCENARIO-008"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "Browser-agent behavior unchanged in both opt-in states",
+            "scenarios": [
+              "SCENARIO-006"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "Trade-off comments present at both wiring points",
+            "scenarios": [
+              "SCENARIO-009"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "Focused tests for subprocess flag presence and inheritExtensions() parsing",
+            "scenarios": [
+              "SCENARIO-010",
+              "SCENARIO-011"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "[Unreleased] Added bold-bullet entry with anchor; changelog contract test stays green",
+            "scenarios": [
+              "SCENARIO-012"
+            ]
+          },
+          {
+            "acId": "AC-08",
+            "description": "npm run typecheck strict-clean; full npm test green",
+            "scenarios": [
+              "SCENARIO-013"
+            ]
+          },
+          {
+            "acId": "AC-09",
+            "description": "Non-goals honored: default OFF, untouched subsystems, preserved guards and zero-ANSI contract",
+            "scenarios": [
+              "SCENARIO-014",
+              "SCENARIO-015",
+              "SCENARIO-016"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-28T13:49:02.101Z",
+      "agent": "research",
+      "data": {
+        "title": "SUPER_DEV_INHERIT_EXTENSIONS opt-in: external grounding for pi extension/provider suppression toggling",
+        "date": "2026-07-28",
+        "summary": "Online research against the pi-coding-agent 0.82.1 source, docs, and issue tracker fully confirms the spec's diagnosis and prescribed wiring. (1) The provider-registration mechanism is real and extension-coupled: `pi.registerProvider(...)` pushes to `runtime.pendingProviderRegistrations`, which are only flushed into the model registry by `bindCore()` after the extension factory runs (loader.ts). So when ambient extensions are suppressed, no provider is ever registered and the child's model runtime cannot resolve an extension-sourced model — it degrades to the settings default (sdk.md's fallback chain), exactly the silent-failure the opt-in closes. (2) `DefaultResourceLoader`'s `noExtensions` is the precise knob: in `reload()`, `extensionPaths = noExtensions ? cliPaths : merge(cliPaths, ambient)`; the inline `extensionFactories` (safety factory) load via a separate `loadExtensionFactories(runtime)` call that is INDEPENDENT of `noExtensions` — confirming AC-03's claim that the safety factory stays either way. (3) `--no-extensions` is the genuine CLI flag (introduced in PR #524), and issue #776 documents that its 'extensions not loaded' contract had a bug in 0.46/0.47 (empty result fell through to discovery) that was fixed by passing the empty result through; the repo's ^0.82.1 is far past the fix, so the default-OFF byte-identical guarantee holds, but the contract has historically been version-fragile. (4) The prescribed boolean parser `/^(1|true|yes|on)$/i` with `.trim()` is the idiomatic best practice: the canonical Node.js pitfall is `Boolean(\"false\")===true` (every non-empty string is truthy), and the durable fix is an explicit allowlist regex/enum parsed once at the boundary — matching the existing SUPER_DEV_* env-read pattern and introducing zero new dependencies. No contradictions with the spec were found; all four AC-wiring decisions are validated as minimal and correct.",
+        "options": [
+          {
+            "name": "Boolean env-var parser: keep the prescribed allowlist regex `/^(1|true|yes|on)$/i` + `.trim()` (no new dependency)",
+            "tradeoffs": "Grounded in the well-documented Node.js pitfall that `Boolean(process.env.X)` is `true` for ANY non-empty string including `\"false\"`, `\"0\"`, `\"no\"` (SRC-07). The durable fix recommended across the ecosystem is an explicit token allowlist parsed once at the boundary — exactly the spec's regex — which is case-insensitive and `.trim()`-tolerant (covering SCENARIO-002's padded/mixed-case inputs) and returns `false` for unset/empty/`0`/`false`/garbage (SCENARIO-003/SCENARIO-016). Alternatives like envalid's `bool()` or a Zod `boolish` enum exist (SRC-07) but would add a dependency and a config module for a SINGLE env read, breaking parity with the existing inline `SUPER_DEV_MODEL`/`SUPER_DEV_THINKING`/`SUPER_DEV_BACKEND` reads in pi-spawn.ts. The short-circuit `Boolean(env && regex.test(env.trim()))` also correctly yields `false` when the var is unset. RECOMMEND: implement exactly as prescribed; it is the idiomatic, zero-dependency, boundary-parsed best practice. Serves AC-01, SCENARIO-001/002/003/016."
+          },
+          {
+            "name": "Session-backend wiring: `noExtensions: !inheritExtensions()` on the `DefaultResourceLoader` (as prescribed)",
+            "tradeoffs": "Directly grounded in resource-loader.ts (SRC-04): the constructor stores `noExtensions` (default `false`) and `reload()` computes `extensionPaths = this.noExtensions ? cliEnabledExtensions : this.mergePaths(cliEnabledExtensions, enabledExtensions)`. For a specialist (no `-e` CLI paths) this means `noExtensions:true` → empty path list → no ambient extension load → no `registerProvider` calls (SRC-05), and `noExtensions:false` → ambient global (`<agentDir>/extensions/`) + project (`.pi/extensions/`) extensions load and their providers register. Critically, the inline `extensionFactories` are loaded by a SEPARATE `loadExtensionFactories(extensionsResult.runtime)` call that runs regardless of `noExtensions`, so the safety factory stays loaded in both states — confirming AC-03/SCENARIO-007/008. The prescribed `!inheritExtensions()` toggle is therefore the minimal change that flips exactly the ambient-discovery branch. RECOMMEND: implement as prescribed. Serves AC-03, SCENARIO-007/008."
+          },
+          {
+            "name": "Subprocess wiring: `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\")` (as prescribed)",
+            "tradeoffs": "`--no-extensions` is the genuine pi CLI flag (introduced in PR #524, SRC-03) that skips all ambient extension discovery/load. Issue #776 (SRC-02) confirms its semantics: when set, extensions from `~/.pi/agent/extensions/` and `.pi/extensions/` are NOT loaded (after the 0.47 fix). The existing `!browser` carveout is required because browser-capable agents must load pi-browser-cdp and already omit the flag (AC-04). Adding `&& !inheritExtensions()` is the minimal change preserving byte-identical OFF behavior (`!browser` alone still pushes the flag) and only suppressing it for non-browser agents when opted in. RECOMMEND: implement exactly as prescribed; do NOT alter the browser branch. Serves AC-02, AC-04, SCENARIO-004/005/006."
+          },
+          {
+            "name": "Default-OFF isolation guarantee + version-fragility caveat for the trade-off comment",
+            "tradeoffs": "The byte-identical-OFF requirement (AC-09, SCENARIO-014) rests on `--no-extensions`/`noExtensions:true` reliably suppressing ALL extension load. Issue #776 (SRC-02) shows this contract has historically been fragile: in 0.46.0/0.47.0 an empty extension result was treated as undefined and fell through to the discovery branch, so extensions loaded anyway. The fix (pass the empty result through) landed well before ^0.82.1, so the OFF behavior is sound on the target version — but this is a VERSION-DEPENDENT guarantee. The AC-05 trade-off comment should therefore state not only the determinism loss when opted IN (child loads ALL user extensions, potential self-include of super-dev, though specialists take no user input so no self-trigger) but implicitly relies on the flag's stability. RECOMMEND: write the comment as prescribed; additionally note in the implementation stage that any future pi downgrade below the #776 fix would silently break the OFF guarantee — a low-severity version-pin note, not a blocker."
+          }
+        ],
+        "sources": [
+          {
+            "title": "Pi Custom Providers docs (pi.registerProvider, extension-registered providers)",
+            "url": "https://pi.dev/docs/latest/custom-provider"
+          },
+          {
+            "title": "pi custom-provider.md source (registerProvider/unregisterProvider, async factory waits before startup)",
+            "url": "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/custom-provider.md"
+          },
+          {
+            "title": "pi #776: The --no-extensions flag doesn't prevent extension discovery (root cause + fix)",
+            "url": "https://github.com/badlogic/pi-mono/issues/776"
+          },
+          {
+            "title": "pi issue: feat(coding-agent) boot without built-in tools (--no-tools/--no-extensions rationale, links PR #524)",
+            "url": "https://github.com/earendil-works/pi/issues/555"
+          },
+          {
+            "title": "pi PR #524: Add --no-extensions flag to disable extension discovery",
+            "url": "https://github.com/earendil-works/pi/pull/524"
+          },
+          {
+            "title": "pi resource-loader.ts (DefaultResourceLoader: noExtensions branch + independent extensionFactories load)",
+            "url": "https://github.com/badlogic/pi-mono/blob/83378aad/packages/coding-agent/src/core/resource-loader.ts"
+          },
+          {
+            "title": "pi extensions/loader.ts (registerProvider queues to pendingProviderRegistrations, flushed by bindCore)",
+            "url": "https://github.com/badlogic/pi-mono/blob/351efc82/packages/coding-agent/src/core/extensions/loader.ts"
+          },
+          {
+            "title": "pi sdk.md (createAgentSession, DefaultResourceLoader, model-resolution fallback chain)",
+            "url": "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/sdk.md"
+          },
+          {
+            "title": "Pi Extensions docs (ambient global+project extension discovery)",
+            "url": "https://pi.dev/docs/latest/extensions"
+          },
+          {
+            "title": "Fixing Boolean and Number Env Coercion Bugs (Boolean('false')===true pitfall, allowlist-regex/envalid best practice)",
+            "url": "https://www.local-environment-automation.com/environment-sync-secrets-ci-parity/environment-variable-validation/fixing-boolean-and-number-env-coercion-bugs/"
+          },
+          {
+            "title": "Node.js Environment Variables docs (process.env string semantics)",
+            "url": "https://nodejs.org/api/environment_variables.html"
+          }
+        ],
+        "openIssues": [
+          "ISS-01 (LOW, version-pin): The default-OFF byte-identical guarantee depends on the `--no-extensions`/`noExtensions:true` 'extensions fully suppressed' contract being intact. Issue #776 shows this contract was broken in 0.46/0.47 and fixed before ^0.82.1; the fix is present on the target version, so this is NOT a blocker, but the AC-05 trade-off comment is the right place to acknowledge the opt-in's determinism loss and the implementation stage should note that a pi downgrade below the #776 fix would silently re-break OFF behavior.",
+          "ISS-02 (INFO, non-goal reaffirmed): Research surfaced that pi also exposes provider config via `models.json` and `--api-key`/`resolveCliModel` resolvers (sdk.md) which are NOT extension-gated. The spec correctly scopes the opt-in to extension-registered providers only (e.g. llama.cpp router, corporate proxies via `pi.registerProvider`); models supplied purely through `models.json` do not need this opt-in. No change to scope recommended — flagging only so the implementation stage does not over-broaden the change.",
+          "ISS-03 (INFO, out-of-scope): The requirements Open Question about documenting `SUPER_DEV_INHERIT_EXTENSIONS` in README/docs (parity with other SUPER_DEV_* vars) is not addressed by external research; it remains a product decision for the human. Research confirms other SUPER_DEV_* env vars are README-documented, so parity would be consistent, but AC-07 only requires the CHANGELOG entry."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/03-research-report.md"
+      }
+    },
+    "debug": {
+      "timestamp": "2026-07-28T13:49:55.482Z",
+      "agent": "debug",
+      "data": {
+        "title": "Specialists silently fail to inherit an extension-sourced model: ambient-extension suppression (determinism) starves the child's fresh provider registry",
+        "date": "2025-01-01",
+        "summary": "The recently-added model-inheritance feature passes the parent session's `ctx.model` object to spawned specialists — correctly, for built-in providers. But it SILENTLY FAILS whenever the user's active model comes from an EXTENSION-REGISTERED provider (a custom `pi.registerProvider(...)` extension, the llama.cpp router, etc.). Root cause: both specialist backends DELIBERATELY suppress ambient extensions for determinism + isolation — the session backend sets `noExtensions: true` at `src/session-agent.ts:487`, and the subprocess backend pushes `--no-extensions` for every non-browser agent at `src/pi-spawn.ts:276`. Extension-registered providers only exist once the owning extension LOADS; with extensions suppressed the child's fresh `modelRuntime`/settings layer has no registration for that provider id. So when the child tries to resolve the inherited model (the `provider/id` string on the subprocess path, or the model object on the session path) it cannot bind auth/streaming for that provider and falls back to the SDK/settings default — \"inherit the parent's model\" is a no-op for extension-sourced models with no error surfaced. The bug is invisible in the default model stack (Anthropic/OpenAI built-ins) and in browser-capable agents (which already OMIT `--no-extensions`), which is why it went undetected. This is a deliberate-design conflict, not a coding mistake — the fix is an env-var opt-in `SUPER_DEV_INHERIT_EXTENSIONS` (default OFF → byte-identical to today) that lets users whose model stack depends on an extension provider turn ambient extension loading back on for specialists, at the cost of determinism.",
+        "hypotheses": [
+          "H1 (HIGH, ~70%) — Extension suppression starves the provider registry. Prediction: with the opt-in OFF, a specialist whose inherited model's provider is extension-registered CANNOT resolve it (silent fallback to settings default), while a BROWSER-capable specialist — which already omits --no-extensions — DOES resolve it correctly. This differential is the falsifiable signature. Confirmed by code: both suppression points exist (session-agent.ts:487 noExtensions:true, pi-spawn.ts:276 if(!browser) push --no-extensions) and both inheritance paths are wired (session passes inheritedModelObject straight to createAgentSession; subprocess qualifies provider/id into --model).",
+          "H2 (MEDIUM, ~20%) — The inherited model reference is malformed (bare id / missing provider), so resolution fails regardless of extensions. Prediction: even WITH extensions loaded, the child still can't resolve. FALSIFIED by inspection: pi-spawn.ts builds `${provider}/${id}` (always qualified, never bare — explicitly closes the opencode bare-id mis-resolution noted in the comment), and the session path passes the whole model object. So the ref is well-formed; the failure is resolution-side, not ref-side.",
+          "H3 (LOW, ~8%) — A resourceLoader.reload() ordering/timing race makes the inherited model resolve before the provider is available. Prediction: the failure is non-deterministic or ordering-dependent. FALSIFIED: in session-agent.ts the loader is constructed and reloaded BEFORE model resolution, and the model resolution itself is a synchronous try/catch that simply passes the object through — no async gap to race on. The subprocess path is a fresh process, so no in-memory race is possible at all.",
+          "H4 (LOW, ~2%) — pi 0.82.x SDK regression in provider scoping. Prediction: the bug reproduces on built-in providers too. FALSIFIED: the task states (and tests confirm) built-in-provider inheritance works; only extension providers fail."
+        ],
+        "rootCause": "Two intentional, separately-correct design decisions collide: (1) model inheritance ships the parent's full `ctx.model` to each specialist (session backend: `opts.inheritedModelObject` passed directly to `createAgentSession` at src/session-agent.ts ~line 511-514; subprocess backend: qualified `${provider}/${id}` pushed as `--model` at src/pi-spawn.ts ~line 286-289); and (2) both specialist backends DELIBERATELY suppress ambient extension discovery for determinism/isolation — session: `noExtensions: true` at src/session-agent.ts:487; subprocess: `if (!browser) args.push(\\\"--no-extensions\\\")` at src/pi-spawn.ts:276. An extension-registered provider (custom `pi.registerProvider(...)`, llama.cpp router, etc.) only enters the child's provider registry WHEN its owning extension LOADS. Under suppression the provider id is unregistered in the child's fresh resolution layer, so binding auth/streaming for the inherited model fails and the child silently falls back to the SDK/settings default (best-effort, no-throw — the session path is wrapped in try/catch that falls through to inheritedModelObject; the subprocess path relies on pi's own no-crash fallback). The failure is silent (no exception, no warning) and only manifests for extension-sourced providers — which is why the existing test suite, run against built-in providers, stayed green. Browser-capable agents (which already OMIT --no-extensions) are the confirming control: they load extensions, so their providers ARE registered, so inheritance works for them. The fix is not to remove suppression (that would break determinism/isolation guarantees), but to add an opt-in escape hatch: `SUPER_DEV_INHERIT_EXTENSIONS` (default OFF → byte-identical current behavior). Wire it into both suppression points — session: `noExtensions: !inheritExtensions()`; subprocess: `if (!browser && !inheritExtensions()) args.push(\\\"--no-extensions\\\")` — leaving the inline safety factory and the inheritedModelObject path untouched.",
+        "reproductionSteps": [
+          "SETUP a provider that ONLY exists via an extension: install/enable a global pi extension that calls `pi.registerProvider(\"llamacpp\", factory)` (or use the llama.cpp router extension), and set the active model to `llamacpp/<some-model>` (or export SUPER_DEV_MODEL=llamacpp/<id>).",
+          "REPRO (default/OFF): run any super-dev goal that spawns a non-browser specialist (e.g. an implementation or research stage). Inspect the spawned `pi` argv (buildSpawnArgs output) — confirm `--no-extensions` IS present AND `--model llamacpp/<id>` IS present. The child process starts, cannot resolve the `llamacpp` provider (no extension loaded it), and silently runs on the settings default model instead of the inherited one — no error, the stage just runs on the wrong model.",
+          "DIFFERENTIAL CONTROL: run the same goal but with the spawned specialist being a BROWSER-capable agent (BROWSER_AGENTS). It omits --no-extensions → loads ambient extensions → the llamacpp provider registers → the inherited model resolves correctly. Same code path, opposite result, proves the cause is extension suppression, not the inheritance ref.",
+          "CONFIRM root cause statically: grep src/session-agent.ts:487 for `noExtensions: true` and src/pi-spawn.ts:276 for `if (!browser) args.push(\"--no-extensions\")` — both gate ambient extension loading, and both sit upstream of model resolution.",
+          "VERIFY FIX (after implementation): set SUPER_DEV_INHERIT_EXTENSIONS=1, repeat step 2 — `--no-extensions` is now ABSENT for the non-browser specialist (and the session loader uses `noExtensions: false`), the extension loads, the provider registers, and the inherited model resolves identically to the browser-agent control. Toggle it back to 0/false/unset and confirm byte-identical-to-today behavior returns (focused pi-spawn unit tests cover --no-extensions present-when-OFF / absent-when-ON / never-for-browser; inheritExtensions() truthy/falsy parsing test covers 1|true|yes|on vs unset/0/false/empty/garbage)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/04-debug-analysis.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-28T13:51:27.394Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment — SUPER_DEV_INHERIT_EXTENSIONS opt-in (Gap #3)",
+        "date": "2026-07-22",
+        "summary": "pi-super-dev is a pure-TS pi-extension library (ESM, `tsc` build, `vitest` test) that spawns specialist `pi` agents via two backends. The change is tiny and self-contained: add an exported `inheritExtensions()` env-reader in `src/pi-spawn.ts` (mirroring the existing `SUPER_DEV_MODEL`/`SUPER_DEV_THINKING` pattern) and flip two gating expressions — `noExtensions: !inheritExtensions()` in `src/session-agent.ts:487` and `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\")` in `src/pi-spawn.ts:276`. There is NO server/API/UI to run: local verification is `npm run typecheck` (tsc --noEmit, strict) and `npm test` (vitest run). The two backends are already co-located, the env-var + regex-parse helper idiom is established, and the test harness (a local `saveEnv()` snapshot/clear/restore helper + direct `buildSpawnArgs`/function import) is ready to extend. The CHANGELOG has a Keep-a-Changelog contract test (`tests/changelog-unreleased-spec15.test.ts`) whose bold-bullet anchor regex is `(inherit|model|thinking|constrain|structured...|registerEntryRenderer|PI_SESSION_ID|PI_MODEL)` — so the new `### Added` bullet's bold span MUST contain `inherit` (and/or `model`); bare `extensions`/`provider` alone will NOT match.",
+        "patterns": [
+          {
+            "name": "Env-var helper idiom (parse + regex + .trim(), exported from pi-spawn.ts)",
+            "example": "src/pi-spawn.ts:176-185 (resolveModel reads process.env.SUPER_DEV_MODEL?.trim()) and :155 (asThinkingLevel via /^(...)$/i)",
+            "consistency": "High — the proposed inheritExtensions() regex `/^(1|true|yes|on)$/i` on `process.env.SUPER_DEV_INHERIT_EXTENSIONS.trim()` is byte-for-byte the established style; place it next to resolveModel/asThinkingLevel."
+          },
+          {
+            "name": "Two-backend gating: session (in-process) vs subprocess (argv flag)",
+            "example": "src/session-agent.ts:483-488 (DefaultResourceLoader noExtensions:true) vs src/pi-spawn.ts:276 (if (!browser) args.push(\"--no-extensions\"))",
+            "consistency": "Both must flip in lockstep. Session uses noExtensions boolean; subprocess uses the --no-extensions argv flag gated by isBrowserAgent(). Browser agents already omit the flag — preserve that branch exactly."
+          },
+          {
+            "name": "Additive, no-throw, byte-identical-when-unset contract",
+            "example": "src/pi-spawn.ts:280-291 (Model precedence explicit→env→inherited→default; --model pushed ONLY when a value resolves) and src/session-agent.ts:502-520 (try/catch best-effort model resolve)",
+            "consistency": "The opt-in MUST default OFF and produce byte-identical behavior when unset/falsy. Every SUPER_DEV_* tier in this file degrades cleanly to today's baseline — mirror that."
+          },
+          {
+            "name": "Vitest env test harness: local saveEnv(...keys) snapshot/clear/restore",
+            "example": "tests/pi-spawn.test.ts:194-200 (saveEnv def) and :246-249 (const env=saveEnv(...); beforeEach(env.clear); afterEach(env.restore))",
+            "consistency": "Reuse this exact helper for the inheritExtensions() + --no-extensions tests. Import the function under test directly from ../src/pi-spawn.ts (already the pattern)."
+          },
+          {
+            "name": "buildSpawnArgs argv assertions via toContain/not.toContain + indexOf",
+            "example": "tests/pi-spawn.test.ts:257-285 (asserts args.toContain(\"--model\") and args[args.indexOf(\"--model\")+1])",
+            "consistency": "For the new --no-extensions test: assert args.toContain(\"--no-extensions\") when OFF/not a browser agent; args.not.toContain(\"--no-extensions\") when ON; and browser agents never contain it regardless. A normal non-browser agent like 'requirements-clarifier' is the existing base fixture."
+          },
+          {
+            "name": "CHANGELOG Keep-a-Changelog bold-bullet anchor contract",
+            "example": "tests/changelog-unreleased-spec15.test.ts:105-112 (boldBulletAnchored regex requires - **...anchor...**) and :114-117 (must sit under ### Added/Changed/Fixed)",
+            "consistency": "New entry goes under a new ### Added block inside [Unreleased] (already two ### Added blocks exist — fine). The bold span text MUST contain an anchor token; use 'inherit'/'model' in the title (e.g. 'Inherit extension-registered providers via SUPER_DEV_INHERIT_EXTENSIONS'). 'extensions'/'provider' alone do NOT satisfy the regex."
+          },
+          {
+            "name": "Dual import surface: ts source imported directly in tests (no dist)",
+            "example": "tests/pi-spawn.test.ts:10 (import {buildSpawnArgs,...} from \"../src/pi-spawn.ts\")",
+            "consistency": "Tests and intra-src imports use the .ts extension and relative paths; no build step needed to run vitest. inheritExtensions() is imported the same way."
+          }
+        ],
+        "recommendations": [
+          "Add `inheritExtensions()` in src/pi-spawn.ts adjacent to resolveModel/asThinkingLevel (lines ~155-185) — it is the canonical home for SUPER_DEV_* reads and is already imported by session-agent.ts; export it and import it into session-agent.ts for the noExtensions flip.",
+          "Wire BOTH gates atomically: src/session-agent.ts:487 `noExtensions: !inheritExtensions()` and src/pi-spawn.ts:276 `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\")`. Leave the safety factory in extensionFactories and the browser/research branches untouched; add a one-line comment at each site noting determinism is lost when opted in (intended for extension-registered providers).",
+          "Write tests in tests/pi-spawn.test.ts reusing its local saveEnv() helper (snapshot/clear/restore): (a) inheritExtensions() truthy/falsy parsing incl. '0'/'false'/''/garbage→false; (b) buildSpawnArgs for a non-browser agent ('requirements-clarifier') contains '--no-extensions' when unset, omits it when SUPER_DEV_INHERIT_EXTENSIONS=1, and a browser agent ('qa-agent' via isBrowserAgent) never contains it either way. The session loader is not trivially unit-testable in isolation, so the inheritExtensions() unit test + documented wiring is the accepted bar (per the spec).",
+          "CHANGELOG: add a new `### Added` bullet under `[Unreleased]` whose bold title contains the anchor token `inherit` (e.g. '**Inherit extension-registered providers via SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17).**'). Avoid relying on 'extensions'/'provider' as the only keyword — the boldBulletAnchored regex in tests/changelog-unreleased-spec15.test.ts:105 only matches inherit|model|thinking|constrain|structured-output|registerEntryRenderer|PI_SESSION_ID|PI_MODEL.",
+          "Verify locally with `npm run typecheck` (tsc --noEmit, strict) and `npm test` (vitest run). There is no API/UI server to start — this is a library consumed as a pi extension, so the verify-loop's 'bring the app up' step is the test suite itself."
+        ],
+        "filesAssessed": [
+          "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/package.json",
+          "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/src/pi-spawn.ts",
+          "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/src/session-agent.ts",
+          "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/tests/pi-spawn.test.ts",
+          "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/tests/changelog-unreleased-spec15.test.ts",
+          "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/CHANGELOG.md",
+          "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/README.md"
+        ],
+        "services": {
+          "api": {
+            "cmd": "npm run typecheck && npm test",
+            "portEnv": "N/A (pure library, no server; vitest run exits 0 as the readiness signal)",
+            "readyPath": "N/A (no HTTP server — verification is `npm run typecheck` strict-clean + `npm test` vitest green)"
+          }
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/05-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-28T13:53:05.894Z",
+      "agent": "spec",
+      "data": {
+        "title": "Technical Specification: SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17, Gap #3)",
+        "date": "2026-07-22",
+        "summary": "Add a default-OFF, env-var opt-in `SUPER_DEV_INHERIT_EXTENSIONS` so specialist `pi` agents spawned by pi-super-dev can load ambient (global + project) extensions — restoring visibility to extension-registered providers/models for users whose model stack depends on them. The change is additive, no-throw, and byte-identical to current behavior when unset or falsy. It consists of (1) a tiny exported helper `inheritExtensions()` placed alongside the existing `SUPER_DEV_MODEL`/`SUPER_DEV_THINKING`/`SUPER_DEV_BACKEND` env reads in `src/pi-spawn.ts`; (2) flipping two gating expressions in lockstep — `noExtensions: !inheritExtensions()` in the session backend (`src/session-agent.ts:487`) and `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\")` in the subprocess backend (`src/pi-spawn.ts` ~276); (3) concise trade-off comments at both wiring points; (4) focused vitest tests reusing the existing `saveEnv()` harness; and (5) a `[Unreleased]` `### Added` CHANGELOG bullet whose bold span carries the contract anchor `inherit`. No server/API/UI runs; local verification is `npm run typecheck` (tsc strict) + `npm test` (vitest). All 9 ACs / 16 BDD scenarios are addressed; the safety factory, the `inheritedModelObject` model-inheritance path, the control-flow node algebra, the resume cache, the pipeline stage structure, every no-throw best-effort guard, and the print/json/rpc/headless zero-ANSI contract are explicitly untouched.",
+        "architecture": "pi-super-dev is a pure-TypeScript pi-extension library (ESM, `tsc` build, `vitest` run) that spawns specialist `pi` agents through two backends. Both backends deliberately suppress ambient extensions for determinism + isolation, supplying only an inline safety extension factory — but recent model-inheritance work passes the parent's full `ctx.model` object to children, which silently fails when the user's *active* model resolves from an extension-registered provider (the child's fresh runtime has no such provider registered). This spec closes that gap with an opt-in escape hatch rather than changing the default isolation.\n\nBackend 1 — session (in-process). `runAgentViaSession()` in `src/session-agent.ts` (~line 487) constructs a `DefaultResourceLoader` with `noExtensions: true` and `extensionFactories: [createSafetyExtensionFactory()]`. The fix changes the boolean to `noExtensions: !inheritExtensions()` (imported from `./pi-spawn.ts`). With the opt-in OFF this evaluates to `true` (byte-identical baseline: ambient extensions suppressed, inline safety factory still loads via `extensionFactories`). With it ON it evaluates to `false`, so `DefaultResourceLoader` performs ambient global+project extension discovery while the safety factory remains registered unchanged. The surrounding model-resolution, thinking-level, no-throw try/catch, and capture logic are not modified.\n\nBackend 2 — subprocess (argv). `buildSpawnArgs()` in `src/pi-spawn.ts` (~line 276) currently does `if (!browser) args.push(\"--no-extensions\");`, where `browser = isBrowserAgent(opts.agent)`. The fix becomes `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\");`. Browser-capable agents already omit the flag so `pi-browser-cdp-extension` loads; the opt-in never touches the `!browser` branch, so browser-agent behavior is invariant in both opt-in states. Web-research agents continue to KEEP `--no-extensions` and load only their two extensions via repeatable `-e <path>` — that explicit `-e` path is also unaffected. Model precedence (`--model` pushed only when a value resolves: explicit → `SUPER_DEV_MODEL` → inherited `provider/id` → default) and thinking precedence are untouched.\n\nThe helper. `inheritExtensions()` lives in `src/pi-spawn.ts` adjacent to `resolveModel`/`asThinkingLevel`/`asBackend` (~lines 155-185), the canonical home for `SUPER_DEV_*` reads and already imported by `session-agent.ts`. Signature: `export function inheritExtensions(): boolean`. Body: `return Boolean(process.env.SUPER_DEV_INHERIT_EXTENSIONS && /^(1|true|yes|on)$/i.test(process.env.SUPER_DEV_INHERIT_EXTENSIONS.trim()));` — mirroring the established `.trim()` + anchored `/^(...)$/i` idiom. It returns `true` only for `1|true|yes|on` (case-insensitive, whitespace-trimmed) and `false` for unset/empty/`0`/`false`/garbage. The leading `Boolean(env && regex.test(...))` is a no-throw best-effort guard: if the env var is undefined the `&&` short-circuits to `false` without ever calling `.trim()`.\n\nCross-cutting contract. The feature is strictly additive and default-OFF: when the env var is unset or falsy, both backends produce byte-identical argv/loader construction to today. Every existing no-throw best-effort guard, the additive model-resolution precedence, and the print/json/rpc/headless zero-ANSI output contract are preserved. Because spawned specialists receive no interactive user input, opting in cannot cause the pipeline to self-trigger even if super-dev itself is among the loaded user extensions — that nuance is documented at both wiring points as the explicit determinism trade-off. Non-goals (safety factory internals, `inheritedModelObject` path, control-flow node algebra, resume cache, pipeline stage structure) are explicitly excluded from the diff.",
+        "testingStrategy": "There is no server/UI to boot — the verify loop IS the test suite. Two test surfaces, both in `tests/pi-spawn.test.ts`, reusing the file's existing local `saveEnv(...keys)` snapshot/clear/restore harness (defined ~line 194, wired via `beforeEach(env.clear)`/`afterEach(env.restore)` ~246-249) and direct `import { buildSpawnArgs, ... } from \"../src/pi-spawn.ts\"`.\n\n(1) `inheritExtensions()` parsing unit test — import the helper directly. Assert ENABLED for every recognized truthy token (`1`, `true`, `yes`, `on`), including mixed case (`True`, `On`) and surrounding-whitespace padding (`  YES  `). Assert DISABLED for unset, empty string, `0`, `false`, and unrecognized/garbage (`off`, `no`, `2`, `maybe`, `random`). The `saveEnv([\"SUPER_DEV_INHERIT_EXTENSIONS\"])` helper guarantees isolation between cases and a clean restore (addresses SCENARIO-001/002/003/011/016 — malformed inputs degrade to OFF without throwing).\n\n(2) `buildSpawnArgs` flag-presence test — assert on a normal non-browser specialist fixture (e.g. `'requirements-clarifier'`) that the returned argv `toContain(\"--no-extensions\")` when the opt-in is unset, and `not.toContain(\"--no-extensions\")` when `SUPER_DEV_INHERIT_EXTENSIONS=1`. Then assert a browser-capable agent (the one `isBrowserAgent` already matches, e.g. a QA/browser fixture) `not.toContain(\"--no-extensions\")` in BOTH opt-in states — proving browser-agent behavior is invariant (SCENARIO-004/005/006/010). Use the established `args.indexOf(\"--no-extensions\")` style for any positional assertions.\n\n(3) Session-backend coverage — `DefaultResourceLoader` construction inside `runAgentViaSession` is not trivially isolatable (it depends on `SettingsManager`/agentDir/cwd), so per the acceptance bar the `inheritExtensions()` unit test plus the documented `noExtensions: !inheritExtensions()` wiring (asserted via phase deliverables) is the accepted coverage; no separate session-loader unit test is required. The subprocess `buildSpawnArgs` test transitively exercises the shared helper both backends depend on.\n\n(4) CHANGELOG contract — `tests/changelog-unreleased-spec15.test.ts` enforces a Keep-a-Changelog bold-bullet anchor regex whose token set is `inherit|model|thinking|constrain|structured-output|registerEntryRenderer|PI_SESSION_ID|PI_MODEL`. The new `### Added` bullet's bold span text MUST contain `inherit` (e.g. `**Inherit extension-registered providers via SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17).**`); `extensions`/`provider` alone do NOT satisfy the regex. The test must remain green and no previously-matched anchor/bullet may be removed or reordered (SCENARIO-012).\n\nFinal quality gate (cross-phase): `npm run typecheck` strict-clean against `@earendil-works/pi-coding-agent@^0.82.1`, and full `npm test` green (existing + new). A diff review confirms the non-goals (safety factory, `inheritedModelObject` path, control-flow node algebra, resume cache, pipeline stage structure) and the zero-ANSI contract are untouched (SCENARIO-013/015).",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016"
+        ],
+        "phases": [
+          {
+            "name": "Opt-in helper, dual-backend wiring, trade-off comments, and focused tests",
+            "description": "Add the exported `inheritExtensions()` env-reader to src/pi-spawn.ts (adjacent to resolveModel/asThinkingLevel), flip both gating expressions in lockstep (`noExtensions: !inheritExtensions()` in src/session-agent.ts:487; `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\")` in src/pi-spawn.ts buildSpawnArgs ~276), add concise determinism-trade-off comments at both wiring points, and add focused vitest tests in tests/pi-spawn.test.ts reusing the local saveEnv() harness (inheritExtensions() truthy/falsy/garbage parsing + buildSpawnArgs flag presence/absence for non-browser vs browser agents across opt-in states). These edits are mutually interdependent — the helper must exist before either wiring references it, and both wirings must land before the tests assert on them, and all three touch overlapping files (pi-spawn.ts carries helper + subprocess wiring; its test file asserts on both) — so they are merged into a single coarse phase to avoid cascade-failure. Covers AC-01..AC-06 and SCENARIO-001..011, SCENARIO-016.",
+            "deliverables": {
+              "requireContains": [
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "export function inheritExtensions"
+                },
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "/\\^\\(1\\|true\\|yes\\|on\\)\\$/i"
+                },
+                {
+                  "file": "src/pi-spawn.ts",
+                  "pattern": "if \\(!browser && !inheritExtensions\\(\\)\\) args\\.push\\(\"--no-extensions\"\\)"
+                },
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "inheritExtensions"
+                },
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "noExtensions: !inheritExtensions\\(\\)"
+                },
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "extensionFactories: \\[createSafetyExtensionFactory\\(\\)\\]"
+                },
+                {
+                  "file": "tests/pi-spawn.test.ts",
+                  "pattern": "inheritExtensions"
+                }
+              ],
+              "requireNotContains": [
+                {
+                  "file": "src/session-agent.ts",
+                  "pattern": "noExtensions: true,"
+                }
+              ],
+              "requireFiles": [
+                "src/pi-spawn.ts",
+                "src/session-agent.ts",
+                "tests/pi-spawn.test.ts"
+              ],
+              "requireTests": [
+                "inheritExtensions parses truthy and falsy SUPER_DEV_INHERIT_EXTENSIONS",
+                "buildSpawnArgs suppresses extensions per opt-in and agent type"
+              ]
+            }
+          },
+          {
+            "name": "CHANGELOG Added entry (parallelizable with Phase 1)",
+            "description": "Add a new `### Added` bullet under the `[Unreleased]` heading in CHANGELOG.md summarizing the opt-in, whose FIRST bullet is a bold (`**...**`) bullet whose bold-span text carries the contract anchor token `inherit` (e.g. `**Inherit extension-registered providers via SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17).**`) so tests/changelog-unreleased-spec15.test.ts's boldBulletAnchored regex (`inherit|model|thinking|constrain|structured-output|registerEntryRenderer|PI_SESSION_ID|PI_MODEL`) matches. Do NOT remove or reorder any previously-matched anchor/bullet. This phase is file-independent from Phase 1 (touches only CHANGELOG.md + its pre-existing contract test) and may be executed in parallel; its deliverable is the contract test staying green. Covers AC-07 and SCENARIO-012.",
+            "deliverables": {
+              "requireContains": [
+                {
+                  "file": "CHANGELOG.md",
+                  "pattern": "\\*\\*[Ii]nherit.*SUPER_DEV_INHERIT_EXTENSIONS"
+                }
+              ],
+              "requireNotContains": [
+                {
+                  "file": "CHANGELOG.md",
+                  "pattern": "\\*\\*[Ee]xtensions\\b"
+                }
+              ],
+              "requireFiles": [
+                "CHANGELOG.md"
+              ],
+              "requireTests": [
+                "changelog-unreleased-spec15"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Opt-in helper, dual-backend wiring, trade-off comments, and focused tests",
+            "description": "Add exported `inheritExtensions(): boolean` to src/pi-spawn.ts adjacent to resolveModel/asThinkingLevel (~lines 155-185). Body: `return Boolean(process.env.SUPER_DEV_INHERIT_EXTENSIONS && /^(1|true|yes|on)$/i.test(process.env.SUPER_DEV_INHERIT_EXTENSIONS.trim()));`. Include the doc comment (opt-in to load ambient extensions in spawned specialists so an extension-registered provider/model is visible; default OFF → byte-identical isolation). Covers AC-01 / SCENARIO-001..003, 016."
+          },
+          {
+            "phase": "Opt-in helper, dual-backend wiring, trade-off comments, and focused tests",
+            "description": "Wire the subprocess backend: in buildSpawnArgs (src/pi-spawn.ts ~276) change `if (!browser) args.push(\"--no-extensions\");` to `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\");`. Add a one-line trade-off comment: opting in loses determinism (the child loads ALL user extensions, potentially super-dev itself, but specialists receive no user input so they will not self-trigger the pipeline); intended for users whose model stack depends on an extension-registered provider. Browser/research/explicit-`-e` branches untouched. Covers AC-02 / SCENARIO-004..006."
+          },
+          {
+            "phase": "Opt-in helper, dual-backend wiring, trade-off comments, and focused tests",
+            "description": "Wire the session backend: in src/session-agent.ts import `inheritExtensions` from `./pi-spawn.ts` and change the `DefaultResourceLoader` option at ~line 487 from `noExtensions: true` to `noExtensions: !inheritExtensions()`. Keep `extensionFactories: [createSafetyExtensionFactory()]` exactly as-is. Add the same one-line determinism-trade-off comment. Covers AC-03 / SCENARIO-007..008."
+          },
+          {
+            "phase": "Opt-in helper, dual-backend wiring, trade-off comments, and focused tests",
+            "description": "Add focused tests to tests/pi-spawn.test.ts reusing the local saveEnv([\"SUPER_DEV_INHERIT_EXTENSIONS\"]) snapshot/clear/restore harness. (a) Unit test inheritExtensions(): truthy `1|true|yes|on` incl. mixed case + padded; falsy unset/empty/`0`/`false`/garbage(`off`,`no`,`2`,`random`) → false, none throw. (b) buildSpawnArgs for non-browser agent ('requirements-clarifier'): `toContain(\"--no-extensions\")` when unset, `not.toContain(\"--no-extensions\")` when `SUPER_DEV_INHERIT_EXTENSIONS=1`; browser-capable agent (per isBrowserAgent) `not.toContain(\"--no-extensions\")` in BOTH states. Covers AC-06 / SCENARIO-010..011, 016."
+          },
+          {
+            "phase": "CHANGELOG Added entry (parallelizable with Phase 1)",
+            "description": "Add a new `### Added` bullet under CHANGELOG.md `[Unreleased]` whose first bullet is bold (`**...**`) and whose bold-span text contains the anchor `inherit` (e.g. `**Inherit extension-registered providers via SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17).**` — a one-line summary of the opt-in + trade-off). Do NOT remove or reorder any previously-matched anchor/bullet. Covers AC-07 / SCENARIO-012."
+          },
+          {
+            "phase": "CHANGELOG Added entry (parallelizable with Phase 1)",
+            "description": "Final quality gate (cross-phase, run after both phases land): `npm run typecheck` strict-clean and full `npm test` green (existing + new) against ^0.82.1; confirm tests/changelog-unreleased-spec15.test.ts stays green. Diff review confirms non-goals untouched — safety factory, inheritedModelObject path, control-flow node algebra, resume cache, pipeline stage structure, all no-throw best-effort guards, and the print/json/rpc/headless zero-ANSI contract. Covers AC-08..AC-09 / SCENARIO-009, 013..015."
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": [
+            "tests/pi-spawn.test.ts",
+            "tests/changelog-unreleased-spec15.test.ts"
+          ]
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/06-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/07-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/08-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/06-specification.md",
+        "phaseCount": "2"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-28T13:54:42.859Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec-17 Review: SUPER_DEV_INHERIT_EXTENSIONS opt-in",
+        "date": "2026-07-22",
+        "verdict": "APPROVED WITH REVISIONS",
+        "summary": "Well-grounded, minimal, additive spec. The opt-in design (single exported helper `inheritExtensions()` + two lockstep wiring flips) is correctly reasoned to be byte-identical to current behavior when unset/falsy, and every load-bearing codebase reference verified against the actual repo — session-agent `noExtensions: true`, pi-spawn `if (!browser) args.push(\"--no-extensions\")`, the `resolveModel`/`asThinkingLevel` helper cluster, the `saveEnv` test harness, the `isBrowserAgent` branch, and the `changelog-unreleased-spec15.test.ts` anchor regex (incl. the `inherit` token). Grounding score ~95% (no HIGH). The parsing regex, truthy/falsy token set, browser-invariance argument, and no-throw guard are all explicit and correct. Two MEDIUM gaps block a clean APPROVE: (1) the session-backend wiring (`runAgentViaSession` / `DefaultResourceLoader`) has NO automated test by the spec's own admission — coverage rests on manual diff review, so a silent regression reintroducing `noExtensions: true` on the session path would not be caught; (2) SCENARIO-014 is unmapped anywhere in the spec and SCENARIO-009 is cited only in inherited-model code comments belonging to a different feature, leaving the traceability chain incomplete for those two scenarios. Verdict: APPROVED WITH REVISIONS — the change is safe to land, but close the testability/traceability gaps before the final quality gate.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "medium",
+            "title": "Session-backend wiring has no automated test coverage",
+            "detail": "Testing Strategy §(3) explicitly waives a `runAgentViaSession` / `DefaultResourceLoader` unit test, leaving the `noExtensions: !inheritExtensions()` flip (session-agent.ts:487) covered only by a manual diff review (asserted 'via phase deliverables'). The subprocess wiring is unit-tested but the session wiring is not. A future edit that silently reintroduces `noExtensions: true` on the session path would pass `npm test`. Recommendation: either (a) stub `SettingsManager`/agentDir/cwd to assert `noExtensions === false` under `SUPER_DEV_INHERIT_EXTENSIONS=1` and `=== true` when unset; or (b) extract the loader-options object into a pure `buildLoaderOptions(opts, inherit)` builder and unit-test it directly, keeping `runAgentViaSession` thin. The spec's justification (loader 'not trivially isolatable') is reasonable for a default-OFF opt-in but does not eliminate the regression risk for one of two lockstep wirings.",
+            "lens": "D4 Testability",
+            "file": "tests/pi-spawn.test.ts"
+          },
+          {
+            "id": "F-02",
+            "severity": "medium",
+            "title": "SCENARIO-014 unmapped; SCENARIO-009 cited only under a different feature",
+            "detail": "The Testing Strategy explicitly maps SCENARIO-001/002/003/004/005/006/010/011/012/013/015/016 to concrete tests or the diff-review gate. SCENARIO-014 is not mentioned anywhere in the spec. SCENARIO-009 appears only inside inherited-model code comments (Phase 1 / Feature 1), which is a separate feature this spec explicitly lists as a non-goal. Because the BDD scenario definitions were not supplied for review (Plan/Tasks marked N/A), the SCENARIO-014 → behavior/test chain cannot be verified as unbroken. Recommendation: add an explicit SCENARIO-014 → test/behavior mapping in the Testing Strategy, or state clearly which existing gate satisfies it.",
+            "lens": "D1 Completeness / D5 Traceability"
+          },
+          {
+            "id": "F-03",
+            "severity": "low",
+            "title": "AC definitions and BDD scenario bodies are external to this document",
+            "detail": "AC-01..AC-09 and the 16 BDD scenario bodies live in requirements/acceptance-criteria artifacts that were not provided for this review (Plan: N/A, Tasks: N/A). The spec references them by ID only ('All 9 ACs / 16 BDD scenarios are addressed'). A full AC→spec-section coverage matrix cannot be reconstructed from this document alone. Recommendation: confirm the requirements/AC artifacts exist in the spec directory and add a cross-link table (AC-nn → spec section) so the traceability chain is self-contained.",
+            "lens": "D1 Completeness / D5 Traceability"
+          },
+          {
+            "id": "F-04",
+            "severity": "low",
+            "title": "Cross-spec coupling on the spec-15 CHANGELOG contract test",
+            "detail": "The feature's quality gate depends on `tests/changelog-unreleased-spec15.test.ts` (a spec-15 artifact) whose anchor regex token set `inherit|model|thinking|constrain|structured-output|registerEntryRenderer|PI_SESSION_ID|PI_MODEL` happens to match this feature's `inherit` token. spec-17's gate is therefore coupled to spec-15's test file remaining unchanged and to the bold-bullet ordering being preserved. The spec acknowledges this ('no previously-matched anchor/bullet may be removed or reordered'), but a future spec-15 edit could silently break spec-17's gate. Recommendation: add a comment in the spec-15 test documenting that `inherit` also anchors spec-17, or add a spec-17-local assertion so the dependency is explicit rather than incidental.",
+            "lens": "D5 Traceability / D7 Complexity",
+            "file": "tests/changelog-unreleased-spec15.test.ts"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "warn",
+            "notes": "Error handling, NFRs (additive/default-OFF/byte-identical), and most scenarios are covered, but SCENARIO-014 has no mapping and the AC/SCENARIO bodies are external (artifacts N/A). Score ~3/5."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "pass",
+            "notes": "Names, env var, helper signature, and terminology (noExtensions / inheritExtensions / SUPER_DEV_INHERIT_EXTENSIONS) are uniform across Summary, Architecture, and Testing Strategy. Browser-invariance argument consistent with isBrowserAgent code. Score 5/5."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "pass",
+            "notes": "Fits existing patterns: helper mirrors the resolveModel/asThinkingLevel idiom; both wiring sites verified present in repo; single-file import path already exists between session-agent.ts and pi-spawn.ts. No circular deps, no new stack capability required. Score 5/5."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "warn",
+            "notes": "Parsing unit test and buildSpawnArgs flag-presence test are concrete and reuse the saveEnv harness. But the session-backend wiring has NO automated test (spec §3 waives it). Numeric thresholds implicit (toContain/not.toContain). Score 3/5."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "warn",
+            "notes": "Most SCENARIO→test mappings explicit, but SCENARIO-014 unmapped and SCENARIO-009 only in unrelated code comments. AC→spec matrix not reconstructable (ACs external). Cross-spec CHANGELOG-test coupling (F-04). Score 3/5."
+          },
+          {
+            "name": "D6 Grounding",
+            "status": "pass",
+            "notes": "~95% verified: session-agent noExtensions:true (~487) ✓, pi-spawn `if(!browser) push --no-extensions` (~276) ✓, resolveModel/resolveThinking/asThinkingLevel cluster (~155-185) ✓, saveEnv harness + beforeEach/afterEach (~194/246-249) ✓, changelog-unreleased-spec15.test.ts regex line 101 with `inherit` token ✓, isBrowserAgent line 32 ✓. Above the 90% gate. Only `asBackend`/SUPER_DEV_BACKEND existence not directly confirmed (minor, non-load-bearing). Score 5/5."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "pass",
+            "notes": "Minimal additive change: one helper + two one-line flips + comments + focused tests. Simplest viable approach; no premature abstraction, no YAGNI violations. Non-goals (safety factory, inheritedModelObject, control-flow node algebra, resume cache) explicitly excluded. Score 5/5."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "pass",
+            "notes": "Signature, regex, exact truthy token set (1|true|yes|on, case-insensitive, trimmed), falsy set (unset/empty/0/false/garbage→OFF), browser-invariance in both states, and byte-identical baseline are all stated explicitly. Determinism trade-off (no self-trigger because spawned agents get no interactive input) documented at both wiring points. Score 5/5."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/09-spec-review.md"
+      }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-28T14:10:29.066Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "Spec-17: SUPER_DEV_INHERIT_EXTENSIONS opt-in (inherit extension-registered providers in spawned specialists)",
+        "date": "2026-07-28",
+        "summary": "## What was built\n\nA new **default-OFF env-var opt-in** (`SUPER_DEV_INHERIT_EXTENSIONS`) that lets specialist `pi` agents spawned by the pipeline load ambient (global + project) extensions. This closes a regression-gap left by spec-15's model-inheritance work: the parent's full `ctx.model` object is now passed to children, but when that model resolves from an *extension-registered* provider (e.g. a `pi.registerProvider(...)` extension), the child's fresh, extension-suppressed runtime couldn't resolve it and silently degraded to the settings default. The opt-in lifts extension suppression in BOTH backends so extension-sourced providers become visible — strictly additive, byte-identical to today when unset.\n\n### Phase 1 — Opt-in helper, dual-backend wiring, trade-off comments, focused tests (commit `9be2f363`)\n- **`src/pi-spawn.ts`**: added exported `inheritExtensions(): boolean` adjacent to the existing `SUPER_DEV_MODEL`/`SUPER_DEV_THINKING` env reads. Recognizes `1|true|yes|on` (case-insensitive, whitespace-trimmed); everything else (unset/empty/`0`/`false`/`off`/`no`/garbage) degrades to OFF **without throwing** (`Boolean(env && …)` short-circuits before `.trim()` so malformed input can never raise). Mirrors the existing `.trim()` + anchored-regex idiom.\n- **Subprocess backend** (`buildSpawnArgs`): guard changed from `if (!browser)` → `if (!browser && !inheritExtensions())` before pushing `--no-extensions`. Browser-capable agents remain invariant (never get `--no-extensions`) in both opt-in states; the explicit `-e` research-extension path and `--tools` allowlist are untouched.\n- **Session backend** (`src/session-agent.ts`): imported `inheritExtensions` and flipped the `DefaultResourceLoader` option from `noExtensions: true` → `noExtensions: !inheritExtensions()`. The inline **safety extension factory stays in `extensionFactories` either way** — child remains guarded in all states.\n- **Trade-off comments** added at both wiring points documenting the determinism/isolation cost (child pulls in EVERY user global extension, potentially super-dev itself — but spawned specialists receive no interactive input, so opting in cannot self-trigger the pipeline).\n- **Tests** (`tests/pi-spawn.test.ts`, +81 lines): unit tests for `inheritExtensions()` parsing (truthy incl. mixed-case/padded; falsy unset/empty/`0`/`false`/`off`/`no`/garbage → false, none throw), and `buildSpawnArgs` assertions that a normal agent (`requirements-clarifier`) gets `--no-extensions` when OFF and omits it when `=1`, while browser-capable agents omit it in BOTH states. Reuses the existing `saveEnv([\"SUPER_DEV_INHERIT_EXTENSIONS\"])` harness.\n\n### Phase 2 — CHANGELOG entry (parallelizable, commit `4ed516c4`)\n- **`CHANGELOG.md`**: added a new `[Unreleased]` → `### Added` bullet whose first bullet is `**bold**` and contains the `inherit` anchor: *\"Inherit extension-registered providers via SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17).\"* No prior bullets removed/reordered — the `tests/changelog-unreleased-spec15.test.ts` contract test stays green (12/12).\n\n## Test results\n- `npm run typecheck` (`tsc --noEmit`): **strict-clean** (no output) against the `^0.82.1` type surface.\n- Full `npm test` (vitest): **96 files / 1551 tests, all passing** (incl. the 12 changelog-contract tests and the expanded 56 pi-spawn tests).\n- Non-goals honored: opt-in defaults OFF (isolation/determinism never changes unless the env var is explicitly set); safety factory, the `inheritedModelObject` model-inheritance path, control-flow node algebra, resume cache, and pipeline stage structure are untouched; every no-throw/best-effort guard and the print/json/rpc/headless zero-ANSI contract preserved.\n\n## Deviations\n- **None functional.** Every AC-01..AC-09 is covered by the implementation + tests + changelog.\n- **Tracking artifact note:** the spec-dir `change-tracker.jsonl` records operations with an empty/`?` `path` field, which is why the upstream control reported `filesModified: none`. The real modified files are unambiguous from the two git commits (listed below) — this is the known empty-control failure class in learned.md, not a missing change. Worktree is otherwise clean (only the untracked spec docs directory remains, as expected at this stage).\n\n## Files changed (git-confirmed)\n1. `src/pi-spawn.ts` — new `inheritExtensions()` helper + `buildSpawnArgs` guard + trade-off comments.\n2. `src/session-agent.ts` — import + `DefaultResourceLoader` `noExtensions: !inheritExtensions()` + trade-off comment.\n3. `tests/pi-spawn.test.ts` — `inheritExtensions()` + `buildSpawnArgs` opt-in state tests.\n4. `CHANGELOG.md` — spec-17 `### Added` entry.",
+        "phasesCompleted": "2/2",
+        "allGreen": "true",
+        "filesModified": [
+          "src/pi-spawn.ts",
+          "src/session-agent.ts",
+          "tests/pi-spawn.test.ts",
+          "CHANGELOG.md"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/10-implementation-summary.md"
+      }
+    },
+    "codeReview": {
+      "timestamp": "2026-07-28T14:11:58.079Z",
+      "agent": "codeReview",
+      "data": {
+        "title": "Code Review: SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17)",
+        "date": "2026-07-22",
+        "verdict": "Approved",
+        "summary": "The implementation matches the specification across all 9 acceptance criteria. The additive `inheritExtensions()` helper in src/pi-spawn.ts mirrors the established `SUPER_DEV_*` env-read idiom (`.trim()` + anchored `/^(1|true|yes|on)$/i`, short-circuit before `.trim()` so malformed/undefined input never throws). Both backends are wired in lockstep: session `noExtensions: !inheritExtensions()` (src/session-agent.ts) and subprocess `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\")` (src/pi-spawn.ts buildSpawnArgs). Default-OFF byte-identical baseline is confirmed by tests. `npm run typecheck` strict-clean (exit 0) and the targeted vitest run is green (pi-spawn 56, spec15 12, spec17 12 = 80/80). The CHANGELOG `[Unreleased] ### Added` bullet's bold span \"Inherit extension-registered providers via SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17).\" carries the `inherit` anchor, satisfying both the existing spec-15 contract test and the new spec-17 test. Non-goals (safety factory, inheritedModelObject path, control-flow node algebra, resume cache, pipeline structure, zero-ANSI contract) are untouched per the diff. Findings are all Low/Info: one misleading comment in the opt-in path, over-verbose changelog prose, and a minor observability gap. No Critical/High/Medium issues.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "Low",
+            "title": "buildSpawnArgs comment contradicts behavior when opt-in is ON",
+            "detail": "The expanded comment in src/pi-spawn.ts buildSpawnArgs states: \"Research still loads ONLY its two extensions explicitly via `-e <path>` below ... so no other global extension is pulled in.\" This claim is only true in the default (`--no-extensions` present) path. When SUPER_DEV_INHERIT_EXTENSIONS is ON, `--no-extensions` is DROPPED for the non-browser branch, so the `pi --no-extensions -e ext` isolation pattern no longer applies and ALL ambient global extensions ARE loaded (which is the intended opt-in behavior). The comment as written is misleading for a maintainer reading the opt-in branch. Suggested fix: qualify the sentence, e.g. \"Research still ADDS its two extensions via `-e <path>`; with the opt-in OFF this is the ONLY source (no other global extension is pulled in); with the opt-in ON ambient extensions are also discovered.\" Behavior itself is correct; documentation only.",
+            "file": "src/pi-spawn.ts",
+            "line": "293"
+          },
+          {
+            "id": "F-02",
+            "severity": "Low",
+            "title": "CHANGELOG bullet is far from the 'concise' the spec requested",
+            "detail": "The spec and goal both ask for a 'concise [Unreleased] CHANGELOG.md entry (### Added)'. The delivered bullet is a single ~650-word run-on sentence re-documenting internals (backend flags, precedence, the zero-ANSI contract, scenario coverage). Keep-a-Changelog Added sections conventionally summarize user-visible behavior in 1-2 sentences. The contract test only asserts the bold-span anchor `inherit` + env-var presence, so the verbosity is not required for compliance. Consider trimming to ~2 sentences (opt-in summary + trade-off note). No functional impact; pure maintainability/contract-hygiene.",
+            "file": "CHANGELOG.md",
+            "line": "10"
+          },
+          {
+            "id": "F-03",
+            "severity": "Low",
+            "title": "No observability signal when the opt-in is active (P2)",
+            "detail": "When SUPER_DEV_INHERIT_EXTENSIONS is ON, a spawned specialist loads a substantially different extension set (all user global + project extensions) than the byte-identical baseline, which materially affects model/provider/tool resolution and determinism. There is no log/debug line at either wiring point indicating the opt-in is active, so a user diagnosing why a child behaves differently has no trace. Suggested fix (optional): add a one-line debug/verbose log at the wiring points, e.g. `logger.debug?.('SUPER_DEV_INHERIT_EXTENSIONS: ambient extension discovery ENABLED for specialist')`. Consistent with the no-throw best-effort guard (guard with `if (logger.debug)`). P2 / non-blocking — the existing codebase pattern for the other SUPER_DEV_* toggles also lacks such logging, so this is a general gap, not a regression.",
+            "file": "src/pi-spawn.ts",
+            "line": "299"
+          },
+          {
+            "id": "F-04",
+            "severity": "Info",
+            "title": "New spec-17 changelog test file duplicates the spec-15 contract regex",
+            "detail": "The implementation adds tests/changelog-unreleased-spec17.test.ts which re-declares the `boldBulletAnchored` regex and the `unreleasedSection` slicer from tests/changelog-unreleased-spec15.test.ts. This is acceptable (both pass) and gives spec-17 its own attributable coverage, but the duplicated contract logic will drift if the shared regex is updated in spec-15. Optional: extract the regex + slicer into a small shared helper (e.g. tests/_changelog-helpers.ts) so both tests reference one source of truth. Not required by the spec; informational only.",
+            "file": "tests/changelog-unreleased-spec17.test.ts",
+            "line": "51"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/11-code-review.md"
+      }
+    },
+    "adversarialReview": {
+      "timestamp": "2026-07-28T14:13:02.956Z",
+      "agent": "adversarialReview",
+      "data": {
+        "title": "Adversarial Review — SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17)",
+        "date": "2025-01-22",
+        "verdict": "CONTEST",
+        "summary": "The change is small, additive, default-OFF, and byte-identical to the baseline when the env var is unset — exactly as the intent demands. The `inheritExtensions()` helper is correct (leading `Boolean(env && ...)` short-circuits `.trim()` on undefined, so malformed input never throws), the subprocess wiring is a clean one-liner, the browser-agent invariant is preserved, the CHANGELOG anchor satisfies both contract tests, and all 80 targeted tests pass with typecheck clean. Both backends flip in lockstep via a single shared helper, so there is one source of truth and no new coupling axis or deadlock surface.\n\nHowever, the review surfaces quality concerns that warrant an author response rather than an unconditional PASS: (1) the DEFAULT backend (session) — the highest-traffic path — has NO automated assertion on its `noExtensions` wiring, while the subprocess path got the full matrix; the AC's escape clause sanctioned this, but it leaves the default path guarded only by a human-read comment. (2) The CHANGELOG bullet is a ~400-word run-on that violates the spec's \"concise\" acceptance criterion and Keep-a-Changelog norms. (3) A load-bearing safety claim (\"the pipeline cannot self-trigger even with super-dev loaded as an ambient extension\") is asserted as fact across all three comment sites with zero verification. (4) Pipeline-wide blast radius and token/context-inflation cost are under-documented. None rise to REJECT (no production failure, data loss, or security breach); the implementation is functionally correct and safe to ship, but the coverage asymmetry and over-documentation should be addressed.",
+        "findings": [
+          {
+            "id": "AR-01",
+            "severity": "medium",
+            "title": "Default session-backend wiring has no automated test — only the subprocess path does",
+            "detail": "The DEFAULT backend is `session` (src/workflow.ts:206 `?? \"session\"`; src/types.ts:298 lists both), yet only the subprocess backend's wiring has a test matrix (tests/pi-spawn.test.ts asserts `--no-extensions` presence/absence across opt-in states for non-browser vs browser agents). The session backend's `noExtensions: !inheritExtensions()` (src/session-agent.ts:497) — the highest-traffic path — is guarded only by the `inheritExtensions()` unit test and a human-read comment. The AC's escape clause ('if the loader construction is unit-testable in isolation, add a parallel assertion; otherwise the unit test + documented wiring is sufficient') technically sanctioned this, but `DefaultResourceLoader` IS constructible in isolation: the code already constructs it with cwd/agentDir/settingsManager/noExtensions and only calls `.reload()` afterward. A test can assert the constructed loader's `noExtensions` value (or spy the constructor arg) across opt-in states WITHOUT calling `.reload()`, so the escape clause's precondition does not actually hold. Risk: a future refactor of src/session-agent.ts:497 silently regresses the byte-identical baseline on the default path with no test catching it. Recommend a cheap assertion on the constructed loader's `noExtensions` value for unset/truthy/falsy env states. [UNCERTAIN only in that it depends on whether `DefaultResourceLoader` exposes the option post-construction; if not, a constructor-arg spy suffices.]",
+            "lens": "Architect",
+            "file": "src/session-agent.ts",
+            "line": "497"
+          },
+          {
+            "id": "AR-02",
+            "severity": "medium",
+            "title": "CHANGELOG `### Added` bullet is ~400 words — violates the spec's 'concise' criterion and Keep-a-Changelog norms",
+            "detail": "AC-07 and the task spec asked for a 'concise `[Unreleased]` CHANGELOG.md entry (### Added) summarizing the opt-in.' The added bullet (CHANGELOG.md line 10) is a single ~400-word run-on paragraph that re-states AC-01..AC-07, SCENARIO-001..016, the implementation mechanics (qualified provider/id, resolveExplicitSessionModel, noExtensions wiring), the zero-ANSI/print-json-rpc-headless contract, and the test-harness reuse — none of which belong in a user-facing changelog. Keep-a-Changelog `### Added` entries are meant to be human-readable summaries of user-visible behavior. This reads like a spec-coverage manifest. Recommend trimming to ~2 sentences: what the opt-in does + the default-OFF byte-identical guarantee + the env var name. (The spec-15 Fixed entry is also long, but this one is materially longer and the verbosity pattern should not compound across specs.)",
+            "lens": "Minimalist",
+            "file": "CHANGELOG.md",
+            "line": "10"
+          },
+          {
+            "id": "AR-03",
+            "severity": "medium",
+            "title": "Load-bearing safety claim 'the pipeline cannot self-trigger' is asserted as fact with no test",
+            "detail": "The helper doc (src/pi-spawn.ts:196-204) and BOTH wiring comments (src/session-agent.ts:490-496, src/pi-spawn.ts:291-301) assert that loading super-dev ITSELF as an ambient extension cannot re-trigger the pipeline because 'spawned specialists receive no interactive user input, so the pipeline still cannot self-trigger even with super-dev loaded.' This is a load-bearing safety justification for shipping the opt-in, yet nothing verifies it. A re-entrancy/extension-registration interaction is plausible: super-dev as an ambient extension registers a `super-dev` command, tool, or middleware, and the specialist's single turn could in principle dispatch it. The claim is PROBABLY true (specialists run one fixed-prompt turn with no slash-command dispatch path), but it is an unverified assertion presented as a guarantee. Recommend either (a) softening the language from guarantee ('cannot self-trigger') to calibrated expectation ('is not expected to self-trigger; not regression-tested'), or (b) adding a smoke test that a specialist spawn with the opt-in ON completes one turn without pipeline re-entry. [UNCERTAIN — depends on pi's extension/extension-command dispatch semantics for non-interactive single-turn agents.]",
+            "lens": "Skeptic",
+            "file": "src/pi-spawn.ts",
+            "line": "200"
+          },
+          {
+            "id": "AR-04",
+            "severity": "low",
+            "title": "Pipeline-wide blast radius and token/context-inflation cost are under-documented",
+            "detail": "`SUPER_DEV_INHERIT_EXTENSIONS` is a single global env var that applies to EVERY specialist in EVERY stage — including code-writing agents (implementer/tdd-guide) that never touch model resolution. Ambient extensions can inject system-prompt text, tools, and MCP servers, materially inflating the child's context/token budget and slowing spawns; the comments name only 'provider/tool registration' as the cost. For a user who sets the flag for ONE provider reason, every stage pays the full ambient-extension load. Additionally, the subprocess backend retains the `--tools` allowlist as a remaining ACTIVE-tool guard, but the session backend has no analogous ACTIVE-tool allowlist called out in the change — so the session path's tool surface broadens more. Not a blocker (explicit opt-in, documented determinism trade-off), but recommend (a) noting the concrete token-budget/context-inflation cost in the helper doc, and (b) scoping the opt-in's intended use to model-stack-dependent users rather than general ambient-extension loading.",
+            "lens": "Skeptic",
+            "file": "src/pi-spawn.ts",
+            "line": "204"
+          },
+          {
+            "id": "AR-05",
+            "severity": "low",
+            "title": "Triplicated trade-off prose + duplicated contract-test scaffolding",
+            "detail": "The same determinism/isolation trade-off paragraph is restated near-verbatim in THREE places: the helper doc (src/pi-spawn.ts:196-204), the session-agent comment (src/session-agent.ts:481-497), and the buildSpawnArgs comment (src/pi-spawn.ts:291-302). Recommend DRY-ing to a single canonical statement in the helper doc with one-line back-references at the two wiring points. Separately, tests/changelog-unreleased-spec17.test.ts (120 lines) copy-pastes `unreleasedSection()` and `BOLD_BULLET_ANCHORED` verbatim from tests/changelog-unreleased-spec15.test.ts rather than extracting a shared `tests/changelog-helpers.ts`; this is a pre-existing pattern, but each new spec deepens the copy. A shared helper would collapse the spec-17 test to ~30 lines of unique assertions. Low, but worth flagging since the test scaffolding will keep duplicating per spec.",
+            "lens": "Minimalist",
+            "file": "tests/changelog-unreleased-spec17.test.ts"
+          },
+          {
+            "id": "AR-06",
+            "severity": "low",
+            "title": "Research-agent comment states isolation as an invariant, but it only holds in the baseline",
+            "detail": "The buildSpawnArgs comment (src/pi-spawn.ts:294-301) says 'Research still loads ONLY its two extensions explicitly via `-e <path>` ... so no other global extension is pulled in.' That is true ONLY when the opt-in is OFF. With `SUPER_DEV_INHERIT_EXTENSIONS=1`, research agents are non-browser → they ALSO drop `--no-extensions` → they DO pull in every ambient extension alongside their two explicit ones. The sentence reads as a constant invariant but is baseline-conditional; a reader opting in could misunderstand research-agent isolation. Recommend qualifying to 'in the baseline (opt-in OFF); with the opt-in ON, research agents also load ambient extensions.' Low — documentation accuracy, not behavioral.",
+            "lens": "Skeptic",
+            "file": "src/pi-spawn.ts",
+            "line": "296"
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/12-adversarial-review.md"
+      }
+    },
+    "docsExecutor": {
+      "timestamp": "2026-07-28T14:15:00.000Z",
+      "agent": "docsExecutor",
+      "data": {
+        "title": "Docs Update: SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17)",
+        "date": "2026-07-28",
+        "stage": "DOCS_COMPLETE",
+        "docsUpdated": [
+          "docs/specifications/17-goal-super-dev-inherit-extensions/06-specification.md (added 'Deviations from Specification' section — no functional deviations; 5 Low/Info quality findings recorded for traceability)",
+          "docs/specifications/17-goal-super-dev-inherit-extensions/07-implementation-plan.md (marked Phase 1 + Phase 2 COMPLETE with commit SHAs)",
+          "docs/specifications/17-goal-super-dev-inherit-extensions/08-task-list.md (checked all 6 task checkboxes COMPLETE; added status header + verification note)",
+          "docs/specifications/17-goal-super-dev-inherit-extensions/10-implementation-summary.md (already comprehensive — verified accurate against commits 9be2f363 + 4ed516c4; no edits required)",
+          "CHANGELOG.md (no edit — [Unreleased] ### Added entry for spec-17 already landed in commit 4ed516c4; contract tests green)"
+        ],
+        "deviationsDocumented": [
+          "DEV-01 (CR F-01 / AR-06): buildSpawnArgs comment isolation claim holds only when opt-in OFF — not applied (Low, doc-only)",
+          "DEV-02 (CR F-02 / AR-02): CHANGELOG entry ~400 words vs requested 'concise' — kept; AC-07 anchor satisfied",
+          "DEV-03 (AR-01): session-backend loader has no direct unit assertion — accepted by AC-06 escape clause",
+          "DEV-04 (AR-03): 'cannot self-trigger' is a calibrated expectation, not a regression-tested guarantee",
+          "DEV-05 (AR-04/F-03/AR-05): triplicated trade-off prose + no observability log + under-documented token cost — informational"
+        ],
+        "summary": "Stage 11 (docs-executor) complete. All spec-directory documents reviewed; implementation matches the specification with ZERO functional deviations. The two landing commits (9be2f363 feat + 4ed516c4 changelog) were confirmed against the code. Task list marked complete; implementation plan phases marked COMPLETE; a Deviations section added to the specification recording the 5 Low/Info/medium QUALITY findings from code review + adversarial review (none altered behavior or any AC). CHANGELOG was already accurate and its two Keep-a-Changelog contract tests (spec-15: 12, spec-17: 12) remain green. No architecture/UI/UX/requirements docs required changes (pure additive library change, no UI). DOCS_COMPLETE signalled."
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-28T14:17:40.283Z",
+      "agent": "docs",
+      "data": {
+        "title": "Docs Update: SUPER_DEV_INHERIT_EXTENSIONS opt-in (spec-17)",
+        "date": "2026-07-28",
+        "summary": "Stage 11 (docs-executor) complete. The shipped implementation matches 06-specification.md with ZERO functional deviations across every documented contract (the inheritExtensions() helper body, both wiring expressions `noExtensions: !inheritExtensions()` in src/session-agent.ts:497 and `if (!browser && !inheritExtensions()) args.push(\"--no-extensions\")` in src/pi-spawn.ts:302, trade-off comments at both wiring points, the focused vitest tests in tests/pi-spawn.test.ts, and the CHANGELOG [Unreleased] ### Added bullet whose bold span carries the `inherit` anchor). Verified against the two landing commits: 9be2f363 (feat: helper + dual-backend wiring + comments + tests) and 4ed516c4 (changelog entry). Spec-directory documents reviewed and updated: 08-task-list.md (all 6 task checkboxes marked COMPLETE with a status header and verification note), 07-implementation-plan.md (Phase 1 and Phase 2 marked COMPLETE with commit SHAs), 06-specification.md (a 'Deviations from Specification' section added — recording that all 5 review findings are Low/Info/medium QUALITY issues that did not alter behavior or any AC-01..AC-09), and the workflow-tracking .knowledge.json (a docsExecutor stage appended with stage=DOCS_COMPLETE; JSON re-validated clean). 10-implementation-summary.md was already comprehensive and accurate, so no edits were required. CHANGELOG.md was already correct (landed in 4ed516c4) and its two Keep-a-Changelog contract tests (spec-15: 12/12, spec-17: 12/12) remain green, so no change was needed there. No architecture/UI-UX/BDD/requirements/README docs required changes — this is a pure additive library change with no UI surface. DOCS_COMPLETE signalled.",
+        "docsUpdated": "docs/specifications/17-goal-super-dev-inherit-extensions/06-specification.md (added 'Deviations from Specification' section documenting the 5 review findings as non-functional, AC-preserving); docs/specifications/17-goal-super-dev-inherit-extensions/07-implementation-plan.md (Phase 1 + Phase 2 marked COMPLETE with commit SHAs 9be2f363 and 4ed516c4); docs/specifications/17-goal-super-dev-inherit-extensions/08-task-list.md (all 6 tasks checked COMPLETE; status header + AC-08/09 verification note added); docs/specifications/17-goal-super-dev-inherit-extensions/.knowledge.json (workflow-tracking: appended docsExecutor stage, status DOCS_COMPLETE, validated JSON clean); docs/specifications/17-goal-super-dev-inherit-extensions/10-implementation-summary.md (verified accurate against commits — no edits needed); CHANGELOG.md (no edit — entry already landed in commit 4ed516c4, contract tests green)",
+        "deviationsDocumented": [
+          "DEV-01 (from CR F-01 / AR-06, Low, doc-only): buildSpawnArgs comment asserts research-agent isolation as a constant invariant, but the claim holds only when the opt-in is OFF — when ON, research agents also load ambient extensions. Not applied; behavior is correct, only comment wording is misleading. No AC affected.",
+          "DEV-02 (from CR F-02 / AR-02, Low): CHANGELOG ### Added entry is ~400 words vs the spec's requested 'concise' summary. Kept as-is — AC-07 only requires the **bold** `inherit` anchor + env-var presence, both satisfied; the spec-15 and spec-17 Keep-a-Changelog contract tests stay green (12/12 each).",
+          "DEV-03 (from AR-01, medium but accepted): the default session backend's DefaultResourceLoader noExtensions wiring has no DIRECT unit assertion, only the shared inheritExtensions() unit test (transitive) — explicitly sanctioned by AC-06's escape clause ('the inheritExtensions() unit test + documented wiring is sufficient'). The subprocess buildSpawnArgs matrix fully covers the shared helper.",
+          "DEV-04 (from AR-03, medium): the 'pipeline cannot self-trigger even with super-dev loaded as an ambient extension' claim is shipped as a calibrated expectation, not a regression-tested guarantee. Almost certainly true (specialists run one fixed-prompt turn with no slash-command dispatch) but unverified; no AC mandates verification.",
+          "DEV-05 (from AR-04 / F-03 / AR-05, Low/Info): trade-off prose is triplicated across 3 sites; no observability/debug log when the opt-in is active (consistent with the other SUPER_DEV_* toggles, so not a regression); token/context-inflation cost is under-documented. All informational — none affect any AC or behavior."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/17-goal-super-dev-inherit-extensions/docs/specifications/17-goal-super-dev-inherit-extensions/13-documentation.md"
+      }
+    }
+  }
+}
