@@ -252,6 +252,9 @@ interface StagnationRecord {
 export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { escalation?: "informative" | "interactive" }): Promise<string | undefined> {
 	const st = (summary.state as Record<string, unknown>).__stagnated as StagnationRecord | undefined;
 	if (!st) return undefined;
+	// If the inline escalation (verify.ts) already attempted (even if dismissed),
+	// don't re-prompt here (prevents double-prompt on the same stagnation).
+	if ((summary.state as Record<string, unknown>).__escalationAttempted) return undefined;
 
 	// Baseline (all modes): write the report. The stagnation prose is shared
 	// between the legacy human-facing `stagnation-report.md` (backward-compat —

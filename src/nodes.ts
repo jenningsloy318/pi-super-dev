@@ -400,6 +400,10 @@ export function gate(opts: GateOptions, node: Node): Node {
 			const label = opts.feedbackKey ? ` gate ${opts.feedbackKey}` : "";
 			let lastErrors: string[] = [];
 			let last: NodeResult = OK;
+			let escalationRetry = false;
+			let msg = "";
+			do {
+				escalationRetry = false;
 			for (let attempt = 1; attempt <= max; attempt++) {
 				if (ctx.signal?.aborted) return { status: "cancelled" };
 				const target = attempt === 1 ? node : (opts.fix ?? node);
@@ -431,7 +435,7 @@ export function gate(opts: GateOptions, node: Node): Node {
 					(state as Record<string, unknown>).__feedback = { ...(all ?? {}), [opts.feedbackKey]: v.errors };
 				}
 			}
-			const msg = `gate${label} could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
+			msg = `gate${label} could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
 			ctx.log(`gate: EXHAUSTED${opts.fatal ? " (FATAL — aborting run)" : " (non-fatal)"} — ${opts.fatal ? "aborting" : "proceeding with best-available artifact"}`);
 			if (opts.fatal) {
 				// spec-18 HITL: before aborting, give the user a chance to decide
@@ -447,11 +451,14 @@ export function gate(opts: GateOptions, node: Node): Node {
 						if (decision) {
 							applyRetryDecision(state, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });
 							if (decision.choice === "accept-limitation") return { status: "ok" as const, attempts: max };
+							if (decision.choice === "retry-with-guidance") { escalationRetry = true; continue; }
 						}
 					} catch { /* never-throw: degrade to FatalAbort */ }
 				}
 				throw new FatalAbort(msg);
 			}
+				break; // non-fatal exhaustion — exit do-while
+			} while (escalationRetry);
 			return { status: "failed", error: msg, attempts: max };
 		},
 	};

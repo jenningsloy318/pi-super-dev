@@ -167,6 +167,7 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 		// spec-18 HITL: escalate before breaking (pause-then-continue).
 		const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
 		if (escalate) {
+			(s as Record<string, unknown>).__escalationAttempted = true;
 			try {
 				const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
 				const setup = (s as { setup?: { worktreePath?: string; specDirectory?: string } }).setup;
