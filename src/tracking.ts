@@ -169,10 +169,15 @@ function classifyPorcelain(xy: string): "created" | "modified" | "deleted" {
 export function rollbackWorktreeTo(worktreePath: string | undefined, commit?: string): { ok: boolean; commit: string | null; error?: string } {
 	if (!worktreePath) return { ok: false, commit: null, error: "no worktreePath" };
 	const target = commit ?? "HEAD";
+	// Exclude the spec dir (untracked artifacts: docs/specifications/*, .resume-cache,
+	// .user-notes.json, change-tracker.jsonl) from the clean so a rollback doesn't
+		// destroy completed stage artifacts the retry still needs (B-1 fix).
+	const specExcludes = ["docs/specifications/", ".resume-cache.jsonl", ".user-notes.json", "change-tracker.jsonl", "stagnation-report.md", "escalation-report.md"];
+	const cleanArgs = ["-C", worktreePath, "clean", "-fd", ...specExcludes.flatMap((e) => ["-e", e])];
 	try {
 		const reset = spawnSync("git", ["-C", worktreePath, "reset", "--hard", target], { encoding: "utf8", timeout: resolveTimeoutMs() });
 		if (reset.error || reset.status !== 0) return { ok: false, commit: null, error: `git reset --hard ${target} failed (status ${String(reset.status)})` };
-		const clean = spawnSync("git", ["-C", worktreePath, "clean", "-fd"], { encoding: "utf8", timeout: resolveTimeoutMs() });
+		const clean = spawnSync("git", cleanArgs, { encoding: "utf8", timeout: resolveTimeoutMs() });
 		if (clean.error || clean.status !== 0) return { ok: false, commit: null, error: `git clean -fd failed (status ${String(clean.status)})` };
 		return { ok: true, commit: null };
 	} catch (err) {
@@ -523,7 +528,3 @@ export function getActiveTracker(): ChangeTracker | null {
 }
 
 // -------------------------------------------------------------------------
-// Worktree-scoped rollback primitive (spec-18 / AC-05, AC-10 → SCENARIO-010/012)
-// -------------------------------------------------------------------------
-
-/** Outcome of {@link rollbackWorktreeTo}. Never thrown — failures degrade to `{ok:false, error}`. */

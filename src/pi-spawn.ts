@@ -3,7 +3,7 @@
  * that replaces pi-workflow's agent engine. Verified invocation:
  *
  *   pi --mode json -p --no-session --no-skills \
- *      --tools read,bash,edit,write,ffgrep,fffind \
+ *      --exclude-tools super_dev \
  *      [--model <provider/id>] --system-prompt <temp-file> "Task: <prompt>"
  *
  * stdout is newline-delimited JSON; the final assistant text is in the last

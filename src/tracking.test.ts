@@ -51,7 +51,7 @@ describe("rollbackWorktreeTo — discrete-argv spawnSync (no shell:true) (SCENAR
 		expect(calls[0][0]).toBe("git");
 		expect(calls[0][1]).toEqual(["-C", WORKTREE, "reset", "--hard", "HEAD"]);
 		expect(calls[1][0]).toBe("git");
-		expect(calls[1][1]).toEqual(["-C", WORKTREE, "clean", "-fd"]);
+		expect(calls[1][1]).toEqual(["-C", WORKTREE, "clean", "-fd", "-e", "docs/specifications/", "-e", ".resume-cache.jsonl", "-e", ".user-notes.json", "-e", "change-tracker.jsonl", "-e", "stagnation-report.md", "-e", "escalation-report.md"]);
 	});
 
 	it("defaults the commit ref to HEAD", () => {
