@@ -101,5 +101,5 @@ export const cleanupTask: Stage = helperTask({
 	label: "Stage 13 — Cleanup",
 	helper: "cleanup",
 	sources: (state) => ({ docs: state.docs ?? {} }),
-	context: (state) => ({ cwd: state.setup?.worktreePath ?? "" }),
+	context: (state) => ({ cwd: state.setup?.worktreePath ?? "", worktreeCreated: state.setup?.worktreeCreated ?? false }),
 });

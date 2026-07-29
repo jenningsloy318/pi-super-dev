@@ -214,11 +214,10 @@ const LANG_MARKERS: Record<string, string[]> = {
 
 async function cleanup(_s: Record<string, unknown>, context?: Record<string, unknown>): Promise<HelperResult> {
 	const cwd = context?.cwd as string | undefined;
+	const worktreeCreated = context?.worktreeCreated === true;
 	if (!cwd) return ok("FAIL: no cwd in context", { languagesDetected: [], directoriesRemoved: [], commandsRun: [], sensitiveDataFindings: [], blocked: false, summary: "Could not scan — no working directory provided" });
 	const { readdir, stat } = await import("node:fs/promises");
 	const { join } = await import("node:path");
-	const { rmSync } = await import("node:fs");
-	const { spawnSync } = await import("node:child_process");
 	const languagesDetected: string[] = [];
 	for (const [lang, markers] of Object.entries(LANG_MARKERS)) {
 		for (const marker of markers) {
@@ -226,42 +225,52 @@ async function cleanup(_s: Record<string, unknown>, context?: Record<string, unk
 		}
 	}
 
-	// --- ACTUAL CLEANUP: run language-specific clean commands + remove build dirs ---
+	// --- ACTUAL CLEANUP: only when running in a WORKTREE (never the main checkout) ---
+	// When in-place (no worktree), skip removal — cleaning the user's main repo
+	// node_modules/target/ would be destructive. Detection + sensitive scan still run.
 	const commandsRun: string[] = [];
 	const directoriesRemoved: string[] = [];
 
-	// Language-specific clean commands (deterministic, never-throw, bounded timeout).
-	if (languagesDetected.includes("rust")) {
-		try {
-			const r = spawnSync("cargo", ["clean"], { cwd, encoding: "utf8", timeout: 60_000 });
-			commandsRun.push(`cargo clean (${r.status === 0 ? "ok" : "exit " + String(r.status)})`);
-		} catch { commandsRun.push("cargo clean (skipped — cargo unavailable)"); }
-	}
-	if (languagesDetected.includes("go")) {
-		try {
-			const r = spawnSync("go", ["clean", "-cache", "-testcache"], { cwd, encoding: "utf8", timeout: 30_000 });
-			commandsRun.push(`go clean -cache -testcache (${r.status === 0 ? "ok" : "exit " + String(r.status)})`);
-		} catch { commandsRun.push("go clean (skipped — go unavailable)"); }
-	}
+	if (worktreeCreated) {
+		const { rmSync } = await import("node:fs");
+		const { spawnSync } = await import("node:child_process");
 
-	// Remove all detected build directories (node_modules, target, dist, etc.).
-	// This catches language-agnostic dirs + dirs the language command may have missed.
-	try {
-		for (const e of await readdir(cwd, { withFileTypes: true })) {
-			if (e.isDirectory() && BUILD_DIRS.has(e.name)) {
-				try { rmSync(join(cwd, e.name), { recursive: true, force: true }); directoriesRemoved.push(e.name); }
-				catch { /* best-effort — skip unreadable/locked */ }
-			}
+		// Language-specific clean commands (deterministic, never-throw, bounded timeout).
+		if (languagesDetected.includes("rust")) {
+			try {
+				const r = spawnSync("cargo", ["clean"], { cwd, encoding: "utf8", timeout: 60_000 });
+				commandsRun.push(`cargo clean (${r.status === 0 ? "ok" : "exit " + String(r.status)})`);
+			} catch { commandsRun.push("cargo clean (skipped — cargo unavailable)"); }
 		}
-	} catch { /* unreadable cwd */ }
+		if (languagesDetected.includes("go")) {
+			try {
+				const r = spawnSync("go", ["clean", "-cache", "-testcache"], { cwd, encoding: "utf8", timeout: 30_000 });
+				commandsRun.push(`go clean -cache -testcache (${r.status === 0 ? "ok" : "exit " + String(r.status)})`);
+			} catch { commandsRun.push("go clean (skipped — go unavailable)"); }
+		}
+
+		// Remove all detected build directories (node_modules, target, dist, etc.).
+		try {
+			for (const e of await readdir(cwd, { withFileTypes: true })) {
+				if (e.isDirectory() && BUILD_DIRS.has(e.name)) {
+					try { rmSync(join(cwd, e.name), { recursive: true, force: true }); directoriesRemoved.push(e.name); }
+					catch { /* best-effort — skip unreadable/locked */ }
+				}
+			}
+		} catch { /* unreadable cwd */ }
+	} else {
+		// In-place run: detection only (report what WOULD be cleaned, don't remove).
+		try { for (const e of await readdir(cwd, { withFileTypes: true })) if (e.isDirectory() && BUILD_DIRS.has(e.name)) directoriesRemoved.push(`${e.name} (skipped — in-place run)`); } catch { /* unreadable */ }
+	}
 
 	const sensitiveDataFindings: string[] = [];
 	try { for (const e of await readdir(cwd)) for (const re of SENSITIVE_RE) if (re.test(e)) { sensitiveDataFindings.push(`Sensitive file detected: ${e}`); break; } } catch { /* unreadable */ }
 	const blocked = sensitiveDataFindings.length > 0;
-	const cleanSummary = `${commandsRun.length} command(s), ${directoriesRemoved.length} dir(s) removed`;
+	const mode = worktreeCreated ? "worktree cleaned" : "in-place — detection only (no removal)";
+	const cleanSummary = worktreeCreated ? `${commandsRun.length} command(s), ${directoriesRemoved.length} dir(s) removed` : `${directoriesRemoved.length} dir(s) detected (not removed)`;
 	return ok(blocked ? `BLOCKED: ${sensitiveDataFindings.length} sensitive finding(s)` : `Clean: ${languagesDetected.length} lang(s), ${cleanSummary}`, {
 		languagesDetected, directoriesRemoved, commandsRun, sensitiveDataFindings, blocked,
-		summary: blocked ? `Merge blocked: found ${sensitiveDataFindings.length} sensitive data issue(s)` : `Worktree cleaned: ${cleanSummary}. Languages: ${languagesDetected.join(", ") || "none detected"}`,
+		summary: blocked ? `Merge blocked: found ${sensitiveDataFindings.length} sensitive data issue(s)` : `${mode}: ${cleanSummary}. Languages: ${languagesDetected.join(", ") || "none detected"}`,
 	});
 }
 
