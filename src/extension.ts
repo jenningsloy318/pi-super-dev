@@ -355,11 +355,13 @@ function mapEscalateChoice(choice: unknown): EscalationDecision | undefined {
  * NEVER throws.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function makeEscalate(ctx: any): Escalate {
+export function makeEscalate(ctx: any, opts?: { background?: boolean }): Escalate {
+	const background = opts?.background ?? false;
 	const escalate: Escalate = async (failure: EscalationFailure) => {
 		let decision: EscalationDecision | undefined;
-		// Interactive pause-ask-continue — TUI/RPC only, never headless.
-		if (ctx?.hasUI === true) {
+		// Interactive pause-ask-continue — TUI/RPC FOREGROUND only (the modal select
+		// can't display after the tool has returned in a background run).
+		if (ctx?.hasUI === true && !background) {
 			try {
 				const options =
 					failure.severity === "hard" ? ESCALATE_OPTIONS_HARD : ESCALATE_OPTIONS_SOFT;
@@ -381,6 +383,16 @@ export function makeEscalate(ctx: any): Escalate {
 			} catch {
 				decision = undefined;
 			}
+		} else if (ctx?.hasUI === true && background) {
+			// BACKGROUND run: the tool has already returned; ctx.ui.select (modal)
+			// can't display. Surface the blocker as a non-modal notification so the
+			// user KNOWS something is stuck (instead of silently failing). The user
+			// can type guidance (mid-run context capture → .user-notes.json) +
+			// re-run with resume, or read the escalation-report.md for details.
+			try { ctx.ui?.notify?.(
+				`⚠️ super-dev hit a blocker: ${failure.message.slice(0, 120)}${failure.message.length > 120 ? "…" : ""} — type your guidance to retry, or see escalation-report.md.`,
+				"warning",
+			); } catch { /* best-effort */ }
 		}
 		// ALWAYS write the report (baseline, all modes). Never throws.
 		writeEscalationReport(failure, decision, failure.specDirectory);
@@ -628,7 +640,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// Phase 3 firing points can pause-ask-continue via ctx.ui. Additive —
 				// an undefined decision stays byte-identical to today (no firing point
 				// invokes it yet). Built beside userSteerProvider (same options seam).
-				escalate: makeEscalate(ctx),
+				escalate: makeEscalate(ctx, { background }),
 				progress: sink,
 					signal: runSignal,
 				});
