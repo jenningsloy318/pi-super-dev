@@ -164,6 +164,25 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	(s as Record<string, unknown>).__reviewSignatures = sigHist;
 	(s as Record<string, unknown>).__reviewCounts = countHist;
 	if (stagnant) {
+		// spec-18 HITL: escalate before breaking (pause-then-continue).
+		const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
+		if (escalate) {
+			try {
+				const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
+				const setup = (s as { setup?: { worktreePath?: string; specDirectory?: string } }).setup;
+				const failure: import("../types.ts").EscalationFailure = { kind: "stagnation", message: "Review loop stagnant — the same findings recur. More fixing won't help; revise the spec/design or accept as a limitation.", severity: "soft", findings: findings.slice(0, 12).map((f) => ({ file: String(f.file ?? "") || null, severity: String(f.severity ?? "") || null, title: String(f.title ?? "") || null })), worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory };
+				const decision = await runEscalation(s, failure, escalate);
+				if (decision) {
+					applyRetryDecision(s, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });
+					if (decision.choice === "retry-with-guidance") {
+						(s as Record<string, unknown>).__reviewSignatures = [];
+						(s as Record<string, unknown>).__reviewCounts = [];
+						return false;
+					}
+					if (decision.choice === "accept-limitation") return true;
+				}
+			} catch { /* never-throw */ }
+		}
 		(s as Record<string, unknown>).__stagnated = {
 			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,

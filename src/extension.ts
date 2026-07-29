@@ -22,10 +22,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureSuperDevDirs, startRun, getRunLogPath, getConfig } from "./render/super-dev-dir.ts";
 import { runReflectionAsync } from "./render/reflection.ts";
+import { writeEscalationReport } from "./render/escalation-report.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
-import type { ProgressSink, RunStatus, RunSummary } from "./types.ts";
+import type { Escalate, EscalationDecision, EscalationFailure, ProgressSink, RunStatus, RunSummary } from "./types.ts";
 
 export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
@@ -235,11 +236,13 @@ function formatSummary(s: RunSummary, cwd?: string): string[] {
 }
 
 /** Gap 4.6′-lite — stagnation escalation (scheme C: informative by default, interactive opt-in).
- *  Always writes a stagnation-report.md to the spec dir (baseline, all modes).
- *  When the run is interactive (ctx.hasUI) AND config.escalation === "interactive",
- *  additionally prompts a 3-option select. Returns the chosen option (or undefined
- *  if not interactive / dismissed). For Tier-2 all options just finish the run —
- *  "revise spec" only surfaces the recommendation; auto-replay is deferred (Tier-3). */
+ *  Always writes a stagnation-report.md to the spec dir (baseline, all modes);
+ *  spec-18 / Phase 2 additionally delegates the canonical escalation-report.md
+ *  to the shared `writeEscalationReport` writer. When the run is interactive
+ *  (ctx.hasUI) AND config.escalation === "interactive", additionally prompts a
+ *  3-option select. Returns the chosen option (or undefined if not interactive /
+ *  dismissed). For Tier-2 all options just finish the run — "revise spec" only
+ *  surfaces the recommendation; auto-replay is deferred (Tier-3). */
 interface StagnationRecord {
 	rounds?: number;
 	verdict?: string;
@@ -250,23 +253,53 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 	const st = (summary.state as Record<string, unknown>).__stagnated as StagnationRecord | undefined;
 	if (!st) return undefined;
 
-	// Baseline (all modes): write the report.
+	// Baseline (all modes): write the report. The stagnation prose is shared
+	// between the legacy human-facing `stagnation-report.md` (backward-compat —
+	// the diagnostic referenced in the run summary) and the canonical
+	// `escalation-report.md` produced by delegating to the shared
+	// `writeEscalationReport` writer (spec-18 / Phase 2 generalization: one
+	// structured report format across this legacy path and the new inline
+	// `escalate` callback; uniformly never-throw). Additive + never-regressing.
+	const findingsRaw = st.findings ?? [];
+	const message = [
+		`The verify-loop broke early after **${st.rounds}** review round(s): the same findings recurred across two consecutive iterations.`,
+		"",
+		`Merged review verdict at stagnation: **${st.verdict ?? "unknown"}**.`,
+		"",
+		"This usually means the implementation is faithful to a spec that produces the wrong outcome — more fixing will not help. Consider revising the specification's design (constants/algorithm/architecture), or accept these findings as known limitations.",
+	].join("\n");
+	// Legacy human-facing diagnostic (byte-identical to pre-spec-18 output).
 	try {
-		const findings = (st.findings ?? []).map((f) => `- [${f.severity ?? "?"}] ${f.file ? "`" + f.file + "` " : ""}${f.title ?? ""}`);
-		const body = [
-			"# Stagnation report",
-			"",
-			`The verify-loop broke early after **${st.rounds}** review round(s): the same findings recurred across two consecutive iterations.`,
-			"",
-			`Merged review verdict at stagnation: **${st.verdict ?? "unknown"}**.`,
-			"",
-			"This usually means the implementation is faithful to a spec that produces the wrong outcome — more fixing will not help. Consider revising the specification's design (constants/algorithm/architecture), or accept these findings as known limitations.",
-			"",
-			"## Recurring findings",
-			...(findings.length ? findings : ["_(no structured findings captured)_"]),
-		].join("\n");
-		writeFileSync(join(summary.specDirectory, "stagnation-report.md"), body);
+		const findingLines = findingsRaw.map((f) => `- [${f.severity ?? "?"}] ${f.file ? "`" + f.file + "` " : ""}${f.title ?? ""}`);
+		writeFileSync(
+			join(summary.specDirectory, "stagnation-report.md"),
+			[
+				"# Stagnation report",
+				"",
+				message,
+				"",
+				"## Recurring findings",
+				...(findingLines.length ? findingLines : ["_(no structured findings captured)_"]),
+			].join("\n"),
+		);
 	} catch { /* best-effort */ }
+	// Canonical escalation report via the shared writer (never-throw).
+	writeEscalationReport(
+		{
+			kind: "stagnation",
+			stage: "verify",
+			severity: "soft",
+			message,
+			findings: findingsRaw.map((f) => ({
+				file: f.file ?? null,
+				severity: f.severity ?? null,
+				title: f.title ?? null,
+			})),
+			specDirectory: summary.specDirectory,
+		},
+		undefined,
+		summary.specDirectory,
+	);
 
 	// Opt-in interactive escalation (TUI/RPC only).
 	const mode = opts?.escalation ?? getConfig().escalation;
@@ -282,6 +315,75 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 	} catch {
 		return undefined;
 	}
+}
+
+/** Human-readable choices offered via ctx.ui.select, in stable order. */
+const ESCALATE_OPTIONS_SOFT = [
+	"Retry with guidance",
+	"Revise manually",
+	"Accept limitation",
+	"Abandon",
+];
+const ESCALATE_OPTIONS_HARD = [
+	"Retry with guidance",
+	"Revise manually",
+	"Abandon",
+];
+
+/** Map a ctx.ui.select result to an EscalationDecision (undefined = dismissed). */
+function mapEscalateChoice(choice: unknown): EscalationDecision | undefined {
+	if (typeof choice !== "string") return undefined;
+	const lower = choice.toLowerCase();
+	if (lower.includes("retry")) return { choice: "retry-with-guidance" };
+	if (lower.includes("revise")) return { choice: "revise-manually" };
+	if (lower.includes("accept")) return { choice: "accept-limitation" };
+	if (lower.includes("abandon")) return { choice: "abandon" };
+	return undefined;
+}
+
+/**
+ * Build the inline `escalate` callback for a run (spec-18 / AC-01). ALWAYS
+ * writes `escalation-report.md` via {@link writeEscalationReport}; then — ONLY
+ * when `ctx.hasUI === true` — prompts `ctx.ui.select` (300s timeout) and, for a
+ * retry-with-guidance choice, `ctx.ui.input` to capture free-text guidance.
+ * Wrapped in try/catch so dismissal / timeout / error all collapse to
+ * `undefined` (the pre-existing fail-with-report path). `accept-limitation` is
+ * omitted from the offered choices when the failure is `severity: "hard"`.
+ * NEVER throws.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function makeEscalate(ctx: any): Escalate {
+	const escalate: Escalate = async (failure: EscalationFailure) => {
+		let decision: EscalationDecision | undefined;
+		// Interactive pause-ask-continue — TUI/RPC only, never headless.
+		if (ctx?.hasUI === true) {
+			try {
+				const options =
+					failure.severity === "hard" ? ESCALATE_OPTIONS_HARD : ESCALATE_OPTIONS_SOFT;
+				const choice = await ctx.ui?.select?.(
+					"Super-dev hit a blocker — how to proceed?",
+					options,
+					{ timeout: 300_000 },
+				);
+				decision = mapEscalateChoice(choice);
+				if (decision?.choice === "retry-with-guidance") {
+					const guidance = await ctx.ui?.input?.(
+						"Guidance for the retry (appended to the next specialist attempt):",
+						{ timeout: 300_000 },
+					);
+					if (typeof guidance === "string" && guidance.trim()) {
+						decision.guidance = guidance;
+					}
+				}
+			} catch {
+				decision = undefined;
+			}
+		}
+		// ALWAYS write the report (baseline, all modes). Never throws.
+		writeEscalationReport(failure, decision, failure.specDirectory);
+		return decision;
+	};
+	return escalate;
 }
 
 // Re-export the extracted dashboard presentation helpers so existing
@@ -519,6 +621,11 @@ export default function activate(pi: ExtensionAPI): void {
 				// realAgent drains this ONCE per specialist spawn; empty while idle/after
 				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
 				userSteerProvider: () => getActiveRun()?.drain() ?? [],
+				// Phase 2 (spec-18 / AC-01): thread the inline escalate callback so the
+				// Phase 3 firing points can pause-ask-continue via ctx.ui. Additive —
+				// an undefined decision stays byte-identical to today (no firing point
+				// invokes it yet). Built beside userSteerProvider (same options seam).
+				escalate: makeEscalate(ctx),
 				progress: sink,
 					signal: runSignal,
 				});

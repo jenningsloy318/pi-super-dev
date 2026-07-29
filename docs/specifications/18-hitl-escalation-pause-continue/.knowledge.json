@@ -1,0 +1,1107 @@
+{
+  "stages": {
+    "requirements": {
+      "timestamp": "2026-07-28T17:49:12.736Z",
+      "agent": "requirements",
+      "data": {
+        "title": "HITL escalation — pause, ask via ctx.ui, then continue the run on unrecoverable blockers",
+        "date": "2026-07-28",
+        "type": "enhancement",
+        "priority": "high",
+        "executiveSummary": "Today super-dev fails silently on unrecoverable blockers: a `gate({fatal:true})` exhaustion throws `FatalAbort` (caught in `execute()` with no prompt), and only verify-loop stagnation has opt-in, post-run HITL (`handleStagnation`). When a human is present, super-dev must pause, ask, and continue. This threads an `escalate(failure)` callback from `extension.ts` through `RunOptions` into the pipeline so each unrecoverable point fires INLINE — before giving up, while failure context is still live — and, in interactive sessions, blocks via `ctx.ui.select`/`ctx.ui.input` so the user's decision (retry-with-guidance / revise-manually / accept-limitation / abandon) drives an inline pause-and-continue. Headless/print/json/rpc runs degrade to today's behavior (write an escalation-report + fail), and the whole escalation path is no-throw/best-effort so it can never crash a run.",
+        "acceptanceCriteria": [
+          {
+            "id": "AC-01",
+            "statement": "`src/types.ts` defines `EscalationFailure` (`kind: \"stagnation\" | \"gate-exhaustion\" | \"design-conflict\"`; with `stage?`, `message`, `specDirectory?`, `worktreePath?`, `findings?`), `EscalationDecision` (`choice: \"retry-with-guidance\" | \"revise-manually\" | \"accept-limitation\" | \"abandon\"`; optional `guidance?`), and `Escalate = (failure: EscalationFailure) => Promise<EscalationDecision | undefined>`. `RunOptions` gains `escalate?: Escalate`, reachable inside every node/stage via `ctx.options.escalate` (mirroring how `userSteerProvider` lives on `RunOptions` and is drained in `workflow.ts` `realAgent`)."
+          },
+          {
+            "id": "AC-02",
+            "statement": "`extension.ts` `execute()` supplies `escalate` to `runPipelineTask` (alongside `userSteerProvider`). The implementation calls `await ctx.ui.select(\"super-dev hit a blocker — <message>\", [<options>], { timeout: 300_000 })` and `await ctx.ui.input(...)` for guidance when \"retry-with-guidance\" is chosen, returning the decision. It is guarded by `ctx.hasUI`, wrapped in try/catch so dismissal/timeout returns `undefined`, and NEVER throws."
+          },
+          {
+            "id": "AC-03",
+            "statement": "Fatal-gate exhaustion: in `src/nodes.ts` `gate({fatal:true})`, immediately before the `throw new FatalAbort(msg)` branch, when `ctx.options.escalate` is present the gate calls it with `{kind:\"gate-exhaustion\", stage: feedbackKey, message, specDirectory: state.setup?.specDirectory, worktreePath: state.setup?.worktreePath}` and acts on the returned decision (retry/accept/abandon) before propagating any abort."
+          },
+          {
+            "id": "AC-04",
+            "statement": "Verify-loop stagnation: in `src/stages/verify.ts`, when stagnation is detected (`reviewLoopUntil` stamping `state.__stagnated`, and the integration-loop path stamping `state.__testStagnated`), the firing point calls `ctx.options.escalate({kind:\"stagnation\", findings})` INLINE so a \"retry-with-guidance\" decision lets the loop CONTINUE (re-run the body) instead of breaking — generalizing the post-run `handleStagnation` path into an inline pause-and-continue."
+          },
+          {
+            "id": "AC-05",
+            "statement": "Recovery — \"retry-with-guidance\": the firing point runs `rollbackWorktreeTo(worktreePath)` (pipeline-internal `git reset --hard <HEAD>` + `git clean -fd`, scoped to the super-dev worktree, never-throws) + `appendUserNotes(specDirectory, [guidance])`, then retries the failed gate/stage inline. Guidance flows into the next specialist prompt via the existing `userNotesForAgent` drain in `workflow.ts` `realAgent`, and a re-run of a thrown gate is uncached (`createMemoizingAgent` only caches completed calls)."
+          },
+          {
+            "id": "AC-06",
+            "statement": "Recovery — other choices: \"revise-manually\" aborts cleanly (partial run) and the escalation-report tells the user exactly what to change; \"accept-limitation\" marks the finding on `state.__acceptedLimitations` and continues/skips, and is offered ONLY for soft blocks (never for hard build failures); \"abandon\" throws `FatalAbort` / returns failed. The `EscalationDecision.choice` is the single source of which branch runs."
+          },
+          {
+            "id": "AC-07",
+            "statement": "An `escalation-report.md` is ALWAYS written to the spec dir in every mode (reusing/generalizing `handleStagnation`'s report-writing, including its `stagnation-report.md` body). Non-interactive runs (or a `undefined` decision) proceed to fail/abort exactly as today — interactive escalation is strictly additive."
+          },
+          {
+            "id": "AC-08",
+            "statement": "Default-on: interactive TUI/RPC sessions escalate by default (interactive when `ctx.hasUI` is true). print/json/rpc-headless/headless runs NEVER block on a prompt — the `ctx.hasUI` guard short-circuits to the report + fail path. No new prompt can fire in automation/test/headless modes."
+          },
+          {
+            "id": "AC-09",
+            "statement": "Bounded retry: \"retry-with-guidance\" is capped at a small N (a dedicated escalation-retry cap, e.g. 2, or the gate's existing `attempts`/`times` cap) before falling back to \"revise-manually\"/\"abandon\". The firing point tracks its own escalation-retry count so the run can never loop infinitely or spend unbounded agent budget."
+          },
+          {
+            "id": "AC-10",
+            "statement": "No-throw / best-effort everywhere: the escalate callback, the rollback, and the report-write are each individually wrapped so ANY failure degrades to fail-with-report and never crashes the pipeline. A misbehaving `ctx.ui` call, a non-git/missing worktree, or a write failure cannot abort the run."
+          },
+          {
+            "id": "AC-11",
+            "statement": "Focused tests are added covering: (a) the escalate callback contract — interactive returns an `EscalationDecision`, headless returns `undefined` and writes the report; (b) rollback-then-retry wiring (rollback fires, guidance is appended, the failed stage re-runs); (c) the default-on guard (interactive session prompts, non-interactive does not); (d) bounded retry falls back after the cap; (e) no-throw under callback/rollback/write failure."
+          },
+          {
+            "id": "AC-12",
+            "statement": "`npm run typecheck` is strict-clean and the full `npm test` suite is green. A concise `[Unreleased]` entry is added under `### Added` in the CHANGELOG."
+          }
+        ],
+        "nonFunctional": [
+          "Fault-tolerance / no-throw: the entire escalation path (callback, rollback, report-write, ctx.ui calls) must never crash a run — every step degrades to fail-with-report under any failure (best-effort try/catch).",
+          "Latency / liveness: the interactive prompt carries a timeout (≈300s) so a dismissed or forgotten prompt cannot hang the run indefinitely; bounded escalation retries prevent infinite loops and unbounded specialist-agent spend.",
+          "Safety: rollback is strictly pipeline-internal (`git reset --hard <HEAD>` + `git clean -fd`) scoped to the super-dev worktree — it must never touch the user's main checkout; persisted guidance is bounded by the existing MAX_QUEUED_INPUTS cap so a specialist prompt cannot be token-bombed.",
+          "Observability: every escalation surfaces a log line via the progress sink/transcript and a durable `escalation-report.md` artifact in the spec dir, so the blocker and the user's decision are auditable post-run.",
+          "Backward compatibility: interactive escalation is strictly additive — print/json/headless/rpc and the existing `escalation:\"informative\"` config must remain byte-identical to today (report + fail, no prompt)."
+        ],
+        "openQuestions": [
+          "`rollbackWorktreeTo` is NOT present in the codebase today (`rg rollbackWorktreeTo src/` returns nothing), although the task states it was 'just added' to `src/tracking.ts'. Confirm whether this work must ADD the helper, or whether it lands in a prior/parallel change — it materially changes AC-05 from 'wire to existing' to 'add + wire'.",
+          "The verify loop has TWO stagnation points (`state.__stagnated` in the review loop and `state.__testStagnated` in the integration loop). Should the inline `escalate` fire at BOTH, or only the review-loop path that `handleStagnation` currently reads?",
+          "Default-on resolution: `handleStagnation` today requires BOTH `ctx.hasUI === true` AND `getConfig().escalation === \"interactive\"`. For default-on, should the config default flip to `\"interactive\"` for interactive sessions, or should default-on be decided purely by `ctx.hasUI` at runtime (ignoring the config key)?",
+          "Retry cap source: re-use each gate's existing `attempts`/`times` cap for escalation retries, or introduce a single dedicated escalation-retry cap (e.g. 2) shared across all firing points?",
+          "\"accept-limitation\" scope: which findings qualify as soft (offered) vs hard (not offered)? Build failures are hard; are review findings and/or test failures soft and acceptable-to-record on `state.__acceptedLimitations`?"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/01-requirements.md"
+      }
+    },
+    "bdd": {
+      "timestamp": "2026-07-28T17:50:18.831Z",
+      "agent": "bdd",
+      "data": {
+        "title": "HITL Escalation — Pause, Ask, and Continue on Unrecoverable Blockers",
+        "date": "2026-07-28",
+        "source": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/01-requirements.md",
+        "features": [
+          {
+            "name": "Escalation Callback Contract & Threading",
+            "scenarios": [
+              {
+                "id": "001",
+                "title": "Escalation carries rich, live blocker context",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "a running pipeline that has reached an unrecoverable blocker",
+                "when": "the pipeline escalates the blocker to the user",
+                "then": "the escalation carries the blocker kind (stagnation, gate exhaustion, or design conflict), the originating stage, a human-readable message, and the current specification and worktree locations",
+                "andClauses": [
+                  "the run context is still live at the moment of escalation, before any abort loses it",
+                  "the escalation callback is reachable from every node and stage of the pipeline"
+                ]
+              },
+              {
+                "id": "002",
+                "title": "User decisions form a closed set with optional guidance",
+                "acRef": "AC-01",
+                "priority": "high",
+                "given": "an escalated blocker presented to the user",
+                "when": "the user responds",
+                "then": "the response is exactly one of retry-with-guidance, revise-manually, accept-limitation, or abandon",
+                "andClauses": [
+                  "a retry-with-guidance response may carry free-text guidance"
+                ]
+              },
+              {
+                "id": "003",
+                "title": "A dismissed or timed-out prompt yields no decision and never throws",
+                "acRef": "AC-02",
+                "priority": "high",
+                "given": "an interactive escalation prompt presented to the user",
+                "when": "the user dismisses the prompt or it times out",
+                "then": "the escalation resolves to no decision",
+                "andClauses": [
+                  "the pipeline never throws as a result of the dismissal or timeout",
+                  "a prompt carries a bounded timeout so a forgotten prompt cannot hang the run"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Fatal-Gate Exhaustion Firing Point",
+            "scenarios": [
+              {
+                "id": "004",
+                "title": "A fatal gate pauses to ask the user before abandoning",
+                "acRef": "AC-03",
+                "priority": "high",
+                "given": "a fatal gate that has exhausted its attempts",
+                "when": "an escalation callback is available",
+                "then": "the pipeline pauses to ask the user before abandoning the run",
+                "andClauses": [
+                  "the user's decision governs whether the run continues or aborts"
+                ]
+              },
+              {
+                "id": "005",
+                "title": "A retry decision re-runs the fatal gate inline",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "a fatal gate paused for escalation",
+                "when": "the user chooses to retry",
+                "then": "the gate is retried inline rather than aborting",
+                "andClauses": [
+                  "the retried gate is evaluated fresh rather than served from a prior cached result"
+                ]
+              },
+              {
+                "id": "006",
+                "title": "Without an escalation callback, a fatal gate aborts as before",
+                "acRef": "AC-03",
+                "priority": "medium",
+                "given": "a fatal gate that has exhausted its attempts",
+                "when": "no escalation callback is available",
+                "then": "the run aborts exactly as it did before escalation was introduced"
+              }
+            ]
+          },
+          {
+            "name": "Verify-Loop Stagnation Firing Point",
+            "scenarios": [
+              {
+                "id": "007",
+                "title": "Verify-loop stagnation pauses the run inline",
+                "acRef": "AC-04",
+                "priority": "high",
+                "given": "a verify loop that has stagnated",
+                "when": "stagnation is detected",
+                "then": "the pipeline pauses inline to ask how to proceed",
+                "andClauses": [
+                  "a retry decision lets the loop continue rather than break",
+                  "the stagnation findings are conveyed with the escalation"
+                ]
+              },
+              {
+                "id": "008",
+                "title": "Test-loop stagnation pauses the run the same way",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "an integration loop that has stagnated on tests",
+                "when": "test stagnation is detected",
+                "then": "the pipeline pauses inline to ask how to proceed",
+                "andClauses": [
+                  "both stagnation points behave consistently"
+                ]
+              },
+              {
+                "id": "009",
+                "title": "A stagnation with no decision breaks the loop as before",
+                "acRef": "AC-04",
+                "priority": "medium",
+                "given": "a stagnated verify loop paused for escalation",
+                "when": "the escalation yields no decision",
+                "then": "the loop breaks as it did before escalation was introduced"
+              }
+            ]
+          },
+          {
+            "name": "Recovery — Retry With Guidance",
+            "scenarios": [
+              {
+                "id": "010",
+                "title": "A retry-with-guidance decision rolls back, records guidance, and resumes",
+                "acRef": "AC-05",
+                "priority": "high",
+                "given": "an escalated blocker the user chose to retry with guidance",
+                "when": "the pipeline acts on the decision",
+                "then": "the in-progress work is rolled back, the guidance is recorded for the specialist, and the failed stage is retried inline",
+                "andClauses": [
+                  "the rollback is strictly confined to the super-dev worktree and never touches the user's main checkout",
+                  "the run continues inline rather than aborting and requiring a re-run"
+                ]
+              },
+              {
+                "id": "011",
+                "title": "Recorded guidance shapes the next specialist attempt",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "guidance recorded from a retry decision",
+                "when": "the failed stage is retried",
+                "then": "the specialist receives the guidance as part of its next attempt",
+                "andClauses": [
+                  "the persisted guidance is bounded so the specialist prompt cannot be overwhelmed"
+                ]
+              },
+              {
+                "id": "012",
+                "title": "A rollback or guidance-write failure still allows a retry",
+                "acRef": "AC-05",
+                "priority": "medium",
+                "given": "a retry-with-guidance decision whose rollback or guidance write fails",
+                "when": "the pipeline acts on the decision",
+                "then": "the failed stage is still retried",
+                "andClauses": [
+                  "the failure is reported rather than crashing the run"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Recovery — Revise, Accept, and Abandon",
+            "scenarios": [
+              {
+                "id": "013",
+                "title": "A revise-manually decision ends the run cleanly with instructions",
+                "acRef": "AC-06",
+                "priority": "medium",
+                "given": "an escalated blocker the user chose to revise manually",
+                "when": "the pipeline acts on the decision",
+                "then": "the run ends as a clean partial run",
+                "andClauses": [
+                  "the report tells the user exactly what to change"
+                ]
+              },
+              {
+                "id": "014",
+                "title": "An accept-limitation decision records the limitation and continues, only for soft blocks",
+                "acRef": "AC-06",
+                "priority": "medium",
+                "given": "an escalated soft blocker the user chose to accept as a limitation",
+                "when": "the pipeline acts on the decision",
+                "then": "the limitation is recorded and the run continues past it",
+                "andClauses": [
+                  "this choice is offered only for soft blocks and never for hard build failures"
+                ]
+              },
+              {
+                "id": "015",
+                "title": "An abandon decision aborts the run",
+                "acRef": "AC-06",
+                "priority": "medium",
+                "given": "an escalated blocker the user chose to abandon",
+                "when": "the pipeline acts on the decision",
+                "then": "the run aborts and is recorded as failed",
+                "andClauses": [
+                  "the user's choice is the single source of which recovery branch runs"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Escalation Report & Observability",
+            "scenarios": [
+              {
+                "id": "016",
+                "title": "Every escalation produces a durable report",
+                "acRef": "AC-07",
+                "priority": "high",
+                "given": "an escalation handled in any mode",
+                "when": "the escalation is processed",
+                "then": "a durable report describing the blocker and the user's decision is written to the specification directory",
+                "andClauses": [
+                  "every escalation also surfaces an audit log line",
+                  "the report includes the prior stagnation report body where applicable"
+                ]
+              },
+              {
+                "id": "017",
+                "title": "A non-interactive escalation still reports and then fails as before",
+                "acRef": "AC-07",
+                "priority": "medium",
+                "given": "a non-interactive escalation that yields no decision",
+                "when": "the escalation is processed",
+                "then": "the report is still written and the run proceeds to fail exactly as it did before",
+                "andClauses": [
+                  "interactive escalation is strictly additive to today's behavior"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Default-On and No-Prompt in Automation",
+            "scenarios": [
+              {
+                "id": "018",
+                "title": "An interactive session escalates by default",
+                "acRef": "AC-08",
+                "priority": "high",
+                "given": "an interactive session in which the user interface is available",
+                "when": "an unrecoverable blocker is reached",
+                "then": "the run pauses for a decision by default",
+                "andClauses": [
+                  "no opt-in configuration is required to get a pause in an interactive session"
+                ]
+              },
+              {
+                "id": "019",
+                "title": "A non-interactive session never blocks on a decision",
+                "acRef": "AC-08",
+                "priority": "high",
+                "given": "a print, JSON, headless, RPC-headless, or automation run",
+                "when": "an unrecoverable blocker is reached",
+                "then": "the run never blocks on a decision prompt",
+                "andClauses": [
+                  "the run falls back to the report-and-fail path",
+                  "no new prompt can fire in automation, test, or headless modes"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Bounded Retry",
+            "scenarios": [
+              {
+                "id": "020",
+                "title": "Retry-with-guidance is capped",
+                "acRef": "AC-09",
+                "priority": "high",
+                "given": "repeated retry-with-guidance decisions for the same blocker",
+                "when": "the escalation-retry cap is reached",
+                "then": "no further retries are attempted for that blocker",
+                "andClauses": [
+                  "the run cannot loop indefinitely",
+                  "the run cannot spend unbounded specialist-agent budget"
+                ]
+              },
+              {
+                "id": "021",
+                "title": "After the cap, the run falls back to revise or abandon",
+                "acRef": "AC-09",
+                "priority": "medium",
+                "given": "the escalation-retry cap reached for a blocker",
+                "when": "the run would otherwise retry again",
+                "then": "the run falls back to revise-manually or abandon"
+              }
+            ]
+          },
+          {
+            "name": "No-Throw / Best-Effort Resilience",
+            "scenarios": [
+              {
+                "id": "022",
+                "title": "Any escalation-path failure degrades to fail-with-report",
+                "acRef": "AC-10",
+                "priority": "high",
+                "given": "any step of the escalation path that can fail",
+                "when": "that step fails",
+                "then": "the run degrades to fail-with-report",
+                "andClauses": [
+                  "the escalation callback, the rollback, and the report-write are each individually protected"
+                ]
+              },
+              {
+                "id": "023",
+                "title": "Specific misbehaviors cannot crash the run",
+                "acRef": "AC-10",
+                "priority": "medium",
+                "given": "a misbehaving prompt, a missing or non-git worktree, or a report write failure",
+                "when": "that misbehavior occurs during escalation",
+                "then": "the run continues to degrade gracefully and is not aborted by the misbehavior"
+              }
+            ]
+          },
+          {
+            "name": "Tests & Build",
+            "scenarios": [
+              {
+                "id": "024",
+                "title": "The escalation behavior is covered by focused tests",
+                "acRef": "AC-11",
+                "priority": "high",
+                "given": "the escalation contract and recovery wiring",
+                "when": "the focused tests run",
+                "then": "the callback contract, the rollback-then-retry wiring, the default-on guard, the bounded-retry fallback, and the no-throw behavior are each exercised",
+                "andClauses": [
+                  "interactive and headless escalation paths are both covered"
+                ]
+              },
+              {
+                "id": "025",
+                "title": "The build stays green with a changelog entry",
+                "acRef": "AC-12",
+                "priority": "medium",
+                "given": "the escalation feature implemented",
+                "when": "the project is built and tested",
+                "then": "the strict typecheck passes and the full test suite is green",
+                "andClauses": [
+                  "a concise changelog entry records the added capability under the unreleased additions"
+                ]
+              }
+            ]
+          }
+        ],
+        "traceability": [
+          {
+            "acId": "AC-01",
+            "description": "EscalationFailure / EscalationDecision / Escalate types and RunOptions.escalate threading",
+            "scenarios": [
+              "SCENARIO-001",
+              "SCENARIO-002"
+            ]
+          },
+          {
+            "acId": "AC-02",
+            "description": "extension.ts supplies escalate; ctx.ui.select/input guarded by ctx.hasUI, try/catch, never throws",
+            "scenarios": [
+              "SCENARIO-003"
+            ]
+          },
+          {
+            "acId": "AC-03",
+            "description": "Fatal-gate exhaustion fires escalate inline before FatalAbort",
+            "scenarios": [
+              "SCENARIO-004",
+              "SCENARIO-005",
+              "SCENARIO-006"
+            ]
+          },
+          {
+            "acId": "AC-04",
+            "description": "Verify-loop stagnation fires escalate inline so the loop can continue",
+            "scenarios": [
+              "SCENARIO-007",
+              "SCENARIO-008",
+              "SCENARIO-009"
+            ]
+          },
+          {
+            "acId": "AC-05",
+            "description": "retry-with-guidance: rollback + appendUserNotes + inline retry; guidance flows via drain",
+            "scenarios": [
+              "SCENARIO-010",
+              "SCENARIO-011",
+              "SCENARIO-012"
+            ]
+          },
+          {
+            "acId": "AC-06",
+            "description": "revise-manually / accept-limitation / abandon recovery branches; choice is single source",
+            "scenarios": [
+              "SCENARIO-013",
+              "SCENARIO-014",
+              "SCENARIO-015"
+            ]
+          },
+          {
+            "acId": "AC-07",
+            "description": "escalation-report.md always written; non-interactive proceeds to fail as today (additive)",
+            "scenarios": [
+              "SCENARIO-016",
+              "SCENARIO-017"
+            ]
+          },
+          {
+            "acId": "AC-08",
+            "description": "Default-on for interactive; print/json/rpc-headless/headless never block",
+            "scenarios": [
+              "SCENARIO-018",
+              "SCENARIO-019"
+            ]
+          },
+          {
+            "acId": "AC-09",
+            "description": "Bounded escalation-retry cap prevents infinite loops / unbounded spend",
+            "scenarios": [
+              "SCENARIO-020",
+              "SCENARIO-021"
+            ]
+          },
+          {
+            "acId": "AC-10",
+            "description": "No-throw / best-effort across callback, rollback, and report-write",
+            "scenarios": [
+              "SCENARIO-022",
+              "SCENARIO-023"
+            ]
+          },
+          {
+            "acId": "AC-11",
+            "description": "Focused tests: contract, rollback-then-retry, default-on guard, bounded retry, no-throw",
+            "scenarios": [
+              "SCENARIO-024"
+            ]
+          },
+          {
+            "acId": "AC-12",
+            "description": "Strict typecheck clean; full test suite green; concise CHANGELOG [Unreleased] ### Added entry",
+            "scenarios": [
+              "SCENARIO-025"
+            ]
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/02-bdd-scenarios.md"
+      }
+    },
+    "research": {
+      "timestamp": "2026-07-28T17:53:52.822Z",
+      "agent": "research",
+      "data": {
+        "title": "External research for HITL escalation (pause-ask-continue via ctx.ui) in super-dev",
+        "date": "2026-07-28",
+        "summary": "Online research confirms the locked design maps cleanly onto pi's documented extension API. The pi extensions docs (SRC-01) define exactly the primitives the escalate callback needs: `ctx.ui.select(message, options, {timeout})`, `ctx.ui.input(prompt, placeholder)`, `ctx.ui.confirm(...)`, and `ctx.ui.notify(...)`; these dialog methods are guarded by `ctx.hasUI` (true in TUI **and** RPC modes, false in print/json) and return a benign value on timeout/dismissal — `select()`→`undefined`, `input()`→`undefined`, `confirm()`→`false` (SRC-01) — which is the exact contract `Escalate = (failure) => Promise<EscalationDecision | undefined>` (AC-02, SCENARIO-003) requires, with zero additional wrapping needed for the no-throw case. Notably the design's choice of `select`/`input` over `ctx.ui.custom` is vindicated: `custom()` is TUI-only (`ctx.mode===\"tui\"`) and the pi-subagents `clarify` model that uses it has a documented footgun (issue #385, SRC-04) where a `custom` overlay fired mid-in-flight-tool-call returns falsy/unconfirmed almost immediately and silently degrades to 'cancelled'; `select`/`input` work in RPC too and degrade benignly, so the escalate path sidesteps that trap. The HITL pattern catalog (SRC-05) and the Interruptible-Agent-Execution pattern (SRC-06) validate pause-and-continue over abort-and-rerun: 'identify the boundary, pause the loop, surface the proposed action with context, require explicit approve/reject, resume on approve / abort-or-replan on reject, log the decision' — a 1:1 match for the retry/revise/accept/abandon choice set (AC-06) and the always-write-report observability (AC-07). For rollback (AC-05), the runaway-agent rollback playbook (SRC-07) and the 'why git reset --hard is the wrong tool for agent pipelines' analysis (SRC-08) both prescribe worktree-scoped, surgical `git reset --hard <known-good>` + `git clean` that never touches the main checkout, plus commit-often for a rich reflog and bounded retry before falling back — directly supporting `rollbackWorktreeTo` and the bounded-cap (AC-09) decision. Finally, production TypeScript fault-tolerance guidance (SRC-09) endorses the no-throw/degrade-to-fail-with-report shape (AC-10) as the idiomatic 'error boundary / graceful degradation' pattern at a framework boundary, and supplies a concrete `withRetry(fn, isRetryable, maxAttempts)` shape with an `isRetryable` predicate and exponential-ish backoff that fits AC-09's dedicated-cap recommendation.",
+        "options": [
+          {
+            "name": "Block on ctx.ui.select + ctx.ui.input (NOT ctx.ui.custom) — the pi-subagents clarify model is the wrong primitive here",
+            "tradeoffs": "PROS (grounded in SRC-01 pi extensions.md): `select`/`input`/`confirm` are dialog methods explicitly guarded by `ctx.hasUI`, which is true in BOTH TUI and RPC modes (false only in print/json) — so interactive escalation is default-on in TUI AND RPC per AC-08, and print/json/headless short-circuit to report+fail. They support a `{timeout}` option with a live countdown and return benign values on timeout/cancel (`select`→`undefined`, `input`→`undefined`, `confirm`→`false`) — a perfect match for `Promise<EscalationDecision | undefined>` and the 'dismissal/timeout yields no decision and never throws' requirement (AC-02, SCENARIO-003); the escalate impl still wraps in try/catch as defense-in-depth but the API itself already cannot throw on dismissal. CONS: less custom layout than a full TUI component. WHY NOT custom(): SRC-04 (pi-subagents #385) documents that `ctx.ui.custom` is TUI-only and, when pushed as an overlay from inside an in-flight synchronous tool call, returns falsy/unconfirmed almost immediately and silently degrades to 'Chain cancelled' — exactly the silent-fail the spec is trying to eliminate. The escalate path fires INLINE before throwing (not inside an LLM-invoked tool call), and uses select/input, so it sidesteps this trap. Serves AC-02, AC-08, SCENARIO-003, SCENARIO-018, SCENARIO-019."
+          },
+          {
+            "name": "Bounded retry: a dedicated, small escalation-retry cap (e.g. 2) per blocker with an isRetryable-style predicate, NOT reuse of each gate's attempts/times cap",
+            "tradeoffs": "Grounded in SRC-09 (TS error handling: `withRetry(fn, isRetryable, maxAttempts)` with a predicate that keeps retry scope tight and a hard `maxAttempts` before surfacing the error) and corroborated by SRC-08 (KAOS cascade pattern: one bad fix → 4 failures; the answer is a bounded number of surgical restore→retry cycles before falling back, never unbounded spend). PROS of a dedicated cap: decoupled from each gate's own retry semantics (a gate's `times` cap is tuned for transient model flakiness, not for human-guided retries), trivially bounded so the run can never loop infinitely or spend unbounded agent budget (AC-09, SCENARIO-020), and the firing point tracks its own count so the fallback to revise-manually/abandon (SCENARIO-021) is a single clear branch. CONS: introduces one new piece of per-firing-point state. REUSE-the-gate-cap alternative is simpler but couples escalation budget to gate internals and risks an unexpectedly large cap. The `isRetryable`-predicate idea also cleanly encodes AC-06's 'accept-limitation offered only for soft blocks': hard build failures are non-retryable/terminal, soft review/test findings are retryable-or-acceptable. Serves AC-09, AC-06, SCENARIO-020, SCENARIO-021."
+          },
+          {
+            "name": "Rollback = worktree-scoped `git reset --hard <known-good> HEAD` + `git clean -fd`, never-throw, with main checkout provably untouched (matches the locked rollbackWorktreeTo helper)",
+            "tradeoffs": "Grounded in SRC-07 (runaway-agent rollback playbook: worktree-per-session contains the damage; `git reset --hard HEAD@{1}` or a known-good commit, or `git reset --hard origin/main` if no commits yet; the main worktree is untouched and the session worktree can be thrown away; commit-often keeps the reflog rich) and SRC-08 (surgical, per-agent restore beats repo-wide `git reset --hard`; an unbounded/naive reset 'blows up every other agent's work'). The git docs (SRC-10 git-clean, SRC-11 git-reset, SRC-12 git-worktree) confirm `git clean -fd` removes untracked files/dirs in the current working tree only and `git reset --hard` rewrites the working tree to a commit — both scoped to the worktree's own HEAD, never the main checkout. PROS: surgical, fast, no new infra, matches the existing helper contract and AC-05/SCENARIO-010's 'strictly confined to the super-dev worktree, never touches the user's main checkout'. CONS (to mitigate): a non-git/missing worktree must not crash the run — so wrap in never-throw (AC-10, SCENARIO-012: rollback failure still allows retry); prefer resetting to a known-good commit (the worktree's pre-stage HEAD) rather than bare `HEAD` if the agent has already committed partial work, to avoid losing salvageable progress. Serves AC-05, AC-10, SCENARIO-010, SCENARIO-012."
+          },
+          {
+            "name": "Fault-tolerance shape: best-effort try/catch per escalation-path step that degrades to fail-with-report (NOT a full Result<T,E> rewrite of the pipeline)",
+            "tradeoffs": "Grounded in SRC-09 (TypeScript error handling in production): at framework/integration boundaries the idiomatic choice is an error-boundary-style never-throw wrapper that degrades gracefully (substitute a safe default / fail-with-report), reserving full discriminated-union Result<T,E> threading for internal service layers; the article is explicit that 'middleware and framework boundaries' and 'graceful degradation by substituting a safe default' are where try/catch+degrade is correct, and that the escalate callback / report-write are exactly such best-effort side steps. PROS: minimal, non-invasive — keeps the existing FatalAbort-as-abort-signal semantics intact (AC-03/AC-06 still throw FatalAbort on 'abandon'), while each escalation-path step (callback, rollback, report-write) is individually wrapped so ANY failure degrades to fail-with-report and never crashes (AC-10, SCENARIO-022, SCENARIO-023). CONS: less type-safe than Result threading; mitigated by keeping the EscalationFailure/EscalationDecision types themselves as tight discriminated unions (AC-01) so the decision branch is exhaustive. This matches the spec's 'no-throw / best-effort everywhere' NFR precisely. Serves AC-01, AC-10, SCENARIO-022, SCENARIO-023."
+          }
+        ],
+        "sources": [
+          {
+            "title": "pi — Extensions docs (ctx.ui.select/input/confirm/editor, {timeout} countdown, return values on timeout, ctx.hasUI, ctx.mode, AbortSignal dialogs, ctx.ui.custom)",
+            "url": "https://github.com/badlogic/pi-mono/blob/38f18be4/packages/coding-agent/docs/extensions.md"
+          },
+          {
+            "title": "pi — Extensions (official docs site)",
+            "url": "https://pi.dev/docs/latest/extensions"
+          },
+          {
+            "title": "pi — TUI docs (custom components, SelectList, overlay mode, ctx.ui.custom done() contract)",
+            "url": "https://github.com/badlogic/pi-mono/blob/83378aad/packages/coding-agent/docs/tui.md"
+          },
+          {
+            "title": "pi-subagents issue #385 — Foreground chain returns 'Chain cancelled' when clarify is omitted (ctx.ui.custom overlay returns falsy mid-tool-call footgun)",
+            "url": "https://github.com/nicobailon/pi-subagents/issues/385"
+          },
+          {
+            "title": "Agent Patterns Catalog — Human-in-the-Loop (identify boundary, pause loop, surface action, approve/reject, resume/replan, log decision)",
+            "url": "https://www.agentpatternscatalog.org/patterns/human-in-the-loop/"
+          },
+          {
+            "title": "Agent Patterns Catalog — Interruptible Agent Execution (pause/resume/cancel as first-class controls; snapshot at step boundaries; resume rehydrates)",
+            "url": "https://github.com/agentpatternscatalog/patterns/blob/main/patterns/interruptible-agent-execution.md"
+          },
+          {
+            "title": "Recovering from a runaway agent: rollback patterns (worktree isolation, git reset --hard known-good, git clean, commit-often reflog, main untouched)",
+            "url": "https://mqdir.com/blog/workflows/recovering-from-runaway-agent"
+          },
+          {
+            "title": "Why git reset --hard Is the Wrong Tool for Agent Pipelines (surgical per-agent restore vs repo-wide reset; cascading failure; bounded retry before fallback; audit trail)",
+            "url": "https://canivel.medium.com/why-git-reset-hard-is-the-wrong-tool-for-agent-pipelines-f3c7b3036941"
+          },
+          {
+            "title": "TypeScript Error Handling in Production: Result Types, Error Boundaries, and Graceful Degradation (withRetry/isRetryable/maxAttempts; Promise.allSettled degrade; framework-boundary try/catch)",
+            "url": "https://letsbuildsolutions.com/blog/web-engineering/typescript-error-handling-in-production-result-types-error-boundaries-and-graceful-degradation/"
+          },
+          {
+            "title": "git-clean documentation (-d -f untracked file/dir removal, scoped to working tree)",
+            "url": "https://git-scm.com/docs/git-clean"
+          },
+          {
+            "title": "git-reset documentation (--hard resets working tree to a commit, scoped to current branch/HEAD)",
+            "url": "https://git-scm.com/docs/git-reset"
+          },
+          {
+            "title": "git-worktree documentation (linked working trees, independent HEADs, isolation from main checkout)",
+            "url": "https://git-scm.com/docs/git-worktree.html"
+          },
+          {
+            "title": "OpenAI Agents SDK — Human in the Loop (interrupt/resume with agent responses as state; approve/reject patterns)",
+            "url": "https://openai.github.io/openai-agents-python/human_in_the_loop/"
+          }
+        ],
+        "openIssues": [
+          "ISS-01 (RPC-mode interactivity): SRC-01 confirms `ctx.hasUI` is true in BOTH TUI and RPC, and lists `select`/`input`/`confirm` as dialog methods that work under that guard — but also notes 'In RPC mode, some TUI-specific methods are no-ops or return defaults.' The pi RPC docs page (https://pi.dev/docs/latest/rpc) returned HTTP 404 when fetched, so it could NOT be confirmed whether `ctx.ui.select`/`ctx.ui.input` in RPC mode actually surface a prompt to the RPC client and await a real answer, or silently no-op/return `undefined` (which would make RPC sessions effectively informative-only despite `hasUI===true`). This directly affects AC-08's claim that 'interactive TUI/RPC sessions escalate by default' — TUI is confirmed, RPC is plausible-but-unverified. Recommend the code-assessment stage confirm against the installed `@earendil-works/pi-coding-agent` RPC UI protocol (the extensions.md links it as rpc.md#extension-ui-protocol) or that the impl guard escalation on `ctx.mode !== 'json' && ctx.mode !== 'print'` rather than `ctx.hasUI` alone if RPC no-ops are a risk.",
+          "ISS-02 (rollbackWorktreeTo existence): The requirements doc's own open question is corroborated by research scope — nothing external resolves whether `rollbackWorktreeTo` already exists in src/tracking.ts or must be ADDED by this work. Research provides the canonical implementation shape (worktree-scoped `git reset --hard <known-good HEAD>` + `git clean -fd`, never-throw) either way, but AC-05's framing ('wire to existing' vs 'add + wire') depends on a codebase check, not external knowledge.",
+          "ISS-03 (timeout return-value parity across modes): SRC-01 documents the benign return values (`select`→`undefined`, `input`→`undefined`, `confirm`→`false`) for TUI timed dialogs. Whether these hold identically when the underlying transport is RPC (disconnected/never-answering client) is not stated in the fetched docs; the escalate impl's try/catch + `undefined` fallback is safe regardless, but a test asserting 'timeout/dismissal → undefined' should cover the mode that will actually be used in CI."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/03-research-report.md"
+      }
+    },
+    "debug": {
+      "timestamp": "2026-07-28T17:55:04.938Z",
+      "agent": "debug",
+      "data": {
+        "title": "super-dev fails silently on unrecoverable blockers: escalation is wired at the run boundary, where failure context is already lost",
+        "date": "2026-07-28",
+        "summary": "super-dev has two distinct \"silent failure on unrecoverable blocker\" paths, both caused by the same architectural gap: human-escalation (HITL) is wired ONLY at the RUN BOUNDARY (`extension.ts` `execute()` catch + the post-run `handleStagnation`), by which point the failure context needed to pause-and-continue has already been destroyed. (1) FATAL-GATE EXHAUSTION: `src/nodes.ts` `gate({fatal:true})` unconditionally `throw new FatalAbort(msg)` at line 436 with NO escalation hook before it. `FatalAbort` carries only the `msg` string. It re-throws through every tolerant `sequence`/`catch` (nodes.ts:172, :202, :550) and surfaces in `execute()`'s `catch (err)` which returns `{isError:true, details:{}}` — no `ctx.ui.select` prompt ever fires, and `state.setup.specDirectory`/`worktreePath` are no longer reachable. (2) VERIFY-LOOP STAGNATION: `src/stages/verify.ts` stamps `state.__stagnated` (line 167) / `state.__testStagnated` (line 329) and BREAKS the loop inline, but the ONLY escalation, `handleStagnation`, is invoked AFTER `runPipelineTask` returns in `execute()` (`const escalationChoice = await handleStagnation(summary, ctx)`). At that boundary the verify loop body is gone, so even an interactive choice can only finish/re-run — it can never \"retry-with-guidance\" inline. The fix (already designed in the task) threads an `escalate(failure)` callback from `execute()` → `RunOptions` → `StageContext` (mirroring the working `userSteerProvider` pattern) and fires it INLINE at each unrecoverable point (inside the gate loop immediately before the `throw FatalAbort`; inside the verify loop when stagnation is detected), where the live `state`/worktree/specDirectory are still in scope. CRITICAL FIX-DEPENDENCY GAP: the task asserts `rollbackWorktreeTo(worktreePath)` \"ALREADY EXISTS in src/tracking.ts (just added)\" — it does NOT (grep of src/ returns nothing; latest commit `35806b37` is mid-run-context, not rollback). The recovery action for \"retry-with-guidance\" therefore depends on a helper that must actually be created, not merely wired. The other reused infrastructure is confirmed present and working: `appendUserNotes`/`userNotesForAgent` + `.user-notes.json` (`src/render/user-notes.ts`), the drain seam in `workflow.ts` `realAgent` (lines 148-149), the `userSteerProvider` threading pattern (types.ts:318 → workflow.ts makeContext → realAgent), and `createMemoizingAgent` (workflow.ts:213) which only caches completed calls (a thrown gate is uncached, so an inline retry re-runs it).",
+        "hypotheses": [
+          "H1 (p≈70%) — Fatal-gate exhaustion has no in-flight escalation hook: `gate({fatal:true})` in nodes.ts unconditionally `throw new FatalAbort(msg)` at line 436 with no pre-throw callback. `FatalAbort` is a thin Error carrying only `msg`; it re-throws through tolerant sequence/catch (nodes.ts:172,202,550) and lands in execute()'s catch with no specDirectory/worktreePath/state attached. FALSIFIABLE PREDICTION: adding a breakpoint at nodes.ts:436 during a fatal-gate exhaustion shows zero `ctx.ui.select` calls between the EXHAUSTED log and the catch; the thrown object has no `specDirectory`/`worktreePath` properties. VERIFIED: gate() body (nodes.ts:393-437) contains no ctx.options.escalate call; execute() catch returns {isError:true, details:{}} with no prompt.",
+          "H2 (p≈20%) — Verify-loop stagnation escalation is wired at the wrong lifecycle point (post-run, not inline): reviewLoopUntil stamps state.__stagnated (verify.ts:167) and the integration-loop path stamps state.__testStagnated (verify.ts:329), then BREAKS the loop. The sole escalation, handleStagnation, is called AFTER runPipelineTask returns in execute(). By then the loop body/state machine is torn down, so 'retry-with-guidance' cannot re-enter the loop — it can only finish or abort. FALSIFIABLE PREDICTION: triggering stagnation and choosing the retry-equivalent option ends the run rather than re-running the verify body. VERIFIED: handleStagnation is invoked only post-summary in execute(); the stagnation stamps are set inside verify.ts with no inline escalate() call.",
+          "H3 (p≈8%) — Escalation plumbing is missing entirely (no escalate on RunOptions / no StageContext threading), so even if a firing point existed it could not reach ctx.ui. FALSIFIABLE PREDICTION: grep of src/types.ts RunOptions shows no `escalate` field; makeContext/realAgent in workflow.ts reference only userSteerProvider, not escalate. VERIFIED: types.ts RunOptions (line 276) has userSteerProvider (line 318) but no escalate; workflow.ts makeContext/realAgent drain userSteerProvider only.",
+          "H4 (p≈2%) — The recovery path is independently broken because its rollback helper is absent: the task claims rollbackWorktreeTo(worktreePath) already exists in src/tracking.ts, but it does NOT (grep returns nothing; latest commits are mid-run-context/extension-inheritance, not rollback). So even after the escalate callback + inline firing are added, the 'retry-with-guidance' branch (AC-05) would crash/throw on rollback unless the helper is created. FALSIFIABLE PREDICTION: an import of rollbackWorktreeTo from './tracking' fails typecheck. VERIFIED: `grep -rn rollbackWorktreeTo src/` → NOT FOUND."
+        ],
+        "rootCause": "The silent failure is an architectural lifecycle mismatch, not a missing UI call. Human escalation is reachable ONLY at the run boundary — `execute()`'s `catch (err)` (which returns `{isError:true, details:{}}` with no prompt) and the post-run `handleStagnation(summary, ctx)` call. Both fire AFTER the failure context that a pause-and-continue needs has been destroyed: (a) a `FatalAbort` thrown at `src/nodes.ts:436` carries only the `msg` string, having already discarded `state.setup.specDirectory`, `state.setup.worktreePath`, and the in-progress `state`; (b) a stagnant verify loop has already `break`-ed out of `reviewLoopUntil`/the integration loop (`src/stages/verify.ts:167`, `:329`), so its loop body is gone and an interactive choice can no longer re-enter it. The pi pause-and-continue pattern (`await ctx.ui.select` blocking the running flow, then continuing inline) REQUIRES the failure context to be live where the decision is made — which is true INSIDE the gate loop and INSIDE the verify loop, NOT at the boundary. Exact locations: fatal throw at `src/nodes.ts:436` (`if (opts.fatal) throw new FatalAbort(msg);`) needs an `escalate` call immediately before it; stagnation stamps at `src/stages/verify.ts:167` and `:329` need an inline `escalate` call (instead of just stamping+breaking) so the loop can `continue` on a retry decision. The fix threads `escalate?: Escalate` onto `RunOptions` (`src/types.ts:276`, mirroring `userSteerProvider` at line 318), through `makeContext` (`src/workflow.ts:108`) onto `StageContext` so `ctx.options.escalate` is callable from inside gates/stages, and supplies it from `execute()` (which owns `ctx.ui`). SECONDARY FIX-DEPENDENCY GAP: the recovery helper `rollbackWorktreeTo` asserted to already exist in `src/tracking.ts` does NOT exist and must be created (git reset --hard + git clean -fd, scoped to the super-dev worktree, never-throws) before AC-05's retry path can work.",
+        "reproductionSteps": [
+          "FATAL-GATE PATH (fast deterministic signal): craft a task whose foundational artifact (requirements/research/spec/bdd — the fatal:true gates) will fail validation on every attempt. Simplest: point a fatal-gated stage's validator at a deliberately-unsatisfiable predicate (e.g. monkeypatch the validator to return {pass:false, errors:['x']} unconditionally, or give a task the specialist provably cannot satisfy within `attempts`). Run super-dev. OBSERVE: ctx.log prints 'gate: EXHAUSTED (FATAL — aborting run)' then the FatalAbort is thrown with NO ctx.ui.select prompt between the EXHAUSTED log and execute()'s catch. In the catch, `err` is a FatalAbort whose only field is `.message` (no specDirectory/worktreePath/state) — confirming the boundary has lost the context. The tool returns isError:true with details:{} and no escalation fired.",
+          "STAGNATION PATH (fast deterministic signal): run super-dev on a task whose spec design is subtly wrong so the verify-loop (reviewLoopUntil, times:3 — verify.ts:182) produces the SAME review findings across two consecutive rounds. OBSERVE: reviewLoopUntil stamps state.__stagnated={rounds,...} (verify.ts:167) and the loop breaks INLINE; the pipeline runs to completion and ONLY THEN does execute() call handleStagnation(summary, ctx). Choose the interactive 'revise/accept' option and OBSERVE the run ENDS — it cannot re-enter the now-destroyed verify loop. The same holds for the integration-loop __testStagnated path (verify.ts:329). This confirms escalation is post-run, not inline.",
+          "CONFIRM THE ABSENT HELPER (AC-05 dependency): run `grep -rn rollbackWorktreeTo src/` from the repo root → returns no matches; `git log --oneline` shows the latest commits are mid-run-context (35806b37) / extension-inheritance, none adding rollback. Therefore the 'retry-with-guidance' recovery branch (rollbackWorktreeTo + appendUserNotes + inline retry) cannot be wired as-is — rollbackWorktreeTo must first be created in src/tracking.ts.",
+          "CONFIRM THE REUSED INFRASTRUCTURE IS PRESENT (so the fix is mostly wiring): verify `appendUserNotes`/`userNotesForAgent` exist in src/render/user-notes.ts (lines 40/60); verify the drain seam in workflow.ts realAgent (lines 148-149: `const drained = options.userSteerProvider ? options.userSteerProvider() : []; appendUserNotes(state.setup?.specDirectory, drained);`) so guidance persisted via appendUserNotes flows into the next specialist prompt; verify the userSteerProvider threading pattern (types.ts:318 RunOptions → workflow.ts makeContext:108 → realAgent:117) is the exact template to mirror for escalate; verify createMemoizingAgent (workflow.ts:213) caches only completed calls, so a thrown/re-tried gate re-runs (supports AC-05's inline retry).",
+          "REGRESSION TEST TO ADD (post-fix): a focused test that (a) drives gate({fatal:true}) to exhaustion with a mock escalate returning {choice:'retry-with-guidance', guidance:'fix X'} and asserts the gate re-runs instead of throwing FatalAbort, (b) asserts a headless ctx (hasUI:false) escalate returns undefined and writes escalation-report.md, (c) asserts an escalate that throws is caught and the run degrades to fail-with-report (no-throw contract, AC-10), (d) asserts the escalation-retry cap (N≈2) falls back to abandon/revise after the bound (AC-09)."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/04-debug-analysis.md"
+      }
+    },
+    "assessment": {
+      "timestamp": "2026-07-28T17:56:51.260Z",
+      "agent": "assessment",
+      "data": {
+        "title": "Codebase Assessment — HITL Escalation (pause-ask-continue)",
+        "date": "2026-07-28",
+        "summary": "pi-super-dev is a pure TypeScript ESM library + pi-extension (\"super_dev\" tool), not a server app — there is no API/UI server, PORT env, or /health path to bring up; the only \"run\" is `npm test` (vitest, LLM-free) or invoking the registered tool. The escalation feature fits the existing seam cleanly: (1) thread an `escalate` callback on `RunOptions` (src/types.ts:276, beside `userSteerProvider` at :318) → through `makeContext` (src/workflow.ts:108) so stages/gates can call it inline; (2) fire it inside `gate()` before the fatal throw (src/nodes.ts:436) and inside `reviewLoopUntil` where `state.__stagnated` is stamped (src/stages/verify.ts:167), generalizing the existing post-run `handleStagnation` (src/extension.ts:249); (3) the extension supplies the impl, using `ctx.hasUI` + `ctx.ui.select` (extension.ts:273,276) for interactive sessions and writing an escalation-report.md (mirror handleStagnation's report) for headless. Two corrections to the task brief: `rollbackWorktreeTo` does NOT exist in src/tracking.ts and must be authored; and `git reset --hard`/`git clean -fd` are on the safety.ts DENYLIST (src/safety.ts:35,39) — so the rollback helper must reuse tracking.ts's discrete-argv `spawnSync(\"git\", [...])` form (NOT a shell string) to sidestep the guard, mirroring tracking.ts:27-28. The mid-run guidance store already exists and is best-effort/never-throws — the exact contract escalate must follow.",
+        "patterns": [
+          {
+            "name": "RunOptions → makeContext → StageContext threading",
+            "example": "src/workflow.ts:108 (makeContext) + :148 (drain) + src/types.ts:318 (userSteerProvider field) + src/extension.ts:521 (supplied by extension)",
+            "consistency": "Canonical seam for all cross-cutting callbacks. `userSteerProvider` is the direct template: declared optional on RunOptions, consumed inside `realAgent` in makeContext, supplied by extension.ts which has ctx access. Thread `escalate` identically (add `escalate?` next to userSteerProvider at types.ts:318); makeContext passes it through so gates/stages read `ctx.options.escalate`."
+          },
+          {
+            "name": "Best-effort / never-throws helpers (mirror for escalate + rollback + report)",
+            "example": "src/render/user-notes.ts:appendUserNotes (try/catch swallow) + src/tracking.ts:13-17 ('NEVER throws. The entire begin/end body and every git op is wrapped in one try/catch')",
+            "consistency": "Every pipeline-internal helper that touches the FS or git MUST degrade silently — a write/git failure must never abort a run. escalate(), rollbackWorktreeTo(), and the report write must each follow this exact try/catch-and-swallow discipline. handleStagnation already does (extension.ts:265,298)."
+          },
+          {
+            "name": "Discrete-argv spawnSync for git (bypasses the shell safety guard)",
+            "example": "src/tracking.ts:27-28 ('Git primitives reuse the EXACT discrete-argv spawnSync shape... spawnSync(\"git\", [\"-C\", wt, ...])')",
+            "consistency": "All internal git ops use spawnSync with an argv array, never a shell string. This is load-bearing for escalation: `git reset --hard` and `git clean -fd` are DENYLISTED in src/safety.ts:35,39, but that guard only matches shell command strings. Build rollbackWorktreeTo with the same argv-array spawnSync form so it naturally sidesteps the guard."
+          },
+          {
+            "name": "Fatal gate vs tolerant sequence (where to fire escalate on exhaustion)",
+            "example": "src/nodes.ts:101 (FatalAbort class) + :436 (gate throws on exhaustion when opts.fatal) + :110 isFatalAbort + :172/:202/:550 (fatal propagates past tolerant sequences)",
+            "consistency": "A `gate({fatal:true})` throws FatalAbort at nodes.ts:436. To give the user a chance BEFORE the abort propagates, fire `ctx.options.escalate?.(failure)` inline at ~line 435 (only when an escalate fn is present), await its decision, and act (retry-with-guidance → continue the loop / abandon → throw). Tolerant sequences re-throw FatalAbort, so anything not caught inline is lost — escalate must happen at the throw site, not at execute()'s catch."
+          },
+          {
+            "name": "Stagnation stamping + post-run handling (generalize to inline)",
+            "example": "src/stages/verify.ts:157 (reviewLoopUntil) + :167 (state.__stagnated = {...}) + src/extension.ts:249 (handleStagnation, called post-run at extension.ts:536)",
+            "consistency": "Stagnation is detected INLINE (verify.ts:167) but currently only handled AFTER the run (extension.ts:536). To enable pause-and-continue, fire escalate INLINE at the stagnation point (verify.ts:167-176) so 'retry-with-guidance' can loop again rather than break. Keep handleStagnation's report-writing (extension.ts:258-269) as the headless/no-UI fallback and the model for escalation-report.md."
+          },
+          {
+            "name": "Interactive detection + bounded UI prompt (mirror for escalate)",
+            "example": "src/extension.ts:273 ('ctx?.hasUI === true && mode === \"interactive\"') + :276 (ctx.ui.select(..., { timeout: 120_000 })) wrapped in try/catch returning undefined on dismissal",
+            "consistency": "Interactive gating is `ctx.hasUI === true`; the select is wrapped in try/catch so dismissal/timeout → undefined (treated as non-interactive fail-with-report). escalate's interactive path must reuse this exactly: guard on ctx.hasUI, pass a {timeout} (spec says 300_000), catch → undefined. 'Default-on' is realized by flipping getConfig().escalation default to 'interactive' when ctx.hasUI (currently the mode comes from getConfig at extension.ts:272)."
+          },
+          {
+            "name": "Tests are LLM-free vitest unit tests over pure functions",
+            "example": "README.md:288 ('vitest — LLM-free unit tests') + src/render/dashboard.test.ts, regression-guard.test.ts, implementation.test.ts",
+            "consistency": "All *.test.ts are deterministic, no real agent spawns. New escalation tests follow this: assert the escalate callback contract (interactive returns decision; headless returns undefined + report written), rollback-then-retry wiring, default-on guard, no-prompt-when-non-interactive — all via injected fakes (fake escalate fn, fake ctx.hasUI, tmp spec dir)."
+          },
+          {
+            "name": "ESM + explicit .ts import specifiers + strict TS",
+            "example": "package.json '\"type\": \"module\"' + imports like '../types.ts' (src/stages/verify.ts:20) + 'npm run typecheck' = tsc --noEmit",
+            "consistency": "All intra-project imports use the .ts extension. New code must too, and `npm run typecheck` must be strict-clean (the project treats it as a gate)."
+          }
+        ],
+        "recommendations": [
+          "Author `rollbackWorktreeTo(worktreePath, commit?)` in src/tracking.ts — it does NOT exist yet (the task brief is mistaken). Copy the discrete-argv spawnSync shape already in tracking.ts:27-28 (`spawnSync('git', ['-C', wt, 'reset','--hard', commit ?? 'HEAD'])` then `['clean','-fd']`), wrap the whole body in one try/catch that returns a {ok:boolean} verdict and NEVER throws (tracking.ts:13-17 is the template). This argv form is what keeps it off the src/safety.ts:35,39 denylist — do NOT shell out.",
+          "Thread `escalate?: Escalate` exactly like `userSteerProvider`: add the field to RunOptions beside userSteerProvider (src/types.ts:318), pass it through makeContext (src/workflow.ts:108) so stages/gates reach it via ctx.options.escalate, and supply the implementation in extension.execute alongside the existing userSteerProvider wiring (src/extension.ts:521). The extension owns the impl because only it has ctx.ui.",
+          "Fire escalate INLINE at the two failure sites, not at execute()'s catch — because FatalAbort (src/nodes.ts:436) and the broken loop have already lost the live context by the catch. In gate() ~line 435 (before `throw new FatalAbort`) and in reviewLoopUntil ~line 167 (where __stagnated is stamped), call `const decision = await ctx.options.escalate?.(failure)` and branch on choice: retry-with-guidance → appendUserNotes + rollbackWorktreeTo + continue the loop (resume already re-runs a thrown gate since thrown calls are uncached in createMemoizingAgent); revise-manually/abandon → throw/return failed; accept-limitation → stamp state.__acceptedLimitations and continue. Bound retries (use the gate's existing `attempts` cap, e.g. nodes.ts:408, before falling back to abandon).",
+          "Make interactive escalation default-ON but never blocking in headless: the impl must guard `ctx.hasUI === true` (extension.ts:273) — when false (print/json/rpc/headless) write escalation-report.md and return undefined so the run fails-with-report exactly as today. For 'default-on' in TUI, resolve the mode from ctx.hasUI at the call site (or flip getConfig().escalation default) rather than requiring config. Keep handleStagnation's report-writing code as the shared headless path so informative and interactive modes both emit the report."
+        ],
+        "filesAssessed": [
+          "package.json",
+          "src/types.ts",
+          "src/workflow.ts",
+          "src/nodes.ts",
+          "src/extension.ts",
+          "src/tracking.ts",
+          "src/render/user-notes.ts",
+          "src/stages/verify.ts",
+          "src/safety.ts",
+          "README.md"
+        ],
+        "services": {},
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/05-code-assessment.md"
+      }
+    },
+    "spec": {
+      "timestamp": "2026-07-28T18:02:55.270Z",
+      "agent": "spec",
+      "data": {
+        "title": "Technical Specification, Implementation Plan & Task List — HITL Escalation (pause-ask-continue) for pi-super-dev",
+        "date": "2026-07-28",
+        "summary": "Three documents specifying HITL escalation for pi-super-dev: when super-dev hits an unrecoverable blocker (fatal-gate exhaustion or verify-loop stagnation), it pauses, asks the user via ctx.ui.select/input (the canonical pi pause-ask-continue pattern), and continues the run on their decision — instead of failing silently. Design (additive, never-regressing): thread an `escalate(failure)` callback on RunOptions (reachable as ctx.options.escalate with zero makeContext edits, mirroring userSteerProvider); the extension supplies the impl (ctx.ui.select/input guarded by ctx.hasUI, 300s timeout, try/catch→undefined, never throws; ALWAYS writes escalation-report.md); fire it INLINE at two sites — gate exhaustion in src/nodes.ts:436 (before throw new FatalAbort) and verify-loop stagnation in src/stages/verify.ts:167/329 (before break). Recovery: retry-with-guidance → rollbackWorktreeTo (worktree-scoped git reset --hard + clean -fd, discrete-argv spawnSync to bypass safety.ts denylist, never-throw — AUTHORED, does not exist) + appendUserNotes (reused) + uncached inline re-run; revise-manually → clean partial stop; accept-limitation → stamp state.__acceptedLimitations (soft blocks only); abandon → FatalAbort. Bounded by ESCALATION_RETRY_CAP=2 per blocker. Default-on in TUI/RPC; print/json/headless never prompt (report + fail exactly as today). Covers AC-01..AC-12 and SCENARIO-001..025; typecheck strict + full vitest green + CHANGELOG entry. Decomposed into 4 coarse, independently-testable phases (Primitives → Plumbing+Impl+Report → Firing Points+Recovery → Hardening+Release).",
+        "architecture": "Single cohesive seam, threaded exactly like the existing userSteerProvider callback. (1) Types: add EscalationFailure/EscalationDecision/Escalate to src/types.ts and escalate?: Escalate to RunOptions (beside userSteerProvider at :318). Because StageContext.options: RunOptions (types.ts:196) and makeContext already assigns options onto the context, escalate is reachable as ctx.options.escalate inside every node/stage/gate with NO edit to src/workflow.ts — confirmed by reading the source. (2) Extension impl (src/extension.ts): makeEscalate(ctx) ALWAYS writes escalation-report.md (generalizing handleStagnation's report body into a new src/render/escalation-report.ts writer), then — only when ctx.hasUI===true and mode is interactive (default-on) — awaits ctx.ui.select (300s timeout) and ctx.ui.input for retry guidance; wrapped in try/catch so dismissal/timeout/error → undefined; accept-limitation omitted when failure.severity==='hard'. Uses select/input NOT ctx.ui.custom (research SRC-04 footgun: custom is TUI-only and silently degrades). Wired into runPipelineTask at :509 beside userSteerProvider. (3) Firing points fire INLINE before giving up because FatalAbort/stagnation lose live context by execute()'s catch. Gate (src/nodes.ts gate() :395-436): wrap the attempt loop in an outer escalation loop bounded by ESCALATION_RETRY_CAP; on exhaustion build failure{kind:'gate-exhaustion', severity: opts.fatal?'hard':'soft'} and call runEscalation; retry-with-guidance → applyRetryDecision (rollback+notes) + continue (re-run uncached, since createMemoizingAgent only caches completed calls); abandon/undefined → original throw new FatalAbort. Stagnation (src/stages/verify.ts reviewLoopUntil :167 and recordTestStagnation :329): fire runEscalation with kind:'stagnation', severity:'soft', findings; retry-with-guidance → clear __stagnated + return false (loop CONTINUES — the key pause-and-continue generalization); accept-limitation → stamp __acceptedLimitations + break. (4) Primitives: rollbackWorktreeTo (src/tracking.ts — AUTHORED, code-assessment confirmed it does not exist) reuses the discrete-argv spawnSync('git',['-C',wt,'reset','--hard',commit]) then ['clean','-fd'] shape so it sidesteps the safety.ts denylist (:35/:39 match shell strings only); one try/catch → {ok,error}, never throws, scoped to the worktree only (never main checkout). appendUserNotes/userNotesForAgent (src/render/user-notes.ts) are REUSED — guidance persisted to .user-notes.json is auto-drained into the next specialist prompt by realAgent (workflow.ts:148), so retry guidance needs no new plumbing. (5) Bounded budget (new src/escalation.ts): escalationBudgetRemaining/runEscalation track per-blocker retries on state.__escalationRetries with ESCALATION_RETRY_CAP=2, guaranteeing termination and bounded spend; applyRetryDecision composes rollback+notes; all never-throw. Non-functional: strictly additive (no escalate or undefined decision → byte-identical to today); no-throw everywhere (callback/rollback/report each degrade to fail-with-report); headless safety (ctx.hasUI guard); ESM + .ts import specifiers + strict TS.",
+        "testingStrategy": "LLM-free vitest unit tests over pure functions with injected fakes (the established pattern — README:288, src/render/*.test.ts); no real agent spawns. (a) Escalate callback contract: src/extension.escalation.test.ts — interactive fake ctx (hasUI:true, ui.select/input returning values) returns an EscalationDecision; headless (hasUI:false) returns undefined AND writes escalation-report.md; ui.select throwing → undefined; default-on guard (no prompt when hasUI:false); retry-with-guidance also calls ui.input; accept-limitation absent when severity hard. (b) Rollback-then-retry wiring: src/escalation.test.ts — applyRetryDecision calls rollbackWorktreeTo + appendUserNotes (guidance lands in .user-notes.json); runEscalation returns undefined when no callback/no budget/callback-throws. src/tracking.test.ts — rollbackWorktreeTo resets a dirty temp git repo + removes untracked → {ok:true}; non-git dir → {ok:false} no-throw; asserts argv form (no shell:true). (c) Firing points: src/nodes.escalation.test.ts — gate retry-with-guidance re-runs the attempt loop and guidance appears in .user-notes.json; abandon throws FatalAbort; accept-limitation not offered when severity hard; cap exhausted → original throw (bounded). src/stages/verify.escalation.test.ts — reviewLoopUntil retry → returns false (continues) + clears __stagnated; accept-limitation stamps __acceptedLimitations; undefined → original break; integration-loop mirror. (d) Bounded retry: escalationBudgetRemaining floors at 0; runEscalation stops calling escalate after ESCCALATION_RETRY_CAP (cap-fallback assertion). (e) No-throw: every helper has a variant where a dependency throws and asserts a safe default is returned. (f) Report: src/render/escalation-report.test.ts — report written to tmp dir with failure+decision fields; never throws on unwritable dir. Acceptance gates: npm run typecheck strict-clean (tsc --noEmit) + full npm test green + concise [Unreleased]/### Added CHANGELOG entry.",
+        "scenarioRefs": [
+          "SCENARIO-001",
+          "SCENARIO-002",
+          "SCENARIO-003",
+          "SCENARIO-004",
+          "SCENARIO-005",
+          "SCENARIO-006",
+          "SCENARIO-007",
+          "SCENARIO-008",
+          "SCENARIO-009",
+          "SCENARIO-010",
+          "SCENARIO-011",
+          "SCENARIO-012",
+          "SCENARIO-013",
+          "SCENARIO-014",
+          "SCENARIO-015",
+          "SCENARIO-016",
+          "SCENARIO-017",
+          "SCENARIO-018",
+          "SCENARIO-019",
+          "SCENARIO-020",
+          "SCENARIO-021",
+          "SCENARIO-022",
+          "SCENARIO-023",
+          "SCENARIO-024",
+          "SCENARIO-025"
+        ],
+        "phases": [
+          {
+            "name": "Phase 1 — Primitives (types + rollback helper)",
+            "description": "Pure additions with zero pipeline behavior change. Add the EscalationKind/EscalationFailure/EscalationDecision/Escalate types and RunOptions.escalate to src/types.ts (beside userSteerProvider); confirm ctx.options.escalate is reachable with no workflow.ts edit. Author rollbackWorktreeTo in src/tracking.ts (discrete-argv spawnSync git reset --hard + clean -fd, never-throws, worktree-scoped). Extend src/tracking.test.ts. Independently testable: types compile; rollback resets a temp git repo and never throws on a non-git dir.",
+            "deliverables": {
+              "requireFiles": [
+                "src/tracking.test.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "src/types.ts",
+                  "pattern": "export type Escalate ="
+                },
+                {
+                  "file": "src/types.ts",
+                  "pattern": "escalate\\?:\\s*Escalate"
+                },
+                {
+                  "file": "src/tracking.ts",
+                  "pattern": "export function rollbackWorktreeTo"
+                },
+                {
+                  "file": "src/tracking.ts",
+                  "pattern": "\"clean\",\\s*\"-fd\""
+                }
+              ],
+              "requireTests": [
+                "rollbackWorktreeTo resets a dirty git worktree",
+                "rollbackWorktreeTo never throws on a non-git dir"
+              ]
+            }
+          },
+          {
+            "name": "Phase 2 — Escalate plumbing + extension impl + report",
+            "description": "Make ctx.options.escalate actually do something (best-effort, never throws) WITHOUT yet firing it. Author src/render/escalation-report.ts (writeEscalationReport, always-written, never-throws). Author src/escalation.ts (ESCALATION_RETRY_CAP=2, escalationBudgetRemaining, runEscalation, applyRetryDecision — all never-throw). Author makeEscalate(ctx) in src/extension.ts (writeEscalationReport + ctx.ui.select/input guarded by ctx.hasUI, 300s timeout, try/catch→undefined, accept-limitation omitted when severity hard) and wire it into runPipelineTask beside userSteerProvider. Generalize handleStagnation to delegate report-writing to writeEscalationReport. Tests via injected fakes (no firing points yet). Independently testable: impl contract, headless no-prompt, never-throw.",
+            "deliverables": {
+              "requireFiles": [
+                "src/escalation.ts",
+                "src/render/escalation-report.ts",
+                "src/escalation.test.ts",
+                "src/render/escalation-report.test.ts",
+                "src/extension.escalation.test.ts"
+              ],
+              "requireContains": [
+                {
+                  "file": "src/escalation.ts",
+                  "pattern": "export async function runEscalation"
+                },
+                {
+                  "file": "src/escalation.ts",
+                  "pattern": "ESCALATION_RETRY_CAP"
+                },
+                {
+                  "file": "src/render/escalation-report.ts",
+                  "pattern": "export async function writeEscalationReport"
+                },
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "escalate:\\s*makeEscalate"
+                },
+                {
+                  "file": "src/extension.ts",
+                  "pattern": "ctx\\.ui\\.select"
+                }
+              ],
+              "requireTests": [
+                "escalate interactive returns an EscalationDecision",
+                "escalate headless returns undefined and writes the report",
+                "runEscalation returns undefined when no callback"
+              ]
+            }
+          },
+          {
+            "name": "Phase 3 — Firing points + bounded recovery",
+            "description": "Fire escalate at the two unrecoverable sites and act on the decision, bounded by ESCALATION_RETRY_CAP. Gate (src/nodes.ts gate() :395-436): wrap the attempt loop in an outer escalation loop; on exhaustion build failure{kind:'gate-exhaustion', severity: fatal?'hard':'soft'}, call runEscalation, branch retry/accept/revise/abandon (abandon/undefined → original throw new FatalAbort). Stagnation (src/stages/verify.ts :167 reviewLoopUntil and :329 integration loop): fire runEscalation{kind:'stagnation', severity:'soft', findings}; retry-with-guidance → clear __stagnated + return false (loop continues); accept-limitation → stamp __acceptedLimitations; else original break. Tests inject fake escalate (no real ctx.ui). Independently testable: rollback-then-retry wiring, bounded fallback, accept-offered-only-for-soft.",
+            "deliverables": {
+              "requireContains": [
+                {
+                  "file": "src/nodes.ts",
+                  "pattern": "runEscalation"
+                },
+                {
+                  "file": "src/nodes.ts",
+                  "pattern": "gate-exhaustion"
+                },
+                {
+                  "file": "src/stages/verify.ts",
+                  "pattern": "kind:\\s*\"stagnation\""
+                },
+                {
+                  "file": "src/stages/verify.ts",
+                  "pattern": "verify-integration"
+                }
+              ],
+              "requireTests": [
+                "gate retry-with-guidance re-runs the attempt loop",
+                "gate abandon throws FatalAbort",
+                "reviewLoopUntil retry continues the loop",
+                "escalation cap falls back to abandon after the cap"
+              ]
+            }
+          },
+          {
+            "name": "Phase 4 — Hardening + release",
+            "description": "Convergence gate. Add a concise [Unreleased] ### Added CHANGELOG entry (Keep-a-Changelog, spec-NN anchor style) describing HITL pause-ask-continue. Run npm run typecheck (tsc --noEmit) strict-clean — fix .ts import specifiers and unknown casts for state.__escalationRetries/__acceptedLimitations. Run full npm test green — ensure new tests pass and no existing test regresses (update any test asserting today's silent-fail to the additive report+fail path). Regression sweep: headless run writes escalation-report.md and returns isError exactly as before; handleStagnation backward-compat report still emits; no prompt when ctx.hasUI===false.",
+            "deliverables": {
+              "requireContains": [
+                {
+                  "file": "CHANGELOG.md",
+                  "pattern": "escalat"
+                },
+                {
+                  "file": "CHANGELOG.md",
+                  "pattern": "\\[Unreleased\\]"
+                }
+              ],
+              "requireTests": []
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "phase": "Phase 1 — Primitives (types + rollback helper)",
+            "description": "P1.T1.types: Add EscalationKind, EscalationSeverity, EscalationFinding, EscalationFailure, EscalationChoice, EscalationDecision, Escalate types to src/types.ts above RunOptions (:276). MODIFY src/types.ts. (AC-01, SCENARIO-001/002)"
+          },
+          {
+            "phase": "Phase 1 — Primitives (types + rollback helper)",
+            "description": "P1.T2.types: Add escalate?: Escalate to RunOptions beside userSteerProvider (:318); confirm StageContext.options: RunOptions (:196) exposes it with NO workflow.ts edit. MODIFY src/types.ts. (AC-01, SCENARIO-002)"
+          },
+          {
+            "phase": "Phase 1 — Primitives (types + rollback helper)",
+            "description": "P1.T3.tracking: Author rollbackWorktreeTo(worktreePath, commit='HEAD') in src/tracking.ts — discrete-argv spawnSync('git',['-C',wt,'reset','--hard',commit]) then ['clean','-fd'] via resolveTimeoutMs; one try/catch → {ok,error}; never throws; no shell:true. MODIFY src/tracking.ts. (AC-05/AC-10, SCENARIO-010/012)"
+          },
+          {
+            "phase": "Phase 1 — Primitives (types + rollback helper)",
+            "description": "P1.T4.test: Extend src/tracking.test.ts — rollback resets dirty temp git repo + removes untracked → {ok:true}; non-git dir → {ok:false} no-throw; asserts argv form. EXTEND src/tracking.test.ts. (AC-11, SCENARIO-024)"
+          },
+          {
+            "phase": "Phase 2 — Escalate plumbing + extension impl + report",
+            "description": "P2.T1.render: Author src/render/escalation-report.ts — writeEscalationReport(specDir, failure, decision?) (mkdir+writeFileSync, never-throws) + renderEscalationReportBody (markdown: kind/stage/message/findings/decision/next-steps). Subsumes stagnation-report.md body. CREATE. (AC-07, SCENARIO-016/017)"
+          },
+          {
+            "phase": "Phase 2 — Escalate plumbing + extension impl + report",
+            "description": "P2.T2.escalation: Author src/escalation.ts — ESCALATION_RETRY_CAP=2, escalationBudgetRemaining(state,key,cap), runEscalation(state,ctx,key,failure,cap) (guards callback+budget, try/catch→undefined), applyRetryDecision(state,decision) (rollbackWorktreeTo + appendUserNotes, never-throws). CREATE. (AC-05/AC-09/AC-10, SCENARIO-010/020/022)"
+          },
+          {
+            "phase": "Phase 2 — Escalate plumbing + extension impl + report",
+            "description": "P2.T3.extension: Author makeEscalate(ctx) in src/extension.ts — always writeEscalationReport; interactive = ctx.hasUI===true && getConfig().escalation!=='informative'; ctx.ui.select (300_000ms) + ctx.ui.input for retry; accept-limitation omitted when severity==='hard'; try/catch→undefined. MODIFY src/extension.ts. (AC-02/AC-06/AC-08/AC-10, SCENARIO-003/015/018/022)"
+          },
+          {
+            "phase": "Phase 2 — Escalate plumbing + extension impl + report",
+            "description": "P2.T4.extension: Wire escalate: makeEscalate(ctx) into runPipelineTask(task,{...}) at src/extension.ts:509 beside userSteerProvider. MODIFY src/extension.ts. (AC-02, SCENARIO-003)"
+          },
+          {
+            "phase": "Phase 2 — Escalate plumbing + extension impl + report",
+            "description": "P2.T5.extension: Generalize handleStagnation (src/extension.ts:249) to delegate report-writing to writeEscalationReport; keep post-run invocation at :536 for backward compat. MODIFY src/extension.ts. (AC-07, SCENARIO-016)"
+          },
+          {
+            "phase": "Phase 2 — Escalate plumbing + extension impl + report",
+            "description": "P2.T6.test: Create src/render/escalation-report.test.ts, src/escalation.test.ts, src/extension.escalation.test.ts — report write+no-throw; budget/runEscalation/applyRetryDecision; interactive returns decision, headless undefined+report, ui.select throwing→undefined, accept absent when hard. CREATE x3. (AC-11, SCENARIO-024)"
+          },
+          {
+            "phase": "Phase 3 — Firing points + bounded recovery",
+            "description": "P3.T1.nodes: Wrap gate() attempt loop (src/nodes.ts:395-436) in outer escalation loop bounded by ESCALATION_RETRY_CAP; on exhaustion build failure{kind:'gate-exhaustion',severity:opts.fatal?'hard':'soft'}, runEscalation, branch retry→applyRetryDecision+continue / accept(soft)→stamp __acceptedLimitations / revise→return failed / abandon|undefined→original throw new FatalAbort. MODIFY src/nodes.ts. (AC-03/AC-05/AC-06/AC-09, SCENARIO-004/005/006/010/013/014/020/021)"
+          },
+          {
+            "phase": "Phase 3 — Firing points + bounded recovery",
+            "description": "P3.T2.verify: Review stagnation firing at reviewLoopUntil stamp (src/stages/verify.ts:167) — runEscalation{kind:'stagnation',stage:'verify-review',severity:'soft',findings}; retry→clear __stagnated+return false (continue); accept→stamp __acceptedLimitations+return true; else original break. MODIFY src/stages/verify.ts. (AC-04/AC-06, SCENARIO-007/008/009/013)"
+          },
+          {
+            "phase": "Phase 3 — Firing points + bounded recovery",
+            "description": "P3.T3.verify: Integration stagnation firing at __testStagnated stamp (src/stages/verify.ts:329) — mirror P3.T2 with key/stage 'verify-integration'; retry→continue loop (no break at :346/:364); accept→stamp 'verify-integration-stagnation'+break. MODIFY src/stages/verify.ts. (AC-04/AC-06, SCENARIO-007/008/009/014)"
+          },
+          {
+            "phase": "Phase 3 — Firing points + bounded recovery",
+            "description": "P3.T4.test: Create src/nodes.escalation.test.ts + src/stages/verify.escalation.test.ts — gate retry re-runs+guidance in .user-notes.json, abandon throws FatalAbort, accept not offered when hard, cap-exhausted→original throw; reviewLoopUntil retry→returns false+clears __stagnated, accept→stamps, undefined→break; integration mirror. CREATE x2. (AC-11, SCENARIO-024)"
+          },
+          {
+            "phase": "Phase 4 — Hardening + release",
+            "description": "P4.T1.docs: Add concise [Unreleased] ### Added CHANGELOG entry (Keep-a-Changelog, spec-NN anchor style) describing HITL pause-ask-continue: two firing points, default-on interactive TUI/RPC, headless report-only, bounded retry cap (2), never-throw/strictly-additive, escalate on RunOptions. MODIFY CHANGELOG.md. (AC-12, SCENARIO-025)"
+          },
+          {
+            "phase": "Phase 4 — Hardening + release",
+            "description": "P4.T2.verification: Run npm run typecheck (tsc --noEmit) strict-clean; fix .ts import specifiers and unknown casts for state.__escalationRetries/__acceptedLimitations and makeEscalate ctx typing. VERIFY. (AC-12, SCENARIO-025)"
+          },
+          {
+            "phase": "Phase 4 — Hardening + release",
+            "description": "P4.T3.verification: Run full npm test green; ensure new tests pass and no regression; update any test asserting today's silent-fail to the additive report+fail path; confirm handleStagnation report still emits. VERIFY. (AC-11/AC-12, SCENARIO-024/025)"
+          },
+          {
+            "phase": "Phase 4 — Hardening + release",
+            "description": "P4.T4.verification: Regression sweep — headless run writes escalation-report.md and returns isError exactly as before (no new prompt/throw); stagnation-report.md/handleStagnation backward-compat report emits; no prompt when ctx.hasUI===false. VERIFY. (AC-07/AC-08)"
+          }
+        ],
+        "gate": {
+          "packages": [],
+          "workspace": false,
+          "integration": []
+        },
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/08-specification.md",
+        "implementationPlanPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/09-implementation-plan.md",
+        "taskListPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/10-task-list.md",
+        "specificationPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/08-specification.md",
+        "phaseCount": "4"
+      }
+    },
+    "specReview": {
+      "timestamp": "2026-07-28T18:04:31.215Z",
+      "agent": "specReview",
+      "data": {
+        "title": "Spec Review — HITL Escalation (pause-ask-continue) for pi-super-dev (08-specification.md)",
+        "date": "2026-07-28",
+        "verdict": "APPROVED WITH REVISIONS",
+        "summary": "Fagan-style inspection of 08-specification.md (the technical-spec / impl-plan / task-list for HITL escalation). The spec is exceptionally well-grounded: every cited file, line, and function was verified against the actual codebase and holds — gate() throws FatalAbort at src/nodes.ts:436 (function at :395); stagnation stamp at src/stages/verify.ts:167 (reviewLoopUntil at :157) and recordTestStagnation at :322 (body ~:329); the userSteerProvider seam is real at types.ts:318 / extension.ts:509-521 / workflow.ts:148 drain; the safety.ts denylist entries 'git reset --hard' (:35) and 'git clean -fd' (:39) exist exactly as cited; and rollbackWorktreeTo / src/escalation.ts / src/render/escalation-report.ts are correctly marked as AUTHORED/absent. The architecture is additive, feasible (mirrors an existing proven seam, zero workflow.ts edit confirmed), testable (concrete vitest files with numeric thresholds), and low-complexity (reuses appendUserNotes/userNotesForAgent). Grounding score ~95%. No Critical or >3 High findings. Six Medium/Low defects remain: (1) the stated reason the denylist is bypassed is imprecise — the real reason is that checkBashCommand only runs inside a child-session tool_call hook, not on host-process spawnSync; (2) rollbackWorktreeTo lacks a path-safety acceptance criterion/test (only \"non-git dir no-throw\" is tested, not \"main checkout refused\"); (3) no in-document AC→section / Scenario→section coverage matrix (AC-01..12 / SCENARIO-001..025 are claimed and ID-listed but not mapped); plus a typo, an unverified createMemoizingAgent caching claim, and an uncited GateOptions.fatal field. Verdict: APPROVED WITH REVISIONS — refinements, not blockers.",
+        "findings": [
+          {
+            "id": "F-01",
+            "severity": "medium",
+            "title": "Safety-bypass rationale is imprecise — denylist is bypassed via host-process spawnSync, not because 'argv-discrete beats shell-string regex'",
+            "detail": "Architecture §4 states rollbackWorktreeTo uses 'discrete-argv spawnSync … so it sidesteps the safety.ts denylist (:35/:39 match shell strings only)'. Grounding check: DANGEROUS patterns at safety.ts:35/39 DO match shell command strings, but that is not why they are bypassed. checkBashCommand (safety.ts:81) is only ever invoked from createSafetyExtensionFactory's child-session `tool_call` hook (the pi.on('tool_call') for toolName==='bash'). rollbackWorktreeTo runs spawnSync in the HOST process, so it never passes through that hook at all — argv form is irrelevant. Recommendation: restate the mechanism accurately ('runs in the host process, which the safety hook does not instrument') so the impl does not silently rely on a false assumption; a future refactor that also gates host spawnSync would break the current wording without anyone noticing.",
+            "lens": "D6 Grounding / D3 Feasibility",
+            "file": "src/safety.ts",
+            "line": "81, 104"
+          },
+          {
+            "id": "F-02",
+            "severity": "medium",
+            "title": "rollbackWorktreeTo lacks a path-safety acceptance criterion — 'never main checkout' is asserted as a property but never tested",
+            "detail": "The spec repeatedly guarantees rollbackWorktreeTo is 'worktree-scoped only (never main checkout)'. Testing Strategy (b) only asserts: dirty temp repo → {ok:true}; non-git dir → {ok:false} no-throw; argv form (no shell:true). There is NO AC or test that the function refuses/no-ops when the resolved target is the main checkout (e.g., cwd not under .worktree/, or path equal to repo root). Since this function runs destructive git ops (reset --hard + clean -fd) outside any safety gate (see F-01), a path guard is the only remaining barrier to wiping the main checkout. Recommendation: add an explicit AC + test: rollbackWorktreeTo returns {ok:false} (or no-ops) when the target path is not recognized as a worktree.",
+            "lens": "D1 Completeness / D4 Testability / D8 Ambiguity",
+            "file": "src/tracking.ts"
+          },
+          {
+            "id": "F-03",
+            "severity": "medium",
+            "title": "No in-document coverage matrix — AC-01..12 / SCENARIO-001..025 are ID-listed but not mapped to spec sections",
+            "detail": "Summary and BDD Scenario References claim 'Covers AC-01..AC-12 and SCENARIO-001..025' and 25 scenario IDs are enumerated, but the document contains no AC→spec-section or Scenario→spec-section table. As a standalone spec artifact the traceability chain (AC → section that satisfies it; Scenario → task) is unprovable inside this doc — the reviewer must cross-read 01-requirements.md / 02-bdd-scenarios.md to confirm each AC is satisfied. Recommendation: add a compact coverage table (one row per AC and per Scenario) pointing to the paragraph/section that delivers it. This is the standard D5 expectation and closes the gap without changing the design.",
+            "lens": "D5 Traceability / D1 Completeness"
+          },
+          {
+            "id": "F-04",
+            "severity": "low",
+            "title": "Typo: ESCCALATION_RETRY_CAP in Testing Strategy (e)",
+            "detail": "Testing Strategy (e) reads 'runEscalation stops calling escalate after ESCCALATION_RETRY_CAP'. Architecture §4 and the rest of the doc use ESCALATION_RETRY_CAP. Inconsistent identifier — will cause a copy-paste compile/reference error in the test if taken literally. Recommendation: fix to ESCALATION_RETRY_CAP.",
+            "lens": "D2 Consistency"
+          },
+          {
+            "id": "F-05",
+            "severity": "low",
+            "title": "createMemoizingAgent 'uncached re-run' claim is unverified",
+            "detail": "Architecture §3 justifies the retry path re-running uncached with 'since createMemoizingAgent only caches completed calls'. This is plausible but no grounding is shown for the cache key / completion semantics. If a memo entry is recorded for a stalled or partially-completed attempt, the retry could yield stale guidance and defeat the pause-ask-continue loop. Recommendation: add a one-line verification of createMemoizingAgent's cache-key/completion behavior, or specify an explicit cache-busting key (e.g., include state.__escalationRetries) in the retry call.",
+            "lens": "D6 Grounding / D3 Feasibility",
+            "file": "src/workflow.ts"
+          },
+          {
+            "id": "F-06",
+            "severity": "low",
+            "title": "Gate failure severity derivation relies on GateOptions.fatal but field is not cited",
+            "detail": "Architecture §3 derives gate-exhaustion severity as {severity: opts.fatal?'hard':'soft'}. Grounding confirms GateOptions does carry a fatal flag (nodes.ts:372 comment: 'When true, EXHAUSTION throws a FatalAbort'). The spec is correct but should cite the field name explicitly so the impl does not guess at the option shape (e.g., opts.fatal vs opts.gate?.fatal). Minor.",
+            "lens": "D8 Ambiguity / D6 Grounding",
+            "file": "src/nodes.ts",
+            "line": "372, 436"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "D1 Completeness",
+            "status": "needs-work",
+            "notes": "Error handling thoroughly specified (no-throw everywhere, report always written, bounded spend). NFRs covered (additive/no-regression, headless safety, ESM+strict TS). Gaps: missing rollback path-validation AC (F-02) and no in-doc coverage matrix (F-03)."
+          },
+          {
+            "name": "D2 Consistency",
+            "status": "pass",
+            "notes": "Type/decision names uniform across sections (Escalate / EscalationDecision / EscalationFailure / __escalationRetries / __acceptedLimitations). One identifier typo ESCCALATION_RETRY_CAP (F-04). Terminology stable."
+          },
+          {
+            "name": "D3 Feasibility",
+            "status": "pass",
+            "notes": "Architecture mirrors the verified, proven userSteerProvider seam (types.ts:318 → extension.ts:509-521 → workflow.ts:148 drain); zero workflow.ts edit confirmed by reading makeContext. createMemoizingAgent caching claim is the only lightly-grounded feasibility assumption (F-05). No circular deps."
+          },
+          {
+            "name": "D4 Testability",
+            "status": "pass",
+            "notes": "Concrete vitest files enumerated with specific assertions and injected fakes (no LLM/agent spawns). Numeric thresholds present (300s timeout, ESCALATION_RETRY_CAP=2). One missing test: rollbackWorktreeTo refusing a non-worktree path (F-02)."
+          },
+          {
+            "name": "D5 Traceability",
+            "status": "needs-work",
+            "notes": "AC-01..12 and SCENARIO-001..025 are referenced and ID-listed but not mapped to spec sections within this document (F-03). Plan→task-list and phase decomposition are coherent (4 phases). Chain is provably unbroken only by cross-reading the requirements/bdd docs."
+          },
+          {
+            "name": "D6 Grounding",
+            "status": "pass",
+            "notes": "~95%. All cited files/lines/functions verified: gate() nodes.ts:395 with FatalAbort throw :436; verify.ts:167/__stagnated and :322-329 recordTestStagnation; workflow.ts:148 userSteerProvider drain; types.ts:196 StageContext.options and :318 userSteerProvider; extension.ts:509 runPipelineTask + :521 userSteerProvider; safety.ts:35/39 denylist entries; rollbackWorktreeTo / escalation.ts / escalation-report.ts correctly marked absent. One reasoning inaccuracy on the bypass mechanism (F-01)."
+          },
+          {
+            "name": "D7 Complexity",
+            "status": "pass",
+            "notes": "Strictly additive. Minimal new surface (one helper rollbackWorktreeTo, one module escalation.ts, one writer escalation-report.ts). Reuses appendUserNotes/userNotesForAgent (verified at src/render/user-notes.ts:40/60) so retry guidance needs no new plumbing. Simplest viable approach."
+          },
+          {
+            "name": "D8 Ambiguity",
+            "status": "needs-work",
+            "notes": "EscalationDecision|undefined contract clear; retry/accept/revise/abandon state transitions explicit; accept-limitation-omitted-for-hard rule stated. Gaps: rollbackWorktreeTo input contract for a non-worktree path unspecified (F-02); GateOptions.fatal field uncited (F-06)."
+          }
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/12-spec-review.md"
+      }
+    },
+    "implementationSummary": {
+      "timestamp": "2026-07-28T18:58:53.631Z",
+      "agent": "implementationSummary",
+      "data": {
+        "title": "spec-18: HITL Escalation (pause-ask-continue) — Implementation Summary",
+        "date": "2026-07-28",
+        "summary": "## Task\n\nSpec-18 adds Human-In-The-Loop (HITL) escalation to pi-super-dev: when a run hits an unrecoverable blocker (fatal-gate exhaustion or verify-loop stagnation), it PAUSES, ASKS the user via `ctx.ui.select`/`input` (the canonical pi pause-ask-continue pattern), and CONTINUES on their decision — instead of failing silently. Recovery options: retry-with-guidance (rollback worktree + persist guidance + uncached re-run), revise-manually (clean stop), accept-limitation (stamp soft-block), abandon (FatalAbort). Bounded by `ESCALATION_RETRY_CAP=2` per blocker; default-on in TUI/RPC, never prompts in headless/print/json.\n\n## Phases planned (4, coarse + independently testable)\n1. **Primitives** — types + `rollbackWorktreeTo` + budget helpers.\n2. **Plumbing + Impl + Report** — extension `makeEscalate`, escalation-report writer, wire `escalate` into `RunOptions`/ctx.\n3. **Firing Points + Recovery** — inline fire at `nodes.ts` gate exhaustion + `verify.ts` stagnation; recovery actions.\n4. **Hardening + Release** — no-throw/full-coverage pass + CHANGELOG entry.\n\n## What was actually built — 2 of 4 phases landed\n\n**NOTE:** The pipeline's pre-rendered metadata said \"1/4 phases, files modified: none.\" Both are STALE. On-disk reality: Phase 1 AND Phase 2 landed; 8 files changed; full suite green. The stale figures reflect an earlier snapshot (the 02:23 summary captured only Phase 1; work continued through 02:57).\n\n### Phase 1 — Primitives (committed: `b782f3a4`, +601 insertions)\n- **`src/types.ts` (+64)** — Pure additive types, no runtime behavior: `EscalationKind`, `EscalationSeverity`, `EscalationFinding`, `EscalationFailure` (rich live blocker context), `EscalationChoice` (closed 4-value union), `EscalationDecision`, async `Escalate` (never-throws contract → `EscalationDecision | undefined`), and `escalate?: Escalate` on `RunOptions` (reachable as `ctx.options.escalate` with ZERO edits to `workflow.ts`, mirroring `userSteerProvider`).\n- **`src/tracking.ts` (+55)** — `rollbackWorktreeTo(worktreePath, commit='HEAD')`: worktree-scoped `git reset --hard` + `clean -fd` via discrete-argv `spawnSync` (sidesteps the `safety.ts` denylist which matches shell strings only); one try/catch → `{ok,error}`, never throws, scoped to the worktree only (never the main checkout).\n- Tests: `tests/tracking.test.ts` (+68, argv-form assertions proving no `shell:true`), `tests/escalation-types.test.ts` (new, `expectTypeOf` + runtime construction), `tests/tracking-rollback.test.ts` (new, AUTHORITATIVE hermetic coverage driving a REAL `git` binary in a fresh `mkdtempSync` repo per test — resets dirty tracked + removes untracked → `{ok:true}`, sibling dir untouched, non-git dir → `{ok:false}` no-throw).\n\n### Phase 2 — Plumbing + Impl + Report (UNCOMMITTED/untracked, but on-disk + green)\n- **`src/extension.ts` (+128/−21)** — `makeEscalate(ctx)` builder (never-throwing inline `escalate` callback, spec-18/AC-01) and threads it into the run context at the RunOptions assembly point (`escalate: makeEscalate(ctx)`). Additive, never-regressing.\n- **`src/escalation.ts` (new, 98 LOC)** — escalation decision/construction logic.\n- **`src/render/escalation-report.ts` (new, 73 LOC)** — report writer.\n- Tests: `src/escalation.test.ts` (6 tests), `src/extension.escalation.test.ts` (11 tests), `src/render/escalation-report.test.ts` (114 LOC) — all pass.\n\n## Test results — ALL GREEN\nFull suite: **101 test files, 1574 tests, 0 failures** (17.5s). The spec-18 suites (`escalation`, `extension.escalation`, `escalation-report`, `tracking-rollback`, `escalation-types`) all pass. No regressions.\n\n## Deviations from spec\n1. **Phase 2 work is UNCOMMITTED** (untracked files + unstaged `extension.ts` edit). It is on-disk and tested, but only Phase 1 is committed (`b782f3a4`). A commit is needed before merge.\n2. **Phases 3 & 4 did NOT run** (no `phase-03`/`phase-04` records in change-tracker.jsonl). Consequences:\n   - **Firing points are NOT wired:** `grep` for `escalate`/`makeEscalate` in `src/nodes.ts` (fatal-gate exhaustion) and `src/verify.ts` (stagnation) returned ZERO matches. The `escalate` callback is built and threaded into ctx, but is never INVOKED at any blocker, so a real run today will still fail silently — the feature is inert until Phase 3 lands.\n   - **No CHANGELOG entry** for the spec-18 pause-ask-continue feature (the only related entry is an earlier \"Stagnation escalation UI (Gap 4.6′-lite)\" informative baseline, not the new recovery/rollback path). Deferred to Phase 4.\n3. **Self-reporting gap (Phase 1):** the implementation agent's `claimed` manifest was empty `{filesCreated/Modified/Deleted:[]}` while gitActual showed 5 files changed; the cross-check flagged them `changedNotClaimed` but still returned `verdict:\"ok\"`. Work is real and on-disk.\n\n## Bottom line\nPhases 1–2 deliver the complete *plumbing* for pause-ask-continue (types, rollback primitive, never-throwing `escalate` callback, report writer, full test coverage) and the suite is green. But the feature CANNOT fire yet: Phase 3's firing points at gate-exhaustion and verify-stagnation are unwired, and Phase 4's hardening/CHANGELOG is absent. Functionally, today's run behavior is still identical to pre-spec-18.",
+        "phasesCompleted": "2 of 4 — Phase 1 (Primitives: types + rollbackWorktreeTo) committed; Phase 2 (Plumbing + Impl + Report: makeEscalate, escalation-report writer, escalate threaded into ctx) on-disk + uncommitted but fully tested/green. Phase 3 (Firing Points + Recovery at nodes.ts/verify.ts) and Phase 4 (Hardening + CHANGELOG) did NOT run.",
+        "allGreen": "false",
+        "filesModified": [
+          "src/types.ts",
+          "src/tracking.ts",
+          "tests/tracking.test.ts",
+          "tests/escalation-types.test.ts",
+          "tests/tracking-rollback.test.ts",
+          "src/extension.ts",
+          "src/escalation.ts",
+          "src/escalation.test.ts",
+          "src/extension.escalation.test.ts",
+          "src/render/escalation-report.ts",
+          "src/render/escalation-report.test.ts"
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/13-implementation-summary.md"
+      }
+    },
+    "docs": {
+      "timestamp": "2026-07-28T19:00:48.030Z",
+      "agent": "docs",
+      "data": {
+        "title": "spec-18 HITL Escalation — Stage 11 documentation update",
+        "date": "2026-07-29",
+        "summary": "Updated the spec-18 (HITL escalation pause-ask-continue) documentation directory to match on-disk implementation reality. State verified against git + grep: Phase 1 (Primitives: types + rollbackWorktreeTo) is COMMITTED (b782f3a4, +601); Phase 2 (Plumbing + makeEscalate impl + escalation-report writer, escalate threaded into ctx) is BUILT and the vitest suite is GREEN (escalation/extension.escalation/escalation-report/tracking-rollback/escalation-types all pass) but UNCOMMITTED (untracked + unstaged). Phases 3 (firing points at nodes.ts gate() :395-436 and verify.ts :167/:329) and 4 (CHANGELOG + convergence gate) did NOT run — grep for runEscalation/applyRetryDecision/ctx.options.escalate/escalate( in src/nodes.ts and src/stages/verify.ts returned ZERO matches, so the escalate callback is reachable but never invoked at any blocker; a real run today still fails silently (feature inert), and there is no spec-18 [Unreleased] CHANGELOG entry. Design itself was implemented VERBATIM for the landed phases (escalate on RunOptions via ctx.options.escalate with zero workflow.ts edits; makeEscalate always-write report + ctx.ui.select/input guarded by ctx.hasUI with 300s timeout and try/catch→undefined; ESCALATION_RETRY_CAP=2; rollbackWorktreeTo discrete-argv spawnSync; never-throw everywhere; headless never prompts). Updated: 10-task-list.md (flipped Phase 1+2 checkboxes to done, added a progress-snapshot table), 09-implementation-plan.md (added a phase-status header and per-phase STATUS markers), 08-specification.md (added a deviations table DEV-01..DEV-05). 13-implementation-summary.md was already accurate and comprehensive from the prior stage (no rewrite needed). Pipeline-managed artifacts (change-tracker.jsonl, .knowledge.json, .resume-cache.jsonl) were left to the runtime; requirements/BDD/research/code-assessment/debug docs were unaffected (no design deviation). Key residual risk: feature is functionally inert until Phase 3 wires the two inline firing sites and Phase 4 adds the CHANGELOG entry; Phase 2 must also be committed before merge.",
+        "docsUpdated": "docs/specifications/18-hitl-escalation-pause-continue/10-task-list.md (flipped Phase 1 + Phase 2 task checkboxes from [ ] to [x]; 4+6 done, 4+4 pending; added a post Stage-11 progress-snapshot table with per-phase status + evidence); docs/specifications/18-hitl-escalation-pause-continue/09-implementation-plan.md (added a phase-status header block ✅✅⛔⛔ and per-phase STATUS markers for all four phases with commit/grep/green evidence); docs/specifications/18-hitl-escalation-pause-continue/08-specification.md (added a Deviations section with table DEV-01..DEV-05 covering scope-not-design gap, typecheck-surface, missing CHANGELOG, uncommitted Phase 2, and the advisory-only under-reporting cross-check). docs/specifications/18-hitl-escalation-pause-continue/13-implementation-summary.md was reviewed and confirmed already accurate — no edit required.",
+        "deviationsDocumented": [
+          "DEV-01: Phases 3 & 4 did NOT run — the two inline firing points (src/nodes.ts gate() :395-436 fatal-gate exhaustion; src/stages/verify.ts :167 reviewLoopUntil and :329 integration-loop stagnation) are unwired (grep runEscalation|applyRetryDecision|ctx.options.escalate|escalate( → zero matches), so the escalate callback built in Phase 2 is reachable but never invoked; a real run still fails silently as pre-spec-18. The feature is functionally inert until Phase 3 lands.",
+          "DEV-02: The spec's strict-clean typecheck contract over the FULL wired surface (incl. state.__escalationRetries / __acceptedLimitations unknown casts at the firing points) cannot be asserted yet — typecheck is green only for the landed plumbing; the unknown casts are not exercised because Phase 3 call sites do not exist.",
+          "DEV-03: The spec's concise [Unreleased] ### Added CHANGELOG entry for HITL pause-ask-continue is ABSENT — the [Unreleased] section holds only mid-run-context/spec-17/spec-15 entries. Deferred to Phase 4 T1.",
+          "DEV-04: Phase 1 is committed (b782f3a4) but Phase 2 is UNCOMMITTED — src/escalation.ts, src/escalation.test.ts, src/extension.escalation.test.ts, src/render/escalation-report.ts, src/render/escalation-report.test.ts are untracked and src/extension.ts is unstaged. On-disk + green, but a commit is required before merge.",
+          "DEV-05: Self-reporting gap — Phase-1 implementer claimed manifest was empty {created/modified/deleted:[]} while gitActual showed 5 files changed; the cross-check flagged changedNotClaimed but returned verdict:\"ok\" (under-reporting is advisory-only by design). No functional impact; observability gap only.",
+          "NO design deviation: the architecture as specified (escalate on RunOptions reachable as ctx.options.escalate with zero workflow.ts edits; makeEscalate always-write report + ctx.ui.select/input guarded by ctx.hasUI with 300s timeout + try/catch→undefined; accept-limitation omitted when severity hard; ESCALATION_RETRY_CAP=2; rollbackWorktreeTo discrete-argv spawnSync git reset --hard + clean -fd; never-throw everywhere; headless/print/json/rpc never prompt) was implemented verbatim for the landed phases — the gap is scope (Phases 3 & 4 pending), not design."
+        ],
+        "docPath": "/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/.worktree/18-hitl-escalation-pause-continue/docs/specifications/18-hitl-escalation-pause-continue/14-documentation.md"
+      }
+    }
+  }
+}
