@@ -702,14 +702,20 @@ function readForDeliverable(
  * substring). Used for requireContains, requireNotContains, and requireTests.
  */
 function tolerantMatch(pattern: string, text: string): boolean {
+	// Original match attempt.
 	let re: RegExp | null = null;
-	try {
-		re = new RegExp(pattern);
-	} catch {
-		re = null; // invalid regex → fall back to substring
-	}
+	try { re = new RegExp(pattern); } catch { re = null; }
 	if (re && re.test(text)) return true;
-	return text.includes(pattern);
+	if (text.includes(pattern)) return true;
+	// Tolerant fallback: strip `async ` so `export async function X` matches
+	// `export function X` (spec may declare async but the impl is sync).
+	const stripped = pattern.replace(/\basync\s+/g, "");
+	if (stripped !== pattern) {
+		try { re = new RegExp(stripped); } catch { re = null; }
+		if (re && re.test(text)) return true;
+		if (text.includes(stripped)) return true;
+	}
+	return false;
 }
 
 /**
@@ -888,6 +894,72 @@ export function computeChangeGate(rec: unknown): ChangeGateResult {
 	}
 }
 
+/** Result of the symbol / hollow-file gate. `hollowFiles` lists claimed source
+ *  deliverables that EXIST but contain NO language symbols (doc-comment-only /
+ *  empty shells) — the "silent-empty-success" a build+deliverable+change gate
+ *  cannot otherwise catch (a never-implemented file compiles, exists, and is
+ *  git-changed). */
+export interface SymbolGateResult {
+	pass: boolean;
+	hollowFiles: string[];
+}
+
+/** Per-language "has real code" symbol probes, matched against comment-stripped
+ *  source. A doc-comment-only shell strips to empty → no match → hollow. */
+const SYMBOL_PATTERNS: Partial<Record<string, RegExp>> = {
+	rust: /\b(?:fn|struct|enum|impl|trait|use|const|static|mod|macro_rules|type)\b/,
+	go: /\b(?:func|type|struct|var|const|import|package)\b/,
+	python: /\b(?:def|class|import|from)\b/,
+	frontend: /\b(?:function|const|let|class|interface|type|export|import)\b|=>/,
+	backend: /\b(?:function|const|let|class|interface|type|export|import)\b|=>/,
+};
+const CODE_EXT = /\.(?:rs|go|py|ts|tsx|js|jsx|mjs|mts|cjs|java|kt|swift|rb|cs|cpp|cc|c|h|hpp|zig|nim)$/;
+
+/** Strip block + line comments and blank lines so a doc-comment-only shell
+ *  reduces to empty (zero symbols). Pure. */
+function stripCommentsAndBlanks(src: string): string {
+	return src
+		.replace(/\/\*[\s\S]*?\*\//g, "")      // /* block comments */
+		.replace(/^[ \t]*\/\/.*$/gm, "")         // // line comments (incl //! ///)
+		.replace(/^[ \t]*#.*$/gm, "")            // # line comments (py/ruby/sh)
+		.replace(/^[ \t]*$/gm, "");              // blank lines
+}
+
+/** Catches the "silent-empty-success": claimed source deliverables that EXIST
+ *  (so they pass the deliverable + change gates) but contain NO real code —
+ *  only comments/whitespace. AND-ed into phase-green alongside buildGate /
+ *  deliverableCheck / changeGate so an implementer that ships doc-comment-only
+ *  shells while claiming the phase done is REJECTED until real symbols land.
+ *
+ *  Best-effort + never-throws (mirrors computeChangeGate): an unreadable file
+ *  is SKIPPED (not counted hollow — never block on infrastructure); an unknown
+ *  language or a phase with no claimed source files → pass (don't block
+ *  config/doc-only phases). */
+export function computeSymbolGate(
+	worktreePath: string,
+	claimedFiles: string[],
+	language: string | undefined,
+): SymbolGateResult {
+	try {
+		const pattern = language ? SYMBOL_PATTERNS[language] : undefined;
+		if (!pattern) return { pass: true, hollowFiles: [] }; // unknown language → don't block
+		const codeFiles = (claimedFiles ?? []).filter((f): f is string => typeof f === "string" && CODE_EXT.test(f));
+		if (codeFiles.length === 0) return { pass: true, hollowFiles: [] }; // no source → don't block
+		const hollow: string[] = [];
+		for (const rel of codeFiles) {
+			try {
+				const src = readFileSync(join(worktreePath, rel), "utf8");
+				if (!pattern.test(stripCommentsAndBlanks(src))) hollow.push(rel);
+			} catch {
+				// unreadable / missing → skip (deliverable/change gates handle absence)
+			}
+		}
+		return { pass: hollow.length === 0, hollowFiles: hollow };
+	} catch {
+		return { pass: true, hollowFiles: [] };
+	}
+}
+
 export function runDeliverableCheck(
 	cwd: string,
 	deliverables: DeliverableContract | null | undefined,
@@ -907,7 +979,7 @@ export function runDeliverableCheck(
 		if (Array.isArray(files)) {
 			for (const p of files) {
 				ran.push(`file:${p}`);
-				if (!existsSync(resolve(cwd, p))) {
+				if (!existsSync(join(cwd, p))) {
 					missing.push(`missing file: ${p}`);
 				}
 			}
@@ -1022,7 +1094,7 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 		const files = deliverables.requireFiles;
 		if (!Array.isArray(files) || files.length === 0) return false;
 		for (const p of files) {
-			if (!existsSync(resolve(cwd, p))) return false;
+			if (!existsSync(join(cwd, p))) return false;
 		}
 		for (const entry of deliverables.requireContains ?? []) {
 			const rd = readForDeliverable(cwd, entry.file);
