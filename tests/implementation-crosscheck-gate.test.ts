@@ -158,6 +158,9 @@ vi.mock("../src/build-runner.ts", () => ({
 		const r = mock.changeGateQ.length ? mock.changeGateQ.shift()! : mock.changeGateDefault;
 		return { ...r };
 	},
+	// Symbol/hollow-file gate: stubbed pass (its LOGIC is unit-tested in
+	// tests/symbol-gate.test.ts); this wiring test doesn't vary its verdict.
+	computeSymbolGate: () => ({ pass: true, hollowFiles: [] }),
 }));
 
 vi.mock("../src/tracking.ts", async (importActual) => {

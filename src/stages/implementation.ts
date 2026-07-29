@@ -13,7 +13,7 @@ import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplement
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { normalizePhases } from "../doc-validators.ts";
-import { computeChangeGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
+import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
 
 const MAX_ATTEMPTS = 3;
 /** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
@@ -188,6 +188,9 @@ export const implementationStage: Stage = {
 			// the next implementer retry under a `## Claimed changes not present in git`
 			// block. Resets each attempt, mirroring `missingDeliverables`.
 			let claimedNotChanged: string[] = [];
+			// Symbol/hollow-file gate: claimed source deliverables that EXIST but contain
+			// NO code (doc-comment-only shells) — fed into the next implementer retry.
+			let hollowFiles: string[] = [];
 			// Phase bracketing (spec-11 Phase 3, AC-04 → SCENARIO-008/009): snapshot the
 			// git baseline BEFORE the attempts so each per-attempt `tracker.end`
 			// computes the delta from phase start; the change-gate reads the freshest
@@ -287,6 +290,9 @@ export const implementationStage: Stage = {
 				if (claimedNotChanged.length) {
 					implParts.push(`## Claimed changes not present in git — actually create/wire these\n${claimedNotChanged.map((e) => `- ${e}`).join("\n")}`);
 				}
+				if (hollowFiles.length) {
+					implParts.push(`## Hollow deliverable files — these exist but contain only comments / no real code; write the actual implementation (functions/types/etc.) in each\n${hollowFiles.map((e) => `- ${e}`).join("\n")}`);
+				}
 				implParts.push(redImplementContext(redStatus, capExhausted));
 				const implPrompt = implParts.join("\n\n");
 				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
@@ -362,6 +368,12 @@ export const implementationStage: Stage = {
 					phaseChangeRec = tracker.probeEnd("phase", phaseId, structured);
 				}
 				const changeGate = computeChangeGate(phaseChangeRec);
+				// Symbol/hollow-file gate (silent-empty-success killer): a claimed source
+				// deliverable that EXISTS (passes deliverable + change gates) but contains
+				// NO code symbols (doc-comment-only shell) is rejected here. Never throws;
+				// degrades to pass on unreadable files / unknown language / no source files.
+				const symbolGate = computeSymbolGate(setup.worktreePath, [...structured.filesCreated, ...structured.filesModified], setup.language);
+				ctx.log(`Implementation ${phaseId} symbol-check ${symbolGate.pass ? "PASS" : "FAIL"} (hollow: ${symbolGate.hollowFiles.join("; ") || "none"})`);
 				// Advisory-only (SCENARIO-014): files git shows changed that the agent did
 				// NOT report (under-reporting) are surfaced via ctx.log but NEVER fail the
 				// gate — under-reporting is not a false-green.
@@ -379,6 +391,7 @@ export const implementationStage: Stage = {
 					ctx.log(`Implementation ${phaseId} 📝 ${c + m + d} files changed (${c}C/${m}M/${d}D)`);
 				}
 				claimedNotChanged = changeGate.claimedNotChanged;
+				hollowFiles = symbolGate.hollowFiles;
 				// In-scope verdict (AC-05 → SCENARIO-012/013/014/025/027): the phase is GREEN
 				// when the gate fully passed OR when every failure is a pre-existing
 				// out-of-scope crate the branch never touched (gate.inScopePass). The
@@ -388,7 +401,7 @@ export const implementationStage: Stage = {
 				// spec-11 AC-07/AC-08 (SCENARIO-013): AND `changeGate.pass` so a
 				// claimed-but-never-changed file hard-fails EVEN WHEN build + deliverable
 				// both pass (the false-green killer, closed a second way).
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass) {
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass) {
 					green = true;
 					phaseStatusUpsert(phaseStatus, phaseId, "green");
 					const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);

@@ -20,6 +20,7 @@ vi.mock("../src/build-runner.ts", () => ({
 	deliverablesAlreadyMet: () => false,
 	resetDeliverableCheckCache: () => {},
 	computeChangeGate: () => ({ pass: true, claimedNotChanged: [] }),
+	computeSymbolGate: () => ({ pass: true, hollowFiles: [] }),
 }));
 
 const { implementationStage } = await import("../src/stages/implementation.ts");

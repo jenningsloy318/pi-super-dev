@@ -157,6 +157,29 @@ function classifyPorcelain(xy: string): "created" | "modified" | "deleted" {
 	return "modified";
 }
 
+/** Rollback a worktree to a known-good commit (last-green recovery). Discards
+ *  ALL uncommitted + post-commit changes back to `commit` (default HEAD) via
+ *  `git reset --hard <commit>` + `git clean -fd`. Deliberately DESTRUCTIVE — the
+ *  "clean slate" step before an escalation-guided retry, to discard a
+ *  half-applied / breaking refactor. Pipeline-INTERNAL (direct spawnSync, NOT
+ *  a specialist tool_call) so the safety guard's reset/clean blocklist does
+ *  not apply; the caller logs it explicitly. Never throws — returns
+ *  `{ok:false,error}` on any git failure so the caller degrades to
+ *  "report + fail" instead of crashing. */
+export function rollbackWorktreeTo(worktreePath: string, commit?: string): { ok: boolean; commit: string | null; error?: string } {
+	const target = commit ?? "HEAD";
+	try {
+		const reset = spawnSync("git", ["-C", worktreePath, "reset", "--hard", target], { encoding: "utf8", timeout: resolveTimeoutMs() });
+		if (reset.error || reset.status !== 0) return { ok: false, commit: null, error: `git reset --hard ${target} failed (status ${String(reset.status)})` };
+		const clean = spawnSync("git", ["-C", worktreePath, "clean", "-fd"], { encoding: "utf8", timeout: resolveTimeoutMs() });
+		if (clean.error || clean.status !== 0) return { ok: false, commit: null, error: `git clean -fd failed (status ${String(clean.status)})` };
+		const head = spawnSync("git", ["-C", worktreePath, "rev-parse", "HEAD"], { encoding: "utf8", timeout: resolveTimeoutMs() });
+		return { ok: true, commit: typeof head.stdout === "string" ? head.stdout.trim() : null };
+	} catch (err) {
+		return { ok: false, commit: null, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
 /**
  * Per-run `ChangeTracker`. Brackets `stage`/`phase` units with git snapshots
  * and persists an append-only jsonl trace. See module doc for the full
