@@ -813,7 +813,7 @@ function loadTestList(
  * short-circuit) so `missing` is exhaustive and `ran` is complete.
  *
  * Sub-checks:
- *   (a) requireFiles       → existsSync(resolve(cwd,p)); miss ⇒
+ *   (a) requireFiles       → existsSync(join(cwd,p)); miss ⇒
  *                            `missing file: <p>`.
  *   (b) requireContains    → readForDeliverable; unreadable ⇒ `unreadable: <p>`;
  *                            missing-file OR absent-pattern ⇒
