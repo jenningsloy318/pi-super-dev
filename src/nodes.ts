@@ -433,7 +433,25 @@ export function gate(opts: GateOptions, node: Node): Node {
 			}
 			const msg = `gate${label} could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
 			ctx.log(`gate: EXHAUSTED${opts.fatal ? " (FATAL — aborting run)" : " (non-fatal)"} — ${opts.fatal ? "aborting" : "proceeding with best-available artifact"}`);
-			if (opts.fatal) throw new FatalAbort(msg);
+			if (opts.fatal) {
+				// spec-18 HITL: before aborting, give the user a chance to decide
+				// (pause-then-continue via ctx.ui.select). Only fires when an escalate
+				// callback is threaded + budget remains; never throws.
+				const escalate = (ctx as { options?: { escalate?: import("./types.ts").Escalate } }).options?.escalate;
+				if (escalate) {
+					try {
+						const { runEscalation, applyRetryDecision } = await import("./escalation.ts");
+						const setup = (state as { setup?: { worktreePath?: string; specDirectory?: string } }).setup;
+						const failure: import("./types.ts").EscalationFailure = { kind: "gate-exhaustion", stage: opts.feedbackKey ?? "gate", message: msg, severity: "hard", worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory };
+						const decision = await runEscalation(state, failure, escalate);
+						if (decision) {
+							applyRetryDecision(state, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });
+							if (decision.choice === "accept-limitation") return { status: "ok" as const, attempts: max };
+						}
+					} catch { /* never-throw: degrade to FatalAbort */ }
+				}
+				throw new FatalAbort(msg);
+			}
 			return { status: "failed", error: msg, attempts: max };
 		},
 	};

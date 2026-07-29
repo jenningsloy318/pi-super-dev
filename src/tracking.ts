@@ -166,15 +166,15 @@ function classifyPorcelain(xy: string): "created" | "modified" | "deleted" {
  *  not apply; the caller logs it explicitly. Never throws — returns
  *  `{ok:false,error}` on any git failure so the caller degrades to
  *  "report + fail" instead of crashing. */
-export function rollbackWorktreeTo(worktreePath: string, commit?: string): { ok: boolean; commit: string | null; error?: string } {
+export function rollbackWorktreeTo(worktreePath: string | undefined, commit?: string): { ok: boolean; commit: string | null; error?: string } {
+	if (!worktreePath) return { ok: false, commit: null, error: "no worktreePath" };
 	const target = commit ?? "HEAD";
 	try {
 		const reset = spawnSync("git", ["-C", worktreePath, "reset", "--hard", target], { encoding: "utf8", timeout: resolveTimeoutMs() });
 		if (reset.error || reset.status !== 0) return { ok: false, commit: null, error: `git reset --hard ${target} failed (status ${String(reset.status)})` };
 		const clean = spawnSync("git", ["-C", worktreePath, "clean", "-fd"], { encoding: "utf8", timeout: resolveTimeoutMs() });
 		if (clean.error || clean.status !== 0) return { ok: false, commit: null, error: `git clean -fd failed (status ${String(clean.status)})` };
-		const head = spawnSync("git", ["-C", worktreePath, "rev-parse", "HEAD"], { encoding: "utf8", timeout: resolveTimeoutMs() });
-		return { ok: true, commit: typeof head.stdout === "string" ? head.stdout.trim() : null };
+		return { ok: true, commit: null };
 	} catch (err) {
 		return { ok: false, commit: null, error: err instanceof Error ? err.message : String(err) };
 	}
@@ -521,3 +521,9 @@ export function setActiveTracker(tracker: ChangeTracker | null): void {
 export function getActiveTracker(): ChangeTracker | null {
 	return activeTracker;
 }
+
+// -------------------------------------------------------------------------
+// Worktree-scoped rollback primitive (spec-18 / AC-05, AC-10 → SCENARIO-010/012)
+// -------------------------------------------------------------------------
+
+/** Outcome of {@link rollbackWorktreeTo}. Never thrown — failures degrade to `{ok:false, error}`. */
