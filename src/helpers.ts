@@ -190,16 +190,35 @@ function gateReview(s: Record<string, unknown>): HelperResult {
 
 // ─── merge-review-verdicts ──────────────────────────────────────────────────
 
-const VERDICT_RANK: Record<string, number> = { Approved: 0, "Approved with Comments": 1, "Changes Requested": 2 };
+const VERDICT_RANK: Record<string, number> = { Approved: 0, "Approved with Comments": 1, "Changes Requested": 2, Blocked: 3 };
+
+function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefined): { verdict: string; syntheticFindings: ControlObj[] } {
+	const fail = (reason: string) => ({
+		verdict: "Changes Requested",
+		syntheticFindings: [{ id: `${sourceName}-invalid`, severity: "high", title: `${sourceName} review unavailable`, detail: reason }],
+	});
+	if (!review || Object.keys(review).length === 0) return fail(`Missing or empty ${sourceName} review output`);
+	const raw = String(review.verdict ?? "").trim();
+	if (!raw) return fail(`Missing verdict in ${sourceName} review output`);
+	if (raw === "PASS") return { verdict: "Approved", syntheticFindings: [] };
+	if (raw === "CONTEST") return { verdict: "Changes Requested", syntheticFindings: [] };
+	if (raw === "REJECT") return { verdict: "Blocked", syntheticFindings: [] };
+	if (raw in VERDICT_RANK) return { verdict: raw, syntheticFindings: [] };
+	return fail(`Invalid verdict in ${sourceName} review output: ${raw}`);
+}
 
 function mergeReviewVerdicts(s: Record<string, unknown>): HelperResult {
 	const codeReview = s["code-review"] as ControlObj | undefined;
 	const adversarial = s["adversarial-review"] as ControlObj | undefined;
-	if (!codeReview && !adversarial) return ok("FAIL: missing both review sources", { verdict: "Changes Requested", findings: [], dimensionsCovered: [] });
-	const codeVerdict = (codeReview?.verdict as string) ?? "Approved";
-	const advVerdict = (adversarial?.verdict as string) ?? "Approved";
-	const verdict = (VERDICT_RANK[codeVerdict] ?? 0) >= (VERDICT_RANK[advVerdict] ?? 0) ? codeVerdict : advVerdict;
-	const findings = [...((codeReview?.findings as unknown[]) ?? []), ...((adversarial?.findings as unknown[]) ?? [])];
+	const code = normalizeReviewVerdict("code-review", codeReview);
+	const adv = normalizeReviewVerdict("adversarial-review", adversarial);
+	const verdict = VERDICT_RANK[code.verdict] >= VERDICT_RANK[adv.verdict] ? code.verdict : adv.verdict;
+	const findings = [
+		...((codeReview?.findings as unknown[]) ?? []),
+		...((adversarial?.findings as unknown[]) ?? []),
+		...code.syntheticFindings,
+		...adv.syntheticFindings,
+	];
 	const dims = [...new Set([...((codeReview?.dimensionsCovered as unknown[]) ?? []), ...((adversarial?.dimensionsCovered as unknown[]) ?? [])] as string[])];
 	return ok(`Merged verdict: ${verdict} (${findings.length} finding(s))`, { verdict, findings, dimensionsCovered: dims });
 }

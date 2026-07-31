@@ -221,6 +221,7 @@ export const bringupTask: Stage = {
 		const uiScope = (state.classify as { uiScope?: string } | undefined)?.uiScope;
 		const hasUi = (!!uiScope && uiScope !== "none") || !!normalizeDiscovered("ui", override?.ui, cwd) || !!detected.ui;
 		const roles: Array<"api" | "ui"> = [hasApi ? "api" : null, hasUi ? "ui" : null].filter((x): x is "api" | "ui" => x !== null);
+		(state as PipelineState).integrationExpectedTests = [...roles];
 		const services: ServiceMap = {};
 		for (const role of roles) {
 			const port = await pickFreePort();
@@ -268,7 +269,12 @@ export function withServiceDeps(deps: string[], node: Node): Node {
 				return !h || !h.ready;
 			});
 			if (missing.length > 0) {
-				ctx.log(`verify: skip test — service(s) not ready: ${missing.join(", ")}`);
+				const reason = `service(s) not ready: ${missing.join(", ")}`;
+				ctx.log(`verify: skip test — ${reason}`);
+				for (const dep of missing) {
+					if (dep === "api") (state as PipelineState).apiTest = { pass: false, skipped: true, failures: [{ reason }], summary: reason };
+					if (dep === "ui") (state as PipelineState).uiTest = { pass: false, skipped: true, failures: [{ reason }], summary: reason };
+				}
 				return { status: "skipped" };
 			}
 			return node.run(state, ctx);

@@ -197,21 +197,26 @@ export const implementationStage: Stage = {
 			// end-record. Never throws (tracker contract); no-op when no tracker active.
 			const tracker = getActiveTracker();
 			// §F #1 — pre-implement no-op detection (the state-confusion root cause):
-			// if this is a RESUME run (re-running over work a prior run already did)
-			// AND this phase DECLARES deliverables that are ALREADY satisfied, SKIP the
-			// implementer instead of re-touching done work and breaking it (systemic
-			// across 10+ runs — implementers said "implementation appears to already
-			// exist" then churned). Resume-gated so it NEVER interferes with a fresh
-			// run's per-attempt deliverable sequencing (the within-run, non-resume
-			// no-op is deferred — it needs the test stubs redesigned to model
-			// phase-start vs post-implementer state). Conservative: skips ONLY when
-			// deliverables are declared AND pass; the final pre-merge build gate
-			// still verifies the whole build.
+			// ONLY for explicit resume runs. A fresh run must never count pre-existing
+			// files/patterns as a completed phase without TDD + build verification.
+			// Even on resume, this is a verified no-op: run the deterministic build gate
+			// and full deliverable check before marking the phase green.
 			const phaseDeliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
-			if (phaseDeliverables && deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables)) {
-				ctx.log(`Implementation ${phaseId} no-op: deliverables already satisfied (files/patterns present) — skipping implementer`);
-				phasesCompleted++;
-				continue;
+			const resumeNoOpAllowed = ctx.options.resume === true || typeof ctx.options.resume === "string";
+			if (resumeNoOpAllowed && phaseDeliverables && deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables)) {
+				resetDeliverableCheckCache();
+				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
+					ctx.log(`Implementation ${phaseId} no-op: resume deliverables already satisfied and verified — skipping implementer`);
+					phaseStatusUpsert(phaseStatus, phaseId, "green");
+					const fi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (fi >= 0) lastFailures.splice(fi, 1);
+					phasesCompleted++;
+					continue;
+				}
+				ctx.log(`Implementation ${phaseId} no-op rejected: resume verification failed (build=${gate.pass || gate.inScopePass}, missing=${deliverableCheck.missing.join("; ") || "none"}) — running implementer`);
+				attemptErrors = gate.errors;
+				missingDeliverables = deliverableCheck.missing;
 			}
 			// Pi-native sub-phase subtitle: announce WHICH phase is being implemented
 			// AFTER the skip guards (so a skipped/already-green phase never flickers a

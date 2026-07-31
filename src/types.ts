@@ -170,6 +170,10 @@ export interface PipelineState {
 	adversarialReview?: ControlObj;
 	apiTest?: ControlObj;
 	uiTest?: ControlObj;
+	/** Stage 11 expected integration-test roles for the current attempt. */
+	integrationExpectedTests?: Array<"api" | "ui">;
+	/** Stage 11 aggregate verdict; absent means integration never ran. */
+	integration?: ControlObj;
 	docs?: ControlObj;
 	cleanup?: ControlObj;
 	merge?: ControlObj;

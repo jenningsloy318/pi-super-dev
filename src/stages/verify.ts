@@ -31,18 +31,66 @@ export const reviewApproved = (s: PipelineState) => {
 
 const passTrue = (v: unknown): boolean => typeof v === "boolean" ? v : /^(true|yes|1|pass)$/i.test(String(v ?? "").trim());
 
-const testsGreen = (s: PipelineState) => {
+export function expectedIntegrationRoles(s: PipelineState): Array<"api" | "ui"> {
+	if (Array.isArray(s.integrationExpectedTests)) return s.integrationExpectedTests;
+	const roles: Array<"api" | "ui"> = [];
+	if (s.services?.api || s.apiTest) roles.push("api");
+	if (s.services?.ui || s.uiTest) roles.push("ui");
+	return roles;
+}
+
+export const integrationTestsGreen = (s: PipelineState) => {
+	const roles = expectedIntegrationRoles(s);
+	if (roles.length === 0) return false;
 	const api = s.apiTest as { pass?: unknown } | undefined;
 	const ui = s.uiTest as { pass?: unknown } | undefined;
-	if (api && !passTrue(api.pass)) return false;
-	if (ui && !passTrue(ui.pass)) return false;
+	if (roles.includes("api") && !passTrue(api?.pass)) return false;
+	if (roles.includes("ui") && !passTrue(ui?.pass)) return false;
 	return true;
 };
 
 const buildGreen = (s: PipelineState) => {
 	const b = s.buildGate as { pass?: boolean } | undefined;
-	return b ? b.pass !== false : true;
+	return b?.pass === true;
 };
+
+function failedReviewControl(kind: "codeReview" | "adversarialReview", reason: string): Record<string, unknown> {
+	const title = kind === "codeReview" ? "Code review did not complete" : "Adversarial review did not complete";
+	return {
+		title,
+		date: new Date().toISOString().slice(0, 10),
+		verdict: "Changes Requested",
+		summary: reason,
+		findings: [{ id: `${kind}-agent-failed`, severity: "high", title, detail: reason }],
+	};
+}
+
+function validReviewControl(control: unknown): control is Record<string, unknown> {
+	return !!control && typeof control === "object" && !Array.isArray(control) && typeof (control as { verdict?: unknown }).verdict === "string";
+}
+
+function failedTestControl(kind: "apiTest" | "uiTest", reason: string): Record<string, unknown> {
+	return { pass: false, skipped: true, failures: [{ reason }], summary: reason };
+}
+
+function resetIntegrationAttemptState(s: PipelineState): void {
+	delete s.apiTest;
+	delete s.uiTest;
+	delete s.services;
+	delete s.integrationExpectedTests;
+}
+
+function markIntegrationNotApplicable(s: PipelineState, ctx: StageContext): NodeResult {
+	s.integration = { pass: true, notApplicable: true, summary: "No API/UI service surface detected for integration testing" };
+	ctx.log("Stage 11: no integration-test surface detected — marking integration not applicable");
+	return { status: "ok" };
+}
+
+function markIntegrationPassed(s: PipelineState, ctx: StageContext, message: string): NodeResult {
+	s.integration = { pass: true, summary: message, expected: expectedIntegrationRoles(s) };
+	ctx.log(message);
+	return { status: "ok" };
+}
 
 // ─── shared steps ───────────────────────────────────────────────────────────
 
@@ -53,20 +101,30 @@ const reviewStep = parallel(
 			id: "codeReview",
 			label: "Stage 10a — Code Review",
 			async run(s, ctx) {
-				if (!ctx.budget.check()) return undefined;
+				if (!ctx.budget.check()) return failedReviewControl("codeReview", "Agent budget exhausted before code review");
 				const r = await ctx.agent({ id: "pipeline.verify.code-review", agent: "code-reviewer", prompt: buildCodeReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["codeReview"]?.schema });
-				renderAndWrite(s.setup!, (m) => ctx.log(m), "codeReview", r.control as Record<string, unknown>);
-				return r.control ?? {};
+				const control = r.error
+					? failedReviewControl("codeReview", `code-reviewer failed: ${r.error}`)
+					: validReviewControl(r.control)
+						? r.control
+						: failedReviewControl("codeReview", "code-reviewer produced no valid structured review verdict");
+				renderAndWrite(s.setup!, (m) => ctx.log(m), "codeReview", control);
+				return control;
 			},
 		}),
 		task({
 			id: "adversarialReview",
 			label: "Stage 10b — Adversarial Review",
 			async run(s, ctx) {
-				if (!ctx.budget.check()) return undefined;
+				if (!ctx.budget.check()) return failedReviewControl("adversarialReview", "Agent budget exhausted before adversarial review");
 				const r = await ctx.agent({ id: "pipeline.verify.adversarial", agent: "adversarial-reviewer", prompt: buildAdversarialPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["adversarialReview"]?.schema });
-				renderAndWrite(s.setup!, (m) => ctx.log(m), "adversarialReview", r.control as Record<string, unknown>);
-				return r.control ?? {};
+				const control = r.error
+					? failedReviewControl("adversarialReview", `adversarial-reviewer failed: ${r.error}`)
+					: validReviewControl(r.control)
+						? r.control
+						: failedReviewControl("adversarialReview", "adversarial-reviewer produced no valid structured review verdict");
+				renderAndWrite(s.setup!, (m) => ctx.log(m), "adversarialReview", control);
+				return control;
 			},
 		}),
 	],
@@ -95,8 +153,8 @@ const buildGateStep = task({
 
 // ─── Stage 10 — Review loop ─────────────────────────────────────────────────
 
-/** Fix review findings only (Stage 10c). */
-const fixStepReview = branch((s: PipelineState) => !reviewApproved(s), {
+/** Fix review findings and deterministic build failures (Stage 10c). */
+const fixStepReview = branch((s: PipelineState) => !reviewApproved(s) || (s.buildGate !== undefined && !buildGreen(s)), {
 	yes: task({
 		id: "reviewFix",
 		label: "Stage 10c — Address Findings",
@@ -159,10 +217,13 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	const countHist = ((s as Record<string, unknown>).__reviewCounts as number[] | undefined) ?? [];
 	const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
 	const sig = findingsSignature(s);
-	// GAP C: identical-signature OR non-decreasing-count triggers stagnation.
+	// GAP B/C: successful exit requires review approval AND a green build gate;
+	// otherwise identical-signature OR non-decreasing-count triggers stagnation.
+	const approvedAndBuildGreen = reviewApproved(s) && buildGreen(s);
 	const stagnant = detectStagnation(sig, findings.length, sigHist, countHist);
 	(s as Record<string, unknown>).__reviewSignatures = sigHist;
 	(s as Record<string, unknown>).__reviewCounts = countHist;
+	if (approvedAndBuildGreen) return true;
 	if (stagnant) {
 		// spec-18 HITL: escalate before breaking (pause-then-continue).
 		const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
@@ -192,9 +253,7 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds — breaking early (non-fatal; ${sigHist.length} rounds)`);
 		return true;
 	}
-	// GAP B: a successful exit requires review approval AND a green build gate.
-	// Approved+build-red keeps looping until stagnation or the times:3 cap.
-	return reviewApproved(s) && buildGreen(s);
+	return false;
 };
 
 /** Stage 10 — Review: review → fix → build gate, max 3. */
@@ -240,12 +299,13 @@ const apiTestStep = withServiceDeps(["api"],
 		label: "Stage 11a — API Testing",
 		requires: ["*-specification.md"],
 		async run(s, ctx) {
-			if (!ctx.budget.check()) return undefined;
+			if (!ctx.budget.check()) return failedTestControl("apiTest", "Agent budget exhausted before API testing");
 			const api = s.services?.api;
-			if (!api) return undefined;
+			if (!api) return failedTestControl("apiTest", "API service was expected but is not available");
 			const r = await ctx.agent({ id: "pipeline.integration.api-test", agent: "api-tester", prompt: buildApiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, api), schema: STAGE_MODELS["apiTest"]?.schema });
-			renderAndWrite(s.setup!, (m) => ctx.log(m), "apiTest", r.control as Record<string, unknown>);
-			return r.control ?? {};
+			const control = r.error ? failedTestControl("apiTest", `api-tester failed: ${r.error}`) : ((r.control as Record<string, unknown> | null) ?? failedTestControl("apiTest", "api-tester produced no structured test result"));
+			renderAndWrite(s.setup!, (m) => ctx.log(m), "apiTest", control);
+			return control;
 		},
 	}),
 );
@@ -262,13 +322,14 @@ const uiTestTaskNode = task({
 	label: "Stage 11b — UI Testing",
 	requires: ["*-specification.md"],
 	async run(s, ctx) {
-		if (!ctx.budget.check()) return undefined;
+		if (!ctx.budget.check()) return failedTestControl("uiTest", "Agent budget exhausted before UI testing");
 		const ui = s.services?.ui;
-		if (!ui) return undefined;
+		if (!ui) return failedTestControl("uiTest", "UI service was expected but is not available");
 		const api = s.services?.api;
 		const r = await ctx.agent({ id: "pipeline.integration.ui-test", agent: "ui-tester", prompt: buildUiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, ui, api), schema: STAGE_MODELS["uiTest"]?.schema });
-		renderAndWrite(s.setup!, (m) => ctx.log(m), "uiTest", r.control as Record<string, unknown>);
-		return r.control ?? {};
+		const control = r.error ? failedTestControl("uiTest", `ui-tester failed: ${r.error}`) : ((r.control as Record<string, unknown> | null) ?? failedTestControl("uiTest", "ui-tester produced no structured test result"));
+		renderAndWrite(s.setup!, (m) => ctx.log(m), "uiTest", control);
+		return control;
 	},
 });
 const uiTestStep: Node = {
@@ -277,6 +338,7 @@ const uiTestStep: Node = {
 		if (ctx.signal?.aborted) return { status: "cancelled" };
 		if (!uiReady(s)) {
 			ctx.log(`Stage 11: skip ui-test — service not ready`);
+			s.uiTest = failedTestControl("uiTest", "UI service was expected but is not ready");
 			return { status: "skipped" } satisfies NodeResult;
 		}
 		return uiTestTaskNode.run(s, ctx);
@@ -319,7 +381,7 @@ const fixStepIntegration = task({
 /**
  * Stage 11 — Integration Testing: test → (fail? fix → re-review → build → re-test), max 3 total.
  *
- * Custom node (not loop()) because testsGreen is vacuously true before tests run —
+ * Custom node (not loop()) because integrationTestsGreen used to be vacuously true before tests ran —
  * a loop's `until` check would exit immediately. This node runs tests FIRST
  * unconditionally, then loops for retries on failure.
  */
@@ -357,34 +419,49 @@ export const integrationLoopNode: Node = {
 
 		// 1. Initial test run (unconditional).
 		ctx.log("Stage 11 — Integration Testing: running initial tests");
+		resetIntegrationAttemptState(state);
 		const initResult = await testBlock.run(state, ctx);
 		if (initResult.status === "cancelled") return initResult;
-		if (testsGreen(state) && reviewApproved(state)) {
-			ctx.log("Stage 11: integration passed on first run");
-			return { status: "ok" };
+		if (initResult.status === "failed") {
+			state.integration = { pass: false, summary: initResult.error ?? "integration bringup/test block failed" };
+			return initResult;
+		}
+		if (expectedIntegrationRoles(state).length === 0) return markIntegrationNotApplicable(state, ctx);
+		if (integrationTestsGreen(state) && reviewApproved(state) && buildGreen(state)) {
+			return markIntegrationPassed(state, ctx, "Stage 11: integration passed on first run");
 		}
 		if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 
 		// 2. Retry loop: fix → re-review → build → re-test (max 2 retries = 3 total).
 		for (let attempt = 1; attempt <= 2; attempt++) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
-			if (!ctx.budget.check()) return { status: "ok" };
+			if (!ctx.budget.check()) {
+				state.integration = { pass: false, summary: "Budget exhausted during integration retry" };
+				return { status: "failed", error: "budget exhausted during integration retry" };
+			}
 
 			ctx.log(`Stage 11: integration retry ${attempt}/2 — fix + re-review + re-test`);
 
 			await fixStepIntegration.run(state, ctx);
 			await reviewStep.run(state, ctx);
 			await buildGateStep.run(state, ctx);
-			await testBlock.run(state, ctx);
+			resetIntegrationAttemptState(state);
+			const retryTestResult = await testBlock.run(state, ctx);
+			if (retryTestResult.status === "cancelled") return retryTestResult;
+			if (retryTestResult.status === "failed") {
+				state.integration = { pass: false, summary: retryTestResult.error ?? "integration bringup/test block failed" };
+				return retryTestResult;
+			}
 
-			if (testsGreen(state) && reviewApproved(state)) {
-				ctx.log(`Stage 11: integration passed on retry ${attempt}`);
-				return { status: "ok" };
+			if (expectedIntegrationRoles(state).length === 0) return markIntegrationNotApplicable(state, ctx);
+			if (integrationTestsGreen(state) && reviewApproved(state) && buildGreen(state)) {
+				return markIntegrationPassed(state, ctx, `Stage 11: integration passed on retry ${attempt}`);
 			}
 			if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 		}
 
 		ctx.log("Stage 11: integration testing max retries exhausted (non-fatal)");
+		state.integration = { pass: false, summary: "integration testing max retries exhausted", expected: expectedIntegrationRoles(state) };
 		return { status: "failed", error: "integration testing max retries exhausted" };
 	},
 };
