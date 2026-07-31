@@ -69,4 +69,45 @@ describe("runWorkflow honest status", () => {
 		);
 		expect(s.status).toBe("partial");
 	});
+	it("reports 'partial' when review never ran", async () => {
+		const s = await runWorkflow(
+			wf(seed({ implementation: { totalPhases: 2, allGreen: true } })),
+			"t",
+		);
+		expect(s.status).toBe("partial");
+	});
+	it("reports 'partial' when a deterministic build gate failed despite approval", async () => {
+		const s = await runWorkflow(
+			wf(seed({ implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" }, preMergeBuild: { pass: false } })),
+			"t",
+		);
+		expect(s.status).toBe("partial");
+	});
+	it("reports 'partial' when integration failed despite approval", async () => {
+		const s = await runWorkflow(
+			wf(seed({ implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" }, integration: { pass: false } })),
+			"t",
+		);
+		expect(s.status).toBe("partial");
+	});
+	it("reports 'partial' when merge was required but not confirmed", async () => {
+		const s = await runWorkflow(
+			wf(seed({ implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" }, preMergeBuild: { pass: true }, cleanup: { blocked: false }, merge: { merged: false } })),
+			"t",
+		);
+		expect(s.status).toBe("partial");
+	});
+	it("reports 'partial' when any stage failed even if green implementation and review exist", async () => {
+		const root: Node = {
+			kind: "seed-and-fail-record",
+			async run(state, ctx) {
+				Object.assign(state, { implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" } });
+				ctx.results.push({ id: "budgeted", label: "Budgeted Stage", status: "failed", error: "budget exhausted" });
+				return { status: "ok" };
+			},
+		};
+		const s = await runWorkflow(wf(root), "t");
+		expect(s.status).toBe("partial");
+		expect(s.failedStages).toEqual([{ label: "Budgeted Stage", error: "budget exhausted" }]);
+	});
 });

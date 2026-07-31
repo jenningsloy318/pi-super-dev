@@ -40,4 +40,8 @@ describe("workflow agent() feedback injection (retry convergence)", () => {
 		await mkCtx({} as PipelineState).agent({ id: "pipeline.other", agent: "requirements-clarifier", prompt: "PLAIN" });
 		expect(captured.prompt).toBe("PLAIN");
 	});
+	it("enforces maxAgents centrally before spawning", async () => {
+		const ctx = makeContext({} as PipelineState, "t", { maxAgents: 0 }, () => {});
+		await expect(ctx.agent({ id: "pipeline.too-many", agent: "requirements-clarifier", prompt: "NOPE" })).rejects.toThrow(/agent budget exhausted/);
+	});
 });

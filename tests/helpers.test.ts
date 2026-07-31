@@ -54,6 +54,17 @@ describe("helpers: routing", () => {
 		expect(r.value.verdict).toBe("Changes Requested");
 		expect((r.value.findings as unknown[]).length).toBe(1);
 	});
+	it("merge-review-verdicts never defaults missing reviewer output to approval", async () => {
+		const r = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": {}, "adversarial-review": {} } });
+		expect(r.value.verdict).toBe("Changes Requested");
+		expect((r.value.findings as unknown[]).length).toBeGreaterThan(0);
+	});
+	it("merge-review-verdicts maps adversarial PASS/REJECT to approved/blocking semantics", async () => {
+		const pass = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "PASS" } } });
+		expect(pass.value.verdict).toBe("Approved");
+		const reject = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "REJECT" } } });
+		expect(reject.value.verdict).toBe("Blocked");
+	});
 });
 
 describe("control parser", () => {

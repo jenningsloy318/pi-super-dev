@@ -69,6 +69,29 @@ describe("task", () => {
 		const t = task({ id: "x", label: "x", fatal: true, async run() { throw new Error("fatal"); } });
 		await expect(t.run({}, mkCtx())).rejects.toThrow("fatal");
 	});
+	it("honors skipStages by stage id", async () => {
+		let ran = false;
+		const ctx = mkCtx();
+		ctx.options.skipStages = ["foo"];
+		const r = await task(mockTask("foo", () => { ran = true; return 1; })).run({}, ctx);
+		expect(r.status).toBe("skipped");
+		expect(ran).toBe(false);
+	});
+	it("honors skipStages by stage number in the label", async () => {
+		let ran = false;
+		const ctx = mkCtx();
+		ctx.options.skipStages = ["10"];
+		const r = await task({ id: "codeReview", label: "Stage 10a — Code Review", async run() { ran = true; return 1; } }).run({}, ctx);
+		expect(r.status).toBe("skipped");
+		expect(ran).toBe(false);
+	});
+	it("does not silently skip when budget is exhausted", async () => {
+		const ctx = mkCtx();
+		ctx.budget.check = () => false;
+		const r = await task(mockTask("foo", () => 1)).run({}, ctx);
+		expect(r.status).toBe("failed");
+		expect(r.error).toMatch(/budget exhausted/);
+	});
 });
 
 describe("sequence", () => {

@@ -90,6 +90,24 @@ const NOOP_RESULT: NodeResult = { status: "ok" };
 const failed = (error: string): NodeResult => ({ status: "failed", error });
 const cancelled = (): NodeResult => ({ status: "cancelled" });
 
+function normalizeSkipStage(value: string): string {
+	return value.trim().toLowerCase().replace(/^stage\s+/, "");
+}
+
+function stageNumbers(label: string): string[] {
+	const match = /^Stage\s+(\d+(?:\.\d+)?)/i.exec(label.trim());
+	return match ? [match[1]] : [];
+}
+
+function shouldSkipStage(stage: Stage, ctx: StageContext): boolean {
+	// Stage 1/setup is never skippable because it creates the worktree/spec dirs.
+	if (stage.id === "setup") return false;
+	const requested = new Set((ctx.options.skipStages ?? []).map((s) => normalizeSkipStage(String(s))));
+	if (requested.size === 0) return false;
+	const candidates = [stage.id, stage.label, ...stageNumbers(stage.label)].map(normalizeSkipStage);
+	return candidates.some((candidate) => requested.has(candidate));
+}
+
 // ─── task ───────────────────────────────────────────────────────────────────
 
 /** Lift a `Stage` into a leaf node. Stores the return value under `state[id]`. */
@@ -103,15 +121,21 @@ export function task(stage: Stage): Node {
 		label: stage.label,
 		async run(state, ctx) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
+			if (shouldSkipStage(stage, ctx)) {
+				ctx.log(`task "${stage.id}": skipped (--skipStages)`);
+				record(ctx, "skipped");
+				return { status: "skipped" };
+			}
 			if (stage.enabled && !stage.enabled(state)) {
 				ctx.log(`task "${stage.id}": skipped (disabled)`);
 				record(ctx, "skipped");
 				return { status: "skipped" };
 			}
 			if (!ctx.budget.check()) {
-				ctx.log(`task "${stage.id}": skipped (budget exhausted)`);
-				record(ctx, "skipped");
-				return { status: "skipped" };
+				const error = `task "${stage.id}": budget exhausted before stage start`;
+				ctx.log(error);
+				record(ctx, "failed", error);
+				return { status: "failed", error };
 			}
 			// Precondition: verify upstream artifact docs exist before running. Logs
 			// ✓/✗ per required glob so inter-stage dependencies are visible. Missing
@@ -125,7 +149,7 @@ export function task(stage: Stage): Node {
 			}
 			try {
 				ctx.events.emit("phase", stage.label);
-			ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" });
+				ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" });
 				const startMs = Date.now();
 				const result = await stage.run(state, ctx);
 				const durationMs = Date.now() - startMs;

@@ -55,6 +55,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	const signal = options.signal;
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
+		if (!budget.check()) {
+			throw new Error(`agent budget exhausted before ${call.id || call.agent} (max ${options.maxAgents ?? DEFAULT_MAX_AGENTS})`);
+		}
 		budget.spent();
 		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
 		// First-principles retry convergence: if a gate rejected a prior attempt,
@@ -195,6 +198,16 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 
 	if (!aborted) progress?.log(`Workflow "${workflow.id}" complete`);
 
+	// Deduped list of stages that ended in `failed` (with their error).
+	const seen = new Set<string>();
+	const failedStages: { label: string; error?: string }[] = [];
+	for (const r of ctx.results) {
+		if (r.status === "failed" && !seen.has(r.id)) {
+			seen.add(r.id);
+			failedStages.push({ label: r.label || r.id, error: r.error });
+		}
+	}
+
 	// Derive an honest overall status from the produced state — never faked.
 	const impl = state.implementation as { totalPhases?: number; allGreen?: boolean } | undefined;
 	const review = state.review as { verdict?: string } | undefined;
@@ -204,23 +217,24 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	const approved = verdict === "Approved" || verdict === "Approved with Comments";
 	const reviewRan = review !== undefined;
 
+	const hardGateFailed =
+		((state.buildGate as { pass?: boolean } | undefined)?.pass === false) ||
+		((state.preMergeBuild as { pass?: boolean } | undefined)?.pass === false) ||
+		((state.integration as { pass?: boolean } | undefined)?.pass === false);
+	const mergeRequired =
+		state.preMergeBuild !== undefined &&
+		(state.preMergeBuild as { pass?: boolean }).pass === true &&
+		state.cleanup !== undefined &&
+		(state.cleanup as { blocked?: boolean }).blocked !== true;
+	const mergeNotConfirmed = mergeRequired && (state.merge as { merged?: boolean } | undefined)?.merged !== true;
+
 	let status: RunStatus;
-	if (phases === 0) {
+	if (aborted || phases === 0) {
 		status = "failed"; // no implementation produced (gate aborted, or spec had no phases)
-	} else if (green && (!reviewRan || approved)) {
+	} else if (green && reviewRan && approved && !hardGateFailed && !mergeNotConfirmed && failedStages.length === 0) {
 		status = "success";
 	} else {
 		status = "partial";
-	}
-
-	// Deduped list of stages that ended in `failed` (with their error).
-	const seen = new Set<string>();
-	const failedStages: { label: string; error?: string }[] = [];
-	for (const r of ctx.results) {
-		if (r.status === "failed" && !seen.has(r.id)) {
-			seen.add(r.id);
-			failedStages.push({ label: r.label || r.id, error: r.error });
-		}
 	}
 
 	return {

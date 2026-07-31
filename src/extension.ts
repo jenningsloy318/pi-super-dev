@@ -306,7 +306,7 @@ export default function activate(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const task = String(params.task ?? "").trim();
 			if (!task) {
-				return { content: [{ type: "text", text: "super_dev requires a non-empty `task`." }], isError: true, details: {} };
+				throw new Error("super_dev requires a non-empty `task`.");
 			}
 			let lastFlush = 0;
 			const FLUSH_MS = 80;
@@ -430,7 +430,6 @@ export default function activate(pi: ExtensionAPI): void {
 					writeFileSync(logPath, stream.diskLogText() + "\n");
 				} catch { /* best-effort; the live tail is the primary surface */ }
 				const escalationChoice = await handleStagnation(summary, ctx);
-				const isError = summary.status === "failed";
 				// Async reflection ("dreaming") — non-blocking, best-effort.
 				runReflectionAsync();
 				// Stages for the result's stage-progress section, from the live tracker.
@@ -440,14 +439,16 @@ export default function activate(pi: ExtensionAPI): void {
 				const fallback = [...summaryLines];
 				if (logPath) fallback.push(`Full run log: ${logPath}`);
 				if (escalationChoice) fallback.push(`  Escalation: user chose "${escalationChoice}".`);
+				if (summary.status === "failed") {
+					throw new Error(fallback.join("\n"));
+				}
 				return {
 					content: [{ type: "text", text: fallback.join("\n") }],
-					isError,
 					details: { summary, summaryLines, transcriptTail: stream.transcriptTail(), stages, logPath },
 				};
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
-				return { content: [{ type: "text", text: `❌ super-dev pipeline failed: ${message}` }], isError: true, details: {} };
+				throw new Error(`❌ super-dev pipeline failed: ${message}`);
 			} finally {
 				// Discard the run-state singleton via the exported setter (single write
 				// path), in the SAME cleanup that removes the run's dashboard widget — so
