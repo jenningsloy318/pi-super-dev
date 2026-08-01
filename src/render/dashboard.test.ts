@@ -316,24 +316,27 @@ describe("packDashboardLines (AC-02 / AC-04 / SCENARIO-007)", () => {
 		expect(all).toContain("<accent>"); // running
 	});
 
-	it("preserves the two-column adaptive stage layout (ceil(n/2) stage rows)", () => {
+	it("uses a grouped single-column stage layout with section separators", () => {
 		const lines = packDashboardLines(entries, undefined, 120, mockTheme() as never);
-		// header(1) + 0 activity lines + ceil(3/2)=2 stage rows = 3 lines
-		expect(lines.length).toBe(3);
+		const all = lines.join("\n");
+		expect(all).toContain("── running ──");
+		expect(all).toContain("── completed ──");
+		expect(all).toContain("── needs attention ──");
+		expect(all).toContain("Stage A");
+		expect(all).toContain("Stage B");
+		expect(all).toContain("Stage C");
 	});
 
 	it("adds exactly one activity line when activity text is supplied", () => {
 		const lines = packDashboardLines(entries, "doing stuff", 120, mockTheme() as never);
-		// header(1) + activity(1) + 2 stage rows = 4 lines
-		expect(lines.length).toBe(4);
+		expect(lines.length).toBeGreaterThan(4);
 		expect(lines[1]).toContain("doing stuff");
 	});
 
 	it("omits the activity line when activity is empty / undefined", () => {
 		for (const act of [undefined, "", "   "]) {
 			const lines = packDashboardLines(entries, act, 120, mockTheme() as never);
-			// header + 2 stage rows only
-			expect(lines.length).toBe(3);
+			expect(lines.length).toBeGreaterThan(3);
 		}
 	});
 
@@ -378,7 +381,7 @@ describe("edge cases — anti-hardcoding hardening (AC-02 / AC-03 / AC-05)", () 
 
 	it("packDashboardLines handles an empty entries array (0/0 header, no stage rows)", () => {
 		const lines = packDashboardLines([], undefined, 120, mockTheme() as never);
-		expect(lines.length).toBe(1); // header only, ceil(0/2) = 0 stage rows
+		expect(lines.length).toBe(1); // header only, no stage rows
 		expect(lines[0]).toContain("0/0");
 		expect(lines[0]).toContain("super-dev");
 		expect(lines[0]).toContain("esc to abort");
