@@ -305,8 +305,11 @@ export class ChangeTracker {
 			const endHead = endHeadRaw.trim() || null;
 			// Committed changes since the begin ref (skipped when no baseline ref).
 			const diffRaw = beginHead ? this.gitSpawn(["diff", "--name-status", beginHead]) : "";
-			// Working-tree (uncommitted/untracked) state at end.
-			const statusRaw = this.gitSpawn(["status", "--porcelain"]);
+			// Working-tree (uncommitted/untracked) state at end. `--untracked-files=all`
+			// is REQUIRED: default porcelain can collapse `?? src/team/` to a directory,
+			// causing claimed file paths like `src/team/types.ts` to false-fail the
+			// change gate even though the files exist.
+			const statusRaw = this.gitSpawn(["status", "--porcelain", "--untracked-files=all"]);
 			const gitActual = this.buildGitActual(diffRaw, statusRaw);
 			const crossCheck = claimedOrNull ? this.computeCrossCheck(claimedOrNull, gitActual) : null;
 			const verdict: ChangeRecord["verdict"] =
@@ -377,7 +380,8 @@ export class ChangeTracker {
 
 	/**
 	 * Build {@link GitActual} from `diff --name-status` (committed) UNION
-	 * `status --porcelain` (uncommitted/untracked). Classification (AC-01):
+	 * `status --porcelain --untracked-files=all` (uncommitted/untracked).
+	 * Classification (AC-01):
 	 *  - diff status letters: `A`→created, `D`→deleted, else (`M`/`T`/…)→modified
 	 *  - porcelain XY via {@link classifyPorcelain}: `??`→created, `D*`/`*D`
 	 *    →deleted, else→modified
