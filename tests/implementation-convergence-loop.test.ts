@@ -17,6 +17,7 @@ let gateQ: Array<{ pass: boolean; inScopePass: boolean; errors: string[]; outOfS
 const PASS = { pass: true, inScopePass: true, errors: [], outOfScopeErrors: [], ran: ["npm test"] };
 const FAIL = { pass: false, inScopePass: false, errors: ["boom: compile error"], outOfScopeErrors: [], ran: ["npm test"] };
 const DELIV_PASS = { pass: true, missing: [], ran: [] };
+let userNotes = "";
 
 vi.mock("../src/build-runner.ts", async (orig) => {
 	const a = (await orig()) as Record<string, unknown>;
@@ -31,6 +32,7 @@ vi.mock("../src/build-runner.ts", async (orig) => {
 });
 vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn() }));
+vi.mock("../src/render/user-notes.ts", () => ({ userNotesForAgent: vi.fn(() => userNotes) }));
 
 import { implementationStage } from "../src/stages/implementation.ts";
 import type { PipelineState, StageContext, RunOptions, AgentResult, HelperResult } from "../src/types.ts";
@@ -62,7 +64,7 @@ const mkCtx = (runLabel: string) => {
 };
 
 describe("§D convergence loop — per-phase green-state carry", () => {
-	beforeEach(() => { gateQ = []; });
+	beforeEach(() => { gateQ = []; userNotes = ""; });
 
 	it("run 1: phase 1 green, phase 2 fails → allGreen=false, phaseStatus + lastFailures recorded", async () => {
 		gateQ = [PASS, FAIL, FAIL, FAIL]; // phase1 passes att1; phase2 fails 3×
@@ -97,5 +99,56 @@ describe("§D convergence loop — per-phase green-state carry", () => {
 		expect(r2.implPhases).not.toContain("phase-01");
 		expect(r2.implPhases).toContain("phase-02"); // phase 2 was re-attempted
 		expect(out2.phaseStatus.every((p) => p.status === "green")).toBe(true);
+	});
+
+	it("runtime instructions arriving during implementation force a follow-up pass that reruns earlier green phases", async () => {
+		gateQ = [PASS, PASS];
+		const state = mkState();
+		const r1 = mkCtx("run1");
+		// Simulate a user instruction captured after implementation starts. The
+		// stage should finish the current pass but report allGreen=false so the
+		// outer convergence loop re-enters with the new instruction visible from
+		// phase 1 onward.
+		const originalAgent = r1.ctx.agent;
+		r1.ctx.agent = async (call) => {
+			const result = await originalAgent(call);
+			if (call.id.includes("phase-01.impl")) userNotes = "(1) switch filters to backend-backed multi-select";
+			return result;
+		};
+		const out1 = await implementationStage.run(state, r1.ctx) as { allGreen: boolean; invalidatedByRuntimeInstructions?: boolean; runtimeInstructionFingerprint?: string };
+		expect(out1.allGreen).toBe(false);
+		expect(out1.invalidatedByRuntimeInstructions).toBe(true);
+		(state as unknown as Record<string, unknown>).implementation = out1;
+
+		gateQ = [PASS, PASS];
+		const r2 = mkCtx("run2");
+		const out2 = await implementationStage.run(state, r2.ctx) as { allGreen: boolean; invalidatedByRuntimeInstructions?: boolean };
+		expect(r2.implPhases).toContain("phase-01");
+		expect(r2.implPhases).toContain("phase-02");
+		expect(out2.allGreen).toBe(true);
+		expect(out2.invalidatedByRuntimeInstructions).toBe(false);
+	});
+
+	it("runtime instructions drained by the implementation summary spawn still invalidate the pass", async () => {
+		gateQ = [PASS, PASS];
+		const state = mkState();
+		const r1 = mkCtx("run1");
+		const originalAgent = r1.ctx.agent;
+		r1.ctx.agent = async (call) => {
+			const result = await originalAgent(call);
+			if (call.id === "pipeline.implementation.summary") userNotes = "(1) make filters backend-backed multi-select";
+			return result;
+		};
+		const out1 = await implementationStage.run(state, r1.ctx) as { allGreen: boolean; invalidatedByRuntimeInstructions?: boolean };
+		expect(out1.allGreen).toBe(false);
+		expect(out1.invalidatedByRuntimeInstructions).toBe(true);
+		(state as unknown as Record<string, unknown>).implementation = out1;
+
+		gateQ = [PASS, PASS];
+		const r2 = mkCtx("run2");
+		const out2 = await implementationStage.run(state, r2.ctx) as { allGreen: boolean };
+		expect(r2.implPhases).toContain("phase-01");
+		expect(r2.implPhases).toContain("phase-02");
+		expect(out2.allGreen).toBe(true);
 	});
 });

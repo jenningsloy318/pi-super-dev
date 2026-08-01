@@ -173,10 +173,11 @@ const pipeline = sequence(
 		// code-review + adversarial reviewers → merge) → fix, looped until approved.
 		branch(hasImplementation, { yes: sequence([reviewStageNode, branch(reviewApproved, { yes: integrationLoopNode, no: noop() })]) }),
 		task(docsWriter),
-		task(cleanupTask),
-		// Pre-merge hard build gate (Gap A): don't merge broken code. Best-effort —
-		// a failure here skips merge but does not abort (tolerant sequence).
+		// Pre-merge hard build gate (Gap A): don't merge broken code. Run BEFORE
+		// cleanup so dependency cleanup cannot remove node_modules/toolchains needed
+		// by the final verification pass.
 		task(preMergeBuildStage),
+		task(cleanupTask),
 		// Conditional branch: merge only if cleanup found no sensitive data AND
 		// the pre-merge build gate did not fail.
 		branch(canMerge, { yes: task(mergeWriter) }),

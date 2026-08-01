@@ -12,6 +12,7 @@ import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
+import { userNotesForAgent } from "../render/user-notes.ts";
 import { normalizePhases } from "../doc-validators.ts";
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
 
@@ -22,6 +23,16 @@ const MAX_ATTEMPTS = 3;
  *  (spec §B, AC-02 → SCENARIO-007/009). Mirrors `MAX_ATTEMPTS` — no new config. */
 const MAX_RED_RETRIES = 2;
 const pad = (n: number) => String(n).padStart(2, "0");
+
+export function runtimeInstructionFingerprint(specDir: string | undefined): string {
+	const notes = userNotesForAgent(specDir);
+	let hash = 2166136261;
+	for (let i = 0; i < notes.length; i++) {
+		hash ^= notes.charCodeAt(i);
+		hash = Math.imul(hash, 16777619);
+	}
+	return `${notes.length}:${(hash >>> 0).toString(16)}`;
+}
 
 /** Status-specific re-prompt hint appended to the tdd-guide prompt when the RED
  *  oracle reports a NON-red status (green/broken), nudging the agent toward a
@@ -159,9 +170,12 @@ export const implementationStage: Stage = {
 		// PRIOR convergence iteration (state.implementation holds the last run's
 		// control). Green phases are skipped; a failed phase's prior reasons seed
 		// its next attempt 1 so iteration 2 targets the real failures.
-		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[] };
-		const phaseStatus: PhaseStatusEntry[] = Array.isArray(priorImpl.phaseStatus) ? priorImpl.phaseStatus.map((p) => ({ ...p })) : [];
-		const lastFailures: PhaseFailureEntry[] = Array.isArray(priorImpl.lastFailures) ? priorImpl.lastFailures.map((f) => ({ ...f, reasons: [...f.reasons] })) : [];
+		const startInstructionFingerprint = runtimeInstructionFingerprint(state.setup?.specDirectory);
+		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[]; runtimeInstructionFingerprint?: string; invalidatedByRuntimeInstructions?: boolean };
+		const priorInstructionInvalidated = priorImpl.invalidatedByRuntimeInstructions === true || (typeof priorImpl.runtimeInstructionFingerprint === "string" && priorImpl.runtimeInstructionFingerprint !== startInstructionFingerprint);
+		let phaseStatus: PhaseStatusEntry[] = priorInstructionInvalidated ? [] : (Array.isArray(priorImpl.phaseStatus) ? priorImpl.phaseStatus.map((p) => ({ ...p })) : []);
+		let lastFailures: PhaseFailureEntry[] = priorInstructionInvalidated ? [] : (Array.isArray(priorImpl.lastFailures) ? priorImpl.lastFailures.map((f) => ({ ...f, reasons: [...f.reasons] })) : []);
+		if (priorInstructionInvalidated) ctx.log("Implementation: runtime user instructions changed — invalidating prior green phase carry and re-running phases");
 		if (phaseStatus.length) ctx.log(`Implementation: resuming convergence iteration (${phaseStatus.filter((p) => p.status === "green").length}/${phases.length} phases already green)`);
 		let phasesCompleted = 0;
 		let allGreen = true;
@@ -445,12 +459,23 @@ export const implementationStage: Stage = {
 			filesModified,
 			phaseStatus,
 			lastFailures,
+			runtimeInstructionFingerprint: runtimeInstructionFingerprint(state.setup?.specDirectory),
+			invalidatedByRuntimeInstructions: false,
 			summary: allGreen ? `All ${phases.length} phases completed successfully` : `${phasesCompleted}/${phases.length} phases completed`,
 		};
 		if (ctx.budget.check()) {
 			const summaryResult = await ctx.agent({ id: "pipeline.implementation.summary", agent: "orchestrator", prompt: buildImplementationSummaryPrompt(setup, state.classify ?? null, control), schema: STAGE_MODELS["implementationSummary"]?.schema });
 			renderAndWrite(setup, (m) => ctx.log(m), "implementationSummary", summaryResult.control as Record<string, unknown> | null);
 		}
+		const endInstructionFingerprint = runtimeInstructionFingerprint(state.setup?.specDirectory);
+		const runtimeInstructionsChangedDuringRun = endInstructionFingerprint !== startInstructionFingerprint;
+		if (runtimeInstructionsChangedDuringRun && phasesCompleted > 0) {
+			control.allGreen = false;
+			control.invalidatedByRuntimeInstructions = true;
+			control.summary = "Runtime user instructions changed during implementation; re-run required";
+			ctx.log("Implementation: runtime user instructions arrived during implementation — forcing one more convergence pass so earlier phases can incorporate them");
+		}
+		control.runtimeInstructionFingerprint = endInstructionFingerprint;
 		return control;
 	},
 };
