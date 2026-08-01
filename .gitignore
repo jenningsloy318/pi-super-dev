@@ -8,3 +8,9 @@ coverage/
 
 # transient super-dev workflow resume cache (root)
 .resume-cache.jsonl
+
+# local agent/tool scratch directories
+.pi/
+.claude/
+.firecrawl/
+.playwright-mcp/
