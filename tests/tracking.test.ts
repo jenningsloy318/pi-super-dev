@@ -22,7 +22,7 @@
  *   - `begin(unit, id)` snapshots baseline = `git rev-parse HEAD` UNION
  *     `git status --porcelain`; emits ONE `{event:"start"}` jsonl line.
  *   - `end(unit, id, claimed?)` re-snapshots; delta =
- *     `git diff --name-status <beginHead>` UNION `git status --porcelain`;
+ *     `git diff --name-status <beginHead>` UNION `git status --porcelain --untracked-files=all`;
  *     classifies diff letters (A→created, M→modified, D→deleted) and
  *     porcelain XY via `classifyPorcelain` (`??`→created, `D*`/`*D`→deleted,
  *     else modified); UNIONs with `dedupePreservingOrder` (first-seen order);
@@ -186,6 +186,24 @@ describe("ChangeTracker — classification from `diff --name-status` (SCENARIO-0
 		expect(rec!.gitActual!.created).toEqual(["src/untracked.ts"]);
 		expect(rec!.gitActual!.deleted).toEqual(["src/wt-deleted.ts", "src/ix-deleted.ts"]);
 		expect(rec!.gitActual!.modified).toEqual(["src/ix-mod.ts", "src/wt-mod.ts"]);
+	});
+
+	it("requests all untracked files so untracked directories do not create claimed-file false misses", () => {
+		git({
+			head: "base",
+			diff: "",
+			// This is the expanded shape produced by `git status --porcelain --untracked-files=all`.
+			porcelain: "?? src/team/types.ts\n?? src/team/default-team.ts",
+		});
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "phase-01");
+		const rec = t.end("phase", "phase-01", { filesCreated: ["src/team/types.ts", "src/team/default-team.ts"], filesModified: [], filesDeleted: [] });
+		expect(rec!.crossCheck!.claimedNotChanged).toEqual([]);
+		expect(rec!.verdict).toBe("ok");
+		const statusCallArgs = spawn.mock.calls
+			.map((call) => call[1] as string[])
+			.filter((args) => args.includes("status"));
+		expect(statusCallArgs.every((args) => args.includes("--untracked-files=all"))).toBe(true);
 	});
 
 	it("UNIONs committed diff with porcelain via dedupePreservingOrder (first-seen order)", () => {
