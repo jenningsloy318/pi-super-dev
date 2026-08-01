@@ -137,10 +137,15 @@ function mockSpawn(cfg: SpawnConfig = {}): string[][] {
 
 const gitCalls = (calls: string[][]) => calls.filter((a) => a[0] === "git");
 const nonGitCalls = (calls: string[][]) => calls.filter((a) => a[0] !== "git");
-/** The argv list expected to be spawned, in run order (build→test→typecheck). */
+/** The argv list expected to be spawned, in run order (optional bootstrap→build→test→typecheck). */
 function expectedArgvs(dir: string): string[][] {
 	const det = detectProjectCommands(dir);
-	return [det.build, det.test, det.typecheck].filter(
+	const bootstrap = det.language === "go"
+		? [["go", "mod", "download"]]
+		: det.pm === "npm" && !existsSync(join(dir, "node_modules"))
+			? [[existsSync(join(dir, "package-lock.json")) ? "npm" : "npm", existsSync(join(dir, "package-lock.json")) ? "ci" : "install"]]
+			: [];
+	return [...bootstrap, det.build, det.test, det.typecheck].filter(
 		(a): a is string[] => Array.isArray(a) && a.length > 0,
 	);
 }
@@ -161,7 +166,7 @@ function assertAdditiveNoOp(r: BuildGateResult): void {
  *                IDENTICAL argvs + result (modulo 2 additive fields)
  * ------------------------------------------------------------------ */
 describe("SCENARIO-015 backward-compat: identical argvs + result (modulo additive fields)", () => {
-	it("non-cargo node repo → argvs equal detectProjectCommands, no git spawn, additive fields no-op", () => {
+	it("non-cargo node repo → bootstraps missing deps then runs detector commands, no git spawn, additive fields no-op", () => {
 		const dir = tmpProj((d) => {
 			writeFileSync(
 				join(d, "package.json"),
@@ -176,7 +181,7 @@ describe("SCENARIO-015 backward-compat: identical argvs + result (modulo additiv
 			expect(det.language).not.toBe("rust");
 			const r = runBuildGate(dir);
 
-			// argvs byte-identical to the pure detector (no -p anywhere)
+			// missing node_modules triggers dependency bootstrap, then detector commands (no -p anywhere)
 			expect(nonGitCalls(calls)).toEqual(expectedArgvs(dir));
 			// tier (iv) for non-rust ⇒ NO git spawn at all (no auto-detection)
 			expect(gitCalls(calls)).toHaveLength(0);
@@ -187,7 +192,7 @@ describe("SCENARIO-015 backward-compat: identical argvs + result (modulo additiv
 		}
 	});
 
-	it("non-cargo go repo → argvs equal detector, zero git spawn, additive no-op", () => {
+	it("non-cargo go repo → bootstraps modules then runs detector commands, zero git spawn, additive no-op", () => {
 		const dir = tmpProj((d) => writeFileSync(join(d, "go.mod"), "module x\n"));
 		try {
 			const calls = mockSpawn();
@@ -422,7 +427,7 @@ describe("SCENARIO-018 no new deps / processes beyond gate commands + one git di
 		}
 	});
 
-	it("non-rust run spawns ZERO git + only the detector's gate commands", () => {
+	it("non-rust run spawns ZERO git + dependency bootstrap + detector gate commands", () => {
 		const dir = tmpProj((d) => writeFileSync(join(d, "go.mod"), "module x\n"));
 		try {
 			const calls = mockSpawn();

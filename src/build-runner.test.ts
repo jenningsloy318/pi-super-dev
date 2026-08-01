@@ -24,7 +24,7 @@ import { join } from "node:path";
 // Captured argv history + a per-test override. `vi.hoisted` keeps the shared
 // state initialized before the hoisted `vi.mock` factory runs.
 const mock = vi.hoisted(() => ({
-	calls: [] as { args: string[] }[],
+	calls: [] as { args: string[]; cwd?: string }[],
 	stubber: null as
 		| null
 		| ((args: string[]) => {
@@ -37,9 +37,9 @@ const mock = vi.hoisted(() => ({
 }));
 
 vi.mock("node:child_process", () => ({
-	spawnSync: (cmd: string, argv?: readonly string[]) => {
+	spawnSync: (cmd: string, argv?: readonly string[], opts?: { cwd?: string }) => {
 		const full = [cmd, ...(Array.isArray(argv) ? argv.slice() : [])];
-		mock.calls.push({ args: full });
+		mock.calls.push({ args: full, cwd: opts?.cwd });
 		if (mock.stubber) return mock.stubber(full);
 		return { status: 0, stdout: "", stderr: "", signal: null };
 	},
@@ -354,6 +354,80 @@ describe("runBuildGate auto-scoping (AC-03)", () => {
 			mock.stubber = (_a) => ok();
 			runBuildGate(nodeDir);
 			expect(gitDiffSpawned()).toBe(false);
+		} finally {
+			rmSync(nodeDir, { recursive: true, force: true });
+		}
+	});
+
+	it("bootstraps a pnpm workspace once before build/test when workspace node_modules are missing", () => {
+		const nodeDir = mkdtempSync(join(tmpdir(), "pnpmgate-"));
+		try {
+			writeFileSync(join(nodeDir, "pnpm-workspace.yaml"), "packages:\n  - frontend\n  - auth-service\n");
+			writeFileSync(join(nodeDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+			writeFileSync(join(nodeDir, "package.json"), JSON.stringify({ packageManager: "pnpm@9.0.0", scripts: { build: "pnpm -r build", test: "pnpm -r test" } }));
+			mkdirSync(join(nodeDir, "frontend"), { recursive: true });
+			writeFileSync(join(nodeDir, "frontend", "package.json"), JSON.stringify({ scripts: { build: "next build" }, dependencies: { next: "latest" } }));
+			mkdirSync(join(nodeDir, "auth-service"), { recursive: true });
+			writeFileSync(join(nodeDir, "auth-service", "package.json"), JSON.stringify({ scripts: { build: "tsc" }, devDependencies: { typescript: "latest" } }));
+			mock.stubber = (_a) => ok();
+			runBuildGate(nodeDir);
+			const argvs = mock.calls.map((c) => c.args);
+			expect(argvs.filter((a) => a.join(" ") === "pnpm install --frozen-lockfile")).toHaveLength(1);
+			expect(argvs).toEqual(expect.arrayContaining([["pnpm", "run", "build"], ["pnpm", "run", "test"]]));
+		} finally {
+			rmSync(nodeDir, { recursive: true, force: true });
+		}
+	});
+
+	it("honors an independent nested pnpm module even when the root uses package-lock", () => {
+		const nodeDir = mkdtempSync(join(tmpdir(), "mixedlock-"));
+		try {
+			writeFileSync(join(nodeDir, "package.json"), JSON.stringify({ scripts: { build: "echo root" } }));
+			writeFileSync(join(nodeDir, "package-lock.json"), "{}");
+			mkdirSync(join(nodeDir, "frontend"), { recursive: true });
+			writeFileSync(join(nodeDir, "frontend", "package.json"), JSON.stringify({ scripts: { build: "next build" } }));
+			writeFileSync(join(nodeDir, "frontend", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+			mock.stubber = (_a) => ok();
+			runBuildGate(nodeDir);
+			const installs = mock.calls.filter((c) => c.args[1] === "install" || c.args[1] === "ci");
+			expect(installs.map((c) => c.args)).toEqual(expect.arrayContaining([["npm", "ci"], ["pnpm", "install", "--frozen-lockfile"]]));
+			expect(installs.find((c) => c.args[0] === "pnpm")?.cwd).toBe(join(nodeDir, "frontend"));
+		} finally {
+			rmSync(nodeDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not let optional nested bootstrap failures block the root gate", () => {
+		const nodeDir = mkdtempSync(join(tmpdir(), "optional-nested-"));
+		try {
+			writeFileSync(join(nodeDir, "package.json"), JSON.stringify({ scripts: { build: "echo root" } }));
+			writeFileSync(join(nodeDir, "package-lock.json"), "{}");
+			mkdirSync(join(nodeDir, "examples", "widget"), { recursive: true });
+			writeFileSync(join(nodeDir, "examples", "widget", "package.json"), JSON.stringify({ packageManager: "npm@10.0.0" }));
+			writeFileSync(join(nodeDir, "examples", "widget", "package-lock.json"), "{}");
+			mock.stubber = (argv) => argv.join(" ") === "npm ci" && mock.calls.at(-1)?.cwd?.includes("examples")
+				? { status: 1, stdout: "", stderr: "nested boom", signal: null }
+				: ok();
+			const r = runBuildGate(nodeDir);
+			expect(r.pass).toBe(true);
+			expect(r.errors).toEqual([]);
+			expect(mock.calls.some((c) => c.cwd?.includes("examples") && c.args.join(" ") === "npm ci")).toBe(true);
+		} finally {
+			rmSync(nodeDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not bootstrap unrelated manifests when no build/test/typecheck command is detected", () => {
+		const nodeDir = mkdtempSync(join(tmpdir(), "nogate-"));
+		try {
+			writeFileSync(join(nodeDir, "package.json"), JSON.stringify({ name: "root-without-scripts" }));
+			mkdirSync(join(nodeDir, "example"), { recursive: true });
+			writeFileSync(join(nodeDir, "example", "package.json"), JSON.stringify({ scripts: { build: "echo example" } }));
+			mock.stubber = (_a) => ok();
+			const r = runBuildGate(nodeDir);
+			expect(r.pass).toBe(true);
+			expect(r.ran).toEqual([]);
+			expect(mock.calls).toEqual([]);
 		} finally {
 			rmSync(nodeDir, { recursive: true, force: true });
 		}
