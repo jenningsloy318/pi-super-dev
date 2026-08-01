@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSetup, detectLanguage } from "../src/setup.ts";
@@ -58,6 +58,22 @@ describe("runSetup worktree creation", () => {
 		expect(s.initializedRepo).toBe(false); // already a repo
 		expect(s.worktreeCreated).toBe(true); // the fix: base commit added → worktree succeeds
 		expect(existsSync(s.worktreePath)).toBe(true);
+	});
+
+	it("copies .env files recursively into a created worktree", () => {
+		writeFileSync(join(dir, ".env"), "ROOT_SECRET=1\n");
+		mkdirSync(join(dir, "apps", "web"), { recursive: true });
+		writeFileSync(join(dir, "apps", "web", ".env.local"), "WEB_SECRET=1\n");
+		writeFileSync(join(dir, "apps", "web", ".env.example"), "EXAMPLE=1\n");
+		mkdirSync(join(dir, "node_modules", "pkg"), { recursive: true });
+		writeFileSync(join(dir, "node_modules", "pkg", ".env"), "NOPE=1\n");
+
+		const s = runSetup("implement a node api", { cwd: dir });
+		expect(s.worktreeCreated).toBe(true);
+		expect(readFileSync(join(s.worktreePath, ".env"), "utf8")).toContain("ROOT_SECRET=1");
+		expect(readFileSync(join(s.worktreePath, "apps", "web", ".env.local"), "utf8")).toContain("WEB_SECRET=1");
+		expect(existsSync(join(s.worktreePath, "apps", "web", ".env.example"))).toBe(false);
+		expect(existsSync(join(s.worktreePath, "node_modules", "pkg", ".env"))).toBe(false);
 	});
 
 	it("operates in-place when skipWorktree is set", () => {

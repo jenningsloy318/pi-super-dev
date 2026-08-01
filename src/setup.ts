@@ -5,10 +5,10 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { clearKnowledge } from "./render/knowledge.ts";
 import { clearUserNotes } from "./render/user-notes.ts";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 /** Load KEY=VALUE pairs from a `.env` file into `process.env` so spawned
  *  specialist agents (api-tester, etc.) inherit them. Only sets vars that
@@ -32,6 +32,48 @@ function loadDotEnv(dir: string): void {
 			if (key && !(key in process.env)) process.env[key] = val;
 		}
 	} catch { /* best-effort */ }
+}
+
+const ENV_PRUNE_DIRS = new Set([".git", ".worktree", "node_modules", "target", "dist", "build", ".next", ".nuxt", "vendor", ".venv", "venv", "__pycache__"]);
+
+function isEnvFile(name: string): boolean {
+	if (!name.startsWith(".env")) return false;
+	const lower = name.toLowerCase();
+	return !lower.includes("example") && !lower.includes("template") && !lower.endsWith(".sample");
+}
+
+/** Copy .env / .env.* files recursively from the main checkout into a created
+ * worktree. Git worktrees intentionally omit ignored files, but app/test startup
+ * commonly depends on nested env files (apps/web/.env.local, services/api/.env,
+ * etc.). Best-effort: never abort setup, never overwrite an env that already
+ * exists in the worktree, and prune heavy/generated dirs. */
+export function copyEnvFilesToWorktree(sourceRoot: string, worktreeRoot: string): string[] {
+	if (resolve(sourceRoot) === resolve(worktreeRoot)) return [];
+	const copied: string[] = [];
+	const visit = (dir: string) => {
+		let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+		try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+		for (const entry of entries) {
+			const src = join(dir, entry.name);
+			const rel = relative(sourceRoot, src);
+			if (!rel || rel.startsWith("..")) continue;
+			if (entry.isDirectory()) {
+				if (ENV_PRUNE_DIRS.has(entry.name)) continue;
+				visit(src);
+				continue;
+			}
+			if (!entry.isFile() || !isEnvFile(entry.name)) continue;
+			const dst = join(worktreeRoot, rel);
+			if (existsSync(dst)) continue;
+			try {
+				mkdirSync(dirname(dst), { recursive: true });
+				copyFileSync(src, dst);
+				copied.push(rel);
+			} catch { /* best-effort */ }
+		}
+	};
+	visit(sourceRoot);
+	return copied;
 }
 import type { SetupControl } from "./types.ts";
 
@@ -175,6 +217,10 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 		}
 	}
 
+	// Git worktree creation does not copy ignored files. Copy .env files from the
+	// main checkout recursively before loading root .env so app/test startup in
+	// the isolated worktree has the same local configuration as the source repo.
+	if (worktreeCreated) copyEnvFilesToWorktree(cwd, worktreePath);
 	// Load .env (TEST_API_KEY etc.) from the worktree so spawned agents inherit it.
 	loadDotEnv(worktreePath);
 
