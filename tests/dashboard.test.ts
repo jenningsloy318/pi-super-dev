@@ -73,10 +73,11 @@ describe("packDashboardLines", () => {
 		expect(lines[0]).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
 	});
 
-	it("packs into 2 columns always (column-first: first half left, second half right)", () => {
+	it("uses a readable single column with grouped status sections", () => {
 		const w80 = packDashboardLines(stages(6), undefined, 80);
 		const rows = w80.filter((x) => x.startsWith("  "));
-		expect(rows.length).toBe(3); // ceil(6/2) = 3 rows
+		expect(rows.length).toBe(6);
+		expect(w80.some((l) => l.includes("── completed ──"))).toBe(true);
 		for (let i = 0; i < 6; i++) expect(w80.some((l) => l.includes(`Stage ${i + 1} —`))).toBe(true);
 	});
 
@@ -90,10 +91,9 @@ describe("packDashboardLines", () => {
 		expect(lines.some((l) => l.startsWith("▶"))).toBe(false);
 	});
 
-	it("shows all stages even with odd count (column-first)", () => {
+	it("shows all stages even with odd count (single-column)", () => {
 		const lines = packDashboardLines(stages(3), undefined, 40);
-		// 3 stages: half=2, rows=2. Left: stages 1,2. Right: stage 3.
-		expect(lines.filter((x) => x.startsWith("  ")).length).toBe(2);
+		expect(lines.filter((x) => x.startsWith("  ")).length).toBe(3);
 		for (let i = 0; i < 3; i++) expect(lines.some((l) => l.includes(`Stage ${i + 1} —`))).toBe(true);
 	});
 
@@ -118,7 +118,7 @@ describe("packDashboardLines", () => {
 	it("renders a dimmed recent-activity tail when recentLogs are supplied (background mode)", () => {
 		const logs = ["Implementation phase-01 red-oracle: red", "Implementation phase-01 build-gate PASS"];
 		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "/super-dev-stop", { recentLogs: logs });
-		expect(lines.some((l) => l.includes("── recent ──"))).toBe(true);
+		expect(lines.some((l) => l.includes("── recent commands / progress ──"))).toBe(true);
 		expect(lines.some((l) => l.includes("red-oracle: red"))).toBe(true);
 		expect(lines.some((l) => l.includes("build-gate PASS"))).toBe(true);
 	});
@@ -134,7 +134,7 @@ describe("packDashboardLines", () => {
 
 	it("omits the recent tail entirely when no recentLogs (foreground mode)", () => {
 		const lines = packDashboardLines(stages(2), "writing x", 80);
-		expect(lines.some((l) => l.includes("── recent ──"))).toBe(false);
+		expect(lines.some((l) => l.includes("── recent commands / progress ──"))).toBe(false);
 	});
 });
 

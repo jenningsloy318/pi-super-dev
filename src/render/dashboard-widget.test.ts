@@ -24,7 +24,7 @@
  *   - AC-01 : factory returns a Component (Container), not a string[] / object
  *   - AC-02 : theme is threaded into the rendered children (status tokens present)
  *   - AC-03 : animation — successive factory invocations advance the running glyph
- *   - AC-04 : 2-column adaptive layout preserved (header + per-stage rows)
+ *   - AC-04 : grouped single-column layout preserved (header + separated stage groups)
  *   - AC-08 : the string[] setWidget overload is NOT produced (factory is a function
  *             returning a Component)
  *   - AC-09 : no-regression — the factory is a pure builder; nothing executes by import
@@ -98,7 +98,7 @@ describe("buildDashboardWidget — AC-01 / AC-02 / AC-04", () => {
 		expect(rendered).toContain("<accent>");
 	});
 
-	it("preserves the 2-column adaptive header + abort hint (AC-04 layout)", () => {
+	it("preserves the grouped single-column header + abort hint (AC-04 layout)", () => {
 		const widget = buildDashboardWidget(SAMPLE_ENTRIES, "compiling", 120, mockTheme());
 		const rendered = widget.render(120).join("\n");
 

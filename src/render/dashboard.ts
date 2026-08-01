@@ -199,8 +199,8 @@ export function padTruncate(s: string, w: number): string {
 }
 
 /**
- * Format the dashboard widget lines, packing ALL stages into width-adaptive
- * columns so EVERY stage is shown — no summary, no stage dropped. The header
+ * Format the dashboard widget lines as a grouped single-column status panel so
+ * every stage is shown without mixing running/completed/pending jobs. The header
  * carries the completed-over-total count, the running stage label, and the
  * "esc to abort" hint (SCENARIO-007). Status glyphs are themed via
  * `statusGlyph`; the running stage uses the time-derived seed so it animates
@@ -248,22 +248,27 @@ export function packDashboardLines(
 		);
 	}
 
-	const cols = 2;
-	// Adapt cell width to the actual terminal width — prevents overflow on narrow terminals.
-	const indent = 2;
-	const cellW = Math.max(10, Math.floor((width - indent) / cols));
-	// Column-first fill: first column = first half, second column = second half.
-	const half = Math.ceil(entries.length / cols);
-	const cell = (e: { label: string; status: string }): string =>
-		padTruncate(`${statusGlyph(e.status, theme)} ${e.label}`, cellW);
-
-	for (let row = 0; row < half; row++) {
-		const left = entries[row];
-		const right = entries[row + half];
-		lines.push(
-			truncLine(" ".repeat(indent) + (right ? cell(left!) + cell(right) : cell(left!)), width),
-		);
-	}
+	// Native, readable single-column layout. Grouping prevents completed jobs,
+	// running jobs, and pending/skipped/failed jobs from visually blending together.
+	// It costs more vertical space than the old two-column grid, but avoids the
+	// confusing stacked status soup shown in narrow/active terminals.
+	const section = (label: string, token: string, rows: Array<{ id: string; label: string; status: string }>) => {
+		if (rows.length === 0) return;
+		lines.push(truncLine(theme ? theme.fg(token, `── ${label} ──`) : `── ${label} ──`, width));
+		for (const e of rows) {
+			lines.push(truncLine(`  ${statusGlyph(e.status, theme)} ${e.label}`, width));
+		}
+	};
+	const runningRows = entries.filter((e) => e.status === "running");
+	const failedRows = entries.filter((e) => e.status === "failed");
+	const completedRows = entries.filter((e) => e.status === "ok");
+	const skippedRows = entries.filter((e) => e.status === "skipped");
+	const pendingRows = entries.filter((e) => !TERMINAL.has(e.status) && e.status !== "running");
+	section("running", "accent", runningRows);
+	section("completed", "success", completedRows);
+	section("needs attention", "error", failedRows);
+	section("skipped", "warning", skippedRows);
+	section("pending", "dim", pendingRows);
 	// Recent-activity tail (background runs only — the caller passes recentLogs
 	// solely when the tool-result live-log body is unavailable, i.e. detached
 	// background mode). Shows the last few structured stage log lines DIMMED so
@@ -272,10 +277,13 @@ export function packDashboardLines(
 	// streams through the tool result), so this section never double-renders.
 	const recent = (opts.recentLogs ?? []).filter((r) => r && r.trim());
 	if (recent.length) {
-		lines.push(truncLine(theme ? theme.fg("dim", "── recent ──") : "── recent ──", width));
+		lines.push(truncLine(theme ? theme.fg("muted", "── recent commands / progress ──") : "── recent commands / progress ──", width));
 		for (const r of recent.slice(-RECENT_LOG_TAIL)) {
 			const oneLine = r.replace(/\s+/g, " ").trim();
-			lines.push(truncLine(theme ? theme.fg("dim", `  ${oneLine}`) : `  ${oneLine}`, width));
+			const isCommand = /^(?:→|\$|web_search|fetch_content|read|edit|write|bash|ffgrep|fffind)\b/.test(oneLine);
+			const token = isCommand ? "accent" : "dim";
+			const prefix = isCommand ? "  › " : "  · ";
+			lines.push(truncLine(theme ? theme.fg(token, `${prefix}${oneLine}`) : `${prefix}${oneLine}`, width));
 		}
 	}
 	return lines;
@@ -300,7 +308,7 @@ function fmtElapsed(ms: number): string {
  * Component shape pi's native Component-factory `setWidget(key, factory, opts)`
  * overload consumes. Pure: no TUI side effects, no reads of process state except
  * the explicit `width` arg. Each rendered line becomes one `Text` child, so the
- * 2-column adaptive layout, themed glyphs, animated running frame, and abort
+ * grouped single-column layout, themed glyphs, animated running frame, and abort
  * hint all flow straight through from `packDashboardLines`
  * (SCENARIO-001 / SCENARIO-002 — AC-01 / AC-02 / AC-04).
  */
