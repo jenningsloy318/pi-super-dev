@@ -3,8 +3,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
 import { parseTestPackages, detectTouchedCargoPackages, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors } from "./scope.ts";
 
@@ -152,6 +152,124 @@ export interface GateOptions {
 	integration?: string[];
 }
 
+const DEP_PRUNE_DIRS = new Set([".git", ".worktree", "node_modules", "target", "dist", "build", ".next", ".nuxt", "vendor", ".venv", "venv", "__pycache__", "coverage"]);
+const depBootstrapCache = new Map<string, string>();
+
+function readJson(path: string): Record<string, unknown> | null {
+	try { return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>; } catch { return null; }
+}
+
+function findUp(start: string, file: string, stop: string): string | null {
+	let cur = start;
+	const root = resolve(stop);
+	while (cur.startsWith(root)) {
+		if (existsSync(join(cur, file))) return cur;
+		const next = dirname(cur);
+		if (next === cur) break;
+		cur = next;
+	}
+	return null;
+}
+
+function findManifestDirs(cwd: string, names: string[]): string[] {
+	const out = new Set<string>();
+	const visit = (dir: string) => {
+		let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+		try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+		for (const entry of entries) {
+			const p = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				if (!DEP_PRUNE_DIRS.has(entry.name)) visit(p);
+				continue;
+			}
+			if (entry.isFile() && names.includes(entry.name)) out.add(dir);
+		}
+	};
+	visit(cwd);
+	return [...out].sort();
+}
+
+function nodeInstallArgv(dir: string, root: string): { cwd: string; argv: string[] } | null {
+	const pkg = readJson(join(dir, "package.json")) ?? {};
+	const pmRaw = String(pkg.packageManager ?? "").split("@")[0];
+	const hasOwnLock = existsSync(join(dir, "package-lock.json")) || existsSync(join(dir, "pnpm-lock.yaml")) || existsSync(join(dir, "yarn.lock")) || existsSync(join(dir, "bun.lockb")) || existsSync(join(dir, "bun.lock"));
+	const workspaceRoot = findUp(dir, "pnpm-workspace.yaml", root);
+	// Only redirect to a pnpm workspace root when the nested package does NOT
+	// declare its own package manager/lockfile. Independent nested modules must be
+	// installed in their own directory; otherwise an npm package under a pnpm
+	// workspace can become `npm ci` at the root and block the gate incorrectly.
+	const runDir = dir !== root && workspaceRoot && !pmRaw && !hasOwnLock ? workspaceRoot : dir;
+	const pm = pmRaw && /^(npm|pnpm|yarn|bun)$/.test(pmRaw)
+		? pmRaw
+		: existsSync(join(runDir, "pnpm-lock.yaml")) || existsSync(join(dir, "pnpm-lock.yaml")) ? "pnpm"
+			: existsSync(join(dir, "yarn.lock")) ? "yarn"
+				: existsSync(join(dir, "bun.lockb")) || existsSync(join(dir, "bun.lock")) ? "bun"
+					: "npm";
+	if (pm === "pnpm") return { cwd: runDir, argv: existsSync(join(runDir, "pnpm-lock.yaml")) || existsSync(join(dir, "pnpm-lock.yaml")) ? ["pnpm", "install", "--frozen-lockfile"] : ["pnpm", "install"] };
+	if (pm === "yarn") return { cwd: runDir, argv: existsSync(join(dir, "yarn.lock")) ? ["yarn", "install", "--frozen-lockfile"] : ["yarn", "install"] };
+	if (pm === "bun") return { cwd: runDir, argv: existsSync(join(dir, "bun.lockb")) || existsSync(join(dir, "bun.lock")) ? ["bun", "install", "--frozen-lockfile"] : ["bun", "install"] };
+	return { cwd: runDir, argv: existsSync(join(dir, "package-lock.json")) ? ["npm", "ci"] : ["npm", "install"] };
+}
+
+function depFingerprint(cwd: string): string {
+	const manifestNames = ["package.json", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lock", "bun.lockb", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "requirements.txt", "pyproject.toml", "poetry.lock", "Pipfile", "Pipfile.lock"];
+	const parts: string[] = [];
+	for (const dir of findManifestDirs(cwd, manifestNames)) {
+		for (const name of manifestNames) {
+			const p = join(dir, name);
+			try { const st = statSync(p); parts.push(`${p}:${st.mtimeMs}:${st.size}`); } catch { /* absent */ }
+		}
+	}
+	return parts.join("|");
+}
+
+function buildDependencyBootstraps(cwd: string, cmds: ProjectCommands): Array<{ cwd: string; argv: string[]; required: boolean }> {
+	if (!cmds.build && !cmds.test && !cmds.typecheck) return [];
+	const tasks: Array<{ cwd: string; argv: string[]; required: boolean }> = [];
+	const seen = new Set<string>();
+	const root = resolve(cwd);
+	const add = (dir: string, argv: string[], required = false) => { const key = `${dir}\0${argv.join(" ")}`; if (!seen.has(key)) { seen.add(key); tasks.push({ cwd: dir, argv, required }); } else if (required) { const t = tasks.find((x) => `${x.cwd}\0${x.argv.join(" ")}` === key); if (t) t.required = true; } };
+
+	for (const dir of findManifestDirs(cwd, ["package.json"])) {
+		if (existsSync(join(dir, "node_modules"))) continue;
+		const install = nodeInstallArgv(dir, cwd);
+		if (install) add(install.cwd, install.argv, resolve(dir) === root);
+	}
+	for (const dir of findManifestDirs(cwd, ["go.mod"])) add(dir, ["go", "mod", "download"], resolve(dir) === root);
+	// Rust's cargo build/test already fetches dependencies as part of the normal
+	// command, so no separate cargo fetch is needed (and it would add noise to
+	// existing gate command accounting).
+	for (const dir of findManifestDirs(cwd, ["poetry.lock"])) add(dir, ["poetry", "install", "--no-interaction"], resolve(dir) === root);
+	for (const dir of findManifestDirs(cwd, ["Pipfile"])) add(dir, ["pipenv", "install", "--deploy"], resolve(dir) === root);
+	for (const dir of findManifestDirs(cwd, ["requirements.txt"])) {
+		if (existsSync(join(dir, ".venv", "bin", "pip"))) add(dir, [join(dir, ".venv", "bin", "pip"), "install", "-r", "requirements.txt"], resolve(dir) === root);
+	}
+	return tasks;
+}
+
+function bootstrapDependencies(cwd: string, timeoutMs: number, signal: AbortSignal | undefined, ran: string[], errors: string[]): void {
+	if (process.env.SUPER_DEV_SKIP_DEP_BOOTSTRAP === "1") return;
+	const fp = depFingerprint(cwd);
+	if (depBootstrapCache.get(cwd) === fp) return;
+	for (const task of buildDependencyBootstraps(cwd, detectProjectCommands(cwd))) {
+		if (signal?.aborted) { errors.push(`${task.argv.join(" ")}: aborted before dependency bootstrap`); return; }
+		const label = `bootstrap:${task.argv.join(" ")}`;
+		ran.push(label);
+		try {
+			const r = spawnSync(task.argv[0], task.argv.slice(1), { cwd: task.cwd, timeout: timeoutMs, encoding: "utf8" });
+			if (r.error || r.status !== 0) {
+				const reason = r.error ? r.error.message.split("\n")[0] : `exit ${String(r.status)}`;
+				const tail = (r.stderr || r.stdout || "").trim().split("\n").slice(-STDERR_TAIL_LINES).join("\n").trim();
+				if (task.required) errors.push(`${label} FAILED (${reason})${tail ? ":\n" + tail : ""}`);
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (task.required) errors.push(`${label} FAILED (${msg.split("\n")[0]})`);
+		}
+	}
+	if (!errors.some((e) => e.startsWith("bootstrap:"))) depBootstrapCache.set(cwd, fp);
+}
+
 /**
  * Run the detected build/test/typecheck commands in `cwd`, each with a bounded
  * timeout, and collect real pass/fail + stderr tails. Non-fatal when nothing is
@@ -250,6 +368,13 @@ export function runBuildGate(
 	const errors: string[] = [];
 	const ran: string[] = [];
 	const flag = { build: true, test: true, typecheck: true };
+	bootstrapDependencies(cwd, timeoutMs, opts.signal, ran, errors);
+	const bootstrapFailed = errors.some((e) => e.startsWith("bootstrap:"));
+	if (bootstrapFailed) {
+		if (cmds.build) flag.build = false;
+		if (cmds.test) flag.test = false;
+		if (cmds.typecheck) flag.typecheck = false;
+	}
 
 	const exec = (argv: string[], key: CmdKey) => {
 		if (opts.signal?.aborted) {
@@ -286,16 +411,20 @@ export function runBuildGate(
 		}
 	};
 
-	if (cmds.build) exec(cmds.build, "build");
-	if (cmds.test) exec(cmds.test, "test");
-	if (cmds.typecheck) exec(cmds.typecheck, "typecheck");
+	if (!bootstrapFailed) {
+		if (cmds.build) exec(cmds.build, "build");
+		if (cmds.test) exec(cmds.test, "test");
+		if (cmds.typecheck) exec(cmds.typecheck, "typecheck");
+	}
 
 	// CR-004: run spec-declared integration/e2e targets as additional
 	// `cargo test --test <stem>` invocations (NOT -p flags — these are explicit
 	// test binaries whose file paths were stat-validated). Uses key "test" so a
 	// failure in any integration target correctly marks allTestsPass=false.
-	for (const stem of gateIntegrationStems) {
-		exec(["cargo", "test", "--test", stem, "--quiet"], "test");
+	if (!bootstrapFailed) {
+		for (const stem of gateIntegrationStems) {
+			exec(["cargo", "test", "--test", stem, "--quiet"], "test");
+		}
 	}
 
 	const buildSuccess = flag.build;
