@@ -5,7 +5,7 @@
  * no-throw / empty-input guards.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { userNotesPath, clearUserNotes, appendUserNotes, userNotesForAgent } from "../src/render/user-notes.ts";
@@ -29,7 +29,8 @@ describe("user-notes store", () => {
 		appendUserNotes(dir, ["also handle X"]);
 		appendUserNotes(dir, ["and Y", "  "]); // whitespace-only entry is skipped
 		const out = userNotesForAgent(dir);
-		expect(out).toBe("(1) also handle X\n(2) and Y");
+		expect(out).toMatch(/\(1\) \[legacy-.*\] also handle X/);
+		expect(out).toMatch(/\(2\) \[legacy-.*\] and Y/);
 	});
 
 	it("userNotesForAgent returns '' when there are no notes (no block)", () => {
@@ -52,8 +53,45 @@ describe("user-notes store", () => {
 
 	it("persists across reads (durable) — a later append is visible to the next read", () => {
 		appendUserNotes(dir, ["first"]);
-		expect(userNotesForAgent(dir)).toBe("(1) first");
+		expect(userNotesForAgent(dir)).toMatch(/\(1\) \[legacy-.*\] first/);
 		appendUserNotes(dir, ["second"]);
-		expect(userNotesForAgent(dir)).toBe("(1) first\n(2) second");
+		const out = userNotesForAgent(dir);
+		expect(out).toMatch(/\(1\) \[legacy-.*\] first/);
+		expect(out).toMatch(/\(2\) \[legacy-.*\] second/);
+	});
+
+	it("reads legacy text-only .user-notes.json without crashing", () => {
+		writeFileSync(userNotesPath(dir), JSON.stringify({ notes: [{ timestamp: "2025-01-01T00:00:00.000Z", text: "legacy note" }] }));
+		expect(userNotesForAgent(dir)).toContain("legacy note");
+	});
+
+	it("persists image attachments and references them in prompt text", () => {
+		appendUserNotes(dir, [{
+			id: "ui-test",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			text: "match this screenshot",
+			images: [{ mediaType: "image/png", data: Buffer.from("pngdata").toString("base64") }],
+		}]);
+		const out = userNotesForAgent(dir);
+		expect(out).toContain("match this screenshot");
+		expect(out).toContain("Attachments:");
+		expect(out).toContain("user-input/ui-test-image-1.png");
+		expect(existsSync(join(dir, "user-input", "ui-test-image-1.png"))).toBe(true);
+	});
+
+	it("copies path-backed attachments into user-input instead of injecting original paths", () => {
+		const src = join(dir, "source.png");
+		writeFileSync(src, "image-bytes");
+		appendUserNotes(dir, [{ id: "path-note", createdAt: "2026-01-01T00:00:00.000Z", text: "see file", images: [{ path: src, mediaType: "image/png" }] }]);
+		const out = userNotesForAgent(dir);
+		expect(out).toContain("user-input/path-note-image-1.png");
+		expect(out).not.toContain(src);
+		expect(existsSync(join(dir, "user-input", "path-note-image-1.png"))).toBe(true);
+	});
+
+	it("does not silently drop image-only input when attachment persistence fails", () => {
+		appendUserNotes(dir, [{ id: "bad-image", createdAt: "2026-01-01T00:00:00.000Z", text: "", images: [{ mediaType: "image/png" }] }]);
+		const out = userNotesForAgent(dir);
+		expect(out).toContain("could not be persisted");
 	});
 });

@@ -162,7 +162,7 @@ describe("SCENARIO-020 — non-interactive input short-circuits with byte-identi
 		const res = pi.events.emit("input", inputEvent("real user steer", "interactive"));
 
 		expect(res).toEqual({ action: "handled" });
-		expect(getActiveRun().queue).toContain("real user steer");
+		expect(getActiveRun().queue.map((instruction: any) => instruction.text)).toContain("real user steer");
 	});
 });
 
