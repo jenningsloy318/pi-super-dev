@@ -73,7 +73,7 @@ describe("Phase 2 — push() ACK surfaces in TUI mode (AC-04 / SCENARIO-008 / SC
 		expect(ctx.ui.setStatus).toHaveBeenCalledTimes(1);
 		const [key, value] = ctx.ui.setStatus.mock.calls[0];
 		expect(key).toBe("super-dev-input");
-		expect(value).toMatch(/^📥 queued: /);
+		expect(value).toMatch(/^📥 accepted: /);
 		expect(value).toContain("focus on the auth bug");
 	});
 
@@ -82,12 +82,10 @@ describe("Phase 2 — push() ACK surfaces in TUI mode (AC-04 / SCENARIO-008 / SC
 		const stream = createLiveStream({ mode: "tui" });
 		const run = createActiveRun(ctx, stream);
 		run.push("steer toward tests");
-		expect(stream.getTranscript()).toContainEqual({
-			kind: "user-input",
-			text: "📥 steer toward tests",
-			stageId: "setup",
-			stageLabel: "pre-stage",
-		});
+		const line = stream.getTranscript().find((entry) => entry.kind === "user-input");
+		expect(line?.text).toMatch(/📥 ui-.*: steer toward tests — queued for next checkpoint/);
+		expect(line?.stageId).toBe("setup");
+		expect(line?.stageLabel).toBe("pre-stage");
 	});
 
 	it("the pill preview is ellipsized for long input (~60 chars)", () => {
@@ -100,7 +98,7 @@ describe("Phase 2 — push() ACK surfaces in TUI mode (AC-04 / SCENARIO-008 / SC
 		// preview must be bounded — the full 200-char input must NOT appear verbatim.
 		expect(value.length).toBeLessThan(120);
 		expect(value).not.toContain("x".repeat(100));
-		expect(value).toMatch(/^📥 queued: /);
+		expect(value).toMatch(/^📥 accepted: /);
 	});
 
 	it("push() still enqueues the text for drain() (ACK does not consume the queue)", () => {

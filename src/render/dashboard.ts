@@ -213,7 +213,7 @@ export function packDashboardLines(
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
-	opts: { elapsedMs?: number; recentLogs?: string[] } = {},
+	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string } = {},
 ): string[] {
 	// F5: count only TERMINAL stages (ok/failed/skipped). The prior
 	// `!== "running"` rule counted never-started (pending/"·") stages as done,
@@ -239,9 +239,10 @@ export function packDashboardLines(
 	// many interactive inputs are queued but not yet injected into a specialist.
 	// Pending-yet-to-be-injected; resets to 0 once drain() runs at the next spawn.
 	if (pendingInputCount > 0) {
+		const latest = opts.latestInputPreview ? ` · latest: ${truncateActivity(opts.latestInputPreview, 48)}` : "";
 		lines.push(
 			truncLine(
-				`📥 ${pendingInputCount} mid-run input${pendingInputCount === 1 ? "" : "s"}`,
+				`📥 ${pendingInputCount} runtime instruction${pendingInputCount === 1 ? "" : "s"}${latest}`,
 				width,
 			),
 		);
@@ -310,7 +311,7 @@ export function buildDashboardWidget(
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
-	opts: { elapsedMs?: number; recentLogs?: string[] } = {},
+	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string } = {},
 ): Container {
 	const container = new Container();
 	for (const line of packDashboardLines(entries, activity, width, theme, pendingInputCount, abortHint, opts)) {
@@ -334,7 +335,7 @@ export function createDashboardWidgetFactory(
 	activity: string | undefined,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
-	opts: { elapsedMs?: number; recentLogs?: string[] } = {},
+	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string } = {},
 ): (tui: unknown, theme: DashboardTheme) => Container {
 	return (_tui, theme) =>
 		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme, pendingInputCount, abortHint, opts);

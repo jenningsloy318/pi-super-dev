@@ -69,6 +69,24 @@ export interface AgentCall {
 
 export interface AgentResult extends SpawnResult {}
 
+/** Image/content attachment captured from a parent Pi input event while a run is active. */
+export interface RuntimeInstructionImage {
+	mediaType?: string;
+	data?: string;
+	path?: string;
+	label?: string;
+}
+
+/** Freeform text/image instruction typed by the user while super-dev is running. */
+export interface RuntimeInstruction {
+	id: string;
+	createdAt: string;
+	text: string;
+	source?: string;
+	streamingBehavior?: "steer" | "followUp";
+	images?: RuntimeInstructionImage[];
+}
+
 export interface HelperCall {
 	name: string;
 	sources: Record<string, unknown>;
@@ -373,13 +391,12 @@ export interface RunOptions {
 	 *  set; `integration` targets are appended. Threaded from the specification
 	 *  stage's declared `gate` via `state.spec?.gate`. */
 	gate?: { packages?: string[]; workspace?: boolean; integration?: string[] };
-	/** Phase 3 (AC-05 / SCENARIO-013..016): drains mid-run user input captured
-	 *  live during execution, atomically, ONCE per specialist spawn inside
-	 *  `workflow.ts` `realAgent`. Each captured input is injected exactly once
-	 *  (memoized resume replays do not re-drain — draining lives inside
-	 *  `realAgent`, NOT the memoizing wrapper). Optional — omitting it disables
-	 *  the feature and prompts stay byte-identical to the no-feature baseline. */
-	userSteerProvider?: () => string[];
+	/** Drains freeform runtime instructions captured from parent Pi input while
+	 *  super-dev is running. Instructions may include text plus image/file
+	 *  attachments. They are persisted to the spec dir and injected at the next
+	 *  specialist/checkpoint boundary; resume replays do not re-drain because this
+	 *  is called inside `realAgent`, not the memoizing wrapper. */
+	userSteerProvider?: () => Array<RuntimeInstruction | string>;
 	/** Inline HITL escalation hook (AC-01). Supplied by extension.ts; reachable
 	 *  as ctx.options.escalate with NO workflow.ts edit (StageContext.options is
 	 *  RunOptions). Additive — undefined/absent ⇒ byte-identical to today. */

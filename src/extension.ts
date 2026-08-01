@@ -26,7 +26,7 @@ import { writeEscalationReport } from "./render/escalation-report.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
-import type { Escalate, EscalationDecision, EscalationFailure, ProgressSink, RunStatus, RunSummary } from "./types.ts";
+import type { Escalate, EscalationDecision, EscalationFailure, ProgressSink, RunStatus, RunSummary, RuntimeInstruction, RuntimeInstructionImage } from "./types.ts";
 
 export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
@@ -46,6 +46,7 @@ const SUPER_DEV_COMMAND = "super-dev";
  *  extension, and reads as a natural "stop/cancel" gesture (close to the old
  *  `s` key on the keyboard so existing muscle memory isn't badly disrupted). */
 const SUPER_DEV_STOP_SHORTCUT = "ctrl+shift+x";
+const SUPER_DEV_PANEL_SHORTCUT = "ctrl+shift+d";
 
 /**
  * Phase 1 (AC-01 / AC-02 / AC-03) — Mid-run input injection run-state singleton.
@@ -66,22 +67,26 @@ const SUPER_DEV_STOP_SHORTCUT = "ctrl+shift+x";
  */
 export interface ActiveRun {
 	/** Pending mid-run user inputs not yet injected into a specialist prompt. */
-	queue: string[];
+	queue: RuntimeInstruction[];
 	/** True when this run executes DETACHED in the background (the tool returned
 	 *  immediately). Both foreground AND background runs now capture free-text
 	 *  typed during the run as mid-run user context (persisted to .user-notes.json
 	 *  and injected into every subsequent stage); slash-commands still pass
 	 *  through so /super-dev-stop etc. work. See the input handler in activate(). */
 	background?: boolean;
+	/** Preview of the most recent accepted instruction for native dashboard UI. */
+	lastInstructionPreview?: string;
 	/** The execute() ctx (TUI guards + ACK surfaces use this — Phase 2). */
 	ctx?: ExtensionContext;
 	/** The live-stream handle (Phase 2 ACK: pushes the user-input transcript
 	 *  line). Optional so the Phase 1 idle-shape (no stream) still works. */
 	stream?: LiveStreamHandle;
-	/** Store interactive input. Empty/whitespace-only is skipped (SCENARIO-007). */
-	push(text: string): void;
-	/** Atomically return the pending inputs AND clear the queue (SCENARIO-013). */
+	/** Store interactive input. Empty/whitespace-only text is allowed only when images exist. */
+	push(text: string, images?: RuntimeInstructionImage[], meta?: { source?: string; streamingBehavior?: "steer" | "followUp" }): RuntimeInstruction | null;
+	/** Back-compat text-only drain for existing callers/tests. */
 	drain(): string[];
+	/** Atomically return the pending structured inputs AND clear the queue. */
+	drainInstructions(): RuntimeInstruction[];
 }
 
 let activeRun: ActiveRun | null = null;
@@ -98,6 +103,27 @@ function previewInput(text: string, max = 60): string {
 	return t.length > max ? `${t.slice(0, max)}…` : t;
 }
 
+let instructionSeq = 0;
+function createInstructionId(): string {
+	instructionSeq += 1;
+	return `ui-${Date.now().toString(36)}-${instructionSeq.toString(36)}`;
+}
+
+function normalizeInputImages(images: unknown): RuntimeInstructionImage[] {
+	return Array.isArray(images) ? images as RuntimeInstructionImage[] : [];
+}
+
+function instructionForEntry(instruction: RuntimeInstruction): RuntimeInstruction {
+	return {
+		...instruction,
+		images: (instruction.images ?? []).map((image) => ({
+			mediaType: image.mediaType,
+			path: image.path,
+			label: image.label,
+		})),
+	};
+}
+
 /** Factory for the module-scoped ActiveRun (fresh queue per run — no leak).
  *  Phase 2 adds the optional `stream` arg so push() can reach the live-stream's
  *  `userInput` sink; omitting it preserves Phase 1 behavior (queue + no ACK). */
@@ -107,31 +133,37 @@ export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandl
 		background,
 		ctx,
 		stream,
-		push(text: string): void {
-			// SCENARIO-007: never queue empty/whitespace-only input (no spurious
-			// guidance entry would be prepended downstream).
+		push(text: string, images: RuntimeInstructionImage[] = [], meta: { source?: string; streamingBehavior?: "steer" | "followUp" } = {}): RuntimeInstruction | null {
 			const t = String(text ?? "").trim();
-			if (!t) return;
-			this.queue.push(t);
+			const normalizedImages = Array.isArray(images) ? images : [];
+			if (!t && normalizedImages.length === 0) return null;
+			const instruction: RuntimeInstruction = {
+				id: createInstructionId(),
+				createdAt: new Date().toISOString(),
+				text: t,
+				source: meta.source,
+				streamingBehavior: meta.streamingBehavior,
+				images: normalizedImages,
+			};
+			this.queue.push(instruction);
 			// Bound the queue: drop the oldest entry when over capacity so a single
 			// specialist spawn can't be token-bombed (most-recent guidance wins).
 			if (this.queue.length > MAX_QUEUED_INPUTS) this.queue.shift();
-			// Phase 2 (AC-04 / AC-07): ACK surfaces — TUI-only AND stream-attached,
-			// each wrapped best-effort try/catch so a failing surface never aborts
-			// capture (SCENARIO-006 / SCENARIO-023). No stream ⇒ no ACK at all
-			// (keeps the Phase 1 idle shape byte-identical).
+			const imageSuffix = normalizedImages.length ? ` + ${normalizedImages.length} image(s)` : "";
+			const preview = t || "(image/content attachment)";
+			this.lastInstructionPreview = `${preview}${imageSuffix}`;
 			if (this.ctx?.mode === "tui" && this.stream) {
-				// (a) status pill — "📥 queued: <preview ~60ch>" (SCENARIO-008).
-				try { this.ctx?.ui?.setStatus?.("super-dev-input", `📥 queued: ${previewInput(t)}`); } catch { /* best-effort */ }
-				// (c) transcript line — flows through transcriptTail → renderResult
-				// unchanged (SCENARIO-009). (b) dashboard count is derived from
-				// queue.length by execute()'s renderDashboard() closure below.
-				try { this.stream.sink.userInput(t); } catch { /* best-effort */ }
+				try { this.ctx?.ui?.setStatus?.("super-dev-input", `📥 accepted: ${previewInput(preview)}${imageSuffix}`); } catch { /* best-effort */ }
+				try { this.stream.sink.userInput(`${instruction.id}: ${preview}${imageSuffix} — queued for next checkpoint`); } catch { /* best-effort */ }
 			}
+			return instruction;
 		},
 		drain(): string[] {
-			// SCENARIO-013: atomic return-and-clear. A second drain returns [] until
-			// new input arrives, so each captured input is injected exactly once.
+			return this.drainInstructions().map((instruction) => instruction.text);
+		},
+		drainInstructions(): RuntimeInstruction[] {
+			// Atomic return-and-clear. A second drain returns [] until new input
+			// arrives, so each captured input is injected exactly once.
 			const out = this.queue;
 			this.queue = [];
 			return out;
@@ -443,7 +475,10 @@ export default function activate(pi: ExtensionAPI): void {
 			// Coerce safely so a missing/blank `text` can never crash the handler.
 			const text = typeof event?.text === "string" ? event.text : "";
 			if (text.trimStart().startsWith("/")) return { action: "continue" };
-			activeRun.push(text);
+			const instruction = activeRun.push(text, normalizeInputImages(event?.images), { source: event?.source, streamingBehavior: event?.streamingBehavior });
+			if (instruction) {
+				try { pi.appendEntry?.("super-dev-instruction", { instruction: instructionForEntry(instruction), queued: activeRun.queue.length }); } catch { /* best-effort */ }
+			}
 			return { action: "handled" };
 		} catch {
 			return { action: "continue" };
@@ -543,7 +578,7 @@ export default function activate(pi: ExtensionAPI): void {
 					// in print/json/headless/RPC modes (AC-09 / AC-10).
 					ctx?.ui?.setWidget?.(
 						DASHBOARD_KEY,
-						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? `/super-dev-stop (${SUPER_DEV_STOP_SHORTCUT})` : "esc to abort", { elapsedMs: Date.now() - runStartMs, recentLogs: activeRun?.background ? recentLogs : [] }),
+						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? `/super-dev-stop (${SUPER_DEV_STOP_SHORTCUT})` : "esc to abort", { elapsedMs: Date.now() - runStartMs, recentLogs: activeRun?.background ? recentLogs : [], latestInputPreview: activeRun?.lastInstructionPreview }),
 						{ placement: "aboveEditor" },
 					);
 				} catch { /* best-effort */ }
@@ -590,6 +625,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// means a prior run never cleared its finally (reentrancy) — discard it.
 				if (activeRun != null) setActiveRun(null);
 				setActiveRun(createActiveRun(ctx, stream, background));
+				try { pi.appendEntry?.("super-dev-run", { status: "started", task, background, at: Date.now() }); } catch { /* best-effort */ }
 				// Heartbeat (TUI only): re-render the widget on a fixed cadence so the
 				// animated running glyph keeps spinning AND the elapsed clock keeps
 				// ticking even during long quiet agent turns (model thinking / a slow
@@ -635,7 +671,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// Wire the mid-run input drain to the activeRun singleton. workflow.ts
 				// realAgent drains this ONCE per specialist spawn; empty while idle/after
 				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
-				userSteerProvider: () => getActiveRun()?.drain() ?? [],
+				userSteerProvider: () => getActiveRun()?.drainInstructions() ?? [],
 				// Phase 2 (spec-18 / AC-01): thread the inline escalate callback so the
 				// Phase 3 firing points can pause-ask-continue via ctx.ui. Additive —
 				// an undefined decision stays byte-identical to today (no firing point
@@ -786,6 +822,37 @@ export default function activate(pi: ExtensionAPI): void {
 		pi.registerEntryRenderer("super-dev-summary", summaryRenderer);
 	} catch { /* best-effort: entry renderer unavailable on this pi runtime */ }
 
+	type RunEntryData = { status?: string; task?: string; background?: boolean; at?: number };
+	const runRenderer: EntryRenderer<RunEntryData> = (entry, _opts, theme) => {
+		const d: RunEntryData = entry.data ?? {};
+		const container = new Container();
+		const mode = d.background ? "background" : "foreground";
+		container.addChild(new Text(theme.fg("accent", theme.bold(`── super-dev run ${d.status ?? "event"} (${mode}) ──`)), 0, 0));
+		if (d.task) container.addChild(new Text(String(d.task), 0, 0));
+		if (d.at) container.addChild(new Text(theme.fg("dim", new Date(d.at).toLocaleString()), 0, 0));
+		return container;
+	};
+	try {
+		pi.registerEntryRenderer("super-dev-run", runRenderer);
+	} catch { /* best-effort */ }
+
+	type InstructionEntryData = { instruction?: RuntimeInstruction; queued?: number };
+	const instructionRenderer: EntryRenderer<InstructionEntryData> = (entry, _opts, theme) => {
+		const d: InstructionEntryData = entry.data ?? {};
+		const i = d.instruction;
+		const container = new Container();
+		container.addChild(new Text(theme.fg("accent", theme.bold(`── super-dev accepted runtime instruction${i?.id ? ` ${i.id}` : ""} ──`)), 0, 0));
+		const text = i?.text?.trim() || "(image/content attachment)";
+		container.addChild(new Text(text, 0, 0));
+		const imageCount = i?.images?.length ?? 0;
+		if (imageCount > 0) container.addChild(new Text(theme.fg("muted", `${imageCount} image attachment(s) will be persisted at the next checkpoint.`), 0, 0));
+		container.addChild(new Text(theme.fg("dim", `Queued for next workflow checkpoint${d.queued ? ` · pending ${d.queued}` : ""}`), 0, 0));
+		return container;
+	};
+	try {
+		pi.registerEntryRenderer("super-dev-instruction", instructionRenderer);
+	} catch { /* best-effort */ }
+
 	// Stop an in-flight background run (pi-native command + shortcut). Aborts the
 	// detached run's OWN controller (not the turn signal, which is already gone).
 	pi.registerCommand("super-dev-stop", {
@@ -808,4 +875,28 @@ export default function activate(pi: ExtensionAPI): void {
 			},
 		});
 	} catch { /* best-effort: the keybinding may be unavailable / conflicting */ }
+	try {
+		pi.registerShortcut(SUPER_DEV_PANEL_SHORTCUT, {
+			description: "Show active super-dev run panel",
+			handler: async (ctx) => {
+				const run = getActiveRun();
+				if (!run || ctx.mode !== "tui") { ctx.ui.notify("No active super-dev run panel available.", "info"); return; }
+				try {
+					await ctx.ui.custom((_tui, theme, _keybindings, done) => {
+						const container = new Container();
+						container.addChild(new Text(theme.fg("accent", theme.bold("super-dev active run")), 1, 1));
+						container.addChild(new Text(`Mode: ${run.background ? "background" : "foreground"}`, 1, 0));
+						container.addChild(new Text(`Pending instructions: ${run.queue.length}`, 1, 0));
+						container.addChild(new Text(`Latest: ${run.lastInstructionPreview ?? "(none)"}`, 1, 0));
+						container.addChild(new Text(theme.fg("dim", `Press Enter/Escape to close · stop: ${SUPER_DEV_STOP_SHORTCUT}`), 1, 1));
+						Object.assign(container, { onKey: (key: string) => {
+							if (key === "return" || key === "enter" || key === "escape") { done(undefined); return true; }
+							return false;
+						} });
+						return container;
+					}, { overlay: true });
+				} catch { /* best-effort */ }
+			},
+		});
+	} catch { /* best-effort */ }
 }

@@ -151,11 +151,12 @@ describe("Phase 3 (Feature 3 / AC-09) — typed registerEntryRenderer", () => {
 			expect(EXTENSION_SRC).toContain('pi.registerEntryRenderer("super-dev-summary"');
 		});
 
-		it("activate(pi) registers exactly one entry renderer, for the `super-dev-summary` customType, via the typed pi API", () => {
+		it("activate(pi) registers native entry renderers for summary and accepted runtime instructions", () => {
 			const { registerEntryRenderer } = setup();
-			expect(registerEntryRenderer).toHaveLength(1);
-			expect(registerEntryRenderer[0].customType).toBe("super-dev-summary");
-			expect(typeof registerEntryRenderer[0].renderer).toBe("function");
+			expect(registerEntryRenderer.map((r) => r.customType)).toEqual(expect.arrayContaining(["super-dev-summary", "super-dev-instruction", "super-dev-run"]));
+			expect(typeof registerEntryRenderer.find((r) => r.customType === "super-dev-summary")?.renderer).toBe("function");
+			expect(typeof registerEntryRenderer.find((r) => r.customType === "super-dev-instruction")?.renderer).toBe("function");
+			expect(typeof registerEntryRenderer.find((r) => r.customType === "super-dev-run")?.renderer).toBe("function");
 		});
 
 		it("the registered renderer still renders the durable background-summary transcript card (behavior preserved)", () => {
