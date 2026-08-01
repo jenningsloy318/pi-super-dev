@@ -259,6 +259,23 @@ describe("runDeliverableCheck — requireContains (SCENARIO-003/006)", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("supports (?i) case-insensitive regex prefixes emitted by specs/agents", () => {
+		const cwd = rustTmp();
+		writeFileSync(join(cwd, "screen.rs"), "Permission denied\nLoading usage analytics\n");
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireContains: [
+					{ file: "screen.rs", pattern: "(?i)permission" },
+					{ file: "screen.rs", pattern: "(?i)empty|error|loading" },
+				],
+			});
+			expect(r.pass).toBe(true);
+			expect(r.missing).toEqual([]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 });
 
 // === SCENARIO-004: requireNotContains ======================================
