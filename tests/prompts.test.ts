@@ -58,6 +58,12 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		expect(p).toContain("RENDERED FOR YOU");
 	});
 
+	it("spec prompt warns deliverable regexes not to overfit examples or comments", () => {
+		const p = buildSpecPrompt(s, null, "t", null, null, null, null, null);
+		expect(p).toContain("avoid arbitrary local variable names");
+		expect(p).toContain("comment-stripped code");
+	});
+
 	it("implementation/fix prompts tell agents not to claim super-dev runtime artifacts", () => {
 		const impl = buildImplementPrompt(s, null, { name: "Phase A" }, {}, {});
 		const fix = buildFixPrompt(s, null, []);

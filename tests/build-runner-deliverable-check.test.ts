@@ -260,6 +260,34 @@ describe("runDeliverableCheck — requireContains (SCENARIO-003/006)", () => {
 		}
 	});
 
+	it("does not satisfy code requireContains from comments only", () => {
+		const cwd = rustTmp();
+		writeFileSync(join(cwd, "route.ts"), "// must use createRootHandlers('/x', 'API')\nexport async function POST() {}\n");
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireContains: [{ file: "route.ts", pattern: "createRootHandlers\\([\"']/x[\"'],\\s*[\"']API[\"']\\)" }],
+			});
+			expect(r.pass).toBe(false);
+			expect(r.missing).toContain("missing pattern createRootHandlers\\([\"']/x[\"'],\\s*[\"']API[\"']\\) in route.ts");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("relaxes generated one-letter alias examples for member export patterns", () => {
+		const cwd = rustTmp();
+		writeFileSync(join(cwd, "route.ts"), "const handlers = createRootHandlers('/x', 'API')\nexport const POST = handlers.POST\n");
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireContains: [{ file: "route.ts", pattern: "export\\s+const\\s+POST\\s*=\\s*h\\.POST" }],
+			});
+			expect(r.pass).toBe(true);
+			expect(r.missing).toEqual([]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("supports (?i) case-insensitive regex prefixes emitted by specs/agents", () => {
 		const cwd = rustTmp();
 		writeFileSync(join(cwd, "screen.rs"), "Permission denied\nLoading usage analytics\n");

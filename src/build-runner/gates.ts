@@ -847,11 +847,28 @@ function tolerantMatch(pattern: string, text: string): boolean {
 		if (flags === "i" && text.toLowerCase().includes(source.toLowerCase())) return true;
 		return false;
 	};
-	if (tryPattern(pattern)) return true;
+	const variants = [pattern];
 	// Tolerant fallback: strip `async ` so `export async function X` matches
 	// `export function X` (spec may declare async but the impl is sync).
 	const stripped = pattern.replace(/\basync\s+/g, "");
-	return stripped !== pattern ? tryPattern(stripped) : false;
+	if (stripped !== pattern) variants.push(stripped);
+	// Specs often encode examples with arbitrary local aliases, e.g.
+	// `const h = createRootHandlers(...); export const POST = h.POST`. The alias
+	// name is not semantic; `handlers.POST` is equivalent. Relax only this common
+	// generated one-letter alias form, and only as a fallback after the exact
+	// pattern missed.
+	for (const p of [...variants]) {
+		const relaxed = p.replace(/h\\\./g, String.raw`[A-Za-z_$][\w$]*\.`).replace(/h\./g, String.raw`[A-Za-z_$][\w$]*\.`);
+		if (relaxed !== p) variants.push(relaxed);
+	}
+	return variants.some((p) => tryPattern(p));
+}
+
+/** For code deliverables, match against comment-stripped text so a placeholder
+ * comment that merely mentions `createRootHandlers(...)` cannot satisfy a real
+ * wiring assertion. Docs and other non-code files keep their original text. */
+function deliverableMatchText(file: string, text: string): string {
+	return CODE_EXT.test(file) ? stripCommentsAndBlanks(text) : text;
 }
 
 /**
@@ -1140,7 +1157,7 @@ export function runDeliverableCheck(
 					}
 					continue;
 				}
-				if (!tolerantMatch(pattern, rd.text)) {
+				if (!tolerantMatch(pattern, deliverableMatchText(file, rd.text))) {
 					missing.push(`missing pattern ${pattern} in ${file}`);
 				}
 			}
@@ -1160,7 +1177,7 @@ export function runDeliverableCheck(
 				const pattern = entry?.pattern;
 				ran.push(`not-contains:${file}:${pattern}`);
 				const rd = readForDeliverable(cwd, file);
-				if (rd.ok && tolerantMatch(pattern, rd.text)) {
+				if (rd.ok && tolerantMatch(pattern, deliverableMatchText(file, rd.text))) {
 					missing.push(`forbidden pattern ${pattern} still present in ${file}`);
 				}
 			}
@@ -1235,11 +1252,11 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 		}
 		for (const entry of deliverables.requireContains ?? []) {
 			const rd = readForDeliverable(cwd, entry.file);
-			if (!rd.ok || !tolerantMatch(entry.pattern, rd.text)) return false;
+			if (!rd.ok || !tolerantMatch(entry.pattern, deliverableMatchText(entry.file, rd.text))) return false;
 		}
 		for (const entry of deliverables.requireNotContains ?? []) {
 			const rd = readForDeliverable(cwd, entry.file);
-			if (rd.ok && tolerantMatch(entry.pattern, rd.text)) return false;
+			if (rd.ok && tolerantMatch(entry.pattern, deliverableMatchText(entry.file, rd.text))) return false;
 		}
 		return true;
 	} catch {
