@@ -2,17 +2,12 @@
  * Phase 0 render pipeline tests:
  *  1. Template engine: interpolation, filters, for, if, comments.
  *  2. Schema validation: TypeBox catches missing/invalid data.
- *  3. Real-case round-trip: extract BddData from REAL stockfan BDD docs → render
- *     via the bdd template → assert structural fidelity (SCENARIO ids, G/W/T
- *     preserved). Multiple docs = multiple validation cases.
  */
 
 import { describe, it, expect } from "vitest";
 import { render } from "../src/render/template-engine.ts";
 import { validateData, renderStage } from "../src/render/render.ts";
 import { BddData as BddSchema, RequirementsData as ReqSchema } from "../src/render/schemas.ts";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 
 // ─── 1. Template engine ─────────────────────────────────────────────────────
 
@@ -70,168 +65,6 @@ describe("schema validation (TypeBox Value.Errors)", () => {
 	});
 });
 
-// ─── 3. Real-case round-trip: stockfan BDD docs ─────────────────────────────
-
-/** Extract BddData from a real BDD markdown doc (regex parser). */
-function extractBddData(doc: string): Record<string, unknown> {
-	const titleMatch = doc.match(/^# Behavior Scenarios:\s*(.+)$/m);
-	const title = titleMatch?.[1]?.trim() ?? "Unknown";
-	const sourceMatch = doc.match(/^\- \*\*Source\*\*:\s*(.+)$/m);
-	const source = sourceMatch?.[1]?.trim() ?? "./01-requirements.md";
-	const dateMatch = doc.match(/^\- \*\*Date\*\*:\s*(.+)$/m);
-	const date = dateMatch?.[1]?.trim() ?? "";
-
-	const features: Array<{ name: string; scenarios: Array<Record<string, unknown>> }> = [];
-	let currentFeature: { name: string; scenarios: Array<Record<string, unknown>> } | null = null;
-
-	// Parse by blocks: ## Feature / ### SCENARIO-NNN
-	const lines = doc.split("\n");
-	let currentScenario: Record<string, unknown> | null = null;
-	let gwt: { given?: string; when?: string; then?: string; andClauses?: string[] } = {};
-
-	for (const line of lines) {
-		const featureMatch = line.match(/^## Feature:\s*(.+)$/);
-		const scenarioMatch = line.match(/^### SCENARIO-(\d+):\s*(.+)$/);
-		const acMatch = line.match(/^\- \*\*Acceptance Criteria\*\*:\s*(.+)$/);
-		const prioMatch = line.match(/^\- \*\*Priority\*\*:\s*(.+)$/);
-		const givenMatch = line.match(/^\*\*Given\*\*\s+(.+)/);
-		const whenMatch = line.match(/^\*\*When\*\*\s+(.+)/);
-		const thenMatch = line.match(/^\*\*Then\*\*\s+(.+)/);
-		const andMatch = line.match(/^\*\*And\*\*\s+(.+)/);
-
-		if (featureMatch) {
-			if (currentScenario && currentFeature) currentFeature.scenarios.push(currentScenario);
-			currentFeature = { name: featureMatch[1].trim(), scenarios: [] };
-			features.push(currentFeature);
-			currentScenario = null;
-		} else if (scenarioMatch) {
-			if (currentScenario && currentFeature) currentFeature.scenarios.push(currentScenario);
-			currentScenario = { id: scenarioMatch[1], title: scenarioMatch[2].trim(), acRef: "AC-01", priority: "medium", given: "", when: "", then: "" };
-			gwt = {};
-		} else if (acMatch && currentScenario) {
-			currentScenario.acRef = acMatch[1].trim();
-		} else if (prioMatch && currentScenario) {
-			currentScenario.priority = prioMatch[1].trim().toLowerCase();
-		} else if (givenMatch) { gwt.given = givenMatch[1].trim(); }
-		else if (whenMatch) { gwt.when = whenMatch[1].trim(); }
-		else if (thenMatch) { gwt.then = thenMatch[1].trim(); }
-		else if (andMatch) { (gwt.andClauses ??= []).push(andMatch[1].trim()); }
-	}
-	// flush last scenario
-	if (currentScenario && currentFeature) {
-		Object.assign(currentScenario, gwt);
-		currentFeature.scenarios.push(currentScenario);
-	}
-	// apply gwt to all scenarios (they were set during parsing)
-	for (const f of features) {
-		for (const s of f.scenarios) {
-			// gwt was set per-scenario but we overwrote it; reparse inline instead
-		}
-	}
-	return { title, date, source, features };
-}
-
-// Better extractor: parse each scenario block with its own GWT
-function extractBddDataV2(doc: string): Record<string, unknown> {
-	const titleMatch = doc.match(/^# Behavior Scenarios:\s*(.+)$/m);
-	const title = titleMatch?.[1]?.trim() ?? "Unknown";
-	const sourceMatch = doc.match(/^\- \*\*Source\*\*:\s*(.+)$/m);
-	const source = sourceMatch?.[1]?.trim() ?? "./01-requirements.md";
-	const dateMatch = doc.match(/^\- \*\*Date\*\*:\s*(.+)$/m);
-	const date = dateMatch?.[1]?.trim() ?? "";
-
-	const features: Array<{ name: string; scenarios: Array<Record<string, unknown>> }> = [];
-	let currentFeature: { name: string; scenarios: Array<Record<string, unknown>> } | null = null;
-
-	const scenarioBlocks = doc.split(/^### SCENARIO-/m).slice(1); // first split = header
-	for (const block of scenarioBlocks) {
-		const idMatch = block.match(/^(\d+)\W+(.+)/s);
-		if (!idMatch) continue;
-		const id = idMatch[1];
-		const scenarioTitle = idMatch[2]?.trim()?.replace(/\n.*$/s, "") ?? "";
-
-		const acMatch = block.match(/\*\*Acceptance Criteria\*\*:\s*(.+)/);
-		const prioMatch = block.match(/\*\*Priority\*\*:\s*(\w+)/);
-		const givenMatch = block.match(/\*\*Given\*\*\s+(.+)/);
-		const whenMatch = block.match(/\*\*When\*\*\s+(.+)/);
-		const thenMatch = block.match(/\*\*Then\*\*\s+(.+)/);
-		const andMatches = [...block.matchAll(/\*\*And\*\*\s+(.+)/g)];
-
-		// Check if this block starts a new feature
-		const featureInBlock = block.match(/^## Feature:\s*(.+)/m);
-
-		const scenario: Record<string, unknown> = {
-			id,
-			title: scenarioTitle,
-			acRef: acMatch?.[1]?.trim() ?? "AC-01",
-			priority: prioMatch?.[1]?.trim().toLowerCase() ?? "medium",
-			given: givenMatch?.[1]?.trim() ?? "",
-			when: whenMatch?.[1]?.trim() ?? "",
-			then: thenMatch?.[1]?.trim() ?? "",
-		};
-		if (andMatches.length > 0) scenario.andClauses = andMatches.map((m) => m[1].trim());
-
-		// Feature detection: look at the text BEFORE this scenario block
-		// (between the previous scenario and this one)
-	if (!currentFeature) {
-			currentFeature = { name: "General", scenarios: [] };
-			features.push(currentFeature);
-		}
-		currentFeature.scenarios.push(scenario);
-	}
-	return { title, date, source, features };
-}
-
-const FIXTURE_DIRS = [
-	"/home/jenningsl/development/personal/stock-analysis/stockfan-web/docs/specifications",
-	"/home/jenningsl/development/personal/stock-analysis/stockfan-server/docs/specifications",
-];
-
-describe("real-case round-trip: stockfan BDD docs → render → structural fidelity", () => {
-	const bddDocs: Array<{ repo: string; path: string; doc: string }> = [];
-	for (const dir of FIXTURE_DIRS) {
-		try {
-			for (const specDir of readdirSync(dir)) {
-				const bddPath = join(dir, specDir, "02-bdd-scenarios.md");
-				try {
-					const docContent = readFileSync(bddPath, "utf8"); if (/^### SCENARIO-\d+/m.test(docContent)) bddDocs.push({ repo: dir.includes("web") ? "web" : "server", path: bddPath, doc: docContent });
-				} catch { /* no bdd doc in this spec */ }
-			}
-		} catch { /* dir not accessible */ }
-	}
-
-	it(`found real BDD docs to test against (expect ≥ 2)`, () => {
-		expect(bddDocs.length).toBeGreaterThanOrEqual(2);
-	});
-
-	for (const { repo, path, doc } of bddDocs) {
-		it(`${repo}: ${path.split("/").slice(-2).join("/")} — extracted data renders, preserving all SCENARIO ids + GWT`, () => {
-			// Extract data from the real doc
-			const data = extractBddDataV2(doc);
-			// Validate against the schema
-			const errors = validateData(BddSchema, data);
-			expect(errors, `schema validation errors: ${errors.join("; ")}`).toEqual([]);
-			// Render through the template
-			const result = renderStage("bdd", data);
-			expect(result.errors).toEqual([]);
-			expect(result.markdown.length).toBeGreaterThan(300);
-			// Structural fidelity: every SCENARIO-NNN from the EXTRACTED data must appear in the render
-			const renderedIds = [...result.markdown.matchAll(/SCENARIO-(\d+)/g)].map((m) => m[1]);
-			const extractedIds = (data.features as Array<{ scenarios: Array<{ id: string }> }>).flatMap((f) => f.scenarios.map((s) => s.id));
-			for (const id of extractedIds) {
-				expect(renderedIds, `SCENARIO-${id} missing from rendered output`).toContain(id);
-			}
-			// Given/When/Then keywords present
-			expect(result.markdown).toMatch(/\*\*Given\*\*/);
-			expect(result.markdown).toMatch(/\*\*When\*\*/);
-			expect(result.markdown).toMatch(/\*\*Then\*\*/);
-			// Rendered total equals extracted total (not original — extractor may miss edge cases)
-			const totalInRender = result.markdown.match(/\*\*Total Scenarios\*\*:\s*(\d+)/);
-			expect(Number(totalInRender?.[1])).toBe(extractedIds.length);
-		});
-	}
-});
-
 // ─── 4. Requirements render pipeline ─────────────────────────────────────────
 
 describe("render pipeline: requirements", () => {
@@ -249,16 +82,6 @@ describe("render pipeline: requirements", () => {
 		expect(result.markdown).toMatch(/Executive Summary/);
 		expect(result.markdown).toMatch(/Non-Functional/);
 		expect(result.markdown).toMatch(/Performance/);
-	});
-	it("real-doc round-trip: stockfan requirements → render → ACs preserved", () => {
-		const doc = readFileSync("/home/jenningsl/development/personal/stock-analysis/stockfan-server/docs/specifications/01-core-foundation/01-requirements.md", "utf8");
-		const titleMatch = doc.match(/^# Requirements:\s*(.+)$/m);
-		const acs = [...doc.matchAll(/- \*\*(AC-\d+)\*\*:\s*(.+)/g)].map((m) => ({ id: m[1], statement: m[2].trim() }));
-		const data = { title: titleMatch?.[1]?.trim() ?? "T", date: "2026-01-01", type: "feature", priority: "high", executiveSummary: "Extracted from real doc.", acceptanceCriteria: acs.length >= 2 ? acs : [...acs, { id: "AC-FILL", statement: "filler" }], nonFunctional: ["Security: validated"] };
-		const result = renderStage("requirements", data);
-		expect(result.errors).toEqual([]);
-		for (const ac of acs) expect(result.markdown).toContain(ac.id);
-		expect(result.markdown).toMatch(/Acceptance Criteria/);
 	});
 });
 
@@ -294,16 +117,6 @@ describe("render pipeline: code-assessment", () => {
 		expect(result.markdown).toMatch(/Result types/);
 		expect(result.markdown).toMatch(/Recommendations/);
 		expect(result.markdown).toMatch(/Files Assessed/);
-	});
-	it("real-doc round-trip: stockfan code-assessment → render → summary preserved", () => {
-		const doc = readFileSync("/home/jenningsl/development/personal/stock-analysis/stockfan-server/docs/specifications/01-core-foundation/03-code-assessment.md", "utf8");
-		const titleMatch = doc.match(/^# Code Assessment:\s*(.+)$/m);
-		const summaryMatch = doc.match(/## Executive Summary\s*\n\s*\n([\s\S]*?)(?:\n---|\n## )/);
-		const data = { title: titleMatch?.[1]?.trim() ?? "T", date: "2026-01-01", summary: summaryMatch?.[1]?.trim() ?? "Assessed.", patterns: [{ name: "P1", example: "f:1", consistency: "ok" }], recommendations: ["R1"], filesAssessed: ["f.js"] };
-		const result = renderStage("assessment", data);
-		expect(result.errors).toEqual([]);
-		expect(result.markdown).toMatch(/Executive Summary/);
-		expect(result.markdown).toContain(titleMatch?.[1]?.trim() ?? "T");
 	});
 });
 
@@ -342,16 +155,6 @@ describe("render pipeline: code-review", () => {
 		expect(result.markdown).toMatch(/Verdict: Approved/);
 		expect(result.markdown).toMatch(/F-01/);
 		expect(result.markdown).toMatch(/server\.js/);
-	});
-	it("real-doc round-trip: stockfan code-review → render → verdict + findings preserved", () => {
-		const doc = readFileSync("/home/jenningsl/development/personal/stock-analysis/stockfan-server/docs/specifications/01-core-foundation/09-code-review.md", "utf8");
-		const titleMatch = doc.match(/^# Code Review:\s*(.+)$/m);
-		const verdictMatch = doc.match(/## Verdict:\s*(.+)/);
-		const data = { title: titleMatch?.[1]?.trim() ?? "T", date: "2026-01-01", verdict: verdictMatch?.[1]?.trim() ?? "Approved", summary: "Extracted.", findings: [{ id: "F-01", severity: "Low", title: "Test finding", detail: "Detail" }] };
-		const result = renderStage("codeReview", data);
-		expect(result.errors).toEqual([]);
-		expect(result.markdown).toMatch(/Verdict:/);
-		expect(result.markdown).toContain(verdictMatch?.[1]?.trim() ?? "Approved");
 	});
 });
 

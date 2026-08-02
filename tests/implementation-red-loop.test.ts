@@ -14,23 +14,21 @@
  *     call `runRedCheck(worktreePath, testFiles, { signal })` ONCE.
  *   - `while (status === "green" || status === "broken") && retries < MAX_RED_RETRIES`
  *       re-prompt `tdd-guide` (status-specific hint), re-run `runRedCheck`.
- *   - On `"red"` OR `"unknown"` → proceed to the implementer (NO further
- *     re-prompt). `unknown` proceeds immediately (zero re-prompts) so
- *     greenfield pipelines NEVER stall.
+ *   - On `"red"` → proceed to the implementer with a CONFIRMED-red context.
+ *   - On `"unknown"` → proceed without stalling, but explicitly tell the
+ *     implementer RED could not be confirmed.
  *   - On cap exhaustion (still green/broken after MAX_RED_RETRIES=4 re-prompts)
- *     → proceed to the implementer with a LOUD WARNING log.
+ *     → HARD-fail the phase (`red-not-confirmed` / `red-broken`) and do NOT call
+ *     the implementer.
  *   - Log EVERY red-oracle outcome as
- *       `Implementation ${phaseId} red-oracle: ${status} (ran: ...)`
- *   - Augment the implementer prompt: when `status === "red"`, tell it the
- *     tests are CONFIRMED-red (goal = green them); when `unknown` /
- *     cap-exhausted, note red could NOT be confirmed.
+ *       `Implementation ${phaseId} red-oracle: ${status} (ran: ...)`.
  *   - The OUTER `MAX_ATTEMPTS = 5` structure and the
  *     `gate.pass || gate.inScopePass` commit condition are UNCHANGED.
  *
- * RED status: because the stage never calls runRedCheck today, every
- * `runRedCheck` call-count assertion sees 0, every "CONFIRMED-red" prompt
- * assertion fails, and no "red-oracle" / "red-oracle WARNING" log line is ever
- * emitted — exactly the RED signal we want.
+ * RED status hardening: `green`/`broken` retry exhaustion is no longer a warning
+ * path into the implementer. It is the bug this suite prevents: unconfirmed RED
+ * stops the phase unless the harness proves deliverables were already satisfied
+ * before RED or the runner is genuinely unknown/unavailable.
  *
  * Hermeticity: the ONLY side-effecting imports of the stage are mocked —
  * `runRedCheck`/`runBuildGate` (src/build-runner.ts) and `renderAndWrite`
@@ -297,24 +295,24 @@ describe("P3 — RED loop: green/broken triggers a bounded re-prompt (SCENARIO-0
 	});
 });
 
-describe("P3 — RED loop: cap exhaustion proceeds with a LOUD warning (SCENARIO-009)", () => {
-	it("always-green → proceeds to implementer AND logs a red-oracle WARNING", async () => {
+describe("P3 — RED loop: cap exhaustion is a hard RED gate", () => {
+	it("always-green → does NOT proceed to implementer and records red-not-confirmed", async () => {
 		redSeq("green");
 		const { ctx, calls } = mkCtx();
 		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
 
-		// cap reached but does NOT stall the pipeline — implementer still runs.
-		expect(calls.impl).toHaveLength(1);
-		expect(res.phasesCompleted).toBe(1);
-		expect(calls.logs.some((l) => /red-oracle WARNING/i.test(l))).toBe(true);
+		expect(calls.impl).toHaveLength(0);
+		expect(res.phasesCompleted).toBe(0);
+		expect(res.allGreen).toBe(false);
+		expect(calls.logs.some((l) => /RED gate FAIL: red-not-confirmed/i.test(l))).toBe(true);
 	});
 
-	it("cap-exhausted (not red) does NOT tell the implementer the tests are CONFIRMED-red", async () => {
+	it("cap-exhausted (not red) never tells an implementer to green weak tests", async () => {
 		redSeq("green");
 		const { ctx, calls } = mkCtx();
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		expect(calls.impl[0].prompt).not.toMatch(/CONFIRMED-red/i);
+		expect(calls.impl).toHaveLength(0);
 	});
 });
 

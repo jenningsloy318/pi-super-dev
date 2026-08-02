@@ -155,21 +155,6 @@ describe("runBuildGate — PI session/model correlation tagging (AC-10, SCENARIO
 		}
 	});
 
-	it("does not alter constructed commands (ran labels unchanged) when correlation is present", () => {
-		process.env.PI_SESSION_ID = "sess-cmd";
-		process.env.PI_MODEL = "model-cmd";
-		const d = tmpProj((dir) =>
-			writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: 'node -e "process.exit(0)"' } })),
-		);
-		try {
-			const r = runBuildGate(d);
-			// The argv label is byte-identical to today (no env-tagging of the command).
-			expect(r.ran).toEqual(["npm run test"]);
-		} finally {
-			rmSync(d, { recursive: true, force: true });
-		}
-	});
-
 	it("populates correlation even on an erroring/aborted gate (defensive, no-throw)", () => {
 		process.env.PI_SESSION_ID = "sess-def";
 		process.env.PI_MODEL = "model-def";

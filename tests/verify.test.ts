@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
-import { integrationTestsGreen, expectedIntegrationRoles, integrationLoopNode, reviewLoopNode, reviewLoopUntil } from "../src/stages/verify.ts";
+import { integrationTestsGreen, integrationOutcome, expectedIntegrationRoles, integrationLoopNode, reviewLoopNode, reviewLoopUntil } from "../src/stages/verify.ts";
 import type { AgentResult, PipelineState, StageContext } from "../src/types.ts";
 
 describe("reviewLoopNode (Phase 1)", () => {
@@ -61,5 +61,12 @@ describe("integration test verdict helpers", () => {
 		const state = { integrationExpectedTests: [], apiTest: { pass: false }, uiTest: { pass: false } } as unknown as PipelineState;
 		expect(expectedIntegrationRoles(state)).toEqual([]);
 		expect(integrationTestsGreen(state)).toBe(false);
+	});
+	it("classifies integration outcomes with explicit non-vacuous statuses", () => {
+		expect(integrationOutcome({} as PipelineState)).toMatchObject({ status: "skipped-not-applicable", pass: true });
+		expect(integrationOutcome({ integrationExpectedTests: ["api"] } as PipelineState)).toMatchObject({ status: "unknown-runner-unavailable", pass: false });
+		expect(integrationOutcome({ integrationExpectedTests: ["api"], apiTest: { pass: false, skipped: true, failures: [{ reason: "service(s) not ready: api" }] } } as unknown as PipelineState)).toMatchObject({ status: "skipped-service-unavailable", pass: false });
+		expect(integrationOutcome({ integrationExpectedTests: ["api"], apiTest: { pass: false, failures: [{ message: "expected 200" }] } } as unknown as PipelineState)).toMatchObject({ status: "failed", pass: false });
+		expect(integrationOutcome({ integrationExpectedTests: ["api"], apiTest: { pass: true } } as PipelineState)).toMatchObject({ status: "passed", pass: true });
 	});
 });

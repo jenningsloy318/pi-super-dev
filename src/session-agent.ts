@@ -396,24 +396,19 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
-	// Safety (Gap 4.3): inject a `tool_call` hook that hard-blockks dangerous
-	// commands + secret-file overwrites. Ambient (global + project) extension
-	// discovery is ENABLED by default (noExtensions: false) — this matches
-	// pi-subagents' default (its `disableAmbientExtensions` is false unless an
-	// explicit extensions list or denyExtensions is given), so an inherited
-	// parent model that resolves from an extension-registered provider no longer
-	// silently fails in the child's runtime, and newly-installed useful
-	// extensions are picked up automatically. Recursion is prevented NOT by
-	// suppressing extensions but by excluding this extension's own spawner tool
-	// from children (see `excludeTools: ["super_dev"]` on createAgentSession
-	// below) — the same mechanism pi-subagents uses (its `subagent` tool is kept
-	// out of children's active tools via the tools allowlist / capability
-	// ceiling). The inline safety factory still loads (verified C9).
+	// Keep session-backed specialists on super-dev-owned prompts. The subprocess
+	// backend already runs `pi --no-skills --system-prompt agents/<name>.md`; mirror
+	// that here so ambient user/project skills are not advertised to specialists
+	// and logs cannot be mistaken for arbitrary external agents. Extensions remain
+	// enabled for provider/tool compatibility; `excludeTools:["super_dev"]` below
+	// prevents recursive pipeline spawning.
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: opts.cwd,
 		agentDir,
 		settingsManager,
 		noExtensions: false,
+		noSkills: true,
+		systemPrompt,
 		extensionFactories: [createSafetyExtensionFactory()],
 	});
 	await resourceLoader.reload();
@@ -495,7 +490,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	// implementer was the root cause of the recurring phase-N zero-edit and
 	// edit-thrash failures (see runs 2026-07-20 / 2026-07-22 phase-03).
 	const deliveryDiscipline = deliveryDisciplineFor(opts.agent);
-	const task = [systemPrompt, "", "## Task", opts.prompt, "", deliveryDiscipline, "", "## Final output", finalOutputLine].join("\n");
+	const task = ["## Task", opts.prompt, "", deliveryDiscipline, "", "## Final output", finalOutputLine].join("\n");
 
 	let correctiveNote = "";
 	try {

@@ -35,6 +35,21 @@ export const reviewApproved = (s: PipelineState) => {
 
 const passTrue = (v: unknown): boolean => typeof v === "boolean" ? v : /^(true|yes|1|pass)$/i.test(String(v ?? "").trim());
 
+export type IntegrationOutcomeStatus =
+	| "passed"
+	| "failed"
+	| "skipped-not-applicable"
+	| "skipped-service-unavailable"
+	| "unknown-runner-unavailable";
+
+export interface IntegrationOutcome {
+	status: IntegrationOutcomeStatus;
+	pass: boolean;
+	expected: Array<"api" | "ui">;
+	roleStatus: Partial<Record<"api" | "ui", IntegrationOutcomeStatus>>;
+	summary: string;
+}
+
 export function expectedIntegrationRoles(s: PipelineState): Array<"api" | "ui"> {
 	if (Array.isArray(s.integrationExpectedTests)) return s.integrationExpectedTests;
 	const roles: Array<"api" | "ui"> = [];
@@ -52,6 +67,51 @@ export const integrationTestsGreen = (s: PipelineState) => {
 	if (roles.includes("ui") && !passTrue(ui?.pass)) return false;
 	return true;
 };
+
+function roleIntegrationStatus(control: unknown): IntegrationOutcomeStatus {
+	if (!control || typeof control !== "object" || Array.isArray(control)) return "unknown-runner-unavailable";
+	const c = control as { pass?: unknown; skipped?: unknown; failures?: Array<{ reason?: unknown }> };
+	if (passTrue(c.pass)) return "passed";
+	const reasonText = (c.failures ?? []).map((f) => String(f?.reason ?? "")).join("\n").toLowerCase();
+	if (c.skipped === true && /service|not ready|not available|unavailable/.test(reasonText)) return "skipped-service-unavailable";
+	return "failed";
+}
+
+export function integrationOutcome(s: PipelineState): IntegrationOutcome {
+	const expected = expectedIntegrationRoles(s);
+	const roleStatus: Partial<Record<"api" | "ui", IntegrationOutcomeStatus>> = {};
+	if (expected.length === 0) {
+		return {
+			status: "skipped-not-applicable",
+			pass: true,
+			expected,
+			roleStatus,
+			summary: "No API/UI service surface detected for integration testing",
+		};
+	}
+	for (const role of expected) {
+		roleStatus[role] = roleIntegrationStatus(role === "api" ? s.apiTest : s.uiTest);
+	}
+	let status: IntegrationOutcomeStatus;
+	if (Object.values(roleStatus).every((v) => v === "passed")) status = "passed";
+	else if (Object.values(roleStatus).some((v) => v === "failed")) status = "failed";
+	else if (Object.values(roleStatus).some((v) => v === "skipped-service-unavailable")) status = "skipped-service-unavailable";
+	else status = "unknown-runner-unavailable";
+	const pass = status === "passed";
+	return {
+		status,
+		pass,
+		expected,
+		roleStatus,
+		summary: status === "passed" ? "Integration tests passed" : `Integration status: ${status}`,
+	};
+}
+
+function setIntegrationOutcome(s: PipelineState, summary?: string): IntegrationOutcome {
+	const outcome = integrationOutcome(s);
+	s.integration = { ...outcome, summary: summary ?? outcome.summary };
+	return outcome;
+}
 
 const buildGreen = (s: PipelineState) => {
 	const b = s.buildGate as { pass?: boolean } | undefined;
@@ -74,7 +134,14 @@ function validReviewControl(control: unknown): control is Record<string, unknown
 }
 
 function failedTestControl(kind: "apiTest" | "uiTest", reason: string): Record<string, unknown> {
-	return { pass: false, skipped: true, failures: [{ reason }], summary: reason };
+	const unavailable = /service|not ready|not available|unavailable/i.test(reason);
+	return {
+		pass: false,
+		skipped: unavailable,
+		status: unavailable ? "skipped-service-unavailable" : "failed",
+		failures: [{ reason }],
+		summary: reason,
+	};
 }
 
 function resetIntegrationAttemptState(s: PipelineState): void {
@@ -85,14 +152,22 @@ function resetIntegrationAttemptState(s: PipelineState): void {
 }
 
 function markIntegrationNotApplicable(s: PipelineState, ctx: StageContext): NodeResult {
-	s.integration = { pass: true, notApplicable: true, summary: "No API/UI service surface detected for integration testing" };
-	ctx.log("Stage 11: no integration-test surface detected — marking integration not applicable");
+	s.integration = {
+		pass: true,
+		status: "skipped-not-applicable",
+		notApplicable: true,
+		expected: [],
+		roleStatus: {},
+		summary: "No API/UI service surface detected for integration testing",
+	};
+	ctx.log("Stage 11: no integration-test surface detected — marking integration not applicable (skipped-not-applicable)");
 	return { status: "ok" };
 }
 
 function markIntegrationPassed(s: PipelineState, ctx: StageContext, message: string): NodeResult {
-	s.integration = { pass: true, summary: message, expected: expectedIntegrationRoles(s) };
-	ctx.log(message);
+	const outcome = setIntegrationOutcome(s, message);
+	s.integration = { ...s.integration, pass: true, status: "passed", expected: outcome.expected, roleStatus: outcome.roleStatus, summary: message };
+	ctx.log(`${message} (status=passed)`);
 	return { status: "ok" };
 }
 
@@ -449,12 +524,14 @@ export const integrationLoopNode: Node = {
 				...(((state.apiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? []),
 				...(((state.uiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? []),
 			];
+			const outcome = setIntegrationOutcome(state, "integration testing stagnated (non-fatal)");
 			(state as Record<string, unknown>).__testStagnated = {
 				rounds: testSigHist.length,
 				signature: sig,
+				status: outcome.status,
 				failures: failures.slice(0, 12).map((f) => ({ file: f.file ?? null, title: f.title ?? null, message: f.message ?? null })),
 			};
-			ctx.log(`Stage 11: test failures stagnant across 2 consecutive rounds — breaking early (non-fatal; ${testSigHist.length} rounds)`);
+			ctx.log(`Stage 11: test failures stagnant across 2 consecutive rounds — breaking early (non-fatal; ${testSigHist.length} rounds; status=${outcome.status})`);
 			return true;
 		};
 
@@ -464,11 +541,13 @@ export const integrationLoopNode: Node = {
 		const initResult = await testBlock.run(state, ctx);
 		if (initResult.status === "cancelled") return initResult;
 		if (initResult.status === "failed") {
-			state.integration = { pass: false, summary: initResult.error ?? "integration bringup/test block failed" };
+			state.integration = { pass: false, status: "failed", summary: initResult.error ?? "integration bringup/test block failed", expected: expectedIntegrationRoles(state) };
 			return initResult;
 		}
 		if (expectedIntegrationRoles(state).length === 0) return markIntegrationNotApplicable(state, ctx);
-		if (integrationTestsGreen(state) && reviewApproved(state) && buildGreen(state)) {
+		const initialOutcome = setIntegrationOutcome(state);
+		ctx.log(`Stage 11: integration initial outcome ${initialOutcome.status} (expected: ${initialOutcome.expected.join(",") || "none"})`);
+		if (initialOutcome.status === "passed" && reviewApproved(state) && buildGreen(state)) {
 			return markIntegrationPassed(state, ctx, "Stage 11: integration passed on first run");
 		}
 		if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
@@ -490,19 +569,22 @@ export const integrationLoopNode: Node = {
 			const retryTestResult = await testBlock.run(state, ctx);
 			if (retryTestResult.status === "cancelled") return retryTestResult;
 			if (retryTestResult.status === "failed") {
-				state.integration = { pass: false, summary: retryTestResult.error ?? "integration bringup/test block failed" };
+				state.integration = { pass: false, status: "failed", summary: retryTestResult.error ?? "integration bringup/test block failed", expected: expectedIntegrationRoles(state) };
 				return retryTestResult;
 			}
 
 			if (expectedIntegrationRoles(state).length === 0) return markIntegrationNotApplicable(state, ctx);
-			if (integrationTestsGreen(state) && reviewApproved(state) && buildGreen(state)) {
+			const retryOutcome = setIntegrationOutcome(state);
+			ctx.log(`Stage 11: integration retry ${attempt} outcome ${retryOutcome.status} (expected: ${retryOutcome.expected.join(",") || "none"})`);
+			if (retryOutcome.status === "passed" && reviewApproved(state) && buildGreen(state)) {
 				return markIntegrationPassed(state, ctx, `Stage 11: integration passed on retry ${attempt}`);
 			}
 			if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 		}
 
 		ctx.log("Stage 11: integration testing max retries exhausted (non-fatal)");
-		state.integration = { pass: false, summary: "integration testing max retries exhausted", expected: expectedIntegrationRoles(state) };
+		const outcome = setIntegrationOutcome(state, "integration testing max retries exhausted");
+		state.integration = { ...state.integration, pass: false, status: outcome.status === "passed" ? "failed" : outcome.status, summary: "integration testing max retries exhausted", expected: outcome.expected, roleStatus: outcome.roleStatus };
 		return { status: "failed", error: "integration testing max retries exhausted" };
 	},
 };

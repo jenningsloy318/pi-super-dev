@@ -3,8 +3,8 @@
  *
  * This is the ANTI-HARDCODING strengthening companion to
  * `tests/implementation-red-loop.test.ts`. The sibling suite asserts the RED
- * loop's *structure* (call-counts, the CONFIRMED-red flag, the WARNING line).
- * It does NOT assert the load-bearing DATA-FLOW edges of the AC-02 contract,
+ * loop's *structure* (call-counts, the CONFIRMED-red flag, and hard blocking of
+ * unconfirmed RED). It does NOT assert the load-bearing DATA-FLOW edges of the
  * so a shortcut implementation that ignored `control.testFiles` entirely, that
  * appended a fixed re-prompt suffix regardless of status, or that re-ran the
  * oracle against STALE test files would still pass the sibling suite. These
@@ -19,10 +19,14 @@
  *   4. A retry's NEW `control.testFiles` propagate to the NEXT runRedCheck
  *      call (not the stale original set).
  *   5. A retry that returns no testFiles falls back to the PRIOR testFiles.
- *   6. The cap-exhausted implementer prompt names the residual status AND the
- *      `2` retry count verbatim (so the green-phase agent is not told a lie).
+ *   6. Cap-exhausted green/broken RED blocks the implementer instead of handing
+ *      weak/broken tests to GREEN.
  *   7. The `unknown` implementer prompt states the red was NOT confirmed.
- *   8. Multi-phase: each phase owns an INDEPENDENT red-oracle loop.
+ *   8. RED pollution (production edits during test-authoring) is detected,
+ *      written to `implementation-evidence.jsonl`, and rolled back.
+ *   9. Already-satisfied green RED can skip implementation only when baseline
+ *      deliverables verify.
+ *  10. Multi-phase: each phase owns an INDEPENDENT red-oracle loop.
  *
  * Hermeticity mirrors the sibling suite: only side-effecting imports
  * (`runRedCheck`/`runBuildGate`, `renderAndWrite`) are mocked; `ctx.agent` /
@@ -32,6 +36,10 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	AgentCall,
 	AgentResult,
@@ -102,10 +110,11 @@ function mkState(phaseCount = 1): PipelineState {
  * tdd-guide controls (one per tdd-guide call, in order), so we can assert that
  * a retry's NEW control.testFiles actually propagate to the next oracle call.
  */
-function mkCtx(opts: { tddControls?: ControlObj[] } = {}): { ctx: StageContext; tddCalls: AgentCall[]; implCalls: AgentCall[] } {
+function mkCtx(opts: { tddControls?: ControlObj[]; onTddCall?: (call: AgentCall, index: number) => void } = {}): { ctx: StageContext; tddCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
 	const queue = [...(opts.tddControls ?? [DEFAULT_TDD_CONTROL])];
 	const tddCalls: AgentCall[] = [];
 	const implCalls: AgentCall[] = [];
+	const logs: string[] = [];
 	const ctx: StageContext = {
 		task: "",
 		options: {} as RunOptions,
@@ -116,6 +125,7 @@ function mkCtx(opts: { tddControls?: ControlObj[] } = {}): { ctx: StageContext; 
 		async agent(call: AgentCall): Promise<AgentResult> {
 			if (call.agent === "tdd-guide") {
 				tddCalls.push(call);
+				opts.onTddCall?.(call, tddCalls.length);
 				const next = queue.length > 1 ? queue.shift()! : (queue[0] ?? DEFAULT_TDD_CONTROL);
 				return { text: "", control: next };
 			}
@@ -129,12 +139,12 @@ function mkCtx(opts: { tddControls?: ControlObj[] } = {}): { ctx: StageContext; 
 			return Promise.all(cbs.map((c) => c()));
 		},
 		budget: { count: 0, check: () => true, spent() { this.count++; return true; } } satisfies Budget,
-		log() {},
+		log(message: string) { logs.push(message); },
 		phase() {},
 		events: new EventEmitter(),
 		results: [],
 	};
-	return { ctx, tddCalls, implCalls };
+	return { ctx, tddCalls, implCalls, logs };
 }
 
 beforeEach(() => {
@@ -236,29 +246,27 @@ describe("P3 edges — a retry's new control.testFiles propagate to the next ora
 	});
 });
 
-// ─── 4. Cap-exhausted / unknown implementer prompt wording ──────────────────
+// ─── 4. Cap-exhausted / unknown implementer behavior ───────────────────────
 
-describe("P3 edges — implementer prompt reports the verified residual status exactly", () => {
-	it("cap-exhausted (green) names '4 retries' and the green status; is NOT 'CONFIRMED-red'", async () => {
+describe("P3 edges — unconfirmed RED blocks the implementer, unknown still degrades", () => {
+	it("cap-exhausted (green) does not call the implementer", async () => {
 		redCheck.mockImplementation(() => "green"); // always green → cap exhaustion
-		const { ctx, implCalls } = mkCtx();
+		const { ctx, implCalls, logs } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		expect(implCalls).toHaveLength(1);
-		expect(implCalls[0].prompt).toMatch(/4 retries/i);
-		expect(implCalls[0].prompt).toMatch(/still green/i);
-		expect(implCalls[0].prompt).not.toMatch(/CONFIRMED-red/i);
+		expect(implCalls).toHaveLength(0);
+		expect(logs.some((l) => /red-not-confirmed/i.test(l))).toBe(true);
 	});
 
-	it("cap-exhausted (broken) names '4 retries' and the broken status", async () => {
+	it("cap-exhausted (broken) does not call the implementer", async () => {
 		redCheck.mockImplementation(() => "broken"); // always broken → cap exhaustion
-		const { ctx, implCalls } = mkCtx();
+		const { ctx, implCalls, logs } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		expect(implCalls[0].prompt).toMatch(/4 retries/i);
-		expect(implCalls[0].prompt).toMatch(/still broken/i);
+		expect(implCalls).toHaveLength(0);
+		expect(logs.some((l) => /red-broken/i.test(l))).toBe(true);
 	});
 
 	it("unknown implementer prompt states the red was NOT confirmed (status: unknown)", async () => {
@@ -270,6 +278,65 @@ describe("P3 edges — implementer prompt reports the verified residual status e
 		expect(implCalls[0].prompt).toMatch(/could not be confirmed/i);
 		expect(implCalls[0].prompt).toMatch(/unknown/i);
 		expect(implCalls[0].prompt).not.toMatch(/CONFIRMED-red|4 retries/i);
+	});
+});
+
+describe("P3 edges — RED pollution is detected and rolled back", () => {
+	it("a RED agent that writes production code is classified polluted-red and never reaches implementer", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-polluted-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "baseline.ts"), "export const baseline = true;\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck.mockImplementation(() => "red");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "polluted");
+			const { ctx, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: ["tests/red.test.ts"] }],
+				onTddCall: () => writeFileSync(join(dir, "src", "prod.ts"), "export const polluted = true;\n"),
+			});
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			expect(implCalls).toHaveLength(0);
+			expect(res.allGreen).toBe(false);
+			expect(logs.some((l) => /red-polluted/i.test(l))).toBe(true);
+			expect(existsSync(join(dir, "src", "prod.ts"))).toBe(false);
+			const evidence = readFileSync(join(state.setup!.specDirectory, "implementation-evidence.jsonl"), "utf8");
+			expect(evidence).toMatch(/"status":"polluted-red"/);
+			expect(evidence).toMatch(/src\/prod\.ts/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	it("green RED can only skip implementation when baseline deliverables are already satisfied and verified", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-satisfied-"));
+		try {
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "existing.ts"), "export const existing = true;\n");
+			redCheck.mockImplementation(() => "green");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "satisfied");
+			(state.spec!.phases as Array<Record<string, unknown>>)[0].deliverables = { requireFiles: ["src/existing.ts"] };
+			const { ctx, implCalls, logs } = mkCtx();
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			expect(implCalls).toHaveLength(0);
+			expect(res.allGreen).toBe(true);
+			expect(res.phasesCompleted).toBe(1);
+			expect(logs.some((l) => /RED already-satisfied: build=true, deliverables=true/i.test(l))).toBe(true);
+			const evidence = readFileSync(join(state.setup!.specDirectory, "implementation-evidence.jsonl"), "utf8");
+			expect(evidence).toMatch(/"status":"green-already-satisfied"/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -294,10 +361,10 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 		expect(redCheck.mock.calls[1][1]).toEqual(["phase2.test.ts"]);
 	});
 
-	it("a cap-exhausting phase 1 does NOT leak its retry state into phase 2 (phase 2 starts fresh)", async () => {
+	it("a cap-exhausting phase 1 fails fast instead of leaking retry state into phase 2", async () => {
 		// Phase 1: five green results (cap-exhausted after MAX_RED_RETRIES=4, i.e.
-		// 1 initial + 4 retries = 5 oracle calls). Phase 2: red immediately (1 call).
-		// Oracle call sequence: five greens (phase1), red (phase2) = 6 calls.
+		// 1 initial + 4 retries = 5 oracle calls). Because unconfirmed RED is now a
+		// hard phase gate, phase 2 must not start.
 		redCheck
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
@@ -305,24 +372,24 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "red");
-		const { ctx, tddCalls } = mkCtx({
+		const { ctx, tddCalls, implCalls, logs } = mkCtx({
 			tddControls: [
 				{ testFiles: ["p1.test.ts"] }, // phase1 initial
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 1
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 2
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 3
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 4
-				{ testFiles: ["p2.test.ts"] }, // phase2 initial
+				{ testFiles: ["p2.test.ts"] }, // would be phase2 initial if phase1 passed
 			],
 		});
 
-		await (implementationStage as Stage).run(mkState(2), ctx);
+		const res = (await (implementationStage as Stage).run(mkState(2), ctx)) as ControlObj;
 
-		// phase1: initial + 4 retries = 5 tdd calls; phase2: initial only = 1.
-		// Total 6 tdd-guide calls; the retry counter must have RESET between phases.
-		expect(tddCalls).toHaveLength(6);
-		// 6 oracle calls: 5 (phase1 cap) + 1 (phase2 red).
-		expect(redCheck).toHaveBeenCalledTimes(6);
-		expect(redCheck.mock.calls[5][1]).toEqual(["p2.test.ts"]);
+		expect(tddCalls).toHaveLength(5);
+		expect(implCalls).toHaveLength(0);
+		expect(redCheck).toHaveBeenCalledTimes(5);
+		expect(res.phasesCompleted).toBe(0);
+		expect(res.allGreen).toBe(false);
+		expect(logs.some((l) => /red-not-confirmed/i.test(l))).toBe(true);
 	});
 });

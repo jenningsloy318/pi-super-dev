@@ -28,6 +28,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  * ------------------------------------------------------------------ */
 const sdk = vi.hoisted(() => {
 	let createOpts: Record<string, unknown> | null = null;
+	let loaderOpts: Record<string, unknown> | null = null;
 	let thinkingCalls: string[] = [];
 	function buildSession(): Record<string, unknown> {
 		return {
@@ -44,8 +45,10 @@ const sdk = vi.hoisted(() => {
 		buildSession,
 		setCreateOpts: (o: Record<string, unknown>) => { createOpts = o; },
 		createOpts: () => createOpts,
+		setLoaderOpts: (o: Record<string, unknown>) => { loaderOpts = o; },
+		loaderOpts: () => loaderOpts,
 		thinkingCalls: () => thinkingCalls,
-		reset: () => { createOpts = null; thinkingCalls = []; },
+		reset: () => { createOpts = null; loaderOpts = null; thinkingCalls = []; },
 	};
 });
 
@@ -57,7 +60,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	createCodingTools: vi.fn(() => []),
 	defineTool: vi.fn((def: unknown) => def),
 	getAgentDir: vi.fn(() => "/tmp/agentdir"),
-	DefaultResourceLoader: vi.fn(function (this: { reload: () => Promise<void> }) {
+	DefaultResourceLoader: vi.fn(function (this: { reload: () => Promise<void> }, opts: Record<string, unknown>) {
+		sdk.setLoaderOpts(opts);
 		this.reload = async () => {};
 	}),
 	SessionManager: { inMemory: vi.fn(() => ({})) },
@@ -153,6 +157,23 @@ describe("runAgentViaSession passes resolved model + thinkingLevel to createAgen
 		const opts = sdk.createOpts();
 		expect(opts).toBeDefined();
 		expect(opts!.model).toBe(m);
+	});
+});
+
+describe("session specialist prompt isolation", () => {
+	const env = saveEnv("SUPER_DEV_THINKING", "SUPER_DEV_MODEL");
+	beforeEach(() => { env.clear(); sdk.reset(); });
+	afterEach(env.restore);
+
+	it("uses the super-dev agent prompt as the session system prompt and disables ambient skills", async () => {
+		await SessionAgent.runAgentViaSession({
+			agent: "spec-writer", prompt: "do the work", cwd: "/tmp",
+		} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);
+		const loader = sdk.loaderOpts();
+		expect(loader).toBeDefined();
+		expect(loader!.systemPrompt).toBe("SYSTEM-PROMPT");
+		expect(loader!.noSkills).toBe(true);
+		expect(sdk.createOpts()?.resourceLoader).toBeDefined();
 	});
 });
 
