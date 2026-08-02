@@ -14,7 +14,7 @@
 import type { ExtensionAPI, Theme, ExtensionContext, InputEvent, EntryRenderer } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
-import type { DashboardTheme } from "./render/dashboard.ts";
+import type { DashboardTheme, DashboardEntry } from "./render/dashboard.ts";
 import { createLiveStream } from "./render/live-stream.js";
 import type { TranscriptLine, LiveStreamHandle } from "./render/live-stream.js";
 import { Type } from "typebox";
@@ -539,7 +539,7 @@ export default function activate(pi: ExtensionAPI): void {
 			// nodes (running → terminal). v2 will grow this into a full two-panel
 			// interactive ctx.ui.custom() with stop/pause/save keybindings.
 			const DASHBOARD_KEY = "super-dev";
-			const dashboardStages = new Map<string, { label: string; status: string }>();
+			const dashboardStages = new Map<string, { label: string; status: string; kind?: "stage" | "phase"; parentId?: string }>();
 			const dashboardOrder: string[] = [];
 			let dashboardActivity = "";
 			// Proof-of-life state for the always-on widget: a run-start clock (ticking
@@ -560,7 +560,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const WIDGET_MS = 200;
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // TUI-only widget (AC-09 no-regression guard)
-				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
+				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as DashboardEntry[];
 			// Do NOT mirror progress into a footer/status-line pill. In Herdr/pi TUI that
 			// status surface is rendered as a full shell-prompt line on every update,
 			// creating the repeated "... · 0/1 stages" clutter the dashboard replaced.
@@ -612,7 +612,7 @@ export default function activate(pi: ExtensionAPI): void {
 				stage: (info) => {
 					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.
 					if (!dashboardOrder.includes(info.id)) dashboardOrder.push(info.id);
-					dashboardStages.set(info.id, { label: info.label, status: info.status });
+					dashboardStages.set(info.id, { label: info.label, status: info.status, kind: info.kind, parentId: info.parentId });
 					// Phase 5 (AC-05 / SCENARIO-019..021): mirror the structured `stage`
 					// event into the live-stream sink so its current-stage state (and the
 					// RESOLVED-1 phase-line re-tag) stays synchronized with the dashboard
@@ -777,7 +777,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const d = (result.details ?? {}) as {
 				summaryLines?: string[];
 				transcriptTail?: TranscriptLine[];
-				stages?: Array<{ id?: string; label: string; status: string }>;
+				stages?: Array<{ id?: string; label: string; status: string; kind?: "stage" | "phase"; parentId?: string }>;
 				logPath?: string;
 			};
 			// During streaming (onUpdate), details are empty — fall back to plain content

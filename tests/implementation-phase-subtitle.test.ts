@@ -32,9 +32,10 @@ const mkState = (phases: Array<{ name?: string }>): PipelineState =>
 		spec: { phases },
 	} as unknown as PipelineState);
 
-/** Capture ctx.phase() announcements AND the order of implementer spawns. */
+/** Capture ctx.phase() announcements, emitted dashboard phase rows, AND the order of implementer spawns. */
 function mkCtx() {
 	const phaseCalls: string[] = [];
+	const emittedStages: Array<{ id: string; label: string; status: string; kind?: string; parentId?: string }> = [];
 	const events: string[] = [];
 	const ctx: StageContext = {
 		task: "t", options: {} as RunOptions, state: {} as PipelineState,
@@ -47,10 +48,10 @@ function mkCtx() {
 		budget: { check: () => true, spent() { this.count++; return true; }, count: 0 } satisfies Budget,
 		log: () => {},
 		phase: (label: string) => { phaseCalls.push(label); events.push(`phase:${label}`); },
-		events: { on: () => () => {}, emit: () => {} } as never,
+		events: { on: () => () => {}, emit: (_name: string, payload: { id: string; label: string; status: string; kind?: string; parentId?: string }) => { emittedStages.push(payload); return true; } } as never,
 		results: [],
 	};
-	return { ctx, phaseCalls, events };
+	return { ctx, phaseCalls, emittedStages, events };
 }
 
 describe("Implementation stage — per-phase pi-native subtitle", () => {
@@ -62,6 +63,17 @@ describe("Implementation stage — per-phase pi-native subtitle", () => {
 		expect(phaseCalls).toEqual([
 			"Implementation — Phase 1/2: Scaffold",
 			"Implementation — Phase 2/2: Wire API",
+		]);
+	});
+
+	it("emits implementation phases as dashboard sub-stage lifecycle rows", async () => {
+		const { ctx, emittedStages } = mkCtx();
+		await implementationStage.run(mkState([{ name: "Scaffold" }, { name: "Wire API" }]), ctx);
+		expect(emittedStages).toEqual([
+			{ id: "implementation.phase-01", label: "↳ Phase 1/2: Scaffold", status: "running", kind: "phase", parentId: "implementation" },
+			{ id: "implementation.phase-01", label: "↳ Phase 1/2: Scaffold", status: "ok", kind: "phase", parentId: "implementation" },
+			{ id: "implementation.phase-02", label: "↳ Phase 2/2: Wire API", status: "running", kind: "phase", parentId: "implementation" },
+			{ id: "implementation.phase-02", label: "↳ Phase 2/2: Wire API", status: "ok", kind: "phase", parentId: "implementation" },
 		]);
 	});
 

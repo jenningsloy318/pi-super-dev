@@ -131,6 +131,19 @@ describe("packDashboardLines", () => {
 		expect(headerAt(3_780_000)).toContain("· 1h03m");
 	});
 
+	it("renders implementation phases as dynamic subordinate dashboard rows without changing stage count", () => {
+		const lines = packDashboardLines([
+			{ id: "setup", label: "Stage 1 — Setup", status: "ok" },
+			{ id: "implementation", label: "Stage 9 — Implementation", status: "running" },
+			{ id: "implementation.phase-01", label: "↳ Phase 1/3: Core", status: "ok", kind: "phase", parentId: "implementation" },
+			{ id: "implementation.phase-02", label: "↳ Phase 2/3: API", status: "running", kind: "phase", parentId: "implementation" },
+		], undefined, 120);
+		expect(lines.find((l) => l.startsWith("super-dev ·"))).toContain("1/2");
+		expect(lines.some((l) => l.includes("  ● Stage 9 — Implementation"))).toBe(true);
+		expect(lines.some((l) => l.includes("    ✓ ↳ Phase 1/3: Core"))).toBe(true);
+		expect(lines.some((l) => l.includes("    ● ↳ Phase 2/3: API"))).toBe(true);
+	});
+
 	it("renders a dimmed recent-activity tail when recentLogs are supplied (background mode)", () => {
 		const logs = ["Implementation phase-01 red-oracle: red", "Implementation phase-01 build-gate PASS"];
 		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "/super-dev-stop", { recentLogs: logs });

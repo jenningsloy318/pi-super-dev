@@ -128,6 +128,10 @@ export interface StageProgressEvent {
 	label: string;
 	status: NodeStatus | "running";
 	error?: string;
+	/** Optional dashboard-only hierarchy marker. Phase rows are displayed as
+	 *  subordinate progress items and are excluded from top-level stage counts. */
+	kind?: "stage" | "phase";
+	parentId?: string;
 }
 
 /** Streaming callbacks from a spawned agent to the progress sink. */

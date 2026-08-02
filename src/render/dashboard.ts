@@ -206,8 +206,16 @@ export function padTruncate(s: string, w: number): string {
  * `statusGlyph`; the running stage uses the time-derived seed so it animates
  * across throttled re-renders (AC-02 / AC-03 / AC-04).
  */
+export type DashboardEntry = {
+	id: string;
+	label: string;
+	status: string;
+	kind?: "stage" | "phase";
+	parentId?: string;
+};
+
 export function packDashboardLines(
-	entries: Array<{ id: string; label: string; status: string }>,
+	entries: DashboardEntry[],
 	activity: string | undefined,
 	width: number,
 	theme?: DashboardTheme,
@@ -215,18 +223,20 @@ export function packDashboardLines(
 	abortHint: string = "esc to abort",
 	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string } = {},
 ): string[] {
-	// F5: count only TERMINAL stages (ok/failed/skipped). The prior
-	// `!== "running"` rule counted never-started (pending/"·") stages as done,
-	// so the header over-reported progress (e.g. "8/11" with only 2 finished).
+	// F5: count only TERMINAL top-level stages (ok/failed/skipped). Phase rows
+	// are subordinate dashboard items derived from the implementation plan and
+	// must not inflate the workflow stage counter.
 	const TERMINAL = new Set(["ok", "failed", "skipped"]);
-	const done = entries.filter((e) => TERMINAL.has(e.status)).length;
-	const running = entries.find((e) => e.status === "running");
+	const isPhase = (e: DashboardEntry) => e.kind === "phase" || /^implementation\.phase-\d+/.test(e.id);
+	const topEntries = entries.filter((e) => !isPhase(e));
+	const done = topEntries.filter((e) => TERMINAL.has(e.status)).length;
+	const running = topEntries.find((e) => e.status === "running");
 	// Elapsed clock (only when supplied): a ticking `· 2m14s` is unmistakable
 	// proof-of-life for background runs whose live log body isn't visible. Omitted
 	// when undefined so the pure-function tests keep their exact header contract.
 	const elapsed = opts.elapsedMs != null ? ` · ${fmtElapsed(opts.elapsedMs)}` : "";
 	const head = truncLine(
-		`super-dev · ${done}/${entries.length}${elapsed}${
+		`super-dev · ${done}/${topEntries.length}${elapsed}${
 			running ? ` · ${statusGlyph(running.status, theme)} ${running.label}` : ""
 		}  (${abortHint})`,
 		width,
@@ -260,12 +270,13 @@ export function packDashboardLines(
 	// running jobs, and pending/skipped/failed jobs from visually blending together.
 	// It costs more vertical space than the old two-column grid, but avoids the
 	// confusing stacked status soup shown in narrow/active terminals.
-	const section = (label: string, token: string, rows: Array<{ id: string; label: string; status: string }>) => {
+	const section = (label: string, token: string, rows: DashboardEntry[]) => {
 		if (rows.length === 0) return;
 		pushGap();
 		lines.push(truncLine(theme ? theme.fg(token, `── ${label} ──`) : `── ${label} ──`, width));
 		for (const e of rows) {
-			lines.push(truncLine(`  ${statusGlyph(e.status, theme)} ${e.label}`, width));
+			const indent = isPhase(e) ? "    " : "  ";
+			lines.push(truncLine(`${indent}${statusGlyph(e.status, theme)} ${e.label}`, width));
 		}
 		lines.push("");
 	};
@@ -325,7 +336,7 @@ function fmtElapsed(ms: number): string {
  * (SCENARIO-001 / SCENARIO-002 — AC-01 / AC-02 / AC-04).
  */
 export function buildDashboardWidget(
-	entries: Array<{ id: string; label: string; status: string }>,
+	entries: DashboardEntry[],
 	activity: string | undefined,
 	width: number,
 	theme?: DashboardTheme,
@@ -351,7 +362,7 @@ export function buildDashboardWidget(
  * never produced) (SCENARIO-001 / SCENARIO-002).
  */
 export function createDashboardWidgetFactory(
-	entries: Array<{ id: string; label: string; status: string }>,
+	entries: DashboardEntry[],
 	activity: string | undefined,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
@@ -384,7 +395,7 @@ export interface ResultDetails {
 	/** Stage-progress rows (§2). `id` is OPTIONAL (additive) so a `statusOf`
 	 *  resolver can map stageId→status for the Phase-4 per-stage blocks; legacy
 	 *  callers that supply only {label,status} still satisfy the shape. */
-	stages?: Array<{ id?: string; label: string; status: string }>;
+	stages?: Array<{ id?: string; label: string; status: string; kind?: "stage" | "phase"; parentId?: string }>;
 	logPath?: string;
 }
 

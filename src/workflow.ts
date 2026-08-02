@@ -260,6 +260,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// sink wiring. SCENARIO-008 (no claimed set for stages).
 	ctx.events.on("stage", (info: unknown) => {
 		const stage = info as StageProgressEvent;
+		if (stage.kind === "phase") return; // dashboard-only sub-stage rows; phase tracking is handled explicitly in implementation.ts
 		const tracker = getActiveTracker();
 		if (tracker && stage?.id) {
 			if (stage.status === "running") {

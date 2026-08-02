@@ -184,10 +184,22 @@ export const implementationStage: Stage = {
 
 		for (const [idx, phase] of phases.entries()) {
 			const phaseId = `phase-${pad(idx + 1)}`;
+			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
+			const phaseLabel = `↳ Phase ${idx + 1}/${phases.length}: ${phaseName}`;
+			const emitPhaseStatus = (status: "running" | "ok" | "failed" | "skipped") => {
+				ctx.events.emit("stage", {
+					id: `implementation.${phaseId}`,
+					label: phaseLabel,
+					status,
+					kind: "phase",
+					parentId: "implementation",
+				});
+			};
 			// §D: skip a phase already green in a prior convergence iteration (don't
 			// re-touch done work — the state-confusion churn §F fought).
 			if (phaseStatus.some((p) => p.id === phaseId && p.status === "green")) {
 				phasesCompleted++;
+				emitPhaseStatus("ok");
 				ctx.log(`Implementation ${phaseId} already green (prior convergence iteration) — skipping`);
 				continue;
 			}
@@ -225,6 +237,7 @@ export const implementationStage: Stage = {
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
 					ctx.log(`Implementation ${phaseId} no-op: resume deliverables already satisfied and verified — skipping implementer`);
 					phaseStatusUpsert(phaseStatus, phaseId, "green");
+					emitPhaseStatus("ok");
 					const fi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (fi >= 0) lastFailures.splice(fi, 1);
 					phasesCompleted++;
 					continue;
@@ -238,7 +251,9 @@ export const implementationStage: Stage = {
 			// subtitle it isn't working on). Surfaces "Phase N/M: <name>" as the
 			// dashboard header/working-message + a distinct ▶ line under the running
 			// stage's live-log section. phase.name falls back to the phase id.
-			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
+			// Emit the dashboard sub-stage row BEFORE the subtitle so the live-stream sink
+			// tags the subtitle/progress under the current implementation phase.
+			emitPhaseStatus("running");
 			ctx.phase(`Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`);
 			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -429,6 +444,7 @@ export const implementationStage: Stage = {
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass) {
 					green = true;
 					phaseStatusUpsert(phaseStatus, phaseId, "green");
+					emitPhaseStatus("ok");
 					const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);
 					if (gate.pass) {
 						ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
@@ -454,6 +470,7 @@ export const implementationStage: Stage = {
 			if (!green) {
 				// §D: record the failure so the next convergence iteration targets it
 				phaseStatusUpsert(phaseStatus, phaseId, "failed");
+				emitPhaseStatus("failed");
 				lastFailuresUpsert(lastFailures, phaseId, [
 					...attemptErrors,
 					...missingDeliverables.map((e) => `deliverable: ${e}`),
