@@ -75,6 +75,12 @@ describe("runWorkflow honest status", () => {
 		expect(s.status).toBe("failed");
 		expect(s.error).toBe("spec gate exhausted");
 	});
+	it("reports 'failed' + cancellation error when the root returns cancelled", async () => {
+		const cancelledRoot: Node = { kind: "cancelled", async run() { return { status: "cancelled" }; } };
+		const s = await runWorkflow(wf(cancelledRoot), "t");
+		expect(s.status).toBe("failed");
+		expect(s.error).toBe("workflow cancelled");
+	});
 	it("reports 'failed' when no implementation was produced", async () => {
 		const s = await runWorkflow(wf(seed({})), "t");
 		expect(s.status).toBe("failed");

@@ -149,6 +149,31 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(opts!.inheritedModelObject).toEqual({ id: "gpt-4o", provider: "openai" });
 		expect(opts!.inheritedThinking).toBe("high");
 	});
+	it("SCENARIO-003: ctx with TUI ui but missing mode still detaches with its own background signal", async () => {
+		const { execute } = setupTool();
+		const turnController = new AbortController();
+		const res = await execute(
+			"call-bg",
+			{ task: "build the thing" },
+			turnController.signal,
+			undefined,
+			{
+				mode: undefined,
+				ui: {
+					setWidget: vi.fn(),
+					setWorkingMessage: vi.fn(),
+					setStatus: vi.fn(),
+					notify: vi.fn(),
+				},
+			},
+		) as { content?: Array<{ type: "text"; text: string }> };
+		await Promise.resolve();
+		expect(res.content?.[0]?.text).toContain("started in the background");
+		const opts = cap.opts();
+		expect(opts).toBeDefined();
+		expect(opts!.signal).toBeDefined();
+		expect(opts!.signal).not.toBe(turnController.signal);
+	});
 });
 
 describe("extension.execute() degrades when the ctx exposes no model/thinking (AC-01 / SCENARIO-002)", () => {

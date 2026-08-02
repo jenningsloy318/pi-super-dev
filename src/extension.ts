@@ -746,7 +746,8 @@ export default function activate(pi: ExtensionAPI): void {
 			// gets its OWN AbortController (stored for /super-dev-stop). print/json/rpc
 			// modes and an explicit `background:false` keep the original blocking path
 			// — byte-identical for automation / tests.
-			const runInBackground = ctx?.mode === "tui" && params.background !== false;
+			const hasTuiUi = ctx?.mode === "tui" || (!!ctx?.ui && typeof ctx.ui.setWidget === "function");
+			const runInBackground = hasTuiUi && params.background !== false;
 			if (!runInBackground) return await doRun(signal, false);
 			if (getActiveRun()?.background) {
 				return { content: [{ type: "text", text: "⏳ A super-dev run is already active in the background. Wait for it to finish or stop it with /super-dev-stop." }], isError: true, details: {} };

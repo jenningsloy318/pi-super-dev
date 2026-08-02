@@ -274,7 +274,12 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	let aborted = false;
 	let abortError: string | undefined;
 	try {
-		await workflow.root.run(state, ctx);
+		const rootResult = await workflow.root.run(state, ctx);
+		if (rootResult.status === "cancelled") {
+			aborted = true;
+			abortError = "workflow cancelled";
+			progress?.log(`Workflow "${workflow.id}" cancelled`);
+		}
 	} catch (err) {
 		// A fatal gate (or fatal task) threw to abort the run honestly.
 		aborted = true;
