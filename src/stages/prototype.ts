@@ -1,15 +1,16 @@
 /**
  * Stage 6B — Prototype (conditional + loop).
  * Self-contained task: only runs when the design declares numeric constants
- * (decided by check-prototype-needed); loops up to 3 rounds until pass.
+ * (decided by check-prototype-needed); loops up to 5 rounds until pass.
  */
 
 import type { ControlObj, Stage } from "../types.ts";
 import { buildPrototypePrompt } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
+import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 
-const MAX_ROUNDS = 3;
+const MAX_ROUNDS = WORKFLOW_ATTEMPTS;
 const pad = (n: number) => String(n).padStart(2, "0");
 
 export const prototypeStage: Stage = {

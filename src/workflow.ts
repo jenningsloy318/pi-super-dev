@@ -20,6 +20,7 @@ import { extractControlKeys } from "./control.ts";
 import { knowledgeForAgent } from "./render/knowledge.ts";
 import { appendUserNotes, userNotesForAgent } from "./render/user-notes.ts";
 import { getActiveTracker } from "./tracking.ts";
+import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import type {
 	AgentCall,
 	AgentResult,
@@ -80,9 +81,11 @@ function isTransientAgentError(error?: string): boolean {
 }
 
 /** Transient-retry backoff schedule (ms). Read LAZILY so tests can set
- *  SUPER_DEV_TRANSIENT_RETRY_MS before invoking. Default: 2s, 4s, 8s. */
+ *  SUPER_DEV_TRANSIENT_RETRY_MS before invoking. Default: four retries
+ *  (5 total tries) at 2s, 4s, 8s, 16s. */
 function transientRetryMs(): number[] {
-	return (process.env.SUPER_DEV_TRANSIENT_RETRY_MS ?? "2000,4000,8000")
+	const defaultDelays = Array.from({ length: Math.max(0, WORKFLOW_ATTEMPTS - 1) }, (_, i) => 2000 * (2 ** i)).join(",");
+	return (process.env.SUPER_DEV_TRANSIENT_RETRY_MS ?? defaultDelays)
 		.split(",").map((x) => Number.parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
 }
 

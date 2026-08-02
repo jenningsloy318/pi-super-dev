@@ -26,6 +26,7 @@ import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWrit
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
+import { WORKFLOW_ATTEMPTS, positiveIntFromEnv } from "../retry-policy.ts";
 import { implementationStage } from "./implementation.ts";
 import { reviewStageNode, integrationLoopNode, reviewApproved } from "./verify.ts";
 
@@ -119,8 +120,8 @@ export const researchComplete = async (s: PipelineState, ctx: StageContext) => {
  *  already-green phases and re-attempts only the failed one(s), seeded with the
  *  prior iteration's failure reasons. On exhaustion the run halts at the
  *  `hasImplementation`/`canMerge` gates (partial status; resume is the human
- *  recovery). Env-overridable via SUPER_DEV_MAX_CONVERGE_ITERS (default 2). */
-const MAX_CONVERGE_ITERS = Math.max(1, Number.parseInt(process.env.SUPER_DEV_MAX_CONVERGE_ITERS ?? "2", 10) || 2);
+ *  recovery). Env-overridable via SUPER_DEV_MAX_CONVERGE_ITERS (default 5). */
+const MAX_CONVERGE_ITERS = positiveIntFromEnv("SUPER_DEV_MAX_CONVERGE_ITERS", WORKFLOW_ATTEMPTS);
 const implAllGreen = (s: PipelineState) =>
 	((s.implementation as { allGreen?: boolean } | undefined)?.allGreen === true);
 
@@ -139,28 +140,28 @@ const pipeline = sequence(
 		// Retries CONVERGE (the validator's errors are fed into the next attempt's
 		// prompt). The FOUNDATIONAL doc gates (requirements/bdd/research/spec) are
 		// FATAL on exhaustion: a foundational artifact that can't be produced after
-		// 4 converging attempts means every downstream stage would work off garbage
+		// 5 converging attempts means every downstream stage would work off garbage
 		// (the "failed but still go on" cascading-failure gap). A fatal exhaustion
 		// throws FatalAbort, which propagates past this tolerant sequence so
 		// runWorkflow aborts honestly with the real reason (resume replays cached
 		// calls). Later loops (implementation/review) stay non-fatal — exhaustion
 		// there yields a `partial` status, not garbage. Spec review is intentionally
 		// NOT gated — its verdict is signal, not a block.
-		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), feedbackKey: "requirements", attempts: 4, fatal: true }, task(requirementsWriter)),
-		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), feedbackKey: "bdd", attempts: 4, fatal: true }, task(bddWriter)),
-		gate({ validate: researchComplete, feedbackKey: "research", attempts: 4, fatal: true }, task(researchWriter)),
+		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), feedbackKey: "requirements", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(requirementsWriter)),
+		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), feedbackKey: "bdd", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(bddWriter)),
+		gate({ validate: researchComplete, feedbackKey: "research", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(researchWriter)),
 		// Conditional branch: debug analysis only for bug fixes.
 		branch(isBug, { yes: task(debugWriter) }),
 		task(assessmentWriter),
 		task(designStage),
 		task(prototypeStage),
-		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), feedbackKey: "spec", attempts: 4, fatal: true }, task(specWriter)),
+		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), feedbackKey: "spec", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(specWriter)),
 		// Spec review is SIGNAL, not a gate: a "Changes Requested" verdict is a
 		// judgment call whose findings flow forward to implementation/code-review.
 		// Blocking on it (the old fatal gate) aborted runs on a subjective verdict.
 		task(specReviewWriter),
 		// §D auto-iterate convergence loop: re-run implementation until allGreen OR
-		// MAX_CONVERGE_ITERS exhausted (default 2). The per-phase green-state carry
+		// MAX_CONVERGE_ITERS exhausted (default 5). The per-phase green-state carry
 		// in implementation.ts skips already-green phases each iteration and seeds
 		// failed phases with the prior iteration's reasons. Budget-bounded via the
 		// while predicate; a throw inside the stage exits the loop (task → failed).

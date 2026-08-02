@@ -1,13 +1,13 @@
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
- * up to 3 attempts of TDD-write → implement → build-gate; commits on green.
+ * up to 5 attempts of TDD-write → implement → build-gate; commits on green.
  * The build-gate is the DETERMINISTIC hard oracle (build-runner.ts) that
  * replaces the old QA self-report — no more vacuous pass on "agent said green".
  */
 
 import type { ControlObj, Stage } from "../types.ts";
-import { getActiveTracker } from "../tracking.ts";
+import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -15,13 +15,14 @@ import { STAGE_MODELS } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
 import { normalizePhases } from "../doc-validators.ts";
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
+import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = WORKFLOW_ATTEMPTS;
 /** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
- *  RED phase is NOT yet confirmed (green/broken). Bounds the worst-case cost
- *  per phase at `≤2 tdd-guide + ≤2 red-check + 1 implementer + 1 build-gate`
- *  (spec §B, AC-02 → SCENARIO-007/009). Mirrors `MAX_ATTEMPTS` — no new config. */
-const MAX_RED_RETRIES = 2;
+ *  RED phase is NOT yet confirmed (green/broken). Counts retries AFTER the
+ *  initial RED attempt, so `MAX_ATTEMPTS - 1` yields the same total try count as
+ *  the outer green loop (5 total TDD tries by default). */
+const MAX_RED_RETRIES = Math.max(0, MAX_ATTEMPTS - 1);
 const pad = (n: number) => String(n).padStart(2, "0");
 
 export function runtimeInstructionFingerprint(specDir: string | undefined): string {
@@ -322,7 +323,12 @@ export const implementationStage: Stage = {
 				// EXCLUDED (a deleted file is not a "modified" display entry). dedupe via
 				// the existing `filesModified.includes` guard (first-seen order preserved).
 				const structured = parseStructuredChanges(impl.control);
-				for (const f of [...structured.filesCreated, ...structured.filesModified]) {
+				const projectStructured: StructuredChanges = {
+					filesCreated: structured.filesCreated.filter((f) => !isInternalRuntimeClaim(f)),
+					filesModified: structured.filesModified.filter((f) => !isInternalRuntimeClaim(f)),
+					filesDeleted: structured.filesDeleted.filter((f) => !isInternalRuntimeClaim(f)),
+				};
+				for (const f of [...projectStructured.filesCreated, ...projectStructured.filesModified]) {
 					if (!filesModified.includes(f)) filesModified.push(f);
 				}
 				// HARD test oracle: actually run build/test/typecheck instead of trusting
@@ -365,7 +371,7 @@ export const implementationStage: Stage = {
 					// on an un-mocked build-runner export (the bridge is pure data prep).
 					requireFiles: Array.from(new Set([
 						...(baseDeliverables.requireFiles ?? []),
-						...structured.filesCreated,
+						...projectStructured.filesCreated,
 					])),
 				};
 				const deliverableCheck = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: !buildGreen });
@@ -391,7 +397,7 @@ export const implementationStage: Stage = {
 				// deliverable that EXISTS (passes deliverable + change gates) but contains
 				// NO code symbols (doc-comment-only shell) is rejected here. Never throws;
 				// degrades to pass on unreadable files / unknown language / no source files.
-				const symbolGate = computeSymbolGate(setup.worktreePath, [...structured.filesCreated, ...structured.filesModified], setup.language);
+				const symbolGate = computeSymbolGate(setup.worktreePath, [...projectStructured.filesCreated, ...projectStructured.filesModified], setup.language);
 				ctx.log(`Implementation ${phaseId} symbol-check ${symbolGate.pass ? "PASS" : "FAIL"} (hollow: ${symbolGate.hollowFiles.join("; ") || "none"})`);
 				// Advisory-only (SCENARIO-014): files git shows changed that the agent did
 				// NOT report (under-reporting) are surfaced via ctx.log but NEVER fail the
@@ -431,7 +437,13 @@ export const implementationStage: Stage = {
 					}
 					break;
 				}
-				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${[...gate.errors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "deliverables unmet"}`);
+				const failureReasons = [
+					...gate.errors,
+					...missingDeliverables.map((e) => `deliverable: ${e}`),
+					...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`),
+					...hollowFiles.map((e) => `hollow-file: ${e}`),
+				];
+				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
 			}
 			// Close the phase bracket EXACTLY ONCE after the attempt loop: the
 			// per-attempt probeEnd calls above computed the freshest cross-check
@@ -442,7 +454,12 @@ export const implementationStage: Stage = {
 			if (!green) {
 				// §D: record the failure so the next convergence iteration targets it
 				phaseStatusUpsert(phaseStatus, phaseId, "failed");
-				lastFailuresUpsert(lastFailures, phaseId, [...attemptErrors, ...missingDeliverables.map((e) => `deliverable: ${e}`), ...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`)]);
+				lastFailuresUpsert(lastFailures, phaseId, [
+					...attemptErrors,
+					...missingDeliverables.map((e) => `deliverable: ${e}`),
+					...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`),
+					...hollowFiles.map((e) => `hollow-file: ${e}`),
+				]);
 				ctx.log(`Implementation ${phaseId} failed after ${MAX_ATTEMPTS} attempts — terminating early`);
 				allGreen = false;
 				break;

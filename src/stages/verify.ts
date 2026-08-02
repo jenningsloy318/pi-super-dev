@@ -1,11 +1,11 @@
 /**
- * Stage 10 — Review (review → fix → re-review loop, max 3).
- * Stage 11 — Integration Testing (test → fix → re-review → re-test loop, max 3).
+ * Stage 10 — Review (review → fix → re-review loop, max 5).
+ * Stage 11 — Integration Testing (test → fix → re-review → re-test loop, max 5).
  *
  * Split from the old combined verify-loop: Stage 10 converges on CODE QUALITY
  * first (no testing until review passes). Stage 11 converges on INTEGRATION
  * (tests run only after review approves; if a fix regresses review, re-review
- * catches it). Each loop is max 3, non-fatal exhaustion.
+ * catches it). Each loop is max 5, non-fatal exhaustion.
  *
  * Research basis (SWE-bench agent): tight, feedback-driven loops where
  * observable results are the convergence signal.
@@ -17,7 +17,11 @@ import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../bui
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
+import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
+
+const REVIEW_MAX_ROUNDS = WORKFLOW_ATTEMPTS;
+const INTEGRATION_MAX_RETRIES = Math.max(0, WORKFLOW_ATTEMPTS - 1);
 
 const setupOf = (s: PipelineState) => s.setup!;
 
@@ -256,9 +260,9 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	return false;
 };
 
-/** Stage 10 — Review: review → fix → build gate, max 3. */
+/** Stage 10 — Review: review → fix → build gate, max 5. */
 export const reviewLoopNode = loop(
-	{ until: reviewLoopUntil, times: 3 },
+	{ until: reviewLoopUntil, times: REVIEW_MAX_ROUNDS },
 	sequence([reviewStep, fixStepReview, buildGateStep]),
 );
 
@@ -379,7 +383,7 @@ const fixStepIntegration = task({
 });
 
 /**
- * Stage 11 — Integration Testing: test → (fail? fix → re-review → build → re-test), max 3 total.
+ * Stage 11 — Integration Testing: test → (fail? fix → re-review → build → re-test), max 5 total.
  *
  * Custom node (not loop()) because integrationTestsGreen used to be vacuously true before tests ran —
  * a loop's `until` check would exit immediately. This node runs tests FIRST
@@ -432,15 +436,15 @@ export const integrationLoopNode: Node = {
 		}
 		if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 
-		// 2. Retry loop: fix → re-review → build → re-test (max 2 retries = 3 total).
-		for (let attempt = 1; attempt <= 2; attempt++) {
+		// 2. Retry loop: fix → re-review → build → re-test (max 4 retries = 5 total).
+		for (let attempt = 1; attempt <= INTEGRATION_MAX_RETRIES; attempt++) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
 			if (!ctx.budget.check()) {
 				state.integration = { pass: false, summary: "Budget exhausted during integration retry" };
 				return { status: "failed", error: "budget exhausted during integration retry" };
 			}
 
-			ctx.log(`Stage 11: integration retry ${attempt}/2 — fix + re-review + re-test`);
+			ctx.log(`Stage 11: integration retry ${attempt}/${INTEGRATION_MAX_RETRIES} — fix + re-review + re-test`);
 
 			await fixStepIntegration.run(state, ctx);
 			await reviewStep.run(state, ctx);

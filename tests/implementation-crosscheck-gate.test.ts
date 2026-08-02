@@ -191,14 +191,14 @@ const GATE_PASS = {
 
 const DELIVERABLE_PASS = { pass: true, missing: [] as string[], ran: [] as string[] };
 
-/** Push `r` onto a queue `n` times (default MAX_ATTEMPTS=3 = persistent). */
-const seedGate = (r: Record<string, unknown>, n = 3): void => {
+/** Push `r` onto a queue `n` times (default MAX_ATTEMPTS=5 = persistent). */
+const seedGate = (r: Record<string, unknown>, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.gateQ.push({ ...r });
 };
-const seedDeliverable = (r: Record<string, unknown>, n = 3): void => {
+const seedDeliverable = (r: Record<string, unknown>, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.deliverableQ.push({ ...r });
 };
-const seedChangeGate = (r: { pass: boolean; claimedNotChanged: string[] }, n = 1): void => {
+const seedChangeGate = (r: { pass: boolean; claimedNotChanged: string[] }, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.changeGateQ.push({ pass: r.pass, claimedNotChanged: [...r.claimedNotChanged] });
 };
 const seedTracker = (r: Record<string, unknown>, n = 1): void => {
@@ -313,7 +313,7 @@ describe("Phase 4 — changeGate AND-ed into phase-green (AC-07/AC-08)", () => {
 		seedDeliverable(DELIVERABLE_PASS);
 		seedImplControl({ filesCreated: ["src/x.ts"] }, 3);
 		// The change-gate FAILS on every attempt — a claimed file git never saw.
-		seedChangeGate({ pass: false, claimedNotChanged: ["src/x.ts"] }, 3);
+		seedChangeGate({ pass: false, claimedNotChanged: ["src/x.ts"] }, 5);
 
 		const { ctx, fake } = mkCtx();
 		const res = (await (implementationStage as Stage).run(
@@ -331,9 +331,13 @@ describe("Phase 4 — changeGate AND-ed into phase-green (AC-07/AC-08)", () => {
 		expect(mock.changeGateCalls).toBeGreaterThan(0);
 		// The phase record was probed per-attempt (AC-04 phase path: probeEnd).
 		expect(mock.tracker.probeCalls).toBeGreaterThan(0);
-		// Retries respected the attempt budget (3 implementer attempts, no more).
+		// Retries respected the attempt budget (5 implementer attempts, no more).
 		const implAttempts = fake.agentIds.filter((id) => /\.impl\.a\d+$/.test(id));
-		expect(implAttempts.length).toBeLessThanOrEqual(3);
+		expect(implAttempts.length).toBeLessThanOrEqual(5);
+		// The attempt failure line should name the real gate reason instead of the
+		// old generic "deliverables unmet" message.
+		expect(hasLog(fake.logs, "claimed-not-changed: src/x.ts")).toBe(true);
+		expect(hasLog(fake.logs, "deliverables unmet")).toBe(false);
 	});
 
 	// ─── SCENARIO-014: under-reporting is advisory-only (AC-07) ──────────────
@@ -504,6 +508,23 @@ describe("Phase 4 — spec-10 deliverable bridge: claimed.filesCreated UNIONs re
 		const contract = mock.deliverableArgs[0] as { requireFiles?: string[] };
 		// Present exactly once (deduped UNION).
 		expect(contract.requireFiles?.filter((p) => p === "src/shared.ts").length).toBe(1);
+	});
+
+	it("SCENARIO-018d: internal runtime claims are NOT bridged into requireFiles", async () => {
+		seedGate(GATE_PASS);
+		seedDeliverable(DELIVERABLE_PASS);
+		seedImplControl({ filesCreated: ["docs/specifications/28-agent-team-runtime/.resume-cache.jsonl", "src/real.ts"] });
+		seedChangeGate({ pass: true, claimedNotChanged: [] });
+
+		const res = (await (implementationStage as Stage).run(
+			mkState([{ name: "Phase A" }]),
+			mkCtx().ctx,
+		)) as ControlObj;
+
+		expect(res.allGreen).toBe(true);
+		const contract = mock.deliverableArgs[0] as { requireFiles?: string[] };
+		expect(contract.requireFiles).toContain("src/real.ts");
+		expect(contract.requireFiles).not.toContain("docs/specifications/28-agent-team-runtime/.resume-cache.jsonl");
 	});
 });
 

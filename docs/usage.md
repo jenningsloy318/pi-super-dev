@@ -34,17 +34,18 @@ super_dev({ task: "add a POST /users endpoint with validation", skipWorktree: fa
 
 1. **Setup** creates a git worktree (unless `skipWorktree`) and a spec dir.
 2. **Classify** decides task type (feature / bug / refactor) and UI scope.
-3. **Requirements → BDD → Research** run inside quality-gate loops (up to 3
+3. **Requirements → BDD → Research** run inside quality-gate loops (up to 5
    rounds each — the writer re-runs until a deterministic validator passes).
 4. **Debug** only runs for bugs (branch).
 5. **Assessment → Design → Prototype** — design is routed to the right
    specialist by `route-designer`; prototype only runs when the design
    declares numeric constants worth validating.
-6. **Spec → Spec-review** — two more gate loops.
+6. **Spec → Spec-review** — spec runs in the same 5-attempt quality gate;
+   spec-review is advisory signal that flows into implementation/review.
 7. **Implementation** — per-phase TDD loop: tests → implement → QA → build
-   gate, with up to 3 attempts per phase, commit on green.
+   gate, with up to 5 attempts per phase, commit on green.
 8. **Code review** — parallel `code-reviewer` + `adversarial-reviewer`; results
-   merged into a single verdict; loop up to 3 times with `implementer` fixes.
+   merged into a single verdict; loop up to 5 times with `implementer` fixes.
 9. **Docs → Cleanup** — cleanup blocks the merge if it finds secrets or
    large binaries.
 10. **Merge** — only runs when cleanup did not block.
@@ -71,7 +72,7 @@ const minimal = {
     task(setupStage),
     task(classifyStage),
     gate(
-      { validate: gateValidator("gate-requirements", "write-requirements", "requirements"), attempts: 3 },
+      { validate: gateValidator("gate-requirements", "write-requirements", "requirements"), attempts: 5 },
       task(requirementsWriter),
     ),
     task(specWriter),

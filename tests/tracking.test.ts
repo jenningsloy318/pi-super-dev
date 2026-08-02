@@ -87,12 +87,16 @@ afterEach(() => {
  *   diff     → stdout for `git diff --name-status <beginHead>`
  *   porcelain→ stdout for `git status --porcelain`
  */
-function git(opts: { head?: string; diff?: string; porcelain?: string }): void {
+function git(opts: { head?: string; diff?: string; porcelain?: string; ignored?: string[] }): void {
 	spawn.mockImplementation((_cmd: string, args: string[]) => {
 		const argv = args as unknown as string[];
 		if (argv.includes("rev-parse")) return { status: 0, stdout: opts.head ?? "" };
 		if (argv.includes("diff")) return { status: 0, stdout: opts.diff ?? "" };
 		if (argv.includes("status")) return { status: 0, stdout: opts.porcelain ?? "" };
+		if (argv.includes("check-ignore")) {
+			const stdout = (opts.ignored ?? []).join("\n");
+			return { status: stdout ? 0 : 1, stdout: stdout ? `${stdout}\n` : "" };
+		}
 		return { status: 0, stdout: "" };
 	});
 }
@@ -246,6 +250,61 @@ describe("ChangeTracker — one-directional cross-check (AC-01 / AC-08 precursor
 		const rec = t.end("stage", "s1", claimed);
 		expect(rec!.crossCheck).not.toBeNull();
 		expect(rec!.crossCheck!.claimedNotChanged).toEqual(["src/x.ts"]);
+	});
+
+	it("does not treat intentionally ignored .resume-cache.jsonl claims as claimed-not-changed", () => {
+		// The super-dev resume cache is intentionally gitignored. Git will not
+		// surface it in porcelain even when it exists, so the change gate must not
+		// false-red an otherwise green phase just because an agent listed it.
+		git({ head: "base", diff: "A\tsrc/a.ts", porcelain: "" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "phase-01");
+		const rec = t.end("phase", "phase-01", {
+			filesCreated: ["src/a.ts", "docs/specifications/28-agent-team-runtime/.resume-cache.jsonl"],
+			filesModified: [],
+			filesDeleted: [],
+		});
+		expect(rec!.crossCheck).not.toBeNull();
+		expect(rec!.crossCheck!.claimedNotChanged).toEqual([]);
+		expect(rec!.verdict).toBe("ok");
+	});
+
+	it("still treats repository-ignored non-runtime claims as claimed-not-changed", () => {
+		// The exemption is intentionally narrow. A real source/doc/output deliverable
+		// that an agent claims but git cannot see must still fail, even if the repo's
+		// ignore rules would hide it from porcelain. Only known super-dev internal
+		// runtime artifacts (e.g. .resume-cache.jsonl) are exempted.
+		git({
+			head: "base",
+			diff: "A\tsrc/a.ts",
+			porcelain: "",
+			ignored: ["tmp/generated-report.json"],
+		});
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "phase-01");
+		const rec = t.end("phase", "phase-01", {
+			filesCreated: ["src/a.ts", "tmp/generated-report.json", "src/not-real.ts"],
+			filesModified: [],
+			filesDeleted: [],
+		});
+		expect(rec!.crossCheck).not.toBeNull();
+		expect(rec!.crossCheck!.claimedNotChanged).toEqual(["tmp/generated-report.json", "src/not-real.ts"]);
+		expect(rec!.verdict).toBe("claimed-miss");
+	});
+
+	it("still fails a claimed documentation file git does NOT show changed", () => {
+		// Runtime cache artifacts are exempted, but real docs are deliverables and
+		// must remain gated by git evidence.
+		git({ head: "base", diff: "" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "phase-01");
+		const rec = t.end("phase", "phase-01", {
+			filesCreated: ["docs/specifications/28-agent-team-runtime/implementation-notes.md"],
+			filesModified: [],
+			filesDeleted: [],
+		});
+		expect(rec!.crossCheck!.claimedNotChanged).toEqual(["docs/specifications/28-agent-team-runtime/implementation-notes.md"]);
+		expect(rec!.verdict).toBe("claimed-miss");
 	});
 
 	it("puts a git-changed file the agent did NOT report into changedNotClaimed (advisory)", () => {
@@ -568,7 +627,7 @@ describe("probeEnd + commitEnd — single begin/end-per-phase nesting (review CR
 		git({ head: "base", diff: "A\tsrc/a.ts" });
 		const t = new ChangeTracker(specDir, WORKTREE);
 		t.begin("phase", "p1");
-		// Simulate 3 attempts (MAX_ATTEMPTS=3): each probes without appending.
+		// Simulate multiple attempts: each probes without appending.
 		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: [], filesDeleted: [] });
 		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: ["src/b.ts"], filesDeleted: [] });
 		t.probeEnd("phase", "p1", { filesCreated: ["src/a.ts"], filesModified: ["src/b.ts", "src/c.ts"], filesDeleted: [] });

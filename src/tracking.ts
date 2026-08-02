@@ -137,6 +137,22 @@ function normalizeTrackerPath(p: string): string {
 	return s;
 }
 
+const INTERNAL_RUNTIME_CLAIM_BASENAMES = new Set([".resume-cache.jsonl"]);
+
+/**
+ * Some claims name super-dev's own transient runtime artifacts rather than repo
+ * deliverables. They are intentionally excluded from git tracking (for example
+ * `.resume-cache.jsonl` is gitignored), so `git status` cannot prove them. Keep
+ * this fallback intentionally narrow: only known super-dev runtime basenames are
+ * exempted. A claimed ignored source/doc file still fails unless git reports an
+ * actual change, preserving the false-green killer for real deliverables.
+ */
+export function isInternalRuntimeClaim(p: string): boolean {
+	const normalized = normalizeTrackerPath(p);
+	const basename = normalized.split("/").pop() ?? normalized;
+	return INTERNAL_RUNTIME_CLAIM_BASENAMES.has(basename);
+}
+
 const TRACKER_FILENAME = "change-tracker.jsonl";
 
 /**
@@ -486,9 +502,10 @@ export class ChangeTracker {
 		const claimedAllN = new Set<string>(
 			[...claimed.filesCreated, ...claimed.filesModified, ...claimed.filesDeleted].map(normalizeTrackerPath),
 		);
-		const claimedNotChanged = claimedCreatedOrModified.filter(
-			(p) => !gitCreatedOrModifiedN.has(normalizeTrackerPath(p)),
-		);
+		const claimedNotChanged = claimedCreatedOrModified.filter((p) => {
+			const normalized = normalizeTrackerPath(p);
+			return !isInternalRuntimeClaim(p) && !gitCreatedOrModifiedN.has(normalized);
+		});
 		const changedNotClaimed = gitAllChanged.filter(
 			(p) => !claimedAllN.has(normalizeTrackerPath(p)),
 		);

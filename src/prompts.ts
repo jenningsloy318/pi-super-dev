@@ -118,7 +118,7 @@ const RUST_SELF_VERIFY_DISCIPLINE = "When verifying a Rust crate, run `cargo tes
  *  actually change in git fails the phase (the false-green killer). Appended to
  *  `buildImplementPrompt` + `buildFixPrompt` so both green-phase agents carry
  *  the identical contract (single source of truth). */
-const GIT_CROSSCHECK_WARNING = "These file claims are git-cross-checked: claiming a file you did not change fails the phase.";
+const GIT_CROSSCHECK_WARNING = "These file claims are git-cross-checked: claiming a file you did not change fails the phase. Report only project source/docs/test files you actually created, modified, or deleted; do NOT include super-dev runtime/cache artifacts such as `.resume-cache.jsonl`, `change-tracker.jsonl`, or `.user-notes.json`.";
 
 /** Return the Rust verification discipline ONLY for Rust projects (review
  *  finding: it was previously broadcast to ALL languages). Uses the

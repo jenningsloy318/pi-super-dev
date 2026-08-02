@@ -214,17 +214,17 @@ describe("implementationStage retry loop — in-scope verdict (AC-05)", () => {
 		const { ctx, fake } = makeCtx();
 		const control = (await implementationStage.run(makeState([{ name: "Phase A" }]), ctx)) as Record<string, unknown>;
 
-		// All 3 attempts were exhausted on a genuine in-scope failure.
+		// All 5 attempts were exhausted on a genuine in-scope failure.
 		expect(hasLog(fake.logs, "terminating early")).toBe(true);
-		expect(hasLog(fake.logs, "failed after 3 attempts")).toBe(true);
+		expect(hasLog(fake.logs, "failed after 5 attempts")).toBe(true);
 		// inScopePass never granted a green here → no IN-SCOPE GREEN line.
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
 		// No commit for a genuinely broken phase.
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
 		expect(control.allGreen).toBe(false);
 		expect(control.phasesCompleted).toBe(0);
-		// 3 attempts ⇒ 3 gate invocations.
-		expect(mock.calls).toBe(3);
+		// 5 attempts ⇒ 5 gate invocations.
+		expect(mock.calls).toBe(5);
 	});
 
 	it("SCENARIO-013: terminate-early breaks the phase loop — later phases never run", async () => {

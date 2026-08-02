@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRequirementsPrompt, buildBddPrompt, buildDebugPrompt, buildAssessmentPrompt, buildSpecPrompt } from "../src/prompts.ts";
+import { buildRequirementsPrompt, buildBddPrompt, buildDebugPrompt, buildAssessmentPrompt, buildSpecPrompt, buildImplementPrompt, buildFixPrompt } from "../src/prompts.ts";
 import type { SetupControl } from "../src/types.ts";
 
 function mkSetup(dir: string): SetupControl {
@@ -56,5 +56,15 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		const p = buildSpecPrompt(s, null, "t", null, null, null, null, null);
 		expect(p).toContain("phases");
 		expect(p).toContain("RENDERED FOR YOU");
+	});
+
+	it("implementation/fix prompts tell agents not to claim super-dev runtime artifacts", () => {
+		const impl = buildImplementPrompt(s, null, { name: "Phase A" }, {}, {});
+		const fix = buildFixPrompt(s, null, []);
+		for (const p of [impl, fix]) {
+			expect(p).toContain("git-cross-checked");
+			expect(p).toContain("do NOT include super-dev runtime/cache artifacts");
+			expect(p).toContain(".resume-cache.jsonl");
+		}
 	});
 });

@@ -11,7 +11,7 @@
  * PASS/FAIL+missing verdict is logged next to the build-gate log, and the
  * exhaustive `missing` list is fed into the next implementer retry under a
  * `## Deliverables still missing — create/wire these` block, bounded by
- * MAX_ATTEMPTS = 3.
+ * MAX_ATTEMPTS = 5.
  *
  * Both `runBuildGate` and `runDeliverableCheck` are fully stubbed via
  * `vi.mock("../src/build-runner.ts")` so the stage exercises ONLY its verdict
@@ -137,12 +137,12 @@ const DELIVERABLE_FAIL = {
 	ran: ["file:src/screen.rs", "contains:src/screen.rs:fetch_us_data", "tests:list"],
 };
 
-/** Push `r` onto the gate queue `n` times (default MAX_ATTEMPTS=3 = persistent). */
-const seedGate = (r: Record<string, unknown>, n = 3): void => {
+/** Push `r` onto the gate queue `n` times (default MAX_ATTEMPTS=5 = persistent). */
+const seedGate = (r: Record<string, unknown>, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.gateQ.push({ ...r });
 };
-/** Push `r` onto the deliverable queue `n` times (default MAX_ATTEMPTS=3). */
-const seedDeliverable = (r: Record<string, unknown>, n = 3): void => {
+/** Push `r` onto the deliverable queue `n` times (default MAX_ATTEMPTS=5). */
+const seedDeliverable = (r: Record<string, unknown>, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.deliverableQ.push({ ...r });
 };
 
@@ -268,7 +268,7 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		// the deliverable contract is unmet.
 		expect(hasLog(fake.logs, "Implementation phase-01 GREEN")).toBe(false);
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
-		expect(hasLog(fake.logs, "failed after 3 attempts — terminating early")).toBe(true);
+		expect(hasLog(fake.logs, "failed after 5 attempts — terminating early")).toBe(true);
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
@@ -276,7 +276,7 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(mock.deliverableCalls).toBeGreaterThan(0);
 	});
 
-	it("SCENARIO-013: MAX_ATTEMPTS (3) still bounds the retry when deliverables keep failing", async () => {
+	it("SCENARIO-013: MAX_ATTEMPTS (5) still bounds the retry when deliverables keep failing", async () => {
 		seedGate(GATE_PASS);
 		seedDeliverable(DELIVERABLE_FAIL);
 		const { ctx } = mkCtx();
@@ -285,9 +285,9 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 			ctx,
 		);
 
-		// Exactly 3 attempts of each primitive — never a 4th, never unbounded.
-		expect(mock.gateCalls).toBe(3);
-		expect(mock.deliverableCalls).toBe(3);
+		// Exactly 5 attempts of each primitive — never a 6th, never unbounded.
+		expect(mock.gateCalls).toBe(5);
+		expect(mock.deliverableCalls).toBe(5);
 	});
 
 	it("SCENARIO-012: a failed deliverable check feeds `## Deliverables still missing` into the NEXT implementer retry", async () => {
@@ -409,7 +409,7 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
-		expect(hasLog(fake.logs, "failed after 3 attempts — terminating early")).toBe(true);
+		expect(hasLog(fake.logs, "failed after 5 attempts — terminating early")).toBe(true);
 	});
 
 	it("SCENARIO-011/015 log: the deliverable-check verdict (with missing reasons) is logged next to the build-gate log", async () => {

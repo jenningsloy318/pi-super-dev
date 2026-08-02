@@ -239,25 +239,25 @@ describe("P3 edges — a retry's new control.testFiles propagate to the next ora
 // ─── 4. Cap-exhausted / unknown implementer prompt wording ──────────────────
 
 describe("P3 edges — implementer prompt reports the verified residual status exactly", () => {
-	it("cap-exhausted (green) names '2 retries' and the green status; is NOT 'CONFIRMED-red'", async () => {
+	it("cap-exhausted (green) names '4 retries' and the green status; is NOT 'CONFIRMED-red'", async () => {
 		redCheck.mockImplementation(() => "green"); // always green → cap exhaustion
 		const { ctx, implCalls } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
 
 		expect(implCalls).toHaveLength(1);
-		expect(implCalls[0].prompt).toMatch(/2 retries/i);
+		expect(implCalls[0].prompt).toMatch(/4 retries/i);
 		expect(implCalls[0].prompt).toMatch(/still green/i);
 		expect(implCalls[0].prompt).not.toMatch(/CONFIRMED-red/i);
 	});
 
-	it("cap-exhausted (broken) names '2 retries' and the broken status", async () => {
+	it("cap-exhausted (broken) names '4 retries' and the broken status", async () => {
 		redCheck.mockImplementation(() => "broken"); // always broken → cap exhaustion
 		const { ctx, implCalls } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		expect(implCalls[0].prompt).toMatch(/2 retries/i);
+		expect(implCalls[0].prompt).toMatch(/4 retries/i);
 		expect(implCalls[0].prompt).toMatch(/still broken/i);
 	});
 
@@ -269,7 +269,7 @@ describe("P3 edges — implementer prompt reports the verified residual status e
 
 		expect(implCalls[0].prompt).toMatch(/could not be confirmed/i);
 		expect(implCalls[0].prompt).toMatch(/unknown/i);
-		expect(implCalls[0].prompt).not.toMatch(/CONFIRMED-red|2 retries/i);
+		expect(implCalls[0].prompt).not.toMatch(/CONFIRMED-red|4 retries/i);
 	});
 });
 
@@ -295,10 +295,12 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 	});
 
 	it("a cap-exhausting phase 1 does NOT leak its retry state into phase 2 (phase 2 starts fresh)", async () => {
-		// Phase 1: green→green→green (cap-exhausted after MAX_RED_RETRIES=2, i.e.
-		// 1 initial + 2 retries = 3 oracle calls). Phase 2: red immediately (1 call).
-		// Oracle call sequence: green, green, green (phase1), red (phase2) = 4 calls.
+		// Phase 1: five green results (cap-exhausted after MAX_RED_RETRIES=4, i.e.
+		// 1 initial + 4 retries = 5 oracle calls). Phase 2: red immediately (1 call).
+		// Oracle call sequence: five greens (phase1), red (phase2) = 6 calls.
 		redCheck
+			.mockImplementationOnce(() => "green")
+			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
@@ -308,17 +310,19 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 				{ testFiles: ["p1.test.ts"] }, // phase1 initial
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 1
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 2
+				{ testFiles: ["p1.test.ts"] }, // phase1 retry 3
+				{ testFiles: ["p1.test.ts"] }, // phase1 retry 4
 				{ testFiles: ["p2.test.ts"] }, // phase2 initial
 			],
 		});
 
 		await (implementationStage as Stage).run(mkState(2), ctx);
 
-		// phase1: initial + 2 retries = 3 tdd calls; phase2: initial only = 1.
-		// Total 4 tdd-guide calls; the retry counter must have RESET between phases.
-		expect(tddCalls).toHaveLength(4);
-		// 4 oracle calls: 3 (phase1 cap) + 1 (phase2 red).
-		expect(redCheck).toHaveBeenCalledTimes(4);
-		expect(redCheck.mock.calls[3][1]).toEqual(["p2.test.ts"]);
+		// phase1: initial + 4 retries = 5 tdd calls; phase2: initial only = 1.
+		// Total 6 tdd-guide calls; the retry counter must have RESET between phases.
+		expect(tddCalls).toHaveLength(6);
+		// 6 oracle calls: 5 (phase1 cap) + 1 (phase2 red).
+		expect(redCheck).toHaveBeenCalledTimes(6);
+		expect(redCheck.mock.calls[5][1]).toEqual(["p2.test.ts"]);
 	});
 });

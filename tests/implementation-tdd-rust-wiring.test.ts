@@ -212,7 +212,7 @@ describe("P4 wiring — tdd-guide prompt carries the no-`--lib` discipline for r
 });
 
 describe("P4 wiring — outer Stage 9 structure unchanged", () => {
-	it("MAX_ATTEMPTS=3 / gate.pass||inScopePass commit condition unaffected: a green gate commits the phase", async () => {
+	it("MAX_ATTEMPTS=5 / gate.pass||inScopePass commit condition unaffected: a green gate commits the phase", async () => {
 		const { ctx, calls } = mkCtx();
 		const res = (await (implementationStage as Stage).run(mkState("rust"), ctx)) as ControlObj;
 		// one phase, gate passes → phasesCompleted === 1, allGreen true

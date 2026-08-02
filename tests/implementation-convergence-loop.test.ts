@@ -1,7 +1,7 @@
 /**
  * §D auto-iterate convergence loop (design report §D). Drives implementationStage
  * TWICE over shared state to prove the per-phase green-state carry:
- *  - run 1: phase 1 green, phase 2 fails 3× → allGreen=false; phaseStatus records
+ *  - run 1: phase 1 green, phase 2 fails 5× → allGreen=false; phaseStatus records
  *    phase-1 green + phase-2 failed; lastFailures records phase-2 reasons.
  *  - run 2: phase 1 is SKIPPED (its implementer is NOT re-spawned — no
  *    state-confusion churn); phase 2 is re-attempted (seeded with the prior
@@ -67,7 +67,7 @@ describe("§D convergence loop — per-phase green-state carry", () => {
 	beforeEach(() => { gateQ = []; userNotes = ""; });
 
 	it("run 1: phase 1 green, phase 2 fails → allGreen=false, phaseStatus + lastFailures recorded", async () => {
-		gateQ = [PASS, FAIL, FAIL, FAIL]; // phase1 passes att1; phase2 fails 3×
+		gateQ = [PASS, FAIL, FAIL, FAIL, FAIL, FAIL]; // phase1 passes att1; phase2 fails 5×
 		const { ctx } = mkCtx("run1");
 		const state = mkState();
 		const out = await implementationStage.run(state, ctx) as { allGreen: boolean; phasesCompleted: number; totalPhases: number; phaseStatus: Array<{ id: string; status: string }>; lastFailures: Array<{ phaseId: string; reasons: string[] }> };
@@ -81,7 +81,7 @@ describe("§D convergence loop — per-phase green-state carry", () => {
 
 	it("run 2 (shared state): phase 1 SKIPPED (implementer not re-spawned), phase 2 re-attempted → converges (allGreen=true)", async () => {
 		// run 1
-		gateQ = [PASS, FAIL, FAIL, FAIL];
+		gateQ = [PASS, FAIL, FAIL, FAIL, FAIL, FAIL];
 		const r1 = mkCtx("run1");
 		const state = mkState();
 		const out1 = await implementationStage.run(state, r1.ctx);

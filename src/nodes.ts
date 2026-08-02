@@ -42,6 +42,7 @@ import { specDocExists } from "./doc-validators.ts";
 import { STAGE_MODELS } from "./render/schemas.ts";
 import { renderAndWrite } from "./render/render.ts";
 import { auditAppend } from "./render/super-dev-dir.ts";
+import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 
 // ─── Shared helper types ────────────────────────────────────────────────────
 
@@ -49,7 +50,7 @@ type Predicate = (state: PipelineState, ctx: StageContext) => boolean | Promise<
 /** A gate validator returns structured errors, not just pass/fail — the gate feeds
  *  those errors into the next retry's prompt so retries CONVERGE instead of
  *  blind-resampling the same distribution (the root cause of "gate failed after
- *  3 attempts" on a probabilistic agent). */
+ *  5 attempts" on a probabilistic agent). */
 type Validator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
 
 /** Run async functions with a concurrency cap, preserving order. */
@@ -420,7 +421,7 @@ export function gate(opts: GateOptions, node: Node): Node {
 	return {
 		kind: "gate",
 		async run(state, ctx) {
-			const max = opts.attempts ?? 3;
+			const max = opts.attempts ?? WORKFLOW_ATTEMPTS;
 			const label = opts.feedbackKey ? ` gate ${opts.feedbackKey}` : "";
 			let lastErrors: string[] = [];
 			let last: NodeResult = OK;

@@ -378,7 +378,7 @@ export async function summarizeSlug(task: string, cwd: string, opts: { signal?: 
  *  Per-stage `controlKeys` are declared in the structured_output schema so the
  *  model fills them. If the first turn omits any, a single corrective re-prompt
  *  is sent IN THE SAME SESSION (context preserved) before giving up — this is
- *  what turns the old "gate failed after 3 attempts" into a self-healing step.
+ *  what turns the old "gate failed after 5 attempts" into a self-healing step.
  *  Set SUPER_DEV_DEBUG=1 to dump the full per-agent message trace to a temp
  *  file (sessions are otherwise in-memory and unobservable). */
 export async function runAgentViaSession(opts: SessionAgentOptions): Promise<SpawnResult> {

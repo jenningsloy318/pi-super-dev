@@ -239,17 +239,18 @@ Grounded in [AWS Step Functions ASL](https://states-language.net/), the [Workflo
 sequence([
   task(setupStage),                                // fatal
   task(classifyStage),
-  gate({ validate: gateValidator(...), attempts: 3 }, task(requirementsWriter)),
-  gate({ validate: gateValidator(...), attempts: 3 }, task(bddWriter)),
-  gate({ validate: researchComplete, attempts: 3 }, task(researchWriter)),
+  gate({ validate: gateValidator(...), attempts: 5 }, task(requirementsWriter)),
+  gate({ validate: gateValidator(...), attempts: 5 }, task(bddWriter)),
+  gate({ validate: researchComplete, attempts: 5 }, task(researchWriter)),
   branch(isBug, { yes: task(debugWriter) }),
   task(assessmentWriter),
   task(designStage),
   task(prototypeStage),
-  gate({ validate: gateValidator(...), attempts: 3 }, task(specWriter)),
-  gate({ validate: gateValidator(...), attempts: 3 }, task(specReviewWriter)),
-  task(implementationStage),                       // per-phase TDD loop
-  loop({ until: reviewApproved, times: 3 },
+  gate({ validate: gateValidator(...), attempts: 5 }, task(specWriter)),
+  task(specReviewWriter),                           // advisory signal, not a gate
+  loop({ while: (s) => !s.implementation?.allGreen, times: 5 },
+    task(implementationStage)),                     // per-phase TDD loop
+  loop({ until: reviewApproved, times: 5 },
     sequence([
       parallel([codeReview, adversarialReview], { into: "review", join: mergeVerdicts }),
       branch(reviewApproved, { no: reviewFix }),

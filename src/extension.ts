@@ -526,6 +526,13 @@ export default function activate(pi: ExtensionAPI): void {
 			});
 			const finalizeLive = stream.finalizeLive;
 			const flush = stream.flush;
+			const flushForeground = () => {
+				// Background runs already have the native dashboard widget. Streaming every
+				// heartbeat/phase/log through onUpdate leaves repeated stale status lines in
+				// the editor transcript above the input; keep those runs widget-only until
+				// the final summary card, while preserving the full disk log.
+				if (!activeRun?.background) flush();
+			};
 			// Workflow dashboard v1 (Gap Dashboard): always-on phase-tracker widget,
 			// TUI-only. Updated from the structured `stage` events emitted by task()
 			// nodes (running → terminal). v2 will grow this into a full two-panel
@@ -595,12 +602,12 @@ export default function activate(pi: ExtensionAPI): void {
 				// narration ("▶ I have the ACs injected…") never leaks into it. The
 				// detailed per-step log (red-oracle / build-gate / advisory) still scrolls
 				// in the stage's section body below.
-				phase: (label) => { stream.sink.phase(label); dashboardActivity = label; pushRecent(`▶ ${label}`); if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flush(); },
-				log: (message) => { stream.sink.log(message); pushRecent(message); renderDashboardThrottled(); flush(); },
+				phase: (label) => { stream.sink.phase(label); dashboardActivity = label; pushRecent(`▶ ${label}`); if (ctx?.mode === "tui" && !activeRun?.background) { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flushForeground(); },
+				log: (message) => { stream.sink.log(message); pushRecent(message); renderDashboardThrottled(); flushForeground(); },
 				text: (partial) => {
 					stream.sink.text(partial);
 					const now = Date.now();
-					if (now - lastFlush >= FLUSH_MS) { flush(); lastFlush = now; renderDashboardThrottled(); }
+					if (now - lastFlush >= FLUSH_MS) { flushForeground(); lastFlush = now; renderDashboardThrottled(); }
 				},
 				stage: (info) => {
 					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.
@@ -701,12 +708,10 @@ export default function activate(pi: ExtensionAPI): void {
 				const fallback = [...summaryLines];
 				if (logPath) fallback.push(`Full run log: ${logPath}`);
 				if (escalationChoice) fallback.push(`  Escalation: user chose "${escalationChoice}".`);
-				if (summary.status === "failed") {
-					throw new Error(fallback.join("\n"));
-				}
+				const isFailed = summary.status === "failed";
 				return {
 					content: [{ type: "text", text: fallback.join("\n") }],
-					isError: false,
+					isError: isFailed,
 					details: { summary, summaryLines, transcriptTail: stream.transcriptTail(), stages, logPath },
 				};
 			} catch (err) {

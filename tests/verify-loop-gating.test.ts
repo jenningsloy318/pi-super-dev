@@ -88,11 +88,25 @@ describe("GAP A — test-failure stagnation", () => {
 	it("writes state.__testStagnated when the same failures repeat across rounds (non-fatal)", async () => {
 		const counts: Record<string, number> = {};
 		const ctx = driveCtx(counts);
+		ctx.agent = async (call: AgentCall) => {
+			counts[call.agent] = (counts[call.agent] ?? 0) + 1;
+			if (call.agent === "api-tester") {
+				return { text: "", control: { pass: false, failures: [{ id: "e1", file: "a.spec.ts", title: "boom", message: "expected 200" }] } };
+			}
+			return { text: "", control: {} };
+		};
 		const state = {
 			setup: tmpWorktree(),
+			assessment: {
+				services: {
+					api: {
+						cmd: `${process.execPath} -e "require('http').createServer((req,res)=>res.end('ok')).listen(process.env.PORT)"`,
+						portEnv: "PORT",
+						readyPath: "/",
+					},
+				},
+			},
 			review: { verdict: "Changes Requested", findings: [] },
-			// Pre-seeded: api-test step self-skips (no service) so this persists every round.
-			apiTest: { pass: false, failures: [{ id: "e1", file: "a.spec.ts", title: "boom", message: "expected 200" }] },
 		} as unknown as PipelineState;
 
 		// Must never throw, even at exhaustion.
@@ -167,8 +181,8 @@ describe("GAP D — exhaustion epilogue", () => {
 
 		await expect(reviewStageNode.run(state, ctx)).resolves.toBeDefined();
 
-		// 3 loop rounds each run reviewStep (code-reviewer) once → 3, plus the
-		// GAP D epilogue's single final reviewStep → 4 total.
-		expect(counts["code-reviewer"]).toBe(4);
+		// 5 loop rounds each run reviewStep (code-reviewer) once → 5, plus the
+		// GAP D epilogue's single final reviewStep → 6 total.
+		expect(counts["code-reviewer"]).toBe(6);
 	});
 });
