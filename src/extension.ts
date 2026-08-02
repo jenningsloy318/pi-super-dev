@@ -560,11 +560,10 @@ export default function activate(pi: ExtensionAPI): void {
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // TUI-only widget (AC-09 no-regression guard)
 				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
-			// Phase 4 (AC-07): footer status pill — done/total stages. TUI-only
-			// (guard above already ensured ctx.mode === "tui").
-			const TERMINAL = new Set(["ok", "failed", "skipped"]);
-			const doneCount = entries.filter((e) => TERMINAL.has(e.status)).length;
-			try { ctx?.ui?.setStatus?.("super-dev", `${doneCount}/${entries.length} stages`); } catch { /* best-effort */ }
+			// Do NOT mirror progress into a footer/status-line pill. In Herdr/pi TUI that
+			// status surface is rendered as a full shell-prompt line on every update,
+			// creating the repeated "... · 0/1 stages" clutter the dashboard replaced.
+			// Keep progress solely in the native dashboard widget + durable run log.
 				// SCENARIO-001 / SCENARIO-002 — register the dashboard via pi's native
 				// Component-factory overload `setWidget(key, (tui, theme) => Component,
 				// opts)`. The previous zero-arg object-returning factory never received
