@@ -23,10 +23,13 @@ describe("deliveryDisciplineFor", () => {
 		expect(impl).toMatch(/source file MUST be modified/);
 		expect(deliveryDisciplineFor("tdd-guide")).toBe(impl);
 	});
-	it("keeps the doc-centric discipline for doc writers", () => {
+	it("keeps a render-pipeline structured-output discipline for doc writers", () => {
 		const doc = deliveryDisciplineFor("research-agent");
-		expect(doc).toMatch(/written document/);
+		expect(doc).toMatch(/COMPLETE STRUCTURED CONTENT/);
+		expect(doc).toMatch(/renderer writes the Markdown document/);
 		expect(doc).toMatch(/AT MOST ~6 tool calls/);
+		expect(doc).toMatch(/immediately call structured_output/);
+		expect(doc).toMatch(/do NOT hand-write markdown files/);
 		expect(doc).not.toMatch(/APPLIED SOURCE-CODE EDITS/);
 	});
 });

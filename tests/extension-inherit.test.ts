@@ -30,8 +30,12 @@ const cap = vi.hoisted(() => {
 });
 
 vi.mock("../src/pipeline.ts", () => ({
-	runPipelineTask: vi.fn(async (_task: string, options: Record<string, unknown> = {}) => {
+	runPipelineTask: vi.fn(async (task: string, options: Record<string, unknown> = {}) => {
 		cap.setOpts(options);
+		if (task.includes("[emit-stage]")) {
+			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void } | undefined;
+			progress?.stage?.({ id: "requirements", label: "Requirements", status: "running" });
+		}
 		// Minimal valid RunSummary so formatSummary / handleStagnation don't throw:
 		// no `__stagnated` on state → handleStagnation returns early.
 		return {
@@ -173,6 +177,19 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(opts).toBeDefined();
 		expect(opts!.signal).toBeDefined();
 		expect(opts!.signal).not.toBe(turnController.signal);
+	});
+	it("does not write stage progress to the TUI footer/status line", async () => {
+		const { execute } = setupTool();
+		const setStatus = vi.fn();
+		await execute(
+			"call-status",
+			{ task: "[emit-stage] build the thing", background: false },
+			undefined,
+			undefined,
+			{ mode: "tui", ui: { setWidget: vi.fn(), setWorkingMessage: vi.fn(), setStatus, notify: vi.fn() } },
+		);
+		expect(setStatus).not.toHaveBeenCalledWith("super-dev", expect.stringContaining("stages"));
+		expect(setStatus).not.toHaveBeenCalledWith("super-dev", undefined);
 	});
 });
 

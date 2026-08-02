@@ -227,11 +227,11 @@ export function deliveryDisciplineFor(agent: string): string {
 	}
 	return [
 		"## Delivery discipline (OVERRIDES any contrary instruction above)",
-		"You have a LIMITED time budget. The ONLY deliverable that matters is the written document + your structured_output call.",
+		"Your deliverable is COMPLETE STRUCTURED CONTENT via the structured_output tool. The super-dev renderer writes the Markdown document from that object; do NOT hand-write markdown files unless this stage explicitly asks you to.",
 		"- Explore with AT MOST ~6 tool calls total (read/bash/grep/web). You do NOT need to read every file, run the full test suite, or verify every claim independently.",
 		"- Never re-read a file you already read. Never loop on self-auditing, self-scoring, or revision.",
-		"- START WRITING the document once you have the gist — well before you feel 'done' exploring. Written-but-imperfect beats thorough-but-unfinished (a timeout produces NOTHING).",
-		"- After writing, immediately call structured_output and STOP.",
+		"- START composing the structured_output object once you have the gist — well before you feel 'done' exploring. Complete-but-imperfect structured data beats thorough-but-unreturned work (a timeout produces NOTHING).",
+		"- Then immediately call structured_output and STOP.",
 	].join("\n");
 }
 
@@ -498,11 +498,26 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 			if (!timedOut && !opts.signal?.aborted) throw err;
 		}
 
-		// Self-heal: ONLY when the model actually called structured_output but
+		// Self-heal #1: when the specialist returns normally without ever calling
+		// structured_output, keep the SAME session/context and give it one final,
+		// tool-only chance. This catches the real BDD failure mode where the agent
+		// read the requirements, stopped after ~30s, and produced neither control nor
+		// a rendered doc; pushing that to a cold gate retry wastes minutes and is
+		// easy for users to cancel before attempt 2. Do not do this on timeout/abort.
+		if (!capture.called && keys.length > 0 && !timedOut && !opts.signal?.aborted) {
+			correctiveNote = "corrective re-prompt (no structured_output)";
+			opts.onProgress?.event(`↻ ${opts.id ?? opts.agent}: ${correctiveNote}`);
+			const fix = `You ended without calling the required structured_output tool. Do not read more files and do not answer in prose. Using the work/context already in this session, call structured_output NOW with ALL of these keys filled: ${keys.join(", ")}.`;
+			try {
+				await session.prompt(fix);
+			} catch (err) {
+				if (!timedOut && !opts.signal?.aborted) throw err;
+			}
+		}
+
+		// Self-heal #2: ONLY when the model actually called structured_output but
 		// omitted declared keys, send ONE corrective turn in the same session
-		// (same context, same files written) naming exactly what's missing. If it
-		// never called the tool, a "you omitted keys" message would be a false
-		// premise — leave that to the gate's cold retry instead.
+		// (same context, same files written) naming exactly what's missing.
 		const afterFirst = capture.called ? (capture.value as Record<string, unknown> | undefined) : undefined;
 		const missing = missingKeys(afterFirst, keys);
 		if (capture.called && missing.length > 0 && !timedOut && !opts.signal?.aborted) {

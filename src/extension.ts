@@ -731,7 +731,9 @@ export default function activate(pi: ExtensionAPI): void {
 				// Always clear the dashboard widget + footer state when the run ends (success or failure).
 				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
-				try { ctx?.ui?.setStatus?.("super-dev", undefined); } catch { /* best-effort */ }
+				// No-op: super-dev no longer owns a footer/status-line pill. Do not call
+				// setStatus("super-dev", undefined) here either; some TUI shells render even
+				// clear operations as prompt/status-line churn.
 				// Phase 2 (AC-04 / SCENARIO-010): clear the mid-run input status pill in
 				// the same cleanup that nulls activeRun + the dashboard widget.
 				try { ctx?.ui?.setStatus?.("super-dev-input", undefined); } catch { /* best-effort */ }
