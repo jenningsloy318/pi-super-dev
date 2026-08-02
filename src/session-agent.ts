@@ -192,11 +192,18 @@ export function strictControlSchema(keys: string[]) {
 }
 
 /** Which declared keys are missing/blank in the captured control object. */
-export function missingKeys(captured: Record<string, unknown> | null | undefined, keys: string[]): string[] {
+export function missingKeys(
+	captured: Record<string, unknown> | null | undefined,
+	keys: string[],
+	options: { allowEmptyArraysFor?: Set<string> | string[] | "*" } = {},
+): string[] {
 	if (!captured) return keys;
+	const allow = options.allowEmptyArraysFor;
+	const allowEmptyArray = (key: string): boolean =>
+		allow === "*" || (Array.isArray(allow) ? allow.includes(key) : allow instanceof Set ? allow.has(key) : false);
 	return keys.filter((k) => {
 		const v = captured[k];
-		return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+		return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0 && !allowEmptyArray(k));
 	});
 }
 
@@ -519,7 +526,8 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		// omitted declared keys, send ONE corrective turn in the same session
 		// (same context, same files written) naming exactly what's missing.
 		const afterFirst = capture.called ? (capture.value as Record<string, unknown> | undefined) : undefined;
-		const missing = missingKeys(afterFirst, keys);
+		const emptyArrayOk = new Set(["filesCreated", "filesModified", "filesDeleted"]);
+		const missing = missingKeys(afterFirst, keys, { allowEmptyArraysFor: emptyArrayOk });
 		if (capture.called && missing.length > 0 && !timedOut && !opts.signal?.aborted) {
 			correctiveNote = `corrective re-prompt (missing: ${missing.join(", ")})`;
 			opts.onProgress?.event(`↻ ${opts.id ?? opts.agent}: ${correctiveNote}`);

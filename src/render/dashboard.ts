@@ -221,7 +221,7 @@ export function packDashboardLines(
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
-	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string } = {},
+	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string; logPath?: string } = {},
 ): string[] {
 	// F5: count only TERMINAL top-level stages (ok/failed/skipped). Phase rows
 	// are subordinate dashboard items derived from the implementation plan and
@@ -290,6 +290,12 @@ export function packDashboardLines(
 	section("needs attention", "error", failedRows);
 	section("skipped", "warning", skippedRows);
 	section("pending", "dim", pendingRows);
+	if (opts.logPath) {
+		pushGap();
+		lines.push(truncLine(theme ? theme.fg("muted", "── run log ──") : "── run log ──", width));
+		lines.push(truncLine(theme ? theme.fg("dim", `  → ${opts.logPath}`) : `  → ${opts.logPath}`, width));
+		lines.push("");
+	}
 	// Recent-activity tail (background runs only — the caller passes recentLogs
 	// solely when the tool-result live-log body is unavailable, i.e. detached
 	// background mode). Shows the last few structured stage log lines DIMMED so
@@ -342,7 +348,7 @@ export function buildDashboardWidget(
 	theme?: DashboardTheme,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
-	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string } = {},
+	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string; logPath?: string } = {},
 ): Container {
 	const container = new Container();
 	for (const line of packDashboardLines(entries, activity, width, theme, pendingInputCount, abortHint, opts)) {
@@ -366,7 +372,7 @@ export function createDashboardWidgetFactory(
 	activity: string | undefined,
 	pendingInputCount: number = 0,
 	abortHint: string = "esc to abort",
-	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string } = {},
+	opts: { elapsedMs?: number; recentLogs?: string[]; latestInputPreview?: string; logPath?: string } = {},
 ): (tui: unknown, theme: DashboardTheme) => Container {
 	return (_tui, theme) =>
 		buildDashboardWidget(entries, activity, process.stdout.columns || 120, theme, pendingInputCount, abortHint, opts);

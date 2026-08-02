@@ -308,6 +308,35 @@ describe("runDeliverableCheck — requireNotContains (SCENARIO-004)", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("passes when a pure negative assertion names a missing optional file", () => {
+		const cwd = rustTmp();
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireNotContains: [{ file: "proxy.ts", pattern: "analytics" }],
+			});
+			expect(r.pass).toBe(true);
+			expect(r.missing).toEqual([]);
+			expect(r.ran).toContain("not-contains:proxy.ts:analytics");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("still fails a missing not-contains target when requireFiles also declares it", () => {
+		const cwd = rustTmp();
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireFiles: ["proxy.ts"],
+				requireNotContains: [{ file: "proxy.ts", pattern: "analytics" }],
+			});
+			expect(r.pass).toBe(false);
+			expect(r.missing).toContain("missing file: proxy.ts");
+			expect(r.missing.some((m) => m.includes("forbidden pattern"))).toBe(false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 });
 
 // === SCENARIO-005 / 006: requireTests ======================================

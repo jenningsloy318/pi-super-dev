@@ -283,28 +283,33 @@ describe("packDashboardLines (AC-02 / AC-04 / SCENARIO-007)", () => {
 		{ id: "c", label: "Stage C", status: "running" },
 	];
 
-	it("returns a string array whose first line is the themed header", () => {
+	function headerLine(lines: string[]): string {
+		return lines.find((l) => l.startsWith("super-dev ·")) ?? "";
+	}
+
+	it("returns a string array whose first line is dashboard breathing room", () => {
 		const lines = packDashboardLines(entries, "doing stuff", 120, mockTheme() as never);
 		expect(Array.isArray(lines)).toBe(true);
 		expect(lines.length).toBeGreaterThan(0);
-		expect(typeof lines[0]).toBe("string");
+		expect(lines[0]).toBe("");
+		expect(typeof headerLine(lines)).toBe("string");
 	});
 
 	it("header carries the completed-over-total stage count", () => {
 		const lines = packDashboardLines(entries, undefined, 120, mockTheme() as never);
 		// done = entries not running = 2 (ok + failed); total = 3
-		expect(lines[0]).toContain("2/3");
-		expect(lines[0]).toContain("super-dev");
+		expect(headerLine(lines)).toContain("2/3");
+		expect(headerLine(lines)).toContain("super-dev");
 	});
 
 	it("header carries the running stage label", () => {
 		const lines = packDashboardLines(entries, undefined, 120, mockTheme() as never);
-		expect(lines[0]).toContain("Stage C");
+		expect(headerLine(lines)).toContain("Stage C");
 	});
 
 	it("header carries the abort hint (SCENARIO-007)", () => {
 		const lines = packDashboardLines(entries, undefined, 120, mockTheme() as never);
-		expect(lines[0]).toContain("esc to abort");
+		expect(headerLine(lines)).toContain("esc to abort");
 	});
 
 	it("applies themed status glyphs across the output (ok/failed/running tokens)", () => {
@@ -330,7 +335,7 @@ describe("packDashboardLines (AC-02 / AC-04 / SCENARIO-007)", () => {
 	it("adds exactly one activity line when activity text is supplied", () => {
 		const lines = packDashboardLines(entries, "doing stuff", 120, mockTheme() as never);
 		expect(lines.length).toBeGreaterThan(4);
-		expect(lines[1]).toContain("doing stuff");
+		expect(lines.find((l) => l.startsWith("▶ "))).toContain("doing stuff");
 	});
 
 	it("omits the activity line when activity is empty / undefined", () => {
@@ -346,14 +351,16 @@ describe("packDashboardLines (AC-02 / AC-04 / SCENARIO-007)", () => {
 			{ id: "b", label: "Stage B", status: "skipped" },
 		];
 		const lines = packDashboardLines(done, undefined, 120, mockTheme() as never);
-		expect(lines[0]).not.toContain("Stage A");
-		expect(lines[0]).not.toContain("Stage B");
+		expect(headerLine(lines)).not.toContain("Stage A");
+		expect(headerLine(lines)).not.toContain("Stage B");
 		// count = 2 done / 2 total (no running excluded)
-		expect(lines[0]).toContain("2/2");
+		expect(headerLine(lines)).toContain("2/2");
 	});
 });
 
 describe("edge cases — anti-hardcoding hardening (AC-02 / AC-03 / AC-05)", () => {
+	const headerLine = (lines: string[]): string => lines.find((l) => l.startsWith("super-dev ·")) ?? "";
+
 	it("runningGlyph distinguishes seed=0 from no-seed (catches `seed || undefined` bug)", () => {
 		// A naive `seed || undefined` or `seed ? frame : circle` impl collapses 0 to the
 		// static glyph. seed=0 MUST select RUNNING_FRAMES[0], NOT the static circle.
@@ -381,10 +388,9 @@ describe("edge cases — anti-hardcoding hardening (AC-02 / AC-03 / AC-05)", () 
 
 	it("packDashboardLines handles an empty entries array (0/0 header, no stage rows)", () => {
 		const lines = packDashboardLines([], undefined, 120, mockTheme() as never);
-		expect(lines.length).toBe(1); // header only, no stage rows
-		expect(lines[0]).toContain("0/0");
-		expect(lines[0]).toContain("super-dev");
-		expect(lines[0]).toContain("esc to abort");
+		expect(lines).toEqual(["", expect.stringContaining("0/0"), ""]); // breathing room + header, no stage rows
+		expect(headerLine(lines)).toContain("super-dev");
+		expect(headerLine(lines)).toContain("esc to abort");
 	});
 
 	it("packDashboardLines omits the running label fragment when nothing is running", () => {
@@ -396,7 +402,7 @@ describe("edge cases — anti-hardcoding hardening (AC-02 / AC-03 / AC-05)", () 
 			120,
 			mockTheme() as never,
 		);
-		expect(lines[0]).not.toMatch(/·\s*<accent>/);
+		expect(headerLine(lines)).not.toMatch(/·\s*<accent>/);
 	});
 
 	it("truncLine does not throw on a tiny maxWidth and stays within budget", () => {

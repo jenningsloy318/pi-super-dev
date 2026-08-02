@@ -957,6 +957,9 @@ function loadTestList(
  *                            substring fallback on an invalid regex).
  *   (c) requireNotContains → a READABLE hit ⇒ `forbidden pattern <pat> still
  *                            present in <file>`; missing/unreadable ⇒ no entry.
+ *                            If the file itself is required, declare it in
+ *                            requireFiles or requireContains; a pure negative
+ *                            assertion is satisfied when the target is absent.
  *   (d) requireTests       → ONE cached test-list spawn per cwd; tolerant
  *                            substring-OR-regex name match; miss ⇒
  *                            `missing test: <name>`. On no-runner / spawn
@@ -1144,12 +1147,12 @@ export function runDeliverableCheck(
 		}
 
 		// (c) requireNotContains — a forbidden pattern surviving in a READABLE file
-		// is reported; a MISSING or UNREADABLE file is ALSO a failure (review finding:
-		// requireNotContains silently PASSED when the target file was missing or
-		// unreadable — a spec that forbids a pattern in `<file>` cannot be verified
-		// when `<file>` is absent, so the contract is unmet and must FAIL, not silently
-		// pass). This mirrors requireFiles/requireContains: `missing file:` when the
-		// file is absent, `unreadable:` when it exists but cannot be read.
+		// is reported. A missing or unreadable file does NOT fail this negative-only
+		// assertion: if a phase needs the file to exist, it must also declare the file
+		// under requireFiles or requireContains. This distinction matters for specs
+		// that say "do not touch/create proxy.ts/middleware.ts"; absence already proves
+		// the forbidden pattern is not present and must not trap an implementer in an
+		// unwinnable retry loop because the spec named the wrong optional path.
 		const notContains = deliverables.requireNotContains;
 		if (Array.isArray(notContains)) {
 			for (const entry of notContains) {
@@ -1157,9 +1160,7 @@ export function runDeliverableCheck(
 				const pattern = entry?.pattern;
 				ran.push(`not-contains:${file}:${pattern}`);
 				const rd = readForDeliverable(cwd, file);
-				if (!rd.ok) {
-					missing.push(rd.exists ? `unreadable: ${file}` : `missing file: ${file}`);
-				} else if (tolerantMatch(pattern, rd.text)) {
+				if (rd.ok && tolerantMatch(pattern, rd.text)) {
 					missing.push(`forbidden pattern ${pattern} still present in ${file}`);
 				}
 			}

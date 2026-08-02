@@ -152,6 +152,19 @@ describe("packDashboardLines", () => {
 		expect(lines.some((l) => l.includes("build-gate PASS"))).toBe(true);
 	});
 
+	it("shows the active run log path between stage groups and recent progress", () => {
+		const lines = packDashboardLines(stages(5, 2), undefined, 120, undefined, 0, "/super-dev-stop", {
+			recentLogs: ["Implementation phase-01 build-gate PASS"],
+			logPath: "/Users/me/.pi/agent/super-dev/runs/2026/run.log",
+		});
+		const completedSection = lines.findIndex((l) => l.includes("── completed ──"));
+		const logSection = lines.findIndex((l) => l.includes("── run log ──"));
+		const recentSection = lines.findIndex((l) => l.includes("── recent commands / progress ──"));
+		expect(logSection).toBeGreaterThan(completedSection);
+		expect(recentSection).toBeGreaterThan(logSection);
+		expect(lines.some((l) => l.includes("/Users/me/.pi/agent/super-dev/runs/2026/run.log"))).toBe(true);
+	});
+
 	it("caps the recent tail at 8 lines (most-recent kept)", () => {
 		const logs = Array.from({ length: 20 }, (_, i) => `log line ${i + 1}`);
 		const lines = packDashboardLines(stages(2), undefined, 120, undefined, 0, "/super-dev-stop", { recentLogs: logs });

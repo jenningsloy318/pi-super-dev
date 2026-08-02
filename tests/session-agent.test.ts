@@ -42,6 +42,13 @@ describe("missingKeys", () => {
 	it("returns keys that are blank", () => {
 		expect(missingKeys({ a: 1, b: "", c: null, d: [], e: "x" }, ["a", "b", "c", "d", "e", "f"])).toEqual(["b", "c", "d", "f"]);
 	});
+	it("can allow empty arrays for fields where [] is semantically complete", () => {
+		expect(missingKeys(
+			{ filesCreated: ["src/new.ts"], filesModified: [], filesDeleted: [] },
+			["filesCreated", "filesModified", "filesDeleted"],
+			{ allowEmptyArraysFor: ["filesModified", "filesDeleted"] },
+		)).toEqual([]);
+	});
 	it("returns [] when everything is present", () => {
 		expect(missingKeys({ a: 1, b: "x" }, ["a", "b"])).toEqual([]);
 	});

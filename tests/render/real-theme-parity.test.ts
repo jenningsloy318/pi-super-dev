@@ -224,7 +224,7 @@ describe("render-layer Theme parity — REAL pi Theme proxy (Gap 2 / AC-05)", ()
 			const joined = lines.join("\n");
 			expect(joined).toContain("super-dev");
 			// Mid-run input count surfaces (AC-07) — proves the optional arg threads.
-			expect(joined).toContain("mid-run input");
+			expect(joined).toContain("runtime instruction");
 			expect(joined).toMatch(ANSI);
 		});
 	});

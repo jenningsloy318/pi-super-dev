@@ -548,6 +548,16 @@ export default function activate(pi: ExtensionAPI): void {
 			// log body is not visible), so the persistent panel still shows movement
 			// instead of looking dead. Foreground runs keep streaming logs via onUpdate.
 			const runStartMs = Date.now();
+			let liveRunLogPath = "";
+			let lastDiskLog = 0;
+			const DISK_LOG_MS = 1000;
+			const persistLiveLog = (force = false) => {
+				if (!liveRunLogPath) return;
+				const now = Date.now();
+				if (!force && now - lastDiskLog < DISK_LOG_MS) return;
+				lastDiskLog = now;
+				try { writeFileSync(liveRunLogPath, stream.diskLogText() + "\n"); } catch { /* best-effort */ }
+			};
 			const recentLogs: string[] = [];
 			const RECENT_LOG_CAP = 40;
 			const pushRecent = (msg: string) => {
@@ -585,7 +595,7 @@ export default function activate(pi: ExtensionAPI): void {
 					// in print/json/headless/RPC modes (AC-09 / AC-10).
 					ctx?.ui?.setWidget?.(
 						DASHBOARD_KEY,
-						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? `/super-dev-stop (${SUPER_DEV_STOP_SHORTCUT})` : "esc to abort", { elapsedMs: Date.now() - runStartMs, recentLogs: activeRun?.background ? recentLogs : [], latestInputPreview: activeRun?.lastInstructionPreview }),
+						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, activeRun?.background ? `/super-dev-stop (${SUPER_DEV_STOP_SHORTCUT})` : "esc to abort", { elapsedMs: Date.now() - runStartMs, recentLogs: activeRun?.background ? recentLogs : [], latestInputPreview: activeRun?.lastInstructionPreview, logPath: liveRunLogPath }),
 						{ placement: "aboveEditor" },
 					);
 				} catch { /* best-effort */ }
@@ -602,12 +612,12 @@ export default function activate(pi: ExtensionAPI): void {
 				// narration ("▶ I have the ACs injected…") never leaks into it. The
 				// detailed per-step log (red-oracle / build-gate / advisory) still scrolls
 				// in the stage's section body below.
-				phase: (label) => { stream.sink.phase(label); dashboardActivity = label; pushRecent(`▶ ${label}`); if (ctx?.mode === "tui" && !activeRun?.background) { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flushForeground(); },
-				log: (message) => { stream.sink.log(message); pushRecent(message); renderDashboardThrottled(); flushForeground(); },
+				phase: (label) => { stream.sink.phase(label); persistLiveLog(); dashboardActivity = label; pushRecent(`▶ ${label}`); if (ctx?.mode === "tui" && !activeRun?.background) { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flushForeground(); },
+				log: (message) => { stream.sink.log(message); persistLiveLog(); pushRecent(message); renderDashboardThrottled(); flushForeground(); },
 				text: (partial) => {
 					stream.sink.text(partial);
 					const now = Date.now();
-					if (now - lastFlush >= FLUSH_MS) { flushForeground(); lastFlush = now; renderDashboardThrottled(); }
+					if (now - lastFlush >= FLUSH_MS) { persistLiveLog(); flushForeground(); lastFlush = now; renderDashboardThrottled(); }
 				},
 				stage: (info) => {
 					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.
@@ -644,6 +654,9 @@ export default function activate(pi: ExtensionAPI): void {
 				if (ctx?.mode === "tui") heartbeat = setInterval(() => { try { renderDashboard(); } catch { /* best-effort */ } }, 250);
 				ensureSuperDevDirs();
 				startRun();
+				liveRunLogPath = getRunLogPath();
+				persistLiveLog(true);
+				renderDashboard();
 				// Name the session after the task (pi-native) so it is identifiable in
 				// the session selector / `/tree`. Only set when the session is still
 				// unnamed so a user-chosen name is never clobbered; refined to the spec
@@ -698,6 +711,7 @@ export default function activate(pi: ExtensionAPI): void {
 				let logPath = "";
 				try {
 					logPath = getRunLogPath();
+					persistLiveLog(true);
 					writeFileSync(logPath, stream.diskLogText() + "\n");
 				} catch { /* best-effort; the live tail is the primary surface */ }
 				const escalationChoice = await handleStagnation(summary, ctx);
