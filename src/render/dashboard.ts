@@ -231,21 +231,29 @@ export function packDashboardLines(
 		}  (${abortHint})`,
 		width,
 	);
-	const lines = [head];
+	const lines = ["", head, ""];
+	const pushGap = () => {
+		if (lines[lines.length - 1] !== "") lines.push("");
+	};
 
 	const a = truncateActivity(activity ?? "");
-	if (a) lines.push(truncLine(`▶ ${a}`, width));
+	if (a) {
+		lines.push(truncLine(`▶ ${a}`, width));
+		lines.push("");
+	}
 	// Phase 2 (AC-04 / AC-07): pending mid-run user-input count — surfaces how
 	// many interactive inputs are queued but not yet injected into a specialist.
 	// Pending-yet-to-be-injected; resets to 0 once drain() runs at the next spawn.
 	if (pendingInputCount > 0) {
 		const latest = opts.latestInputPreview ? ` · latest: ${truncateActivity(opts.latestInputPreview, 48)}` : "";
+		pushGap();
 		lines.push(
 			truncLine(
 				`📥 ${pendingInputCount} runtime instruction${pendingInputCount === 1 ? "" : "s"}${latest}`,
 				width,
 			),
 		);
+		lines.push("");
 	}
 
 	// Native, readable single-column layout. Grouping prevents completed jobs,
@@ -254,10 +262,12 @@ export function packDashboardLines(
 	// confusing stacked status soup shown in narrow/active terminals.
 	const section = (label: string, token: string, rows: Array<{ id: string; label: string; status: string }>) => {
 		if (rows.length === 0) return;
+		pushGap();
 		lines.push(truncLine(theme ? theme.fg(token, `── ${label} ──`) : `── ${label} ──`, width));
 		for (const e of rows) {
 			lines.push(truncLine(`  ${statusGlyph(e.status, theme)} ${e.label}`, width));
 		}
+		lines.push("");
 	};
 	const runningRows = entries.filter((e) => e.status === "running");
 	const failedRows = entries.filter((e) => e.status === "failed");
@@ -277,6 +287,7 @@ export function packDashboardLines(
 	// streams through the tool result), so this section never double-renders.
 	const recent = (opts.recentLogs ?? []).filter((r) => r && r.trim());
 	if (recent.length) {
+		pushGap();
 		lines.push(truncLine(theme ? theme.fg("muted", "── recent commands / progress ──") : "── recent commands / progress ──", width));
 		for (const r of recent.slice(-RECENT_LOG_TAIL)) {
 			const oneLine = r.replace(/\s+/g, " ").trim();
@@ -285,6 +296,7 @@ export function packDashboardLines(
 			const prefix = isCommand ? "  › " : "  · ";
 			lines.push(truncLine(theme ? theme.fg(token, `${prefix}${oneLine}`) : `${prefix}${oneLine}`, width));
 		}
+		lines.push("");
 	}
 	return lines;
 }

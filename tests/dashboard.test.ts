@@ -70,7 +70,7 @@ describe("packDashboardLines", () => {
 
 	it("header carries done/total + running stage + esc hint", () => {
 		const lines = packDashboardLines(stages(5, 2), undefined, 80);
-		expect(lines[0]).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
+		expect(lines.find((l) => l.startsWith("super-dev ·"))).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
 	});
 
 	it("uses a readable single column with grouped status sections", () => {
@@ -99,20 +99,36 @@ describe("packDashboardLines", () => {
 
 	it("header stays byte-identical when no elapsed clock is supplied", () => {
 		const lines = packDashboardLines(stages(5, 2), undefined, 80);
-		expect(lines[0]).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
+		expect(lines.find((l) => l.startsWith("super-dev ·"))).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
+	});
+
+	it("adds vertical breathing room around header, activity, and sections", () => {
+		const lines = packDashboardLines(stages(5, 2), "Implementation — Phase 1/4", 120, undefined, 0, "/super-dev-stop", { recentLogs: ["→ read file.ts"] });
+		const header = lines.findIndex((l) => l.startsWith("super-dev ·"));
+		const activity = lines.findIndex((l) => l.startsWith("▶ Implementation"));
+		const runningSection = lines.findIndex((l) => l.includes("── running ──"));
+		const completedSection = lines.findIndex((l) => l.includes("── completed ──"));
+		const recentSection = lines.findIndex((l) => l.includes("── recent commands / progress ──"));
+		expect(lines[header - 1]).toBe("");
+		expect(lines[header + 1]).toBe("");
+		expect(lines[activity - 1]).toBe("");
+		expect(lines[activity + 1]).toBe("");
+		expect(lines[runningSection - 1]).toBe("");
+		expect(lines[completedSection - 1]).toBe("");
+		expect(lines[recentSection - 1]).toBe("");
 	});
 
 	it("header shows a ticking elapsed clock when elapsedMs is supplied", () => {
 		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: 134_000 });
 		// 134s → 2m14s, inserted after the done/total count
-		expect(lines[0]).toBe("super-dev · 4/5 · 2m14s · ● Stage 3 — Live  (esc to abort)");
+		expect(lines.find((l) => l.startsWith("super-dev ·"))).toBe("super-dev · 4/5 · 2m14s · ● Stage 3 — Live  (esc to abort)");
 	});
 
 	it("formats sub-minute, minute, and hour elapsed spans", () => {
-		const at = (ms: number) => packDashboardLines(stages(1), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: ms })[0];
-		expect(at(45_000)).toContain("· 45s");
-		expect(at(125_000)).toContain("· 2m05s");
-		expect(at(3_780_000)).toContain("· 1h03m");
+		const headerAt = (ms: number) => packDashboardLines(stages(1), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: ms }).find((l) => l.startsWith("super-dev ·")) ?? "";
+		expect(headerAt(45_000)).toContain("· 45s");
+		expect(headerAt(125_000)).toContain("· 2m05s");
+		expect(headerAt(3_780_000)).toContain("· 1h03m");
 	});
 
 	it("renders a dimmed recent-activity tail when recentLogs are supplied (background mode)", () => {
