@@ -191,6 +191,27 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", expect.stringContaining("stages"));
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", undefined);
 	});
+	it("keeps background TUI runs terminal-quiet: no widget/status/working-message redraws", async () => {
+		const { execute } = setupTool();
+		const ui = {
+			setWidget: vi.fn(),
+			setWorkingMessage: vi.fn(),
+			setStatus: vi.fn(),
+			notify: vi.fn(),
+		};
+		const res = await execute(
+			"call-bg-quiet",
+			{ task: "[emit-stage] build the thing" },
+			new AbortController().signal,
+			undefined,
+			{ mode: "tui", ui },
+		) as { content?: Array<{ type: "text"; text: string }> };
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(res.content?.[0]?.text).toContain("terminal-quiet");
+		expect(ui.setWidget).not.toHaveBeenCalled();
+		expect(ui.setWorkingMessage).not.toHaveBeenCalled();
+		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev", expect.anything());
+	});
 });
 
 describe("extension.execute() degrades when the ctx exposes no model/thinking (AC-01 / SCENARIO-002)", () => {
