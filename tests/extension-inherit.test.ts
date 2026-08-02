@@ -33,8 +33,9 @@ vi.mock("../src/pipeline.ts", () => ({
 	runPipelineTask: vi.fn(async (task: string, options: Record<string, unknown> = {}) => {
 		cap.setOpts(options);
 		if (task.includes("[emit-stage]")) {
-			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void } | undefined;
+			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void; log?: (message: string) => void } | undefined;
 			progress?.stage?.({ id: "requirements", label: "Requirements", status: "running" });
+			progress?.log?.("background log still visible");
 		}
 		// Minimal valid RunSummary so formatSummary / handleStagnation don't throw:
 		// no `__stagnated` on state → handleStagnation returns early.
@@ -62,13 +63,21 @@ vi.mock("../src/pi-spawn.ts", () => ({
 }));
 
 vi.mock("../src/render/live-stream.js", () => ({
-	createLiveStream: vi.fn(() => ({
-		sink: { phase: () => {}, log: () => {}, text: () => {}, stage: () => {} },
-		finalizeLive: () => {},
-		flush: () => {},
-		diskLogText: () => "",
-		transcriptTail: () => [],
-	})),
+	createLiveStream: vi.fn((opts: { onUpdate?: (body: string) => void } = {}) => {
+		let body = "";
+		return {
+			sink: {
+				phase: (label: string) => { body += `▶ ${label}\n`; },
+				log: (message: string) => { body += `${message}\n`; },
+				text: (partial: string) => { body += `${partial}\n`; },
+				stage: () => {},
+			},
+			finalizeLive: () => {},
+			flush: () => { opts.onUpdate?.(body); },
+			diskLogText: () => body,
+			transcriptTail: () => [],
+		};
+	}),
 }));
 
 vi.mock("../src/render/dashboard.ts", () => ({
@@ -191,7 +200,7 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", expect.stringContaining("stages"));
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", undefined);
 	});
-	it("keeps background TUI runs terminal-quiet: no widget/status/working-message redraws", async () => {
+	it("keeps background TUI runs prompt-quiet while still streaming live logs", async () => {
 		const { execute } = setupTool();
 		const ui = {
 			setWidget: vi.fn(),
@@ -199,18 +208,21 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 			setStatus: vi.fn(),
 			notify: vi.fn(),
 		};
+		const onUpdate = vi.fn();
 		const res = await execute(
 			"call-bg-quiet",
 			{ task: "[emit-stage] build the thing" },
 			new AbortController().signal,
-			undefined,
+			onUpdate,
 			{ mode: "tui", ui },
 		) as { content?: Array<{ type: "text"; text: string }> };
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(res.content?.[0]?.text).toContain("terminal-quiet");
+		expect(res.content?.[0]?.text).toContain("Live logs still stream");
 		expect(ui.setWidget).not.toHaveBeenCalled();
 		expect(ui.setWorkingMessage).not.toHaveBeenCalled();
 		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev", expect.anything());
+		expect(onUpdate).toHaveBeenCalled();
+		expect(JSON.stringify(onUpdate.mock.calls)).toContain("background log still visible");
 	});
 });
 

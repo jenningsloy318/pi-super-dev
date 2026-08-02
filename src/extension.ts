@@ -527,11 +527,11 @@ export default function activate(pi: ExtensionAPI): void {
 			const finalizeLive = stream.finalizeLive;
 			const flush = stream.flush;
 			const flushForeground = () => {
-				// Background runs already have the native dashboard widget. Streaming every
-				// heartbeat/phase/log through onUpdate leaves repeated stale status lines in
-				// the editor transcript above the input; keep those runs widget-only until
-				// the final summary card, while preserving the full disk log.
-				if (!activeRun?.background) flush();
+				// Live logs/progress should remain visible for both foreground and
+				// background runs. The prompt/status spam came from TUI chrome surfaces
+				// (widget/status/working-message heartbeat), not from the transcript log
+				// stream, so only those chrome surfaces are disabled for background runs.
+				flush();
 			};
 			// Workflow dashboard v1 (Gap Dashboard): always-on phase-tracker widget,
 			// TUI-only. Updated from the structured `stage` events emitted by task()
@@ -771,7 +771,7 @@ export default function activate(pi: ExtensionAPI): void {
 				.catch((err) => { try { ctx?.ui?.notify?.(`super-dev background run crashed: ${err instanceof Error ? err.message : String(err)}`, "error"); } catch { /* best-effort */ } })
 				.finally(() => setActiveBgController(null));
 			return {
-				content: [{ type: "text", text: `🚀 super-dev started in the background for:\n  ${task.slice(0, 100)}\n\nDetached run is terminal-quiet: no live prompt/status redraws. I'll post a summary card here when it finishes; full logs are written under ~/.pi/agent/super-dev/runs/. Stop it any time with /super-dev-stop.` }],
+				content: [{ type: "text", text: `🚀 super-dev started in the background for:\n  ${task.slice(0, 100)}\n\nLive logs still stream, but prompt/status chrome redraws are suppressed. I'll post a summary card here when it finishes; full logs are written under ~/.pi/agent/super-dev/runs/. Stop it any time with /super-dev-stop.` }],
 				isError: false,
 				details: { background: true },
 			};
