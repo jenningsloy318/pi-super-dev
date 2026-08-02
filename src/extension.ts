@@ -527,11 +527,12 @@ export default function activate(pi: ExtensionAPI): void {
 			const finalizeLive = stream.finalizeLive;
 			const flush = stream.flush;
 			const flushForeground = () => {
-				// Live logs/progress should remain visible for both foreground and
-				// background runs. The prompt/status spam came from TUI chrome surfaces
-				// (widget/status/working-message heartbeat), not from the transcript log
-				// stream, so only those chrome surfaces are disabled for background runs.
-				flush();
+				// Background runs use the native dashboard widget for live progress. Do
+				// NOT stream transcript onUpdate in background: in pi/Herdr that redraws
+				// the editor prompt/status chrome and appends the full host/model/cwd/MCP
+				// status line to scrollback. The widget still shows recent commands via
+				// pushRecent(), and the complete raw log is written to disk.
+				if (!activeRun?.background) flush();
 			};
 			// Workflow dashboard v1 (Gap Dashboard): always-on phase-tracker widget,
 			// TUI-only. Updated from the structured `stage` events emitted by task()
@@ -559,11 +560,6 @@ export default function activate(pi: ExtensionAPI): void {
 			const WIDGET_MS = 200;
 			const renderDashboard = () => {
 				if (ctx?.mode !== "tui") return; // TUI-only widget (AC-09 no-regression guard)
-				// Background runs must be terminal-quiet. In Herdr/pi, even native widget
-				// refreshes can cause the shell/status prompt (host, model, cwd, branch,
-				// context, MCP, etc.) to be copied into scrollback. Keep detached runs
-				// disk-log + final-summary only; foreground runs may still use the widget.
-				if (activeRun?.background) return;
 				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as Array<{ id: string; label: string; status: string }>;
 			// Do NOT mirror progress into a footer/status-line pill. In Herdr/pi TUI that
 			// status surface is rendered as a full shell-prompt line on every update,
@@ -642,10 +638,10 @@ export default function activate(pi: ExtensionAPI): void {
 				// ticking even during long quiet agent turns (model thinking / a slow
 				// tool) when no sink event fires. Without this the widget froze and a
 				// live background run looked dead. Cleared in finally (no leak across
-				// runs). No-op in background mode too: detached runs are deliberately
-				// terminal-quiet to avoid copying the host/model/cwd prompt line into
-				// scrollback on every redraw.
-				if (ctx?.mode === "tui" && !background) heartbeat = setInterval(() => { try { renderDashboard(); } catch { /* best-effort */ } }, 250);
+				// runs). Background runs still heartbeat the dashboard widget because that
+				// is the desired live progress surface; prompt/status chrome is suppressed
+				// separately by disabling onUpdate/setStatus/setWorkingMessage for background.
+				if (ctx?.mode === "tui") heartbeat = setInterval(() => { try { renderDashboard(); } catch { /* best-effort */ } }, 250);
 				ensureSuperDevDirs();
 				startRun();
 				// Name the session after the task (pi-native) so it is identifiable in
@@ -737,10 +733,9 @@ export default function activate(pi: ExtensionAPI): void {
 				// in-memory baselines/end-records) leaks across runs. The setup stage
 				// installs it; every run clears it here on success OR failure.
 				// Always clear the dashboard widget + footer state when the run ends (success or failure).
-				// Foreground runs own the dashboard widget; background runs intentionally
-				// never set it, because widget redraws can leak the whole prompt/status
-				// line (host/model/thinking/cwd/branch/context/MCP) into scrollback.
-				if (!wasBackground) { try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ } }
+				// The dashboard widget is the one live progress surface background runs own;
+				// clear it on completion. Status/working-message chrome remains disabled.
+				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
 				if (!wasBackground) { try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ } }
 				// No-op: super-dev no longer owns a footer/status-line pill. Do not call
 				// setStatus("super-dev", undefined) here either; some TUI shells render even
@@ -771,7 +766,7 @@ export default function activate(pi: ExtensionAPI): void {
 				.catch((err) => { try { ctx?.ui?.notify?.(`super-dev background run crashed: ${err instanceof Error ? err.message : String(err)}`, "error"); } catch { /* best-effort */ } })
 				.finally(() => setActiveBgController(null));
 			return {
-				content: [{ type: "text", text: `🚀 super-dev started in the background for:\n  ${task.slice(0, 100)}\n\nLive logs still stream, but prompt/status chrome redraws are suppressed. I'll post a summary card here when it finishes; full logs are written under ~/.pi/agent/super-dev/runs/. Stop it any time with /super-dev-stop.` }],
+				content: [{ type: "text", text: `🚀 super-dev started in the background for:\n  ${task.slice(0, 100)}\n\nLive progress shows in the dashboard widget above the editor; prompt/status-line streaming is suppressed. I'll post a summary card here when it finishes; full logs are written under ~/.pi/agent/super-dev/runs/. Stop it any time with /super-dev-stop.` }],
 				isError: false,
 				details: { background: true },
 			};

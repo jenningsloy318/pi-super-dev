@@ -200,7 +200,7 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", expect.stringContaining("stages"));
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", undefined);
 	});
-	it("keeps background TUI runs prompt-quiet while still streaming live logs", async () => {
+	it("keeps background TUI runs prompt-quiet while showing dashboard progress", async () => {
 		const { execute } = setupTool();
 		const ui = {
 			setWidget: vi.fn(),
@@ -217,12 +217,12 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 			{ mode: "tui", ui },
 		) as { content?: Array<{ type: "text"; text: string }> };
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(res.content?.[0]?.text).toContain("Live logs still stream");
-		expect(ui.setWidget).not.toHaveBeenCalled();
+		expect(res.content?.[0]?.text).toContain("Live progress shows in the dashboard widget");
+		expect(ui.setWidget).toHaveBeenCalledWith("super-dev", expect.anything(), { placement: "aboveEditor" });
 		expect(ui.setWorkingMessage).not.toHaveBeenCalled();
 		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev", expect.anything());
-		expect(onUpdate).toHaveBeenCalled();
-		expect(JSON.stringify(onUpdate.mock.calls)).toContain("background log still visible");
+		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev-input", expect.anything());
+		expect(onUpdate).not.toHaveBeenCalled();
 	});
 });
 
