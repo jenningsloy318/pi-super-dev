@@ -69,6 +69,8 @@ describe("handleStagnation", () => {
 			const report = readFileSync(join(d, "stagnation-report.md"), "utf8");
 			expect(report).toMatch(/review round/);
 			expect(report).toContain("**3**");
+			expect(report).toContain("workflow reached review/verify");
+			expect(report).not.toContain("revise the specification's design");
 			expect(report).toMatch(/a\.ts/);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});

@@ -139,6 +139,38 @@ function nextSpecNumber(cwd: string): number {
 	return max + 1;
 }
 
+/** Extract an explicitly referenced existing spec directory from the task text.
+ * Users often ask: `implement @docs/specifications/24-foo/` and expect the
+ * whole workflow to keep that track as source-of-truth. Without this, setup
+ * allocates the next numbered spec (`28-foo`), causing review/source-of-truth
+ * failures even when implementation succeeds. */
+export function referencedSpecIdentifier(task: string, cwd: string): string | null {
+	const specsRoot = join(cwd, "docs", "specifications");
+	const re = /@?docs\/specifications\/([A-Za-z0-9][A-Za-z0-9._-]*)(?:\/|\b)/g;
+	let match: RegExpExecArray | null;
+	while ((match = re.exec(task)) !== null) {
+		const candidate = match[1];
+		if (candidate.includes("..") || candidate.includes("/")) continue;
+		if (existsSync(join(specsRoot, candidate))) return candidate;
+	}
+	return null;
+}
+
+function branchExists(cwd: string, branch: string): boolean {
+	return git(["rev-parse", "--verify", `refs/heads/${branch}`], cwd) !== null;
+}
+
+function createOrReuseWorktree(cwd: string, specIdentifier: string, defaultBranch: string): { worktreePath: string; worktreeCreated: boolean } {
+	const wtPath = join(cwd, ".worktree", specIdentifier);
+	if (existsSync(wtPath)) return { worktreePath: wtPath, worktreeCreated: true };
+	const args = branchExists(cwd, specIdentifier)
+		? ["worktree", "add", wtPath, specIdentifier]
+		: ["worktree", "add", "-b", specIdentifier, wtPath, defaultBranch];
+	const created = git(args, cwd);
+	if (created !== null || existsSync(wtPath)) return { worktreePath: wtPath, worktreeCreated: true };
+	return { worktreePath: cwd, worktreeCreated: false };
+}
+
 function detectDefaultBranch(cwd: string): string {
 	const fromOrigin = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
 	if (fromOrigin && fromOrigin.startsWith("origin/")) return fromOrigin.slice("origin/".length);
@@ -195,25 +227,32 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	let specIdentifier: string;
 	let worktreePath = cwd;
 	let worktreeCreated = false;
+	const taskSpecIdentifier = referencedSpecIdentifier(task, cwd);
 	if (options.resumeSpecIdentifier) {
 		// Resume: reuse the existing spec id + worktree (do NOT allocate new).
 		specIdentifier = options.resumeSpecIdentifier;
-		const wtPath = join(cwd, ".worktree", specIdentifier);
-		if (existsSync(wtPath)) {
-			worktreePath = wtPath;
-			worktreeCreated = true;
+		if (!options.skipWorktree) {
+			const wt = createOrReuseWorktree(cwd, specIdentifier, defaultBranch);
+			worktreePath = wt.worktreePath;
+			worktreeCreated = wt.worktreeCreated;
 		}
-		// else: worktree gone → fall back to in-place in cwd (worktreePath stays cwd).
+	} else if (taskSpecIdentifier) {
+		// Existing spec reference: keep that numbered track as the authoritative
+		// spec directory. This is a fresh full workflow run, not a memoized resume,
+		// but it must not allocate `nextSpecNumber()` or create a new spec dir.
+		specIdentifier = taskSpecIdentifier;
+		if (!options.skipWorktree) {
+			const wt = createOrReuseWorktree(cwd, specIdentifier, defaultBranch);
+			worktreePath = wt.worktreePath;
+			worktreeCreated = wt.worktreeCreated;
+		}
 	} else {
 		const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
 		specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
 		if (!options.skipWorktree) {
-			const wtPath = join(cwd, ".worktree", specIdentifier);
-			const created = git(["worktree", "add", "-b", specIdentifier, wtPath, defaultBranch], cwd);
-			if (created !== null || existsSync(wtPath)) {
-				worktreePath = wtPath;
-				worktreeCreated = true;
-			}
+			const wt = createOrReuseWorktree(cwd, specIdentifier, defaultBranch);
+			worktreePath = wt.worktreePath;
+			worktreeCreated = wt.worktreeCreated;
 		}
 	}
 

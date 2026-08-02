@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runSetup, detectLanguage } from "../src/setup.ts";
+import { runSetup, detectLanguage, referencedSpecIdentifier } from "../src/setup.ts";
 
 const git = (args: string[], cwd: string) => execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
 
@@ -35,6 +35,21 @@ describe("detectLanguage (greenfield task inference)", () => {
 	});
 });
 
+describe("referencedSpecIdentifier", () => {
+	let dir: string;
+	beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "sd-spec-ref-")); });
+	afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+	it("detects an explicitly referenced existing spec directory", () => {
+		mkdirSync(join(dir, "docs", "specifications", "24-agent-team-runtime"), { recursive: true });
+		expect(referencedSpecIdentifier("implement @docs/specifications/24-agent-team-runtime/", dir)).toBe("24-agent-team-runtime");
+	});
+
+	it("ignores referenced spec paths that do not exist", () => {
+		expect(referencedSpecIdentifier("implement @docs/specifications/99-missing/", dir)).toBeNull();
+	});
+});
+
 describe("runSetup worktree creation", () => {
 	let dir: string;
 	beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "sd-setup-")); });
@@ -47,6 +62,24 @@ describe("runSetup worktree creation", () => {
 		expect(s.worktreePath).not.toBe(dir);
 		expect(existsSync(s.worktreePath)).toBe(true);
 		expect(existsSync(s.specDirectory)).toBe(true);
+	});
+
+	it("reuses an explicitly referenced existing spec directory instead of allocating next numbered spec", () => {
+		git(["init"], dir);
+		git(["config", "user.email", "test@example.com"], dir);
+		git(["config", "user.name", "Test User"], dir);
+		mkdirSync(join(dir, "docs", "specifications", "24-agent-team-runtime"), { recursive: true });
+		writeFileSync(join(dir, "docs", "specifications", "24-agent-team-runtime", "06-technical-specification.md"), "# Spec\n");
+		git(["add", "."], dir);
+		git(["commit", "-m", "seed spec"], dir);
+
+		const s = runSetup("implement @docs/specifications/24-agent-team-runtime/, don't create new spec dir again", { cwd: dir });
+		expect(s.specIdentifier).toBe("24-agent-team-runtime");
+		expect(s.worktreeCreated).toBe(true);
+		expect(s.worktreePath).toContain(join(".worktree", "24-agent-team-runtime"));
+		expect(s.specDirectory).toBe(join(s.worktreePath, "docs", "specifications", "24-agent-team-runtime") + "/");
+		expect(existsSync(join(s.worktreePath, "docs", "specifications", "24-agent-team-runtime", "06-technical-specification.md"))).toBe(true);
+		expect(existsSync(join(s.worktreePath, "docs", "specifications", "25-agent-team-runtime"))).toBe(false);
 	});
 
 	it("creates a worktree in a git repo that had an unborn HEAD (the /tmp/hello-word bug)", () => {

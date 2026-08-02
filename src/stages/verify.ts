@@ -236,7 +236,7 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 			try {
 				const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
 				const setup = (s as { setup?: { worktreePath?: string; specDirectory?: string } }).setup;
-				const failure: import("../types.ts").EscalationFailure = { kind: "stagnation", message: "Review loop stagnant — the same findings recur. More fixing won't help; revise the spec/design or accept as a limitation.", severity: "soft", findings: findings.slice(0, 12).map((f) => ({ file: String(f.file ?? "") || null, severity: String(f.severity ?? "") || null, title: String(f.title ?? "") || null })), worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory };
+				const failure: import("../types.ts").EscalationFailure = { kind: "stagnation", message: "Review loop stagnant — the same findings recur. The workflow reached review/verify but could not converge; inspect recurring findings or provide explicit retry guidance.", severity: "soft", findings: findings.slice(0, 12).map((f) => ({ file: String(f.file ?? "") || null, severity: String(f.severity ?? "") || null, title: String(f.title ?? "") || null })), worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory };
 				const decision = await runEscalation(s, failure, escalate);
 				if (decision) {
 					applyRetryDecision(s, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });

@@ -263,7 +263,7 @@ function formatSummary(s: RunSummary, cwd?: string): string[] {
 	}
 	if (s.error) lines.push(`  Error:    ${s.error}`);
 	const stagnant = (s.state as Record<string, unknown>).__stagnated as { rounds?: number } | undefined;
-	if (stagnant) lines.push(`  ⚠ Verify-loop stagnant after ${stagnant.rounds} round(s) — see stagnation-report.md in the spec dir. More fixing won't help; consider revising the spec design.`);
+	if (stagnant) lines.push(`  ⚠ Verify-loop stagnant after ${stagnant.rounds} round(s) — see escalation-report.md in the spec dir. The workflow reached review/verify but could not converge; inspect recurring findings or provide guidance before rerun.`);
 	return lines;
 }
 
@@ -301,7 +301,7 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 		"",
 		`Merged review verdict at stagnation: **${st.verdict ?? "unknown"}**.`,
 		"",
-		"This usually means the implementation is faithful to a spec that produces the wrong outcome — more fixing will not help. Consider revising the specification's design (constants/algorithm/architecture), or accept these findings as known limitations.",
+		"This means the workflow reached review/verify but repeated the same unresolved findings. Treat it as a workflow/review convergence blocker: inspect the recurring findings, fix the implementation or orchestration issue they identify, or provide explicit retry guidance before rerunning.",
 	].join("\n");
 	// Legacy human-facing diagnostic (byte-identical to pre-spec-18 output).
 	try {
