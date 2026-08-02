@@ -229,32 +229,16 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	(s as Record<string, unknown>).__reviewCounts = countHist;
 	if (approvedAndBuildGreen) return true;
 	if (stagnant) {
-		// spec-18 HITL: escalate before breaking (pause-then-continue).
-		const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
-		if (escalate) {
-			(s as Record<string, unknown>).__escalationAttempted = true;
-			try {
-				const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
-				const setup = (s as { setup?: { worktreePath?: string; specDirectory?: string } }).setup;
-				const failure: import("../types.ts").EscalationFailure = { kind: "stagnation", message: "Review loop stagnant — the same findings recur. The workflow reached review/verify but could not converge; inspect recurring findings or provide explicit retry guidance.", severity: "soft", findings: findings.slice(0, 12).map((f) => ({ file: String(f.file ?? "") || null, severity: String(f.severity ?? "") || null, title: String(f.title ?? "") || null })), worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory };
-				const decision = await runEscalation(s, failure, escalate);
-				if (decision) {
-					applyRetryDecision(s, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });
-					if (decision.choice === "retry-with-guidance") {
-						(s as Record<string, unknown>).__reviewSignatures = [];
-						(s as Record<string, unknown>).__reviewCounts = [];
-						return false;
-					}
-					if (decision.choice === "accept-limitation") return true;
-				}
-			} catch { /* never-throw */ }
-		}
+		// Defer HITL/background escalation until reviewStageNode performs a final
+		// safety re-review of the code that was just fixed. The loop checks `until`
+		// before each body run, so escalating here can notify a false blocker while
+		// the terminal fixed code has not been reviewed yet.
 		(s as Record<string, unknown>).__stagnated = {
 			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
 			findings: findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })),
 		};
-		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds — breaking early (non-fatal; ${sigHist.length} rounds)`);
+		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds — breaking for terminal re-review (non-fatal; ${sigHist.length} rounds)`);
 		return true;
 	}
 	return false;
@@ -268,26 +252,79 @@ export const reviewLoopNode = loop(
 
 /**
  * GAP D: the composed Stage 10 node = reviewLoopNode + one final
- * budget-checked reviewStep epilogue on max-rounds EXHAUSTION (not approval,
- * not stagnation), so the downstream reviewApproved merge gate reads the
- * terminal fixed code. No extra fix runs; the epilogue is non-fatal (never
- * throws). Mirrors the reviewLoopUntil/__stagnated non-fatal style.
+ * budget-checked reviewStep epilogue on max-round exhaustion OR stagnation.
+ * The loop checks `until` before each body run, so a review+fix+build round can
+ * leave a stale non-approved review in state immediately after the fix. The
+ * epilogue refreshes the terminal fixed code before downstream merge gates read
+ * `state.review`; if that final review approves after a stagnation marker, the
+ * marker is cleared. No extra fix runs; the epilogue is non-fatal (never
+ * throws).
  */
+async function finalSafetyReReview(state: PipelineState, ctx: StageContext, reason: "max-rounds" | "stagnation"): Promise<void> {
+	const label = reason === "stagnation"
+		? "Stage 10: stagnation reached after a fix — final safety re-review (non-fatal)"
+		: "Stage 10: max rounds exhausted — final safety re-review (non-fatal)";
+	ctx.log(label);
+	try {
+		await reviewStep.run(state, ctx);
+		if (reason === "stagnation" && reviewApproved(state) && buildGreen(state)) {
+			delete (state as Record<string, unknown>).__stagnated;
+			ctx.log("Stage 10: final safety re-review approved after stagnation; clearing stale stagnation marker");
+		}
+	} catch (err) {
+		// FatalAbort (a nested fatal gate's exhaustion) must propagate to
+		// runWorkflow — never be swallowed by this non-fatal epilogue.
+		if (isFatalAbort(err)) throw err;
+		ctx.log(`Stage 10: final re-review threw (non-fatal) — ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+async function escalateReviewStagnationIfStillBlocked(state: PipelineState, ctx: StageContext): Promise<import("../types.ts").EscalationDecision | undefined> {
+	if (reviewApproved(state)) return undefined;
+	const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
+	if (!escalate) return undefined;
+	(state as Record<string, unknown>).__escalationAttempted = true;
+	try {
+		const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
+		const setup = (state as { setup?: { worktreePath?: string; specDirectory?: string } }).setup;
+		const findings = ((state as Record<string, unknown>).__stagnated as { findings?: Array<{ file?: unknown; severity?: unknown; title?: unknown }> } | undefined)?.findings ?? [];
+		const failure: import("../types.ts").EscalationFailure = {
+			kind: "stagnation",
+			message: "Review loop stagnant after final re-review — the same findings recur and automatic fixes did not converge. Inspect recurring findings or provide explicit retry guidance.",
+			severity: "soft",
+			findings: findings.slice(0, 12).map((f) => ({ file: String(f.file ?? "") || null, severity: String(f.severity ?? "") || null, title: String(f.title ?? "") || null })),
+			worktreePath: setup?.worktreePath,
+			specDirectory: setup?.specDirectory,
+		};
+		const decision = await runEscalation(state, failure, escalate);
+		if (decision) applyRetryDecision(state, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });
+		return decision;
+	} catch {
+		return undefined;
+	}
+}
+
 export const reviewStageNode: Node = {
 	kind: "reviewStage",
 	async run(state, ctx) {
-		const r = await reviewLoopNode.run(state, ctx);
+		let r = await reviewLoopNode.run(state, ctx);
 		if (r.status === "cancelled") return r;
-		const stagnated = (state as Record<string, unknown>).__stagnated;
-		if (!reviewApproved(state) && !stagnated && ctx.budget.check()) {
-			ctx.log("Stage 10: max rounds exhausted — final safety re-review (non-fatal)");
-			try {
-				await reviewStep.run(state, ctx);
-			} catch (err) {
-				// FatalAbort (a nested fatal gate's exhaustion) must propagate to
-				// runWorkflow — never be swallowed by this non-fatal epilogue.
-				if (isFatalAbort(err)) throw err;
-				ctx.log(`Stage 10: final re-review threw (non-fatal) — ${err instanceof Error ? err.message : String(err)}`);
+		let stagnated = Boolean((state as Record<string, unknown>).__stagnated);
+		if (!reviewApproved(state) && ctx.budget.check()) {
+			await finalSafetyReReview(state, ctx, stagnated ? "stagnation" : "max-rounds");
+		}
+		stagnated = Boolean((state as Record<string, unknown>).__stagnated);
+		if (stagnated && !reviewApproved(state)) {
+			const decision = await escalateReviewStagnationIfStillBlocked(state, ctx);
+			if (decision?.choice === "retry-with-guidance") {
+				delete (state as Record<string, unknown>).__stagnated;
+				(state as Record<string, unknown>).__reviewSignatures = [];
+				(state as Record<string, unknown>).__reviewCounts = [];
+				r = await reviewLoopNode.run(state, ctx);
+				if (r.status === "cancelled") return r;
+				if (!reviewApproved(state) && ctx.budget.check()) {
+					await finalSafetyReReview(state, ctx, Boolean((state as Record<string, unknown>).__stagnated) ? "stagnation" : "max-rounds");
+				}
 			}
 		}
 		return r;

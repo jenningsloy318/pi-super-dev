@@ -59,9 +59,14 @@ describe("helpers: routing", () => {
 		expect(r.value.verdict).toBe("Changes Requested");
 		expect((r.value.findings as unknown[]).length).toBeGreaterThan(0);
 	});
-	it("merge-review-verdicts maps adversarial PASS/REJECT to approved/blocking semantics", async () => {
+	it("merge-review-verdicts maps adversarial PASS/CONTEST/REJECT to calibrated gate semantics", async () => {
 		const pass = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "PASS" } } });
 		expect(pass.value.verdict).toBe("Approved");
+		const contest = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "CONTEST", findings: [{ severity: "medium", title: "quality concern" }] } } });
+		expect(contest.value.verdict).toBe("Approved with Comments");
+		expect((contest.value.findings as unknown[]).length).toBe(1);
+		const highContest = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "CONTEST", findings: [{ severity: "high", title: "blocking concern" }] } } });
+		expect(highContest.value.verdict).toBe("Changes Requested");
 		const reject = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "REJECT" } } });
 		expect(reject.value.verdict).toBe("Blocked");
 	});

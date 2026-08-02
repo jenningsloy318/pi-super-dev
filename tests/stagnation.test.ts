@@ -4,8 +4,13 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { findingsSignature, reviewLoopUntil } from "../src/stages/verify.ts";
-import type { PipelineState, StageContext } from "../src/types.ts";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import { findingsSignature, reviewLoopUntil, reviewStageNode } from "../src/stages/verify.ts";
+import { runHelper } from "../src/helpers.ts";
+import type { PipelineState, StageContext, AgentCall } from "../src/types.ts";
 
 const findings = (file: string, severity: string, title: string) => ({ id: "x", severity, title, detail: "d", file });
 
@@ -35,6 +40,76 @@ describe("findingsSignature", () => {
 		const a = stateWith({ findings: [findings("a.ts", "high", "T")] });
 		const b = stateWith({ findings: [findings("a.ts", "low", "T")] });
 		expect(findingsSignature(a)).not.toBe(findingsSignature(b));
+	});
+});
+
+describe("reviewStageNode terminal re-review", () => {
+	it("re-reviews after a stagnation break so stale pre-fix findings do not block merge", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sd-review-stale-"));
+		try {
+			const specDirectory = join(root, "docs", "specifications", "01-review") + "/";
+			mkdirSync(specDirectory, { recursive: true });
+			writeFileSync(join(specDirectory, "06-specification.md"), "# Specification\n");
+			const state: PipelineState = {
+				setup: {
+					worktreePath: root,
+					specDirectory,
+					defaultBranch: "main",
+					language: "frontend",
+					isWebUi: true,
+					specIdentifier: "01-review",
+					worktreeCreated: false,
+					initializedRepo: false,
+				},
+				classify: { taskType: "feature", uiScope: "ui+arch", language: "frontend", isWebUi: true },
+				spec: { specificationPath: join(specDirectory, "06-specification.md") },
+				implementation: { phasesCompleted: 1, totalPhases: 1, allGreen: true },
+			};
+			let codeReviewCalls = 0;
+			let fixCalls = 0;
+			let escalationCalls = 0;
+			const logs: string[] = [];
+			const ctx: StageContext = {
+				task: "implement feature",
+				options: { escalate: async () => { escalationCalls += 1; return undefined; } },
+				state,
+				budget: { check: () => true, spent: () => true, count: 0 },
+				log: (m: string) => logs.push(m),
+				phase: () => {},
+				events: new EventEmitter(),
+				results: [],
+				helper: runHelper,
+				parallel: async () => [],
+				agent: async (call: AgentCall) => {
+					if (call.agent === "code-reviewer") {
+						codeReviewCalls += 1;
+						if (codeReviewCalls <= 2) {
+							return { text: "", control: { title: "Review", date: "2026-08-02", verdict: "Changes Requested", summary: "same issue", findings: [{ id: "F-1", severity: "High", title: "Fix me", detail: "still present", file: "src/a.ts" }] } };
+						}
+						return { text: "", control: { title: "Review", date: "2026-08-02", verdict: "Approved", summary: "fixed", findings: [] } };
+					}
+					if (call.agent === "adversarial-reviewer") {
+						return { text: "", control: { title: "Adversarial", date: "2026-08-02", verdict: "PASS", summary: "ok", findings: [] } };
+					}
+					if (call.agent === "implementer") {
+						fixCalls += 1;
+						return { text: "", control: { filesCreated: [], filesModified: ["src/a.ts"], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+					}
+					return { text: "", control: {} };
+				},
+			};
+
+			await reviewStageNode.run(state, ctx);
+
+			expect(fixCalls).toBe(2);
+			expect(codeReviewCalls).toBe(3);
+			expect(state.review?.verdict).toBe("Approved");
+			expect(escalationCalls).toBe(0);
+			expect((state as Record<string, unknown>).__stagnated).toBeUndefined();
+			expect(logs.join("\n")).toContain("final safety re-review approved after stagnation");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

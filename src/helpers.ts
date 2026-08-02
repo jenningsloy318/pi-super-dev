@@ -192,6 +192,15 @@ function gateReview(s: Record<string, unknown>): HelperResult {
 
 const VERDICT_RANK: Record<string, number> = { Approved: 0, "Approved with Comments": 1, "Changes Requested": 2, Blocked: 3 };
 
+function findingSeverity(review: ControlObj | undefined): string[] {
+	const findings = (review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
+	return findings.map((f) => String(f.severity ?? "").trim().toLowerCase()).filter(Boolean);
+}
+
+function hasBlockingReviewFinding(review: ControlObj | undefined): boolean {
+	return findingSeverity(review).some((s) => /^(critical|blocker|high|fatal|reject)/i.test(s));
+}
+
 function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefined): { verdict: string; syntheticFindings: ControlObj[] } {
 	const fail = (reason: string) => ({
 		verdict: "Changes Requested",
@@ -201,7 +210,14 @@ function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefin
 	const raw = String(review.verdict ?? "").trim();
 	if (!raw) return fail(`Missing verdict in ${sourceName} review output`);
 	if (raw === "PASS") return { verdict: "Approved", syntheticFindings: [] };
-	if (raw === "CONTEST") return { verdict: "Changes Requested", syntheticFindings: [] };
+	if (raw === "CONTEST") {
+		// The adversarial reviewer contract says CONTEST is for medium/low quality
+		// concerns that need an author response, while REJECT is the production/data
+		// loss/security veto. Do not let advisory red-team comments create an endless
+		// merge blocker once code review approves. If a CONTEST payload nevertheless
+		// carries high/critical findings, keep it blocking for safety.
+		return { verdict: hasBlockingReviewFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
+	}
 	if (raw === "REJECT") return { verdict: "Blocked", syntheticFindings: [] };
 	if (raw in VERDICT_RANK) return { verdict: raw, syntheticFindings: [] };
 	return fail(`Invalid verdict in ${sourceName} review output: ${raw}`);
