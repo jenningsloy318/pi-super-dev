@@ -5,7 +5,7 @@
 
 import { readdirSync, statSync, unlinkSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { getSuperDevDir, getConfig, getStatsPath, getAuditPath, getRunDir } from "./super-dev-dir.ts";
+import { getRunsDir, getTracesDir, getConfig, getStatsPath, getAuditPath } from "./super-dev-dir.ts";
 
 export interface RunStats {
 	totalRuns: number;
@@ -28,7 +28,7 @@ export function cleanupOldRuns(): { deletedRuns: number; deletedTraces: number }
 
 	// Clean old runs
 	try {
-		const runsDir = join(getSuperDevDir(), "runs");
+		const runsDir = getRunsDir();
 		for (const entry of readdirSync(runsDir)) {
 			const path = join(runsDir, entry);
 			try {
@@ -42,7 +42,7 @@ export function cleanupOldRuns(): { deletedRuns: number; deletedTraces: number }
 
 	// Clean old traces
 	try {
-		const tracesDir = join(getSuperDevDir(), "traces");
+		const tracesDir = getTracesDir();
 		for (const entry of readdirSync(tracesDir)) {
 			const path = join(tracesDir, entry);
 			try {

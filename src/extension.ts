@@ -26,15 +26,18 @@ import { writeEscalationReport } from "./render/escalation-report.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
+import { superDevRunMetadataLine } from "./version.ts";
 import type { Escalate, EscalationDecision, EscalationFailure, ProgressSink, RunStatus, RunSummary, RuntimeInstruction, RuntimeInstructionImage } from "./types.ts";
 
 export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
 export * as nodes from "./nodes.ts";
 export { runWorkflow } from "./workflow.ts";
+export { SUPER_DEV_VERSION_METADATA, SUPER_DEV_EXTENSION_VERSION, SUPER_DEV_VERSION_POLICY, superDevVersionLabel } from "./version.ts";
 
 const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
+const SUPER_DEV_BG_COMMAND = "super-dev-bg";
 /** Keyboard shortcut that stops an in-flight BACKGROUND super-dev run.
  *
  *  Deliberately NOT `ctrl+shift+s` — that binding is owned by the
@@ -47,6 +50,28 @@ const SUPER_DEV_COMMAND = "super-dev";
  *  `s` key on the keyboard so existing muscle memory isn't badly disrupted). */
 const SUPER_DEV_STOP_SHORTCUT = "ctrl+shift+x";
 const SUPER_DEV_PANEL_SHORTCUT = "ctrl+shift+d";
+
+export interface ParsedSuperDevCommandArgs {
+	task: string;
+	background: boolean;
+}
+
+/** Parse `/super-dev` args. Foreground is the slash-command default; `--bg` and
+ * `--background` are explicit opt-ins to the detached tool path. */
+export function parseSuperDevCommandArgs(args: unknown): ParsedSuperDevCommandArgs {
+	const raw = String(args ?? "").trim();
+	const bgMatch = raw.match(/^--(?:bg|background)(?:\s+|$)/);
+	if (!bgMatch) return { task: raw, background: false };
+	return { task: raw.slice(bgMatch[0].length).trim(), background: true };
+}
+
+function buildSuperDevToolInstruction(task: string, background: boolean): string {
+	return [
+		`Use the ${SUPER_DEV_TOOL} tool with these exact parameters:`,
+		JSON.stringify({ task, background }, null, 2),
+		"Call the tool now. Pass the task verbatim and do not change the background value.",
+	].join("\n");
+}
 
 /**
  * Phase 1 (AC-01 / AC-02 / AC-03) — Mid-run input injection run-state singleton.
@@ -655,6 +680,7 @@ export default function activate(pi: ExtensionAPI): void {
 				ensureSuperDevDirs();
 				startRun();
 				liveRunLogPath = getRunLogPath();
+				stream.sink.log(superDevRunMetadataLine());
 				persistLiveLog(true);
 				renderDashboard();
 				// Name the session after the task (pi-native) so it is identifiable in
@@ -780,7 +806,7 @@ export default function activate(pi: ExtensionAPI): void {
 				.catch((err) => { try { ctx?.ui?.notify?.(`super-dev background run crashed: ${err instanceof Error ? err.message : String(err)}`, "error"); } catch { /* best-effort */ } })
 				.finally(() => setActiveBgController(null));
 			return {
-				content: [{ type: "text", text: `🚀 super-dev started in the background for:\n  ${task.slice(0, 100)}\n\nLive progress shows in the dashboard widget above the editor; prompt/status-line streaming is suppressed. I'll post a summary card here when it finishes; full logs are written under ~/.pi/agent/super-dev/runs/. Stop it any time with /super-dev-stop.` }],
+				content: [{ type: "text", text: `🚀 super-dev started in the background for:\n  ${task.slice(0, 100)}\n\nLive progress shows in the dashboard widget above the editor; prompt/status-line streaming is suppressed. I'll post a summary card here when it finishes; full logs are written under ~/.super-dev/runs/. Stop it any time with /super-dev-stop.` }],
 				isError: false,
 				details: { background: true },
 			};
@@ -809,18 +835,33 @@ export default function activate(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand(SUPER_DEV_COMMAND, {
-		description: "Run the 13-stage super-dev pipeline. Usage: /super-dev <task description>",
+		description: "Run the 13-stage super-dev pipeline in the foreground. Usage: /super-dev [--bg] <task description>",
 		handler: async (args, ctx) => {
-			const task = String(args ?? "").trim();
+			const { task, background } = parseSuperDevCommandArgs(args);
 			if (!task) {
 				ctx.ui.notify(
-					"Usage: /super-dev <task description>\n\nExamples:\n  /super-dev implement user authentication with OAuth2\n  /super-dev fix the crash when uploading large files",
+					"Usage: /super-dev [--bg] <task description>\n\nExamples:\n  /super-dev implement user authentication with OAuth2\n  /super-dev fix the crash when uploading large files\n  /super-dev --bg run the migration workflow",
 					"info",
 				);
 				return;
 			}
 			// Dispatch to the agent so it runs interruptibly and the tool streams progress.
-			pi.sendUserMessage(`Use the ${SUPER_DEV_TOOL} tool to run the full super-dev pipeline for this task: ${task}`);
+			pi.sendUserMessage(buildSuperDevToolInstruction(task, background));
+		},
+	});
+
+	pi.registerCommand(SUPER_DEV_BG_COMMAND, {
+		description: "Run the 13-stage super-dev pipeline detached in the background. Usage: /super-dev-bg <task description>",
+		handler: async (args, ctx) => {
+			const { task } = parseSuperDevCommandArgs(args);
+			if (!task) {
+				ctx.ui.notify(
+					"Usage: /super-dev-bg <task description>\n\nExample:\n  /super-dev-bg implement user authentication with OAuth2",
+					"info",
+				);
+				return;
+			}
+			pi.sendUserMessage(buildSuperDevToolInstruction(task, true));
 		},
 	});
 

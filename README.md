@@ -57,7 +57,27 @@ super_dev({ task: "fix the crash on large file upload" })
 
 Tool options: `skipWorktree`, `skipStages`, `model`, `maxAgents`.
 
+## Extension version metadata
+
+The runtime-visible super-dev extension metadata is currently `super-dev v0.1.0`.
+It is shown on the first line of the TUI dashboard and written at the top of
+each run log. This metadata is intentionally separate from the npm package
+version in `package.json`.
+
+Versioning rule: every commit that changes the extension increments the patch
+number. Patch values run from `0` to `99`; after `99`, increment the minor
+number and reset patch to `0`. Minor values follow the same `0` to `99` rollover;
+after minor `99`, increment major and reset minor/patch to `0`.
+
 ## Configuration
+
+Super-dev stores user-level runtime data under `~/.super-dev/`:
+
+- `config.json`
+- `runs/<timestamp>/run.log`
+- `runs/<timestamp>/audit.jsonl`
+- `learned.md`, `learned-index.json`, `stats.json`
+- `traces/`
 
 The deterministic build gate (Stage 9 verify / 9.2 implementation / 11 merge)
 runs `build`, `test`, and `typecheck` (and Rust `clippy`) against your

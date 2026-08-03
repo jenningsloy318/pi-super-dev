@@ -30,6 +30,27 @@ super_dev({ task: "add a POST /users endpoint with validation", skipWorktree: fa
 | `model`        | `string`   | —       | Model override for spawned specialists (`provider/id`).     |
 | `maxAgents`    | `number`   | `200`   | Cap total specialist spawns.                                |
 
+## Extension version metadata
+
+The extension metadata is currently `super-dev v0.1.0`. The TUI dashboard shows
+it on the first line, and every run log records it near the start of the file.
+This runtime metadata is intentionally separate from the npm package version in
+`package.json`.
+
+Versioning rule: every commit that changes the extension increments the patch
+number (`0` through `99`). After patch `99`, increment minor and reset patch to
+`0`; minor follows the same `0` through `99` rollover before incrementing major.
+
+## Runtime data directory
+
+Super-dev stores both configuration and run artifacts under `~/.super-dev/`:
+
+- `~/.super-dev/config.json`
+- `~/.super-dev/runs/<timestamp>/run.log`
+- `~/.super-dev/runs/<timestamp>/audit.jsonl`
+- `~/.super-dev/learned.md`, `learned-index.json`, `stats.json`
+- `~/.super-dev/traces/`
+
 ## What happens
 
 1. **Setup** creates a git worktree (unless `skipWorktree`) and a spec dir.

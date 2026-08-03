@@ -20,6 +20,7 @@ import { Container, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui"
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { themeLine, commandBackground, statusFgToken, type LineKind } from "./stream-theme.js";
 import { groupByStage, type StageGroup } from "./stage-grouping.js";
+import { superDevVersionLabel } from "../version.js";
 
 /**
  * Structural subset of pi's `Theme` that the dashboard presentation layer
@@ -236,7 +237,7 @@ export function packDashboardLines(
 	// when undefined so the pure-function tests keep their exact header contract.
 	const elapsed = opts.elapsedMs != null ? ` · ${fmtElapsed(opts.elapsedMs)}` : "";
 	const head = truncLine(
-		`super-dev · ${done}/${topEntries.length}${elapsed}${
+		`${superDevVersionLabel()} · ${done}/${topEntries.length}${elapsed}${
 			running ? ` · ${statusGlyph(running.status, theme)} ${running.label}` : ""
 		}  (${abortHint})`,
 		width,

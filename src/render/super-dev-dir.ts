@@ -1,17 +1,17 @@
 /**
  * Centralized super-dev user-level directory management.
  *
- * All super-dev runtime data lives under ~/.pi/agent/super-dev/:
+ * All super-dev runtime data lives under ~/.super-dev/:
  *   config.json, learned.md, learned-index.json, runs/<ts>/, traces/, stats.json
  *
  * This module provides path resolution, config defaults, and per-run lifecycle.
  */
 
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { mkdirSync, readFileSync, appendFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
-const SUPER_DEV_DIR = join(getAgentDir(), "super-dev");
+const SUPER_DEV_DIR = join(homedir(), ".super-dev");
 
 export interface SuperDevConfig {
 	reflectionEnabled: boolean;
@@ -51,13 +51,14 @@ export function getLearnedIndexPath(): string { return join(SUPER_DEV_DIR, "lear
 export function getLearnedArchivePath(): string { return join(SUPER_DEV_DIR, "learned-archive.md"); }
 export function getStatsPath(): string { return join(SUPER_DEV_DIR, "stats.json"); }
 export function getTracesDir(): string { return join(SUPER_DEV_DIR, "traces"); }
+export function getRunsDir(): string { return join(SUPER_DEV_DIR, "runs"); }
 export function getConfigPath(): string { return join(SUPER_DEV_DIR, "config.json"); }
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
 export function ensureSuperDevDirs(): void {
-	mkdirSync(join(SUPER_DEV_DIR, "runs"), { recursive: true });
-	mkdirSync(join(SUPER_DEV_DIR, "traces"), { recursive: true });
+	mkdirSync(getRunsDir(), { recursive: true });
+	mkdirSync(getTracesDir(), { recursive: true });
 }
 
 export function getConfig(): SuperDevConfig {
@@ -74,7 +75,7 @@ let currentRunDir: string | null = null;
 /** Start a new run — creates the run directory and sets the active audit/log paths. */
 export function startRun(): string {
 	const ts = new Date().toISOString().replace(/[:.]/g, "-");
-	currentRunDir = join(SUPER_DEV_DIR, "runs", ts);
+	currentRunDir = join(getRunsDir(), ts);
 	mkdirSync(currentRunDir, { recursive: true });
 	return currentRunDir;
 }

@@ -26,6 +26,9 @@ import {
 	padTruncate,
 	packDashboardLines,
 } from "./dashboard.js";
+import { superDevVersionLabel } from "../version.ts";
+
+const DASHBOARD_HEADER_PREFIX = `${superDevVersionLabel()} ·`;
 
 /** Minimal structural mock of the pi Theme — `fg(token, text)` wraps text in a
  * token marker so assertions can verify WHICH theme token was applied without
@@ -284,7 +287,7 @@ describe("packDashboardLines (AC-02 / AC-04 / SCENARIO-007)", () => {
 	];
 
 	function headerLine(lines: string[]): string {
-		return lines.find((l) => l.startsWith("super-dev ·")) ?? "";
+		return lines.find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX)) ?? "";
 	}
 
 	it("returns a string array whose first line is dashboard breathing room", () => {
@@ -359,7 +362,7 @@ describe("packDashboardLines (AC-02 / AC-04 / SCENARIO-007)", () => {
 });
 
 describe("edge cases — anti-hardcoding hardening (AC-02 / AC-03 / AC-05)", () => {
-	const headerLine = (lines: string[]): string => lines.find((l) => l.startsWith("super-dev ·")) ?? "";
+	const headerLine = (lines: string[]): string => lines.find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX)) ?? "";
 
 	it("runningGlyph distinguishes seed=0 from no-seed (catches `seed || undefined` bug)", () => {
 		// A naive `seed || undefined` or `seed ? frame : circle` impl collapses 0 to the

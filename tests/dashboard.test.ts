@@ -8,7 +8,10 @@ import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { task } from "../src/nodes.ts";
 import { packDashboardLines, truncateActivity } from "../src/extension.ts";
+import { superDevVersionLabel } from "../src/version.ts";
 import type { NodeResult, PipelineState, Stage, StageContext } from "../src/types.ts";
+
+const DASHBOARD_HEADER_PREFIX = `${superDevVersionLabel()} ·`;
 
 function fakeCtx(): { ctx: StageContext; events: EventEmitter } {
 	const events = new EventEmitter();
@@ -70,7 +73,7 @@ describe("packDashboardLines", () => {
 
 	it("header carries done/total + running stage + esc hint", () => {
 		const lines = packDashboardLines(stages(5, 2), undefined, 80);
-		expect(lines.find((l) => l.startsWith("super-dev ·"))).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
+		expect(lines.find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX))).toBe(`${superDevVersionLabel()} · 4/5 · ● Stage 3 — Live  (esc to abort)`);
 	});
 
 	it("uses a readable single column with grouped status sections", () => {
@@ -99,12 +102,12 @@ describe("packDashboardLines", () => {
 
 	it("header stays byte-identical when no elapsed clock is supplied", () => {
 		const lines = packDashboardLines(stages(5, 2), undefined, 80);
-		expect(lines.find((l) => l.startsWith("super-dev ·"))).toBe("super-dev · 4/5 · ● Stage 3 — Live  (esc to abort)");
+		expect(lines.find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX))).toBe(`${superDevVersionLabel()} · 4/5 · ● Stage 3 — Live  (esc to abort)`);
 	});
 
 	it("adds vertical breathing room around header, activity, and sections", () => {
 		const lines = packDashboardLines(stages(5, 2), "Implementation — Phase 1/4", 120, undefined, 0, "/super-dev-stop", { recentLogs: ["→ read file.ts"] });
-		const header = lines.findIndex((l) => l.startsWith("super-dev ·"));
+		const header = lines.findIndex((l) => l.startsWith(DASHBOARD_HEADER_PREFIX));
 		const activity = lines.findIndex((l) => l.startsWith("▶ Implementation"));
 		const runningSection = lines.findIndex((l) => l.includes("── running ──"));
 		const completedSection = lines.findIndex((l) => l.includes("── completed ──"));
@@ -121,11 +124,11 @@ describe("packDashboardLines", () => {
 	it("header shows a ticking elapsed clock when elapsedMs is supplied", () => {
 		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: 134_000 });
 		// 134s → 2m14s, inserted after the done/total count
-		expect(lines.find((l) => l.startsWith("super-dev ·"))).toBe("super-dev · 4/5 · 2m14s · ● Stage 3 — Live  (esc to abort)");
+		expect(lines.find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX))).toBe(`${superDevVersionLabel()} · 4/5 · 2m14s · ● Stage 3 — Live  (esc to abort)`);
 	});
 
 	it("formats sub-minute, minute, and hour elapsed spans", () => {
-		const headerAt = (ms: number) => packDashboardLines(stages(1), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: ms }).find((l) => l.startsWith("super-dev ·")) ?? "";
+		const headerAt = (ms: number) => packDashboardLines(stages(1), undefined, 80, undefined, 0, "esc to abort", { elapsedMs: ms }).find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX)) ?? "";
 		expect(headerAt(45_000)).toContain("· 45s");
 		expect(headerAt(125_000)).toContain("· 2m05s");
 		expect(headerAt(3_780_000)).toContain("· 1h03m");
@@ -138,7 +141,7 @@ describe("packDashboardLines", () => {
 			{ id: "implementation.phase-01", label: "↳ Phase 1/3: Core", status: "ok", kind: "phase", parentId: "implementation" },
 			{ id: "implementation.phase-02", label: "↳ Phase 2/3: API", status: "running", kind: "phase", parentId: "implementation" },
 		], undefined, 120);
-		expect(lines.find((l) => l.startsWith("super-dev ·"))).toContain("1/2");
+		expect(lines.find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX))).toContain("1/2");
 		expect(lines.some((l) => l.includes("  ● Stage 9 — Implementation"))).toBe(true);
 		expect(lines.some((l) => l.includes("    ✓ ↳ Phase 1/3: Core"))).toBe(true);
 		expect(lines.some((l) => l.includes("    ● ↳ Phase 2/3: API"))).toBe(true);
@@ -155,14 +158,14 @@ describe("packDashboardLines", () => {
 	it("shows the active run log path between stage groups and recent progress", () => {
 		const lines = packDashboardLines(stages(5, 2), undefined, 120, undefined, 0, "/super-dev-stop", {
 			recentLogs: ["Implementation phase-01 build-gate PASS"],
-			logPath: "/Users/me/.pi/agent/super-dev/runs/2026/run.log",
+			logPath: "/Users/me/.super-dev/runs/2026/run.log",
 		});
 		const completedSection = lines.findIndex((l) => l.includes("── completed ──"));
 		const logSection = lines.findIndex((l) => l.includes("── run log ──"));
 		const recentSection = lines.findIndex((l) => l.includes("── recent commands / progress ──"));
 		expect(logSection).toBeGreaterThan(completedSection);
 		expect(recentSection).toBeGreaterThan(logSection);
-		expect(lines.some((l) => l.includes("/Users/me/.pi/agent/super-dev/runs/2026/run.log"))).toBe(true);
+		expect(lines.some((l) => l.includes("/Users/me/.super-dev/runs/2026/run.log"))).toBe(true);
 	});
 
 	it("caps the recent tail at 8 lines (most-recent kept)", () => {
