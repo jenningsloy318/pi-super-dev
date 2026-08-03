@@ -68,7 +68,16 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	ModelRuntime: { create: vi.fn(async () => ({ getModel: vi.fn(() => undefined), getModels: vi.fn(() => []) })) },
 }));
 vi.mock("../src/agents.ts", () => ({ loadAgentPrompt: vi.fn(() => "SYSTEM-PROMPT") }));
-vi.mock("../src/control.ts", () => ({ extractControl: vi.fn(() => null) }));
+vi.mock("../src/control.ts", () => ({
+	extractControl: vi.fn(() => null),
+	missingControlKeys: vi.fn((captured: Record<string, unknown> | null | undefined, keys: string[]) => {
+		if (!captured) return keys;
+		return keys.filter((k) => {
+			const v = captured[k];
+			return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+		});
+	}),
+}));
 vi.mock("../src/setup.ts", () => ({ sanitizeSlug: vi.fn((s: string) => s) }));
 vi.mock("../src/safety.ts", () => ({ createSafetyExtensionFactory: vi.fn(() => () => ({ name: "safety", activate: () => ({}) })) }));
 vi.mock("../src/render/super-dev-dir.ts", () => ({ getTracesDir: vi.fn(() => "/tmp/traces") }));

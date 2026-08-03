@@ -2,7 +2,7 @@
  * Spawns `pi` child processes to run specialist agents — the single primitive
  * that replaces pi-workflow's agent engine. Verified invocation:
  *
- *   pi --mode json -p --no-session --no-skills \
+ *   pi --mode json -p --no-session --no-skills --no-extensions --no-context-files --no-prompt-templates \
  *      --exclude-tools super_dev \
  *      [--model <provider/id>] --system-prompt <temp-file> "Task: <prompt>"
  *
@@ -11,18 +11,19 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentPrompt } from "./agents.ts";
-import { extractControl } from "./control.ts";
+import { extractControl, missingControlKeys } from "./control.ts";
 import { safetyPreamble } from "./safety.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 /** Agents that drive a browser for UI testing. They receive the `browser_execute`
- *  tool and load extensions (so pi-browser-cdp-extension is available).
- *  Recursion is prevented by `--exclude-tools super_dev` (this extension's own
- *  spawner tool stays uncallable). Browser connection uses AUTO-DISCOVERY —
+ *  tool by explicitly loading pi-browser-cdp-extension via `-e` while ambient
+ *  extension discovery stays disabled. Recursion is prevented by
+ *  `--exclude-tools super_dev` (this extension's own spawner tool stays
+ *  uncallable). Browser connection uses AUTO-DISCOVERY —
  *  `await session.connect()` with no args finds any Chrome started with
  *  `--remote-debugging-port`; see agents/qa-agent.md. */
 const BROWSER_AGENTS = new Set(["qa-agent", "ui-tester"]);
@@ -38,12 +39,11 @@ export function isBrowserAgent(agent: string): boolean {
  *  pitfalls — for the requirement + BDD, rather than re-analyzing the local
  *  codebase (that is the code-assessment stage's job). Forced onto the SUBPROCESS
  *  backend (see workflow.ts) so extensions load in an ISOLATED process, never in
- *  the parent's in-process session. Ambient extensions now load by default (no
- *  `--no-extensions`); these two web/MCP extensions are ALSO attached via
- *  repeatable `-e <path>` as belt-and-suspenders so the web tools are present
- *  even if ambient discovery missed them. Recursion is prevented by
+ *  the parent's in-process session. Ambient extensions stay disabled; these
+ *  web/MCP extensions are the only role extensions attached via repeatable
+ *  `-e <path>`. Recursion is prevented by
  *  `--exclude-tools super_dev` (the spawner tool stays uncallable); all other
- *  tools (built-in + extension + MCP) inherit active. */
+ *  ambient extension tools remain unavailable. */
 const WEB_RESEARCH_AGENTS = new Set(["research-agent"]);
 
 export function needsWebResearch(agent: string): boolean {
@@ -53,24 +53,95 @@ export function needsWebResearch(agent: string): boolean {
 /** The installed extensions a research agent explicitly loads via `-e`. Order
  *  is irrelevant; each is resolved to its on-disk entry by researchExtensions(). */
 const RESEARCH_EXTENSION_PACKAGES = ["pi-web-access", "pi-mcp-adapter"];
+const BROWSER_EXTENSION_PACKAGES = ["pi-browser-cdp-extension"];
+
+function piAgentDir(): string {
+	return process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+}
+
+function safeIsFile(path: string): boolean {
+	try { return statSync(path).isFile(); } catch { return false; }
+}
+
+function safeIsDirectory(path: string): boolean {
+	try { return statSync(path).isDirectory(); } catch { return false; }
+}
+
+function packageRoot(pkg: string, agentDir: string): string {
+	return join(agentDir, "npm", "node_modules", pkg);
+}
+
+function readPiExtensionManifestEntries(root: string): string[] {
+	try {
+		const raw = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { pi?: { extensions?: unknown } };
+		const entries = raw.pi?.extensions;
+		return Array.isArray(entries)
+			? entries.filter((e): e is string => typeof e === "string").map((e) => e.trim()).filter((e) => e.length > 0)
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+function resolveExtensionPath(root: string, relativePath: string): string[] {
+	const full = join(root, relativePath);
+	if (safeIsFile(full)) return [full];
+	if (!safeIsDirectory(full)) return [];
+	try {
+		return readdirSync(full)
+			.filter((name) => /\.(?:ts|mjs|js|cjs)$/i.test(name))
+			.map((name) => join(full, name))
+			.filter((path) => safeIsFile(path))
+			.sort();
+	} catch {
+		return [];
+	}
+}
+
+/** Resolve every Pi extension entry exposed by an installed package's
+ *  package.json `pi.extensions` manifest. Falls back to root index.* for older
+ *  packages. Never throws. */
+export function resolveExtensionEntries(pkg: string, agentDir: string): string[] {
+	const root = packageRoot(pkg, agentDir);
+	const manifestEntries = readPiExtensionManifestEntries(root).flatMap((entry) => resolveExtensionPath(root, entry));
+	if (manifestEntries.length > 0) return manifestEntries;
+	for (const fallback of ["index.ts", "index.mjs", "index.js", "dist/index.js"]) {
+		const candidate = join(root, fallback);
+		if (safeIsFile(candidate)) return [candidate];
+	}
+	return [];
+}
 
 /** Resolve an installed pi extension package to its loadable entry file, or null
  *  when it isn't installed. Uses pi's standard agent-dir npm layout
- *  (`<agentDir>/npm/node_modules/<pkg>/index.ts`). Kept pure (agentDir injected)
- *  so it is unit-testable against a temp fixture. Never throws. */
+ *  (`<agentDir>/npm/node_modules/<pkg>`). Kept pure (agentDir injected) so it is
+ *  unit-testable against a temp fixture. Never throws. */
 export function resolveExtensionEntry(pkg: string, agentDir: string): string | null {
-	const entry = join(agentDir, "npm", "node_modules", pkg, "index.ts");
-	try { return existsSync(entry) ? entry : null; } catch { return null; }
+	return resolveExtensionEntries(pkg, agentDir)[0] ?? null;
 }
 
 /** Resolve the research extensions' entry paths (pi-web-access + pi-mcp-adapter)
  *  from the pi agent dir. Missing packages are silently skipped so a partial
  *  install degrades gracefully (the agent still gets whatever loaded). */
 export function researchExtensions(): string[] {
-	const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+	const agentDir = piAgentDir();
 	return RESEARCH_EXTENSION_PACKAGES
-		.map((p) => resolveExtensionEntry(p, agentDir))
-		.filter((p): p is string => p !== null);
+		.flatMap((p) => resolveExtensionEntries(p, agentDir));
+}
+
+/** Resolve browser automation extensions from the pi agent dir. */
+export function browserExtensions(): string[] {
+	const agentDir = piAgentDir();
+	return BROWSER_EXTENSION_PACKAGES.flatMap((p) => resolveExtensionEntries(p, agentDir));
+}
+
+export function extensionsForAgent(agent: string): string[] {
+	const packages = [
+		...(needsWebResearch(agent) ? RESEARCH_EXTENSION_PACKAGES : []),
+		...(isBrowserAgent(agent) ? BROWSER_EXTENSION_PACKAGES : []),
+	];
+	const agentDir = piAgentDir();
+	return packages.flatMap((p) => resolveExtensionEntries(p, agentDir));
 }
 
 
@@ -208,8 +279,9 @@ export interface SpawnAgentOptions {
 	 *  session (ctx.thinkingLevel). ADDITIVE — loses to a per-call override and
 	 *  to SUPER_DEV_THINKING env, but wins over the role default. */
 	inheritedThinking?: ThinkingLevel;
-	/** Ignored by the subprocess backend (it uses <control> text, not a schema).
-	 *  Accepted so the same `common` options object can feed both backends. */
+	/** Required top-level keys in the subprocess <control> block. The subprocess
+	 *  backend cannot pass a structured_output schema, so it appends an explicit
+	 *  text contract and does one corrective retry when these keys are missing. */
 	controlKeys?: string[];
 	/** Live progress from the spawned agent (tool calls + streaming text). */
 	onProgress?: AgentProgress;
@@ -223,16 +295,91 @@ function resolvePiBinary(): { command: string; args: string[] } {
 	return { command: "pi", args: [] };
 }
 
+function normalizedControlKeys(keys: string[] | undefined): string[] {
+	return Array.from(new Set((keys ?? []).map((k) => k.trim()).filter((k) => /^[A-Za-z_][\w]*$/.test(k))));
+}
+
+function controlTemplate(keys: string[]): string {
+	const obj: Record<string, string> = {};
+	for (const key of keys) obj[key] = "FILL_ME";
+	return JSON.stringify(obj);
+}
+
+export function buildSubprocessTaskPrompt(prompt: string, controlKeys: string[] | undefined): string {
+	const keys = normalizedControlKeys(controlKeys);
+	if (keys.length === 0) return prompt;
+	return [
+		prompt,
+		"",
+		"## Required Final Control Output",
+		"Your final assistant message MUST include one valid machine-readable control block.",
+		`The block MUST be exactly valid JSON inside <control>...</control> and MUST include these top-level keys: ${keys.join(", ")}.`,
+		"Do not put comments, markdown fences, or prose inside the <control> block.",
+		`Template: <control>${controlTemplate(keys)}</control>`,
+	].join("\n");
+}
+
+function controlError(control: Record<string, unknown> | null, keys: string[]): string | undefined {
+	const missing = missingControlKeys(control, keys);
+	if (missing.length === 0) return undefined;
+	return control
+		? `missing required control keys: ${missing.join(", ")}`
+		: `agent produced no control object; missing required control keys: ${missing.join(", ")}`;
+}
+
+function withControlError(result: SpawnResult, keys: string[]): SpawnResult {
+	const err = controlError(result.control, keys);
+	return err && !result.error ? { ...result, error: err } : result;
+}
+
+function compactPreviousOutput(text: string, maxChars = 12_000): string {
+	if (text.length <= maxChars) return text;
+	return `[previous output truncated to last ${maxChars} chars]\n${text.slice(-maxChars)}`;
+}
+
+function buildSubprocessCorrectivePrompt(originalPrompt: string, previous: SpawnResult, keys: string[]): string {
+	const missing = missingControlKeys(previous.control, keys);
+	return [
+		originalPrompt,
+		"",
+		"## Corrective Retry",
+		"The previous subprocess run did not return the required machine-readable control output.",
+		`Missing required key(s): ${missing.join(", ") || "none"}.`,
+		"Use the files and artifacts already produced in this working tree. Do not redo broad exploration unless it is necessary to fill the missing control fields.",
+		"Return a final assistant message with a valid <control> JSON block containing every required key.",
+		"",
+		"## Previous Assistant Output",
+		compactPreviousOutput(previous.text || "(empty)"),
+	].join("\n");
+}
+
 export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> {
 	const systemPrompt = `${safetyPreamble()}\n\n---\n\n${loadAgentPrompt(opts.agent)}`;
 	const tempDir = mkdtempSync(join(tmpdir(), "super-dev-agent-"));
 	const promptPath = join(tempDir, "agent.md");
 	writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
 
-	const args = buildSpawnArgs(opts, promptPath, needsWebResearch(opts.agent) ? researchExtensions() : []);
-	const result = await runPi(args, opts.cwd, opts.signal, opts.id ?? opts.agent, opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent), opts.onProgress);
-	rmSync(tempDir, { recursive: true, force: true });
-	return result;
+	try {
+		const requiredKeys = normalizedControlKeys(opts.controlKeys);
+		const roleExtensions = extensionsForAgent(opts.agent);
+		const timeoutMs = opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent);
+		const label = opts.id ?? opts.agent;
+		const args = buildSpawnArgs(opts, promptPath, roleExtensions);
+		const first = await runPi(args, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
+		const firstError = controlError(first.control, requiredKeys);
+		if (!firstError || first.error || opts.signal?.aborted) return withControlError(first, requiredKeys);
+
+		opts.onProgress?.event(`↻ ${label}: corrective subprocess retry (${firstError})`);
+		const retryOpts: SpawnAgentOptions = {
+			...opts,
+			prompt: buildSubprocessCorrectivePrompt(opts.prompt, first, requiredKeys),
+		};
+		const retryArgs = buildSpawnArgs(retryOpts, promptPath, roleExtensions);
+		const retry = await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
+		return withControlError(retry, requiredKeys);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
 }
 
 /**
@@ -241,34 +388,22 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
  * previous version dropped `command` and tried to exec "--mode", causing
  * `spawn --mode ENOENT` on every single agent spawn.)
  *
- * All agents load ambient (global + project) extensions by default (no
- * `--no-extensions`), matching pi-subagents' default (its
- * `disableAmbientExtensions` is false unless an explicit extensions list or
- * denyExtensions is given). Recursion is prevented by `--exclude-tools super_dev`
- * (this extension's own spawner tool stays uncallable even though super-dev
- * itself loads) — the subprocess counterpart of the session backend's
- * excludeTools. All other tools (built-in + extension + MCP) inherit active.
- * Browser agents additionally get `browser_execute`; research agents additionally load pi-web-access +
- * pi-mcp-adapter via `-e`.
+ * Spawned specialists run isolated from ambient Pi resources: no skills, no
+ * extensions, and no AGENTS.md/CLAUDE.md context files. Role-specific extensions
+ * are supplied only through explicit `-e` paths. This prevents installed tools
+ * such as pi-subagents from discovering ~/.pi/agent/agents or project agents and
+ * keeps this repository's agents/<name>.md as the sole role definition.
  */
 export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extraExtensions: string[] = []): string[] {
 	const { command, args: prefix } = resolvePiBinary();
 	const args = [
 		command, // ← the executable ("pi" on PATH, or `node` re-invoking the host entry)
 		...prefix,
-		"--mode", "json", "-p", "--no-session", "--no-skills",
+		"--mode", "json", "-p", "--no-session", "--no-skills", "--no-extensions", "--no-context-files", "--no-prompt-templates",
 	];
-	// Extensions: ALL agents load ambient (global + project) extensions by
-	// default (no --no-extensions) — matches pi-subagents' default, so an
-	// inherited parent model that resolves from an extension-registered provider
-	// no longer silently fails, and newly-installed useful extensions are picked
-	// up automatically. Recursion is prevented solely by `--exclude-tools super_dev`
-	// below (this extension's own spawner tool stays uncallable) — the subprocess
-	// counterpart of the session backend's excludeTools:["super_dev"]. Browser/
-	// research agents additionally pull their role extensions via the -e paths below.
+	// `--no-extensions` disables ambient discovery; explicit `-e` role extensions
+	// still load, per pi CLI semantics.
 	for (const ext of extraExtensions) args.push("-e", ext);
-	// Inherit ALL tools (built-in + extension + MCP) — NO allowlist, so newly added
-	// MCP/extension tools are picked up automatically without editing a whitelist.
 	args.push("--exclude-tools", "super_dev");
 	args.push("--system-prompt", promptPath);
 	// Model precedence: explicit param → SUPER_DEV_MODEL env → INHERITED
@@ -285,7 +420,7 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 	// Phase 1 (Feature 1): widened thinking precedence per-call → SUPER_DEV_THINKING
 	// → inheritedThinking → role default (SCENARIO-005/006).
 	args.push("--thinking", resolveThinking(opts.agent, opts.thinking, opts.inheritedThinking));
-	args.push(`Task: ${opts.prompt}`);
+	args.push(`Task: ${buildSubprocessTaskPrompt(opts.prompt, opts.controlKeys)}`);
 	return args;
 }
 
@@ -478,4 +613,3 @@ export function extractFinalAssistant(stdout: string): { text: string; model?: s
 	}
 	return { text, model };
 }
-

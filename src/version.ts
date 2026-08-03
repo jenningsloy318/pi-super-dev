@@ -3,16 +3,16 @@
  *
  * Versioning rule:
  * - Every commit that changes the extension MUST increment the patch number.
- * - Patch is bounded to 0..99. After 99, increment minor and reset patch to 0.
- * - Minor is bounded to 0..99. After 99, increment major and reset minor/patch.
+ * - Patch is two digits, bounded to 01..99. After 99, increment minor and reset patch to 01.
+ * - Minor is two digits, bounded to 01..99. After 99, increment major and reset minor/patch to 01.
  *
  * This is intentionally separate from package.json's package version so the
  * runtime-visible extension version can advance at the stricter per-commit
  * cadence without implying an npm/package release.
  */
-export const SUPER_DEV_EXTENSION_VERSION = "0.1.0";
+export const SUPER_DEV_EXTENSION_VERSION = "0.01.01";
 export const SUPER_DEV_EXTENSION_NAME = "super-dev";
-export const SUPER_DEV_VERSION_POLICY = "increment patch every commit; patch 0-99 then bump minor/reset patch; minor 0-99 then bump major/reset minor+patch";
+export const SUPER_DEV_VERSION_POLICY = "increment patch every commit; patch 01-99 then bump minor/reset patch to 01; minor 01-99 then bump major/reset minor+patch to 01";
 
 export interface SuperDevVersionMetadata {
 	name: typeof SUPER_DEV_EXTENSION_NAME;

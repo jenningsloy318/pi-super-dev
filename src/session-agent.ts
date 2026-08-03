@@ -34,7 +34,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getTracesDir } from "./render/super-dev-dir.ts";
 import { loadAgentPrompt } from "./agents.ts";
-import { extractControl } from "./control.ts";
+import { extractControl, missingControlKeys } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
 import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
@@ -197,14 +197,7 @@ export function missingKeys(
 	keys: string[],
 	options: { allowEmptyArraysFor?: Set<string> | string[] | "*" } = {},
 ): string[] {
-	if (!captured) return keys;
-	const allow = options.allowEmptyArraysFor;
-	const allowEmptyArray = (key: string): boolean =>
-		allow === "*" || (Array.isArray(allow) ? allow.includes(key) : allow instanceof Set ? allow.has(key) : false);
-	return keys.filter((k) => {
-		const v = captured[k];
-		return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0 && !allowEmptyArray(k));
-	});
+	return missingControlKeys(captured, keys, options);
 }
 
 /** Agent-aware delivery discipline preamble (OVERRIDES the ported agent prompts,
@@ -396,19 +389,24 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
-	// Keep session-backed specialists on super-dev-owned prompts. The subprocess
-	// backend already runs `pi --no-skills --system-prompt agents/<name>.md`; mirror
-	// that here so ambient user/project skills are not advertised to specialists
-	// and logs cannot be mistaken for arbitrary external agents. Extensions remain
-	// enabled for provider/tool compatibility; `excludeTools:["super_dev"]` below
-	// prevents recursive pipeline spawning.
+	// Keep session-backed specialists on super-dev-owned prompts/resources. The
+	// subprocess backend runs with `--no-skills --no-extensions --no-context-files`
+	// and a temp system prompt built from agents/<name>.md; mirror that here so
+	// ambient packages such as pi-subagents cannot expose tools that discover
+	// ~/.pi/agent/agents or project .pi/agents, and AGENTS.md/CLAUDE.md files are
+	// not appended to the specialist role.
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: opts.cwd,
 		agentDir,
 		settingsManager,
-		noExtensions: false,
+		noExtensions: true,
 		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
 		systemPrompt,
+		appendSystemPromptOverride: () => [],
+		agentsFilesOverride: () => ({ agentsFiles: [] }),
 		extensionFactories: [createSafetyExtensionFactory()],
 	});
 	await resourceLoader.reload();
@@ -444,13 +442,9 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		settingsManager,
 		resourceLoader,
 		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
-		// Recursion guard: ambient extensions now load by default (noExtensions:
-		// false above), which includes super-dev itself — whose `activate()`
-		// registers the `super_dev` spawner tool. Excluding it from the ACTIVE
-		// tool set keeps specialists from calling super_dev (nested pipeline /
-		// blowup) while leaving super-dev's other (inert in a headless child)
-		// registrations harmless. Mirrors pi-subagents excluding its `subagent`
-		// tool from children. (Other ambient tools stay active + useful.)
+		// Recursion guard remains defense-in-depth: ambient extensions are disabled
+		// above, but an explicitly supplied safety factory or future local factory
+		// must still never expose this extension's spawner tool to specialists.
 		excludeTools: ["super_dev"],
 		// Conditionally threaded so a run with NO resolvable model/thinking is
 		// byte-identical to today (neither creation option is set — SCENARIO-002/004).

@@ -65,6 +65,22 @@ export function extractControlKeys(prompt: string): string[] {
 		.filter((s) => /^[A-Za-z_][\w]*$/.test(s));
 }
 
+/** Which declared keys are missing/blank in a captured control object. */
+export function missingControlKeys(
+	captured: Record<string, unknown> | null | undefined,
+	keys: string[],
+	options: { allowEmptyArraysFor?: Set<string> | string[] | "*" } = {},
+): string[] {
+	if (!captured) return keys;
+	const allow = options.allowEmptyArraysFor;
+	const allowEmptyArray = (key: string): boolean =>
+		allow === "*" || (Array.isArray(allow) ? allow.includes(key) : allow instanceof Set ? allow.has(key) : false);
+	return keys.filter((k) => {
+		const v = captured[k];
+		return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0 && !allowEmptyArray(k));
+	});
+}
+
 /** Find the last balanced `{...}` substring via a brace scan. */
 export function findLastJsonObject(text: string): string | null {
 	const lastOpen = text.lastIndexOf("{");

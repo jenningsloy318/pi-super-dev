@@ -82,7 +82,16 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	},
 }));
 vi.mock("../src/agents.ts", () => ({ loadAgentPrompt: vi.fn(() => "SYSTEM-PROMPT") }));
-vi.mock("../src/control.ts", () => ({ extractControl: vi.fn(() => null) }));
+vi.mock("../src/control.ts", () => ({
+	extractControl: vi.fn(() => null),
+	missingControlKeys: vi.fn((captured: Record<string, unknown> | null | undefined, keys: string[]) => {
+		if (!captured) return keys;
+		return keys.filter((k) => {
+			const v = captured[k];
+			return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+		});
+	}),
+}));
 vi.mock("../src/setup.ts", () => ({ sanitizeSlug: vi.fn((s: string) => s) }));
 vi.mock("../src/safety.ts", () => ({
 	createSafetyExtensionFactory: vi.fn(() => () => ({ name: "safety", activate: () => ({}) })),
@@ -165,14 +174,20 @@ describe("session specialist prompt isolation", () => {
 	beforeEach(() => { env.clear(); sdk.reset(); });
 	afterEach(env.restore);
 
-	it("uses the super-dev agent prompt as the session system prompt and disables ambient skills", async () => {
+	it("uses the super-dev agent prompt as the session system prompt and disables ambient resources", async () => {
 		await SessionAgent.runAgentViaSession({
 			agent: "spec-writer", prompt: "do the work", cwd: "/tmp",
 		} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);
 		const loader = sdk.loaderOpts();
 		expect(loader).toBeDefined();
 		expect(loader!.systemPrompt).toBe("SYSTEM-PROMPT");
+		expect(loader!.noExtensions).toBe(true);
 		expect(loader!.noSkills).toBe(true);
+		expect(loader!.noPromptTemplates).toBe(true);
+		expect(loader!.noThemes).toBe(true);
+		expect(loader!.noContextFiles).toBe(true);
+		expect((loader!.appendSystemPromptOverride as () => string[])()).toEqual([]);
+		expect((loader!.agentsFilesOverride as () => { agentsFiles: unknown[] })()).toEqual({ agentsFiles: [] });
 		expect(sdk.createOpts()?.resourceLoader).toBeDefined();
 	});
 });

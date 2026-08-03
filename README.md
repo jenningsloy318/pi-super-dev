@@ -59,15 +59,15 @@ Tool options: `skipWorktree`, `skipStages`, `model`, `maxAgents`.
 
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.1.0`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.01.01`.
 It is shown on the first line of the TUI dashboard and written at the top of
 each run log. This metadata is intentionally separate from the npm package
 version in `package.json`.
 
 Versioning rule: every commit that changes the extension increments the patch
-number. Patch values run from `0` to `99`; after `99`, increment the minor
-number and reset patch to `0`. Minor values follow the same `0` to `99` rollover;
-after minor `99`, increment major and reset minor/patch to `0`.
+number. Patch values run from `01` to `99`; after `99`, increment the minor
+number and reset patch to `01`. Minor values follow the same `01` to `99` rollover;
+after minor `99`, increment major and reset minor/patch to `01`.
 
 ## Configuration
 

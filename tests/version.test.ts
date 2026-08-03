@@ -7,20 +7,20 @@ import {
 } from "../src/version.ts";
 
 describe("super-dev extension version metadata", () => {
-	it("sets the runtime-visible extension version to 0.1.0", () => {
-		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.1.0");
+	it("sets the runtime-visible extension version to 0.01.01", () => {
+		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.01.01");
 		expect(SUPER_DEV_VERSION_METADATA).toMatchObject({
 			name: "super-dev",
-			version: "0.1.0",
+			version: "0.01.01",
 		});
-		expect(superDevVersionLabel()).toBe("super-dev v0.1.0");
+		expect(superDevVersionLabel()).toBe("super-dev v0.01.01");
 	});
 
 	it("exposes the commit-based patch/minor rollover rule for logs and docs", () => {
 		const line = superDevRunMetadataLine();
-		expect(line).toContain("super-dev v0.1.0");
+		expect(line).toContain("super-dev v0.01.01");
 		expect(line).toContain("increment patch every commit");
-		expect(line).toContain("patch 0-99");
-		expect(line).toContain("minor 0-99");
+		expect(line).toContain("patch 01-99");
+		expect(line).toContain("minor 01-99");
 	});
 });

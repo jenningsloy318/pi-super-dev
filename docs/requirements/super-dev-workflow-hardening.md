@@ -110,8 +110,8 @@ Current workflow-to-agent ownership:
 
 Two backend details matter for interpretation:
 
-- **Subprocess backend** runs `pi --mode json -p --no-session --no-skills --exclude-tools super_dev --system-prompt agents/<name>.md ...`. Browser and web-research agents are intentionally forced through this backend so browser/web/MCP tools load in an isolated process while recursive `super_dev` spawning remains disabled.
-- **Session backend** runs in-process through `createAgentSession`. It now mirrors the subprocess identity boundary by using the super-dev prompt as the session system prompt and disabling ambient skills (`noSkills: true`), while still allowing ambient extensions for model/provider/tool compatibility and excluding only `super_dev` from the active tool set.
+- **Subprocess backend** runs `pi --mode json -p --no-session --no-skills --no-extensions --no-context-files --no-prompt-templates --exclude-tools super_dev --system-prompt agents/<name>.md ...`. Browser and web-research agents are intentionally forced through this backend, but they receive browser/web/MCP tools only through explicit `-e` role-extension paths.
+- **Session backend** runs in-process through `createAgentSession`. It mirrors the subprocess identity boundary by using the super-dev prompt as the session system prompt and disabling ambient extensions, skills, prompt templates, themes, and AGENTS.md/CLAUDE.md context files. The inline safety extension still loads explicitly, and `super_dev` remains excluded from the active tool set as defense in depth.
 
 Conclusion: the current role set is broadly appropriate (specialized writer/reviewer/tester/fixer roles plus deterministic orchestration), but the harness must keep agent identity and gate responsibility explicit. Specialist prompts are advisory capabilities; deterministic gates, evidence ledgers, state transitions, and final status classification remain workflow-owned.
 

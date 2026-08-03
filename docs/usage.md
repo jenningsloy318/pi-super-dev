@@ -32,14 +32,14 @@ super_dev({ task: "add a POST /users endpoint with validation", skipWorktree: fa
 
 ## Extension version metadata
 
-The extension metadata is currently `super-dev v0.1.0`. The TUI dashboard shows
+The extension metadata is currently `super-dev v0.01.01`. The TUI dashboard shows
 it on the first line, and every run log records it near the start of the file.
 This runtime metadata is intentionally separate from the npm package version in
 `package.json`.
 
 Versioning rule: every commit that changes the extension increments the patch
-number (`0` through `99`). After patch `99`, increment minor and reset patch to
-`0`; minor follows the same `0` through `99` rollover before incrementing major.
+number (`01` through `99`). After patch `99`, increment minor and reset patch to
+`01`; minor follows the same `01` through `99` rollover before incrementing major.
 
 ## Runtime data directory
 

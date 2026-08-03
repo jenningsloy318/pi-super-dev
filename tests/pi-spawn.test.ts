@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractFinalAssistant, buildSpawnArgs, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
+import { extractFinalAssistant, buildSpawnArgs, buildSubprocessTaskPrompt, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveExtensionEntries, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 /** Minimal inherited-model object for tests (only provider+id are read by buildSpawnArgs). */
@@ -84,6 +84,10 @@ describe("buildSpawnArgs", () => {
 		expect(args[args.indexOf("--mode") + 1]).toBe("json");
 		expect(args).toContain("-p");
 		expect(args).toContain("--no-session");
+		expect(args).toContain("--no-skills");
+		expect(args).toContain("--no-extensions");
+		expect(args).toContain("--no-context-files");
+		expect(args).toContain("--no-prompt-templates");
 		expect(args).toContain("--system-prompt");
 		expect(args[args.indexOf("--system-prompt") + 1]).toBe("/tmp/agent.md");
 	});
@@ -99,34 +103,59 @@ describe("buildSpawnArgs", () => {
 		expect(args[args.indexOf("--model") + 1]).toBe("openai/gpt-4o");
 	});
 
-	it("non-browser agents inherit ALL tools (no --tools allowlist) and exclude only super_dev", () => {
+	it("non-browser agents disable ambient resources and exclude only super_dev", () => {
 		const args = buildSpawnArgs({ agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(args).not.toContain("--no-extensions");
+		expect(args).toContain("--no-extensions");
+		expect(args).toContain("--no-context-files");
 		expect(args).not.toContain("--tools");
 		expect(args[args.indexOf("--exclude-tools") + 1]).toBe("super_dev");
 	});
 
-	it("browser agents (qa-agent, ui-tester) inherit ALL tools (no --tools allowlist) and exclude only super_dev", () => {
+	it("browser agents keep ambient discovery disabled and load browser_execute only through explicit -e paths", () => {
+		const ext = "/agent/npm/node_modules/pi-browser-cdp-extension/extensions/browser-execute.ts";
 		for (const agent of ["qa-agent", "ui-tester"]) {
-			const args = buildSpawnArgs({ agent, prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-			expect(args, agent).not.toContain("--no-extensions");
+			const args = buildSpawnArgs({ agent, prompt: "x", cwd: "/tmp" }, "/tmp/a.md", [ext]);
+			expect(args, agent).toContain("--no-extensions");
+			expect(args, agent).toContain("--no-context-files");
 			expect(args, agent).not.toContain("--tools");
+			expect(args[args.indexOf(ext) - 1], agent).toBe("-e");
 			expect(args[args.indexOf("--exclude-tools") + 1], agent).toBe("super_dev");
 		}
 	});
 
-	it("research-agent loads ambient extensions (no --no-extensions) + its -e role extensions, inheriting ALL tools", () => {
+	it("research-agent keeps ambient discovery disabled and loads only its explicit role extensions", () => {
 		const exts = ["/agent/npm/node_modules/pi-web-access/index.ts", "/agent/npm/node_modules/pi-mcp-adapter/index.ts"];
 		const args = buildSpawnArgs({ agent: "research-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md", exts);
-		expect(args).not.toContain("--no-extensions");
+		expect(args).toContain("--no-extensions");
+		expect(args).toContain("--no-context-files");
 		expect(args).not.toContain("--tools");
 		expect(args[args.indexOf("--exclude-tools") + 1]).toBe("super_dev");
-		// the two named role extensions are still loaded explicitly via -e
 		for (const e of exts) {
 			const i = args.indexOf(e);
 			expect(i).toBeGreaterThan(0);
 			expect(args[i - 1]).toBe("-e");
 		}
+	});
+
+	it("appends the required <control> contract when controlKeys are provided", () => {
+		const args = buildSpawnArgs({ ...base, controlKeys: ["docPath", "summary"] }, "/tmp/agent.md");
+		const task = args[args.length - 1];
+		expect(task).toContain("Task: do X");
+		expect(task).toContain("Required Final Control Output");
+		expect(task).toContain("docPath, summary");
+		expect(task).toContain('<control>{"docPath":"FILL_ME","summary":"FILL_ME"}</control>');
+	});
+});
+
+describe("buildSubprocessTaskPrompt", () => {
+	it("leaves prompts without control keys byte-identical", () => {
+		expect(buildSubprocessTaskPrompt("hello", [])).toBe("hello");
+	});
+
+	it("deduplicates invalid/duplicate control keys before rendering the contract", () => {
+		const prompt = buildSubprocessTaskPrompt("do work", ["docPath", "3bad", "docPath", "summary"]);
+		expect(prompt).toContain("docPath, summary");
+		expect(prompt).not.toContain("3bad");
 	});
 });
 
@@ -139,13 +168,26 @@ describe("web-research agent classification", () => {
 	});
 
 
-	it("resolveExtensionEntry returns the entry path when installed, null otherwise", () => {
+	it("resolveExtensionEntry returns the manifest extension entry when installed, null otherwise", () => {
 		const tmp = mkdtempSync(join(tmpdir(), "sd-ext-"));
 		const pkgDir = join(tmp, "npm", "node_modules", "pi-web-access");
 		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ pi: { extensions: ["./index.ts"] } }));
 		writeFileSync(join(pkgDir, "index.ts"), "// stub");
 		expect(resolveExtensionEntry("pi-web-access", tmp)).toBe(join(pkgDir, "index.ts"));
 		expect(resolveExtensionEntry("pi-mcp-adapter", tmp)).toBeNull();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("resolveExtensionEntries expands manifest directory entries into loadable files", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "sd-ext-dir-"));
+		const pkgDir = join(tmp, "npm", "node_modules", "pi-browser-cdp-extension");
+		const extDir = join(pkgDir, "extensions");
+		mkdirSync(extDir, { recursive: true });
+		writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ pi: { extensions: ["./extensions"] } }));
+		writeFileSync(join(extDir, "browser-execute.ts"), "// browser tool");
+		writeFileSync(join(extDir, "README.md"), "ignored");
+		expect(resolveExtensionEntries("pi-browser-cdp-extension", tmp)).toEqual([join(extDir, "browser-execute.ts")]);
 		rmSync(tmp, { recursive: true, force: true });
 	});
 });
@@ -273,20 +315,21 @@ describe("buildSpawnArgs — model resolution chain [AC-02 / SCENARIO-003, SCENA
 	});
 });
 
-describe("buildSpawnArgs — ambient extensions load by default (no --no-extensions for any agent)", () => {
-	it("non-browser agents do NOT carry --no-extensions (ambient loads; recursion guarded by --exclude-tools super_dev)", () => {
+describe("buildSpawnArgs — ambient resources are disabled for every subprocess specialist", () => {
+	it("non-browser agents carry --no-extensions and --no-context-files", () => {
 		const args = buildSpawnArgs({ agent: "requirements-clarifier", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(args).not.toContain("--no-extensions");
+		expect(args).toContain("--no-extensions");
+		expect(args).toContain("--no-context-files");
 	});
-	it("research-agent does NOT carry --no-extensions (loads ambient + its -e role extensions)", () => {
+	it("research-agent carries --no-extensions while explicit -e role extensions still load", () => {
 		const exts = ["/agent/npm/node_modules/pi-web-access/index.ts"];
 		const args = buildSpawnArgs({ agent: "research-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md", exts);
-		expect(args).not.toContain("--no-extensions");
+		expect(args).toContain("--no-extensions");
 		for (const e of exts) expect(args[args.indexOf(e) - 1]).toBe("-e");
 	});
-	it("browser agents do NOT carry --no-extensions", () => {
+	it("browser agents also carry --no-extensions", () => {
 		const args = buildSpawnArgs({ agent: "qa-agent", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(args).not.toContain("--no-extensions");
+		expect(args).toContain("--no-extensions");
 	});
 });
 
