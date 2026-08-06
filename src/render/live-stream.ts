@@ -32,6 +32,7 @@ import { runningGlyph, type DashboardTheme } from "./dashboard.js";
 import { classifyLine, themeLine, statusFgToken } from "./stream-theme.js";
 import type { LineKind } from "./stream-theme.js";
 import { groupByStage, type StageGroup } from "./stage-grouping.js";
+import { localTimestamp } from "./time.js";
 
 /**
  * One committed transcript entry. `kind` is the classified content taxonomy
@@ -148,7 +149,7 @@ export const TOTAL_SECTION_CAP = 400;
  */
 export const PARTITION_INPUT_CAP = TOTAL_SECTION_CAP * 10;
 
-const timestamp = (): string => new Date().toISOString();
+const timestamp = (): string => localTimestamp();
 
 const publicLine = ({ kind, text, stageId, stageLabel }: TranscriptEntry): TranscriptLine =>
 	({ kind, text, stageId, stageLabel });

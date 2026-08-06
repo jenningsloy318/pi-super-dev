@@ -35,6 +35,7 @@ import type { DashboardTheme } from "./dashboard.js";
 
 /** ANSI CSI detector — MUST NOT match any no-theme / non-TUI output. */
 const ANSI = /\x1b\[/i;
+const LOCAL_TS = String.raw`\d{4}-\d{2}-\d{2}T[^\]]+[+-]\d{2}:\d{2}`;
 
 /** Extract mock-theme color-token markers (`<accent>`, `<toolTitle>`, ...).
  *  The `<b>` bold wrapper is structural, not a color token, so it is omitted. */
@@ -298,7 +299,7 @@ describe("AC-05 on-disk log writes timestamped raw text (zero ANSI)", () => {
 		h.sink.phase("Design");
 		h.sink.log("→ npm test");
 		h.sink.text("musing..."); h.finalizeLive();
-		expect(h.diskLogText()).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] ▶ Design\n\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] → npm test\n\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] musing\.\.\.$/);
+		expect(h.diskLogText()).toMatch(new RegExp(`^\\[${LOCAL_TS}\\] ▶ Design\\n\\[${LOCAL_TS}\\] → npm test\\n\\[${LOCAL_TS}\\] musing\\.\\.\\.$`));
 		expect(ANSI.test(h.diskLogText())).toBe(false);
 		expect(tokensIn(h.diskLogText())).toEqual([]);
 	});
@@ -307,7 +308,7 @@ describe("AC-05 on-disk log writes timestamped raw text (zero ANSI)", () => {
 		const h = createLiveStream({});
 		h.sink.phase("Design");
 		h.sink.text("not yet committed");
-		expect(h.diskLogText()).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] ▶ Design$/);
+		expect(h.diskLogText()).toMatch(new RegExp(`^\\[${LOCAL_TS}\\] ▶ Design$`));
 		expect(h.diskLogText()).not.toContain("not yet committed");
 	});
 });

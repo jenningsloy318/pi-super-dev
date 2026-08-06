@@ -195,7 +195,7 @@ function driveAllKinds(mode: string, theme?: ReturnType<typeof mockTheme>) {
 
 /** The raw joined text the non-TUI body MUST equal byte-for-byte. */
 const RAW_JOINED = KIND_ROWS.map((r) => r.text).join("\n");
-const TIMESTAMP_PREFIX = /^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] /;
+const TIMESTAMP_PREFIX = /^\[\d{4}-\d{2}-\d{2}T[^\]]+[+-]\d{2}:\d{2}\] /;
 
 function stripDiskTimestamps(disk: string): string {
 	return disk.split("\n").map((line) => line.replace(TIMESTAMP_PREFIX, "")).join("\n");

@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import { ensureSuperDevDirs, startRun, getRunLogPath, getConfig } from "./render/super-dev-dir.ts";
 import { runReflectionAsync } from "./render/reflection.ts";
 import { writeEscalationReport } from "./render/escalation-report.ts";
+import { localTimestamp } from "./render/time.ts";
 import { runPipelineTask } from "./pipeline.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
@@ -253,7 +254,7 @@ function gitValue(cwd: string, args: string[]): string {
 
 function launchMetadataLines(task: string, cwd: string, runLogPath: string): string[] {
 	return [
-		`Run started: ${new Date().toISOString()}`,
+		`Run started: ${localTimestamp()}`,
 		`Task: ${task}`,
 		`Launch cwd: ${cwd}`,
 		`Launch worktree: ${gitValue(cwd, ["rev-parse", "--show-toplevel"])}`,
@@ -548,7 +549,7 @@ export default function activate(pi: ExtensionAPI): void {
 					if (!dashboardOrder.includes(info.id)) dashboardOrder.push(info.id);
 					const previous = dashboardStages.get(info.id);
 					const nowMs = Date.now();
-					const nowIso = new Date(nowMs).toISOString();
+					const nowIso = localTimestamp(new Date(nowMs));
 					const next: StageViewState = {
 						...(previous ?? {}),
 						label: info.label,

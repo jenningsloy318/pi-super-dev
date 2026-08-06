@@ -36,6 +36,8 @@ import { describe, it, expect } from "vitest";
 
 import { createLiveStream } from "../src/render/live-stream.ts";
 
+const LOCAL_TS = String.raw`\d{4}-\d{2}-\d{2}T[^\]]+[+-]\d{2}:\d{2}`;
+
 /** The structured dashboard `stage` event payload (the ONLY source the sink
  *  should read stage identity from — never the `▶ Stage N` label text). */
 type StageInfo = { id: string; label: string; status?: string };
@@ -303,7 +305,7 @@ describe("regression: stage tagging stays byte-clean (non-TUI / disk log)", () =
 		h.sink.phase("Spec");
 		h.sink.stage({ id: "spec", label: "Specification" } satisfies StageInfo);
 		h.sink.log("writing");
-		expect(h.diskLogText()).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] ▶ Spec\n\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] writing$/);
+		expect(h.diskLogText()).toMatch(new RegExp(`^\\[${LOCAL_TS}\\] ▶ Spec\\n\\[${LOCAL_TS}\\] writing$`));
 	});
 
 	it("a non-TUI flush stays zero-ANSI once stage tags are present", () => {
