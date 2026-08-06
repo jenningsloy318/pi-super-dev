@@ -34,6 +34,7 @@ Read requirements, BDD scenarios, specification, implementation plan, and task l
 
 ## Constraints
 
+- During the RED phase, create or modify test files only. Do not create or modify production/source implementation files; missing symbols are expected and should be implemented later by the GREEN-phase implementer.
 - All public functions must have unit tests.
 - All API endpoints must have integration tests.
 - Tests must be independent with no shared state.

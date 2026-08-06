@@ -1,0 +1,177 @@
+import { isInternalRuntimeClaim } from "./tracking.ts";
+
+export type RedBoundaryCategory = "test" | "support" | "runtime" | "production" | "ambiguous";
+export type RedBoundarySource = "deterministic" | "agent" | "fallback";
+
+export interface RedBoundaryClassification {
+	path: string;
+	category: RedBoundaryCategory;
+	allowed: boolean;
+	confidence: number;
+	source: RedBoundarySource;
+	reason: string;
+}
+
+export interface RedBoundaryResult {
+	classifications: RedBoundaryClassification[];
+	forbiddenFiles: string[];
+	ambiguousFiles: string[];
+	allAllowed: boolean;
+}
+
+const MIN_AGENT_CONFIDENCE = 0.7;
+const RUNTIME_EVIDENCE_BASENAMES = new Set([
+	"implementation-evidence.jsonl",
+	"change-tracker.jsonl",
+	".resume-cache.jsonl",
+	".user-notes.json",
+	"stagnation-report.md",
+	"escalation-report.md",
+]);
+
+const normalizePath = (path: string): string =>
+	String(path ?? "").trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/");
+
+function dedupe(paths: string[]): string[] {
+	return Array.from(new Set(paths.map(normalizePath).filter(Boolean)));
+}
+
+function tokenizePath(path: string): string[] {
+	const normalized = normalizePath(path)
+		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+	return normalized
+		.split(/[^A-Za-z0-9]+/g)
+		.map((part) => part.trim().toLowerCase())
+		.filter(Boolean);
+}
+
+function hasObviousTestToken(path: string): boolean {
+	const tokens = tokenizePath(path);
+	return tokens.some((token) =>
+		token === "test" ||
+		token === "tests" ||
+		token === "spec" ||
+		token === "specs" ||
+		token === "e2e" ||
+		token === "snapshot" ||
+		token === "snapshots"
+	);
+}
+
+function isRuntimeEvidencePath(path: string): boolean {
+	const basename = normalizePath(path).split("/").pop() ?? "";
+	return RUNTIME_EVIDENCE_BASENAMES.has(basename);
+}
+
+function decision(path: string, category: RedBoundaryCategory, allowed: boolean, confidence: number, source: RedBoundarySource, reason: string): RedBoundaryClassification {
+	return { path: normalizePath(path), category, allowed, confidence, source, reason };
+}
+
+/**
+ * Deterministic RED-boundary classifier for obvious cases only.
+ *
+ * This intentionally does not try to encode every language/framework's test
+ * layout. It accepts paths whose own structure clearly says "test/spec/e2e" or
+ * known super-dev runtime artifacts, then leaves the rest for the evaluator.
+ */
+export function classifyObviousRedPath(path: string): RedBoundaryClassification {
+	const normalized = normalizePath(path);
+	if (!normalized) return decision(path, "ambiguous", false, 0, "deterministic", "empty path");
+	if (isInternalRuntimeClaim(normalized) || isRuntimeEvidencePath(normalized)) {
+		return decision(normalized, "runtime", true, 1, "deterministic", "known super-dev runtime artifact");
+	}
+	if (hasObviousTestToken(normalized)) {
+		return decision(normalized, "test", true, 0.95, "deterministic", "path contains an obvious test/spec/e2e/snapshot token");
+	}
+	return decision(normalized, "ambiguous", false, 0.5, "deterministic", "path is not an obvious RED test artifact; evaluator required");
+}
+
+function isAllowedCategory(category: RedBoundaryCategory): boolean {
+	return category === "test" || category === "support" || category === "runtime";
+}
+
+function normalizeCategory(value: unknown): RedBoundaryCategory {
+	const v = typeof value === "string" ? value.trim().toLowerCase() : "";
+	if (v === "test" || v === "support" || v === "runtime" || v === "production" || v === "ambiguous") return v;
+	return "ambiguous";
+}
+
+function normalizeConfidence(value: unknown): number {
+	const n = typeof value === "number" ? value : Number(value);
+	return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+}
+
+function stringArray(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").map(normalizePath).filter(Boolean) : [];
+}
+
+export function redBoundaryResultFromClassifications(classifications: RedBoundaryClassification[]): RedBoundaryResult {
+	const forbiddenFiles = classifications.filter((item) => !item.allowed).map((item) => item.path);
+	const ambiguousFiles = classifications
+		.filter((item) => item.category === "ambiguous" || item.confidence < MIN_AGENT_CONFIDENCE)
+		.map((item) => item.path);
+	return {
+		classifications,
+		forbiddenFiles,
+		ambiguousFiles,
+		allAllowed: forbiddenFiles.length === 0,
+	};
+}
+
+export function redBoundaryResultFromAgent(paths: string[], control: unknown): RedBoundaryResult {
+	const requested = dedupe(paths);
+	const obj = control != null && typeof control === "object" && !Array.isArray(control)
+		? control as Record<string, unknown>
+		: {};
+	const explicitForbidden = new Set(stringArray(obj.forbiddenFiles));
+	const explicitAmbiguous = new Set(stringArray(obj.ambiguousFiles));
+	const rawClassifications = Array.isArray(obj.classifications) ? obj.classifications : [];
+	const byPath = new Map<string, Record<string, unknown>>();
+	for (const item of rawClassifications) {
+		if (item == null || typeof item !== "object" || Array.isArray(item)) continue;
+		const rec = item as Record<string, unknown>;
+		const path = typeof rec.path === "string" ? normalizePath(rec.path) : "";
+		if (path) byPath.set(path, rec);
+	}
+
+	const classifications = requested.map((path) => {
+		const rec = byPath.get(path);
+		if (!rec) {
+			return decision(path, "ambiguous", false, 0, "fallback", "evaluator omitted this path");
+		}
+		const category = explicitForbidden.has(path) ? "production" : explicitAmbiguous.has(path) ? "ambiguous" : normalizeCategory(rec.category);
+		const confidence = normalizeConfidence(rec.confidence);
+		const reason = typeof rec.reason === "string" && rec.reason.trim()
+			? rec.reason.trim()
+			: "evaluator did not provide a reason";
+		const allowed = isAllowedCategory(category) && confidence >= MIN_AGENT_CONFIDENCE;
+		return decision(path, category, allowed, confidence, "agent", allowed ? reason : `${reason}; denied by RED boundary policy`);
+	});
+	return redBoundaryResultFromClassifications(classifications);
+}
+
+export function buildRedBoundaryPrompt(args: { changedFiles: string[]; testFiles: string[]; phaseName: string; phaseDescription?: string; redStatus: string }): string {
+	return [
+		"Classify RED-phase file changes for a TDD harness.",
+		"The RED phase may create/modify tests and test-only support artifacts. It must not create/modify production implementation.",
+		"Use semantic project judgment. Do not rely only on file extensions. When unsure, mark ambiguous.",
+		`Phase: ${args.phaseName}`,
+		args.phaseDescription ? `Phase description: ${args.phaseDescription}` : "",
+		`RED oracle status: ${args.redStatus}`,
+		`Reported test targets: ${args.testFiles.length ? args.testFiles.join(", ") : "none"}`,
+		`Changed files requiring classification: ${args.changedFiles.join(", ")}`,
+		"Return structured_output with:",
+		"- classifications: [{ path, category: 'test'|'support'|'runtime'|'production'|'ambiguous', confidence: 0..1, reason }]",
+		"- forbiddenFiles: production or unsafe paths",
+		"- ambiguousFiles: paths you cannot confidently allow",
+		"- allAllowed: true only when every changed file is safe for RED",
+	].filter(Boolean).join("\n");
+}
+
+/** Back-compat helper for older callers/tests. New code should use the full
+ * boundary result so ambiguous files are not silently accepted. */
+export function isTestArtifactPath(path: string): boolean {
+	const classified = classifyObviousRedPath(path);
+	return classified.allowed && classified.category === "test";
+}

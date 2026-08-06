@@ -203,10 +203,12 @@ export function missingKeys(
 /** Agent-aware delivery discipline preamble (OVERRIDES the ported agent prompts,
  *  which demand Claude-grade exhaustive verification a slow model cannot afford).
  *
- *  Two shapes, because the deliverable differs by role:
+ *  Three shapes, because the deliverable differs by role:
  *   - DOC writers (requirements/research/spec/…): deliverable is a document —
  *     bound exploration hard and write early, because a timeout produces nothing.
- *   - CODE writers (implementer/tdd-guide): deliverable is APPLIED source edits.
+ *   - TDD guide: deliverable is APPLIED TEST edits only. It must never satisfy
+ *     the RED phase by writing production code.
+ *   - CODE writers (implementer): deliverable is APPLIED source edits.
  *     Capping exploration at ~6 calls starves them (reading one 400+ line file
  *     is already several calls); the fix is to read ENOUGH, then land + verify
  *     edits before the (now larger) clock runs out, and to prefer whole-file
@@ -214,6 +216,18 @@ export function missingKeys(
  *     code edit as "writing a document" was the root cause of the recurring
  *     zero-edit / edit-thrash phase failures. */
 export function deliveryDisciplineFor(agent: string): string {
+	if (agent === "tdd-guide") {
+		return [
+			"## Delivery discipline (OVERRIDES any contrary instruction above)",
+			"Your deliverable is APPLIED TEST-CODE EDITS for the RED phase — real changes to test files only — followed by your structured_output call.",
+			"- Do NOT create or modify production/source implementation files during RED. If a test needs a missing symbol, reference that symbol from the test and let the implementer create it during GREEN.",
+			"- Read ONLY what you need to write focused failing tests (target API, existing nearby tests, and relevant types). Do NOT read every file or re-read a file you already read.",
+			"- Then APPLY the test edits early. An unfinished turn writes NOTHING to disk.",
+			"- When a single test file needs several changes, prefer ONE whole-file `write` over many `edit` calls. Do NOT thrash on `edit` when its exact-match `oldText` keeps failing (tabs/whitespace); switch to `write` after the first miss. Never hand-patch indentation with `sed`.",
+			"- After applying tests, run only the focused test targets ONCE to confirm RED, fix obvious test compile/collection errors, then call structured_output and STOP.",
+			"- NEVER end your turn having only explored or only described tests: at least one test file MUST be modified before you finish.",
+		].join("\n");
+	}
 	if (isCodeWritingAgent(agent)) {
 		return [
 			"## Delivery discipline (OVERRIDES any contrary instruction above)",

@@ -21,7 +21,15 @@ describe("deliveryDisciplineFor", () => {
 		// Steers away from the edit-thrash failure mode.
 		expect(impl).toMatch(/whole-file `write`/);
 		expect(impl).toMatch(/source file MUST be modified/);
-		expect(deliveryDisciplineFor("tdd-guide")).toBe(impl);
+	});
+	it("gives tdd-guide a RED-phase test-only discipline", () => {
+		const tdd = deliveryDisciplineFor("tdd-guide");
+		expect(tdd).toMatch(/APPLIED TEST-CODE EDITS/);
+		expect(tdd).toMatch(/test files only/i);
+		expect(tdd).toMatch(/Do NOT create or modify production\/source implementation files/);
+		expect(tdd).toMatch(/test file MUST be modified/);
+		expect(tdd).not.toMatch(/APPLIED SOURCE-CODE EDITS/);
+		expect(tdd).not.toMatch(/source file MUST be modified/);
 	});
 	it("keeps a render-pipeline structured-output discipline for doc writers", () => {
 		const doc = deliveryDisciplineFor("research-agent");

@@ -36,6 +36,7 @@ import type {
 	PipelineState,
 	Stage,
 	StageContext,
+	StageProgressEvent,
 	ControlObj,
 } from "./types.ts";
 import { specDocExists } from "./doc-validators.ts";
@@ -142,9 +143,15 @@ function shouldSkipStage(stage: Stage, ctx: StageContext): boolean {
 
 /** Lift a `Stage` into a leaf node. Stores the return value under `state[id]`. */
 export function task(stage: Stage): Node {
-	const record = (ctx: StageContext, status: NodeStatus, error?: string) => {
+	const record = (ctx: StageContext, status: NodeStatus, error?: string, eventStatus: StageProgressEvent["status"] = status) => {
 		ctx.results.push({ id: stage.id, label: stage.label, status, error });
-		ctx.events.emit("stage", { id: stage.id, label: stage.label, status, error });
+		ctx.events.emit("stage", { id: stage.id, label: stage.label, status: eventStatus, error });
+	};
+	const displayStatus = (result: unknown): StageProgressEvent["status"] => {
+		if (stage.id === "implementation" && result != null && typeof result === "object" && (result as { allGreen?: unknown }).allGreen === false) {
+			return "partial";
+		}
+		return "ok";
 	};
 	return {
 		kind: "task",
@@ -186,7 +193,7 @@ export function task(stage: Stage): Node {
 				const result = await stage.run(state, ctx);
 				const durationMs = Date.now() - startMs;
 				if (result !== undefined && result !== null) state[stage.id] = result;
-				record(ctx, "ok");
+				record(ctx, "ok", undefined, displayStatus(result));
 				auditAppend({ stage: stage.id, durationMs, control: result });
 				return { status: "ok", value: result };
 			} catch (err) {

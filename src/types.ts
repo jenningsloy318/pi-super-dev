@@ -126,7 +126,7 @@ export interface ProgressSink {
 export interface StageProgressEvent {
 	id: string;
 	label: string;
-	status: NodeStatus | "running";
+	status: NodeStatus | "running" | "partial";
 	error?: string;
 	/** Optional dashboard-only hierarchy marker. Phase rows are displayed as
 	 *  subordinate progress items and are excluded from top-level stage counts. */

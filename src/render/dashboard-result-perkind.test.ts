@@ -396,6 +396,29 @@ describe("AC-07 — §2 stage header + §3 Markdown are unchanged by per-kind §
 		expect(rendered).toContain("⚠ Impl");
 	});
 
+	it("§2 stage-progress rows include start/end/duration when supplied", () => {
+		const comp = buildResultComponent(
+			{
+				stages: [
+					{
+						id: "implementation",
+						label: "Stage 9 — Implementation",
+						status: "ok",
+						startedAt: "2026-08-06T22:00:00.000+08:00",
+						endedAt: "2026-08-06T22:16:40.000+08:00",
+						durationMs: 1_000_000,
+					},
+				],
+			},
+			mockTheme() as never,
+		) as Container;
+		const rendered = renderChildren(comp).join("\n");
+		expect(rendered).toContain("✔ Stage 9 — Implementation");
+		expect(rendered).toContain("start 2026-08-06T22:00:00.000+08:00");
+		expect(rendered).toContain("end 2026-08-06T22:16:40.000+08:00");
+		expect(rendered).toContain("duration 16m40s");
+	});
+
 	it("§3 Markdown is still emitted as exactly one Markdown child (unchanged composition)", () => {
 		const comp = buildResultComponent(
 			{

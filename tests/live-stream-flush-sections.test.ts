@@ -246,6 +246,44 @@ describe("SCENARIO-012: completed stages render COMPACT", () => {
 		expect(shown).toBeLessThanOrEqual(3);
 	});
 
+	it("keeps sticky run metadata and stage/phase lifecycle lines visible outside the completed tail cap", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate, showTimestamps: true });
+		h.sink.stage({ id: "research", label: "ResearchA", status: "running" });
+		h.sink.log("super-dev v9.09.09");
+		h.sink.log("Run started: 2026-08-06T22:00:00.000+08:00");
+		h.sink.log("Launch branch: main");
+		h.sink.log("Run log: /Users/me/.super-dev/runs/2026/run.log");
+		h.sink.log("Stage start: ResearchA at 2026-08-06T22:00:00.000+08:00");
+		const ordinary = Array.from({ length: 12 }, (_, i) => `done-noise-xx-${String(i).padStart(2, "0")}`);
+		for (const line of ordinary) h.sink.log(line);
+		h.sink.log("Implementation phase-01 RED gate FAIL: red-polluted: RED phase changed production file(s): src/prod.go");
+		h.sink.log("Implementation phase-01 RED gate evidence: status=polluted-red oracle=green retries=4 testFiles=src/prod_test.go changedFiles=src/prod.go forbiddenFiles=src/prod.go");
+		h.sink.log("Stage end: ResearchA status=ok at 2026-08-06T22:10:00.000+08:00 duration=10m 00s");
+		h.sink.stage({ id: "research", label: "ResearchA", status: "ok" });
+		h.sink.stage({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
+		h.sink.log("Phase start: ↳ Phase 1/1: Core at 2026-08-06T22:11:00.000+08:00");
+		for (let i = 0; i < 8; i++) h.sink.log(`phase-noise-xx-${String(i).padStart(2, "0")}`);
+		h.sink.log("Phase end: ↳ Phase 1/1: Core status=ok at 2026-08-06T22:13:00.000+08:00 duration=2m 00s");
+		h.sink.stage({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "ok", kind: "phase", parentId: "implementation" });
+		h.sink.stage({ id: "verify", label: "Verify", status: "running" });
+		h.sink.log("live-now");
+		h.flush();
+
+		const body = h0.body;
+		expect(body).toContain("super-dev v9.09.09");
+		expect(body).toContain("Run started: 2026-08-06T22:00:00.000+08:00");
+		expect(body).toContain("Launch branch: main");
+		expect(body).toContain("Run log: /Users/me/.super-dev/runs/2026/run.log");
+		expect(body).toContain("Stage start: ResearchA");
+		expect(body).toContain("Stage end: ResearchA status=ok");
+		expect(body).toContain("Implementation phase-01 RED gate FAIL");
+		expect(body).toContain("Implementation phase-01 RED gate evidence");
+		expect(body).toContain("Phase start: ↳ Phase 1/1: Core");
+		expect(body).toContain("Phase end: ↳ Phase 1/1: Core status=ok");
+		expect(ordinary.filter((m) => body.includes(m))).toHaveLength(3);
+	});
+
 	it("renders a completed stage with zero visible lines as header-only (still emits its header)", () => {
 		const h0 = bodyHolder();
 		const h = createLiveStream({ mode: "tui", theme: mockTheme(), onUpdate: h0.onUpdate });

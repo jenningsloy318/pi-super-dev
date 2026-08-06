@@ -567,11 +567,12 @@ export default function activate(pi: ExtensionAPI): void {
 					}
 					dashboardStages.set(info.id, next);
 					stream.sink.stage(info);
+					const lifecycleNoun = info.kind === "phase" ? "Phase" : "Stage";
 					if (info.status === "running" && previous?.startedAt === undefined) {
-						logStageTiming(`Stage start: ${info.label} at ${nowIso}`);
+						logStageTiming(`${lifecycleNoun} start: ${info.label} at ${nowIso}`);
 					} else if (info.status !== "running") {
 						const error = info.error ? ` error=${info.error}` : "";
-						logStageTiming(`Stage end: ${info.label} status=${info.status} at ${nowIso} duration=${formatDuration(next.durationMs ?? 0)}${error}`);
+						logStageTiming(`${lifecycleNoun} end: ${info.label} status=${info.status} at ${nowIso} duration=${formatDuration(next.durationMs ?? 0)}${error}`);
 					}
 				},
 			};
@@ -692,7 +693,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const d = (result.details ?? {}) as {
 				summaryLines?: string[];
 				transcriptTail?: TranscriptLine[];
-				stages?: Array<{ id?: string; label: string; status: string; kind?: "stage" | "phase"; parentId?: string }>;
+				stages?: Array<{ id?: string; label: string; status: string; kind?: "stage" | "phase"; parentId?: string; startedAt?: string; endedAt?: string; durationMs?: number }>;
 				logPath?: string;
 			};
 			// During streaming (onUpdate), details are empty — fall back to plain content

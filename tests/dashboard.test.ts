@@ -134,6 +134,23 @@ describe("packDashboardLines", () => {
 		expect(headerAt(3_780_000)).toContain("· 1h03m");
 	});
 
+	it("shows start/end/duration beside stage rows when lifecycle timing is available", () => {
+		const lines = packDashboardLines([
+			{
+				id: "implementation",
+				label: "Stage 9 — Implementation",
+				status: "ok",
+				startedAt: "2026-08-06T22:00:00.000+08:00",
+				endedAt: "2026-08-06T22:16:40.000+08:00",
+				durationMs: 1_000_000,
+			},
+		], undefined, 180);
+		const row = lines.find((l) => l.includes("Stage 9 — Implementation")) ?? "";
+		expect(row).toContain("start 2026-08-06T22:00:00.000+08:00");
+		expect(row).toContain("end 2026-08-06T22:16:40.000+08:00");
+		expect(row).toContain("duration 16m40s");
+	});
+
 	it("renders implementation phases as dynamic subordinate dashboard rows without changing stage count", () => {
 		const lines = packDashboardLines([
 			{ id: "setup", label: "Stage 1 — Setup", status: "ok" },

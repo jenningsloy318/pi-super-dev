@@ -57,6 +57,8 @@ export interface StageInfo {
 	id: string;
 	label: string;
 	status?: string;
+	kind?: "stage" | "phase";
+	parentId?: string;
 }
 
 /** The minimal sink surface the factory owns (phase / log / text / stage). */
@@ -156,6 +158,39 @@ const publicLine = ({ kind, text, stageId, stageLabel }: TranscriptEntry): Trans
 
 const withTimestamp = (line: Pick<TranscriptEntry, "createdAt" | "text">): string =>
 	`[${line.createdAt}] ${line.text}`;
+
+type SectionLine = { kind: LineKind; text: string; createdAt?: string };
+
+/**
+ * Lines in this allowlist are diagnostic anchors, not ordinary chatter. They
+ * remain visible in compact completed sections so the TUI can answer "when did
+ * this run/stage/phase start or end?" without requiring the user to open the
+ * full run log.
+ */
+const isStickySectionLine = (line: Pick<SectionLine, "text">): boolean => {
+	const text = line.text.trimStart();
+	return (
+		/^super-dev v\d+\.\d{2}\.\d{2}$/.test(text) ||
+		/^(?:Run started|Task|Launch cwd|Launch worktree|Launch branch|Run log): /.test(text) ||
+		/^(?:Stage|Phase) (?:start|end): /.test(text) ||
+		/^Implementation \S+ (?:RED gate FAIL|RED gate evidence|failed after \d+ attempts|attempt \d+\/\d+ FAIL|build-gate FAIL|deliverable-check FAIL)/.test(text)
+	);
+};
+
+const compactSectionLines = (
+	lines: readonly SectionLine[],
+	cap: number,
+	stageLabel: string,
+): SectionLine[] => {
+	const ordinary = lines.filter((line) => !isStickySectionLine(line));
+	if (ordinary.length <= cap) return [...lines];
+	const ordinaryTail = new Set<SectionLine>(ordinary.slice(-cap));
+	const trimmed = ordinary.length - cap;
+	return [
+		{ kind: "trim", text: trimNoticeText(trimmed, stageLabel), createdAt: timestamp() },
+		...lines.filter((line) => isStickySectionLine(line) || ordinaryTail.has(line)),
+	];
+};
 
 /** Leading status bar drawn in the section-header status color (TUI only). */
 const STATUS_BAR = "▌";
@@ -422,16 +457,10 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 			const isRunning =
 				group.status === undefined || group.status === "running";
 			const cap = isRunning ? RUNNING_TAIL_LINES : COMPLETED_TAIL_LINES;
-			let sectionLines: Array<{ kind: LineKind; text: string; createdAt?: string }> = group.lines;
-			if (sectionLines.length > cap) {
-				const trimmed = sectionLines.length - cap;
-				// Per-stage trim notice appears INSIDE its own section (not a
-				// single global preamble) — SCENARIO-011.
-				sectionLines = [
-					{ kind: "trim", text: trimNoticeText(trimmed, group.stageLabel), createdAt: timestamp() },
-					...sectionLines.slice(-cap),
-				];
-			}
+			// Per-stage trim notice appears INSIDE its own section (not a single
+			// global preamble) — SCENARIO-011. Sticky lifecycle/launch diagnostics
+			// survive outside the ordinary-line cap.
+			const sectionLines = compactSectionLines(group.lines, cap, group.stageLabel);
 			// Each line is themed per-kind (TUI) or raw (non-TUI) and indented
 			// TWO spaces under its header (SCENARIO-010).
 			for (const line of sectionLines) {

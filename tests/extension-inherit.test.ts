@@ -37,6 +37,11 @@ vi.mock("../src/pipeline.ts", () => ({
 			progress?.stage?.({ id: "requirements", label: "Requirements", status: "running" });
 			progress?.log?.("foreground log still visible");
 		}
+		if (task.includes("[emit-phase]")) {
+			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void } | undefined;
+			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
+			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "ok", kind: "phase", parentId: "implementation" });
+		}
 		// Minimal valid RunSummary so formatSummary / handleStagnation don't throw:
 		// no `__stagnated` on state → handleStagnation returns early.
 		return {
@@ -242,6 +247,21 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev", expect.anything());
 		expect(pi.appendEntry).not.toHaveBeenCalledWith("super-dev-run", expect.anything());
 		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("foreground log still visible") })]) }));
+	});
+
+	it("implementation phase lifecycle events are logged as Phase start/end", async () => {
+		const { execute } = setupTool();
+		const onUpdate = vi.fn();
+		await execute(
+			"call-phase-stream",
+			{ task: "[emit-phase] build the thing" },
+			new AbortController().signal,
+			onUpdate,
+			{ mode: "tui", ui: { setWidget: vi.fn(), setWorkingMessage: vi.fn(), setStatus: vi.fn(), notify: vi.fn() } },
+		);
+		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Phase start: ↳ Phase 1/1: Core") })]) }));
+		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Phase end: ↳ Phase 1/1: Core status=ok") })]) }));
+		expect(onUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Stage start: ↳ Phase 1/1: Core") })]) }));
 	});
 });
 

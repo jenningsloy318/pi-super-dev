@@ -7,11 +7,13 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ControlObj, Stage } from "../types.ts";
+import type { ControlObj, Stage, StageContext } from "../types.ts";
 import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
+import { localTimestamp } from "../render/time.ts";
+import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -32,6 +34,7 @@ interface RedEvidence {
 	testFiles: string[];
 	changedFiles: string[];
 	forbiddenFiles: string[];
+	boundary?: RedBoundaryResult;
 	redRetries: number;
 	reason?: string;
 }
@@ -59,14 +62,13 @@ function setDiff(after: Set<string>, before: Set<string>): string[] {
 	return [...after].filter((p) => !before.has(p)).sort();
 }
 
-function isAllowedRedPath(path: string): boolean {
-	const p = path.replace(/\\/g, "/");
-	if (isInternalRuntimeClaim(p)) return true;
-	if (/\.snap$/i.test(p)) return true;
-	if (/(^|\/)__tests__\//.test(p)) return true;
-	if (/^tests\//.test(p)) return true;
-	if (/(^|\/)(fixtures|mocks|__fixtures__|__mocks__)\//.test(p) && /(^|\/)(__tests__|tests)\//.test(p)) return true;
-	return /\.(test|spec)\.[cm]?[jt]sx?$/i.test(p);
+function listOrNone(values: string[]): string {
+	return values.length ? values.join(", ") : "none";
+}
+
+function redEvidenceLogLine(e: RedEvidence): string {
+	const boundary = e.boundary ? ` ambiguousFiles=${listOrNone(e.boundary.ambiguousFiles)}` : "";
+	return `Implementation ${e.phaseId} RED gate evidence: status=${e.status} oracle=${e.oracleStatus} retries=${e.redRetries} testFiles=${listOrNone(e.testFiles)} changedFiles=${listOrNone(e.changedFiles)} forbiddenFiles=${listOrNone(e.forbiddenFiles)}${boundary}`;
 }
 
 function restorePaths(cwd: string, paths: string[]): void {
@@ -80,18 +82,19 @@ function appendImplementationEvidence(specDir: string | undefined, evidence: Red
 	if (!specDir) return;
 	try {
 		mkdirSync(specDir, { recursive: true });
-		appendFileSync(join(specDir, "implementation-evidence.jsonl"), JSON.stringify({ ts: new Date().toISOString(), ...evidence }) + "\n");
+		appendFileSync(join(specDir, "implementation-evidence.jsonl"), JSON.stringify({ ts: localTimestamp(), ...evidence }) + "\n");
 	} catch { /* evidence is best-effort */ }
 }
 
-function classifyRedEvidence(args: { phaseId: string; attempt: number; redStatus: RedStatus; testFiles: string[]; changedFiles: string[]; forbiddenFiles: string[]; redRetries: number; alreadySatisfied: boolean }): RedEvidence {
-	const { phaseId, attempt, redStatus, testFiles, changedFiles, forbiddenFiles, redRetries, alreadySatisfied } = args;
-	if (forbiddenFiles.length) return { phaseId, attempt, status: "polluted-red", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, redRetries, reason: "RED phase modified non-test production files" };
-	if (redStatus === "red") return { phaseId, attempt, status: "red-behavior-failure", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, redRetries };
-	if (redStatus === "broken") return { phaseId, attempt, status: "broken-test", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, redRetries, reason: "RED tests did not compile/collect" };
-	if (redStatus === "green" && alreadySatisfied) return { phaseId, attempt, status: "green-already-satisfied", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, redRetries, reason: "Deliverables were already satisfied before implementation" };
-	if (redStatus === "green") return { phaseId, attempt, status: "green-weak-test", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, redRetries, reason: "RED tests passed before implementation" };
-	return { phaseId, attempt, status: testFiles.length ? "unknown-unclassified" : "unknown-no-runner", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, redRetries, reason: testFiles.length ? "RED status could not be classified from runner output" : "No RED test targets or runner were available" };
+function classifyRedEvidence(args: { phaseId: string; attempt: number; redStatus: RedStatus; testFiles: string[]; changedFiles: string[]; boundary: RedBoundaryResult; redRetries: number; alreadySatisfied: boolean }): RedEvidence {
+	const { phaseId, attempt, redStatus, testFiles, changedFiles, boundary, redRetries, alreadySatisfied } = args;
+	const forbiddenFiles = boundary.forbiddenFiles;
+	if (forbiddenFiles.length) return { phaseId, attempt, status: "polluted-red", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, boundary, redRetries, reason: "RED phase modified files outside the test boundary" };
+	if (redStatus === "red") return { phaseId, attempt, status: "red-behavior-failure", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, boundary, redRetries };
+	if (redStatus === "broken") return { phaseId, attempt, status: "broken-test", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, boundary, redRetries, reason: "RED tests did not compile/collect" };
+	if (redStatus === "green" && alreadySatisfied) return { phaseId, attempt, status: "green-already-satisfied", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, boundary, redRetries, reason: "Deliverables were already satisfied before implementation" };
+	if (redStatus === "green") return { phaseId, attempt, status: "green-weak-test", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, boundary, redRetries, reason: "RED tests passed before implementation" };
+	return { phaseId, attempt, status: testFiles.length ? "unknown-unclassified" : "unknown-no-runner", oracleStatus: redStatus, testFiles, changedFiles, forbiddenFiles, boundary, redRetries, reason: testFiles.length ? "RED status could not be classified from runner output" : "No RED test targets or runner were available" };
 }
 
 function redEvidenceFailureReasons(e: RedEvidence): string[] {
@@ -99,6 +102,66 @@ function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	if (e.status === "green-weak-test") return [`red-not-confirmed: tests passed before implementation (${e.testFiles.join(", ") || "no tests"})`];
 	if (e.status === "broken-test") return [`red-broken: tests did not compile/collect (${e.testFiles.join(", ") || "no tests"})`];
 	return [];
+}
+
+function redGenerationRetryHint(e: RedEvidence): string | null {
+	if (e.status === "green-weak-test") return redRePromptHint("green");
+	if (e.status === "broken-test") return redRePromptHint("broken");
+	if (e.status === "polluted-red") {
+		return `\n\nYour RED phase modified files outside the test boundary: ${e.forbiddenFiles.join(", ")}. Rewrite the RED change using test files or test-only support artifacts. Do not create or modify production implementation files.`;
+	}
+	return null;
+}
+
+function boundarySummary(result: RedBoundaryResult): string {
+	const classifications = result.classifications.map((c) => `${c.path}:${c.category}:${c.allowed ? "allow" : "deny"}:${c.source}:${c.confidence.toFixed(2)}`).join("; ") || "none";
+	return `allAllowed=${result.allAllowed} forbidden=${listOrNone(result.forbiddenFiles)} ambiguous=${listOrNone(result.ambiguousFiles)} classifications=${classifications}`;
+}
+
+async function resolveRedBoundary(args: { ctx: StageContext; phaseId: string; phaseName: string; phase: unknown; redStatus: RedStatus; testFiles: string[]; changedFiles: string[] }): Promise<RedBoundaryResult> {
+	const deterministic = args.changedFiles.map(classifyObviousRedPath);
+	const ambiguous = deterministic.filter((item) => item.category === "ambiguous" && !item.allowed).map((item) => item.path);
+	if (ambiguous.length === 0) return redBoundaryResultFromClassifications(deterministic);
+	try {
+		const phaseDescription = typeof (args.phase as { description?: unknown }).description === "string" ? (args.phase as { description: string }).description : undefined;
+		const evaluated = await args.ctx.agent({
+			id: `pipeline.implementation.${args.phaseId}.red-boundary`,
+			agent: "red-boundary-classifier",
+			controlKeys: ["classifications", "forbiddenFiles", "ambiguousFiles", "allAllowed"],
+			prompt: buildRedBoundaryPrompt({
+				changedFiles: ambiguous,
+				testFiles: args.testFiles,
+				phaseName: args.phaseName,
+				phaseDescription,
+				redStatus: args.redStatus,
+			}),
+		});
+		const agentResult = redBoundaryResultFromAgent(ambiguous, evaluated.control);
+		const byPath = new Map(agentResult.classifications.map((item) => [item.path, item]));
+		return redBoundaryResultFromClassifications(deterministic.map((item) => byPath.get(item.path) ?? item));
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return redBoundaryResultFromClassifications(deterministic.map((item) => item.category === "ambiguous" ? { ...item, source: "fallback", confidence: 0, reason: `boundary evaluator failed: ${message}` } : item));
+	}
+}
+
+function snapshotFiles(cwd: string, paths: string[]): Map<string, string | null> {
+	const out = new Map<string, string | null>();
+	for (const path of paths) {
+		try { out.set(path, readFileSync(join(cwd, path), "utf8")); }
+		catch { out.set(path, null); }
+	}
+	return out;
+}
+
+function changedSinceSnapshot(cwd: string, before: Map<string, string | null>): string[] {
+	const changed: string[] = [];
+	for (const [path, oldContent] of before) {
+		let next: string | null = null;
+		try { next = readFileSync(join(cwd, path), "utf8"); } catch { next = null; }
+		if (next !== oldContent) changed.push(path);
+	}
+	return changed;
 }
 
 /** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
@@ -348,36 +411,48 @@ export const implementationStage: Stage = {
 				// `RUST_SELF_VERIFY_DISCIPLINE` source string (single source of truth).
 				// For non-rust setups `rustDiscipline(setup)` is "" and the specialist's
 				// languageInstructions still flow through (no regression).
-				// RED phase (Gap 1b, AC-02 → SCENARIO-006/007/008/009/010): author the
-				// tests via tdd-guide and VERIFY they actually fail against the
-				// unimplemented behavior. The tdd-guide result is NO LONGER discarded —
-				// we read `control.testFiles` and run the deterministic `runRedCheck`
-				// oracle (P2). On green/broken we re-prompt tdd-guide (status-specific
-				// hint) up to MAX_RED_RETRIES so "TDD" is genuinely red-then-green. If
-				// green/broken still remains after the cap, RED is a hard gate failure;
-				// only red or unknown may reach the implementer. Never throws
-				// (runRedCheck degrades to `unknown`); never exceeds the cap.
+				// RED phase: generate tests until the RED boundary and RED oracle are both
+				// acceptable. Weak-green tests, broken tests, and RED pollution are retried
+				// here before the implementer runs, so a bad RED sample does not consume or
+				// masquerade as a GREEN implementation attempt.
 				const redBaseline = gitStatusPaths(setup.worktreePath);
 				const baselineDeliverablesSatisfied = phaseDeliverables ? deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables) : false;
-				const tdd = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) });
-				let testFiles = normalizeStringArray((tdd.control as { testFiles?: unknown } | null)?.testFiles);
-				let redStatus: RedStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
 				let retries = 0;
-				ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
-				while ((redStatus === "green" || redStatus === "broken") && retries < MAX_RED_RETRIES) {
-					retries++;
-					const retry = await ctx.agent({ id: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) + redRePromptHint(redStatus) });
-					const retryFilesRaw = (retry.control as { testFiles?: unknown } | null)?.testFiles;
-					testFiles = retryFilesRaw == null ? testFiles : normalizeStringArray(retryFilesRaw);
+				let redHint = "";
+				let testFiles: string[] = [];
+				let redStatus: RedStatus = "unknown";
+				let redChangedFiles: string[] = [];
+				let redEvidence: RedEvidence | null = null;
+				while (true) {
+					const tddId = retries === 0
+						? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
+						: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
+					const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) + redHint });
+					const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
+					testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
 					redStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
 					ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
+					redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
+					const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
+					ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
+					redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied });
+					appendImplementationEvidence(setup.specDirectory, redEvidence);
+					if (redEvidence.status === "polluted-red") {
+						restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);
+					}
+					const retryHint = redGenerationRetryHint(redEvidence);
+					if (retryHint && retries < MAX_RED_RETRIES) {
+						retries++;
+						redHint = retryHint;
+						ctx.log(`Implementation ${phaseId} RED generation retry ${retries}/${MAX_RED_RETRIES}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
+						continue;
+					}
+					break;
 				}
-				const redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
-				const redForbiddenFiles = redChangedFiles.filter((f) => !isAllowedRedPath(f));
-				const redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, forbiddenFiles: redForbiddenFiles, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied });
-				appendImplementationEvidence(setup.specDirectory, redEvidence);
-				if (redEvidence.status === "polluted-red") {
-					restorePaths(setup.worktreePath, redForbiddenFiles);
+				if (!redEvidence) {
+					attemptErrors = ["red-generation: no RED evidence produced"];
+					ctx.log(`Implementation ${phaseId} RED generation failed after 0 tries`);
+					break;
 				}
 				if (redEvidence.status === "green-already-satisfied") {
 					resetDeliverableCheckCache();
@@ -399,9 +474,14 @@ export const implementationStage: Stage = {
 				const redFailures = redEvidenceFailureReasons(redEvidence);
 				if (redFailures.length) {
 					attemptErrors = redFailures;
+					ctx.log(`Implementation ${phaseId} RED generation failed after ${retries + 1} tries`);
 					ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
+					ctx.log(redEvidenceLogLine(redEvidence));
 					break;
 				}
+				const redTestSnapshot = redStatus === "red" && testFiles.length > 0 ? snapshotFiles(setup.worktreePath, testFiles) : new Map<string, string | null>();
+				const redTargetsExist = Array.from(redTestSnapshot.values()).some((content) => content !== null);
+				const confirmedRedTargets = redStatus === "red" && testFiles.length > 0 && (redChangedFiles.length > 0 || redTargetsExist);
 				// Feed the previous attempt's REAL build/test errors into this attempt
 				// so the implementer fixes the specific failures instead of resampling,
 				// and surface the verified RED status so the green-phase agent knows
@@ -540,6 +620,20 @@ export const implementationStage: Stage = {
 				}
 				claimedNotChanged = changeGate.claimedNotChanged;
 				hollowFiles = symbolGate.hollowFiles;
+				const tddOracleFailures: string[] = [];
+				if (confirmedRedTargets) {
+					const modifiedRedTests = changedSinceSnapshot(setup.worktreePath, redTestSnapshot);
+					if (modifiedRedTests.length) {
+						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")}`);
+						ctx.log(`Implementation ${phaseId} post-red-oracle: skipped because confirmed RED test file(s) changed during GREEN (${modifiedRedTests.join(", ")})`);
+					} else {
+						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
+						ctx.log(`Implementation ${phaseId} post-red-oracle: ${postRedStatus} (ran: ${testFiles.join(",") || "n/a"})`);
+						if (postRedStatus === "red") tddOracleFailures.push(`tdd-targets-still-red: ${testFiles.join(", ")}`);
+						else if (postRedStatus === "broken") tddOracleFailures.push(`tdd-targets-broken-after-implementation: ${testFiles.join(", ")}`);
+						else if (postRedStatus !== "green") tddOracleFailures.push(`tdd-targets-unverified-after-implementation: ${testFiles.join(", ")}`);
+					}
+				}
 				// In-scope verdict (AC-05 → SCENARIO-012/013/014/025/027): the phase is GREEN
 				// when the gate fully passed OR when every failure is a pre-existing
 				// out-of-scope crate the branch never touched (gate.inScopePass). The
@@ -549,7 +643,7 @@ export const implementationStage: Stage = {
 				// spec-11 AC-07/AC-08 (SCENARIO-013): AND `changeGate.pass` so a
 				// claimed-but-never-changed file hard-fails EVEN WHEN build + deliverable
 				// both pass (the false-green killer, closed a second way).
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass) {
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
 					green = true;
 					phaseStatusUpsert(phaseStatus, phaseId, "green");
 					emitPhaseStatus("ok");
@@ -566,7 +660,9 @@ export const implementationStage: Stage = {
 					...missingDeliverables.map((e) => `deliverable: ${e}`),
 					...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`),
 					...hollowFiles.map((e) => `hollow-file: ${e}`),
+					...tddOracleFailures,
 				];
+				attemptErrors = failureReasons;
 				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
 			}
 			// Close the phase bracket EXACTLY ONCE after the attempt loop: the

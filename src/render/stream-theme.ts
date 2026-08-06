@@ -198,6 +198,7 @@ export function themeLine(kind: LineKind, text: string, theme?: DashboardTheme):
  *   ok       → "success"
  *   failed   → "error"
  *   skipped  → "warning"
+ *   partial  → "warning"
  *   running  → "accent"
  *   undefined / unknown → "accent"  (treated as in-progress)
  *
@@ -210,7 +211,7 @@ export function themeLine(kind: LineKind, text: string, theme?: DashboardTheme):
 export function statusFgToken(status: string | undefined): string {
 	if (status === "ok") return "success";
 	if (status === "failed") return "error";
-	if (status === "skipped") return "warning";
+	if (status === "skipped" || status === "partial") return "warning";
 	return "accent";
 }
 

@@ -115,6 +115,7 @@ export function statusGlyph(status: string, theme?: DashboardTheme): string {
 	if (status === "ok") return theme ? theme.fg("success", "✓") : "✓";
 	if (status === "failed") return theme ? theme.fg("error", "✗") : "✗";
 	if (status === "skipped") return theme ? theme.fg("warning", "↷") : "↷";
+	if (status === "partial") return theme ? theme.fg("warning", "!") : "!";
 	if (status === "running") {
 		// With theme: animated braille frame (time-derived seed). Without theme:
 		// the stable static glyph `●` (anti-hardcoding: seed undefined → static).
@@ -213,7 +214,20 @@ export type DashboardEntry = {
 	status: string;
 	kind?: "stage" | "phase";
 	parentId?: string;
+	startedAt?: string;
+	endedAt?: string;
+	durationMs?: number;
 };
+
+export type StageProgressEntry = Omit<DashboardEntry, "id"> & { id?: string };
+
+function stageTimingSuffix(entry: Pick<DashboardEntry, "startedAt" | "endedAt" | "durationMs">): string {
+	const parts: string[] = [];
+	if (entry.startedAt) parts.push(`start ${entry.startedAt}`);
+	if (entry.endedAt) parts.push(`end ${entry.endedAt}`);
+	if (entry.durationMs !== undefined) parts.push(`duration ${fmtElapsed(entry.durationMs)}`);
+	return parts.length ? ` (${parts.join(" · ")})` : "";
+}
 
 export function packDashboardLines(
 	entries: DashboardEntry[],
@@ -277,7 +291,7 @@ export function packDashboardLines(
 		lines.push(truncLine(theme ? theme.fg(token, `── ${label} ──`) : `── ${label} ──`, width));
 		for (const e of rows) {
 			const indent = isPhase(e) ? "    " : "  ";
-			lines.push(truncLine(`${indent}${statusGlyph(e.status, theme)} ${e.label}`, width));
+			lines.push(truncLine(`${indent}${statusGlyph(e.status, theme)} ${e.label}${stageTimingSuffix(e)}`, width));
 		}
 		lines.push("");
 	};
@@ -399,7 +413,7 @@ export interface ResultDetails {
 	/** Stage-progress rows (§2). `id` is OPTIONAL (additive) so a `statusOf`
 	 *  resolver can map stageId→status for the Phase-4 per-stage blocks; legacy
 	 *  callers that supply only {label,status} still satisfy the shape. */
-	stages?: Array<{ id?: string; label: string; status: string; kind?: "stage" | "phase"; parentId?: string }>;
+	stages?: StageProgressEntry[];
 	logPath?: string;
 }
 
@@ -422,6 +436,7 @@ function stageBlockGlyph(status: string | undefined): string {
 	if (status === "ok") return "✓";
 	if (status === "failed") return "✗";
 	if (status === "skipped") return "↷";
+	if (status === "partial") return "!";
 	return "●"; // running OR undefined (unknown) — in-progress, matches accent fg
 }
 
@@ -446,15 +461,11 @@ function statusBackground(
 
 /** Status → icon for §2 stage rows (mirrors the renderResult icon mapper). */
 export function stageIcon(st: string): string {
-	return st === "ok"
-		? "✔"
-		: st === "failed"
-			? "⚠"
-			: st === "skipped"
-				? "↷"
-				: st === "running"
-					? "●"
-					: "·";
+	if (st === "ok") return "✔";
+	if (st === "failed" || st === "partial") return "⚠";
+	if (st === "skipped") return "↷";
+	if (st === "running") return "●";
+	return "·";
 }
 
 /**
@@ -569,7 +580,7 @@ export function buildResultComponent(details: ResultDetails, theme?: DashboardTh
 	// stage renders its status icon + label.
 	container.addChild(new Text(bold("── stage progress ──"), 0, 0));
 	for (const s of details.stages ?? []) {
-		container.addChild(new Text(`  ${stageIcon(s.status)} ${s.label}`, 0, 0));
+		container.addChild(new Text(`  ${stageIcon(s.status)} ${s.label}${stageTimingSuffix(s)}`, 0, 0));
 	}
 
 	// §3 summary — Markdown-rendered (AC-06). Omitted entirely when there are no

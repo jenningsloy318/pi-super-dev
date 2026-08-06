@@ -61,6 +61,19 @@ describe("task", () => {
 		expect(r.status).toBe("ok");
 		expect(state.foo).toEqual({ ok: true });
 	});
+	it("emits partial progress for incomplete implementation while preserving node ok", async () => {
+		const t = task(mockTask("implementation", () => ({ allGreen: false, phasesCompleted: 0, totalPhases: 1 })));
+		const state: PipelineState = {};
+		const ctx = mkCtx();
+		const seen: string[] = [];
+		ctx.events.on("stage", (info: { status: string }) => seen.push(info.status));
+
+		const r = await t.run(state, ctx);
+
+		expect(r.status).toBe("ok");
+		expect(state.implementation).toMatchObject({ allGreen: false });
+		expect(seen).toEqual(["running", "partial"]);
+	});
 	it("returns failed (not throw) on a non-fatal error", async () => {
 		const t = task({ id: "x", label: "x", async run() { throw new Error("boom"); } });
 		const r = await t.run({}, mkCtx());

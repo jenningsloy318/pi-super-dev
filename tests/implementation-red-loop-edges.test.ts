@@ -110,9 +110,16 @@ function mkState(phaseCount = 1): PipelineState {
  * tdd-guide controls (one per tdd-guide call, in order), so we can assert that
  * a retry's NEW control.testFiles actually propagate to the next oracle call.
  */
-function mkCtx(opts: { tddControls?: ControlObj[]; onTddCall?: (call: AgentCall, index: number) => void } = {}): { ctx: StageContext; tddCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
+function mkCtx(opts: {
+	tddControls?: ControlObj[];
+	boundaryControls?: ControlObj[];
+	onTddCall?: (call: AgentCall, index: number) => void;
+	onImplCall?: (call: AgentCall, index: number) => void;
+} = {}): { ctx: StageContext; tddCalls: AgentCall[]; boundaryCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
 	const queue = [...(opts.tddControls ?? [DEFAULT_TDD_CONTROL])];
+	const boundaryQueue = [...(opts.boundaryControls ?? [])];
 	const tddCalls: AgentCall[] = [];
+	const boundaryCalls: AgentCall[] = [];
 	const implCalls: AgentCall[] = [];
 	const logs: string[] = [];
 	const ctx: StageContext = {
@@ -129,8 +136,14 @@ function mkCtx(opts: { tddControls?: ControlObj[]; onTddCall?: (call: AgentCall,
 				const next = queue.length > 1 ? queue.shift()! : (queue[0] ?? DEFAULT_TDD_CONTROL);
 				return { text: "", control: next };
 			}
+			if (call.agent === "red-boundary-classifier") {
+				boundaryCalls.push(call);
+				const next = boundaryQueue.length > 1 ? boundaryQueue.shift()! : (boundaryQueue[0] ?? {});
+				return { text: "", control: next };
+			}
 			if (call.agent === "implementer") {
 				implCalls.push(call);
+				opts.onImplCall?.(call, implCalls.length);
 				return { text: "", control: { filesModified: ["src/x.ts"] } };
 			}
 			return { text: "", control: {} };
@@ -144,7 +157,7 @@ function mkCtx(opts: { tddControls?: ControlObj[]; onTddCall?: (call: AgentCall,
 		events: new EventEmitter(),
 		results: [],
 	};
-	return { ctx, tddCalls, implCalls, logs };
+	return { ctx, tddCalls, boundaryCalls, implCalls, logs };
 }
 
 beforeEach(() => {
@@ -282,6 +295,114 @@ describe("P3 edges — unconfirmed RED blocks the implementer, unknown still deg
 });
 
 describe("P3 edges — RED pollution is detected and rolled back", () => {
+	it("asks the boundary evaluator for ambiguous RED files and accepts high-confidence test-support decisions", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-boundary-agent-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			writeFileSync(join(dir, "README.md"), "baseline\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck.mockImplementationOnce(() => "red").mockImplementationOnce(() => "green");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "boundary");
+			const supportPath = "src/runtime/manifest_fixture.ts";
+			const { ctx, boundaryCalls, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: [supportPath] }],
+				boundaryControls: [{
+					classifications: [{ path: supportPath, category: "support", confidence: 0.93, reason: "A RED-only fixture imported by the generated test." }],
+				}],
+				onTddCall: () => {
+					mkdirSync(join(dir, "src", "runtime"), { recursive: true });
+					writeFileSync(join(dir, supportPath), "export const fixture = 'red';\n");
+				},
+			});
+
+			await (implementationStage as Stage).run(state, ctx);
+
+			expect(boundaryCalls).toHaveLength(1);
+			expect(boundaryCalls[0].prompt).toContain(supportPath);
+			expect(implCalls).toHaveLength(1);
+			expect(logs.some((l) => /RED boundary: allAllowed=true/i.test(l))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("polluted RED output is regenerated inside the RED loop before GREEN implementation", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-pollution-retry-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			writeFileSync(join(dir, "README.md"), "baseline\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck
+				.mockImplementationOnce(() => "red")
+				.mockImplementationOnce(() => "red")
+				.mockImplementationOnce(() => "green");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "pollution-retry");
+			const { ctx, tddCalls, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: ["tests/red.test.ts"] }, { testFiles: ["tests/red.test.ts"] }],
+				onTddCall: (_call, index) => {
+					if (index === 1) {
+						mkdirSync(join(dir, "src"), { recursive: true });
+						writeFileSync(join(dir, "src", "prod.ts"), "export const polluted = true;\n");
+						return;
+					}
+					mkdirSync(join(dir, "tests"), { recursive: true });
+					writeFileSync(join(dir, "tests", "red.test.ts"), "import { describe, it } from 'vitest';\ndescribe('red', () => { it('fails first', () => { throw new Error('red'); }); });\n");
+				},
+			});
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			expect(tddCalls).toHaveLength(2);
+			expect(implCalls).toHaveLength(1);
+			expect(res.allGreen).toBe(true);
+			expect(existsSync(join(dir, "src", "prod.ts"))).toBe(false);
+			expect(logs.some((l) => /RED generation retry/i.test(l))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("Go *_test.go files under package directories are allowed RED test edits", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-go-test-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			writeFileSync(join(dir, "README.md"), "baseline\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck.mockImplementation(() => "red");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "go-red");
+			const goTestPath = "backend-service/internal/handlers/performance/jmx_resource_manifest_test.go";
+			const { ctx, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: [goTestPath] }],
+				onTddCall: () => {
+					mkdirSync(join(dir, "backend-service", "internal", "handlers", "performance"), { recursive: true });
+					writeFileSync(join(dir, goTestPath), "package performance\n\nfunc TestJMXManifestRed(t *testing.T) {\n\tt.Fatal(\"red\")\n}\n");
+				},
+			});
+
+			await (implementationStage as Stage).run(state, ctx);
+
+			expect(logs.some((l) => /red-polluted/i.test(l))).toBe(false);
+			expect(implCalls.length).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("a RED agent that writes production code is classified polluted-red and never reaches implementer", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "sd-red-polluted-"));
 		try {
@@ -391,5 +512,74 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 		expect(res.phasesCompleted).toBe(0);
 		expect(res.allGreen).toBe(false);
 		expect(logs.some((l) => /red-not-confirmed/i.test(l))).toBe(true);
+	});
+});
+
+describe("P3 edges — confirmed RED targets must become green after implementation", () => {
+	it("fails the GREEN attempt when the confirmed RED target is still red after implementation", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-still-red-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			writeFileSync(join(dir, "README.md"), "baseline\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck.mockImplementation(() => "red");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "still-red");
+			const testPath = "tests/red.test.ts";
+			const { ctx, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: [testPath] }],
+				onTddCall: () => {
+					mkdirSync(join(dir, "tests"), { recursive: true });
+					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { throw new Error('red'); });\n");
+				},
+			});
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			expect(implCalls.length).toBeGreaterThan(0);
+			expect(res.allGreen).toBe(false);
+			expect(logs.some((l) => /post-red-oracle: red/i.test(l))).toBe(true);
+			expect(logs.some((l) => /tdd-targets-still-red/i.test(l))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("fails the GREEN attempt when the implementer changes confirmed RED test files", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-test-integrity-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			writeFileSync(join(dir, "README.md"), "baseline\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck.mockImplementationOnce(() => "red").mockImplementation(() => "green");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "test-integrity");
+			const testPath = "tests/red.test.ts";
+			const { ctx, logs } = mkCtx({
+				tddControls: [{ testFiles: [testPath] }],
+				onTddCall: () => {
+					mkdirSync(join(dir, "tests"), { recursive: true });
+					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { throw new Error('red'); });\n");
+				},
+				onImplCall: () => {
+					writeFileSync(join(dir, testPath), "it('forces real behavior', () => {});\n");
+				},
+			});
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			expect(res.allGreen).toBe(false);
+			expect(logs.some((l) => /tdd-tests-modified-during-green/i.test(l))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
