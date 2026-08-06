@@ -29,6 +29,7 @@ import type { LineKind } from "./stream-theme.js";
 export type GroupedLine = {
 	kind: LineKind;
 	text: string;
+	createdAt?: string;
 };
 
 /** A partitioned per-stage section (one per distinct stage in first-appearance order). */
@@ -51,8 +52,7 @@ export type StageGroup = {
  * (Phase 4), so a single call site partitions every shape without a throw.
  */
 export type GroupableEntry =
-	| { kind: LineKind; text: string; stageId: string; stageLabel: string }
-	| { kind: LineKind; text: string; stageId?: string; stageLabel?: string }
+	| { kind: LineKind; text: string; stageId?: string; stageLabel?: string; createdAt?: string }
 	| string;
 
 /** Sentinel identity for untagged / legacy-string entries — identical to the
@@ -97,6 +97,7 @@ export function groupByStage(
 		let stageLabel: string;
 		let kind: LineKind;
 		let text: string;
+		let createdAt: string | undefined;
 
 		if (typeof entry === "string") {
 			// SCENARIO-007: plain legacy strings collapse into the sentinel
@@ -117,6 +118,7 @@ export function groupByStage(
 					: SENTINEL_STAGE_LABEL;
 			kind = entry.kind;
 			text = entry.text;
+			createdAt = entry.createdAt;
 		}
 
 		let idx = groupIndexOf.get(stageId);
@@ -127,8 +129,11 @@ export function groupByStage(
 			groupIndexOf.set(stageId, idx);
 			groups.push({ stageId, stageLabel, lines: [] });
 		}
-		// Strip the stage tag: callers consume only { kind, text }.
-		groups[idx].lines.push({ kind, text });
+		// Strip the stage tag but keep the optional event timestamp for foreground
+		// stream rendering and run-log diagnostics.
+		const line: GroupedLine = { kind, text };
+		if (createdAt !== undefined) line.createdAt = createdAt;
+		groups[idx].lines.push(line);
 	}
 
 	// SCENARIO-009: resolve each group's status via the injected lookup,

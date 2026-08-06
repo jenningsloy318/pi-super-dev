@@ -88,18 +88,11 @@ export const hasImplementation = (s: PipelineState) => {
 	return (i?.totalPhases ?? 0) > 0 && i?.allGreen === true;
 };
 
-/** A research report is COMPLETE when it exists on disk. Open issues are
- *  NORMAL research output — the agent is explicitly instructed to flag genuine
- *  open questions/contradictions for the next stage (agents/research-agent.md
- *  "Flag issues"). Treating `openIssues.length > 0` as a gate FAILURE made an
- *  honest agent with any unresolvable question (e.g. an unreleased library
- *  version) exhaust all 4 attempts — the ROOT CAUSE of "Research gate
- *  exhausted". Open issues now flow forward as documented signal (matching how
- *  the requirements gate treats `openQuestions`), not a blocker. The only hard
- *  failure is "no report produced" (genuine timeout/no-output), which — now
- *  that this gate is fatal — aborts the run honestly instead of cascading.
- *  AUDIT: this is the only gate with the "honest agent can't pass" anti-pattern;
- *  requirements/bdd/spec check structural minimums the agent can always add. */
+/** A research report is complete only when it exists and leaves no answerable
+ *  open issues. `openIssues` is reserved for concrete ambiguities that another
+ *  research pass should try to resolve; generic caveats and unresolvable limits
+ *  belong in the summary/options instead. The gate feeds these issues into the
+ *  next attempt through the normal feedback path. */
 export const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const r = s.research as { docPath?: string; openIssues?: unknown[] } | undefined;
 	if (!r || !r.docPath) {
@@ -109,7 +102,8 @@ export const researchComplete = async (s: PipelineState, ctx: StageContext) => {
 	const open = (r.openIssues as unknown[]) ?? [];
 	if (open.length > 0) {
 		const preview = open.slice(0, 3).map((o) => String(o).slice(0, 80)).join("; ");
-		ctx.log(`Research: ${open.length} open issue(s) documented (flowing forward as signal, not blocking): ${preview}`);
+		ctx.log(`Research: ${open.length} answerable open issue(s) remain; retrying research: ${preview}`);
+		return { pass: false, errors: [`research left ${open.length} answerable open issue(s): ${preview}`] };
 	}
 	return { pass: true, errors: [] };
 };

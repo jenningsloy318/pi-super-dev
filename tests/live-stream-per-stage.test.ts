@@ -298,12 +298,12 @@ describe("SCENARIO-004: stage id from structured event, not label parsing", () =
 // ─── Regression: stage tagging never leaks ANSI / breaks the raw disk log ─
 
 describe("regression: stage tagging stays byte-clean (non-TUI / disk log)", () => {
-	it("diskLogText() remains raw line.text only — no stage tags leak into the on-disk log", () => {
+	it("diskLogText() remains timestamped raw text — no stage tags leak into the on-disk log", () => {
 		const h = createLiveStream({});
 		h.sink.phase("Spec");
 		h.sink.stage({ id: "spec", label: "Specification" } satisfies StageInfo);
 		h.sink.log("writing");
-		expect(h.diskLogText()).toBe("▶ Spec\nwriting");
+		expect(h.diskLogText()).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] ▶ Spec\n\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] writing$/);
 	});
 
 	it("a non-TUI flush stays zero-ANSI once stage tags are present", () => {

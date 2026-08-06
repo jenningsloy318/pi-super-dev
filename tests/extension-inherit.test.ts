@@ -221,8 +221,8 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", expect.stringContaining("stages"));
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", undefined);
 	});
-	it("foreground TUI runs stream updates while showing dashboard progress", async () => {
-		const { execute } = setupTool();
+	it("foreground TUI runs stream updates without registering the old dashboard widget", async () => {
+		const { pi, execute } = setupTool();
 		const ui = {
 			setWidget: vi.fn(),
 			setWorkingMessage: vi.fn(),
@@ -238,8 +238,9 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 			{ mode: "tui", ui },
 		) as { content?: Array<{ type: "text"; text: string }> };
 		expect(res.content?.[0]?.text).toContain("super-dev pipeline complete");
-		expect(ui.setWidget).toHaveBeenCalledWith("super-dev", expect.anything(), { placement: "aboveEditor" });
+		expect(ui.setWidget).not.toHaveBeenCalled();
 		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev", expect.anything());
+		expect(pi.appendEntry).not.toHaveBeenCalledWith("super-dev-run", expect.anything());
 		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("foreground log still visible") })]) }));
 	});
 });

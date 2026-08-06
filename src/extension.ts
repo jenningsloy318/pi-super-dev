@@ -14,12 +14,13 @@
 import type { ExtensionAPI, Theme, ExtensionContext, InputEvent, EntryRenderer } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
-import type { DashboardTheme, DashboardEntry } from "./render/dashboard.ts";
+import type { DashboardTheme } from "./render/dashboard.ts";
 import { createLiveStream } from "./render/live-stream.js";
 import type { TranscriptLine, LiveStreamHandle } from "./render/live-stream.js";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { ensureSuperDevDirs, startRun, getRunLogPath, getConfig } from "./render/super-dev-dir.ts";
 import { runReflectionAsync } from "./render/reflection.ts";
 import { writeEscalationReport } from "./render/escalation-report.ts";
@@ -230,6 +231,37 @@ function formatSummary(s: RunSummary, cwd?: string): string[] {
 	return lines;
 }
 
+function formatDuration(ms: number): string {
+	if (!Number.isFinite(ms) || ms < 0) return "unknown";
+	if (ms < 1000) return `${ms}ms`;
+	const sec = ms / 1000;
+	if (sec < 60) return `${sec.toFixed(sec < 10 ? 1 : 0)}s`;
+	const min = Math.floor(sec / 60);
+	const rem = Math.round(sec % 60);
+	return `${min}m ${rem}s`;
+}
+
+function gitValue(cwd: string, args: string[]): string {
+	try {
+		const result = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		if (result.status !== 0) return "n/a";
+		return result.stdout.trim() || "n/a";
+	} catch {
+		return "n/a";
+	}
+}
+
+function launchMetadataLines(task: string, cwd: string, runLogPath: string): string[] {
+	return [
+		`Run started: ${new Date().toISOString()}`,
+		`Task: ${task}`,
+		`Launch cwd: ${cwd}`,
+		`Launch worktree: ${gitValue(cwd, ["rev-parse", "--show-toplevel"])}`,
+		`Launch branch: ${gitValue(cwd, ["branch", "--show-current"])}`,
+		`Run log: ${runLogPath}`,
+	];
+}
+
 /** Gap 4.6′-lite — stagnation escalation (scheme C: informative by default, interactive opt-in).
  *  Always writes a stagnation-report.md to the spec dir (baseline, all modes);
  *  spec-18 / Phase 2 additionally delegates the canonical escalation-report.md
@@ -386,9 +418,9 @@ export function makeEscalate(ctx: any): Escalate {
 
 // Re-export the extracted dashboard presentation helpers so existing
 // importers (tests, downstream consumers) keep resolving unchanged (AC-08).
-// The upgraded, theme-aware implementations live in src/render/dashboard.ts;
-// `buildDashboardWidget` / `createDashboardWidgetFactory` expose the Phase 2
-// Component-factory builders consumed by renderDashboard()'s setWidget call.
+// The upgraded, theme-aware implementations live in src/render/dashboard.ts.
+// The live foreground widget is no longer registered, but these builders remain
+// exported for compatibility with tests/downstream consumers and final results.
 export {
 	packDashboardLines,
 	padTruncate,
@@ -472,22 +504,23 @@ export default function activate(pi: ExtensionAPI): void {
 				onUpdate: (body) => onUpdate?.({ content: [{ type: "text", text: body }], details: {} }),
 				mode: ctx?.mode,
 				theme: ctx?.ui?.theme as DashboardTheme | undefined,
+				showTimestamps: true,
 			});
 			const finalizeLive = stream.finalizeLive;
 			const flush = stream.flush;
 			const flushLive = () => flush();
-			// Workflow dashboard v1 (Gap Dashboard): always-on phase-tracker widget,
-			// TUI-only. Updated from the structured `stage` events emitted by task()
-			// nodes (running → terminal). v2 will grow this into a full two-panel
-			// interactive ctx.ui.custom() with stop/pause/save keybindings.
-			const DASHBOARD_KEY = "super-dev";
-			const dashboardStages = new Map<string, { label: string; status: string; kind?: "stage" | "phase"; parentId?: string }>();
+			type StageViewState = {
+				label: string;
+				status: string;
+				kind?: "stage" | "phase";
+				parentId?: string;
+				startedAt?: string;
+				endedAt?: string;
+				durationMs?: number;
+				startedMs?: number;
+			};
+			const dashboardStages = new Map<string, StageViewState>();
 			const dashboardOrder: string[] = [];
-			let dashboardActivity = "";
-			// Proof-of-life state for the always-on widget: a run-start clock keeps the
-			// header visibly ticking even during quiet agent/model spans. Detailed output
-			// continues to stream through the foreground tool result and the run log.
-			const runStartMs = Date.now();
 			let liveRunLogPath = "";
 			let lastDiskLog = 0;
 			const DISK_LOG_MS = 1000;
@@ -498,94 +531,63 @@ export default function activate(pi: ExtensionAPI): void {
 				lastDiskLog = now;
 				try { writeFileSync(liveRunLogPath, stream.diskLogText() + "\n"); } catch { /* best-effort */ }
 			};
-			let lastWidget = 0;
-			const WIDGET_MS = 200;
-			const renderDashboard = () => {
-				if (ctx?.mode !== "tui") return; // TUI-only widget (AC-09 no-regression guard)
-				const entries = dashboardOrder.map((id) => { const s = dashboardStages.get(id); return s ? { id, ...s } : null; }).filter(Boolean) as DashboardEntry[];
-			// Do NOT mirror progress into a footer/status-line pill. In Herdr/pi TUI that
-			// status surface is rendered as a full shell-prompt line on every update,
-			// creating the repeated "... · 0/1 stages" clutter the dashboard replaced.
-			// Keep progress solely in the native dashboard widget + durable run log.
-				// SCENARIO-001 / SCENARIO-002 — register the dashboard via pi's native
-				// Component-factory overload `setWidget(key, (tui, theme) => Component,
-				// opts)`. The previous zero-arg object-returning factory never received
-				// `theme`, so the dashboard rendered as uncolored ASCII (AC-01 root
-				// cause). The factory now builds a Container of Text children using the
-				// theme-aware packDashboardLines (AC-02 theming, AC-03 animated running
-				// glyph via a time-derived seed, AC-04 preserved 2-column layout). The
-				// string[] setWidget overload is intentionally NOT used (AC-08).
-				try {
-					// SCENARIO-001 / SCENARIO-002 — register the dashboard via pi's native
-					// Component-factory overload `setWidget(key, (tui, theme) => Component,
-					// opts)`. The factory is the pure, unit-tested
-					// `createDashboardWidgetFactory`, so `theme` threads into a Container of
-					// Text children (AC-01 root-cause fix; AC-02 theming; AC-03 animated
-					// running glyph via a time-derived seed; AC-04 preserved 2-column
-					// layout). The string[] setWidget overload is intentionally NOT used
-					// (AC-08); the `ctx.mode === 'tui'` guard above guarantees no call fires
-					// in print/json/headless/RPC modes (AC-09 / AC-10).
-					ctx?.ui?.setWidget?.(
-						DASHBOARD_KEY,
-						createDashboardWidgetFactory(entries, dashboardActivity, activeRun?.queue.length ?? 0, "esc to abort", { elapsedMs: Date.now() - runStartMs, latestInputPreview: activeRun?.lastInstructionPreview, logPath: liveRunLogPath }),
-						{ placement: "aboveEditor" },
-					);
-				} catch { /* best-effort */ }
+			const logStageTiming = (message: string) => {
+				stream.sink.log(message);
+				persistLiveLog(true);
+				flushLive();
 			};
-			// Stage changes are infrequent → render at once; text/log updates are high-rate → throttle.
-			const renderDashboardThrottled = () => { const now = Date.now(); if (now - lastWidget >= WIDGET_MS) { renderDashboard(); lastWidget = now; } };
 			const sink: ProgressSink = {
-				// The dashboard `▶ <activity>` line is a STICKY current-phase indicator:
-				// it is updated ONLY by phase() — stage banners AND the implementation
-				// sub-phase subtitles ("Implementation — Phase 1/2: …"). It is deliberately
-				// NOT touched by the high-rate log()/text() events, so the current phase
-				// stays PINNED (like the `▌ Stage 9 — Implementation` section header)
-				// instead of rolling through every command — and the agent's streaming
-				// narration ("▶ I have the ACs injected…") never leaks into it. The
-				// detailed per-step log (red-oracle / build-gate / advisory) still scrolls
-				// in the stage's section body below.
-				phase: (label) => { stream.sink.phase(label); persistLiveLog(); dashboardActivity = label; if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } renderDashboard(); flushLive(); },
-				log: (message) => { stream.sink.log(message); persistLiveLog(); renderDashboardThrottled(); flushLive(); },
+				phase: (label) => { stream.sink.phase(label); persistLiveLog(); if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } flushLive(); },
+				log: (message) => { stream.sink.log(message); persistLiveLog(); flushLive(); },
 				text: (partial) => {
 					stream.sink.text(partial);
 					const now = Date.now();
-					if (now - lastFlush >= FLUSH_MS) { persistLiveLog(); flushLive(); lastFlush = now; renderDashboardThrottled(); }
+					if (now - lastFlush >= FLUSH_MS) { persistLiveLog(); flushLive(); lastFlush = now; }
 				},
 				stage: (info) => {
-					// Workflow dashboard v1 (Gap Dashboard): always-on phase tracker widget.
 					if (!dashboardOrder.includes(info.id)) dashboardOrder.push(info.id);
-					dashboardStages.set(info.id, { label: info.label, status: info.status, kind: info.kind, parentId: info.parentId });
-					// Phase 5 (AC-05 / SCENARIO-019..021): mirror the structured `stage`
-					// event into the live-stream sink so its current-stage state (and the
-					// RESOLVED-1 phase-line re-tag) stays synchronized with the dashboard
-					// tracker. This is the SINGLE wiring point that makes stage tags
-					// resolve from the structured `stage.id` (not `▶ Stage N` label
-					// parsing) end-to-end — without it the Phase-3 per-stage section stack
-					// is unreachable in production and transcriptTail carries no tags.
+					const previous = dashboardStages.get(info.id);
+					const nowMs = Date.now();
+					const nowIso = new Date(nowMs).toISOString();
+					const next: StageViewState = {
+						...(previous ?? {}),
+						label: info.label,
+						status: info.status,
+						kind: info.kind,
+						parentId: info.parentId,
+					};
+					if (info.status === "running" && previous?.startedAt === undefined) {
+						next.startedAt = nowIso;
+						next.startedMs = nowMs;
+					} else if (info.status !== "running") {
+						next.endedAt = nowIso;
+						const startedMs = previous?.startedMs ?? nowMs;
+						next.durationMs = nowMs - startedMs;
+					}
+					dashboardStages.set(info.id, next);
 					stream.sink.stage(info);
-					renderDashboard(); // widget update
+					if (info.status === "running" && previous?.startedAt === undefined) {
+						logStageTiming(`Stage start: ${info.label} at ${nowIso}`);
+					} else if (info.status !== "running") {
+						const error = info.error ? ` error=${info.error}` : "";
+						logStageTiming(`Stage end: ${info.label} status=${info.status} at ${nowIso} duration=${formatDuration(next.durationMs ?? 0)}${error}`);
+					}
 				},
 			};
 			const doRun = async (runSignal: AbortSignal | undefined): Promise<ToolRunResult> => {
-			let heartbeat: ReturnType<typeof setInterval> | undefined;
 			try {
 				// Set the run-state singleton on execute() entry via the exported setter
 				// (single write path). Guard overlapping runs: a non-null singleton here
 				// means a prior run never cleared its finally (reentrancy) — discard it.
 				if (activeRun != null) setActiveRun(null);
 				setActiveRun(createActiveRun(ctx, stream));
-				try { pi.appendEntry?.("super-dev-run", { status: "started", task, at: Date.now() }); } catch { /* best-effort */ }
-				// Heartbeat (TUI only): re-render the widget on a fixed cadence so the
-				// animated running glyph keeps spinning AND the elapsed clock keeps
-				// ticking even during long quiet agent turns (model thinking / a slow
-				// tool) when no sink event fires. Cleared in finally (no leak across runs).
-				if (ctx?.mode === "tui") heartbeat = setInterval(() => { try { renderDashboard(); } catch { /* best-effort */ } }, 250);
 				ensureSuperDevDirs();
 				startRun();
 				liveRunLogPath = getRunLogPath();
 				stream.sink.log(superDevRunMetadataLine());
+				for (const line of launchMetadataLines(task, process.cwd(), liveRunLogPath)) stream.sink.log(line);
 				persistLiveLog(true);
-				renderDashboard();
+				flushLive();
 				// Name the session after the task (pi-native) so it is identifiable in
 				// the session selector / `/tree`. Only set when the session is still
 				// unnamed so a user-chosen name is never clobbered; refined to the spec
@@ -663,25 +665,20 @@ export default function activate(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				throw new Error(`❌ super-dev pipeline failed: ${message}`);
 			} finally {
-				// Stop the proof-of-life heartbeat FIRST so no re-render fires after the
-				// widget is torn down below.
-				if (heartbeat) clearInterval(heartbeat);
 				// Discard the run-state singleton via the exported setter (single write
-				// path), in the SAME cleanup that removes the run's dashboard widget — so
-				// run teardown + widget teardown stay unified (no leak across runs).
+				// path) so no queued run input leaks across runs.
 				setActiveRun(null);
 				// spec-11 AC-05 / SCENARIO-010: clear the per-run ChangeTracker singleton
 				// in the SAME finally that nulls activeRun, so no tracker (and its
 				// in-memory baselines/end-records) leaks across runs. The setup stage
 				// installs it; every run clears it here on success OR failure.
-				// Always clear the dashboard widget + footer state when the run ends (success or failure).
-				try { ctx?.ui?.setWidget?.(DASHBOARD_KEY, undefined); } catch { /* best-effort */ }
+				// Always clear the compact working message when the run ends (success or failure).
 				try { ctx?.ui?.setWorkingMessage?.(); } catch { /* best-effort */ }
 				// No-op: super-dev no longer owns a footer/status-line pill. Do not call
 				// setStatus("super-dev", undefined) here either; some TUI shells render even
 				// clear operations as prompt/status-line churn.
 				// Phase 2 (AC-04 / SCENARIO-010): clear the mid-run input status pill in
-				// the same cleanup that nulls activeRun + the dashboard widget.
+				// the same cleanup that nulls activeRun.
 				try { ctx?.ui?.setStatus?.("super-dev-input", undefined); } catch { /* best-effort */ }
 				setActiveTracker(null);
 			}

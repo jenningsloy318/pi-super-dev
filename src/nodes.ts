@@ -178,10 +178,11 @@ export function task(stage: Stage): Node {
 					ctx.log(`precondition ${stage.id}: ${specDocExists(specDir, glob) ? "✓" : "✗ missing"} ${glob}`);
 				}
 			}
+			let startMs = Date.now();
 			try {
 				ctx.events.emit("phase", stage.label);
 				ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" });
-				const startMs = Date.now();
+				startMs = Date.now();
 				const result = await stage.run(state, ctx);
 				const durationMs = Date.now() - startMs;
 				if (result !== undefined && result !== null) state[stage.id] = result;
@@ -190,8 +191,9 @@ export function task(stage: Stage): Node {
 				return { status: "ok", value: result };
 			} catch (err) {
 				const error = err instanceof Error ? err.message : String(err);
+				const durationMs = Date.now() - startMs;
 				record(ctx, "failed", error);
-				auditAppend({ stage: stage.id, error });
+				auditAppend({ stage: stage.id, durationMs, error });
 				// FatalAbort (a nested fatal gate's exhaustion) must ALWAYS propagate — never
 				// be converted to {status:"failed"}, which a tolerant sequence would swallow.
 				if (isFatalAbort(err)) throw err;
@@ -429,37 +431,43 @@ export function gate(opts: GateOptions, node: Node): Node {
 			let msg = "";
 			do {
 				escalationRetry = false;
-			for (let attempt = 1; attempt <= max; attempt++) {
-				if (ctx.signal?.aborted) return { status: "cancelled" };
-				const target = attempt === 1 ? node : (opts.fix ?? node);
-				last = await target.run(state, ctx);
-				if (last.status === "cancelled") return last;
-				if (last.status === "failed") {
-					if (attempt < max) continue;
-					break; // exhausted → non-fatal return below
-				}
-				const v = await opts.validate(state, ctx);
-				if (v.pass) {
-					// BUG-6: clear the feedback entry on success so stale failure errors
-					// don't persist + get re-prepended if this gate (or a sibling sharing
-					// the key) is ever re-run (loop/converge). No-op when none was set.
+				for (let attempt = 1; attempt <= max; attempt++) {
+					if (ctx.signal?.aborted) return { status: "cancelled" };
+					const target = attempt === 1 ? node : (opts.fix ?? node);
+					ctx.log(`gate${label}: attempt ${attempt}/${max} starting`);
+					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: null });
+					last = await target.run(state, ctx);
+					if (last.status === "cancelled") return last;
+					if (last.status === "failed") {
+						if (attempt < max) {
+							ctx.log(`gate${label}: attempt ${attempt}/${max} stage failed — ${last.error ?? "unknown error"}; retrying`);
+							continue;
+						}
+						break; // exhausted → non-fatal return below
+					}
+					const v = await opts.validate(state, ctx);
+					if (v.pass) {
+						// BUG-6: clear the feedback entry on success so stale failure errors
+						// don't persist + get re-prepended if this gate (or a sibling sharing
+						// the key) is ever re-run (loop/converge). No-op when none was set.
+						if (opts.feedbackKey) {
+							const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
+							if (all && opts.feedbackKey in all) delete all[opts.feedbackKey];
+						}
+						auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
+						ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
+						return { status: "ok", attempts: attempt };
+					}
+					lastErrors = v.errors;
+					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: false, errors: v.errors } });
+					ctx.log(`gate${label}: ✗ FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
+					// Feed the errors forward so the next attempt's agent prompt names them.
 					if (opts.feedbackKey) {
 						const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
-						if (all && opts.feedbackKey in all) delete all[opts.feedbackKey];
+						(state as Record<string, unknown>).__feedback = { ...(all ?? {}), [opts.feedbackKey]: v.errors };
 					}
-					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
-					ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
-					return { status: "ok", attempts: attempt };
+					if (attempt < max) ctx.log(`gate${label}: retrying with validator feedback`);
 				}
-				lastErrors = v.errors;
-				auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: false, errors: v.errors } });
-				ctx.log(`gate${label}: ✗ FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
-				// Feed the errors forward so the next attempt's agent prompt names them.
-				if (opts.feedbackKey) {
-					const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
-					(state as Record<string, unknown>).__feedback = { ...(all ?? {}), [opts.feedbackKey]: v.errors };
-				}
-			}
 			msg = `gate${label} could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
 			ctx.log(`gate: EXHAUSTED${opts.fatal ? " (FATAL — aborting run)" : " (non-fatal)"} — ${opts.fatal ? "aborting" : "proceeding with best-available artifact"}`);
 			if (opts.fatal) {

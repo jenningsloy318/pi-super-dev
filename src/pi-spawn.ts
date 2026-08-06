@@ -365,6 +365,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 		const timeoutMs = opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent);
 		const label = opts.id ?? opts.agent;
 		const args = buildSpawnArgs(opts, promptPath, roleExtensions);
+		opts.onProgress?.event(`subprocess ${label}: spawn timeout=${timeoutMs}ms cwd=${opts.cwd} roleExtensions=${roleExtensions.length ? roleExtensions.join(", ") : "(none)"} argv=${summarizeSpawnArgs(args)}`);
 		const first = await runPi(args, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
 		const firstError = controlError(first.control, requiredKeys);
 		if (!firstError || first.error || opts.signal?.aborted) return withControlError(first, requiredKeys);
@@ -375,11 +376,20 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 			prompt: buildSubprocessCorrectivePrompt(opts.prompt, first, requiredKeys),
 		};
 		const retryArgs = buildSpawnArgs(retryOpts, promptPath, roleExtensions);
+		opts.onProgress?.event(`subprocess ${label}: corrective retry argv=${summarizeSpawnArgs(retryArgs)}`);
 		const retry = await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
 		return withControlError(retry, requiredKeys);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
+}
+
+function summarizeSpawnArgs(args: string[]): string {
+	const redacted = args.map((arg, index) => {
+		if (index === args.length - 1 && arg.startsWith("Task: ")) return `Task: [prompt ${arg.length} chars]`;
+		return arg;
+	});
+	return redacted.join(" ");
 }
 
 /**
@@ -453,11 +463,13 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		};
 		const onAbort = () => {
 			aborted = true;
+			onProgress?.event(`subprocess ${label}: aborted by parent signal; terminating child pi`);
 			try { child.kill("SIGTERM"); } catch { /* ignore */ }
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		const timer = setTimeout(() => {
 			timedOut = true;
+			onProgress?.event(`subprocess ${label}: timeout after ${timeoutMs}ms; terminating child pi`);
 			try { child.kill("SIGTERM"); } catch { /* ignore */ }
 		}, timeoutMs);
 
@@ -504,6 +516,8 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		});
 		child.on("close", (code) => {
 			cleanup();
+			const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
+			onProgress?.event(`subprocess ${label}: close exit=${code ?? "signal"} timedOut=${timedOut ? "yes" : "no"}${tail ? ` stderrTail=${tail}` : ""}`);
 			if (aborted) { resolve({ text: "", control: null, error: "aborted" }); return; }
 			// lastAssistantText already holds the last non-empty assistant text
 			// (resilient to a trailing tool-call turn or a mid-stream kill).
@@ -511,7 +525,6 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 				resolve({ text: lastAssistantText, control: extractControl(lastAssistantText), model: lastModel, error: timedOut ? `timed out after ${timeoutMs}ms (used partial output)` : undefined });
 				return;
 			}
-			const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
 			const reason = timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `produced no output (exit ${code})`;
 			reject(new Error(`super-dev [${label}]: agent ${reason}.${tail ? ` stderr: ${tail}` : ""}`));
 		});
@@ -539,6 +552,19 @@ function assistantFromMessageEnd(ev: PiJsonEvent): { text: string; model?: strin
 /** Compact one-line summary of a tool call, for live progress.
  *  Paths/commands are shown IN FULL (no truncation, no abbreviation) — the
  *  TUI wraps long lines, same as it does for read/write. */
+function compactArg(value: unknown, max = 180): string {
+	const s = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
+	return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function firstArg(args: Record<string, unknown>, keys: string[]): string {
+	for (const key of keys) {
+		const value = args[key];
+		if (value !== undefined && value !== null && String(value).trim()) return compactArg(value);
+	}
+	return "";
+}
+
 export function summarizeToolCall(name: string, args: Record<string, unknown> | undefined): string {
 	const a = args ?? {};
 	switch (name) {
@@ -551,6 +577,21 @@ export function summarizeToolCall(name: string, args: Record<string, unknown> | 
 		case "ffgrep":
 		case "fffind":
 			return `${name} "${a.pattern ?? ""}"`;
+		case "web_search": {
+			const query = firstArg(a, ["query", "q", "search", "term"]);
+			return query ? `${name} query="${query}"` : name;
+		}
+		case "fetch_content": {
+			const url = firstArg(a, ["url", "uri", "link"]);
+			return url ? `${name} url="${url}"` : name;
+		}
+		case "get_search_content": {
+			const id = firstArg(a, ["id", "resultId", "contentId"]);
+			const url = firstArg(a, ["url", "uri", "link"]);
+			const query = firstArg(a, ["query", "q"]);
+			const detail = id ? `id="${id}"` : url ? `url="${url}"` : query ? `query="${query}"` : "";
+			return detail ? `${name} ${detail}` : name;
+		}
 		default:
 			return name;
 	}

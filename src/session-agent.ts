@@ -37,7 +37,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,13 +314,7 @@ function forwardProgress(session: { subscribe(listener: (e: unknown) => void): (
 }
 
 function summarize(name: string, args: Record<string, unknown> | undefined): string {
-	const a = args ?? {};
-	switch (name) {
-		case "write": case "edit": case "read": return `${name} ${a.path ?? a.file_path ?? ""}`;
-		case "bash": return `$ ${String(a.command ?? "").split("\n")[0]}`;
-		case "ffgrep": case "fffind": return `${name} "${a.pattern ?? ""}"`;
-		default: return name === "structured_output" ? "structured_output ✓" : name;
-	}
+	return name === "structured_output" ? "structured_output ✓" : summarizeToolCall(name, args);
 }
 
 function lastAssistantText(messages: Array<{ role?: string; content?: Array<{ type: string; text?: string }> }>): string {
@@ -464,9 +458,15 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 
 	const unsub = opts.onProgress ? forwardProgress(session, opts.onProgress) : undefined;
 	let timedOut = false;
-	const onAbort = () => void session.abort();
+	const label = opts.id ?? opts.agent;
+	opts.onProgress?.event(`session ${label}: start timeout=${timeoutMs}ms cwd=${opts.cwd} controlKeys=${keys.join(",") || "(none)"}`);
+	const onAbort = () => {
+		opts.onProgress?.event(`session ${label}: aborted by parent signal`);
+		void session.abort();
+	};
 	const timer = setTimeout(() => {
 		timedOut = true;
+		opts.onProgress?.event(`session ${label}: timeout after ${timeoutMs}ms; aborting agent session`);
 		try { void session.abort(); } catch { /* ignore */ }
 	}, timeoutMs);
 	opts.signal?.addEventListener("abort", onAbort, { once: true });

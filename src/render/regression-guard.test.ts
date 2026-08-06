@@ -195,6 +195,11 @@ function driveAllKinds(mode: string, theme?: ReturnType<typeof mockTheme>) {
 
 /** The raw joined text the non-TUI body MUST equal byte-for-byte. */
 const RAW_JOINED = KIND_ROWS.map((r) => r.text).join("\n");
+const TIMESTAMP_PREFIX = /^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] /;
+
+function stripDiskTimestamps(disk: string): string {
+	return disk.split("\n").map((line) => line.replace(TIMESTAMP_PREFIX, "")).join("\n");
+}
 
 // ─── SCENARIO-015 (critical): no-theme path leaks zero ANSI ───────────────
 
@@ -207,10 +212,11 @@ describe("SCENARIO-015 — no-theme path: zero ANSI in live body AND disk log (e
 			expect(body, `body in ${mode} must equal raw joined text`).toBe(RAW_JOINED);
 		});
 
-		it(`mode "${mode}": on-disk log has zero ANSI and equals raw joined text`, () => {
+		it(`mode "${mode}": on-disk log has zero ANSI and timestamped raw joined text`, () => {
 			const { disk } = driveAllKinds(mode /* no theme */);
 			expect(ANSI.test(disk), `disk log in ${mode} must be ANSI-free`).toBe(false);
-			expect(disk, `disk log in ${mode} must equal raw joined text`).toBe(RAW_JOINED);
+			expect(disk.split("\n").every((line) => TIMESTAMP_PREFIX.test(line)), `disk log in ${mode} must prefix every line with an ISO timestamp`).toBe(true);
+			expect(stripDiskTimestamps(disk), `disk log in ${mode} must preserve raw joined text after timestamps`).toBe(RAW_JOINED);
 		});
 	}
 

@@ -27,11 +27,11 @@ You have web + MCP tools: `web_search`, `fetch_content`, `get_search_content`, a
 1. **Scope**: read Requirements + BDD; identify the 2-4 research questions that decide the implementation.
 2. **Search**: run targeted `web_search` queries per question; `fetch_content` the best sources; stop once the key questions are answered.
 3. **Synthesize options**: for each real decision point, 2-4 options with tradeoffs + a recommendation, grounded in what you found.
-4. **Flag issues**: open questions / contradictions for a human or the next stage.
+4. **Flag issues**: only concrete, answerable ambiguities that need another research pass. Put general caveats, unverified fallback claims, and permanently unresolvable limitations in the synthesis instead of `openIssues`.
 
 ## Deep Research Mode
 
-When spawned with explicit open issues from a prior research report, run targeted searches per issue and record whether each is resolved, partially resolved, or still ambiguous.
+When spawned with explicit open issues from a prior research report, run targeted searches per issue and keep `openIssues` empty for every issue you can resolve or reasonably classify as a limitation rather than an answerable blocker.
 
 ## Constraints
 

@@ -288,17 +288,17 @@ describe("AC-05 non-TUI flush stays byte-clean (SCENARIO-011)", () => {
 	});
 });
 
-// ─── AC-05 on-disk log: raw line.text, zero ANSI ─────────────────────────
+// ─── AC-05 on-disk log: timestamped raw text, zero ANSI ─────────────────
 
-describe("AC-05 on-disk log writes raw line.text (zero ANSI)", () => {
-	it("diskLogText() returns committed texts joined by \\n — no kinds, no ANSI", () => {
+describe("AC-05 on-disk log writes timestamped raw text (zero ANSI)", () => {
+	it("diskLogText() returns timestamped committed texts joined by \\n — no kinds, no ANSI", () => {
 		// Even in TUI+theme mode (which WOULD style the live body), the disk log
-		// stays grep-friendly raw text.
+		// stays grep-friendly raw text, now with one ISO timestamp per committed line.
 		const h = createLiveStream({ mode: "tui", theme: mockTheme() });
 		h.sink.phase("Design");
 		h.sink.log("→ npm test");
 		h.sink.text("musing..."); h.finalizeLive();
-		expect(h.diskLogText()).toBe("▶ Design\n→ npm test\nmusing...");
+		expect(h.diskLogText()).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] ▶ Design\n\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] → npm test\n\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] musing\.\.\.$/);
 		expect(ANSI.test(h.diskLogText())).toBe(false);
 		expect(tokensIn(h.diskLogText())).toEqual([]);
 	});
@@ -307,7 +307,8 @@ describe("AC-05 on-disk log writes raw line.text (zero ANSI)", () => {
 		const h = createLiveStream({});
 		h.sink.phase("Design");
 		h.sink.text("not yet committed");
-		expect(h.diskLogText()).toBe("▶ Design");
+		expect(h.diskLogText()).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] ▶ Design$/);
+		expect(h.diskLogText()).not.toContain("not yet committed");
 	});
 });
 

@@ -48,6 +48,8 @@ export type TranscriptLine = {
 	stageLabel: string;
 };
 
+type TranscriptEntry = TranscriptLine & { createdAt: string };
+
 /** Structured dashboard `stage` event payload — the ONLY source the sink
  *  reads stage identity from (never the human-readable `▶ Stage N` label). */
 export interface StageInfo {
@@ -89,6 +91,9 @@ export interface CreateLiveStreamOptions {
 	/** Rolling-tail window size (default 400). When the visible body exceeds
 	 *  this, a `{trim}` notice line prefixes the last `tailLines` entries. */
 	tailLines?: number;
+	/** Prefix rendered live-stream lines with their event timestamp. Disk logs are
+	 *  always timestamped; this controls only the foreground/onUpdate body. */
+	showTimestamps?: boolean;
 }
 
 /** Handle returned by {@link createLiveStream}. */
@@ -101,8 +106,8 @@ export interface LiveStreamHandle {
 	flush(): void;
 	/** The committed transcript (excludes the un-finalized live buffer). */
 	getTranscript(): TranscriptLine[];
-	/** Committed `text` values joined by `\n` — grep-friendly raw disk log
-	 *  (no kinds, no ANSI, no pending live buffer). */
+	/** Committed `text` values joined by `\n` with ISO timestamp prefixes —
+	 *  grep-friendly raw disk log (no kinds, no ANSI, no pending live buffer). */
 	diskLogText(): string;
 	/** The last `size` (default 50) transcript entries as `{kind,text}` objects. */
 	transcriptTail(size?: number): TranscriptLine[];
@@ -142,6 +147,14 @@ export const TOTAL_SECTION_CAP = 400;
  * visible content; it only bounds the worst-case partition cost on huge runs.
  */
 export const PARTITION_INPUT_CAP = TOTAL_SECTION_CAP * 10;
+
+const timestamp = (): string => new Date().toISOString();
+
+const publicLine = ({ kind, text, stageId, stageLabel }: TranscriptEntry): TranscriptLine =>
+	({ kind, text, stageId, stageLabel });
+
+const withTimestamp = (line: Pick<TranscriptEntry, "createdAt" | "text">): string =>
+	`[${line.createdAt}] ${line.text}`;
 
 /** Leading status bar drawn in the section-header status color (TUI only). */
 const STATUS_BAR = "▌";
@@ -204,11 +217,12 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	const onUpdate = opts.onUpdate;
 	const mode = opts.mode;
 	const theme = opts.theme;
+	const showTimestamps = opts.showTimestamps === true;
 	/** Rolling-tail window for the pre-stage legacy body (default 400). The
 	 *  per-stage section stack uses its OWN caps (RUNNING/COMPLETED_TAIL_LINES). */
 	const tailLines = opts.tailLines ?? 400;
 
-	const transcript: TranscriptLine[] = [];
+	const transcript: TranscriptEntry[] = [];
 	let live = "";
 
 	// AC-01 / SCENARIO-001: the stage the sink is currently emitting under.
@@ -216,6 +230,15 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	// event arrives (RESOLVED-1: resolved from info.id, never label parsing).
 	let currentStageId = "setup";
 	let currentStageLabel = "pre-stage";
+	const push = (kind: LineKind, text: string): void => {
+		transcript.push({
+			kind,
+			text,
+			stageId: currentStageId,
+			stageLabel: currentStageLabel,
+			createdAt: timestamp(),
+		});
+	};
 	// AC-03 / SCENARIO-010: stageId → { label, status? }, captured from the
 	// structured `stage` events the sink receives so flush can theme each
 	// section header WITHOUT importing the dashboard tracker (the pure
@@ -235,12 +258,7 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	 *  Stamps the CURRENT stage tag onto the committed entry (AC-01). */
 	const finalizeLive = (): void => {
 		if (live) {
-			transcript.push({
-				kind: "thinking",
-				text: live,
-				stageId: currentStageId,
-				stageLabel: currentStageLabel,
-			});
+			push("thinking", live);
 			live = "";
 		}
 	};
@@ -249,24 +267,14 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// SCENARIO-008: phase marker carries the ▶ prefix text.
 		phase: (label: string): void => {
 			finalizeLive();
-			transcript.push({
-				kind: "phase",
-				text: `▶ ${label}`,
-				stageId: currentStageId,
-				stageLabel: currentStageLabel,
-			});
+			push("phase", `▶ ${label}`);
 		},
 		// SCENARIO-008: log is classified by the single classifyLine authority;
 		// the RAW message is stored as text (no leading indent — classification
 		// trims leading whitespace itself).
 		log: (message: string): void => {
 			finalizeLive();
-			transcript.push({
-				kind: classifyLine(message),
-				text: message,
-				stageId: currentStageId,
-				stageLabel: currentStageLabel,
-			});
+			push(classifyLine(message), message);
 		},
 		// Live (typing) buffer — NOT committed until finalizeLive().
 		text: (partial: string): void => {
@@ -277,12 +285,7 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// the `📥 `-prefixed raw text so it reaches diskLogText + themed flush.
 		userInput: (text: string): void => {
 			finalizeLive();
-			transcript.push({
-				kind: "user-input",
-				text: `📥 ${text}`,
-				stageId: currentStageId,
-				stageLabel: currentStageLabel,
-			});
+			push("user-input", `📥 ${text}`);
 		},
 		// AC-01 / SCENARIO-004: set the current stage from the STRUCTURED
 		// dashboard `stage` event (info.id is canonical — never parsed off the
@@ -341,9 +344,9 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	 * Phase 2 contract pinned by `live-stream.test.ts` and the SCENARIO-015
 	 * regression guard byte-for-byte.
 	 */
-	const flushRollingTail = (visible: TranscriptLine[]): void => {
+	const flushRollingTail = (visible: TranscriptEntry[]): void => {
 		const themed = mode === "tui" && theme;
-		let shown: TranscriptLine[] = visible;
+		let shown: TranscriptEntry[] = visible;
 		if (visible.length > tailLines) {
 			const trimmed = visible.length - tailLines;
 			shown = [
@@ -352,12 +355,15 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 					text: trimNoticeText(trimmed),
 					stageId: currentStageId,
 					stageLabel: currentStageLabel,
+					createdAt: timestamp(),
 				},
 				...visible.slice(-tailLines),
 			];
 		}
 		const bodyLines = shown.map((l) =>
-			themed ? themeLine(l.kind, l.text, theme) : l.text,
+			themed
+				? themeLine(l.kind, showTimestamps ? withTimestamp(l) : l.text, theme)
+				: showTimestamps ? withTimestamp(l) : l.text,
 		);
 		onUpdate?.(bodyLines.join("\n"));
 	};
@@ -371,7 +377,7 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	 * — byte-clean, zero ANSI (AC-08) — now structured as `▶ <label>` headers +
 	 * two-space-indented logs.
 	 */
-	const flushSectionStack = (visible: TranscriptLine[]): void => {
+	const flushSectionStack = (visible: TranscriptEntry[]): void => {
 		// Hot-path bound (PARTITION_INPUT_CAP): partition only a generous recent
 		// WINDOW of the transcript. Completed stages already render COMPACT
 		// (≤ COMPLETED_TAIL_LINES tail, or header-only via stageMeta synthesis),
@@ -415,22 +421,25 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 			const isRunning =
 				group.status === undefined || group.status === "running";
 			const cap = isRunning ? RUNNING_TAIL_LINES : COMPLETED_TAIL_LINES;
-			let sectionLines: { kind: LineKind; text: string }[] = group.lines;
+			let sectionLines: Array<{ kind: LineKind; text: string; createdAt?: string }> = group.lines;
 			if (sectionLines.length > cap) {
 				const trimmed = sectionLines.length - cap;
 				// Per-stage trim notice appears INSIDE its own section (not a
 				// single global preamble) — SCENARIO-011.
 				sectionLines = [
-					{ kind: "trim", text: trimNoticeText(trimmed, group.stageLabel) },
+					{ kind: "trim", text: trimNoticeText(trimmed, group.stageLabel), createdAt: timestamp() },
 					...sectionLines.slice(-cap),
 				];
 			}
 			// Each line is themed per-kind (TUI) or raw (non-TUI) and indented
 			// TWO spaces under its header (SCENARIO-010).
 			for (const line of sectionLines) {
-				const rendered = themed
-					? themeLine(line.kind, line.text, theme)
+				const text = showTimestamps && line.createdAt
+					? withTimestamp({ createdAt: line.createdAt, text: line.text })
 					: line.text;
+				const rendered = themed
+					? themeLine(line.kind, text, theme)
+					: text;
 				sec.push(`  ${rendered}`);
 			}
 			return sec;
@@ -485,16 +494,16 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	};
 
 	/** Committed transcript (the un-finalized live buffer is excluded). */
-	const getTranscript = (): TranscriptLine[] => transcript;
+	const getTranscript = (): TranscriptLine[] => transcript.map(publicLine);
 
-	/** AC-05 on-disk log: raw committed `text` joined by `\n` — grep-friendly,
-	 *  zero ANSI, no kinds, no pending live buffer. */
-	const diskLogText = (): string => transcript.map((l) => l.text).join("\n");
+	/** AC-05 on-disk log: timestamped committed `text` joined by `\n` —
+	 *  grep-friendly, zero ANSI, no kinds, no pending live buffer. */
+	const diskLogText = (): string => transcript.map(withTimestamp).join("\n");
 
 	/** AC-06: kind-carrying tail snapshot (default last 50 entries). Always
 	 *  emits `{kind,text}` objects — never plain strings (SCENARIO-013). */
 	const transcriptTail = (size: number = DEFAULT_TAIL_SNAPSHOT): TranscriptLine[] =>
-		transcript.slice(-size);
+		transcript.slice(-size).map(publicLine);
 
 	return { sink, finalizeLive, flush, getTranscript, diskLogText, transcriptTail };
 }

@@ -154,11 +154,21 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const promptWithNotes = userNotes
 			? `${promptWithKnowledge}\n\n## User context (added during the run)\n${userNotes}`
 			: promptWithKnowledge;
+		const controlKeys = call.controlKeys ?? extractControlKeys(call.prompt);
+		const timeoutMs = call.timeoutMs;
+		const timeoutLabel = timeoutMs !== undefined ? `${timeoutMs}ms` : "role-default";
+		const thinkingLabel = call.thinking ?? options.inheritedThinking ?? process.env.SUPER_DEV_THINKING ?? "role-default";
+		const backend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
+			? "subprocess"
+			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
+		const inheritedModel = options.inheritedModelObject
+			? `${options.inheritedModelObject.provider}/${options.inheritedModelObject.id}`
+			: undefined;
 		const common = {
 			agent: call.agent,
 			prompt: promptWithNotes,
 			cwd: agentCwd,
-			controlKeys: call.controlKeys ?? extractControlKeys(call.prompt),
+			controlKeys,
 			schema: call.schema,
 			model,
 			// Thread the inherited DEFAULTS (live main-session model object +
@@ -172,7 +182,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			id: call.id,
 			// Per-call override; when absent each backend falls back to the
 			// role-based default (code-writing agents get a larger cap).
-			timeoutMs: call.timeoutMs,
+			timeoutMs,
 			// Per-call thinking override. Both backends read the SAME per-call value:
 			// the subprocess backend reads `thinking` (buildSpawnArgs → --thinking via
 			// resolveThinking); the session backend reads `thinkingLevel`
@@ -202,11 +212,21 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// pi's web tools (pi-web-access), which load via extension discovery in an
 		// ISOLATED process, never in the parent's in-process session (the session
 		// backend runs noExtensions + createCodingTools only, so it has no web tools).
-		const backend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
-			? "subprocess"
-			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
 		const exec = backend === "session" ? () => runAgentViaSession(common) : () => spawnAgent(common);
-		return runWithTransientRetry(exec, signal, (m) => log(m));
+		const label = call.id ?? call.agent;
+		const started = Date.now();
+		log(`agent ${label}: start agent=${call.agent} backend=${backend} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithNotes.length}`);
+		try {
+			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
+			const elapsed = Date.now() - started;
+			log(`agent ${label}: end elapsed=${elapsed}ms control=${result.control ? "yes" : "no"} model=${result.model ?? "unknown"}${result.error ? ` error=${result.error}` : ""}`);
+			return result;
+		} catch (err) {
+			const elapsed = Date.now() - started;
+			const message = err instanceof Error ? err.message : String(err);
+			log(`agent ${label}: threw elapsed=${elapsed}ms error=${message}`);
+			throw err;
+		}
 	}
 	// Resume (v0.3.0): always CAPTURE agent results so any interrupted run is
 	// resumable; MEMOIZE (return cached) when options.resumeCache was pre-loaded.

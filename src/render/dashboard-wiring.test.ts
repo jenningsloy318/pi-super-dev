@@ -1,29 +1,23 @@
 /**
- * Phase 2 WIRING contract tests — renderDashboard() → setWidget (root cause).
+ * Dashboard wiring / foreground widget regression tests.
  *
  * `dashboard-widget.test.ts` covers the PURE builders
  * (`buildDashboardWidget` / `createDashboardWidgetFactory`) in isolation.
- * This suite verifies the WIRING the Phase 2 root-cause fix is actually about:
+ * This suite verifies the dashboard/export contracts that still matter after
+ * foreground live widget removal:
  *
  *   1. extension.ts RE-EXPORTS the dashboard builders (AC-08),
- *   2. renderDashboard() passes `createDashboardWidgetFactory(...)` — a FUNCTION —
- *      as the 2nd arg to `ctx.ui.setWidget` (the Component-factory overload),
- *      NOT a `string[]` and NOT the old zero-arg object factory (AC-01 root cause
- *      / AC-08 — the string[] overload is never produced),
- *   3. the call is guarded behind `ctx?.mode === "tui"` so print/json/headless/
- *      RPC modes never register a widget (AC-09 / AC-10 no-regression),
- *   4. `placement: "aboveEditor"` is requested,
- *   5. the widget is cleared via `setWidget(KEY, undefined)` in `finally`,
- *   6. the factory captured by a stubbed `setWidget` behaves EXACTLY like pi's
+ *   2. extension.ts no longer registers or clears a foreground `setWidget`
+ *      dashboard; the foreground stream is the live progress surface,
+ *   3. the legacy string[] setWidget overload is never produced,
+ *   4. the factory captured by a stubbed `setWidget` behaves EXACTLY like pi's
  *      native Component-factory contract: arity 2 `(tui, theme)`, returns a
  *      `Container`, threads `theme`, animates, and reads width INSIDE the closure
  *      so it adapts to a resized terminal.
  *
- * `renderDashboard()` is a private closure inside `execute()`, so the call-site
- * is verified via a SOURCE-CONTRACT assertion (the AC-01 root cause WAS a wrong
- * overload signature — guarding the signature is precisely the point) PLUS a
- * stubbed-TUI behavioral simulation that hands the exact symbol extension.ts
- * passes (the factory) to a spy shaped like `ctx.ui.setWidget`.
+ * The old `renderDashboard()` private closure was removed from `execute()`, so
+ * the no-widget contract is verified via SOURCE-CONTRACT assertions PLUS a
+ * stubbed-TUI behavioral simulation that proves the pure factory remains valid.
  *
  * Coverage: AC-01, AC-02 (theme threaded), AC-03 (animation), AC-04 (layout
  *           preserved across re-renders), AC-08, AC-09, AC-10.
@@ -93,18 +87,13 @@ describe("AC-08 re-export contract — extension.ts re-exports the dashboard bui
 	});
 });
 
-describe("AC-01 root-cause call-site contract — setWidget receives a Component-factory FUNCTION", () => {
-	it("renderDashboard passes createDashboardWidgetFactory(...) as setWidget's 2nd arg", () => {
-		// The fix: 2nd arg is the factory FUNCTION whose (tui, theme) params select
-		// the Component-factory overload and let `theme` reach the strings.
-		expect(EXTENSION_SRC).toMatch(
-			/setWidget\?\.\(\s*DASHBOARD_KEY,\s*\n\s*createDashboardWidgetFactory\(/,
-		);
+describe("foreground dashboard widget removal", () => {
+	it("extension execute no longer registers a live setWidget dashboard", () => {
+		expect(EXTENSION_SRC).not.toMatch(/setWidget\?\.\(/);
 	});
 
 	it("the string[] setWidget overload is NOT produced (no array literal as 2nd arg)", () => {
-		// AC-08: a `setWidget(key, [ ...strings ])` call would select the WRONG
-		// (legacy) overload and bypass theming entirely.
+		// A future dashboard path must not reintroduce the legacy string[] overload.
 		expect(EXTENSION_SRC).not.toMatch(/setWidget\?\.\(\s*DASHBOARD_KEY,\s*\[/);
 	});
 
@@ -115,30 +104,23 @@ describe("AC-01 root-cause call-site contract — setWidget receives a Component
 		expect(EXTENSION_SRC).not.toMatch(/invalidate\s*:\s*\(\s*\)\s*=>/);
 	});
 
-	it('requests placement: "aboveEditor" (Component-factory option)', () => {
-		expect(EXTENSION_SRC).toMatch(/placement:\s*"aboveEditor"/);
+	it('does not request placement: "aboveEditor" for a foreground widget', () => {
+		expect(EXTENSION_SRC).not.toMatch(/placement:\s*"aboveEditor"/);
 	});
 });
 
-describe("AC-09 / AC-10 no-regression — renderDashboard is TUI-only", () => {
-	it("the registration path early-returns when ctx?.mode !== 'tui'", () => {
-		// Print / json / headless / RPC modes must never register a widget.
-		expect(EXTENSION_SRC).toMatch(/ctx\?\.mode\s*!==\s*["']tui["']/);
+describe("AC-09 / AC-10 no-regression — foreground stream owns live progress", () => {
+	it("the private renderDashboard closure is gone", () => {
+		expect(EXTENSION_SRC).not.toMatch(/const\s+renderDashboard\s*=/);
 	});
 
-	it("setWidget is invoked optional-chained (ctx?.ui?.setWidget?.) so a missing UI can't crash", () => {
-		expect(EXTENSION_SRC).toMatch(/ctx\?\.ui\?\.setWidget\?\.\(/);
-	});
-
-	it("clears the widget via setWidget(DASHBOARD_KEY, undefined) in finally", () => {
-		expect(EXTENSION_SRC).toMatch(
-			/finally\s*\{[\s\S]*?setWidget\?\.\(\s*DASHBOARD_KEY,\s*undefined/,
-		);
+	it("finally cleanup does not clear a dashboard widget", () => {
+		expect(EXTENSION_SRC).not.toMatch(/setWidget\?\.\(\s*DASHBOARD_KEY,\s*undefined/);
 	});
 });
 
 describe("Stubbed-TUI behavioral contract — the factory behaves per the Component-factory overload", () => {
-	// Simulate renderDashboard handing its factory to a spied ctx.ui.setWidget,
+	// Simulate any future caller handing the pure factory to ctx.ui.setWidget,
 	// then invoke the captured factory exactly like pi would: (tui, theme) => Component.
 
 	it("setWidget's 2nd argument is a FUNCTION (selects the Component overload, not string[])", () => {

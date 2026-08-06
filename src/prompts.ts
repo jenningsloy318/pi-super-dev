@@ -64,6 +64,7 @@ export function buildResearchPrompt(s: SetupControl, c: Classification | null, t
 		"- USE THE WEB TOOLS: call `web_search` for each question (prefer several varied queries), then `fetch_content` on the most authoritative results (official docs, RFCs/standards, primary sources, high-quality community posts) to read the real content — do not rely on snippets alone. If MCP servers are configured, you may also use the `mcp` gateway (e.g. a library-docs server) to pull authoritative reference material.",
 		"- Ground every option and recommendation in what you FOUND online, tied back to the requirement/BDD it serves. Prefer current, version-accurate sources; note the date.",
 		"- If web tools are unavailable or a provider is not configured, say so explicitly, fall back to your own knowledge, and mark the affected claims as unverified — never fabricate sources or URLs.",
+		"- Use openIssues ONLY for concrete, answerable ambiguities that require another research iteration. Do NOT put generic caveats, future work, or permanently unresolvable limitations in openIssues; include those in summary/options instead and keep openIssues empty.",
 		"The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.",
 		"", "## Data to return", "Return the research as structured data:",
 		"- title: the research topic title",
@@ -71,7 +72,7 @@ export function buildResearchPrompt(s: SetupControl, c: Classification | null, t
 		"- summary: one-paragraph synthesis of what the online research concluded",
 		"- options: array of { name: string, tradeoffs: string } (at least 1), each grounded in a real source and the requirement/BDD it addresses",
 		"- sources: array of { title: string, url: string } — the real URLs you actually fetched/searched (empty ONLY if web tools were unavailable)",
-		"- openIssues: array of strings (empty if none)",
+		"- openIssues: array of concrete answerable blocker questions that need another research pass (empty if none)",
 		"", "Output <control> JSON with: title, date, summary, options, sources, openIssues.");
 	return parts.join("\n");
 }

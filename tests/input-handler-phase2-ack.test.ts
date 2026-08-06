@@ -31,9 +31,8 @@
  *
  * Dashboard count: the decoupled observable is "N pushes → N pending user-input
  * inputs tracked" (one transcript line each + queue.length === N). How the
- * dashboard RENDER surfaces `📥 N mid-run input(s)` is an impl detail of
- * execute()'s renderDashboard() closure (untestable in isolation); this file
- * asserts the count the dashboard would read.
+ * run/result surfaces can read the pending queue count from ActiveRun; this
+ * file asserts that count stays correct without depending on a live widget.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as ext from "../src/extension.ts";
