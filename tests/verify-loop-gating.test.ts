@@ -11,7 +11,8 @@
  * GAP D: one final budget-checked reviewStep at Stage 10 max-rounds exhaustion.
  */
 import { describe, it, expect } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -19,8 +20,10 @@ import {
 	reviewLoopUntil,
 	reviewStageNode,
 	integrationLoopNode,
+	verificationConvergenceNode,
 	testFailuresSignature,
 } from "../src/stages/verify.ts";
+import { runHelper } from "../src/helpers.ts";
 import type { AgentCall, PipelineState, StageContext } from "../src/types.ts";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -56,6 +59,39 @@ function driveCtx(counts: Record<string, number>): StageContext {
 		events: new EventEmitter(),
 		results: [],
 	} as unknown as StageContext;
+}
+
+function convergenceCtx(agent: StageContext["agent"], logs: string[] = []): StageContext {
+	return {
+		task: "implement feature",
+		options: {},
+		state: {} as PipelineState,
+		agent,
+		helper: runHelper,
+		parallel: async (calls: Array<() => Promise<unknown>>) => Promise.all(calls.map((f) => f())) as never,
+		budget: { check: () => true, spent: () => true, count: 0 },
+		log: (m: string) => logs.push(m),
+		phase: () => {},
+		events: new EventEmitter(),
+		results: [],
+	} as unknown as StageContext;
+}
+
+function stateWithApi(): PipelineState {
+	return {
+		setup: tmpWorktree(),
+		classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false },
+		implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true },
+		assessment: {
+			services: {
+				api: {
+					cmd: `${process.execPath} -e "require('http').createServer((req,res)=>res.end('ok')).listen(process.env.PORT)"`,
+					portEnv: "PORT",
+					readyPath: "/",
+				},
+			},
+		},
+	} as unknown as PipelineState;
 }
 
 /** Fresh empty worktree so the deterministic build gate detects no commands. */
@@ -184,5 +220,198 @@ describe("GAP D — exhaustion epilogue", () => {
 		// 5 loop rounds each run reviewStep (code-reviewer) once → 5, plus the
 		// GAP D epilogue's single final reviewStep → 6 total.
 		expect(counts["code-reviewer"]).toBe(6);
+	});
+});
+
+// ─── Unified verification convergence ──────────────────────────────────────
+
+describe("verificationConvergenceNode", () => {
+	it("fixes review findings, then re-reviews before integration runs", async () => {
+		let codeReviewCalls = 0;
+		let fixCalls = 0;
+		let apiCalls = 0;
+		const state = stateWithApi();
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				codeReviewCalls += 1;
+				if (codeReviewCalls === 1) {
+					return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Changes Requested", summary: "fix", findings: [{ id: "F1", severity: "high", title: "Bug", detail: "bad", file: "src/a.ts" }] } };
+				}
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				return { text: "", control: { filesCreated: [], filesModified: ["src/a.ts"], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			if (call.agent === "api-tester") {
+				apiCalls += 1;
+				expect(codeReviewCalls).toBeGreaterThanOrEqual(2);
+				return { text: "", control: { title: "API", date: "2026-08-07", pass: true, cases: 1, failures: [], summary: "ok" } };
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("ok");
+		expect(codeReviewCalls).toBe(2);
+		expect(fixCalls).toBe(1);
+		expect(apiCalls).toBe(1);
+		expect(state.integration?.status).toBe("passed");
+	});
+
+	it("fixes integration failures, then re-reviews before re-testing", async () => {
+		let codeReviewCalls = 0;
+		let fixCalls = 0;
+		let apiCalls = 0;
+		const state = stateWithApi();
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				codeReviewCalls += 1;
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "api-tester") {
+				apiCalls += 1;
+				if (apiCalls === 1) {
+					return { text: "", control: { title: "API", date: "2026-08-07", pass: false, cases: 1, failures: [{ method: "GET", path: "/", reason: "expected 200" }], summary: "fail" } };
+				}
+				expect(codeReviewCalls).toBe(2);
+				return { text: "", control: { title: "API", date: "2026-08-07", pass: true, cases: 1, failures: [], summary: "ok" } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				return { text: "", control: { filesCreated: [], filesModified: ["src/a.ts"], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("ok");
+		expect(codeReviewCalls).toBe(2);
+		expect(apiCalls).toBe(2);
+		expect(fixCalls).toBe(1);
+		expect(state.integration?.status).toBe("passed");
+	});
+
+	it("does not carry stale integration failures into the next review/build attempt", async () => {
+		let codeReviewCalls = 0;
+		let fixCalls = 0;
+		let apiCalls = 0;
+		const state = stateWithApi();
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				codeReviewCalls += 1;
+				if (codeReviewCalls === 2) {
+					return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Changes Requested", summary: "new review issue", findings: [{ id: "R2", severity: "high", title: "Regression", detail: "bad", file: "src/a.ts" }] } };
+				}
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "api-tester") {
+				apiCalls += 1;
+				if (apiCalls === 1) {
+					return { text: "", control: { title: "API", date: "2026-08-07", pass: false, cases: 1, failures: [{ method: "GET", path: "/", reason: "expected 200" }], summary: "fail" } };
+				}
+				return { text: "", control: { title: "API", date: "2026-08-07", pass: true, cases: 1, failures: [], summary: "ok" } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				return { text: "", control: { filesCreated: [], filesModified: ["src/a.ts"], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("ok");
+		expect(codeReviewCalls).toBe(3);
+		expect(apiCalls).toBe(2);
+		expect(fixCalls).toBe(2);
+		const attempts = (state as Record<string, unknown>).__verificationAttempts as Array<{ reviewFindings?: number; integrationStatus?: string }>;
+		expect(attempts).toHaveLength(3);
+		expect(attempts[1]).toMatchObject({ reviewFindings: 1 });
+		expect(attempts[1]?.integrationStatus).toBeUndefined();
+		expect(state.integration?.status).toBe("passed");
+	});
+
+	it("does not run a final unreviewed fix when max attempts are exhausted", async () => {
+		let codeReviewCalls = 0;
+		let fixCalls = 0;
+		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				codeReviewCalls += 1;
+				const remaining = Math.max(1, 6 - codeReviewCalls);
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Changes Requested", summary: "fail", findings: mkFindings(remaining, `r${codeReviewCalls}`) } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				return { text: "", control: { filesCreated: [], filesModified: ["src/a.ts"], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("failed");
+		expect(codeReviewCalls).toBe(5);
+		expect(fixCalls).toBe(4);
+		const attempts = (state as Record<string, unknown>).__verificationAttempts as unknown[];
+		expect(attempts).toHaveLength(5);
+	});
+
+	it("rejects integration tester writes to production files instead of routing them to implementer", async () => {
+		let fixCalls = 0;
+		const state = stateWithApi();
+		const cwd = state.setup!.worktreePath;
+		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "api-tester") {
+				mkdirSync(join(cwd, "src"), { recursive: true });
+				writeFileSync(join(cwd, "src", "prod.ts"), "export const changedByTester = true;\n");
+				return { text: "", control: { title: "API", date: "2026-08-07", pass: true, cases: 1, failures: [], summary: "ok" } };
+			}
+			if (call.agent === "red-boundary-classifier") {
+				return {
+					text: "",
+					control: {
+						classifications: [{ path: "src/prod.ts", category: "production", confidence: 0.99, reason: "source implementation file" }],
+						forbiddenFiles: ["src/prod.ts"],
+						ambiguousFiles: [],
+						allAllowed: false,
+					},
+				};
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				return { text: "", control: { filesCreated: [], filesModified: [], filesDeleted: [], fixesApplied: 1, summary: "should not run" } };
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("failed");
+		expect(String(result.error)).toContain("integration tester modified implementation files");
+		expect(fixCalls).toBe(0);
+		expect(state.integration?.summary).toContain("src/prod.ts");
 	});
 });

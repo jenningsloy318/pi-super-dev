@@ -27,6 +27,8 @@ const RUNTIME_EVIDENCE_BASENAMES = new Set([
 	".user-notes.json",
 	"stagnation-report.md",
 	"escalation-report.md",
+	"api-test-report.md",
+	"ui-test-report.md",
 ]);
 
 const normalizePath = (path: string): string =>

@@ -7,7 +7,7 @@ gate / map / wait).
 
 Runs the 13-stage super-dev workflow — requirements → BDD → research →
 [debug] → assessment → design → [prototype] → spec → spec-review → TDD
-implementation → parallel code review → docs → cleanup → merge — by spawning
+implementation → verification convergence → docs → cleanup → merge — by spawning
 21 specialist `pi` subagents directly. **No dependency on `@agwab/pi-workflow`
 or any other external workflow engine.**
 
@@ -62,7 +62,7 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.01.06`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.01.07`.
 The foreground stream and run log show the short version label only. This metadata
 is intentionally separate from the npm package version in `package.json`.
 
@@ -81,7 +81,7 @@ Super-dev stores user-level runtime data under `~/.super-dev/`:
 - `learned.md`, `learned-index.json`, `stats.json`
 - `traces/`
 
-The deterministic build gate (Stage 9 verify / 9.2 implementation / 11 merge)
+The deterministic build gate (implementation / verification / pre-merge)
 runs `build`, `test`, and `typecheck` (and Rust `clippy`) against your
 worktree. It is **scope-aware**: on Rust workspaces it can narrow all three
 commands to the crates the current branch actually touched and treat
@@ -272,11 +272,9 @@ sequence([
   task(specReviewWriter),                           // advisory signal, not a gate
   loop({ while: (s) => !s.implementation?.allGreen, times: 5 },
     task(implementationStage)),                     // per-phase TDD loop
-  loop({ until: reviewApproved, times: 5 },
-    sequence([
-      parallel([codeReview, adversarialReview], { into: "review", join: mergeVerdicts }),
-      branch(reviewApproved, { no: reviewFix }),
-    ])),
+  branch(hasImplementation, {
+    yes: verificationConvergenceNode,               // review → fix → review → integration
+  }),
   task(docsWriter),
   task(cleanupTask),
   branch(notBlocked, { yes: task(mergeWriter) }),

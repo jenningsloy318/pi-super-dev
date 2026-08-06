@@ -1,29 +1,235 @@
 /**
- * Stage 10 — Review (review → fix → re-review loop, max 5).
- * Stage 11 — Integration Testing (test → fix → re-review → re-test loop, max 5).
+ * Stage 10 — Verification Convergence
+ * (review → fix → review → integration → fix → review → integration, max 5).
  *
- * Split from the old combined verify-loop: Stage 10 converges on CODE QUALITY
- * first (no testing until review passes). Stage 11 converges on INTEGRATION
- * (tests run only after review approves; if a fix regresses review, re-review
- * catches it). Each loop is max 5, non-fatal exhaustion.
+ * The main pipeline uses one convergence state machine so every product fix
+ * invalidates downstream evidence: a review/build fix must be reviewed before
+ * integration; an integration fix must be reviewed before integration is run
+ * again. Success means review + build + integration are fresh on the same code
+ * state. The older split review/integration nodes are kept as compatibility
+ * exports for direct callers and existing tests.
  *
  * Research basis (SWE-bench agent): tight, feedback-driven loops where
  * observable results are the convergence signal.
  */
 
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
+import { localTimestamp } from "../render/time.ts";
+import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
 const REVIEW_MAX_ROUNDS = WORKFLOW_ATTEMPTS;
 const INTEGRATION_MAX_RETRIES = Math.max(0, WORKFLOW_ATTEMPTS - 1);
+const VERIFICATION_MAX_ATTEMPTS = WORKFLOW_ATTEMPTS;
 
 const setupOf = (s: PipelineState) => s.setup!;
+
+export interface VerificationAttemptRecord {
+	attempt: number;
+	startedAt: string;
+	endedAt?: string;
+	durationMs?: number;
+	reviewVerdict?: string;
+	reviewFindings: number;
+	buildPass?: boolean;
+	buildErrors: number;
+	integrationStatus?: IntegrationOutcomeStatus;
+	integrationExpected: Array<"api" | "ui">;
+	failureSignature: string;
+	codeBefore: string;
+	codeAfter?: string;
+	fixKind?: "review" | "integration";
+	fixChanged?: boolean;
+	terminal?: boolean;
+}
+
+function gitText(cwd: string, args: string[]): string {
+	try {
+		return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+	} catch {
+		return "";
+	}
+}
+
+function gitStatusPaths(cwd: string): string[] {
+	return gitText(cwd, ["status", "--porcelain=v1", "--untracked-files=all"])
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter(Boolean)
+		.map((line) => {
+			const raw = line.slice(3).trim();
+			return raw.includes(" -> ") ? raw.split(" -> ").pop()!.trim() : raw;
+		})
+		.filter(Boolean)
+		.sort();
+}
+
+function snapshotStatusFiles(s: PipelineState): Map<string, string | null> {
+	const cwd = s.setup?.worktreePath;
+	const out = new Map<string, string | null>();
+	if (!cwd) return out;
+	for (const path of gitStatusPaths(cwd)) {
+		try { out.set(path, readFileSync(join(cwd, path), "utf8")); }
+		catch { out.set(path, null); }
+	}
+	return out;
+}
+
+function changedSinceSnapshot(s: PipelineState, before: Map<string, string | null>): string[] {
+	const cwd = s.setup?.worktreePath;
+	if (!cwd) return [];
+	const paths = new Set([...before.keys(), ...gitStatusPaths(cwd)]);
+	const changed: string[] = [];
+	for (const path of paths) {
+		let next: string | null = null;
+		try { next = readFileSync(join(cwd, path), "utf8"); } catch { next = null; }
+		if (next !== before.get(path)) changed.push(path);
+	}
+	return changed.sort();
+}
+
+export function workingTreeSignature(s: PipelineState): string {
+	const cwd = s.setup?.worktreePath;
+	if (!cwd) return "no-worktree";
+	const status = gitText(cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
+	const staged = gitText(cwd, ["diff", "--cached", "--binary", "--"]);
+	const diff = gitText(cwd, ["diff", "--binary", "--"]);
+	return createHash("sha256").update(status).update("\n---staged---\n").update(staged).update("\n---diff---\n").update(diff).digest("hex").slice(0, 16);
+}
+
+function ensureVerificationAttempts(s: PipelineState): VerificationAttemptRecord[] {
+	const key = "__verificationAttempts";
+	const existing = (s as Record<string, unknown>)[key];
+	if (Array.isArray(existing)) return existing as VerificationAttemptRecord[];
+	const created: VerificationAttemptRecord[] = [];
+	(s as Record<string, unknown>)[key] = created;
+	return created;
+}
+
+function buildErrors(s: PipelineState): string[] {
+	return ((s.buildGate as { errors?: string[] } | undefined)?.errors ?? []).filter((e): e is string => typeof e === "string");
+}
+
+function testFailureCount(s: PipelineState): number {
+	return (((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length +
+		(((s.uiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length;
+}
+
+export function verificationFailureSignature(s: PipelineState): string {
+	const parts = [
+		`review:${findingsSignature(s)}`,
+		`build:${buildErrors(s).slice().sort().join("\n")}`,
+		`tests:${testFailuresSignature(s)}`,
+		`integration:${String((s.integration as { status?: unknown } | undefined)?.status ?? "none")}`,
+		`fixChanged:${String(((s as Record<string, unknown>).__lastVerificationFix as { changed?: unknown } | undefined)?.changed ?? "unknown")}`,
+	];
+	return parts.join("\n---\n");
+}
+
+function verificationFailureCount(s: PipelineState): number {
+	const findings = (s.review?.findings as unknown[] | undefined) ?? [];
+	const integration = s.integration as { status?: IntegrationOutcomeStatus } | undefined;
+	const integrationPenalty = integration?.status && integration.status !== "passed" && integration.status !== "skipped-not-applicable" ? 1 : 0;
+	return findings.length + buildErrors(s).length + testFailureCount(s) + integrationPenalty;
+}
+
+function recordAttemptEnd(s: PipelineState, record: VerificationAttemptRecord, terminal = false): void {
+	record.endedAt = localTimestamp();
+	record.durationMs = Date.now() - Date.parse(record.startedAt);
+	record.reviewVerdict = String((s.review as { verdict?: unknown } | undefined)?.verdict ?? "");
+	record.reviewFindings = ((s.review?.findings as unknown[] | undefined) ?? []).length;
+	record.buildPass = (s.buildGate as { pass?: boolean } | undefined)?.pass;
+	record.buildErrors = buildErrors(s).length;
+	const outcome = s.integration as { status?: IntegrationOutcomeStatus; expected?: Array<"api" | "ui"> } | undefined;
+	record.integrationStatus = outcome?.status;
+	record.integrationExpected = outcome?.expected ?? expectedIntegrationRoles(s);
+	record.failureSignature = verificationFailureSignature(s);
+	record.codeAfter = workingTreeSignature(s);
+	record.terminal = terminal;
+}
+
+function recordVerificationStagnation(s: PipelineState, ctx: StageContext, record: VerificationAttemptRecord): boolean {
+	const sigHist = ((s as Record<string, unknown>).__verificationSignatures as string[] | undefined) ?? [];
+	const countHist = ((s as Record<string, unknown>).__verificationCounts as number[] | undefined) ?? [];
+	(s as Record<string, unknown>).__verificationSignatures = sigHist;
+	(s as Record<string, unknown>).__verificationCounts = countHist;
+	const count = verificationFailureCount(s);
+	if (!detectStagnation(record.failureSignature, count, sigHist, countHist)) return false;
+	const findings = ((s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [])
+		.slice(0, 12)
+		.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null }));
+	(s as Record<string, unknown>).__verificationStagnated = {
+		rounds: sigHist.length,
+		attempt: record.attempt,
+		status: (s.integration as { status?: unknown } | undefined)?.status ?? "review-build",
+		signature: record.failureSignature,
+		findings,
+	};
+	// Preserve the existing extension summary/report path, which keys off
+	// __stagnated for verify-loop blockers.
+	(s as Record<string, unknown>).__stagnated = {
+		rounds: sigHist.length,
+		verdict: (s.review as { verdict?: string } | undefined)?.verdict,
+		findings,
+	};
+	ctx.log(`Stage 10: verification convergence stagnant across 2 consecutive attempts — stopping before another blind fix (attempt ${record.attempt})`);
+	return true;
+}
+
+async function runVerificationFix(kind: "review" | "integration", node: Node, state: PipelineState, ctx: StageContext): Promise<NodeResult> {
+	const before = workingTreeSignature(state);
+	const r = await node.run(state, ctx);
+	if (r.status === "cancelled") return r;
+	const after = workingTreeSignature(state);
+	const changed = before !== after;
+	(state as Record<string, unknown>).__lastVerificationFix = { kind, changed, before, after, at: localTimestamp() };
+	ctx.log(`Stage 10: ${kind} fix ${changed ? "changed repository state" : "made no repository-state change"} (before=${before} after=${after})`);
+	return r;
+}
+
+async function resolveIntegrationWriteBoundary(args: { ctx: StageContext; state: PipelineState; changedFiles: string[] }): Promise<RedBoundaryResult> {
+	const deterministic = args.changedFiles.map(classifyObviousRedPath);
+	const ambiguous = deterministic.filter((item) => item.category === "ambiguous" && !item.allowed).map((item) => item.path);
+	if (ambiguous.length === 0) return redBoundaryResultFromClassifications(deterministic);
+	try {
+		const evaluated = await args.ctx.agent({
+			id: "pipeline.integration.write-boundary",
+			agent: "red-boundary-classifier",
+			controlKeys: ["classifications", "forbiddenFiles", "ambiguousFiles", "allAllowed"],
+			prompt: buildRedBoundaryPrompt({
+				changedFiles: ambiguous,
+				testFiles: [],
+				phaseName: "Integration Testing",
+				phaseDescription: "API/UI tester agents may create or update test-only support and super-dev report artifacts, but must not modify production implementation while observing behavior.",
+				redStatus: "integration-test-observation",
+			}),
+		});
+		const agentResult = redBoundaryResultFromAgent(ambiguous, evaluated.control);
+		const byPath = new Map(agentResult.classifications.map((item) => [item.path, item]));
+		return redBoundaryResultFromClassifications(deterministic.map((item) => byPath.get(item.path) ?? item));
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return redBoundaryResultFromClassifications(deterministic.map((item) => item.category === "ambiguous" ? { ...item, source: "fallback", confidence: 0, reason: `boundary evaluator failed: ${message}` } : item));
+	}
+}
+
+async function detectIntegrationWriteViolations(state: PipelineState, ctx: StageContext, before: Map<string, string | null>): Promise<string[]> {
+	const changed = changedSinceSnapshot(state, before);
+	if (changed.length === 0) return [];
+	const boundary = await resolveIntegrationWriteBoundary({ ctx, state, changedFiles: changed });
+	ctx.log(`Stage 10: integration write-boundary allAllowed=${boundary.allAllowed} forbidden=${boundary.forbiddenFiles.join(", ") || "none"} ambiguous=${boundary.ambiguousFiles.join(", ") || "none"}`);
+	return boundary.forbiddenFiles;
+}
 
 // ─── shared predicates ──────────────────────────────────────────────────────
 
@@ -493,6 +699,135 @@ const fixStepIntegration = task({
 		return r.control ?? {};
 	},
 });
+
+function inconclusiveIntegrationMessage(outcome: IntegrationOutcome): string {
+	if (outcome.status === "skipped-service-unavailable") return "integration service unavailable; stopping without product-code fix";
+	if (outcome.status === "unknown-runner-unavailable") return "integration runner unavailable; stopping without product-code fix";
+	return `integration did not pass (${outcome.status})`;
+}
+
+/**
+ * Stage 10 — Verification Convergence.
+ *
+ * This is the main workflow's review/fix/test convergence state machine:
+ * review → fix → review → integration → fix → review → integration. A fix is
+ * never terminal evidence; the next attempt must re-run semantic review and the
+ * deterministic build gate before integration is allowed to run again.
+ */
+export const verificationConvergenceNode: Node = {
+	kind: "verificationConvergence",
+	async run(state, ctx) {
+		if (ctx.signal?.aborted) return { status: "cancelled" };
+		delete (state as Record<string, unknown>).__verificationStagnated;
+		delete (state as Record<string, unknown>).__stagnated;
+		delete (state as Record<string, unknown>).__lastVerificationFix;
+		(state as Record<string, unknown>).__verificationSignatures = [];
+		(state as Record<string, unknown>).__verificationCounts = [];
+		const attempts = ensureVerificationAttempts(state);
+
+		for (let attempt = 1; attempt <= VERIFICATION_MAX_ATTEMPTS; attempt++) {
+			if (ctx.signal?.aborted) return { status: "cancelled" };
+			if (!ctx.budget.check()) {
+				state.integration = { pass: false, status: "unknown-runner-unavailable", summary: "Budget exhausted before verification convergence attempt" };
+				return { status: "failed", error: "budget exhausted before verification convergence attempt" };
+			}
+			resetIntegrationAttemptState(state);
+			delete state.integration;
+
+			const record: VerificationAttemptRecord = {
+				attempt,
+				startedAt: localTimestamp(),
+				reviewFindings: 0,
+				buildErrors: 0,
+				integrationExpected: [],
+				failureSignature: "",
+				codeBefore: workingTreeSignature(state),
+			};
+			attempts.push(record);
+			ctx.log(`Stage 10 — Verification convergence attempt ${attempt}/${VERIFICATION_MAX_ATTEMPTS}: review + build`);
+
+			const reviewResult = await reviewStep.run(state, ctx);
+			if (reviewResult.status === "cancelled") return reviewResult;
+			const buildResult = await buildGateStep.run(state, ctx);
+			if (buildResult.status === "cancelled") return buildResult;
+
+			if (!reviewApproved(state) || !buildGreen(state)) {
+				recordAttemptEnd(state, record, attempt >= VERIFICATION_MAX_ATTEMPTS);
+				ctx.log(`Stage 10: review/build outcome attempt ${attempt}: review=${String(record.reviewVerdict || "unknown")} build=${record.buildPass === true ? "pass" : "fail"} findings=${record.reviewFindings} buildErrors=${record.buildErrors}`);
+				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
+				if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
+					ctx.log("Stage 10: verification max attempts exhausted after fresh review/build evidence; no final fix will run without re-review");
+					return { status: "failed", error: "verification convergence max attempts exhausted" };
+				}
+				record.fixKind = "review";
+				const fixResult = await runVerificationFix("review", fixStepReview, state, ctx);
+				record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
+				if (fixResult.status === "cancelled") return fixResult;
+				continue;
+			}
+
+			ctx.log(`Stage 10 — Verification convergence attempt ${attempt}/${VERIFICATION_MAX_ATTEMPTS}: integration`);
+			const integrationWriteSnapshot = snapshotStatusFiles(state);
+			const testResult = await testBlock.run(state, ctx);
+			if (testResult.status === "cancelled") return testResult;
+			const writeViolations = await detectIntegrationWriteViolations(state, ctx, integrationWriteSnapshot);
+			if (writeViolations.length > 0) {
+				state.integration = {
+					pass: false,
+					status: "failed",
+					summary: `integration tester modified non-test implementation file(s): ${writeViolations.join(", ")}`,
+					expected: expectedIntegrationRoles(state),
+					failures: writeViolations.map((file) => ({ file, reason: "integration tester modified repository implementation state" })),
+				};
+				recordAttemptEnd(state, record, true);
+				ctx.log(`Stage 10: integration write-boundary violation — ${writeViolations.join(", ")}; stopping without product-code fix`);
+				return { status: "failed", error: "integration tester modified implementation files" };
+			}
+			if (testResult.status === "failed") {
+				state.integration = { pass: false, status: "failed", summary: testResult.error ?? "integration bringup/test block failed", expected: expectedIntegrationRoles(state) };
+				recordAttemptEnd(state, record, attempt >= VERIFICATION_MAX_ATTEMPTS);
+				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
+				if (attempt >= VERIFICATION_MAX_ATTEMPTS) return { status: "failed", error: testResult.error ?? "integration bringup/test block failed" };
+				record.fixKind = "integration";
+				const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx);
+				record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
+				if (fixResult.status === "cancelled") return fixResult;
+				continue;
+			}
+
+			if (expectedIntegrationRoles(state).length === 0) {
+				const r = markIntegrationNotApplicable(state, ctx);
+				recordAttemptEnd(state, record, true);
+				ctx.log(`Stage 10: verification converged (review/build green; integration not applicable) in ${attempt} attempt(s)`);
+				return r;
+			}
+
+			const outcome = setIntegrationOutcome(state);
+			recordAttemptEnd(state, record, outcome.status === "passed" || attempt >= VERIFICATION_MAX_ATTEMPTS);
+			ctx.log(`Stage 10: integration outcome attempt ${attempt}: ${outcome.status} (expected: ${outcome.expected.join(",") || "none"})`);
+			if (outcome.status === "passed" && reviewApproved(state) && buildGreen(state)) {
+				return markIntegrationPassed(state, ctx, `Stage 10: verification converged after ${attempt} attempt(s)`);
+			}
+
+			if (outcome.status !== "failed") {
+				ctx.log(`Stage 10: ${inconclusiveIntegrationMessage(outcome)}`);
+				return { status: "failed", error: inconclusiveIntegrationMessage(outcome) };
+			}
+			if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
+			if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
+				ctx.log("Stage 10: verification max attempts exhausted after fresh integration evidence; no final fix will run without re-review");
+				return { status: "failed", error: "verification convergence max attempts exhausted" };
+			}
+
+			record.fixKind = "integration";
+			const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx);
+			record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
+			if (fixResult.status === "cancelled") return fixResult;
+		}
+
+		return { status: "failed", error: "verification convergence max attempts exhausted" };
+	},
+};
 
 /**
  * Stage 11 — Integration Testing: test → (fail? fix → re-review → build → re-test), max 5 total.

@@ -472,7 +472,7 @@ export default function activate(pi: ExtensionAPI): void {
 		name: SUPER_DEV_TOOL,
 		label: "Super Dev",
 		description:
-			"Run the self-contained 13-stage super-dev pipeline (requirements → research → design → spec → TDD implementation → code review → docs → merge). Spawns specialist `pi` subagents directly — no external workflow engine required.",
+			"Run the self-contained 13-stage super-dev pipeline (requirements → research → design → spec → TDD implementation → verification convergence → docs → merge). Spawns specialist `pi` subagents directly — no external workflow engine required.",
 		promptSnippet: "Run the full 13-stage super-dev development pipeline for a feature/bug/refactor task",
 		promptGuidelines: [
 			"Use super_dev when the user asks to implement a feature, fix a bug, or refactor code as a structured multi-stage workflow.",

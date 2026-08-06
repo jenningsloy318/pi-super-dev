@@ -15,11 +15,12 @@
  *   setup ─► classify ─► gate(requirements) ─► gate(bdd) ─► gate(research) ─►
  *   branch[bug]→debug ─► assessment ─► design ─► prototype ─►
  *   gate(spec) ─► gate(specReview) ─► implementation ─►
- *   loop{ code-review = parallel[review,adversarial]→merge + fix } ─►
+ *   verification convergence (review/build → integration, restarting at review
+ *   after every fix) ─►
  *   docs ─► cleanup ─► branch[!blocked]→merge
  */
 
-import { task, sequence, branch, gate, loop, gateValidator, noop } from "../nodes.ts";
+import { task, sequence, branch, gate, loop, gateValidator } from "../nodes.ts";
 import type { ControlObj, PipelineState, Stage, StageContext, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
 import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
@@ -28,7 +29,7 @@ import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { WORKFLOW_ATTEMPTS, positiveIntFromEnv } from "../retry-policy.ts";
 import { implementationStage } from "./implementation.ts";
-import { reviewStageNode, integrationLoopNode, reviewApproved } from "./verify.ts";
+import { verificationConvergenceNode, reviewApproved } from "./verify.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -119,10 +120,11 @@ const MAX_CONVERGE_ITERS = positiveIntFromEnv("SUPER_DEV_MAX_CONVERGE_ITERS", WO
 const implAllGreen = (s: PipelineState) =>
 	((s.implementation as { allGreen?: boolean } | undefined)?.allGreen === true);
 
-// ─── Verify (Stage 10): unified review + fix loop ───────────────────────────
-// Extracted to src/stages/verify.ts. BOTH reviewers (code-review + adversarial)
-// run in parallel → merged verdict → fix loop. Phase 2 adds the api/ui test step
-// inside that loop; Phase 3 makes its `until` require tests-green too.
+// ─── Verify (Stage 10): fresh-evidence convergence loop ─────────────────────
+// Extracted to src/stages/verify.ts. Each attempt runs fresh review + build
+// evidence before integration. Any fix invalidates downstream evidence and the
+// next attempt starts at review again: review → fix → review → integration →
+// fix → review → integration, bounded by WORKFLOW_ATTEMPTS.
 
 // ─── The pipeline ───────────────────────────────────────────────────────────
 
@@ -163,10 +165,10 @@ const pipeline = sequence(
 			{ while: (s, c) => !implAllGreen(s) && c.budget.check(), times: MAX_CONVERGE_ITERS },
 			task(implementationStage),
 		),
-		// Verify (Stage 10) only runs when implementation actually produced phases;
-		// otherwise we'd burn spawns reviewing nothing. verifyNode = review (both
-		// code-review + adversarial reviewers → merge) → fix, looped until approved.
-		branch(hasImplementation, { yes: sequence([reviewStageNode, branch(reviewApproved, { yes: integrationLoopNode, no: noop() })]) }),
+		// Verify only runs when implementation produced all phases. The convergence
+		// node owns review/build/integration freshness; a fix is never terminal
+		// evidence and always forces the next attempt to restart at review.
+		branch(hasImplementation, { yes: verificationConvergenceNode }),
 		task(docsWriter),
 		// Pre-merge hard build gate (Gap A): don't merge broken code. Run BEFORE
 		// cleanup so dependency cleanup cannot remove node_modules/toolchains needed
@@ -183,7 +185,7 @@ const pipeline = sequence(
 export const SUPER_DEV_WORKFLOW: Workflow = {
 	id: "super-dev",
 	description:
-		"13-stage development pipeline composed from control-flow nodes: classify → requirements → BDD → research → [debug] → assessment → design → [prototype] → spec → spec-review → implementation (TDD) → code review → docs → cleanup → merge.",
+		"13-stage development pipeline composed from control-flow nodes: classify → requirements → BDD → research → [debug] → assessment → design → [prototype] → spec → spec-review → implementation (TDD) → verification convergence → docs → cleanup → merge.",
 	root: pipeline,
 };
 
