@@ -233,8 +233,8 @@ export function packDashboardLines(
 	const done = topEntries.filter((e) => TERMINAL.has(e.status)).length;
 	const running = topEntries.find((e) => e.status === "running");
 	// Elapsed clock (only when supplied): a ticking `· 2m14s` is unmistakable
-	// proof-of-life for background runs whose live log body isn't visible. Omitted
-	// when undefined so the pure-function tests keep their exact header contract.
+	// proof-of-life during quiet agent/model spans. Omitted when undefined so the
+	// pure-function tests keep their exact header contract.
 	const elapsed = opts.elapsedMs != null ? ` · ${fmtElapsed(opts.elapsedMs)}` : "";
 	const head = truncLine(
 		`${superDevVersionLabel()} · ${done}/${topEntries.length}${elapsed}${
@@ -297,12 +297,9 @@ export function packDashboardLines(
 		lines.push(truncLine(theme ? theme.fg("dim", `  → ${opts.logPath}`) : `  → ${opts.logPath}`, width));
 		lines.push("");
 	}
-	// Recent-activity tail (background runs only — the caller passes recentLogs
-	// solely when the tool-result live-log body is unavailable, i.e. detached
-	// background mode). Shows the last few structured stage log lines DIMMED so
-	// the user sees live progress in the persistent widget instead of a frozen,
-	// seemingly-dead panel. Foreground runs pass no recentLogs (their log body
-	// streams through the tool result), so this section never double-renders.
+	// Recent-activity tail (optional): shows the last few structured stage log
+	// lines DIMMED when a caller explicitly supplies them. The foreground tool path
+	// normally leaves this empty because its log body streams through the tool result.
 	const recent = (opts.recentLogs ?? []).filter((r) => r && r.trim());
 	if (recent.length) {
 		pushGap();
@@ -319,7 +316,7 @@ export function packDashboardLines(
 	return lines;
 }
 
-/** Max recent stage-log lines shown in the background-mode widget tail. */
+/** Max recent stage-log lines shown in the optional widget tail. */
 const RECENT_LOG_TAIL = 8;
 
 /** Format an elapsed duration compactly: `45s`, `2m14s`, `1h03m`. */

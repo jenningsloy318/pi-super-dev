@@ -1,12 +1,10 @@
 /**
  * Phase 3 (Feature 3) — typed registerEntryRenderer (RED→GREEN tests).
  *
- * AC-09 → SCENARIO-014 (the background-summary transcript-card renderer is
- *          registered DIRECTLY through the typed public `pi.registerEntryRenderer`
- *          API — the `pi as unknown as { registerEntryRenderer?: … }` capability
- *          cast is GONE, and the typed call `pi.registerEntryRenderer("super-dev-summary", …)`
- *          is PRESENT), and the durable transcript-card rendering behavior is
- *          preserved;
+ * AC-09 → SCENARIO-014 (native transcript-card renderers are registered
+ *          DIRECTLY through the typed public `pi.registerEntryRenderer` API —
+ *          the `pi as unknown as { registerEntryRenderer?: … }` capability cast
+ *          is GONE), and the durable run-card rendering behavior is preserved;
  *          SCENARIO-015 (a failure during renderer registration is swallowed by
  *          the best-effort try/catch guard and activation continues without
  *          aborting the run).
@@ -147,38 +145,37 @@ describe("Phase 3 (Feature 3 / AC-09) — typed registerEntryRenderer", () => {
 			expect(EXTENSION_SRC).not.toMatch(/registerEntryRenderer\?:/);
 		});
 
-		it('the source calls the typed public API directly: `pi.registerEntryRenderer("super-dev-summary", …)`', () => {
-			expect(EXTENSION_SRC).toContain('pi.registerEntryRenderer("super-dev-summary"');
+		it('the source calls the typed public API directly for the run renderer', () => {
+			expect(EXTENSION_SRC).toContain('pi.registerEntryRenderer("super-dev-run"');
 		});
 
-		it("activate(pi) registers native entry renderers for summary and accepted runtime instructions", () => {
+		it("activate(pi) registers native entry renderers for run events and accepted runtime instructions", () => {
 			const { registerEntryRenderer } = setup();
-			expect(registerEntryRenderer.map((r) => r.customType)).toEqual(expect.arrayContaining(["super-dev-summary", "super-dev-instruction", "super-dev-run"]));
-			expect(typeof registerEntryRenderer.find((r) => r.customType === "super-dev-summary")?.renderer).toBe("function");
+			expect(registerEntryRenderer.map((r) => r.customType)).toEqual(expect.arrayContaining(["super-dev-instruction", "super-dev-run"]));
+			expect(registerEntryRenderer.map((r) => r.customType)).not.toContain("super-dev-summary");
 			expect(typeof registerEntryRenderer.find((r) => r.customType === "super-dev-instruction")?.renderer).toBe("function");
 			expect(typeof registerEntryRenderer.find((r) => r.customType === "super-dev-run")?.renderer).toBe("function");
 		});
 
-		it("the registered renderer still renders the durable background-summary transcript card (behavior preserved)", () => {
+		it("the registered run renderer renders a durable foreground run transcript card", () => {
 			tui.reset();
 			const { registerEntryRenderer } = setup();
-			const { renderer } = registerEntryRenderer[0];
+			const { renderer } = registerEntryRenderer.find((r) => r.customType === "super-dev-run")!;
 			const theme: { bold: (t: string) => string; fg: (c: string, t: string) => string } = {
 				bold: (t) => `*${t}*`,
 				fg: (_c, t) => t,
 			};
 			const out = renderer(
-				{ data: { text: "line one\nline two", isError: true } },
+				{ data: { status: "started", task: "fix X", at: 1_779_999_200_000 } },
 				{ expanded: true },
 				theme,
 			) as { children: Array<{ text: string }> };
-			// Returns a Component (the Container) and builds the same children as
-			// before: an isError-aware header followed by each body line.
 			expect(out).toBeTruthy();
 			expect(Array.isArray(out.children)).toBe(true);
 			const texts = out.children.map((c) => c.text);
-			expect(texts[0]).toContain("finished with errors");
-			expect(texts.slice(1)).toEqual(["line one", "line two"]);
+			expect(texts[0]).toContain("super-dev run started");
+			expect(texts[0]).not.toContain("background");
+			expect(texts[1]).toBe("fix X");
 		});
 	});
 
@@ -187,9 +184,10 @@ describe("Phase 3 (Feature 3 / AC-09) — typed registerEntryRenderer", () => {
 			expect(() => setup({ registerEntryRendererThrows: true })).not.toThrow();
 		});
 
-		it("activation still registers the post-renderer `super-dev-stop` command when the renderer throws (continues)", () => {
+		it("activation still registers the main `super-dev` command when the renderer throws (continues)", () => {
 			const { registerCommand } = setup({ registerEntryRendererThrows: true });
-			expect(registerCommand).toContain("super-dev-stop");
+			expect(registerCommand).toContain("super-dev");
+			expect(registerCommand).not.toContain("super-dev-stop");
 		});
 	});
 });

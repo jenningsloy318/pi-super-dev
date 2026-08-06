@@ -38,9 +38,6 @@ const activate = (ext as any).default as (pi: any) => void;
 const setActiveRun = (run: unknown): void => (ext as any).setActiveRun(run);
 const getActiveRun = (): unknown => (ext as any).getActiveRun();
 const createActiveRun = (ctx?: unknown): any => (ext as any).createActiveRun(ctx);
-const createBgActiveRun = (ctx?: unknown, stream?: unknown): any => (ext as any).createActiveRun(ctx, stream, true);
-const setActiveBgController = (c: unknown): void => (ext as any).setActiveBgController(c);
-const getActiveBgController = (): unknown => (ext as any).getActiveBgController();
 
 /** Minimal mock pi: captures the handler registered via events.on("input", h). */
 function makeMockPi() {
@@ -231,64 +228,37 @@ describe("Phase 1 — drain() atomic return-and-clear (AC-05 / SCENARIO-013)", (
 	});
 });
 
-describe("Background runs — session stays fully interactive (accept commands mid-run)", () => {
+describe("Active foreground runs — session stays interactive for slash commands", () => {
 	let pi: ReturnType<typeof makeMockPi>;
 	let H: (e: any) => any;
 	beforeEach(() => {
 		resetRun();
-		try { setActiveBgController(null); } catch { /* not implemented yet */ }
 		pi = makeMockPi();
 		activate(pi);
 		H = pi.inputHandler()!;
 	});
 
-	it("a background run captures free-text input (same as foreground) but passes slash-commands through", () => {
-		const run = createBgActiveRun();
+	it("passes slash-commands through and captures free-text steering", () => {
+		const run = createActiveRun();
 		setActiveRun(run);
-		// Slash-commands pass through so /super-dev-stop, /reload, /model, etc. still
-		// work during a run (leading slash, even whitespace-prefixed).
-		expect(H(ev("/super-dev-stop", "interactive"))).toEqual({ action: "continue" });
+		// Slash-commands pass through so /reload, /model, etc. still work during a run.
+		expect(H(ev("/reload", "interactive"))).toEqual({ action: "continue" });
 		expect(H(ev("   /help   ", "interactive"))).toEqual({ action: "continue" });
-		// Free-text typed during an active (background) run is captured as mid-run
-		// user context and drained + persisted into .user-notes.json for every
-		// subsequent stage. {handled} tells pi NOT to also queue it as a normal turn.
+		// Free-text typed during an active run is captured as mid-run user context.
 		expect(H(ev("also handle the empty-list edge case", "interactive"))).toEqual({ action: "handled" });
 		expect(run.drain()).toEqual(["also handle the empty-list edge case"]);
 		setActiveRun(null);
 	});
 
 	it("a FOREGROUND run still captures interactive input (steering preserved)", () => {
-		const run = createActiveRun(); // background defaults to false
+		const run = createActiveRun();
 		setActiveRun(run);
 		expect(H(ev("focus on the parser", "interactive"))).toEqual({ action: "handled" });
 		expect(run.drain()).toEqual(["focus on the parser"]);
 		setActiveRun(null);
 	});
 
-	it("createActiveRun exposes the background flag it was constructed with", () => {
-		expect(createActiveRun().background).toBe(false);
-		expect(createBgActiveRun().background).toBe(true);
-	});
-});
-
-describe("Background-run abort controller singleton", () => {
-	beforeEach(() => { try { setActiveBgController(null); } catch { /* not implemented */ } });
-
-	it("is null when idle; stores and clears a controller", () => {
-		expect(getActiveBgController()).toBeNull();
-		const c = new AbortController();
-		setActiveBgController(c);
-		expect(getActiveBgController()).toBe(c);
-		setActiveBgController(null);
-		expect(getActiveBgController()).toBeNull();
-	});
-
-	it("aborting the stored controller signals cancellation (drives /super-dev-stop)", () => {
-		const c = new AbortController();
-		setActiveBgController(c);
-		expect(c.signal.aborted).toBe(false);
-		getActiveBgController() && (getActiveBgController() as AbortController).abort();
-		expect(c.signal.aborted).toBe(true);
-		setActiveBgController(null);
+	it("createActiveRun no longer carries a background mode flag", () => {
+		expect(createActiveRun().background).toBeUndefined();
 	});
 });

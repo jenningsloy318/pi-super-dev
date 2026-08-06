@@ -85,25 +85,17 @@ function commandCtx() {
 }
 
 describe("parseSuperDevCommandArgs", () => {
-	it("defaults /super-dev args to foreground", () => {
-		expect(parseSuperDevCommandArgs("fix X")).toEqual({ task: "fix X", background: false });
-	});
-
-	it("parses leading --bg as an explicit background opt-in", () => {
-		expect(parseSuperDevCommandArgs(" --bg   fix X ")).toEqual({ task: "fix X", background: true });
-	});
-
-	it("parses leading --background as an explicit background opt-in", () => {
-		expect(parseSuperDevCommandArgs("--background fix X")).toEqual({ task: "fix X", background: true });
+	it("trims /super-dev args for the foreground-only command", () => {
+		expect(parseSuperDevCommandArgs(" fix X ")).toEqual({ task: "fix X" });
 	});
 
 	it("treats non-leading --bg text as part of the task", () => {
-		expect(parseSuperDevCommandArgs("fix --bg X")).toEqual({ task: "fix --bg X", background: false });
+		expect(parseSuperDevCommandArgs("fix --bg X")).toEqual({ task: "fix --bg X" });
 	});
 });
 
-describe("/super-dev command foreground/background dispatch", () => {
-	it("sends a foreground super_dev tool instruction by default", async () => {
+describe("/super-dev command dispatch", () => {
+	it("sends a foreground-only super_dev tool instruction", async () => {
 		const { commands, sendUserMessage } = setupCommands();
 		const ctx = commandCtx();
 
@@ -114,19 +106,7 @@ describe("/super-dev command foreground/background dispatch", () => {
 		const message = sendUserMessage.mock.calls[0][0] as string;
 		expect(message).toContain("Use the super_dev tool");
 		expect(message).toContain('"task": "fix X"');
-		expect(message).toContain('"background": false');
-	});
-
-	it("sends a background super_dev tool instruction when --bg is present", async () => {
-		const { commands, sendUserMessage } = setupCommands();
-
-		await commands.get("super-dev")!.handler("--bg fix X", commandCtx());
-
-		expect(sendUserMessage).toHaveBeenCalledTimes(1);
-		const message = sendUserMessage.mock.calls[0][0] as string;
-		expect(message).toContain('"task": "fix X"');
-		expect(message).toContain('"background": true');
-		expect(message).not.toContain('"task": "--bg fix X"');
+		expect(message).not.toContain('"background"');
 	});
 
 	it("shows usage instead of dispatching when /super-dev has no task", async () => {
@@ -139,14 +119,18 @@ describe("/super-dev command foreground/background dispatch", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /super-dev"), "info");
 	});
 
-	it("registers /super-dev-bg as an explicit detached command", async () => {
+	it("rejects removed background flags instead of dispatching", async () => {
 		const { commands, sendUserMessage } = setupCommands();
+		const ctx = commandCtx();
 
-		await commands.get("super-dev-bg")!.handler("fix X", commandCtx());
+		await commands.get("super-dev")!.handler("--bg fix X", ctx);
 
-		expect(sendUserMessage).toHaveBeenCalledTimes(1);
-		const message = sendUserMessage.mock.calls[0][0] as string;
-		expect(message).toContain('"task": "fix X"');
-		expect(message).toContain('"background": true');
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("removed"), "info");
+	});
+
+	it("does not register /super-dev-bg", () => {
+		const { commands } = setupCommands();
+		expect(commands.has("super-dev-bg")).toBe(false);
 	});
 });

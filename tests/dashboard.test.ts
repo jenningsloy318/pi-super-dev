@@ -106,7 +106,7 @@ describe("packDashboardLines", () => {
 	});
 
 	it("adds vertical breathing room around header, activity, and sections", () => {
-		const lines = packDashboardLines(stages(5, 2), "Implementation — Phase 1/4", 120, undefined, 0, "/super-dev-stop", { recentLogs: ["→ read file.ts"] });
+		const lines = packDashboardLines(stages(5, 2), "Implementation — Phase 1/4", 120, undefined, 0, "esc to abort", { recentLogs: ["→ read file.ts"] });
 		const header = lines.findIndex((l) => l.startsWith(DASHBOARD_HEADER_PREFIX));
 		const activity = lines.findIndex((l) => l.startsWith("▶ Implementation"));
 		const runningSection = lines.findIndex((l) => l.includes("── running ──"));
@@ -147,16 +147,16 @@ describe("packDashboardLines", () => {
 		expect(lines.some((l) => l.includes("    ● ↳ Phase 2/3: API"))).toBe(true);
 	});
 
-	it("renders a dimmed recent-activity tail when recentLogs are supplied (background mode)", () => {
+	it("renders a dimmed recent-activity tail when recentLogs are supplied", () => {
 		const logs = ["Implementation phase-01 red-oracle: red", "Implementation phase-01 build-gate PASS"];
-		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "/super-dev-stop", { recentLogs: logs });
+		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "esc to abort", { recentLogs: logs });
 		expect(lines.some((l) => l.includes("── recent commands / progress ──"))).toBe(true);
 		expect(lines.some((l) => l.includes("red-oracle: red"))).toBe(true);
 		expect(lines.some((l) => l.includes("build-gate PASS"))).toBe(true);
 	});
 
 	it("shows the active run log path between stage groups and recent progress", () => {
-		const lines = packDashboardLines(stages(5, 2), undefined, 120, undefined, 0, "/super-dev-stop", {
+		const lines = packDashboardLines(stages(5, 2), undefined, 120, undefined, 0, "esc to abort", {
 			recentLogs: ["Implementation phase-01 build-gate PASS"],
 			logPath: "/Users/me/.super-dev/runs/2026/run.log",
 		});
@@ -170,14 +170,14 @@ describe("packDashboardLines", () => {
 
 	it("caps the recent tail at 8 lines (most-recent kept)", () => {
 		const logs = Array.from({ length: 20 }, (_, i) => `log line ${i + 1}`);
-		const lines = packDashboardLines(stages(2), undefined, 120, undefined, 0, "/super-dev-stop", { recentLogs: logs });
+		const lines = packDashboardLines(stages(2), undefined, 120, undefined, 0, "esc to abort", { recentLogs: logs });
 		const shown = lines.filter((l) => /log line \d+/.test(l));
 		expect(shown.length).toBe(8);
 		expect(lines.some((l) => l.includes("log line 20"))).toBe(true); // newest kept
 		expect(lines.some((l) => l.includes("log line 12"))).toBe(false); // oldest trimmed
 	});
 
-	it("omits the recent tail entirely when no recentLogs (foreground mode)", () => {
+	it("omits the recent tail entirely when no recentLogs are supplied", () => {
 		const lines = packDashboardLines(stages(2), "writing x", 80);
 		expect(lines.some((l) => l.includes("── recent commands / progress ──"))).toBe(false);
 	});

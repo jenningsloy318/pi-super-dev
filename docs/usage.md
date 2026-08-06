@@ -30,9 +30,12 @@ super_dev({ task: "add a POST /users endpoint with validation", skipWorktree: fa
 | `model`        | `string`   | —       | Model override for spawned specialists (`provider/id`).     |
 | `maxAgents`    | `number`   | `200`   | Cap total specialist spawns.                                |
 
+Super-dev runs in the foreground. Detached/background slash-command flags and
+stop commands are no longer supported.
+
 ## Extension version metadata
 
-The extension metadata is currently `super-dev v0.01.02`. The TUI dashboard and
+The extension metadata is currently `super-dev v0.01.03`. The TUI dashboard and
 run log show the short version label only. This runtime metadata is intentionally
 separate from the npm package version in `package.json`.
 

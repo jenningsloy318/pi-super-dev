@@ -57,9 +57,12 @@ super_dev({ task: "fix the crash on large file upload" })
 
 Tool options: `skipWorktree`, `skipStages`, `model`, `maxAgents`.
 
+Super-dev runs in the foreground. Detached/background slash-command flags and
+stop commands are no longer supported.
+
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.01.02`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.01.03`.
 The TUI dashboard and run log show the short version label only. This metadata
 is intentionally separate from the npm package version in `package.json`.
 

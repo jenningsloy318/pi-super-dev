@@ -35,7 +35,7 @@ vi.mock("../src/pipeline.ts", () => ({
 		if (task.includes("[emit-stage]")) {
 			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void; log?: (message: string) => void } | undefined;
 			progress?.stage?.({ id: "requirements", label: "Requirements", status: "running" });
-			progress?.log?.("background log still visible");
+			progress?.log?.("foreground log still visible");
 		}
 		// Minimal valid RunSummary so formatSummary / handleStagnation don't throw:
 		// no `__stagnated` on state → handleStagnation returns early.
@@ -185,11 +185,11 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(opts).toBeDefined();
 		expect(opts!.signal).toBe(turnController.signal);
 	});
-	it("SCENARIO-004: explicit background:true in TUI detaches with its own background signal", async () => {
+	it("SCENARIO-004: stale background:true is ignored and the TUI run stays foreground", async () => {
 		const { execute } = setupTool();
 		const turnController = new AbortController();
 		const res = await execute(
-			"call-bg",
+			"call-stale-bg",
 			{ task: "build the thing", background: true },
 			turnController.signal,
 			undefined,
@@ -203,19 +203,17 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 				},
 			},
 		) as { content?: Array<{ type: "text"; text: string }> };
-		await Promise.resolve();
-		expect(res.content?.[0]?.text).toContain("started in the background");
+		expect(res.content?.[0]?.text).toContain("super-dev pipeline complete");
 		const opts = cap.opts();
 		expect(opts).toBeDefined();
-		expect(opts!.signal).toBeDefined();
-		expect(opts!.signal).not.toBe(turnController.signal);
+		expect(opts!.signal).toBe(turnController.signal);
 	});
 	it("does not write stage progress to the TUI footer/status line", async () => {
 		const { execute } = setupTool();
 		const setStatus = vi.fn();
 		await execute(
 			"call-status",
-			{ task: "[emit-stage] build the thing", background: false },
+			{ task: "[emit-stage] build the thing" },
 			undefined,
 			undefined,
 			{ mode: "tui", ui: { setWidget: vi.fn(), setWorkingMessage: vi.fn(), setStatus, notify: vi.fn() } },
@@ -223,7 +221,7 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", expect.stringContaining("stages"));
 		expect(setStatus).not.toHaveBeenCalledWith("super-dev", undefined);
 	});
-	it("keeps background TUI runs prompt-quiet while showing dashboard progress", async () => {
+	it("foreground TUI runs stream updates while showing dashboard progress", async () => {
 		const { execute } = setupTool();
 		const ui = {
 			setWidget: vi.fn(),
@@ -233,19 +231,16 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		};
 		const onUpdate = vi.fn();
 		const res = await execute(
-			"call-bg-quiet",
-			{ task: "[emit-stage] build the thing", background: true },
+			"call-fg-stream",
+			{ task: "[emit-stage] build the thing" },
 			new AbortController().signal,
 			onUpdate,
 			{ mode: "tui", ui },
 		) as { content?: Array<{ type: "text"; text: string }> };
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(res.content?.[0]?.text).toContain("Live progress shows in the dashboard widget");
+		expect(res.content?.[0]?.text).toContain("super-dev pipeline complete");
 		expect(ui.setWidget).toHaveBeenCalledWith("super-dev", expect.anything(), { placement: "aboveEditor" });
-		expect(ui.setWorkingMessage).not.toHaveBeenCalled();
 		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev", expect.anything());
-		expect(ui.setStatus).not.toHaveBeenCalledWith("super-dev-input", expect.anything());
-		expect(onUpdate).not.toHaveBeenCalled();
+		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("foreground log still visible") })]) }));
 	});
 });
 
