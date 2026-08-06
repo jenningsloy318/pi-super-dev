@@ -162,12 +162,35 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(opts!.inheritedModelObject).toEqual({ id: "gpt-4o", provider: "openai" });
 		expect(opts!.inheritedThinking).toBe("high");
 	});
-	it("SCENARIO-003: ctx with TUI ui but missing mode still detaches with its own background signal", async () => {
+	it("SCENARIO-003: ctx with TUI ui but missing mode still defaults to foreground", async () => {
+		const { execute } = setupTool();
+		const turnController = new AbortController();
+		const res = await execute(
+			"call-fg",
+			{ task: "build the thing" },
+			turnController.signal,
+			undefined,
+			{
+				mode: undefined,
+				ui: {
+					setWidget: vi.fn(),
+					setWorkingMessage: vi.fn(),
+					setStatus: vi.fn(),
+					notify: vi.fn(),
+				},
+			},
+		) as { content?: Array<{ type: "text"; text: string }> };
+		expect(res.content?.[0]?.text).toContain("super-dev pipeline complete");
+		const opts = cap.opts();
+		expect(opts).toBeDefined();
+		expect(opts!.signal).toBe(turnController.signal);
+	});
+	it("SCENARIO-004: explicit background:true in TUI detaches with its own background signal", async () => {
 		const { execute } = setupTool();
 		const turnController = new AbortController();
 		const res = await execute(
 			"call-bg",
-			{ task: "build the thing" },
+			{ task: "build the thing", background: true },
 			turnController.signal,
 			undefined,
 			{
@@ -211,7 +234,7 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		const onUpdate = vi.fn();
 		const res = await execute(
 			"call-bg-quiet",
-			{ task: "[emit-stage] build the thing" },
+			{ task: "[emit-stage] build the thing", background: true },
 			new AbortController().signal,
 			onUpdate,
 			{ mode: "tui", ui },

@@ -6,7 +6,7 @@ Scope: Determine whether `pi-super-dev` can run foreground when invoked from Pi,
 
 ## Summary
 
-`pi-super-dev` is not technically background-only. The `super_dev` tool already has a blocking foreground path when `background: false` is passed. The effective problem is that interactive TUI mode defaults `background` to true, and `/super-dev` does not execute the runner directly. It sends a user message asking the model to call `super_dev`, so normal command usage follows the tool's background default.
+`pi-super-dev` is not technically background-only. The `super_dev` tool has a blocking foreground path when `background: false` is passed. The original problem was that interactive TUI mode defaulted `background` to true, and `/super-dev` did not execute the runner directly. Current behavior defaults both the slash command and direct tool calls to foreground; background is an explicit opt-in.
 
 The installed extension most similar to the requested behavior is `pi-web-access`: it keeps its primary tool call foreground, streams progress through the tool `onUpdate` callback, uses `ctx.ui.setWidget` for activity UI, stores durable results with `pi.appendEntry`, and uses background only for secondary long content fetches. `pi-subagents` is also useful: its slash commands run directly from command handlers, default foreground, accept explicit background flags, and update Pi UI/status through `ctx.ui` and `pi.sendMessage`.
 
@@ -18,14 +18,14 @@ The local package is registered as a Pi extension and skill in `package.json` vi
 
 Key findings from `src/extension.ts`:
 
-- The `super_dev` tool exposes a `background` boolean. Its description says TUI defaults to background and `background: false` blocks until completion.
+- The `super_dev` tool exposes a `background` boolean. Its description says foreground is the default and `background: true` opts into the detached path.
 - The foreground live stream uses the tool `onUpdate` callback through `createLiveStream`, then flushes only when `activeRun.background` is false.
 - The dashboard uses Pi-native `ctx.ui.setWidget` with a component factory at placement `aboveEditor`; this is Pi UI, although the dashboard component itself is custom project code.
-- The dispatch decision is `runInBackground = hasTuiUi && params.background !== false`; if false, it calls `doRun(signal, false)` and waits.
-- The `/super-dev` slash command currently sends `pi.sendUserMessage(...)` asking the model to call the tool, without forcing `background: false`.
+- The dispatch decision is `runInBackground = hasTuiUi && params.background === true`; otherwise it calls `doRun(signal, false)` and waits.
+- The `/super-dev` slash command sends `pi.sendUserMessage(...)` asking the model to call the tool with an explicit `background` value; plain `/super-dev` sends `false`, and `--bg` sends `true`.
 - Background completion uses `pi.appendEntry("super-dev-summary", ...)` and `pi.sendMessage(..., { deliverAs: "nextTurn" })`.
 
-Implication: foreground support exists, but it is not the default path users get from `/super-dev`.
+Implication: foreground support is now the default path users get from `/super-dev` and direct tool calls. Detached background runs remain available through explicit opt-ins.
 
 ## Pi API Surface Relevant To This Change
 
@@ -167,10 +167,8 @@ This lets the pipeline emit structured progress without knowing where it is rend
 
 ## Open Decisions
 
-1. Should `/super-dev` direct command execution replace `sendUserMessage` immediately, or should Phase 1 ship first as a smaller compatibility change?
-2. Should the `super_dev` tool itself keep background as the default in TUI mode for agent-initiated calls, or should foreground become the global default?
-3. Is the current dashboard acceptable because it is hosted by Pi `ctx.ui.setWidget`, or should it be simplified to a plain Pi string widget to reduce local UI code?
-4. Should background mode stay as `/super-dev --bg`, a separate `/super-dev-bg`, or both?
+1. Should `/super-dev` direct command execution replace `sendUserMessage` in a later refactor, or is the explicit tool-instruction bridge acceptable long term?
+2. Is the current dashboard acceptable because it is hosted by Pi `ctx.ui.setWidget`, or should it be simplified to a plain Pi string widget to reduce local UI code?
 
 ## Evidence Consulted
 
@@ -186,6 +184,6 @@ This lets the pipeline emit structured progress without knowing where it is rend
 
 ## Conclusion
 
-Yes, this extension can be improved to run foreground when invoked from Pi. The fastest safe change is to make `/super-dev` force `background: false` and add an explicit background flag/command. The better long-term change is to refactor the existing tool runner into a shared runner that the slash command can execute directly, while keeping progress on Pi-native UI surfaces.
+Yes, this extension can run foreground when invoked from Pi. The shipped safe change makes `/super-dev` and direct `super_dev` calls default to foreground, with explicit background mode through `/super-dev --bg`, `/super-dev-bg`, or `background: true`. A possible later refactor is to move the existing tool runner into a shared runner that the slash command can execute directly, while keeping progress on Pi-native UI surfaces.
 
 The goal should be "no separate/raw TUI" rather than "no local rendering code at all." Pi provides UI primitives and render hooks; extensions still need to provide the workflow-specific lines/components they want Pi to display.

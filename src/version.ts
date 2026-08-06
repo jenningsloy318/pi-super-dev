@@ -10,7 +10,7 @@
  * runtime-visible extension version can advance at the stricter per-commit
  * cadence without implying an npm/package release.
  */
-export const SUPER_DEV_EXTENSION_VERSION = "0.01.01";
+export const SUPER_DEV_EXTENSION_VERSION = "0.01.02";
 export const SUPER_DEV_EXTENSION_NAME = "super-dev";
 export const SUPER_DEV_VERSION_POLICY = "increment patch every commit; patch 01-99 then bump minor/reset patch to 01; minor 01-99 then bump major/reset minor+patch to 01";
 
@@ -31,5 +31,5 @@ export function superDevVersionLabel(): string {
 }
 
 export function superDevRunMetadataLine(): string {
-	return `${superDevVersionLabel()} · version policy: ${SUPER_DEV_VERSION_POLICY}`;
+	return superDevVersionLabel();
 }

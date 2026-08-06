@@ -528,7 +528,7 @@ export default function activate(pi: ExtensionAPI): void {
 			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
 			resume: Type.Optional(Type.Boolean({ description: "Resume the most-recent interrupted run from where it left off (memoized replay). Default: false." })),
 			resumeSpecId: Type.Optional(Type.String({ description: "Resume a specific run by spec identifier (e.g. '07-foo-bar'). Overrides auto-pick." })),
-			background: Type.Optional(Type.Boolean({ description: "Run the pipeline DETACHED in the background so the session stays interactive (you can keep chatting and running commands during the run). Defaults to true in interactive TUI mode; set false to block until the pipeline finishes. Ignored (always blocking) in print/json/rpc modes." })),
+			background: Type.Optional(Type.Boolean({ description: "Run the pipeline DETACHED in the background so the session stays interactive (you can keep chatting and running commands during the run). Defaults to false; set true or use /super-dev-bg to detach. Ignored (always blocking) in print/json/rpc modes." })),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const task = String(params.task ?? "").trim();
@@ -787,14 +787,13 @@ export default function activate(pi: ExtensionAPI): void {
 			}
 			};
 			// ── foreground vs. background dispatch ───────────────────────────────────
-			// In interactive TUI mode, DETACH the pipeline by default so the session
-			// stays live (user can chat + run commands DURING the run). The turn's
-			// `signal` would abort the instant the tool returns, so the detached run
+			// Foreground is the default in every mode. Background is an explicit TUI-only
+			// opt-in (`background:true`, `/super-dev --bg`, or `/super-dev-bg`). The turn's
+			// `signal` would abort the instant a detached tool returns, so the detached run
 			// gets its OWN AbortController (stored for /super-dev-stop). print/json/rpc
-			// modes and an explicit `background:false` keep the original blocking path
-			// — byte-identical for automation / tests.
+			// modes remain blocking even if a caller asks for background.
 			const hasTuiUi = ctx?.mode === "tui" || (!!ctx?.ui && typeof ctx.ui.setWidget === "function");
-			const runInBackground = hasTuiUi && params.background !== false;
+			const runInBackground = hasTuiUi && params.background === true;
 			if (!runInBackground) return await doRun(signal, false);
 			if (getActiveRun()?.background) {
 				return { content: [{ type: "text", text: "⏳ A super-dev run is already active in the background. Wait for it to finish or stop it with /super-dev-stop." }], isError: true, details: {} };
