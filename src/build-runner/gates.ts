@@ -13,6 +13,16 @@ export interface RedCheckPlan {
 	argv: string[];
 }
 
+export interface RedCheckDiagnostic {
+	plan: RedCheckPlan;
+	language: string;
+	status: RedStatus;
+	exitCode: number | null;
+	signal: string | null;
+	error?: string;
+	outputTail: string;
+}
+
 /**
  * Default per-command timeout for the build gate, in milliseconds (10 min).
  *
@@ -689,6 +699,20 @@ export interface RedCheckOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	onPlan?: (plans: RedCheckPlan[]) => void;
+	onResult?: (diagnostic: RedCheckDiagnostic) => void;
+}
+
+function tailText(text: string, maxLines = STDERR_TAIL_LINES): string {
+	const lines = String(text ?? "").split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+	return lines.slice(-maxLines).join("\n");
+}
+
+function emitRedDiagnostic(opts: RedCheckOptions | undefined, diagnostic: RedCheckDiagnostic): void {
+	try { opts?.onResult?.(diagnostic); } catch { /* diagnostics must never affect the oracle */ }
+}
+
+function emitRedPlans(opts: RedCheckOptions | undefined, plans: RedExecutionPlan[]): void {
+	try { opts?.onPlan?.(plans.map((plan) => ({ cwd: plan.cwd, argv: [...plan.argv] }))); } catch { /* diagnostics must never affect the oracle */ }
 }
 
 /**
@@ -992,7 +1016,7 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		}
 
 		if (plans.length === 0) return "unknown";
-		opts?.onPlan?.(plans.map((plan) => ({ cwd: plan.cwd, argv: [...plan.argv] })));
+		emitRedPlans(opts, plans);
 
 		// Run each argv under the shared timeout envelope. Each plan is classified
 		// with its own language because RED targets may live in nested modules whose
@@ -1001,11 +1025,34 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		for (const plan of plans) {
 			if (opts?.signal?.aborted) return "unknown";
 			const { argv } = plan;
-			const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
-			// NEVER throw on a spawn error / ENOENT — degrade to unknown.
-			if (r.error) return "unknown";
-			const combined = "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
-			statuses.push(classifyRedStatus(plan.language, combined, r.status === 0));
+			try {
+				const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
+				const combined = "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
+				const status = r.error ? "unknown" : classifyRedStatus(plan.language, combined, r.status === 0);
+				emitRedDiagnostic(opts, {
+					plan: { cwd: plan.cwd, argv: [...plan.argv] },
+					language: plan.language,
+					status,
+					exitCode: typeof r.status === "number" ? r.status : null,
+					signal: typeof r.signal === "string" ? r.signal : null,
+					...(r.error ? { error: r.error.message } : {}),
+					outputTail: tailText(combined),
+				});
+				// NEVER throw on a spawn error / ENOENT — degrade to unknown.
+				if (r.error) return "unknown";
+				statuses.push(status);
+			} catch (err) {
+				emitRedDiagnostic(opts, {
+					plan: { cwd: plan.cwd, argv: [...plan.argv] },
+					language: plan.language,
+					status: "unknown",
+					exitCode: null,
+					signal: null,
+					error: err instanceof Error ? err.message : String(err),
+					outputTail: "",
+				});
+				return "unknown";
+			}
 		}
 		return combineRedStatuses(statuses);
 	} catch {

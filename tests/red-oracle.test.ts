@@ -364,6 +364,25 @@ describe("runRedCheck — npm / vitest / jest classification", () => {
 		}
 	});
 
+	it("emits per-command RED diagnostics with cwd, argv, status, exit, and output tail", () => {
+		const d = vitestProj();
+		try {
+			mockRunner(out(1, "SyntaxError: Unexpected token '}' at src/fail.test.ts:5\nstack tail marker"));
+			const diagnostics: Array<{ plan: { cwd: string; argv: string[] }; status: string; exitCode: number | null; signal: string | null; outputTail: string }> = [];
+			expect(runRedCheck(d, ["src/fail.test.ts"], { onResult: (diagnostic) => diagnostics.push(diagnostic) })).toBe("broken");
+			expect(diagnostics).toHaveLength(1);
+			expect(diagnostics[0]!.plan.cwd).toBe(d);
+			expect(diagnostics[0]!.plan.argv.length).toBeGreaterThan(0);
+			expect(diagnostics[0]!.status).toBe("broken");
+			expect(diagnostics[0]!.exitCode).toBe(1);
+			expect(diagnostics[0]!.signal).toBeNull();
+			expect(diagnostics[0]!.outputTail).toContain("SyntaxError");
+			expect(diagnostics[0]!.outputTail).toContain("stack tail marker");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	it("classifies a `failed to load` collection failure as broken", () => {
 		const d = vitestProj();
 		try {

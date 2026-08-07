@@ -173,9 +173,17 @@ function mkCtx(opts: {
  *  last one indefinitely (so cap-exhaustion tests always stay green/broken). */
 function redSeq(...statuses: string[]): void {
 	let i = 0;
-	redCheck.mockImplementation(() => {
-		const s = statuses[Math.min(i, statuses.length - 1)];
+	redCheck.mockImplementation((_cwd: string, _targets: string[], opts?: { onResult?: (diagnostic: unknown) => void }) => {
+		const s = statuses[Math.min(i, statuses.length - 1)] ?? "unknown";
 		i++;
+		opts?.onResult?.({
+			plan: { cwd: "/tmp/sd-red-loop", argv: ["node", "--import", "tsx", "--test", "tests/red.test.ts"] },
+			language: "backend",
+			status: s,
+			exitCode: s === "green" ? 0 : 1,
+			signal: null,
+			outputTail: s === "broken" ? "SyntaxError: Cannot use import statement outside a module" : "AssertionError: expected missing behavior",
+		});
 		return s;
 	});
 }
@@ -283,6 +291,19 @@ describe("P3 — RED loop: green/broken triggers a bounded re-prompt (SCENARIO-0
 		expect(calls.impl[0].prompt).toMatch(/CONFIRMED-red/i);
 	});
 
+	it("broken RED retries include the runner diagnostics in the next tdd-guide prompt", async () => {
+		redSeq("broken", "red");
+		const { ctx, calls } = mkCtx();
+
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		expect(calls.tdd).toHaveLength(2);
+		expect(calls.tdd[1]!.prompt).toContain("RED runner diagnostics from the last oracle run");
+		expect(calls.tdd[1]!.prompt).toContain("node --import tsx --test tests/red.test.ts");
+		expect(calls.tdd[1]!.prompt).toContain("SyntaxError: Cannot use import statement outside a module");
+		expect(calls.logs.some((l) => l.includes("RED runner diagnostic") && l.includes("SyntaxError"))).toBe(true);
+	});
+
 	it("never exceeds MAX_RED_RETRIES re-prompts even if always-green", async () => {
 		// Always green: must NOT loop forever — capped at MAX_RED_RETRIES+1 calls.
 		redSeq("green");
@@ -305,6 +326,7 @@ describe("P3 — RED loop: cap exhaustion is a hard RED gate", () => {
 		expect(res.phasesCompleted).toBe(0);
 		expect(res.allGreen).toBe(false);
 		expect(calls.logs.some((l) => /RED gate FAIL: red-not-confirmed/i.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /stopped before implementation: RED generation exhausted after 5 tries/i.test(l))).toBe(true);
 	});
 
 	it("cap-exhausted (not red) never tells an implementer to green weak tests", async () => {

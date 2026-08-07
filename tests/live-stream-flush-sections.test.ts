@@ -259,6 +259,7 @@ describe("SCENARIO-012: completed stages render COMPACT", () => {
 		for (const line of ordinary) h.sink.log(line);
 		h.sink.log("Implementation phase-01 RED gate FAIL: red-polluted: RED phase changed production file(s): src/prod.go");
 		h.sink.log("Implementation phase-01 RED gate evidence: status=polluted-red oracle=green retries=4 testFiles=src/prod_test.go changedFiles=src/prod.go forbiddenFiles=src/prod.go");
+		h.sink.log("Implementation phase-01 RED runner diagnostic: cwd=/repo cmd=node --test src/prod_test.go status=broken exit=1 signal=none tail=SyntaxError marker");
 		h.sink.log("Stage end: ResearchA status=ok at 2026-08-06T22:10:00.000+08:00 duration=10m 00s");
 		h.sink.stage({ id: "research", label: "ResearchA", status: "ok" });
 		h.sink.stage({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
@@ -279,6 +280,7 @@ describe("SCENARIO-012: completed stages render COMPACT", () => {
 		expect(body).toContain("Stage end: ResearchA status=ok");
 		expect(body).toContain("Implementation phase-01 RED gate FAIL");
 		expect(body).toContain("Implementation phase-01 RED gate evidence");
+		expect(body).toContain("Implementation phase-01 RED runner diagnostic");
 		expect(body).toContain("Phase start: ↳ Phase 1/1: Core");
 		expect(body).toContain("Phase end: ↳ Phase 1/1: Core status=ok");
 		expect(ordinary.filter((m) => body.includes(m))).toHaveLength(3);

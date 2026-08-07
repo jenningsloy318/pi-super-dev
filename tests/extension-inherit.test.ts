@@ -42,6 +42,13 @@ vi.mock("../src/pipeline.ts", () => ({
 			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
 			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "ok", kind: "phase", parentId: "implementation" });
 		}
+		if (task.includes("[emit-phase-repeat]")) {
+			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void } | undefined;
+			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
+			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "failed", kind: "phase", parentId: "implementation" });
+			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
+			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "ok", kind: "phase", parentId: "implementation" });
+		}
 		// Minimal valid RunSummary so formatSummary / handleStagnation don't throw:
 		// no `__stagnated` on state → handleStagnation returns early.
 		return {
@@ -262,6 +269,23 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Phase start: ↳ Phase 1/1: Core") })]) }));
 		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Phase end: ↳ Phase 1/1: Core status=ok") })]) }));
 		expect(onUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Stage start: ↳ Phase 1/1: Core") })]) }));
+	});
+
+	it("repeated implementation phase runs get a fresh display attempt and timing bracket", async () => {
+		const { execute } = setupTool();
+		const onUpdate = vi.fn();
+		await execute(
+			"call-phase-repeat-stream",
+			{ task: "[emit-phase-repeat] build the thing" },
+			new AbortController().signal,
+			onUpdate,
+			{ mode: "tui", ui: { setWidget: vi.fn(), setWorkingMessage: vi.fn(), setStatus: vi.fn(), notify: vi.fn() } },
+		);
+		const streamed = onUpdate.mock.calls.map((call) => String(call[0]?.content?.[0]?.text ?? "")).join("\n");
+		expect(streamed).toContain("Phase start: ↳ Phase 1/1: Core at");
+		expect(streamed).toContain("Phase end: ↳ Phase 1/1: Core status=failed");
+		expect(streamed).toContain("Phase start: ↳ Phase 1/1: Core (attempt 2) at");
+		expect(streamed).toContain("Phase end: ↳ Phase 1/1: Core (attempt 2) status=ok");
 	});
 });
 

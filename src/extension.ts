@@ -522,6 +522,30 @@ export default function activate(pi: ExtensionAPI): void {
 			};
 			const dashboardStages = new Map<string, StageViewState>();
 			const dashboardOrder: string[] = [];
+			const stageOccurrenceCounts = new Map<string, number>();
+			const activeStageOccurrences = new Map<string, string>();
+			const stageDisplayLabel = (label: string, occurrence: number): string =>
+				occurrence > 1 ? `${label} (attempt ${occurrence})` : label;
+			const resolveStageOccurrence = (id: string, status: string): { displayId: string; occurrence: number } => {
+				const activeId = activeStageOccurrences.get(id);
+				const active = activeId ? dashboardStages.get(activeId) : undefined;
+				if (status === "running") {
+					if (!activeId || (active && active.status !== "running")) {
+						const nextOccurrence = (stageOccurrenceCounts.get(id) ?? 0) + 1;
+						stageOccurrenceCounts.set(id, nextOccurrence);
+						const displayId = nextOccurrence === 1 ? id : `${id}#${nextOccurrence}`;
+						activeStageOccurrences.set(id, displayId);
+						return { displayId, occurrence: nextOccurrence };
+					}
+					return { displayId: activeId, occurrence: stageOccurrenceCounts.get(id) ?? 1 };
+				}
+				if (activeId) return { displayId: activeId, occurrence: stageOccurrenceCounts.get(id) ?? 1 };
+				const nextOccurrence = stageOccurrenceCounts.get(id) ?? 1;
+				stageOccurrenceCounts.set(id, nextOccurrence);
+				const displayId = nextOccurrence === 1 ? id : `${id}#${nextOccurrence}`;
+				activeStageOccurrences.set(id, displayId);
+				return { displayId, occurrence: nextOccurrence };
+			};
 			let liveRunLogPath = "";
 			let lastDiskLog = 0;
 			const DISK_LOG_MS = 1000;
@@ -546,33 +570,35 @@ export default function activate(pi: ExtensionAPI): void {
 					if (now - lastFlush >= FLUSH_MS) { persistLiveLog(); flushLive(); lastFlush = now; }
 				},
 				stage: (info) => {
-					if (!dashboardOrder.includes(info.id)) dashboardOrder.push(info.id);
-					const previous = dashboardStages.get(info.id);
+					const { displayId, occurrence } = resolveStageOccurrence(info.id, info.status);
+					const displayInfo = { ...info, id: displayId, label: stageDisplayLabel(info.label, occurrence) };
+					if (!dashboardOrder.includes(displayId)) dashboardOrder.push(displayId);
+					const previous = dashboardStages.get(displayId);
 					const nowMs = Date.now();
 					const nowIso = localTimestamp(new Date(nowMs));
 					const next: StageViewState = {
 						...(previous ?? {}),
-						label: info.label,
-						status: info.status,
-						kind: info.kind,
-						parentId: info.parentId,
+						label: displayInfo.label,
+						status: displayInfo.status,
+						kind: displayInfo.kind,
+						parentId: displayInfo.parentId,
 					};
-					if (info.status === "running" && previous?.startedAt === undefined) {
+					if (displayInfo.status === "running" && previous?.startedAt === undefined) {
 						next.startedAt = nowIso;
 						next.startedMs = nowMs;
-					} else if (info.status !== "running") {
+					} else if (displayInfo.status !== "running") {
 						next.endedAt = nowIso;
 						const startedMs = previous?.startedMs ?? nowMs;
 						next.durationMs = nowMs - startedMs;
 					}
-					dashboardStages.set(info.id, next);
-					stream.sink.stage(info);
-					const lifecycleNoun = info.kind === "phase" ? "Phase" : "Stage";
-					if (info.status === "running" && previous?.startedAt === undefined) {
-						logStageTiming(`${lifecycleNoun} start: ${info.label} at ${nowIso}`);
-					} else if (info.status !== "running") {
-						const error = info.error ? ` error=${info.error}` : "";
-						logStageTiming(`${lifecycleNoun} end: ${info.label} status=${info.status} at ${nowIso} duration=${formatDuration(next.durationMs ?? 0)}${error}`);
+					dashboardStages.set(displayId, next);
+					stream.sink.stage(displayInfo);
+					const lifecycleNoun = displayInfo.kind === "phase" ? "Phase" : "Stage";
+					if (displayInfo.status === "running" && previous?.startedAt === undefined) {
+						logStageTiming(`${lifecycleNoun} start: ${displayInfo.label} at ${nowIso}`);
+					} else if (displayInfo.status !== "running") {
+						const error = displayInfo.error ? ` error=${displayInfo.error}` : "";
+						logStageTiming(`${lifecycleNoun} end: ${displayInfo.label} status=${displayInfo.status} at ${nowIso} duration=${formatDuration(next.durationMs ?? 0)}${error}`);
 					}
 				},
 			};
