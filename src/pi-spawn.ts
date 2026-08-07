@@ -16,6 +16,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
+import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { safetyPreamble } from "./safety.ts";
 import type { AgentProgress, SpawnResult } from "./types.ts";
 
@@ -339,14 +340,19 @@ function compactPreviousOutput(text: string, maxChars = 12_000): string {
 
 function buildSubprocessCorrectivePrompt(originalPrompt: string, previous: SpawnResult, keys: string[]): string {
 	const missing = missingControlKeys(previous.control, keys);
+	const feedback: RetryFeedback = {
+		stage: "agent-subprocess",
+		gate: "required-control-output",
+		location: "final assistant message <control> block",
+		observed: previous.control ? "control block was present but missing required keys" : "agent produced no control object",
+		expected: `valid <control> JSON containing required keys: ${keys.join(", ")}`,
+		missing,
+		nextAction: "Use the files and artifacts already produced in this working tree. Return a final assistant message with a valid <control> JSON block containing every required key.",
+	};
 	return [
 		originalPrompt,
 		"",
-		"## Corrective Retry",
-		"The previous subprocess run did not return the required machine-readable control output.",
-		`Missing required key(s): ${missing.join(", ") || "none"}.`,
-		"Use the files and artifacts already produced in this working tree. Do not redo broad exploration unless it is necessary to fill the missing control fields.",
-		"Return a final assistant message with a valid <control> JSON block containing every required key.",
+		renderRetryFeedbackBlock([feedback], "Corrective Retry"),
 		"",
 		"## Previous Assistant Output",
 		compactPreviousOutput(previous.text || "(empty)"),

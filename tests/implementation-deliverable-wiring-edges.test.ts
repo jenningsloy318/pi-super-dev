@@ -258,7 +258,8 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 		const attempt2 = fake.implByAttempt.get(2);
 		expect(attempt2, "expected an attempt-2 implementer prompt").toBeDefined();
 		expect(attempt2!).toContain("## Deliverables still missing — create/wire these");
-		expect(attempt2!).toContain("- missing file: src/screen.rs");
+		expect(attempt2!).toContain("gate=deliverable-check");
+		expect(attempt2!).toContain("missing file: src/screen.rs");
 		// attempt-1 prompt was built BEFORE its deliverable check → no block yet.
 		expect(fake.implByAttempt.get(1)).not.toContain("Deliverables still missing");
 	});

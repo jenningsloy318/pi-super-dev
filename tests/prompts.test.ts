@@ -116,6 +116,7 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		);
 
 		expect(prompt).toContain("Previous Prototype Round Feedback");
+		expect(prompt).toContain("gate=prototype-verdict");
 		expect(prompt).toContain("Verdict: fail");
 		expect(prompt).toContain("p95 exceeded 500ms");
 		expect(prompt).toContain("reduce timeout window");

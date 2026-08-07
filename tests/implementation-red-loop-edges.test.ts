@@ -248,6 +248,8 @@ describe("P3 edges — re-prompt tdd-guide carries the EXACT status-specific hin
 
 		expect(tddCalls).toHaveLength(2);
 		expect(tddCalls[0].prompt).not.toMatch(/PASSED already|GENUINELY/i); // initial: no hint
+		expect(tddCalls[1].prompt).toMatch(/RED oracle rejected the previous test set/i);
+		expect(tddCalls[1].prompt).toMatch(/gate=red-oracle/i);
 		expect(tddCalls[1].prompt).toMatch(/PASSED already/i);
 		expect(tddCalls[1].prompt).toMatch(/GENUINELY/i);
 	});
@@ -259,6 +261,8 @@ describe("P3 edges — re-prompt tdd-guide carries the EXACT status-specific hin
 		await (implementationStage as Stage).run(mkState(), ctx);
 
 		expect(tddCalls).toHaveLength(2);
+		expect(tddCalls[1].prompt).toMatch(/RED oracle rejected the previous test set/i);
+		expect(tddCalls[1].prompt).toMatch(/gate=red-oracle/i);
 		expect(tddCalls[1].prompt).toMatch(/compile\/collect/i);
 		// The broken hint must NOT reuse the green hint text.
 		expect(tddCalls[1].prompt).not.toMatch(/PASSED already/i);

@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { getTracesDir } from "./render/super-dev-dir.ts";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
+import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
 import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
@@ -517,7 +518,16 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		if (!capture.called && keys.length > 0 && !timedOut && !opts.signal?.aborted) {
 			correctiveNote = "corrective re-prompt (no structured_output)";
 			opts.onProgress?.event(`↻ ${opts.id ?? opts.agent}: ${correctiveNote}`);
-			const fix = `You ended without calling the required structured_output tool. Do not read more files and do not answer in prose. Using the work/context already in this session, call structured_output NOW with ALL of these keys filled: ${keys.join(", ")}.`;
+			const feedback: RetryFeedback = {
+				stage: "agent-session",
+				gate: "required-structured-output",
+				location: "final structured_output tool call",
+				observed: "agent ended without calling the required structured_output tool",
+				expected: `structured_output called with all required keys: ${keys.join(", ")}`,
+				missing: keys,
+				nextAction: "Do not read more files and do not answer in prose. Using the work/context already in this session, call structured_output now with every required key filled.",
+			};
+			const fix = renderRetryFeedbackBlock([feedback], "Corrective Re-Prompt");
 			try {
 				await session.prompt(fix);
 			} catch (err) {
@@ -534,7 +544,16 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		if (capture.called && missing.length > 0 && !timedOut && !opts.signal?.aborted) {
 			correctiveNote = `corrective re-prompt (missing: ${missing.join(", ")})`;
 			opts.onProgress?.event(`↻ ${opts.id ?? opts.agent}: ${correctiveNote}`);
-			const fix = `Your previous structured_output was missing required keys: ${missing.join(", ")}. Call structured_output AGAIN, this time with ALL of these keys filled from the work you already did: ${keys.join(", ")}. Do not redo the work — just return the complete object.`;
+			const feedback: RetryFeedback = {
+				stage: "agent-session",
+				gate: "required-structured-output",
+				location: "structured_output tool call",
+				observed: `previous structured_output was missing required keys: ${missing.join(", ")}`,
+				expected: `structured_output contains all required keys: ${keys.join(", ")}`,
+				missing,
+				nextAction: "Call structured_output again with all keys filled from the work already done. Do not redo the work; return the complete object.",
+			};
+			const fix = renderRetryFeedbackBlock([feedback], "Corrective Re-Prompt");
 			try {
 				await session.prompt(fix);
 			} catch (err) {

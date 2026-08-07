@@ -99,6 +99,8 @@ describe("runAgentViaSession no-output corrective prompt", () => {
 		});
 
 		expect(sdk.promptCalls()).toHaveLength(2);
+		expect(sdk.promptCalls()[1]).toContain("Corrective Re-Prompt");
+		expect(sdk.promptCalls()[1]).toContain("gate=required-structured-output");
 		expect(sdk.promptCalls()[1]).toContain("ended without calling the required structured_output tool");
 		expect(events).toContain("↻ pipeline.bdd: corrective re-prompt (no structured_output)");
 		expect(result.error).toBeUndefined();

@@ -70,6 +70,7 @@ describe("spawnAgent subprocess control repair", () => {
 		expect(harness.state.calls[0].args.join(" ")).toContain("--no-context-files");
 		expect(harness.state.calls[0].args.at(-1)).toContain("Required Final Control Output");
 		expect(harness.state.calls[1].args.at(-1)).toContain("Corrective Retry");
+		expect(harness.state.calls[1].args.at(-1)).toContain("gate=required-control-output");
 		expect(events.some((e) => e.includes("corrective subprocess retry"))).toBe(true);
 		expect(result.error).toBeUndefined();
 		expect(result.control).toEqual({ docPath: "docs/01-requirements.md", summary: "ok" });

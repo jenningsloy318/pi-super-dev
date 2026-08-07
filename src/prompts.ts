@@ -14,6 +14,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SetupControl, Classification, ControlObj } from "./types.ts";
+import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 
 type R = ControlObj | null | undefined;
 
@@ -114,14 +115,19 @@ export function buildDesignPrompt(s: SetupControl, c: Classification | null, tas
 }
 export function buildPrototypePrompt(s: SetupControl, c: Classification | null, task: string, design: R, constants: string[], round: number, previous: R = null): string {
 	const previousBlock = previous
-		? [
-			"",
-			"## Previous Prototype Round Feedback",
-			`- Verdict: ${String(previous.verdict ?? "unknown")}`,
-			`- Measurements: ${Array.isArray(previous.measurements) ? previous.measurements.map(String).join("; ") || "none" : String(previous.measurements ?? "none")}`,
-			`- Adjustments: ${Array.isArray(previous.adjustments) ? previous.adjustments.map(String).join("; ") || "none" : String(previous.adjustments ?? "none")}`,
-			"Use this feedback directly. Do not repeat the same failed measurement setup unless you explain why it is still the correct validation path.",
-		]
+		? ["", renderRetryFeedbackBlock([{
+			stage: "prototype",
+			attempt: Math.max(1, round - 1),
+			gate: "prototype-verdict",
+			location: "previous prototype round",
+			observed: `Verdict: ${String(previous.verdict ?? "unknown")}`,
+			expected: "prototype verdict pass with measurements validating the numeric constants",
+			diagnostics: [
+				`Measurements: ${Array.isArray(previous.measurements) ? previous.measurements.map(String).join("; ") || "none" : String(previous.measurements ?? "none")}`,
+				`Adjustments: ${Array.isArray(previous.adjustments) ? previous.adjustments.map(String).join("; ") || "none" : String(previous.adjustments ?? "none")}`,
+			],
+			nextAction: "Use this feedback directly. Do not repeat the same failed measurement setup unless you explain why it is still the correct validation path.",
+		} satisfies RetryFeedback], "Previous Prototype Round Feedback")]
 		: [];
 	return [ctxBlock(s, c), "", "## Design", `- Design doc: ${(design?.docs as string[] | undefined)?.[0] ?? "N/A"}`, `- Constants to validate: ${(constants ?? []).join(", ")}`, ...previousBlock, "", "## Task", task, "", "## Instructions", `Prototype round ${round}: Empirically validate the numeric design constants.`, "Build a minimal prototype, measure against representative input, and report pass/fail.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "Output <control> JSON with: title, date, summary, verdict, measurements, adjustments."].join("\n");
 }

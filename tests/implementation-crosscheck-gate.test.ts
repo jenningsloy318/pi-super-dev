@@ -391,6 +391,7 @@ describe("Phase 4 — changeGate AND-ed into phase-green (AC-07/AC-08)", () => {
 		// surfacing the claimed-but-absent file.
 		const attempt2Prompt = fake.implByAttempt.get(2) ?? "";
 		expect(attempt2Prompt).toContain("Claimed changes not present in git");
+		expect(attempt2Prompt).toContain("gate=change-check");
 		expect(attempt2Prompt).toContain("src/x.ts");
 		// Respected the attempt budget.
 		expect(mock.changeGateCalls).toBe(2);

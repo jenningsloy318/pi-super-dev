@@ -312,8 +312,9 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		const attempt2 = fake.implByAttempt.get(2);
 		expect(attempt2, "expected an attempt-2 implementer prompt").toBeDefined();
 		expect(attempt2!).toContain("## Deliverables still missing — create/wire these");
+		expect(attempt2!).toContain("gate=deliverable-check");
 		for (const entry of DELIVERABLE_FAIL.missing) {
-			expect(attempt2!).toContain(`- ${entry}`);
+			expect(attempt2!).toContain(entry);
 		}
 		expect(fake.tddCalls).toBe(1);
 		expect(fake.agentIds.some((id) => id.includes("phase-01.tdd.a2"))).toBe(false);
@@ -335,7 +336,8 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(attempt3, "expected an attempt-3 implementer prompt").toBeDefined();
 		// attempt-3 prompt reflects attempt-2's missing list (still failing).
 		expect(attempt3!).toContain("## Deliverables still missing — create/wire these");
-		expect(attempt3!).toContain("- missing file: src/screen.rs");
+		expect(attempt3!).toContain("gate=deliverable-check");
+		expect(attempt3!).toContain("missing file: src/screen.rs");
 	});
 
 	it("SCENARIO-012 (convergence): FAIL then PASS on attempt 2 → GREEN on attempt 2, missing block carried only to attempt 2", async () => {

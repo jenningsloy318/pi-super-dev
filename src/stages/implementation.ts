@@ -142,6 +142,10 @@ function tddCoverageRetryHint(result: TddCoverageResult): string {
 	return `\n\n${renderRetryFeedbackBlock([feedback], "RED coverage verifier rejected the previous test set")}`;
 }
 
+function implementationRetrySection(heading: string, feedback: Omit<RetryFeedback, "stage">): string {
+	return renderRetryFeedbackBlock([{ stage: "implementation", ...feedback }], heading);
+}
+
 function restorePaths(cwd: string, paths: string[]): void {
 	for (const path of paths) {
 		try { execFileSync("git", ["checkout", "--", path], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
@@ -226,7 +230,16 @@ function redGenerationRetryHint(e: RedEvidence): string | null {
 	if (e.status === "green-weak-test") return redRePromptHint("green") + redDiagnosticsPrompt(e.diagnostics);
 	if (e.status === "broken-test") return redRePromptHint("broken") + redDiagnosticsPrompt(e.diagnostics);
 	if (e.status === "polluted-red") {
-		return `\n\nYour RED phase modified files outside the test boundary: ${e.forbiddenFiles.join(", ")}. Rewrite the RED change using test files or test-only support artifacts. Do not create or modify production implementation files.`;
+		return `\n\n${implementationRetrySection("RED boundary rejected the previous test set", {
+			phase: e.phaseId,
+			attempt: e.attempt,
+			gate: "red-boundary",
+			location: "RED changed-file boundary",
+			observed: `RED phase modified files outside the test boundary: ${e.forbiddenFiles.join(", ")}`,
+			expected: "RED may create or modify tests and test-only support artifacts only",
+			missing: e.forbiddenFiles,
+			nextAction: "Rewrite the RED change using test files or test-only support artifacts. Do not create or modify production implementation files.",
+		})}`;
 	}
 	return null;
 }
@@ -387,10 +400,22 @@ export function runtimeInstructionFingerprint(specDir: string | undefined): stri
  *  resampling the same passing/broken shape (spec §B → SCENARIO-007). */
 function redRePromptHint(status: RedStatus): string {
 	if (status === "green") {
-		return "\n\nYour tests PASSED already; the goal of the RED phase is a test that GENUINELY fails against the unimplemented behavior. Rewrite the test so it fails for the right reason before the production code exists.";
+		return `\n\n${implementationRetrySection("RED oracle rejected the previous test set", {
+			gate: "red-oracle",
+			location: "TDD RED test execution",
+			observed: "tests PASSED already before implementation",
+			expected: "a RED test set that GENUINELY fails against the unimplemented behavior",
+			nextAction: "Rewrite the test so it fails for the right reason before the production code exists.",
+		})}`;
 	}
 	if (status === "broken") {
-		return "\n\nYour tests did not compile/collect (the RED oracle saw a build/collection error). Fix the test so it RUNS and then FAILS against the unimplemented behavior.";
+		return `\n\n${implementationRetrySection("RED oracle rejected the previous test set", {
+			gate: "red-oracle",
+			location: "TDD RED test execution",
+			observed: "tests did not compile/collect; the RED oracle saw a build/collection error",
+			expected: "a test that compiles, RUNS, and then FAILS against the unimplemented behavior",
+			nextAction: "Fix the test so it RUNS and then FAILS against the unimplemented behavior.",
+		})}`;
 	}
 	return "";
 }
@@ -783,28 +808,73 @@ export const implementationStage: Stage = {
 				if (attempt === 1) {
 					const priorFail = lastFailures.find((f) => f.phaseId === phaseId);
 					if (priorFail?.reasons.length) {
-						implParts.push(`## Prior convergence-iteration failures — fix these\n${priorFail.reasons.map((r) => `- ${r}`).join("\n")}`);
+						implParts.push(implementationRetrySection("Prior convergence-iteration failures — fix these", {
+							phase: phaseId,
+							attempt,
+							gate: "prior-convergence-iteration",
+							location: "previous implementation convergence pass",
+							observed: "this phase failed in the prior convergence pass",
+							expected: "phase reaches green with build, deliverable, change, symbol, and post-RED gates satisfied",
+							missing: priorFail.reasons,
+							nextAction: "Fix these carried-forward blockers before reporting implementation complete.",
+						}));
 					}
 				}
 				if (attemptErrors.length) {
-					implParts.push(`## Previous attempt failed the build/test gate — fix these\n${attemptErrors.map((e) => `- ${e}`).join("\n")}`);
+					implParts.push(implementationRetrySection("Previous attempt failed the build/test gate — fix these", {
+						phase: phaseId,
+						attempt,
+						gate: "implementation-gates",
+						location: "previous GREEN attempt",
+						observed: "the prior implementation attempt did not satisfy all phase gates",
+						expected: "all deterministic build/test and phase gates pass",
+						missing: attemptErrors,
+						nextAction: "Make a targeted code or test-support change for these exact failures, then run the relevant checks before calling structured_output.",
+					}));
 				}
 				// AND-semantics (AC-03 → SCENARIO-012): when a previous attempt was
 				// build-green but its DELIVERABLE CONTRACT was unmet, the exhaustive
 				// `missing` list is injected here so the implementer creates the files /
 				// does the wiring / adds the named tests instead of resampling.
 				if (missingDeliverables.length) {
-					implParts.push(`## Deliverables still missing — create/wire these\n${missingDeliverables.map((e) => `- ${e}`).join("\n")}`);
+					implParts.push(implementationRetrySection("Deliverables still missing — create/wire these", {
+						phase: phaseId,
+						attempt,
+						gate: "deliverable-check",
+						location: "phase deliverable contract",
+						observed: "the prior attempt built but did not satisfy declared deliverables",
+						expected: "every required file, pattern, forbidden-pattern removal, and named test exists in the owning module",
+						missing: missingDeliverables,
+						nextAction: "Create, wire, or rename the missing deliverables directly. Do not claim completion until this list is empty.",
+					}));
 				}
 				// spec-11 AC-07 (SCENARIO-015): a previous attempt claimed a file git did
 				// NOT show changed — feed the specific paths so the implementer actually
 				// creates/wires them instead of resampling. Mirrors the deliverables block
 				// above and is bounded by MAX_ATTEMPTS via the surrounding attempt loop.
 				if (claimedNotChanged.length) {
-					implParts.push(`## Claimed changes not present in git — actually create/wire these\n${claimedNotChanged.map((e) => `- ${e}`).join("\n")}`);
+					implParts.push(implementationRetrySection("Claimed changes not present in git — actually create/wire these", {
+						phase: phaseId,
+						attempt,
+						gate: "change-check",
+						location: "git actual-vs-claimed change set",
+						observed: "the implementer claimed files that git did not show as changed",
+						expected: "claimed files are actually created, modified, or deleted in the worktree",
+						missing: claimedNotChanged,
+						nextAction: "Actually create or modify these paths, or remove them from the claimed change set if no project edit is needed.",
+					}));
 				}
 				if (hollowFiles.length) {
-					implParts.push(`## Hollow deliverable files — these exist but contain only comments / no real code; write the actual implementation (functions/types/etc.) in each\n${hollowFiles.map((e) => `- ${e}`).join("\n")}`);
+					implParts.push(implementationRetrySection("Hollow deliverable files — write the actual implementation", {
+						phase: phaseId,
+						attempt,
+						gate: "symbol-check",
+						location: "claimed source deliverables",
+						observed: "these files exist but contain only comments or no real code symbols",
+						expected: "claimed source deliverables contain real functions, types, handlers, or other executable implementation symbols",
+						missing: hollowFiles,
+						nextAction: "Write the actual implementation in each file instead of placeholder comments or empty shells.",
+					}));
 				}
 				implParts.push(redImplementContext(redStatus));
 				const implPrompt = implParts.join("\n\n");
