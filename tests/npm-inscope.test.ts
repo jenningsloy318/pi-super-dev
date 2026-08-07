@@ -39,7 +39,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -406,6 +406,40 @@ describe("runBuildGate npm wiring — any in-scope failure ⇒ inScopePass false
 			const r = runBuildGate(d);
 			expect(r.pass).toBe(false);
 			// ≥1 in-scope failure ⇒ the whole gate is NOT in-scope-passing
+			expect(r.inScopePass).toBe(false);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("touched nested package tests run from the package cwd and package-relative failures stay in-scope", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-npm-module-gate-"));
+		const moduleDir = join(d, "auth-service");
+		try {
+			mkdirSync(join(d, "node_modules"), { recursive: true });
+			mkdirSync(join(moduleDir, "src"), { recursive: true });
+			mkdirSync(join(moduleDir, "node_modules"), { recursive: true });
+			writeFileSync(join(d, "package.json"), JSON.stringify({ packageManager: "pnpm@9.0.0", scripts: { test: "pnpm -r run test" } }));
+			writeFileSync(join(moduleDir, "package.json"), JSON.stringify({ scripts: { build: "node -e 0", test: "vitest run", typecheck: "tsc --noEmit" }, devDependencies: { vitest: "1", typescript: "5" } }));
+			const calls: Array<{ cmd: string; args: string[]; cwd?: string }> = [];
+			spawn.mockImplementation((cmd: string, args: string[], opts?: { cwd?: string }) => {
+				calls.push({ cmd, args: args ?? [], cwd: opts?.cwd });
+				if (cmd === "git") return { status: 0, stdout: "auth-service/src/fail.test.ts\n", stderr: "" };
+				if (opts?.cwd === moduleDir && cmd === "pnpm" && args[0] === "run" && args[1] === "test") {
+					return { status: 1, stdout: "FAIL src/fail.test.ts\n ❯ src/fail.test.ts:4:5\nTests  1 failed (1)", stderr: "" };
+				}
+				return { status: 0, stdout: "", stderr: "" };
+			});
+
+			const r = runBuildGate(d);
+
+			expect(calls.some((c) => c.cwd === d && c.cmd === "pnpm" && c.args.join(" ") === "run test")).toBe(true);
+			expect(calls.some((c) => c.cwd === moduleDir && c.cmd === "pnpm" && c.args.join(" ") === "run build")).toBe(true);
+			expect(calls.some((c) => c.cwd === moduleDir && c.cmd === "pnpm" && c.args.join(" ") === "run test")).toBe(true);
+			expect(calls.some((c) => c.cwd === moduleDir && c.cmd === "pnpm" && c.args.join(" ") === "run typecheck")).toBe(true);
+			expect(r.ran).toContain("auth-service: pnpm run test");
+			expect(r.pass).toBe(false);
+			expect(r.outOfScopeErrors).toEqual([]);
 			expect(r.inScopePass).toBe(false);
 		} finally {
 			rmSync(d, { recursive: true, force: true });

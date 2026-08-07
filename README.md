@@ -62,7 +62,7 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.01.09`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.01.10`.
 The foreground stream and run log show the short version label only. This metadata
 is intentionally separate from the npm package version in `package.json`.
 
@@ -86,7 +86,13 @@ runs `build`, `test`, and `typecheck` (and Rust `clippy`) against your
 worktree. It is **scope-aware**: on Rust workspaces it can narrow all three
 commands to the crates the current branch actually touched and treat
 pre-existing out-of-scope failures as ignorable, so it stops false-failing
-and false-aborting on messy real-world monorepos. Three **optional
+and false-aborting on messy real-world monorepos. When the root Node gate is
+active, Node workspaces with nested `package.json` modules keep the root gate
+and also run each touched nested module's `build`, `test`, and `typecheck`
+scripts from that module directory, using the module's package manager or the
+root workspace manager when inherited. The run log labels these commands as
+`<module>: <pm> run <script>`, so skipped root workspace scripts are visible.
+Three **optional
 environment variables** tune its timeout and scope **without editing any
 stage call site** — the harness resolves them internally, so the three
 callers keep passing only `{ signal }`.

@@ -462,6 +462,23 @@ export function parseFailingNpmTestFiles(combinedOutput: string): string[] {
 	}
 }
 
+function normalizePathForScope(path: string): string {
+	return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function npmErrorModulePrefix(block: string): string | null {
+	const first = block.split("\n", 1)[0] ?? "";
+	const m = /^([^:\n]+):\s+(?:npm|pnpm|yarn|bun|deno)\s/.exec(first);
+	return m ? normalizePathForScope(m[1].trim()).replace(/\/$/, "") : null;
+}
+
+function touchedHasNpmFailure(touchedSet: Set<string>, failingFile: string, modulePrefix: string | null): boolean {
+	const file = normalizePathForScope(failingFile);
+	if (touchedSet.has(file)) return true;
+	if (!modulePrefix) return false;
+	return touchedSet.has(`${modulePrefix}/${file}`);
+}
+
 /**
  * Classify npm-family (vitest/jest) error blocks into out-of-scope failures.
  *
@@ -504,7 +521,7 @@ export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string): stri
 		// failure is out-of-scope ⇒ conservative IN-SCOPE.
 		const touched = touchedFilePaths(cwd);
 		if (touched.length === 0) return [];
-		const touchedSet = new Set(touched);
+		const touchedSet = new Set(touched.map(normalizePathForScope));
 		// Per-block classification mirroring {@link classifyOutOfScopeErrors}: a
 		// block is OUT-of-scope iff it references ≥1 failing file AND ALL of its
 		// referenced failing files are ABSENT from the touched set. Any in-scope
@@ -514,9 +531,10 @@ export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string): stri
 			const block = typeof err === "string" ? err : String(err ?? "");
 			const blockFiles = parseFailingNpmTestFiles(block);
 			if (blockFiles.length === 0) continue; // no marker ⇒ in-scope (skip)
+			const modulePrefix = npmErrorModulePrefix(block);
 			let anyInScope = false;
 			for (const f of blockFiles) {
-				if (touchedSet.has(f)) {
+				if (touchedHasNpmFailure(touchedSet, f, modulePrefix)) {
 					anyInScope = true;
 					break;
 				}

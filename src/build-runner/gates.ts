@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
-import { parseTestPackages, detectTouchedCargoPackages, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors } from "./scope.ts";
+import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors } from "./scope.ts";
 
 export interface RedCheckPlan {
 	cwd: string;
@@ -92,6 +92,13 @@ export function resolveTimeoutMs(explicit?: number): number {
 const STDERR_TAIL_LINES = 12;
 
 export type CmdKey = "build" | "test" | "typecheck";
+
+interface BuildCommandPlan {
+	cwd: string;
+	argv: string[];
+	key: CmdKey;
+	label: string;
+}
 
 export interface BuildGateResult {
 	pass: boolean;
@@ -275,6 +282,102 @@ function bootstrapDependencies(cwd: string, timeoutMs: number, signal: AbortSign
 	if (!errors.some((e) => e.startsWith("bootstrap:"))) depBootstrapCache.set(cwd, fp);
 }
 
+function relDir(root: string, dir: string): string {
+	const absRoot = resolve(root);
+	const absDir = resolve(dir);
+	if (absRoot === absDir) return ".";
+	const rel = relative(absRoot, absDir);
+	return rel && !rel.startsWith("..") ? rel : dir;
+}
+
+function buildPlan(root: string, planCwd: string, key: CmdKey, argv: string[]): BuildCommandPlan {
+	const rel = relDir(root, planCwd);
+	const command = argv.join(" ");
+	return {
+		cwd: planCwd,
+		argv,
+		key,
+		label: rel === "." ? command : `${rel}: ${command}`,
+	};
+}
+
+function commandPlansFromProject(root: string, planCwd: string, cmds: ProjectCommands): BuildCommandPlan[] {
+	const plans: BuildCommandPlan[] = [];
+	if (cmds.build) plans.push(buildPlan(root, planCwd, "build", cmds.build));
+	if (cmds.test) plans.push(buildPlan(root, planCwd, "test", cmds.test));
+	if (cmds.typecheck) plans.push(buildPlan(root, planCwd, "typecheck", cmds.typecheck));
+	return plans;
+}
+
+function hasNestedPackageJson(cwd: string): boolean {
+	const root = resolve(cwd);
+	return findManifestDirs(cwd, ["package.json"]).some((dir) => resolve(dir) !== root);
+}
+
+function detectPmForPackageDir(dir: string, pkg: Record<string, unknown> | null, fallbackPm?: string): string {
+	const pm = String(pkg?.packageManager ?? "").split("@")[0];
+	if (pm && /^(npm|pnpm|yarn|bun|deno)$/.test(pm)) return pm;
+	if (existsSync(join(dir, "bun.lockb")) || existsSync(join(dir, "bun.lock"))) return "bun";
+	if (existsSync(join(dir, "deno.lock"))) return "deno";
+	if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
+	if (existsSync(join(dir, "yarn.lock"))) return "yarn";
+	if (fallbackPm && /^(npm|pnpm|yarn|bun|deno)$/.test(fallbackPm)) return fallbackPm;
+	return "npm";
+}
+
+function nodePmRun(pm: string, script: string): string[] {
+	return pm === "deno" ? ["deno", "task", script] : [pm, "run", script];
+}
+
+function detectNodePackageCommands(dir: string, fallbackPm?: string): ProjectCommands {
+	const pkg = readPackageJson(dir) ?? {};
+	const scripts = packageScripts(pkg);
+	const deps = packageDeps(pkg);
+	const pm = detectPmForPackageDir(dir, pkg, fallbackPm);
+	const language = deps && (deps.react || deps.next || deps.vue || deps.svelte) ? "frontend" : "backend";
+	const cmds: ProjectCommands = { language, pm, ran: [] };
+	if (scripts.build) {
+		cmds.build = nodePmRun(pm, "build");
+		cmds.ran.push(`${pm} run build`);
+	}
+	if (scripts.test) {
+		cmds.test = nodePmRun(pm, "test");
+		cmds.ran.push(`${pm} run test`);
+	}
+	if (scripts.typecheck) {
+		cmds.typecheck = nodePmRun(pm, "typecheck");
+		cmds.ran.push(`${pm} run typecheck`);
+	} else if (existsSync(join(dir, "tsconfig.json"))) {
+		cmds.typecheck = ["npx", "--no-install", "tsc", "--noEmit"];
+		cmds.ran.push("tsc --noEmit");
+	}
+	return cmds;
+}
+
+function nodeModuleBuildPlans(cwd: string, rootCmds: ProjectCommands): BuildCommandPlan[] {
+	if (!rootCmds.build && !rootCmds.test && !rootCmds.typecheck) return [];
+	if (!hasNestedPackageJson(cwd)) return [];
+	const root = resolve(cwd);
+	const rootPkg = readPackageJson(cwd);
+	const fallbackPm = rootCmds.pm ?? detectPmForPackageDir(cwd, rootPkg);
+	const dirs: string[] = [];
+	const seen = new Set<string>();
+	for (const touched of touchedFilePaths(cwd)) {
+		const dir = nearestPackageDir(cwd, touched);
+		if (!dir) continue;
+		const abs = resolve(dir);
+		if (abs === root || seen.has(abs)) continue;
+		seen.add(abs);
+		dirs.push(abs);
+	}
+	const plans: BuildCommandPlan[] = [];
+	for (const dir of dirs) {
+		const cmds = detectNodePackageCommands(dir, fallbackPm);
+		plans.push(...commandPlansFromProject(cwd, dir, cmds));
+	}
+	return plans;
+}
+
 /**
  * Run the detected build/test/typecheck commands in `cwd`, each with a bounded
  * timeout, and collect real pass/fail + stderr tails. Non-fatal when nothing is
@@ -381,16 +484,16 @@ export function runBuildGate(
 		if (cmds.typecheck) flag.typecheck = false;
 	}
 
-	const exec = (argv: string[], key: CmdKey) => {
+	const exec = (plan: BuildCommandPlan) => {
+		const { argv, key, label } = plan;
 		if (opts.signal?.aborted) {
 			flag[key] = false;
-			errors.push(`${argv.join(" ")}: aborted before run`);
+			errors.push(`${label}: aborted before run`);
 			return;
 		}
-		const label = argv.join(" ");
 		ran.push(label);
 		try {
-			const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" });
+			const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
 			if (opts.signal?.aborted) {
 				flag[key] = false;
 				errors.push(`${label}: aborted`);
@@ -417,9 +520,8 @@ export function runBuildGate(
 	};
 
 	if (!bootstrapFailed) {
-		if (cmds.build) exec(cmds.build, "build");
-		if (cmds.test) exec(cmds.test, "test");
-		if (cmds.typecheck) exec(cmds.typecheck, "typecheck");
+		for (const plan of commandPlansFromProject(cwd, cwd, cmds)) exec(plan);
+		for (const plan of nodeModuleBuildPlans(cwd, cmds0)) exec(plan);
 	}
 
 	// CR-004: run spec-declared integration/e2e targets as additional
@@ -428,7 +530,7 @@ export function runBuildGate(
 	// failure in any integration target correctly marks allTestsPass=false.
 	if (!bootstrapFailed) {
 		for (const stem of gateIntegrationStems) {
-			exec(["cargo", "test", "--test", stem, "--quiet"], "test");
+			exec(buildPlan(cwd, cwd, "test", ["cargo", "test", "--test", stem, "--quiet"]));
 		}
 	}
 
