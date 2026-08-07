@@ -19,7 +19,7 @@ import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
 import { normalizePhases } from "../doc-validators.ts";
-import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedStatus } from "../build-runner.ts";
+import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckPlan, type RedStatus } from "../build-runner.ts";
 import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 
 const MAX_ATTEMPTS = WORKFLOW_ATTEMPTS;
@@ -76,6 +76,13 @@ function restorePaths(cwd: string, paths: string[]): void {
 		try { execFileSync("git", ["checkout", "--", path], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
 		try { execFileSync("git", ["clean", "-fd", "--", path], { cwd, stdio: "ignore" }); } catch { /* best-effort */ }
 	}
+}
+
+function restoreUnacceptedRedChanges(ctx: StageContext, cwd: string, phaseId: string, paths: string[]): void {
+	const restorable = paths.filter((p) => !isInternalRuntimeClaim(p));
+	if (restorable.length === 0) return;
+	restorePaths(cwd, restorable);
+	ctx.log(`Implementation ${phaseId} RED cleanup: restored unaccepted RED change(s): ${restorable.join(", ")}`);
 }
 
 function appendImplementationEvidence(specDir: string | undefined, evidence: RedEvidence): void {
@@ -205,6 +212,21 @@ function redImplementContext(status: RedStatus): string {
 	}
 	// unknown — red could not be determined at all (e.g. greenfield: no test runner).
 	return "The TDD red status could not be confirmed (status: unknown) — proceeding; red was not verified.";
+}
+
+function quoteCmdArg(arg: string): string {
+	return /^[A-Za-z0-9_./:@%+=,-]+$/.test(arg) ? arg : JSON.stringify(arg);
+}
+
+function redCheckOptions(ctx: StageContext, phaseId: string) {
+	return {
+		signal: ctx.signal,
+		onPlan(plans: RedCheckPlan[]) {
+			for (const plan of plans) {
+				ctx.log(`Implementation ${phaseId} RED test plan: cwd=${plan.cwd} cmd=${plan.argv.map(quoteCmdArg).join(" ")}`);
+			}
+		},
+	};
 }
 
 /**
@@ -430,7 +452,7 @@ export const implementationStage: Stage = {
 					const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) + redHint });
 					const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
 					testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
-					redStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
+					redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId));
 					ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 					redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
 					const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
@@ -442,6 +464,9 @@ export const implementationStage: Stage = {
 					}
 					const retryHint = redGenerationRetryHint(redEvidence);
 					if (retryHint && retries < MAX_RED_RETRIES) {
+						if (redEvidence.status === "green-weak-test" || redEvidence.status === "polluted-red") {
+							restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
+						}
 						retries++;
 						redHint = retryHint;
 						ctx.log(`Implementation ${phaseId} RED generation retry ${retries}/${MAX_RED_RETRIES}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
@@ -473,6 +498,7 @@ export const implementationStage: Stage = {
 				}
 				const redFailures = redEvidenceFailureReasons(redEvidence);
 				if (redFailures.length) {
+					restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
 					attemptErrors = redFailures;
 					ctx.log(`Implementation ${phaseId} RED generation failed after ${retries + 1} tries`);
 					ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
@@ -627,7 +653,7 @@ export const implementationStage: Stage = {
 						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")}`);
 						ctx.log(`Implementation ${phaseId} post-red-oracle: skipped because confirmed RED test file(s) changed during GREEN (${modifiedRedTests.join(", ")})`);
 					} else {
-						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, { signal: ctx.signal });
+						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId));
 						ctx.log(`Implementation ${phaseId} post-red-oracle: ${postRedStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						if (postRedStatus === "red") tddOracleFailures.push(`tdd-targets-still-red: ${testFiles.join(", ")}`);
 						else if (postRedStatus === "broken") tddOracleFailures.push(`tdd-targets-broken-after-implementation: ${testFiles.join(", ")}`);

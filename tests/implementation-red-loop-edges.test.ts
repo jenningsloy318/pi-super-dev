@@ -199,6 +199,18 @@ describe("P3 edges — control.testFiles is captured and forwarded to runRedChec
 		expect(redCheck).toHaveBeenCalledTimes(1);
 		expect(redCheck.mock.calls[0][1]).toEqual([]);
 	});
+
+	it("logs the RED oracle's selected test cwd and command before implementation", async () => {
+		redCheck.mockImplementation((_cwd: string, _targets: string[], opts?: { onPlan?: (plans: Array<{ cwd: string; argv: string[] }>) => void }) => {
+			opts?.onPlan?.([{ cwd: "/repo/auth-service", argv: ["node", "--import", "tsx", "--test", "src/auth.red.test.ts"] }]);
+			return "red";
+		});
+		const { ctx, logs } = mkCtx({ tddControls: [{ testFiles: ["auth-service/src/auth.red.test.ts"] }] });
+
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		expect(logs.some((l) => l === "Implementation phase-01 RED test plan: cwd=/repo/auth-service cmd=node --import tsx --test src/auth.red.test.ts")).toBe(true);
+	});
 });
 
 // ─── 2. Status-specific re-prompt hint wording ──────────────────────────────
@@ -295,6 +307,45 @@ describe("P3 edges — unconfirmed RED blocks the implementer, unknown still deg
 });
 
 describe("P3 edges — RED pollution is detected and rolled back", () => {
+	it("restores weak passing RED test changes before retrying so they cannot contaminate the next RED attempt", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-weak-cleanup-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			writeFileSync(join(dir, "README.md"), "baseline\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck
+				.mockImplementationOnce(() => "green")
+				.mockImplementationOnce(() => "red")
+				.mockImplementationOnce(() => "green");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "weak-cleanup");
+			const weakPath = "tests/weak.test.ts";
+			const redPath = "tests/red.test.ts";
+			const { ctx, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: [weakPath] }, { testFiles: [redPath] }],
+				onTddCall: (_call, index) => {
+					mkdirSync(join(dir, "tests"), { recursive: true });
+					if (index === 1) writeFileSync(join(dir, weakPath), "it('too weak', () => {});\n");
+					else writeFileSync(join(dir, redPath), "it('real red', () => { throw new Error('red'); });\n");
+				},
+			});
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			expect(res.allGreen).toBe(true);
+			expect(implCalls).toHaveLength(1);
+			expect(existsSync(join(dir, weakPath))).toBe(false);
+			expect(existsSync(join(dir, redPath))).toBe(true);
+			expect(logs.some((l) => /RED cleanup: restored unaccepted RED change\(s\): tests\/weak\.test\.ts/.test(l))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("asks the boundary evaluator for ambiguous RED files and accepts high-confidence test-support decisions", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "sd-red-boundary-agent-"));
 		try {

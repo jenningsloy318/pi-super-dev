@@ -4,9 +4,14 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
 import { parseTestPackages, detectTouchedCargoPackages, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors } from "./scope.ts";
+
+export interface RedCheckPlan {
+	cwd: string;
+	argv: string[];
+}
 
 /**
  * Default per-command timeout for the build gate, in milliseconds (10 min).
@@ -524,6 +529,7 @@ export type RedStatus = "red" | "green" | "broken" | "unknown";
 export interface RedCheckOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	onPlan?: (plans: RedCheckPlan[]) => void;
 }
 
 /**
@@ -556,19 +562,136 @@ function classifyRedStatus(language: string, combined: string, ok: boolean): Red
 	}
 	// npm family: vitest / jest / npm run test (frontend + backend).
 	// BROKEN — collection/parse failure before any test ran.
-	if (/SyntaxError/i.test(out) || /failed to load/i.test(out) || /No test files found/i.test(out)) {
+	if (/SyntaxError/i.test(out) || /failed to load/i.test(out) || /No test files found/i.test(out) || /ERR_MODULE_NOT_FOUND/i.test(out) || /Cannot find package/i.test(out)) {
 		return "broken";
 	}
 	if (ok) return "green";
 	// RED — a failing-test marker appeared after a successful collection.
 	if (
 		/❯/.test(out) ||
+		/^✖\s+/m.test(out) ||
 		/^FAIL\s+/m.test(out) ||
+		/failing tests/i.test(out) ||
+		/AssertionError/i.test(out) ||
 		/Tests:?\s+\d+\s*failed/i.test(out)
 	) {
 		return "red";
 	}
 	return "unknown";
+}
+
+function readPackageJson(dir: string): Record<string, unknown> | null {
+	try {
+		return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
+function packageScripts(pkg: Record<string, unknown> | null): Record<string, string> {
+	return (pkg?.scripts ?? {}) as Record<string, string>;
+}
+
+function packageDeps(pkg: Record<string, unknown> | null): Record<string, string> {
+	return { ...(pkg?.dependencies as Record<string, string> | undefined), ...(pkg?.devDependencies as Record<string, string> | undefined) };
+}
+
+function detectPmForDir(dir: string, pkg: Record<string, unknown> | null): string {
+	const pm = String(pkg?.packageManager ?? "").split("@")[0];
+	if (pm && /^(npm|pnpm|yarn|bun|deno)$/.test(pm)) return pm;
+	if (existsSync(join(dir, "bun.lockb")) || existsSync(join(dir, "bun.lock"))) return "bun";
+	if (existsSync(join(dir, "deno.lock"))) return "deno";
+	if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
+	if (existsSync(join(dir, "yarn.lock"))) return "yarn";
+	return "npm";
+}
+
+function nearestPackageDir(cwd: string, target: string): string | null {
+	const root = resolve(cwd);
+	let cur = dirname(resolve(cwd, target));
+	while (cur.startsWith(root)) {
+		if (existsSync(join(cur, "package.json"))) return cur;
+		const next = dirname(cur);
+		if (next === cur) break;
+		cur = next;
+	}
+	return existsSync(join(root, "package.json")) ? root : null;
+}
+
+function relTarget(pkgDir: string, cwd: string, target: string): string {
+	const rel = relative(pkgDir, resolve(cwd, target));
+	return rel.startsWith("..") ? target : rel;
+}
+
+function isJsTsTarget(target: string): boolean {
+	return /\.(?:[cm]?[jt]sx?)$/i.test(target);
+}
+
+function isTsTarget(target: string): boolean {
+	return /\.(?:[cm]?ts|tsx)$/i.test(target);
+}
+
+function fileUsesNodeTest(cwd: string, target: string): boolean {
+	try {
+		const content = readFileSync(resolve(cwd, target), "utf8");
+		return /(?:from\s+['"]node:test['"]|require\(\s*['"]node:test['"]\s*\)|node:test)/.test(content);
+	} catch {
+		return false;
+	}
+}
+
+function hasPackageTool(pkgDir: string, pkg: Record<string, unknown> | null, tool: string): boolean {
+	const deps = packageDeps(pkg);
+	return Boolean(deps[tool]) || existsSync(join(pkgDir, "node_modules", ".bin", tool)) || existsSync(join(pkgDir, "node_modules", tool));
+}
+
+function pmExec(pm: string, tool: string, args: string[]): string[] {
+	if (pm === "yarn") return [pm, "exec", tool, ...args];
+	if (pm === "bun") return [pm, "x", tool, ...args];
+	if (pm === "deno") return ["deno", "task", tool, ...args];
+	return [pm, "exec", tool, ...args];
+}
+
+function npmRedCheckPlans(cwd: string, targets: string[], cmds: ProjectCommands): RedCheckPlan[] {
+	const plans: RedCheckPlan[] = [];
+	const fallbackTargets: string[] = [];
+	for (const target of targets) {
+		const pkgDir = nearestPackageDir(cwd, target) ?? cwd;
+		const pkg = readPackageJson(pkgDir);
+		const scripts = packageScripts(pkg);
+		const rel = relTarget(pkgDir, cwd, target);
+		const pm = detectPmForDir(pkgDir, pkg);
+
+		if (isJsTsTarget(target) && fileUsesNodeTest(cwd, target)) {
+			if (!isTsTarget(target)) {
+				plans.push({ cwd: pkgDir, argv: ["node", "--test", rel] });
+				continue;
+			}
+			if (hasPackageTool(pkgDir, pkg, "tsx")) {
+				plans.push({ cwd: pkgDir, argv: ["node", "--import", "tsx", "--test", rel] });
+				continue;
+			}
+		}
+
+		if (scripts.test) {
+			if (/vitest/i.test(scripts.test) || hasPackageTool(pkgDir, pkg, "vitest")) plans.push({ cwd: pkgDir, argv: pmExec(pm, "vitest", ["run", rel]) });
+			else plans.push({ cwd: pkgDir, argv: pm === "deno" ? ["deno", "task", "test", rel] : [pm, "run", "test", "--", rel] });
+			continue;
+		}
+
+		if (hasPackageTool(pkgDir, pkg, "vitest")) {
+			plans.push({ cwd: pkgDir, argv: pmExec(pm, "vitest", ["run", rel]) });
+			continue;
+		}
+
+		fallbackTargets.push(target);
+	}
+	if (fallbackTargets.length > 0) {
+		const usesVitest = cmds.ran.some((label) => /vitest/i.test(label)) || hasVitestScript(cwd);
+		if (usesVitest) plans.push({ cwd, argv: ["vitest", "run", ...fallbackTargets] });
+		else if (cmds.test && cmds.test.length > 0) plans.push({ cwd, argv: [...cmds.test, "--", ...fallbackTargets] });
+	}
+	return plans.filter((plan) => plan.argv.length > 0);
 }
 
 /**
@@ -588,15 +711,17 @@ function classifyRedStatus(language: string, combined: string, ok: boolean): Red
  *               fall back to a scoped `cargo test -p <pkg>` for the touched
  *               packages ({@link detectTouchedCargoPackages}); empty scope → a
  *               single workspace-wide `cargo test`.
- *   - npm/vitest/jest (frontend+backend) → `<pm> run test -- <targets>` (or a
- *               direct `vitest run <targets>` when vitest owns the test
- *               script), reusing the detected {@link ProjectCommands.pm}.
+ *   - npm/vitest/jest/node:test (frontend+backend) → resolve each target's
+ *               owning package directory first, then run that package's direct
+ *               node:test/vitest/script plan. Only fall back to the root test
+ *               command when no package-local runner can be identified.
  *   - `python` → `pytest <targets> -q`.
  *   - `go`     → `go test <targets>`.
  *
- * No-spawn short-circuit → `unknown`: a greenfield dir (no manifest), an npm
- * project WITHOUT a test script, or `testTargets.length === 0`. A greenfield
- * repo CANNOT stall the pipeline — it has nothing to verify RED against.
+ * No-spawn short-circuit → `unknown`: a greenfield dir (no manifest or owning
+ * package runner), unresolved/empty targets, or a target set for which no safe
+ * package/root test plan can be identified. A greenfield repo CANNOT stall the
+ * pipeline — it has nothing to verify RED against.
  *
  * NEVER throws (the load-bearing invariant mirrored from every existing gate):
  * the ENTIRE body is try/caught; any spawn error (`r.error` / ENOENT), a
@@ -612,8 +737,6 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		// No targets → nothing to verify RED against (no spawn).
 		if (!Array.isArray(testTargets) || testTargets.length === 0) return "unknown";
 		const cmds = detectProjectCommands(cwd);
-		// No test runner configured (greenfield, or npm without a test script).
-		if (!cmds.test || cmds.test.length === 0) return "unknown";
 		if (opts?.signal?.aborted) return "unknown";
 
 		const timeoutMs = resolveTimeoutMs(opts?.timeoutMs);
@@ -621,48 +744,45 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		const targets = testTargets.filter((t) => typeof t === "string" && t.trim().length > 0);
 		if (targets.length === 0) return "unknown";
 
-		// Build the scoped argv(s) per language, mirroring runBuildGate's branch.
-		const argvs: string[][] = [];
+		// Build the scoped spawn plan(s) per language, mirroring runBuildGate's branch.
+		const plans: RedCheckPlan[] = [];
 		if (language === "rust") {
+			if (!cmds.test || cmds.test.length === 0) return "unknown";
 			const stems = resolveIntegrationStems(cwd, targets);
 			if (stems.length > 0) {
 				// Per-stem integration binaries — NEVER `--lib` (no-`--lib` discipline).
-				for (const stem of stems) argvs.push(["cargo", "test", "--test", stem, "--quiet"]);
+				for (const stem of stems) plans.push({ cwd, argv: ["cargo", "test", "--test", stem, "--quiet"] });
 			} else {
 				// No resolvable stems → scope to the touched packages; empty → workspace.
 				const pkgs = detectTouchedCargoPackages(cwd);
 				if (pkgs.length > 0) {
-					for (const pkg of pkgs) argvs.push(["cargo", "test", "-p", pkg, "--quiet"]);
+					for (const pkg of pkgs) plans.push({ cwd, argv: ["cargo", "test", "-p", pkg, "--quiet"] });
 				} else {
-					argvs.push(["cargo", "test", "--quiet"]);
+					plans.push({ cwd, argv: ["cargo", "test", "--quiet"] });
 				}
 			}
 		} else if (language === "python") {
-			argvs.push(["pytest", ...targets, "-q"]);
+			if (!cmds.test || cmds.test.length === 0) return "unknown";
+			plans.push({ cwd, argv: ["pytest", ...targets, "-q"] });
 		} else if (language === "go") {
-			argvs.push(["go", "test", ...targets]);
+			if (!cmds.test || cmds.test.length === 0) return "unknown";
+			plans.push({ cwd, argv: ["go", "test", ...targets] });
 		} else {
-			// npm family (frontend + backend). Prefer a direct `vitest run` when the
-			// project's test script is vitest-owned; otherwise reuse the detected pm
-			// (`<pm> run test -- <targets>`). Either routes the targets to vitest/jest.
-			const usesVitest = cmds.ran.some((label) => /vitest/i.test(label)) || hasVitestScript(cwd);
-			if (usesVitest) {
-				argvs.push(["vitest", "run", ...targets]);
-			} else {
-				argvs.push([...cmds.test, "--", ...targets]);
-			}
+			plans.push(...npmRedCheckPlans(cwd, targets, cmds));
 		}
 
-		if (argvs.length === 0) return "unknown";
+		if (plans.length === 0) return "unknown";
+		opts?.onPlan?.(plans.map((plan) => ({ cwd: plan.cwd, argv: [...plan.argv] })));
 
 		// Run each argv under the shared timeout envelope and aggregate. The
 		// phase is GREEN only when EVERY invocation exits 0; the combined stdout
-	 // + stderr feeds the per-language classifier.
+		// + stderr feeds the per-language classifier.
 		let combined = "";
 		let allOk = true;
-		for (const argv of argvs) {
+		for (const plan of plans) {
 			if (opts?.signal?.aborted) return "unknown";
-			const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" });
+			const { argv } = plan;
+			const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
 			// NEVER throw on a spawn error / ENOENT — degrade to unknown.
 			if (r.error) return "unknown";
 			combined += "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
@@ -678,9 +798,9 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 }
 
 /**
- * Whether the project's `package.json` `test` script invokes vitest. Used by
- * {@link runRedCheck} to prefer a direct `vitest run <targets>` invocation over
- * a generic `<pm> run test --`. Pure read, never throws.
+ * Whether the root `package.json` `test` script invokes vitest. Used by the
+ * root fallback path only; package-local plans inspect the owning package.
+ * Pure read, never throws.
  */
 function hasVitestScript(cwd: string): boolean {
 	try {

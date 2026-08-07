@@ -19,8 +19,9 @@
  *     resolveTimeoutMs, resolveIntegrationStems (no NEW primitives).
  *   - Per-language scoped invocation: cargo (per-stem `cargo test -p <pkg>
  *     --test <stem>`, NO --lib; fall back to `cargo test -p <pkg>` when no
- *     stems resolve), npm/vitest/jest (`vitest run <targets>` or
- *     `<pm> test -- <targets>`), pytest (`pytest <targets>`).
+ *     stems resolve), npm/vitest/jest/node:test (owning package cwd first;
+ *     direct node:test/vitest/script plan; root fallback only when needed),
+ *     pytest (`pytest <targets>`).
  *   - Classifies COMBINED stdout+stderr+exit into exactly one status:
  *       cargo    — broken: `error[E` / `could not compile` / `no tests to run`
  *                  (no run); red: exit≠0 + `test result: FAILED.`/`FAILED`/
@@ -31,7 +32,7 @@
  *                  green: exit 0; unknown on ambiguity.
  *       pytest   — broken: `ERROR collecting`; red: `failed`/`error` summary +
  *                  exit≠0; green: exit 0; unknown on ambiguity.
- *   - No test runner (greenfield/no-manifest, or npm without a test script) OR
+ *   - No test runner (greenfield/no-manifest/no package-local or root plan) OR
  *     `testTargets.length === 0` → "unknown" with NO spawn (greenfield cannot
  *     stall the pipeline).
  *   - The ENTIRE body is try/caught → any spawn error / thrown exception /
@@ -388,6 +389,36 @@ describe("runRedCheck — npm / vitest / jest classification", () => {
 		try {
 			mockRunner(out(1, "random unrelated npm chatter"));
 			expect(runRedCheck(d, ["src/x.test.ts"])).toBe("unknown");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("runs a node:test target from the owning package directory before classifying RED", () => {
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "pnpm -r run test" } }));
+			writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+			const pkgDir = join(dir, "auth-service");
+			mkdirSync(join(pkgDir, "src", "api", "v1", "auth"), { recursive: true });
+			writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "auth-service", devDependencies: { tsx: "4" } }));
+			writeFileSync(
+				join(pkgDir, "src", "api", "v1", "auth", "auth.authority-boundary-red.test.ts"),
+				"import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('red', () => assert.equal(1, 2));\n",
+			);
+		});
+		try {
+			const plans: Array<{ cwd: string; argv: string[] }> = [];
+			spawn.mockImplementation((cmd: string, args: string[], opts: { cwd?: string }) => {
+				expect(plans).toEqual([{ cwd: join(d, "auth-service"), argv: ["node", "--import", "tsx", "--test", "src/api/v1/auth/auth.authority-boundary-red.test.ts"] }]);
+				expect(cmd).toBe("node");
+				expect(args).toEqual(["--import", "tsx", "--test", "src/api/v1/auth/auth.authority-boundary-red.test.ts"]);
+				expect(opts.cwd).toBe(join(d, "auth-service"));
+				return out(1, "✖ red\n# failing tests:\nAssertionError [ERR_ASSERTION]: Expected values to be strictly equal");
+			});
+
+			expect(runRedCheck(d, ["auth-service/src/api/v1/auth/auth.authority-boundary-red.test.ts"], { onPlan: (p) => plans.push(...p) })).toBe("red");
+			expect(spawn).toHaveBeenCalledTimes(1);
+			expect(plans).toEqual([{ cwd: join(d, "auth-service"), argv: ["node", "--import", "tsx", "--test", "src/api/v1/auth/auth.authority-boundary-red.test.ts"] }]);
 		} finally {
 			rmSync(d, { recursive: true, force: true });
 		}
