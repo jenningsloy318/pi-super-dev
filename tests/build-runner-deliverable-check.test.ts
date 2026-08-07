@@ -31,14 +31,14 @@
  * spawns (the cache assertion). No real cargo/vitest/git runs in CI.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // --- spawnSync stub (the ONLY side effect the checker performs) -------------
 const mock = vi.hoisted(() => ({
-	calls: [] as { args: string[] }[],
-	stubber: null as null | ((args: string[]) => {
+	calls: [] as { args: string[]; cwd?: string }[],
+	stubber: null as null | ((args: string[], cwd?: string) => {
 		status: number;
 		stdout: string;
 		stderr: string;
@@ -48,10 +48,10 @@ const mock = vi.hoisted(() => ({
 }));
 
 vi.mock("node:child_process", () => ({
-	spawnSync: (cmd: string, argv?: readonly string[]) => {
+	spawnSync: (cmd: string, argv?: readonly string[], opts?: { cwd?: string }) => {
 		const full = [cmd, ...(Array.isArray(argv) ? argv.slice() : [])];
-		mock.calls.push({ args: full });
-		if (mock.stubber) return mock.stubber(full);
+		mock.calls.push({ args: full, cwd: opts?.cwd });
+		if (mock.stubber) return mock.stubber(full, opts?.cwd);
 		return { status: 0, stdout: "", stderr: "", signal: null };
 	},
 }));
@@ -100,6 +100,16 @@ function listStubber(listStdout: string): NonNullable<typeof mock.stubber> {
 /** Count spawns that look like the project test-LISTER. */
 function listSpawns(): number {
 	return mock.calls.filter((c) => /\blist\b|listTests|collect-only/i.test(c.args.join(" "))).length;
+}
+
+function nestedVitestTmp(): { cwd: string; moduleDir: string } {
+	const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-nested-vitest-"));
+	const moduleDir = join(cwd, "auth-service");
+	mkdirSync(join(moduleDir, "src"), { recursive: true });
+	writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "root", scripts: { build: "echo root" } }));
+	writeFileSync(join(moduleDir, "package.json"), JSON.stringify({ name: "auth-service", scripts: { test: "vitest run" }, devDependencies: { vitest: "1" } }));
+	writeFileSync(join(moduleDir, "src", "auth.test.ts"), "test('nested auth expires session', () => {})\n");
+	return { cwd, moduleDir };
 }
 
 beforeEach(() => {
@@ -429,6 +439,79 @@ describe("runDeliverableCheck — requireTests (SCENARIO-005/006)", () => {
 			const r = runDeliverableCheck(cwd, { requireTests: ["loads"] });
 			expect(r.pass).toBe(true);
 			expect(r.missing).toEqual([]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("derives the owning nested package cwd for requireTests instead of treating the root as unavailable", () => {
+		const { cwd, moduleDir } = nestedVitestTmp();
+		mock.stubber = (args, spawnCwd) => {
+			if (/\blist\b|listTests|collect-only/i.test(args.join(" "))) {
+				expect(spawnCwd).toBe(moduleDir);
+				return { status: 0, stdout: '[{"name":"nested auth expires session"}]', stderr: "", signal: null };
+			}
+			return { status: 0, stdout: "", stderr: "", signal: null };
+		};
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireFiles: ["auth-service/src/auth.test.ts"],
+				requireTests: ["nested auth expires session"],
+			});
+			expect(r.pass).toBe(true);
+			expect(r.ran).toContain("tests:list:auth-service");
+			expect(mock.calls.some((c) => c.cwd === moduleDir && /vitest\s+list/.test(c.args.join(" ")))).toBe(true);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("fails a missing requireTests name when the relevant test list is in a nested package", () => {
+		const { cwd, moduleDir } = nestedVitestTmp();
+		mock.stubber = (args, spawnCwd) => {
+			if (/\blist\b|listTests|collect-only/i.test(args.join(" "))) {
+				expect(spawnCwd).toBe(moduleDir);
+				return { status: 0, stdout: '[{"name":"some other nested test"}]', stderr: "", signal: null };
+			}
+			return { status: 0, stdout: "", stderr: "", signal: null };
+		};
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireFiles: ["auth-service/src/auth.test.ts"],
+				requireTests: ["nested auth expires session"],
+			});
+			expect(r.pass).toBe(false);
+			expect(r.missing).toContain("missing test: nested auth expires session");
+			expect(r.ran).toContain("tests:list:auth-service");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("derives a nested Go module cwd for requireTests before listing tests", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-nested-go-"));
+		const moduleDir = join(cwd, "backend-service");
+		mkdirSync(join(moduleDir, "internal", "handlers", "performance"), { recursive: true });
+		writeFileSync(join(moduleDir, "go.mod"), "module example.com/backend-service\n\ngo 1.22\n");
+		writeFileSync(join(moduleDir, "internal", "handlers", "performance", "jmx_resource_manifest_test.go"), "package performance\n");
+		mock.stubber = (args, spawnCwd) => {
+			if (args[0] === "git") return { status: 128, stdout: "", stderr: "fatal: not a git repository", signal: null };
+			if (args[0] === "go" && args.includes("-list")) {
+				expect(spawnCwd).toBe(moduleDir);
+				expect(args).toEqual(["go", "test", "./...", "-list", "."]);
+				return { status: 0, stdout: "TestJMXResourceManifest\n", stderr: "", signal: null };
+			}
+			return { status: 0, stdout: "", stderr: "", signal: null };
+		};
+
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireFiles: ["backend-service/internal/handlers/performance/jmx_resource_manifest_test.go"],
+				requireTests: ["TestJMXResourceManifest"],
+			});
+			expect(r.pass).toBe(true);
+			expect(r.ran).toContain("tests:list:backend-service");
+			expect(mock.calls.some((c) => c.cwd === moduleDir && c.args.join(" ") === "go test ./... -list .")).toBe(true);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

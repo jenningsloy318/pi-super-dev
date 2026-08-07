@@ -432,6 +432,38 @@ describe("runBuildGate auto-scoping (AC-03)", () => {
 			rmSync(nodeDir, { recursive: true, force: true });
 		}
 	});
+
+	it("runs build/test/typecheck from a touched nested Go module when the root has no manifest", () => {
+		const dir = mkdtempSync(join(tmpdir(), "nested-go-gate-"));
+		const moduleDir = join(dir, "backend-service");
+		try {
+			mkdirSync(join(moduleDir, "internal", "handlers"), { recursive: true });
+			writeFileSync(join(moduleDir, "go.mod"), "module example.com/backend-service\n\ngo 1.22\n");
+			writeFileSync(join(moduleDir, "internal", "handlers", "auth_test.go"), "package handlers\n");
+			mock.stubber = (args) => {
+				if (args[0] === "git") return { status: 0, stdout: "backend-service/internal/handlers/auth_test.go\n", stderr: "", signal: null };
+				return ok();
+			};
+
+			const r = runBuildGate(dir);
+			const moduleCalls = mock.calls.filter((c) => c.cwd === moduleDir).map((c) => c.args);
+			expect(moduleCalls).toEqual(expect.arrayContaining([
+				["go", "mod", "download"],
+				["go", "build", "./..."],
+				["go", "test", "./..."],
+				["go", "vet", "./..."],
+			]));
+			expect(r.pass).toBe(true);
+			expect(r.ran).toEqual(expect.arrayContaining([
+				"bootstrap:go mod download",
+				"backend-service: go build ./...",
+				"backend-service: go test ./...",
+				"backend-service: go vet ./...",
+			]));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 // ===========================================================================

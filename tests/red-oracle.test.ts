@@ -473,6 +473,34 @@ describe("runRedCheck — pytest classification", () => {
 	});
 });
 
+describe("runRedCheck — nested module owner derivation", () => {
+	it("runs a Go *_test.go target from its owning go.mod directory", () => {
+		const d = tmpProj((dir) => {
+			const mod = join(dir, "backend-service");
+			mkdirSync(join(mod, "internal", "handlers", "performance"), { recursive: true });
+			writeFileSync(join(mod, "go.mod"), "module example.com/backend-service\n\ngo 1.22\n");
+			writeFileSync(join(mod, "internal", "handlers", "performance", "jmx_resource_manifest_test.go"), "package performance\n");
+		});
+		try {
+			const moduleDir = join(d, "backend-service");
+			const plans: Array<{ cwd: string; argv: string[] }> = [];
+			spawn.mockImplementation((cmd: string, args: string[], opts: { cwd?: string }) => {
+				expect(plans).toEqual([{ cwd: moduleDir, argv: ["go", "test", "./internal/handlers/performance"] }]);
+				expect(cmd).toBe("go");
+				expect(args).toEqual(["test", "./internal/handlers/performance"]);
+				expect(opts.cwd).toBe(moduleDir);
+				return out(1, "--- FAIL: TestJMXManifestRed (0.00s)\nFAIL\n");
+			});
+
+			expect(runRedCheck(d, ["backend-service/internal/handlers/performance/jmx_resource_manifest_test.go"], { onPlan: (p) => plans.push(...p) })).toBe("red");
+			expect(spawn).toHaveBeenCalledTimes(1);
+			expect(plans).toEqual([{ cwd: moduleDir, argv: ["go", "test", "./internal/handlers/performance"] }]);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("runRedCheck — reuses shared timeout envelope (AC-01)", () => {
 	it("honors opts.timeoutMs by passing it as the spawnSync timeout (resolveTimeoutMs reuse)", () => {
 		const d = tmpProj((dir) =>

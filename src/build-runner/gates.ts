@@ -100,6 +100,16 @@ interface BuildCommandPlan {
 	label: string;
 }
 
+interface RedExecutionPlan extends RedCheckPlan {
+	language: string;
+}
+
+interface TestListPlan {
+	cwd: string;
+	argv: string[];
+	label: string;
+}
+
 export interface BuildGateResult {
 	pass: boolean;
 	buildSuccess: boolean;
@@ -165,6 +175,7 @@ export interface GateOptions {
 }
 
 const DEP_PRUNE_DIRS = new Set([".git", ".worktree", "node_modules", "target", "dist", "build", ".next", ".nuxt", "vendor", ".venv", "venv", "__pycache__", "coverage"]);
+const PROJECT_MANIFEST_NAMES = ["package.json", "go.mod", "pyproject.toml", "setup.py", "requirements.txt", "pytest.ini", "tox.ini", "Cargo.toml"];
 const depBootstrapCache = new Map<string, string>();
 
 function readJson(path: string): Record<string, unknown> | null {
@@ -201,6 +212,49 @@ function findManifestDirs(cwd: string, names: string[]): string[] {
 	return [...out].sort();
 }
 
+function isInsideOrSame(root: string, path: string): boolean {
+	const rel = relative(resolve(root), resolve(path));
+	return rel === "" || (!!rel && !rel.startsWith("..") && !rel.startsWith("/"));
+}
+
+function hasAnyManifest(dir: string, names = PROJECT_MANIFEST_NAMES): boolean {
+	return names.some((name) => existsSync(join(dir, name)));
+}
+
+function nearestProjectDir(cwd: string, target: string): string | null {
+	const root = resolve(cwd);
+	const absTarget = resolve(cwd, target);
+	if (!isInsideOrSame(root, absTarget)) return null;
+	let cur = dirname(absTarget);
+	while (isInsideOrSame(root, cur)) {
+		if (hasAnyManifest(cur)) return cur;
+		const next = dirname(cur);
+		if (next === cur) break;
+		cur = next;
+	}
+	return hasAnyManifest(root) ? root : null;
+}
+
+function projectDirsFromEvidence(cwd: string, paths: string[]): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const path of paths) {
+		if (typeof path !== "string" || path.trim() === "") continue;
+		const dir = nearestProjectDir(cwd, path);
+		if (!dir) continue;
+		const abs = resolve(dir);
+		if (seen.has(abs)) continue;
+		seen.add(abs);
+		out.push(abs);
+	}
+	return out;
+}
+
+function hasNestedProjectManifest(cwd: string): boolean {
+	const root = resolve(cwd);
+	return findManifestDirs(cwd, PROJECT_MANIFEST_NAMES).some((dir) => resolve(dir) !== root);
+}
+
 function nodeInstallArgv(dir: string, root: string): { cwd: string; argv: string[] } | null {
 	const pkg = readJson(join(dir, "package.json")) ?? {};
 	const pmRaw = String(pkg.packageManager ?? "").split("@")[0];
@@ -235,35 +289,42 @@ function depFingerprint(cwd: string): string {
 	return parts.join("|");
 }
 
-function buildDependencyBootstraps(cwd: string, cmds: ProjectCommands): Array<{ cwd: string; argv: string[]; required: boolean }> {
-	if (!cmds.build && !cmds.test && !cmds.typecheck) return [];
+function buildDependencyBootstraps(cwd: string, cmds: ProjectCommands, requiredDirs: string[] = []): Array<{ cwd: string; argv: string[]; required: boolean }> {
+	const hasRootCommands = Boolean(cmds.build || cmds.test || cmds.typecheck);
+	const requiredSet = new Set(requiredDirs.map((dir) => resolve(dir)));
+	if (!hasRootCommands && requiredSet.size === 0) return [];
 	const tasks: Array<{ cwd: string; argv: string[]; required: boolean }> = [];
 	const seen = new Set<string>();
 	const root = resolve(cwd);
 	const add = (dir: string, argv: string[], required = false) => { const key = `${dir}\0${argv.join(" ")}`; if (!seen.has(key)) { seen.add(key); tasks.push({ cwd: dir, argv, required }); } else if (required) { const t = tasks.find((x) => `${x.cwd}\0${x.argv.join(" ")}` === key); if (t) t.required = true; } };
+	const shouldConsider = (dir: string) => hasRootCommands || requiredSet.has(resolve(dir));
+	const isRequired = (dir: string) => resolve(dir) === root || requiredSet.has(resolve(dir));
 
 	for (const dir of findManifestDirs(cwd, ["package.json"])) {
+		if (!shouldConsider(dir)) continue;
 		if (existsSync(join(dir, "node_modules"))) continue;
 		const install = nodeInstallArgv(dir, cwd);
-		if (install) add(install.cwd, install.argv, resolve(dir) === root);
+		if (install) add(install.cwd, install.argv, isRequired(dir));
 	}
-	for (const dir of findManifestDirs(cwd, ["go.mod"])) add(dir, ["go", "mod", "download"], resolve(dir) === root);
+	for (const dir of findManifestDirs(cwd, ["go.mod"])) if (shouldConsider(dir)) add(dir, ["go", "mod", "download"], isRequired(dir));
 	// Rust's cargo build/test already fetches dependencies as part of the normal
 	// command, so no separate cargo fetch is needed (and it would add noise to
 	// existing gate command accounting).
-	for (const dir of findManifestDirs(cwd, ["poetry.lock"])) add(dir, ["poetry", "install", "--no-interaction"], resolve(dir) === root);
-	for (const dir of findManifestDirs(cwd, ["Pipfile"])) add(dir, ["pipenv", "install", "--deploy"], resolve(dir) === root);
+	for (const dir of findManifestDirs(cwd, ["poetry.lock"])) if (shouldConsider(dir)) add(dir, ["poetry", "install", "--no-interaction"], isRequired(dir));
+	for (const dir of findManifestDirs(cwd, ["Pipfile"])) if (shouldConsider(dir)) add(dir, ["pipenv", "install", "--deploy"], isRequired(dir));
 	for (const dir of findManifestDirs(cwd, ["requirements.txt"])) {
-		if (existsSync(join(dir, ".venv", "bin", "pip"))) add(dir, [join(dir, ".venv", "bin", "pip"), "install", "-r", "requirements.txt"], resolve(dir) === root);
+		if (!shouldConsider(dir)) continue;
+		if (existsSync(join(dir, ".venv", "bin", "pip"))) add(dir, [join(dir, ".venv", "bin", "pip"), "install", "-r", "requirements.txt"], isRequired(dir));
 	}
 	return tasks;
 }
 
-function bootstrapDependencies(cwd: string, timeoutMs: number, signal: AbortSignal | undefined, ran: string[], errors: string[]): void {
+function bootstrapDependencies(cwd: string, timeoutMs: number, signal: AbortSignal | undefined, ran: string[], errors: string[], requiredDirs: string[] = []): void {
 	if (process.env.SUPER_DEV_SKIP_DEP_BOOTSTRAP === "1") return;
 	const fp = depFingerprint(cwd);
-	if (depBootstrapCache.get(cwd) === fp) return;
-	for (const task of buildDependencyBootstraps(cwd, detectProjectCommands(cwd))) {
+	const cacheKey = `${resolve(cwd)}\0${requiredDirs.map((dir) => resolve(dir)).sort().join("|")}`;
+	if (depBootstrapCache.get(cacheKey) === fp) return;
+	for (const task of buildDependencyBootstraps(cwd, detectProjectCommands(cwd), requiredDirs)) {
 		if (signal?.aborted) { errors.push(`${task.argv.join(" ")}: aborted before dependency bootstrap`); return; }
 		const label = `bootstrap:${task.argv.join(" ")}`;
 		ran.push(label);
@@ -279,7 +340,7 @@ function bootstrapDependencies(cwd: string, timeoutMs: number, signal: AbortSign
 			if (task.required) errors.push(`${label} FAILED (${msg.split("\n")[0]})`);
 		}
 	}
-	if (!errors.some((e) => e.startsWith("bootstrap:"))) depBootstrapCache.set(cwd, fp);
+	if (!errors.some((e) => e.startsWith("bootstrap:"))) depBootstrapCache.set(cacheKey, fp);
 }
 
 function relDir(root: string, dir: string): string {
@@ -307,11 +368,6 @@ function commandPlansFromProject(root: string, planCwd: string, cmds: ProjectCom
 	if (cmds.test) plans.push(buildPlan(root, planCwd, "test", cmds.test));
 	if (cmds.typecheck) plans.push(buildPlan(root, planCwd, "typecheck", cmds.typecheck));
 	return plans;
-}
-
-function hasNestedPackageJson(cwd: string): boolean {
-	const root = resolve(cwd);
-	return findManifestDirs(cwd, ["package.json"]).some((dir) => resolve(dir) !== root);
 }
 
 function detectPmForPackageDir(dir: string, pkg: Record<string, unknown> | null, fallbackPm?: string): string {
@@ -354,25 +410,24 @@ function detectNodePackageCommands(dir: string, fallbackPm?: string): ProjectCom
 	return cmds;
 }
 
-function nodeModuleBuildPlans(cwd: string, rootCmds: ProjectCommands): BuildCommandPlan[] {
-	if (!rootCmds.build && !rootCmds.test && !rootCmds.typecheck) return [];
-	if (!hasNestedPackageJson(cwd)) return [];
-	const root = resolve(cwd);
-	const rootPkg = readPackageJson(cwd);
-	const fallbackPm = rootCmds.pm ?? detectPmForPackageDir(cwd, rootPkg);
-	const dirs: string[] = [];
-	const seen = new Set<string>();
-	for (const touched of touchedFilePaths(cwd)) {
-		const dir = nearestPackageDir(cwd, touched);
-		if (!dir) continue;
-		const abs = resolve(dir);
-		if (abs === root || seen.has(abs)) continue;
-		seen.add(abs);
-		dirs.push(abs);
+function projectCommandsForDir(root: string, dir: string, rootCmds: ProjectCommands): ProjectCommands {
+	if (existsSync(join(dir, "package.json"))) {
+		const rootPkg = readPackageJson(root);
+		const fallbackPm = rootCmds.pm ?? detectPmForPackageDir(root, rootPkg);
+		return detectNodePackageCommands(dir, fallbackPm);
 	}
+	return detectProjectCommands(dir);
+}
+
+function moduleBuildPlans(cwd: string, rootCmds: ProjectCommands): BuildCommandPlan[] {
+	const root = resolve(cwd);
+	if (rootCmds.language === "rust") return [];
+	if (!hasNestedProjectManifest(cwd)) return [];
+	if (!rootCmds.build && !rootCmds.test && !rootCmds.typecheck && hasAnyManifest(root)) return [];
+	const dirs = projectDirsFromEvidence(cwd, touchedFilePaths(cwd)).filter((dir) => resolve(dir) !== root);
 	const plans: BuildCommandPlan[] = [];
 	for (const dir of dirs) {
-		const cmds = detectNodePackageCommands(dir, fallbackPm);
+		const cmds = projectCommandsForDir(cwd, dir, rootCmds);
 		plans.push(...commandPlansFromProject(cwd, dir, cmds));
 	}
 	return plans;
@@ -476,7 +531,9 @@ export function runBuildGate(
 	const errors: string[] = [];
 	const ran: string[] = [];
 	const flag = { build: true, test: true, typecheck: true };
-	bootstrapDependencies(cwd, timeoutMs, opts.signal, ran, errors);
+	const rootPlans = commandPlansFromProject(cwd, cwd, cmds);
+	const nestedPlans = moduleBuildPlans(cwd, cmds0);
+	bootstrapDependencies(cwd, timeoutMs, opts.signal, ran, errors, nestedPlans.map((plan) => plan.cwd));
 	const bootstrapFailed = errors.some((e) => e.startsWith("bootstrap:"));
 	if (bootstrapFailed) {
 		if (cmds.build) flag.build = false;
@@ -520,8 +577,8 @@ export function runBuildGate(
 	};
 
 	if (!bootstrapFailed) {
-		for (const plan of commandPlansFromProject(cwd, cwd, cmds)) exec(plan);
-		for (const plan of nodeModuleBuildPlans(cwd, cmds0)) exec(plan);
+		for (const plan of rootPlans) exec(plan);
+		for (const plan of nestedPlans) exec(plan);
 	}
 
 	// CR-004: run spec-declared integration/e2e targets as additional
@@ -662,6 +719,12 @@ function classifyRedStatus(language: string, combined: string, ok: boolean): Red
 		if (/\bfailed\b/i.test(out) || /\berror\b/i.test(out)) return "red";
 		return "unknown";
 	}
+	if (language === "go") {
+		if (/build failed/i.test(out) || /setup failed/i.test(out) || /no required module provides package/i.test(out)) return "broken";
+		if (ok) return "green";
+		if (/^--- FAIL:/m.test(out) || /^FAIL\b/m.test(out) || /\bpanic:/i.test(out)) return "red";
+		return "unknown";
+	}
 	// npm family: vitest / jest / npm run test (frontend + backend).
 	// BROKEN — collection/parse failure before any test ran.
 	if (/SyntaxError/i.test(out) || /failed to load/i.test(out) || /No test files found/i.test(out) || /ERR_MODULE_NOT_FOUND/i.test(out) || /Cannot find package/i.test(out)) {
@@ -796,6 +859,57 @@ function npmRedCheckPlans(cwd: string, targets: string[], cmds: ProjectCommands)
 	return plans.filter((plan) => plan.argv.length > 0);
 }
 
+function goPackageArg(moduleDir: string, cwd: string, target: string): string {
+	const rel = relTarget(moduleDir, cwd, target).replace(/\\/g, "/");
+	const pkgDir = /\.go$/i.test(rel) ? dirname(rel).replace(/\\/g, "/") : rel.replace(/\/$/, "");
+	if (!pkgDir || pkgDir === ".") return ".";
+	return pkgDir.startsWith("./") ? pkgDir : `./${pkgDir}`;
+}
+
+function ownerRedCheckPlans(cwd: string, targets: string[]): { plans: RedExecutionPlan[]; handled: Set<string> } {
+	const groups = new Map<string, { dir: string; language: string; targets: string[] }>();
+	const handled = new Set<string>();
+	for (const target of targets) {
+		const dir = nearestProjectDir(cwd, target);
+		if (!dir) continue;
+		const cmds = detectProjectCommands(dir);
+		if (cmds.language !== "rust" && cmds.language !== "python" && cmds.language !== "go") continue;
+		const key = `${resolve(dir)}\0${cmds.language}`;
+		const group = groups.get(key) ?? { dir, language: cmds.language, targets: [] };
+		group.targets.push(target);
+		groups.set(key, group);
+		handled.add(target);
+	}
+	const plans: RedExecutionPlan[] = [];
+	for (const group of groups.values()) {
+		const cmds = detectProjectCommands(group.dir);
+		if (!cmds.test || cmds.test.length === 0) continue;
+		if (group.language === "rust") {
+			const relTargets = group.targets.map((target) => relTarget(group.dir, cwd, target));
+			const stems = resolveIntegrationStems(group.dir, relTargets);
+			if (stems.length > 0) {
+				for (const stem of stems) plans.push({ cwd: group.dir, argv: ["cargo", "test", "--test", stem, "--quiet"], language: "rust" });
+			} else {
+				plans.push({ cwd: group.dir, argv: ["cargo", "test", "--quiet"], language: "rust" });
+			}
+		} else if (group.language === "python") {
+			plans.push({ cwd: group.dir, argv: ["pytest", ...group.targets.map((target) => relTarget(group.dir, cwd, target)), "-q"], language: "python" });
+		} else if (group.language === "go") {
+			const pkgs = dedupePreservingOrder(group.targets.map((target) => goPackageArg(group.dir, cwd, target)));
+			plans.push({ cwd: group.dir, argv: ["go", "test", ...pkgs], language: "go" });
+		}
+	}
+	return { plans, handled };
+}
+
+function combineRedStatuses(statuses: RedStatus[]): RedStatus {
+	if (statuses.length === 0) return "unknown";
+	if (statuses.includes("broken")) return "broken";
+	if (statuses.includes("red")) return "red";
+	if (statuses.every((status) => status === "green")) return "green";
+	return "unknown";
+}
+
 /**
  * Deterministic "red" oracle for the Stage 9 TDD cycle (Gap 1a, AC-01).
  *
@@ -818,7 +932,8 @@ function npmRedCheckPlans(cwd: string, targets: string[], cmds: ProjectCommands)
  *               node:test/vitest/script plan. Only fall back to the root test
  *               command when no package-local runner can be identified.
  *   - `python` → `pytest <targets> -q`.
- *   - `go`     → `go test <targets>`.
+ *   - `go`     → root modules use the root command; nested modules are grouped
+ *               by owning `go.mod` and run as `go test <package>` from that cwd.
  *
  * No-spawn short-circuit → `unknown`: a greenfield dir (no manifest or owning
  * package runner), unresolved/empty targets, or a target set for which no safe
@@ -847,50 +962,52 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		if (targets.length === 0) return "unknown";
 
 		// Build the scoped spawn plan(s) per language, mirroring runBuildGate's branch.
-		const plans: RedCheckPlan[] = [];
+		const plans: RedExecutionPlan[] = [];
 		if (language === "rust") {
 			if (!cmds.test || cmds.test.length === 0) return "unknown";
 			const stems = resolveIntegrationStems(cwd, targets);
 			if (stems.length > 0) {
 				// Per-stem integration binaries — NEVER `--lib` (no-`--lib` discipline).
-				for (const stem of stems) plans.push({ cwd, argv: ["cargo", "test", "--test", stem, "--quiet"] });
+				for (const stem of stems) plans.push({ cwd, argv: ["cargo", "test", "--test", stem, "--quiet"], language });
 			} else {
 				// No resolvable stems → scope to the touched packages; empty → workspace.
 				const pkgs = detectTouchedCargoPackages(cwd);
 				if (pkgs.length > 0) {
-					for (const pkg of pkgs) plans.push({ cwd, argv: ["cargo", "test", "-p", pkg, "--quiet"] });
+					for (const pkg of pkgs) plans.push({ cwd, argv: ["cargo", "test", "-p", pkg, "--quiet"], language });
 				} else {
-					plans.push({ cwd, argv: ["cargo", "test", "--quiet"] });
+					plans.push({ cwd, argv: ["cargo", "test", "--quiet"], language });
 				}
 			}
 		} else if (language === "python") {
 			if (!cmds.test || cmds.test.length === 0) return "unknown";
-			plans.push({ cwd, argv: ["pytest", ...targets, "-q"] });
+			plans.push({ cwd, argv: ["pytest", ...targets, "-q"], language });
 		} else if (language === "go") {
 			if (!cmds.test || cmds.test.length === 0) return "unknown";
-			plans.push({ cwd, argv: ["go", "test", ...targets] });
+			plans.push({ cwd, argv: ["go", "test", ...targets], language });
 		} else {
-			plans.push(...npmRedCheckPlans(cwd, targets, cmds));
+			const ownerPlans = ownerRedCheckPlans(cwd, targets);
+			plans.push(...ownerPlans.plans);
+			const npmTargets = targets.filter((target) => !ownerPlans.handled.has(target));
+			plans.push(...npmRedCheckPlans(cwd, npmTargets, cmds).map((plan) => ({ ...plan, language: "backend" })));
 		}
 
 		if (plans.length === 0) return "unknown";
 		opts?.onPlan?.(plans.map((plan) => ({ cwd: plan.cwd, argv: [...plan.argv] })));
 
-		// Run each argv under the shared timeout envelope and aggregate. The
-		// phase is GREEN only when EVERY invocation exits 0; the combined stdout
-		// + stderr feeds the per-language classifier.
-		let combined = "";
-		let allOk = true;
+		// Run each argv under the shared timeout envelope. Each plan is classified
+		// with its own language because RED targets may live in nested modules whose
+		// stack differs from the repository root.
+		const statuses: RedStatus[] = [];
 		for (const plan of plans) {
 			if (opts?.signal?.aborted) return "unknown";
 			const { argv } = plan;
 			const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
 			// NEVER throw on a spawn error / ENOENT — degrade to unknown.
 			if (r.error) return "unknown";
-			combined += "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
-			if (r.status !== 0) allOk = false;
+			const combined = "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
+			statuses.push(classifyRedStatus(plan.language, combined, r.status === 0));
 		}
-		return classifyRedStatus(language, combined, allOk);
+		return combineRedStatuses(statuses);
 	} catch {
 		// The load-bearing NEVER-THROW invariant: any spawn error, thrown
 		// exception, or parse ambiguity degrades to `unknown` (proceed, do not
@@ -980,18 +1097,19 @@ export interface DeliverableCheckOptions {
 /**
  * Resolved project test list: either the collected list text OR an
  * `{ available:false }` sentinel (no-runner / spawn error / timeout / empty
- * stdout). Cached per absolute cwd so the lister spawns at most once per run.
+ * stdout). Cached per absolute cwd + argv so each distinct lister plan spawns
+ * at most once per run.
  */
 type TestListResult = { available: true; list: string } | { available: false };
 
 /**
- * Process-local cache of the project test LIST, keyed by ABSOLUTE `cwd` (via
- * `resolve()` so a relative/symlinked `cwd` keys the cache identically to the
- * spawn `cwd` — mirrors {@link cargoMetadataCache}, review finding: cache-key/
- * argv skew risk). Stores either the collected list text OR an
- * `{ available:false }` sentinel so the lister spawns AT MOST ONCE per cwd per
- * run (SCENARIO-009 — two requireTests-bearing phases sharing a cwd share one
- * spawn). Lives only in memory.
+ * Process-local cache of the project test LIST, keyed by ABSOLUTE `cwd` plus
+ * argv (via `resolve()` so a relative/symlinked `cwd` keys the cache
+ * identically to the spawn `cwd` — mirrors {@link cargoMetadataCache}, review
+ * finding: cache-key/argv skew risk). Stores either the collected list text OR
+ * an `{ available:false }` sentinel so the same lister plan spawns AT MOST ONCE
+ * per run (SCENARIO-009 — two requireTests-bearing phases sharing a plan share
+ * one spawn). Lives only in memory.
  *
  * RUN-BOUNDARY RESET (review finding, HIGH): a module-level cache is STALE the
  * instant the implementer ADDS a test on a retry — the cached list still omits
@@ -1097,7 +1215,7 @@ function deliverableMatchText(file: string, text: string): string {
  * Resolve the project test-LISTER argv for `cmds`, mirroring runRedCheck's
  * runner selection so the lister is chosen EXACTLY as the RED oracle chooses
  * its runner. Returns `null` when no recognized runner exists (greenfield /
- * mixed / go) → requireTests degrades to "test-list unavailable" WITHOUT
+ * mixed) → requireTests degrades to "test-list unavailable" WITHOUT
  * spawning (SCENARIO-007). Pure: only READS package.json (no spawn/git).
  */
 function resolveTestListerArgv(cwd: string, cmds: ProjectCommands): string[] | null {
@@ -1107,40 +1225,73 @@ function resolveTestListerArgv(cwd: string, cmds: ProjectCommands): string[] | n
 	if (cmds.language === "python") {
 		return ["pytest", "--collect-only", "-q"];
 	}
+	if (cmds.language === "go") {
+		return ["go", "test", "./...", "-list", "."];
+	}
 	if (cmds.language === "frontend" || cmds.language === "backend") {
 		// node family: prefer `vitest list --json`, else `jest --listTests`. Decide
 		// from the package.json `test` script content (runRedCheck's same heuristic).
-		if (hasVitestScript(cwd)) return ["vitest", "list", "--json"];
-		const pkgText = readMaybe(cwd, "package.json");
-		if (/"test"\s*:\s*"[^"]*jest/i.test(pkgText)) return ["jest", "--listTests"];
+		const pkg = readPackageJson(cwd);
+		const scripts = packageScripts(pkg);
+		const pm = detectPmForDir(cwd, pkg);
+		if (/vitest/i.test(scripts.test ?? "") || hasPackageTool(cwd, pkg, "vitest")) return pmExec(pm, "vitest", ["list", "--json"]);
+		if (/jest/i.test(scripts.test ?? "") || hasPackageTool(cwd, pkg, "jest")) return pmExec(pm, "jest", ["--listTests"]);
 		return null; // no recognized node lister → unavailable
 	}
 	return null;
 }
 
+function testListPlan(root: string, dir: string, cmds: ProjectCommands): TestListPlan | null {
+	const argv = resolveTestListerArgv(dir, cmds);
+	if (!argv || argv.length === 0) return null;
+	const rel = relDir(root, dir);
+	return { cwd: dir, argv, label: rel === "." ? "tests:list" : `tests:list:${rel}` };
+}
+
+function deliverableEvidencePaths(deliverables: DeliverableContract): string[] {
+	const paths: string[] = [];
+	for (const p of deliverables.requireFiles ?? []) if (typeof p === "string") paths.push(p);
+	for (const entry of deliverables.requireContains ?? []) if (entry && typeof entry.file === "string") paths.push(entry.file);
+	for (const entry of deliverables.requireNotContains ?? []) if (entry && typeof entry.file === "string") paths.push(entry.file);
+	return paths;
+}
+
+function testListPlansForDeliverables(cwd: string, deliverables: DeliverableContract): TestListPlan[] {
+	const rootCmds = detectProjectCommands(cwd);
+	const plans: TestListPlan[] = [];
+	const seen = new Set<string>();
+	const add = (plan: TestListPlan | null) => {
+		if (!plan) return;
+		const key = `${resolve(plan.cwd)}\0${plan.argv.join("\0")}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		plans.push(plan);
+	};
+	add(testListPlan(cwd, cwd, rootCmds));
+	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd)];
+	for (const dir of projectDirsFromEvidence(cwd, evidence)) {
+		if (resolve(dir) === resolve(cwd)) continue;
+		add(testListPlan(cwd, dir, projectCommandsForDir(cwd, dir, rootCmds)));
+	}
+	return plans;
+}
+
 /**
- * Load (and cache) the project test list for `cwd` via ONE spawn per cwd per
- * run (SCENARIO-009). On no-runner / spawn error / timeout / empty stdout →
+ * Load (and cache) one project test-list plan via ONE spawn per cwd+argv per
+ * run (SCENARIO-009). On spawn error / timeout / empty stdout →
  * returns `{ available:false }` and does NOT block (existence/grep still
  * enforced — SCENARIO-007). Never throws.
  */
 function loadTestList(
-	cwd: string,
-	cmds: ProjectCommands,
+	plan: TestListPlan,
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): TestListResult {
 	// Resolve ONCE so the cache KEY and the spawn `cwd` use the SAME absolute
 	// path (review finding: cache-key/argv skew — mirrors {@link cargoMetadataCache}).
-	const key = resolve(cwd);
+	const key = `${resolve(plan.cwd)}\0${plan.argv.join("\0")}`;
 	const cached = testListCache.get(key);
 	if (cached) return cached;
-	const argv = resolveTestListerArgv(cwd, cmds);
-	if (!argv || argv.length === 0) {
-		const res: TestListResult = { available: false };
-		testListCache.set(key, res);
-		return res;
-	}
 	if (signal?.aborted) {
 		const res: TestListResult = { available: false };
 		testListCache.set(key, res);
@@ -1149,7 +1300,7 @@ function loadTestList(
 	let list = "";
 	let available = false;
 	try {
-		const r = spawnSync(argv[0], argv.slice(1), { cwd, timeout: timeoutMs, encoding: "utf8" });
+		const r = spawnSync(plan.argv[0], plan.argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
 		if (!r.error && r.status === 0) {
 			const out = (r.stdout ?? "").trim();
 			if (out.length > 0) {
@@ -1178,8 +1329,9 @@ function loadTestList(
  * spec-54 false-green.
  *
  * Reuses the single sources of truth: {@link detectProjectCommands} for runner
- * selection, {@link resolveTimeoutMs} for the spawn envelope, and ONE cached
- * {@link spawnSync} test-list subprocess per cwd per run ({@link testListCache}).
+ * selection, {@link resolveTimeoutMs} for the spawn envelope, and cached
+ * {@link spawnSync} test-list subprocesses per derived cwd+argv plan
+ * ({@link testListCache}).
  *
  * NEVER throws (the load-bearing build-runner-nonregression invariant): the
  * ENTIRE body is wrapped in try/catch; on any thrown error it returns
@@ -1199,7 +1351,8 @@ function loadTestList(
  *                            If the file itself is required, declare it in
  *                            requireFiles or requireContains; a pure negative
  *                            assertion is satisfied when the target is absent.
- *   (d) requireTests       → ONE cached test-list spawn per cwd; tolerant
+ *   (d) requireTests       → cached test-list spawn(s) per derived cwd+argv
+ *                            plan; tolerant
  *                            substring-OR-regex name match; miss ⇒
  *                            `missing test: <name>`. On no-runner / spawn
  *                            error / timeout / empty stdout ⇒ records
@@ -1405,18 +1558,23 @@ export function runDeliverableCheck(
 			}
 		}
 
-		// (d) requireTests — ONE cached test-list spawn per cwd per run. Skipped
+		// (d) requireTests — cached test-list spawn(s) per cwd+argv plan. Skipped
 		// entirely when `opts.skipTests` is set (review finding: do NOT spawn the
 		// test-lister when the build gate already failed — wasted compile on a broken
 		// build, and a poisoned cache). The cheap file/contains/not-contains checks
 		// above still ran regardless.
 		const tests = deliverables.requireTests;
 		if (Array.isArray(tests) && tests.length > 0 && !opts?.skipTests) {
-			const cmds = detectProjectCommands(cwd);
 			const timeoutMs = resolveTimeoutMs(opts?.timeoutMs);
-			const list = loadTestList(cwd, cmds, timeoutMs, opts?.signal);
-			if (list.available) {
-				ran.push("tests:list");
+			const plans = testListPlansForDeliverables(cwd, deliverables);
+			const lines: string[] = [];
+			for (const plan of plans) {
+				const list = loadTestList(plan, timeoutMs, opts?.signal);
+				if (!list.available) continue;
+				ran.push(plan.label);
+				lines.push(...list.list.split(/\r?\n/).filter((l) => l.trim().length > 0));
+			}
+			if (lines.length > 0) {
 				// Review finding: matching the test name against the WHOLE raw stdout
 				// (a single giant string) risks false-greens — a name substring hit in
 				// a path, a directory header, or a comment line would satisfy the
@@ -1424,7 +1582,6 @@ export function runDeliverableCheck(
 				// instead so a hit requires the name to appear on an actual listed
 				// entry line (cargo/pytest emit one test per line; vitest --json emits
 				// a single-line JSON array, which is one line and unaffected).
-				const lines = list.list.split(/\r?\n/).filter((l) => l.trim().length > 0);
 				for (const name of tests) {
 					const hit = lines.some((line) => tolerantMatch(name, line));
 					if (!hit) {
