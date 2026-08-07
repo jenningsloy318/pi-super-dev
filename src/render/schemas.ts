@@ -254,6 +254,7 @@ export type PhaseDeliverables = Static<typeof PhaseDeliverables>;
 export const SpecPhase = Type.Object({
 	name: Type.String(),
 	description: Type.String(),
+	scenarioRefs: Type.Optional(Type.Array(Type.String())),
 	deliverables: Type.Optional(PhaseDeliverables),
 });
 export type SpecPhase = Static<typeof SpecPhase>;
@@ -264,9 +265,10 @@ export const SpecificationData = Type.Object({
 	summary: Type.String(),
 	architecture: Type.String(),
 	testingStrategy: Type.String(),
+	acceptanceCriteriaRefs: Type.Optional(Type.Array(Type.String())),
 	scenarioRefs: Type.Array(Type.String()),
 	phases: Type.Array(SpecPhase, { minItems: 1 }),
-	tasks: Type.Array(Type.Object({ phase: Type.String(), description: Type.String() })),
+	tasks: Type.Array(Type.Object({ phase: Type.String(), description: Type.String(), scenarioRefs: Type.Optional(Type.Array(Type.String())) })),
 	// Layer D (AC-04..08): an OPTIONAL spec-declared cargo build-gate contract.
 	// The specification stage MAY declare it for backend/integration features; it
 	// is threaded into RunOptions.gate and becomes the top-precedence scope tier.

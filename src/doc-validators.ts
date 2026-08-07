@@ -55,6 +55,22 @@ export function extractAcceptanceCriteriaIds(content: string): string[] {
 	return uniqueSortedIds([...content.matchAll(/\bAC-(\d+)\b/gi)].map((m) => normalizedId("AC", m[1] ?? "0")));
 }
 
+function extractAcceptanceCriteriaIdsFromValue(value: unknown): string[] {
+	const raw = Array.isArray(value) ? value : [value];
+	const ids: string[] = [];
+	for (const item of raw) {
+		if (typeof item === "number" && Number.isInteger(item)) {
+			ids.push(normalizedId("AC", String(item)));
+			continue;
+		}
+		if (typeof item !== "string") continue;
+		const matches = extractAcceptanceCriteriaIds(item);
+		if (matches.length > 0) ids.push(...matches);
+		else if (/^\d+$/.test(item.trim())) ids.push(normalizedId("AC", item.trim()));
+	}
+	return uniqueSortedIds(ids);
+}
+
 /** Extract normalized SCENARIO-NNN identifiers from BDD/spec text. */
 export function extractScenarioIds(content: string): string[] {
 	return uniqueSortedIds([...content.matchAll(/\bSCENARIO-(\d+)\b/gi)].map((m) => normalizedId("SCENARIO", m[1] ?? "0")));
@@ -81,6 +97,21 @@ export function extractScenarioRefsFromControl(control: ControlObj | undefined):
 	return extractScenarioIdsFromValue(control?.scenarioRefs);
 }
 
+/** Extract normalized AC-NN identifiers from spec control.acceptanceCriteriaRefs. */
+export function extractAcceptanceCriteriaRefsFromControl(control: ControlObj | undefined): string[] {
+	return extractAcceptanceCriteriaIdsFromValue(control?.acceptanceCriteriaRefs);
+}
+
+/** Extract scenario refs from phase/task trace-matrix fields. */
+export function extractMappedScenarioRefsFromControl(control: ControlObj | undefined): string[] {
+	const refs: string[] = [];
+	const phases = Array.isArray(control?.phases) ? control.phases as Array<Record<string, unknown>> : [];
+	for (const phase of phases) refs.push(...extractScenarioIdsFromValue(phase.scenarioRefs));
+	const tasks = Array.isArray(control?.tasks) ? control.tasks as Array<Record<string, unknown>> : [];
+	for (const task of tasks) refs.push(...extractScenarioIdsFromValue(task.scenarioRefs));
+	return uniqueSortedIds(refs);
+}
+
 function missingIds(required: string[], actual: string[]): string[] {
 	const actualSet = new Set(actual);
 	return required.filter((id) => !actualSet.has(id));
@@ -100,12 +131,13 @@ export function bddTraceabilityErrors(requirementsContent: string, bddContent: s
 	return errors;
 }
 
-/** Spec must cover every BDD scenario and tasks must map to declared phases. */
-export function specTraceabilityErrors(bddContent: string, specContent: string, spec: ControlObj | undefined): string[] {
+/** Spec must cover every requirements AC, every BDD scenario, and map tasks to declared phases. */
+export function specTraceabilityErrors(bddContent: string, specContent: string, spec: ControlObj | undefined, requirementsContent?: string): string[] {
 	const bddScenarioIds = extractScenarioIds(bddContent);
 	const specDocScenarioIds = extractScenarioIds(specContent);
 	const specControlScenarioIds = extractScenarioRefsFromControl(spec);
 	const combinedSpecIds = uniqueSortedIds([...specDocScenarioIds, ...specControlScenarioIds]);
+	const mappedScenarioIds = extractMappedScenarioRefsFromControl(spec);
 	const errors: string[] = [];
 	if (bddScenarioIds.length === 0) errors.push("BDD doc has no SCENARIO-NNN identifiers for spec traceability");
 	if (specControlScenarioIds.length === 0) errors.push("spec.scenarioRefs must include SCENARIO-NNN IDs from the BDD doc");
@@ -113,6 +145,24 @@ export function specTraceabilityErrors(bddContent: string, specContent: string, 
 	if (uncovered.length > 0) errors.push(`spec does not reference BDD scenarios: ${uncovered.join(", ")}`);
 	const dangling = missingIds(combinedSpecIds, bddScenarioIds);
 	if (dangling.length > 0) errors.push(`spec references scenarios not found in BDD doc: ${dangling.join(", ")}`);
+	if (mappedScenarioIds.length === 0) errors.push("spec phases/tasks must include scenarioRefs so every BDD scenario maps to implementable work");
+	const unmapped = missingIds(bddScenarioIds, mappedScenarioIds);
+	if (unmapped.length > 0) errors.push(`spec phases/tasks do not map BDD scenarios to work: ${unmapped.join(", ")}`);
+	const mappedDangling = missingIds(mappedScenarioIds, bddScenarioIds);
+	if (mappedDangling.length > 0) errors.push(`spec phases/tasks reference scenarios not found in BDD doc: ${mappedDangling.join(", ")}`);
+
+	if (requirementsContent) {
+		const requirementIds = extractAcceptanceCriteriaIds(requirementsContent);
+		const specDocAcIds = extractAcceptanceCriteriaIds(specContent);
+		const specControlAcIds = extractAcceptanceCriteriaRefsFromControl(spec);
+		const combinedSpecAcIds = uniqueSortedIds([...specDocAcIds, ...specControlAcIds]);
+		if (requirementIds.length === 0) errors.push("requirements doc has no AC-NN identifiers for spec traceability");
+		if (specControlAcIds.length === 0) errors.push("spec.acceptanceCriteriaRefs must include AC-NN IDs from the requirements doc");
+		const uncoveredAc = missingIds(requirementIds, combinedSpecAcIds);
+		if (uncoveredAc.length > 0) errors.push(`spec does not reference acceptance criteria: ${uncoveredAc.join(", ")}`);
+		const danglingAc = missingIds(combinedSpecAcIds, requirementIds);
+		if (danglingAc.length > 0) errors.push(`spec references acceptance criteria not found in requirements: ${danglingAc.join(", ")}`);
+	}
 
 	const phases = normalizePhases(spec?.phases);
 	const phaseNames = new Set(phases.map((p) => p.name.trim()));
@@ -184,7 +234,7 @@ export function toBool(v: unknown): boolean {
 /** A normalized spec phase. `deliverables` is OPTIONAL and round-trips from the
  *  agent's declared `phases[].deliverables` so downstream consumers (the
  *  implementation stage) read a typed `phase.deliverables`. */
-export type NormalizedPhase = { name: string; description?: string; deliverables?: PhaseDeliverables };
+export type NormalizedPhase = { name: string; description?: string; scenarioRefs?: string[]; deliverables?: PhaseDeliverables };
 
 /** Normalize a spec's `phases` field into a usable {name, description?, deliverables?}
  *  array. Agents occasionally return phases as a string (newline/comma list) or an

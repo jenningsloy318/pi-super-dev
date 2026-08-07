@@ -156,8 +156,10 @@ function gateSpecTrace(s: Record<string, unknown>): HelperResult {
 		if (doc) {
 			errors.push(...specContentErrors(doc.content));
 			const bddDoc = readSpecDoc(dir, s["write-bdd"] as ControlObj | undefined, "*-bdd-scenarios.md");
-			if (bddDoc) errors.push(...specTraceabilityErrors(bddDoc.content, doc.content, spec));
+			const requirementsDoc = readSpecDoc(dir, s["write-requirements"] as ControlObj | undefined, "*-requirements.md");
+			if (bddDoc) errors.push(...specTraceabilityErrors(bddDoc.content, doc.content, spec, requirementsDoc?.content));
 			else errors.push("No BDD doc found for spec traceability (no docPath, and no *-bdd-scenarios.md in the spec dir)");
+			if (!requirementsDoc) errors.push("No requirements doc found for spec acceptance-criteria traceability (no docPath, and no *-requirements.md in the spec dir)");
 			if (!specDocExists(dir, "*-task-list.md")) errors.push("Task list file (*-task-list.md) missing");
 			if (!specDocExists(dir, "*-implementation-plan.md")) errors.push("Implementation plan file (*-implementation-plan.md) missing");
 		} else {

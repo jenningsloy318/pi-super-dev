@@ -50,12 +50,24 @@ function scenarioRefsFromValue(value: unknown): string[] {
 	return [...new Set(ids)].sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
 }
 
+function mergeScenarioRefs(values: unknown[]): string[] {
+	return [...new Set(values.flatMap(scenarioRefsFromValue))].sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
+}
+
 function phaseTasksFor(specControl: R, phaseName: string): string[] {
 	const tasks = Array.isArray(specControl?.tasks) ? specControl.tasks as Array<Record<string, unknown>> : [];
 	return tasks
 		.filter((task) => typeof task.phase === "string" && task.phase.trim() === phaseName)
 		.map((task) => String(task.description ?? "").trim())
 		.filter(Boolean);
+}
+
+function phaseScenarioRefsFor(specControl: R, phase: { name: string; scenarioRefs?: unknown }): string[] {
+	const tasks = Array.isArray(specControl?.tasks) ? specControl.tasks as Array<Record<string, unknown>> : [];
+	const taskRefs = tasks
+		.filter((task) => typeof task.phase === "string" && task.phase.trim() === phase.name)
+		.map((task) => task.scenarioRefs);
+	return mergeScenarioRefs([phase.scenarioRefs, ...taskRefs]);
 }
 
 /** A single stage's doc path: next free number + the slug. */
@@ -137,16 +149,20 @@ export function buildSpecPrompt(s: SetupControl, c: Classification | null, task:
 	if (Array.isArray(docs) && docs.length) parts.push(`- Design: ${docs.join(", ")}`);
 	if (prototype?.docPath) parts.push(`- Prototype Report: ${prototype.docPath as string}`);
 	/* render pipeline: spec returns structured data; 3 docs rendered from it */
-	parts.push("", "## Task", task, "", "## Instructions", "Write the technical specification, implementation plan, and task list.", "The documents will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the documents.", "Break implementation into phases. Each phase must be independently testable. Prefer FEWER, COARSER, independently-shippable phases (each with its own deliverable); avoid over-decomposing a feature into many tiny interdependent phases — if two phases must share state or edit the same files, MERGE them into one phase. Granular interdependent phases cascade-fail; coarse independent phases converge.", "If a Prototype Report is present, incorporate its verdict, measurements, and adjustments into the architecture, testing strategy, and phase deliverables; do not ignore failed or borderline prototype evidence.", "Every BDD scenario from the BDD Scenarios doc must appear in scenarioRefs and in the specification narrative. Every task.phase must exactly match a declared phase.name.", "", "## Data to return", "Return the specification as structured data:", "- title, date, summary", "- architecture: the technical architecture (prose)", "- testingStrategy: how the feature will be tested (prose)", "- scenarioRefs: array of SCENARIO-NNN IDs", "- phases: array of { name, description, deliverables? } (at least 1, each independently testable)", "- tasks: array of { phase, description }", "- gate (optional, Rust/backend only): { packages: [real cargo package names whose tests must pass], workspace: boolean (true = run cargo test --workspace), integration: [paths to e2e/integration test files to also run] }", "- deliverables (optional, per phase): declare when a phase's deliverable is NOT compiler-checkable — { requireFiles: [paths that must exist], requireContains: [{ file, pattern } regex that must appear], requireNotContains: [{ file, pattern } regex that must NOT appear], requireTests: [test names that must exist] }. Phases that create a file, wire a call site X→Y, make new sources reachable, or add a named test MUST declare deliverables — without them a phase compiles green while delivering nothing. Deliverables are AND-ed with build-green, so a missing file/pattern/test fails the phase even when the build passes. For requireContains, assert semantic anchors and avoid arbitrary local variable names from examples: prefer flexible identifier regex such as `[A-Za-z_$][\\w$]*\\.POST` over `h\\.POST`; patterns for code files are matched against comment-stripped code, so comments do not satisfy wiring assertions.", "", "Output <control> JSON with: title, date, summary, architecture, testingStrategy, scenarioRefs, phases, tasks, gate.");
+	parts.push("", "## Task", task, "", "## Instructions", "Write the technical specification, implementation plan, and task list.", "The documents will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the documents.", "Build an explicit trace matrix from Requirements AC-NN IDs to BDD SCENARIO-NNN IDs to implementation phases/tasks. The spec is invalid unless every requirements acceptance criterion and every BDD scenario is covered by that matrix.", "Break implementation into phases. Each phase must be independently testable. Prefer FEWER, COARSER, independently-shippable phases (each with its own deliverable); avoid over-decomposing a feature into many tiny interdependent phases — if two phases must share state or edit the same files, MERGE them into one phase. Granular interdependent phases cascade-fail; coarse independent phases converge.", "If a Prototype Report is present, incorporate its verdict, measurements, and adjustments into the architecture, testing strategy, and phase deliverables; do not ignore failed or borderline prototype evidence.", "Every requirements AC-NN from the Requirements doc must appear in acceptanceCriteriaRefs and in the specification narrative. Every BDD scenario from the BDD Scenarios doc must appear in scenarioRefs, in the specification narrative, and in at least one phase.scenarioRefs or task.scenarioRefs entry. Every task.phase must exactly match a declared phase.name.", "", "## Data to return", "Return the specification as structured data:", "- title, date, summary", "- architecture: the technical architecture (prose)", "- testingStrategy: how the feature will be tested (prose)", "- acceptanceCriteriaRefs: array of AC-NN IDs from the Requirements doc", "- scenarioRefs: array of SCENARIO-NNN IDs from the BDD Scenarios doc", "- phases: array of { name, description, deliverables? } (at least 1, each independently testable; may also include scenarioRefs?: string[] to map BDD scenarios to phases)", "- tasks: array of { phase, description, scenarioRefs? }", "- gate (optional, Rust/backend only): { packages: [real cargo package names whose tests must pass], workspace: boolean (true = run cargo test --workspace), integration: [paths to e2e/integration test files to also run] }", "- deliverables (optional, per phase): declare when a phase's deliverable is NOT compiler-checkable — { requireFiles: [paths that must exist], requireContains: [{ file, pattern } regex that must appear], requireNotContains: [{ file, pattern } regex that must NOT appear], requireTests: [test names that must exist] }. Phases that create a file, wire a call site X→Y, make new sources reachable, or add a named test MUST declare deliverables — without them a phase compiles green while delivering nothing. Deliverables are AND-ed with build-green, so a missing file/pattern/test fails the phase even when the build passes. For requireContains, assert semantic anchors and avoid arbitrary local variable names from examples: prefer flexible identifier regex such as `[A-Za-z_$][\\w$]*\\.POST` over `h\\.POST`; patterns for code files are matched against comment-stripped code, so comments do not satisfy wiring assertions.", "", "Output <control> JSON with: title, date, summary, architecture, testingStrategy, acceptanceCriteriaRefs, scenarioRefs, phases, tasks, gate.");
 	return parts.join("\n");
 }
 export function buildSpecReviewPrompt(s: SetupControl, c: Classification | null, specControl: R): string {
-	return [ctxBlock(s, c), "", "## Specification to Review", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, `- Plan: ${(specControl?.planPath as string) ?? "N/A"}`, `- Tasks: ${(specControl?.tasksPath as string) ?? "N/A"}`, `- Phases: ${(specControl?.phaseCount as number) ?? 0}`, "", "## Instructions", "Review the specification across 8 quality dimensions: completeness, correctness, consistency, testability, feasibility, security, performance, and maintainability.", "Score each dimension 1-5. Produce a verdict.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "## Data to return", "Return: title, date, verdict, summary, findings [{id, severity, title, detail}], dimensions [{name, status, notes}]", "", "Output <control> JSON with: title, date, verdict, summary, findings, dimensions."].join("\n");
+	return [ctxBlock(s, c), "", "## Specification to Review", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, `- Plan: ${(specControl?.planPath as string) ?? "N/A"}`, `- Tasks: ${(specControl?.tasksPath as string) ?? "N/A"}`, `- Phases: ${(specControl?.phaseCount as number) ?? 0}`, "", "## Instructions", "Review the specification across these 8 required quality dimensions: Completeness, Consistency, Feasibility, Testability, Traceability, Grounding, Complexity, and Ambiguity.", "Traceability must explicitly check Requirements AC-NN coverage, BDD SCENARIO-NNN coverage, and scenario-to-phase/task mapping. If any requirement, scenario, task, phase, or testing obligation is missing or ambiguous, use verdict Changes Requested.", "Score each dimension 1-5. Produce a verdict.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "## Data to return", "Return: title, date, verdict, summary, findings [{id, severity, title, detail}], dimensions [{name, status, notes}]", "", "Output <control> JSON with: title, date, verdict, summary, findings, dimensions."].join("\n");
 }
-export function buildTddPrompt(s: SetupControl, c: Classification | null, phase: { name: string; description?: string }, specControl: R, langInstructions = "", bddControl: R = null): string {
+export function buildTddPrompt(s: SetupControl, c: Classification | null, phase: { name: string; description?: string; scenarioRefs?: unknown }, specControl: R, langInstructions = "", bddControl: R = null): string {
 	const scenarioRefs = scenarioRefsFromValue(specControl?.scenarioRefs);
+	const phaseScenarioRefs = phaseScenarioRefsFor(specControl, phase);
 	const phaseTasks = phaseTasksFor(specControl, phase.name);
-	const scenarioBaseline = scenarioRefs.length ? scenarioRefs.join(", ") : "read the BDD scenarios doc and derive the SCENARIO-NNN baseline";
+	const scenarioBaseline = phaseScenarioRefs.length
+		? phaseScenarioRefs.join(", ")
+		: scenarioRefs.length ? scenarioRefs.join(", ") : "read the BDD scenarios doc and derive the SCENARIO-NNN baseline";
+	const scenarioBaselineLabel = phaseScenarioRefs.length ? "Phase scenarioRefs baseline" : "Spec scenarioRefs baseline";
 	const taskLines = phaseTasks.length ? phaseTasks.map((t) => `- ${t}`) : ["- No explicit task rows were mapped to this phase; use the phase name/description and BDD scenario refs as the coverage boundary."];
 	return [
 		ctxBlock(s, c),
@@ -156,7 +172,7 @@ export function buildTddPrompt(s: SetupControl, c: Classification | null, phase:
 		`- Description: ${phase.description ?? ""}`,
 		`- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`,
 		`- BDD Scenarios: ${(bddControl?.docPath as string) ?? "N/A"}`,
-		`- Spec scenarioRefs baseline: ${scenarioBaseline}`,
+		`- ${scenarioBaselineLabel}: ${scenarioBaseline}`,
 		"",
 		"## Phase Tasks",
 		...taskLines,

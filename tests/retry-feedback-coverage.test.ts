@@ -10,15 +10,18 @@ describe("shared retry-feedback coverage", () => {
 	it("routes every stage-level agent retry surface through the shared feedback renderer", () => {
 		const workflow = src("src/workflow.ts");
 		const stages = src("src/stages/index.ts");
+		const specConvergence = src("src/stages/spec-convergence.ts");
 		const implementation = src("src/stages/implementation.ts");
 		const verify = src("src/stages/verify.ts");
 		const subprocess = src("src/pi-spawn.ts");
 		const session = src("src/session-agent.ts");
 
-		// Foundational document gates: requirements, BDD, research, spec.
-		for (const key of ["requirements", "bdd", "research", "spec"]) {
+		// Foundational document gates: requirements, BDD, research.
+		for (const key of ["requirements", "bdd", "research"]) {
 			expect(stages).toContain(`feedbackKey: "${key}"`);
 		}
+		expect(specConvergence).toContain("setRetryFeedback(state");
+		expect(specConvergence).toContain("setSpecFeedback(state");
 		expect(workflow).toContain("renderRetryFeedbackBlock(feedback)");
 
 		// Stage 9: RED retries and GREEN implementation retries.

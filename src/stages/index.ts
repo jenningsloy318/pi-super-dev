@@ -14,7 +14,7 @@
  *
  *   setup ─► classify ─► gate(requirements) ─► gate(bdd) ─► gate(research) ─►
  *   branch[bug]→debug ─► assessment ─► design ─► prototype ─►
- *   gate(spec) ─► gate(specReview) ─► implementation ─►
+ *   spec/review convergence ─► implementation ─►
  *   verification convergence (review/build → integration, restarting at review
  *   after every fix) ─►
  *   docs ─► cleanup ─► branch[!blocked]→merge
@@ -30,6 +30,7 @@ import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../bui
 import { WORKFLOW_ATTEMPTS, positiveIntFromEnv } from "../retry-policy.ts";
 import { implementationStage } from "./implementation.ts";
 import { verificationConvergenceNode, reviewApproved } from "./verify.ts";
+import { specConvergenceNode } from "./spec-convergence.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -174,8 +175,9 @@ const pipeline = sequence(
 		// throws FatalAbort, which propagates past this tolerant sequence so
 		// runWorkflow aborts honestly with the real reason (resume replays cached
 		// calls). Later loops (implementation/review) stay non-fatal — exhaustion
-		// there yields a `partial` status, not garbage. Spec review is intentionally
-		// NOT gated — its verdict is signal, not a block.
+		// there yields a `partial` status, not garbage. Specification + spec review
+		// are one convergence loop: trace-gate failures and review findings both feed
+		// back into the next spec-writer attempt.
 		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), feedbackKey: "requirements", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(requirementsWriter)),
 		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), feedbackKey: "bdd", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(bddWriter)),
 		gate({ validate: researchComplete, feedbackKey: "research", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(researchWriter)),
@@ -184,11 +186,7 @@ const pipeline = sequence(
 		task(assessmentWriter),
 		task(designStage),
 		task(prototypeStage),
-		gate({ validate: gateValidator("gate-spec-trace", "write-spec", "spec"), feedbackKey: "spec", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(specWriter)),
-		// Spec review is SIGNAL, not a gate: a "Changes Requested" verdict is a
-		// judgment call whose findings flow forward to implementation/code-review.
-		// Blocking on it (the old fatal gate) aborted runs on a subjective verdict.
-		task(specReviewWriter),
+		specConvergenceNode,
 		// §D auto-iterate convergence loop: re-run implementation until allGreen OR
 		// MAX_CONVERGE_ITERS exhausted (default 5). The per-phase green-state carry
 		// in implementation.ts skips already-green phases each iteration and seeds
@@ -218,7 +216,7 @@ const pipeline = sequence(
 export const SUPER_DEV_WORKFLOW: Workflow = {
 	id: "super-dev",
 	description:
-		"13-stage development pipeline composed from control-flow nodes: classify → requirements → BDD → research → [debug] → assessment → design → [prototype] → spec → spec-review → implementation (TDD) → verification convergence → docs → cleanup → merge.",
+		"13-stage development pipeline composed from control-flow nodes: classify → requirements → BDD → research → [debug] → assessment → design → [prototype] → spec/review convergence → implementation (TDD) → verification convergence → docs → cleanup → merge.",
 	root: pipeline,
 };
 
@@ -231,5 +229,6 @@ export {
 } from "./writers.ts";
 export { designStage } from "./design.ts";
 export { prototypeStage } from "./prototype.ts";
+export { specConvergenceNode } from "./spec-convergence.ts";
 export { implementationStage } from "./implementation.ts";
 export type { ControlObj };

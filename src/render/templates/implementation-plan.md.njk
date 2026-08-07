@@ -8,4 +8,8 @@
 ## Phase {{ loop.index }}: {{ phase.name }}
 
 {{ phase.description }}
+
+{% if phase.scenarioRefs %}
+Scenario refs: {{ phase.scenarioRefs | join(", ") }}
+{% endif %}
 {% endfor %}

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRequirementsPrompt, buildBddPrompt, buildDebugPrompt, buildAssessmentPrompt, buildPrototypePrompt, buildSpecPrompt, buildTddPrompt, buildImplementPrompt, buildFixPrompt } from "../src/prompts.ts";
+import { buildRequirementsPrompt, buildBddPrompt, buildDebugPrompt, buildAssessmentPrompt, buildPrototypePrompt, buildSpecPrompt, buildSpecReviewPrompt, buildTddPrompt, buildImplementPrompt, buildFixPrompt } from "../src/prompts.ts";
 import type { SetupControl } from "../src/types.ts";
 
 function mkSetup(dir: string): SetupControl {
@@ -56,7 +56,19 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		put(dir, "04-code-assessment.md"); put(dir, "05-design.md");
 		const p = buildSpecPrompt(s, null, "t", null, null, null, null, null);
 		expect(p).toContain("phases");
+		expect(p).toContain("acceptanceCriteriaRefs");
+		expect(p).toContain("phase.scenarioRefs or task.scenarioRefs");
+		expect(p).toContain("trace matrix");
 		expect(p).toContain("RENDERED FOR YOU");
+	});
+
+	it("spec review prompt matches the gated review dimensions", () => {
+		const p = buildSpecReviewPrompt(s, null, { specificationPath: "/tmp/spec.md", planPath: "/tmp/plan.md", tasksPath: "/tmp/tasks.md", phaseCount: 2 });
+		for (const dim of ["Completeness", "Consistency", "Feasibility", "Testability", "Traceability", "Grounding", "Complexity", "Ambiguity"]) {
+			expect(p).toContain(dim);
+		}
+		expect(p).toContain("Requirements AC-NN coverage");
+		expect(p).toContain("BDD SCENARIO-NNN coverage");
 	});
 
 	it("spec prompt warns deliverable regexes not to overfit examples or comments", () => {
@@ -102,6 +114,24 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		expect(prompt).toContain("Missing scenario coverage is an invalid RED sample");
 		expect(prompt).toContain("implementation is missing or behavior is not implemented yet is valid");
 		expect(prompt).toContain("missing scenario coverage: none");
+	});
+
+	it("TDD prompt uses phase-specific scenario refs when the spec maps scenarios to phases", () => {
+		const prompt = buildTddPrompt(
+			s,
+			null,
+			{ name: "Phase A", description: "Auth session expiration", scenarioRefs: ["SCENARIO-002"] },
+			{
+				specificationPath: "/tmp/spec.md",
+				scenarioRefs: ["SCENARIO-001", "SCENARIO-002", "SCENARIO-003"],
+				tasks: [{ phase: "Phase A", description: "Reject expired sessions", scenarioRefs: ["SCENARIO-003"] }],
+			},
+			"",
+			{ docPath: "/tmp/bdd.md" },
+		);
+
+		expect(prompt).toContain("Phase scenarioRefs baseline: SCENARIO-002, SCENARIO-003");
+		expect(prompt).not.toContain("Spec scenarioRefs baseline: SCENARIO-001, SCENARIO-002, SCENARIO-003");
 	});
 
 	it("prototype retry prompt carries previous-round feedback", () => {

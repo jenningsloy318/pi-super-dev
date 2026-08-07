@@ -6,4 +6,7 @@
 
 {% for task in tasks %}
 - [ ] **{{ task.phase }}**: {{ task.description }}
+{% if task.scenarioRefs %}
+  - Scenario refs: {{ task.scenarioRefs | join(", ") }}
+{% endif %}
 {% endfor %}

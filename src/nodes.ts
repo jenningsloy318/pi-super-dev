@@ -44,6 +44,7 @@ import { STAGE_MODELS } from "./render/schemas.ts";
 import { renderAndWrite } from "./render/render.ts";
 import { auditAppend } from "./render/super-dev-dir.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
+import { clearRetryFeedback, setRetryFeedback } from "./retry-feedback.ts";
 
 // ─── Shared helper types ────────────────────────────────────────────────────
 
@@ -458,8 +459,7 @@ export function gate(opts: GateOptions, node: Node): Node {
 						// don't persist + get re-prepended if this gate (or a sibling sharing
 						// the key) is ever re-run (loop/converge). No-op when none was set.
 						if (opts.feedbackKey) {
-							const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
-							if (all && opts.feedbackKey in all) delete all[opts.feedbackKey];
+							clearRetryFeedback(state as Record<string, unknown>, opts.feedbackKey);
 						}
 						auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
 						ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
@@ -470,8 +470,7 @@ export function gate(opts: GateOptions, node: Node): Node {
 					ctx.log(`gate${label}: ✗ FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
 					// Feed the errors forward so the next attempt's agent prompt names them.
 					if (opts.feedbackKey) {
-						const all = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
-						(state as Record<string, unknown>).__feedback = { ...(all ?? {}), [opts.feedbackKey]: v.errors };
+						setRetryFeedback(state as Record<string, unknown>, opts.feedbackKey, v.errors);
 					}
 					if (attempt < max) ctx.log(`gate${label}: retrying with validator feedback`);
 				}

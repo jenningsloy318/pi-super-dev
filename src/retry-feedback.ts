@@ -22,6 +22,8 @@ export interface RetryFeedback {
 
 export type RetryFeedbackInput = RetryFeedback | string;
 
+export type RetryFeedbackMap = Record<string, RetryFeedbackInput[]>;
+
 function isRetryFeedback(value: RetryFeedbackInput): value is RetryFeedback {
 	return typeof value === "object" && value !== null && "gate" in value && "nextAction" in value;
 }
@@ -58,3 +60,28 @@ export function renderRetryFeedbackBlock(items: RetryFeedbackInput[], heading = 
 	].join("\n");
 }
 
+function feedbackMap(state: Record<string, unknown>): RetryFeedbackMap {
+	const existing = state.__feedback;
+	if (existing && typeof existing === "object" && !Array.isArray(existing)) return existing as RetryFeedbackMap;
+	const created: RetryFeedbackMap = {};
+	state.__feedback = created;
+	return created;
+}
+
+export function getRetryFeedback(state: Record<string, unknown>, key: string): RetryFeedbackInput[] | undefined {
+	const existing = state.__feedback;
+	if (!existing || typeof existing !== "object" || Array.isArray(existing)) return undefined;
+	const value = (existing as RetryFeedbackMap)[key];
+	return Array.isArray(value) ? value : undefined;
+}
+
+export function setRetryFeedback(state: Record<string, unknown>, key: string, items: RetryFeedbackInput | RetryFeedbackInput[]) {
+	feedbackMap(state)[key] = Array.isArray(items) ? items : [items];
+}
+
+export function clearRetryFeedback(state: Record<string, unknown>, ...keys: string[]) {
+	const existing = state.__feedback;
+	if (!existing || typeof existing !== "object" || Array.isArray(existing)) return;
+	const map = existing as RetryFeedbackMap;
+	for (const key of keys) delete map[key];
+}

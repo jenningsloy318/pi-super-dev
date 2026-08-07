@@ -20,6 +20,8 @@ import {
 	extractAcceptanceCriteriaIds,
 	extractScenarioIds,
 	extractScenarioRefsFromControl,
+	extractAcceptanceCriteriaRefsFromControl,
+	extractMappedScenarioRefsFromControl,
 	normalizePhases,
 	readSpecDoc,
 	toNumber,
@@ -66,7 +68,7 @@ function bddDoc(scenarios: Array<{ id: string; ac: string }>): string {
 	].join("\n");
 }
 
-function specDoc(refs: string[]): string {
+function specDoc(refs: string[], acRefs = ["AC-01", "AC-02"]): string {
 	return [
 		"# Spec",
 		"## Summary",
@@ -75,6 +77,8 @@ function specDoc(refs: string[]): string {
 		"Use the existing module boundaries and keep the implementation deterministic.",
 		"## Testing Strategy",
 		"Unit and integration tests cover every referenced BDD scenario.",
+		"## Acceptance Criteria References",
+		...acRefs.map((r) => `- ${r}`),
 		"## BDD Scenario References",
 		...refs.map((r) => `- ${r}`),
 	].join("\n");
@@ -154,6 +158,8 @@ describe("traceability validators", () => {
 		expect(extractAcceptanceCriteriaIds("AC-1, ac-02, AC-02")).toEqual(["AC-01", "AC-02"]);
 		expect(extractScenarioIds("SCENARIO-1 plus scenario-002")).toEqual(["SCENARIO-001", "SCENARIO-002"]);
 		expect(extractScenarioRefsFromControl({ scenarioRefs: ["001", "SCENARIO-002"] })).toEqual(["SCENARIO-001", "SCENARIO-002"]);
+		expect(extractAcceptanceCriteriaRefsFromControl({ acceptanceCriteriaRefs: ["1", "AC-02"] })).toEqual(["AC-01", "AC-02"]);
+		expect(extractMappedScenarioRefsFromControl({ phases: [{ scenarioRefs: ["SCENARIO-001"] }], tasks: [{ scenarioRefs: ["002"] }] })).toEqual(["SCENARIO-001", "SCENARIO-002"]);
 	});
 
 	it("requires BDD to cover every requirements acceptance criterion", () => {
@@ -165,18 +171,21 @@ describe("traceability validators", () => {
 
 	it("requires spec scenario refs and task phases to trace to BDD and declared phases", () => {
 		const goodControl = {
+			acceptanceCriteriaRefs: ["AC-01", "AC-02"],
 			scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
-			phases: [{ name: "Implementation" }],
-			tasks: [{ phase: "Implementation", description: "build it" }],
+			phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
+			tasks: [{ phase: "Implementation", description: "build it", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
 		};
-		expect(specTraceabilityErrors(bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]), specDoc(["SCENARIO-001", "SCENARIO-002"]), goodControl)).toEqual([]);
+		expect(specTraceabilityErrors(bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]), specDoc(["SCENARIO-001", "SCENARIO-002"]), goodControl, requirementsDoc(["AC-01", "AC-02"]))).toEqual([]);
 		const bad = specTraceabilityErrors(
 			bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]),
-			specDoc(["SCENARIO-001", "SCENARIO-099"]),
-			{ scenarioRefs: ["SCENARIO-001"], phases: [{ name: "Implementation" }], tasks: [{ phase: "Wrong", description: "x" }] },
+			specDoc(["SCENARIO-001", "SCENARIO-099"], ["AC-01"]),
+			{ acceptanceCriteriaRefs: ["AC-01"], scenarioRefs: ["SCENARIO-001"], phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001"] }], tasks: [{ phase: "Wrong", description: "x", scenarioRefs: ["SCENARIO-001"] }] },
+			requirementsDoc(["AC-01", "AC-02"]),
 		);
 		expect(bad.some((e) => e.includes("SCENARIO-002"))).toBe(true);
 		expect(bad.some((e) => e.includes("SCENARIO-099"))).toBe(true);
+		expect(bad.some((e) => e.includes("AC-02"))).toBe(true);
 		expect(bad.some((e) => e.includes("unknown phase"))).toBe(true);
 	});
 });
@@ -308,6 +317,7 @@ describe("gates validate real doc content", () => {
 	it("gate-spec-trace PASSES with complete BDD coverage and valid task phases", async () => {
 		const specDir = `${dir}/docs/specifications/05-thing/`;
 		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}01-requirements.md`, requirementsDoc(["AC-01", "AC-02"]));
 		writeFileSync(`${specDir}02-bdd-scenarios.md`, bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]));
 		writeFileSync(`${specDir}04-specification.md`, specDoc(["SCENARIO-001", "SCENARIO-002"]));
 		writeFileSync(`${specDir}05-implementation-plan.md`, "## Phase 1: Implementation\nDo it.");
@@ -319,8 +329,9 @@ describe("gates validate real doc content", () => {
 				"write-spec": {
 					specificationPath: `${specDir}04-specification.md`,
 					phaseCount: 1,
-					phases: [{ name: "Implementation" }],
-					tasks: [{ phase: "Implementation", description: "build it" }],
+					acceptanceCriteriaRefs: ["AC-01", "AC-02"],
+					phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
+					tasks: [{ phase: "Implementation", description: "build it", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
 					scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
 				},
 				setup,
@@ -332,6 +343,7 @@ describe("gates validate real doc content", () => {
 	it("gate-spec-trace FAILS on missing BDD scenario coverage and unknown task phase", async () => {
 		const specDir = `${dir}/docs/specifications/05-thing/`;
 		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}01-requirements.md`, requirementsDoc(["AC-01", "AC-02"]));
 		writeFileSync(`${specDir}02-bdd-scenarios.md`, bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]));
 		writeFileSync(`${specDir}04-specification.md`, specDoc(["SCENARIO-001", "SCENARIO-099"]));
 		writeFileSync(`${specDir}05-implementation-plan.md`, "## Phase 1: Implementation\nDo it.");
@@ -343,8 +355,9 @@ describe("gates validate real doc content", () => {
 				"write-spec": {
 					specificationPath: `${specDir}04-specification.md`,
 					phaseCount: 1,
-					phases: [{ name: "Implementation" }],
-					tasks: [{ phase: "Wrong", description: "build it" }],
+					acceptanceCriteriaRefs: ["AC-01"],
+					phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001"] }],
+					tasks: [{ phase: "Wrong", description: "build it", scenarioRefs: ["SCENARIO-001"] }],
 					scenarioRefs: ["SCENARIO-001"],
 				},
 				setup,

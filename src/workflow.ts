@@ -21,7 +21,7 @@ import { knowledgeForAgent } from "./render/knowledge.ts";
 import { appendUserNotes, userNotesForAgent } from "./render/user-notes.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
-import { renderRetryFeedbackBlock } from "./retry-feedback.ts";
+import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
 import type {
 	AgentCall,
 	AgentResult,
@@ -131,8 +131,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// to this attempt's prompt so the agent fixes the specific failure instead
 		// of resampling the same distribution. The writer's call.id is `pipeline.<id>`.
 		const stageKey = (call.id ?? "").replace(/^pipeline\./, "");
-		const fb = (state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined;
-		const feedback = fb?.[stageKey];
+		const feedback = getRetryFeedback(state as Record<string, unknown>, stageKey);
 		const feedbackBlock = feedback?.length ? renderRetryFeedbackBlock(feedback) : "";
 		const prompt = feedback?.length
 			? `${call.prompt}\n\n${feedbackBlock}\nRe-produce the complete artifact, then call structured_output.`
