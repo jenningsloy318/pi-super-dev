@@ -78,6 +78,25 @@ describe("knowledge.json accumulation + extraction", () => {
 		expect(result).toContain("AC-01");
 	});
 
+	it("knowledgeForAgent gives tdd-guide BDD scenarios, scenario refs, phases, and tasks", () => {
+		appendToKnowledge(dir, "bdd", {
+			features: [{ name: "Auth", scenarios: [{ id: "001", acRef: "AC-01" }, { id: "002", acRef: "AC-02" }] }],
+		});
+		appendToKnowledge(dir, "spec", {
+			scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+			phases: [{ name: "Phase A", description: "Auth-service expiration" }],
+			tasks: [{ phase: "Phase A", description: "Reject expired sessions" }],
+		});
+
+		const result = knowledgeForAgent(dir, "tdd-guide");
+
+		expect(result).toContain("Scenarios");
+		expect(result).toContain("SCENARIO-001");
+		expect(result).toContain("Scenario Refs");
+		expect(result).toContain("Phase A");
+		expect(result).toContain("Reject expired sessions");
+	});
+
 	it("AGENT_KNOWLEDGE_NEEDS covers all doc-producing agents", () => {
 		const agentsWithNeeds = Object.keys(AGENT_KNOWLEDGE_NEEDS).filter(a => AGENT_KNOWLEDGE_NEEDS[a].length > 0);
 		expect(agentsWithNeeds.length).toBeGreaterThanOrEqual(10);

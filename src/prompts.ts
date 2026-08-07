@@ -33,6 +33,30 @@ function nextDocNumber(specDir: string, excludeSlugs: string[] = []): number {
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
+function scenarioRefsFromValue(value: unknown): string[] {
+	const raw = Array.isArray(value) ? value : [value];
+	const ids: string[] = [];
+	for (const item of raw) {
+		if (typeof item === "number" && Number.isInteger(item)) {
+			ids.push(`SCENARIO-${String(item).padStart(3, "0")}`);
+			continue;
+		}
+		if (typeof item !== "string") continue;
+		const matches = [...item.matchAll(/\bSCENARIO-(\d+)\b/gi)].map((m) => `SCENARIO-${String(Number(m[1] ?? "0")).padStart(3, "0")}`);
+		if (matches.length) ids.push(...matches);
+		else if (/^\d+$/.test(item.trim())) ids.push(`SCENARIO-${String(Number(item.trim())).padStart(3, "0")}`);
+	}
+	return [...new Set(ids)].sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
+}
+
+function phaseTasksFor(specControl: R, phaseName: string): string[] {
+	const tasks = Array.isArray(specControl?.tasks) ? specControl.tasks as Array<Record<string, unknown>> : [];
+	return tasks
+		.filter((task) => typeof task.phase === "string" && task.phase.trim() === phaseName)
+		.map((task) => String(task.description ?? "").trim())
+		.filter(Boolean);
+}
+
 /** A single stage's doc path: next free number + the slug. */
 export function specDoc(s: SetupControl, slug: string): string {
 	return `${s.specDirectory}${pad(nextDocNumber(s.specDirectory, [slug]))}-${slug}.md`;
@@ -88,8 +112,18 @@ export function buildAssessmentPrompt(s: SetupControl, c: Classification | null,
 export function buildDesignPrompt(s: SetupControl, c: Classification | null, task: string, requirements: R, research: R, assessment: R, designerAgent: string): string {
 	return [ctxBlock(s, c), "", "## Upstream Artifacts", `- Requirements: ${(requirements?.docPath as string) ?? "N/A"}`, `- Research: ${(research?.docPath as string) ?? "N/A"}`, `- Code Assessment: ${(assessment?.docPath as string) ?? "N/A"}`, "", "## Task", task, "", "## Instructions", `You are the ${designerAgent}. Design the architecture/UI for this feature.`, "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "Include: module decomposition, interfaces, data flow, and any numeric constants that need validation.", "", "Output <control> JSON with: title, date, summary, designer, modules [{name, description}], hasNumericConstants."].join("\n");
 }
-export function buildPrototypePrompt(s: SetupControl, c: Classification | null, task: string, design: R, constants: string[], round: number): string {
-	return [ctxBlock(s, c), "", "## Design", `- Design doc: ${(design?.docs as string[] | undefined)?.[0] ?? "N/A"}`, `- Constants to validate: ${(constants ?? []).join(", ")}`, "", "## Task", task, "", "## Instructions", `Prototype round ${round}: Empirically validate the numeric design constants.`, "Build a minimal prototype, measure against representative input, and report pass/fail.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "Output <control> JSON with: title, date, summary, verdict, measurements, adjustments."].join("\n");
+export function buildPrototypePrompt(s: SetupControl, c: Classification | null, task: string, design: R, constants: string[], round: number, previous: R = null): string {
+	const previousBlock = previous
+		? [
+			"",
+			"## Previous Prototype Round Feedback",
+			`- Verdict: ${String(previous.verdict ?? "unknown")}`,
+			`- Measurements: ${Array.isArray(previous.measurements) ? previous.measurements.map(String).join("; ") || "none" : String(previous.measurements ?? "none")}`,
+			`- Adjustments: ${Array.isArray(previous.adjustments) ? previous.adjustments.map(String).join("; ") || "none" : String(previous.adjustments ?? "none")}`,
+			"Use this feedback directly. Do not repeat the same failed measurement setup unless you explain why it is still the correct validation path.",
+		]
+		: [];
+	return [ctxBlock(s, c), "", "## Design", `- Design doc: ${(design?.docs as string[] | undefined)?.[0] ?? "N/A"}`, `- Constants to validate: ${(constants ?? []).join(", ")}`, ...previousBlock, "", "## Task", task, "", "## Instructions", `Prototype round ${round}: Empirically validate the numeric design constants.`, "Build a minimal prototype, measure against representative input, and report pass/fail.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "Output <control> JSON with: title, date, summary, verdict, measurements, adjustments."].join("\n");
 }
 export function buildSpecPrompt(s: SetupControl, c: Classification | null, task: string, requirements: R, bdd: R, research: R, assessment: R, design: R, prototype: R = null): string {
 	const parts = [ctxBlock(s, c), "", "## Upstream Artifacts", `- Requirements: ${(requirements?.docPath as string) ?? "N/A"}`, `- BDD Scenarios: ${(bdd?.docPath as string) ?? "N/A"}`, `- Research: ${(research?.docPath as string) ?? "N/A"}`, `- Code Assessment: ${(assessment?.docPath as string) ?? "N/A"}`];
@@ -103,8 +137,35 @@ export function buildSpecPrompt(s: SetupControl, c: Classification | null, task:
 export function buildSpecReviewPrompt(s: SetupControl, c: Classification | null, specControl: R): string {
 	return [ctxBlock(s, c), "", "## Specification to Review", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, `- Plan: ${(specControl?.planPath as string) ?? "N/A"}`, `- Tasks: ${(specControl?.tasksPath as string) ?? "N/A"}`, `- Phases: ${(specControl?.phaseCount as number) ?? 0}`, "", "## Instructions", "Review the specification across 8 quality dimensions: completeness, correctness, consistency, testability, feasibility, security, performance, and maintainability.", "Score each dimension 1-5. Produce a verdict.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "## Data to return", "Return: title, date, verdict, summary, findings [{id, severity, title, detail}], dimensions [{name, status, notes}]", "", "Output <control> JSON with: title, date, verdict, summary, findings, dimensions."].join("\n");
 }
-export function buildTddPrompt(s: SetupControl, c: Classification | null, phase: { name: string; description?: string }, specControl: R, langInstructions = ""): string {
-	return [ctxBlock(s, c), "", "## Implementation Phase", `- Phase: ${phase.name}`, `- Description: ${phase.description ?? ""}`, `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, "", langInstructions ? `## Language-Specific Instructions\n${langInstructions}\n` : "", "## Instructions", "Write failing tests FIRST for this implementation phase.", "Tests should cover the acceptance criteria and edge cases.", "Run the tests to confirm they fail (red phase of TDD). Ensure the tests TYPECHECK against the real source (compile cleanly) — a test that fails only because it references a non-existent property/type is a BROKEN test, not a red one.", "", "Output <control> JSON with: testsWritten (number), testFiles (array of paths), allFailing (boolean), summary."].join("\n");
+export function buildTddPrompt(s: SetupControl, c: Classification | null, phase: { name: string; description?: string }, specControl: R, langInstructions = "", bddControl: R = null): string {
+	const scenarioRefs = scenarioRefsFromValue(specControl?.scenarioRefs);
+	const phaseTasks = phaseTasksFor(specControl, phase.name);
+	const scenarioBaseline = scenarioRefs.length ? scenarioRefs.join(", ") : "read the BDD scenarios doc and derive the SCENARIO-NNN baseline";
+	const taskLines = phaseTasks.length ? phaseTasks.map((t) => `- ${t}`) : ["- No explicit task rows were mapped to this phase; use the phase name/description and BDD scenario refs as the coverage boundary."];
+	return [
+		ctxBlock(s, c),
+		"",
+		"## Implementation Phase",
+		`- Phase: ${phase.name}`,
+		`- Description: ${phase.description ?? ""}`,
+		`- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`,
+		`- BDD Scenarios: ${(bddControl?.docPath as string) ?? "N/A"}`,
+		`- Spec scenarioRefs baseline: ${scenarioBaseline}`,
+		"",
+		"## Phase Tasks",
+		...taskLines,
+		"",
+		langInstructions ? `## Language-Specific Instructions\n${langInstructions}\n` : "",
+		"## Instructions",
+		"Write failing tests FIRST for this implementation phase.",
+		"Before writing tests, build a Scenario Coverage Matrix from the BDD scenarios and the spec scenarioRefs. Cover every SCENARIO-NNN relevant to this phase; if the spec does not map scenarios to phases, cover every scenarioRef in the baseline above.",
+		"Do not mark the RED phase complete while any relevant BDD scenario lacks a test. Missing scenario coverage is an invalid RED sample; add or revise tests until the coverage matrix is complete.",
+		"A RED run that compiles/collects and fails because the implementation is missing or behavior is not implemented yet is valid. A test that fails only because it references a non-existent type/property unrelated to the intended public contract is BROKEN, not RED.",
+		"Run the tests to confirm they fail (red phase of TDD). Ensure the tests TYPECHECK against the real source (compile cleanly) — a test that fails only because it references a non-existent property/type is a BROKEN test, not a red one.",
+		"In summary, include the scenario coverage matrix as SCENARIO-NNN -> test file/test name and explicitly say `missing scenario coverage: none` when complete.",
+		"",
+		"Output <control> JSON with: testsWritten (number), testFiles (array of paths), allFailing (boolean), summary.",
+	].join("\n");
 }
 /** Fix 3 — language-scoped Rust self-verification discipline (AC-07,
  *  SCENARIO-010 implement / SCENARIO-011 qa). Appended UNCONDITIONALLY to

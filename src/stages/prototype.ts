@@ -32,7 +32,7 @@ export const prototypeStage: Stage = {
 			const result = await ctx.agent({
 				id: `pipeline.prototype.r${pad(round)}`,
 				agent: "prototype-runner",
-				prompt: buildPrototypePrompt(setup, state.classify ?? null, ctx.task, design, constants, round),
+				prompt: buildPrototypePrompt(setup, state.classify ?? null, ctx.task, design, constants, round, last),
 				schema: STAGE_MODELS["prototype"]?.schema,
 			});
 			renderAndWrite(setup, (m) => ctx.log(m), "prototype", result.control as Record<string, unknown> | null);

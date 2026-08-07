@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRequirementsPrompt, buildBddPrompt, buildDebugPrompt, buildAssessmentPrompt, buildSpecPrompt, buildImplementPrompt, buildFixPrompt } from "../src/prompts.ts";
+import { buildRequirementsPrompt, buildBddPrompt, buildDebugPrompt, buildAssessmentPrompt, buildPrototypePrompt, buildSpecPrompt, buildTddPrompt, buildImplementPrompt, buildFixPrompt } from "../src/prompts.ts";
 import type { SetupControl } from "../src/types.ts";
 
 function mkSetup(dir: string): SetupControl {
@@ -79,5 +79,46 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 			expect(p).toContain("do NOT include super-dev runtime/cache artifacts");
 			expect(p).toContain(".resume-cache.jsonl");
 		}
+	});
+
+	it("TDD prompt distinguishes missing implementation RED from missing BDD scenario coverage", () => {
+		const prompt = buildTddPrompt(
+			s,
+			null,
+			{ name: "Phase A", description: "Auth session expiration" },
+			{
+				specificationPath: "/tmp/spec.md",
+				scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+				tasks: [{ phase: "Phase A", description: "Reject expired sessions" }],
+			},
+			"",
+			{ docPath: "/tmp/bdd.md" },
+		);
+
+		expect(prompt).toContain("BDD Scenarios: /tmp/bdd.md");
+		expect(prompt).toContain("Spec scenarioRefs baseline: SCENARIO-001, SCENARIO-002");
+		expect(prompt).toContain("Reject expired sessions");
+		expect(prompt).toContain("Scenario Coverage Matrix");
+		expect(prompt).toContain("Missing scenario coverage is an invalid RED sample");
+		expect(prompt).toContain("implementation is missing or behavior is not implemented yet is valid");
+		expect(prompt).toContain("missing scenario coverage: none");
+	});
+
+	it("prototype retry prompt carries previous-round feedback", () => {
+		const prompt = buildPrototypePrompt(
+			s,
+			null,
+			"validate timeout constants",
+			{ docs: ["/tmp/design.md"] },
+			["idleTimeoutSeconds"],
+			2,
+			{ verdict: "fail", measurements: ["p95 exceeded 500ms"], adjustments: ["reduce timeout window"] },
+		);
+
+		expect(prompt).toContain("Previous Prototype Round Feedback");
+		expect(prompt).toContain("Verdict: fail");
+		expect(prompt).toContain("p95 exceeded 500ms");
+		expect(prompt).toContain("reduce timeout window");
+		expect(prompt).toContain("Do not repeat the same failed measurement setup");
 	});
 });

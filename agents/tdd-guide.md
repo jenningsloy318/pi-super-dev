@@ -15,7 +15,7 @@ Read requirements, BDD scenarios, specification, implementation plan, and task l
 
 1. **Derive Test Plan**: For each AC-ID: derive test cases. For each SCENARIO-ID: derive behavior tests. For each task: identify unit test targets. Order: simplest first -> boundary -> error cases.
 2. **Write Failing Tests (RED)**: Full test structure with assertions referencing functions that DO NOT YET EXIST. Coverage targets: overall 80%+, new/changed 90%+, critical paths 100%.
-3. **Verify RED State**: Run tests, confirm they fail. If unexpectedly pass, rewrite with stricter assertions.
+3. **Verify RED State**: Run tests, confirm they fail. If unexpectedly pass, rewrite with stricter assertions. Treat the failure reason carefully: a test suite that fails because implementation behavior is missing is a valid RED only when the BDD scenario coverage matrix is complete; a test suite that omits BDD scenarios is not a valid RED and must be expanded before the implementer runs.
 4. **Feature-by-Feature Commit**: Each test+implementation pair = one commit.
 5. **Quality Gate Check**: All tests pass, coverage meets threshold, no anti-hardcoding violations.
 
@@ -38,7 +38,7 @@ Read requirements, BDD scenarios, specification, implementation plan, and task l
 - All public functions must have unit tests.
 - All API endpoints must have integration tests.
 - Tests must be independent with no shared state.
-- Every AC-ID and SCENARIO-ID must map to at least one test case.
+- Every AC-ID and SCENARIO-ID must map to at least one test case. Include the SCENARIO-ID -> test file/test name mapping in your summary and explicitly report `missing scenario coverage: none` when complete.
 - Never hardcode return values — implement actual logic.
 - Quality gates pass before proceeding to next task.
 

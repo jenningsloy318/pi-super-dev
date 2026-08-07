@@ -40,6 +40,12 @@ interface RedEvidence {
 	reason?: string;
 }
 
+interface AcceptedRedContext {
+	status: RedStatus;
+	testFiles: string[];
+	changedFiles: string[];
+}
+
 function gitLines(cwd: string, args: string[]): string[] {
 	try {
 		const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
@@ -436,6 +442,11 @@ export const implementationStage: Stage = {
 			// Symbol/hollow-file gate: claimed source deliverables that EXIST but contain
 			// NO code (doc-comment-only shells) — fed into the next implementer retry.
 			let hollowFiles: string[] = [];
+			// Once a phase has a valid RED boundary, GREEN-side retries should reuse it
+			// instead of asking tdd-guide to resample tests after every build/deliverable
+			// failure. The cache is invalidated only when the GREEN attempt changes a
+			// confirmed RED test file, because that corrupts the test oracle itself.
+			let acceptedRed: AcceptedRedContext | null = null;
 			// Phase bracketing (spec-11 Phase 3, AC-04 → SCENARIO-008/009): snapshot the
 			// git baseline BEFORE the attempts so each per-attempt `tracker.end`
 			// computes the delta from phase start; the change-gate reads the freshest
@@ -493,89 +504,98 @@ export const implementationStage: Stage = {
 				// `RUST_SELF_VERIFY_DISCIPLINE` source string (single source of truth).
 				// For non-rust setups `rustDiscipline(setup)` is "" and the specialist's
 				// languageInstructions still flow through (no regression).
-				// RED phase: generate tests until the RED boundary and RED oracle are both
-				// acceptable. Weak-green tests, broken tests, and RED pollution are retried
-				// here before the implementer runs, so a bad RED sample does not consume or
-				// masquerade as a GREEN implementation attempt.
-				const redBaseline = gitStatusPaths(setup.worktreePath);
-				const baselineDeliverablesSatisfied = phaseDeliverables ? deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables) : false;
-				let retries = 0;
-				let redHint = "";
 				let testFiles: string[] = [];
 				let redStatus: RedStatus = "unknown";
 				let redChangedFiles: string[] = [];
 				let redEvidence: RedEvidence | null = null;
-				while (true) {
-					const redDiagnostics: RedCheckDiagnostic[] = [];
-					const redTryDetail = attemptDetail(attempt, `try ${retries + 1}/${MAX_RED_RETRIES + 1}`);
-					const tddId = retries === 0
-						? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
-						: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
-					announceActivity("TDD RED", redTryDetail);
-					const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) + redHint });
-					const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
-					testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
-					announceActivity("RED oracle", redTryDetail);
-					redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics));
-					ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
-					redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
-					announceActivity("RED boundary", redTryDetail);
-					const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
-					ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
-					redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied, diagnostics: redDiagnostics });
-					appendImplementationEvidence(setup.specDirectory, redEvidence);
-					if (redEvidence.status === "polluted-red") {
-						restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);
-					}
-					const retryHint = redGenerationRetryHint(redEvidence);
-					if (retryHint && retries < MAX_RED_RETRIES) {
-						if (redEvidence.status === "green-weak-test" || redEvidence.status === "polluted-red") {
-							restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
+				if (acceptedRed) {
+					testFiles = [...acceptedRed.testFiles];
+					redStatus = acceptedRed.status;
+					redChangedFiles = [...acceptedRed.changedFiles];
+					announceActivity("Reuse RED", attemptDetail(attempt));
+					ctx.log(`Implementation ${phaseId} reusing accepted RED for attempt ${attempt} (status=${redStatus}; tests=${testFiles.join(",") || "n/a"})`);
+				} else {
+					// RED phase: generate tests until the RED boundary and RED oracle are both
+					// acceptable. Weak-green tests, broken tests, and RED pollution are retried
+					// here before the implementer runs, so a bad RED sample does not consume or
+					// masquerade as a GREEN implementation attempt.
+					const redBaseline = gitStatusPaths(setup.worktreePath);
+					const baselineDeliverablesSatisfied = phaseDeliverables ? deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables) : false;
+					let retries = 0;
+					let redHint = "";
+					while (true) {
+						const redDiagnostics: RedCheckDiagnostic[] = [];
+						const redTryDetail = attemptDetail(attempt, `try ${retries + 1}/${MAX_RED_RETRIES + 1}`);
+						const tddId = retries === 0
+							? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
+							: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
+						announceActivity("TDD RED", redTryDetail);
+						const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint });
+						const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
+						testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
+						announceActivity("RED oracle", redTryDetail);
+						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics));
+						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
+						redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
+						announceActivity("RED boundary", redTryDetail);
+						const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
+						ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
+						redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied, diagnostics: redDiagnostics });
+						appendImplementationEvidence(setup.specDirectory, redEvidence);
+						if (redEvidence.status === "polluted-red") {
+							restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);
 						}
-						retries++;
-						redHint = retryHint;
-						ctx.log(`Implementation ${phaseId} RED generation retry ${retries}/${MAX_RED_RETRIES}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
-						continue;
-					}
-					break;
-				}
-				if (!redEvidence) {
-					attemptErrors = ["red-generation: no RED evidence produced"];
-					terminalFailureKind = "red-generation";
-					terminalRedTries = 0;
-					ctx.log(`Implementation ${phaseId} RED generation failed after 0 tries`);
-					break;
-				}
-				if (redEvidence.status === "green-already-satisfied") {
-					resetDeliverableCheckCache();
-					announceActivity("Already-satisfied verification", attemptDetail(attempt));
-					announceActivity("Build gate", attemptDetail(attempt));
-					const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
-					announceActivity("Deliverable check", attemptDetail(attempt));
-					const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
-					ctx.log(`Implementation ${phaseId} RED already-satisfied: build=${gate.pass || gate.inScopePass}, deliverables=${deliverableCheck.pass}`);
-					if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
-						green = true;
-						phaseStatusUpsert(phaseStatus, phaseId, "green");
-						emitPhaseStatus("ok");
-						const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);
+						const retryHint = redGenerationRetryHint(redEvidence);
+						if (retryHint && retries < MAX_RED_RETRIES) {
+							if (redEvidence.status === "green-weak-test" || redEvidence.status === "polluted-red") {
+								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
+							}
+							retries++;
+							redHint = retryHint;
+							ctx.log(`Implementation ${phaseId} RED generation retry ${retries}/${MAX_RED_RETRIES}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
+							continue;
+						}
 						break;
 					}
-					attemptErrors = gate.errors;
-					missingDeliverables = deliverableCheck.missing;
-					ctx.log(`Implementation ${phaseId} RED already-satisfied verification FAIL: ${[...attemptErrors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "phase gates unmet"}`);
-					break;
-				}
-				const redFailures = redEvidenceFailureReasons(redEvidence);
-				if (redFailures.length) {
-					restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
-					attemptErrors = redFailures;
-					terminalFailureKind = "red-generation";
-					terminalRedTries = retries + 1;
-					ctx.log(`Implementation ${phaseId} RED generation failed after ${retries + 1} tries`);
-					ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
-					ctx.log(redEvidenceLogLine(redEvidence));
-					break;
+					if (!redEvidence) {
+						attemptErrors = ["red-generation: no RED evidence produced"];
+						terminalFailureKind = "red-generation";
+						terminalRedTries = 0;
+						ctx.log(`Implementation ${phaseId} RED generation failed after 0 tries`);
+						break;
+					}
+					if (redEvidence.status === "green-already-satisfied") {
+						resetDeliverableCheckCache();
+						announceActivity("Already-satisfied verification", attemptDetail(attempt));
+						announceActivity("Build gate", attemptDetail(attempt));
+						const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+						announceActivity("Deliverable check", attemptDetail(attempt));
+						const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
+						ctx.log(`Implementation ${phaseId} RED already-satisfied: build=${gate.pass || gate.inScopePass}, deliverables=${deliverableCheck.pass}`);
+						if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
+							green = true;
+							phaseStatusUpsert(phaseStatus, phaseId, "green");
+							emitPhaseStatus("ok");
+							const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);
+							break;
+						}
+						attemptErrors = gate.errors;
+						missingDeliverables = deliverableCheck.missing;
+						ctx.log(`Implementation ${phaseId} RED already-satisfied verification FAIL: ${[...attemptErrors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "phase gates unmet"}`);
+						break;
+					}
+					const redFailures = redEvidenceFailureReasons(redEvidence);
+					if (redFailures.length) {
+						restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
+						attemptErrors = redFailures;
+						terminalFailureKind = "red-generation";
+						terminalRedTries = retries + 1;
+						ctx.log(`Implementation ${phaseId} RED generation failed after ${retries + 1} tries`);
+						ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
+						ctx.log(redEvidenceLogLine(redEvidence));
+						break;
+					}
+					acceptedRed = { status: redStatus, testFiles: [...testFiles], changedFiles: [...redChangedFiles] };
 				}
 				const redTestSnapshot = redStatus === "red" && testFiles.length > 0 ? snapshotFiles(setup.worktreePath, testFiles) : new Map<string, string | null>();
 				const redTargetsExist = Array.from(redTestSnapshot.values()).some((content) => content !== null);
@@ -724,10 +744,12 @@ export const implementationStage: Stage = {
 				claimedNotChanged = changeGate.claimedNotChanged;
 				hollowFiles = symbolGate.hollowFiles;
 				const tddOracleFailures: string[] = [];
+				let invalidateAcceptedRed = false;
 				if (confirmedRedTargets) {
 					const modifiedRedTests = changedSinceSnapshot(setup.worktreePath, redTestSnapshot);
 					if (modifiedRedTests.length) {
 						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")}`);
+						invalidateAcceptedRed = true;
 						ctx.log(`Implementation ${phaseId} post-red-oracle: skipped because confirmed RED test file(s) changed during GREEN (${modifiedRedTests.join(", ")})`);
 					} else {
 						announceActivity("Post-RED oracle", attemptDetail(attempt));
@@ -767,6 +789,10 @@ export const implementationStage: Stage = {
 					...tddOracleFailures,
 				];
 				attemptErrors = failureReasons;
+				if (invalidateAcceptedRed) {
+					acceptedRed = null;
+					ctx.log(`Implementation ${phaseId} RED cache invalidated: confirmed RED test file(s) changed during GREEN`);
+				}
 				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
 			}
 			// Close the phase bracket EXACTLY ONCE after the attempt loop: the

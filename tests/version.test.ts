@@ -8,18 +8,18 @@ import {
 } from "../src/version.ts";
 
 describe("super-dev extension version metadata", () => {
-	it("sets the runtime-visible extension version to 0.01.14", () => {
-		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.01.14");
+	it("sets the runtime-visible extension version to 0.01.15", () => {
+		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.01.15");
 		expect(SUPER_DEV_VERSION_METADATA).toMatchObject({
 			name: "super-dev",
-			version: "0.01.14",
+			version: "0.01.15",
 		});
-		expect(superDevVersionLabel()).toBe("super-dev v0.01.14");
+		expect(superDevVersionLabel()).toBe("super-dev v0.01.15");
 	});
 
 	it("keeps the TUI/run metadata line short", () => {
 		const line = superDevRunMetadataLine();
-		expect(line).toBe("super-dev v0.01.14");
+		expect(line).toBe("super-dev v0.01.15");
 		expect(line).not.toContain("version policy");
 		expect(line).not.toContain("increment patch every commit");
 	});

@@ -67,7 +67,7 @@ export const AGENT_KNOWLEDGE_NEEDS: Record<string, KnowledgeNeed[]> = {
 	"architecture-improver": [{ stage: "requirements", path: "acceptanceCriteria", label: "ACs" }],
 	"spec-writer":           [{ stage: "requirements", path: "acceptanceCriteria", label: "ACs" }, { stage: "bdd", path: "features", label: "Scenarios" }, { stage: "code-assessment", path: "patterns", label: "Patterns" }, { stage: "code-assessment", path: "services", label: "Services" }],
 	"spec-reviewer":         [{ stage: "spec", path: "phases", label: "Phases" }, { stage: "spec", path: "summary", label: "Summary" }],
-	"tdd-guide":             [{ stage: "spec", path: "phases", label: "Phases" }],
+	"tdd-guide":             [{ stage: "bdd", path: "features", label: "Scenarios" }, { stage: "spec", path: "scenarioRefs", label: "Scenario Refs" }, { stage: "spec", path: "phases", label: "Phases" }, { stage: "spec", path: "tasks", label: "Tasks" }],
 	"implementer":           [{ stage: "spec", path: "phases", label: "Phases" }, { stage: "code-assessment", path: "patterns", label: "Patterns" }],
 	"qa-agent":              [{ stage: "spec", path: "phases", label: "Phases" }],
 	"code-reviewer":         [{ stage: "spec", path: "phases", label: "Phases" }, { stage: "spec", path: "summary", label: "Summary" }],

@@ -170,6 +170,7 @@ interface FakeCtx {
 	logs: string[];
 	agentIds: string[];
 	implByAttempt: Map<number, string>;
+	tddCalls: number;
 }
 
 /**
@@ -179,7 +180,7 @@ interface FakeCtx {
  * asserted without spawning a real agent.
  */
 function mkCtx(): { ctx: StageContext; fake: FakeCtx } {
-	const fake: FakeCtx = { logs: [], agentIds: [], implByAttempt: new Map() };
+	const fake: FakeCtx = { logs: [], agentIds: [], implByAttempt: new Map(), tddCalls: 0 };
 	const ctx: StageContext = {
 		task: "",
 		options: {} as RunOptions,
@@ -190,6 +191,7 @@ function mkCtx(): { ctx: StageContext; fake: FakeCtx } {
 		async agent(call: AgentCall): Promise<AgentResult> {
 			fake.agentIds.push(call.id);
 			if (call.agent === "tdd-guide") {
+				fake.tddCalls++;
 				return { text: "", control: { testFiles: ["tests/red.test.ts"] } };
 			}
 			if (call.agent === "implementer") {
@@ -313,6 +315,9 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		for (const entry of DELIVERABLE_FAIL.missing) {
 			expect(attempt2!).toContain(`- ${entry}`);
 		}
+		expect(fake.tddCalls).toBe(1);
+		expect(fake.agentIds.some((id) => id.includes("phase-01.tdd.a2"))).toBe(false);
+		expect(fake.logs.some((line) => line.includes("reusing accepted RED for attempt 2"))).toBe(true);
 	});
 
 	it("SCENARIO-012 (reset): the missing block reflects the MOST RECENT failing attempt only", async () => {

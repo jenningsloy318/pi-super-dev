@@ -633,4 +633,49 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("invalidates the accepted RED cache and re-runs tdd-guide after a GREEN attempt edits RED tests", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-cache-invalidate-"));
+		try {
+			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			writeFileSync(join(dir, "README.md"), "baseline\n");
+			execFileSync("git", ["add", "."], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			redCheck
+				.mockImplementationOnce(() => "red")
+				.mockImplementationOnce(() => "red")
+				.mockImplementationOnce(() => "green");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "cache-invalidate");
+			const testPath = "tests/red.test.ts";
+			const { ctx, tddCalls, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: [testPath] }, { testFiles: [testPath] }],
+				onTddCall: () => {
+					mkdirSync(join(dir, "tests"), { recursive: true });
+					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { throw new Error('red'); });\n");
+				},
+				onImplCall: (_call, index) => {
+					if (index === 1) {
+						writeFileSync(join(dir, testPath), "it('forces real behavior', () => {});\n");
+						return;
+					}
+					mkdirSync(join(dir, "src"), { recursive: true });
+					writeFileSync(join(dir, "src", "impl.ts"), "export const implemented = true;\n");
+				},
+			});
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			expect(tddCalls).toHaveLength(2);
+			expect(implCalls).toHaveLength(2);
+			expect(res.allGreen).toBe(true);
+			expect(logs.some((l) => /RED cache invalidated/i.test(l))).toBe(true);
+			expect(logs.some((l) => /reusing accepted RED for attempt 2/i.test(l))).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
