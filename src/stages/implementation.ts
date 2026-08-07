@@ -387,7 +387,9 @@ export const implementationStage: Stage = {
 		for (const [idx, phase] of phases.entries()) {
 			const phaseId = `phase-${pad(idx + 1)}`;
 			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
+			const phaseHeadline = `Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			const phaseLabel = `↳ Phase ${idx + 1}/${phases.length}: ${phaseName}`;
+			let phaseLifecycleStarted = false;
 			const emitPhaseStatus = (status: "running" | "ok" | "failed" | "skipped") => {
 				ctx.events.emit("stage", {
 					id: `implementation.${phaseId}`,
@@ -397,6 +399,17 @@ export const implementationStage: Stage = {
 					parentId: "implementation",
 				});
 			};
+			const ensurePhaseRunning = () => {
+				if (phaseLifecycleStarted) return;
+				phaseLifecycleStarted = true;
+				emitPhaseStatus("running");
+			};
+			const announceActivity = (activity?: string, detail?: string) => {
+				const suffix = activity ? ` — ${activity}${detail ? ` (${detail})` : ""}` : "";
+				ctx.phase(`${phaseHeadline}${suffix}`);
+			};
+			const attemptDetail = (attempt: number, extra?: string) =>
+				[`attempt ${attempt}/${MAX_ATTEMPTS}`, extra].filter(Boolean).join(", ");
 			// §D: skip a phase already green in a prior convergence iteration (don't
 			// re-touch done work — the state-confusion churn §F fought).
 			if (phaseStatus.some((p) => p.id === phaseId && p.status === "green")) {
@@ -436,8 +449,12 @@ export const implementationStage: Stage = {
 			const phaseDeliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
 			const resumeNoOpAllowed = ctx.options.resume === true || typeof ctx.options.resume === "string";
 			if (resumeNoOpAllowed && phaseDeliverables && deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables)) {
+				ensurePhaseRunning();
+				announceActivity("Resume verification");
 				resetDeliverableCheckCache();
+				announceActivity("Build gate", "resume verification");
 				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+				announceActivity("Deliverable check", "resume verification");
 				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
 					ctx.log(`Implementation ${phaseId} no-op: resume deliverables already satisfied and verified — skipping implementer`);
@@ -458,8 +475,8 @@ export const implementationStage: Stage = {
 			// stage's live-log section. phase.name falls back to the phase id.
 			// Emit the dashboard sub-stage row BEFORE the subtitle so the live-stream sink
 			// tags the subtitle/progress under the current implementation phase.
-			emitPhaseStatus("running");
-			ctx.phase(`Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`);
+			ensurePhaseRunning();
+			announceActivity();
 			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 				attemptsRun = attempt;
@@ -467,6 +484,7 @@ export const implementationStage: Stage = {
 					allGreen = false;
 					return { phasesCompleted, totalPhases: phases.length, allGreen, filesModified, summary: "Budget exhausted" };
 				}
+				announceActivity("Route specialist", attemptDetail(attempt));
 				const specialist = await ctx.helper({ name: "route-specialist", sources: { "classify-task": state.classify }, options: { phase } });
 				const lang = (specialist.value.languageInstructions as string) ?? "";
 				// Gap 3 (AC-03 → SCENARIO-010): the RED-phase prompt carries the no-`--lib`
@@ -489,15 +507,19 @@ export const implementationStage: Stage = {
 				let redEvidence: RedEvidence | null = null;
 				while (true) {
 					const redDiagnostics: RedCheckDiagnostic[] = [];
+					const redTryDetail = attemptDetail(attempt, `try ${retries + 1}/${MAX_RED_RETRIES + 1}`);
 					const tddId = retries === 0
 						? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
 						: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
+					announceActivity("TDD RED", redTryDetail);
 					const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n")) + redHint });
 					const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
 					testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
+					announceActivity("RED oracle", redTryDetail);
 					redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics));
 					ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 					redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
+					announceActivity("RED boundary", redTryDetail);
 					const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
 					ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
 					redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied, diagnostics: redDiagnostics });
@@ -526,7 +548,10 @@ export const implementationStage: Stage = {
 				}
 				if (redEvidence.status === "green-already-satisfied") {
 					resetDeliverableCheckCache();
+					announceActivity("Already-satisfied verification", attemptDetail(attempt));
+					announceActivity("Build gate", attemptDetail(attempt));
 					const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+					announceActivity("Deliverable check", attemptDetail(attempt));
 					const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
 					ctx.log(`Implementation ${phaseId} RED already-satisfied: build=${gate.pass || gate.inScopePass}, deliverables=${deliverableCheck.pass}`);
 					if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
@@ -591,6 +616,7 @@ export const implementationStage: Stage = {
 				}
 				implParts.push(redImplementContext(redStatus));
 				const implPrompt = implParts.join("\n\n");
+				announceActivity("Implementation", attemptDetail(attempt));
 				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
 				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
 				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads
@@ -610,6 +636,7 @@ export const implementationStage: Stage = {
 				// HARD test oracle: actually run build/test/typecheck instead of trusting
 				// a QA agent's self-report (vacuous-pass risk). Non-fatal when nothing
 				// is detectable (greenfield): ran is empty and pass is true.
+				announceActivity("Build gate", attemptDetail(attempt));
 				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
@@ -650,6 +677,7 @@ export const implementationStage: Stage = {
 						...projectStructured.filesCreated,
 					])),
 				};
+				announceActivity("Deliverable check", attemptDetail(attempt));
 				const deliverableCheck = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: !buildGreen });
 				missingDeliverables = deliverableCheck.missing;
 				ctx.log(`Implementation ${phaseId} deliverable-check ${deliverableCheck.pass ? "PASS" : "FAIL"} (missing: ${deliverableCheck.missing.join("; ") || "none"}; ran: ${deliverableCheck.ran.join(", ") || "none"})`);
@@ -660,6 +688,7 @@ export const implementationStage: Stage = {
 				// degrades to a pass when git is unavailable (SCENARIO-017) — never block
 				// on infrastructure. No tracker / never ended → null record → trivial pass.
 				let phaseChangeRec: ChangeRecord | null = null;
+				announceActivity("Change check", attemptDetail(attempt));
 				if (tracker) {
 					// Per-attempt PROBE (compute + store, no jsonl append) so the retry
 					// injection sees the freshest claimedNotChanged (SCENARIO-015).
@@ -673,6 +702,7 @@ export const implementationStage: Stage = {
 				// deliverable that EXISTS (passes deliverable + change gates) but contains
 				// NO code symbols (doc-comment-only shell) is rejected here. Never throws;
 				// degrades to pass on unreadable files / unknown language / no source files.
+				announceActivity("Symbol check", attemptDetail(attempt));
 				const symbolGate = computeSymbolGate(setup.worktreePath, [...projectStructured.filesCreated, ...projectStructured.filesModified], setup.language);
 				ctx.log(`Implementation ${phaseId} symbol-check ${symbolGate.pass ? "PASS" : "FAIL"} (hollow: ${symbolGate.hollowFiles.join("; ") || "none"})`);
 				// Advisory-only (SCENARIO-014): files git shows changed that the agent did
@@ -700,6 +730,7 @@ export const implementationStage: Stage = {
 						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")}`);
 						ctx.log(`Implementation ${phaseId} post-red-oracle: skipped because confirmed RED test file(s) changed during GREEN (${modifiedRedTests.join(", ")})`);
 					} else {
+						announceActivity("Post-RED oracle", attemptDetail(attempt));
 						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId));
 						ctx.log(`Implementation ${phaseId} post-red-oracle: ${postRedStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						if (postRedStatus === "red") tddOracleFailures.push(`tdd-targets-still-red: ${testFiles.join(", ")}`);
@@ -764,6 +795,7 @@ export const implementationStage: Stage = {
 			}
 			phasesCompleted++;
 			if (ctx.budget.check()) {
+				announceActivity("Commit");
 				await ctx.agent({ id: `pipeline.implementation.${phaseId}.commit`, agent: "orchestrator", prompt: buildCommitPrompt(setup, phase.name) });
 			}
 		}
@@ -779,6 +811,7 @@ export const implementationStage: Stage = {
 			summary: allGreen ? `All ${phases.length} phases completed successfully` : `${phasesCompleted}/${phases.length} phases completed`,
 		};
 		if (ctx.budget.check()) {
+			ctx.phase("Implementation — Summary");
 			const summaryResult = await ctx.agent({ id: "pipeline.implementation.summary", agent: "orchestrator", prompt: buildImplementationSummaryPrompt(setup, state.classify ?? null, control), schema: STAGE_MODELS["implementationSummary"]?.schema });
 			renderAndWrite(setup, (m) => ctx.log(m), "implementationSummary", summaryResult.control as Record<string, unknown> | null);
 		}

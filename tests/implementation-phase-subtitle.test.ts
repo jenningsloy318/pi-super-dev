@@ -57,13 +57,38 @@ function mkCtx() {
 describe("Implementation stage — per-phase pi-native subtitle", () => {
 	beforeEach(() => { gate.pass = true; gate.inScopePass = true; gate.errors = []; });
 
+	const basePhaseCalls = (calls: string[]) =>
+		calls.filter((label) => /^Implementation — Phase \d+\/\d+: [^—]+$/.test(label));
+
 	it("announces each phase as 'Implementation — Phase N/M: <name>'", async () => {
 		const { ctx, phaseCalls } = mkCtx();
 		await implementationStage.run(mkState([{ name: "Scaffold" }, { name: "Wire API" }]), ctx);
-		expect(phaseCalls).toEqual([
+		expect(basePhaseCalls(phaseCalls)).toEqual([
 			"Implementation — Phase 1/2: Scaffold",
 			"Implementation — Phase 2/2: Wire API",
 		]);
+	});
+
+	it("announces the current Stage 9 activity under the phase banner", async () => {
+		const { ctx, phaseCalls } = mkCtx();
+		await implementationStage.run(mkState([{ name: "Core" }]), ctx);
+		expect(phaseCalls).toEqual(expect.arrayContaining([
+			"Implementation — Phase 1/1: Core",
+			"Implementation — Phase 1/1: Core — Route specialist (attempt 1/5)",
+			"Implementation — Phase 1/1: Core — TDD RED (attempt 1/5, try 1/5)",
+			"Implementation — Phase 1/1: Core — RED oracle (attempt 1/5, try 1/5)",
+			"Implementation — Phase 1/1: Core — RED boundary (attempt 1/5, try 1/5)",
+			"Implementation — Phase 1/1: Core — Implementation (attempt 1/5)",
+			"Implementation — Phase 1/1: Core — Build gate (attempt 1/5)",
+			"Implementation — Phase 1/1: Core — Deliverable check (attempt 1/5)",
+			"Implementation — Phase 1/1: Core — Change check (attempt 1/5)",
+			"Implementation — Phase 1/1: Core — Symbol check (attempt 1/5)",
+			"Implementation — Phase 1/1: Core — Commit",
+			"Implementation — Summary",
+		]));
+		const tddIdx = phaseCalls.indexOf("Implementation — Phase 1/1: Core — TDD RED (attempt 1/5, try 1/5)");
+		const implIdx = phaseCalls.indexOf("Implementation — Phase 1/1: Core — Implementation (attempt 1/5)");
+		expect(implIdx).toBeGreaterThan(tddIdx);
 	});
 
 	it("emits implementation phases as dashboard sub-stage lifecycle rows", async () => {
@@ -92,7 +117,7 @@ describe("Implementation stage — per-phase pi-native subtitle", () => {
 		// it is renumbered against the normalized total).
 		const { ctx, phaseCalls } = mkCtx();
 		await implementationStage.run(mkState([{}, { name: "Kept" }]), ctx);
-		expect(phaseCalls).toEqual(["Implementation — Phase 1/1: Kept"]);
+		expect(basePhaseCalls(phaseCalls)).toEqual(["Implementation — Phase 1/1: Kept"]);
 	});
 
 	it("does NOT announce a phase carried green from a prior convergence iteration", async () => {
@@ -103,6 +128,6 @@ describe("Implementation stage — per-phase pi-native subtitle", () => {
 		const state = mkState([{ name: "Done" }, { name: "Pending" }]);
 		(state as unknown as Record<string, unknown>).implementation = { phaseStatus: [{ id: "phase-01", status: "green" }] };
 		await implementationStage.run(state, ctx);
-		expect(phaseCalls).toEqual(["Implementation — Phase 2/2: Pending"]);
+		expect(basePhaseCalls(phaseCalls)).toEqual(["Implementation — Phase 2/2: Pending"]);
 	});
 });

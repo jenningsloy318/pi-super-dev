@@ -37,6 +37,10 @@ vi.mock("../src/pipeline.ts", () => ({
 			progress?.stage?.({ id: "requirements", label: "Requirements", status: "running" });
 			progress?.log?.("foreground log still visible");
 		}
+		if (task.includes("[emit-phase-activity]")) {
+			const progress = options.progress as { phase?: (label: string) => void } | undefined;
+			progress?.phase?.("Implementation — Phase 1/2: Auth — TDD RED (attempt 1/5, try 1/5)");
+		}
 		if (task.includes("[emit-phase]")) {
 			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void } | undefined;
 			progress?.stage?.({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
@@ -269,6 +273,19 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Phase start: ↳ Phase 1/1: Core") })]) }));
 		expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Phase end: ↳ Phase 1/1: Core status=ok") })]) }));
 		expect(onUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Stage start: ↳ Phase 1/1: Core") })]) }));
+	});
+
+	it("implementation activity phase labels update the TUI working message", async () => {
+		const { execute } = setupTool();
+		const ui = { setWidget: vi.fn(), setWorkingMessage: vi.fn(), setStatus: vi.fn(), notify: vi.fn() };
+		await execute(
+			"call-phase-activity",
+			{ task: "[emit-phase-activity] build the thing" },
+			new AbortController().signal,
+			vi.fn(),
+			{ mode: "tui", ui },
+		);
+		expect(ui.setWorkingMessage).toHaveBeenCalledWith("super-dev · Implementation — Phase 1/2: Auth — TDD RED (attempt 1/5, try 1/5)");
 	});
 
 	it("repeated implementation phase runs get a fresh display attempt and timing bracket", async () => {
