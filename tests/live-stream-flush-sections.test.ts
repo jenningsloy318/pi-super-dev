@@ -225,6 +225,20 @@ describe("SCENARIO-011: the running stage honors RUNNING_TAIL_LINES (15)", () =>
 		expect(headerIdx).toBeGreaterThanOrEqual(0);
 		expect(trimIdx).toBeGreaterThan(headerIdx);
 	});
+
+	it("keeps the latest Stage 9 activity banner visible even when the running tail overflows", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate });
+		h.sink.stage({ id: "implementation.phase-01", label: "↳ Phase 1/1: Core", status: "running", kind: "phase", parentId: "implementation" });
+		h.sink.phase("Implementation — Phase 1/1: Core — TDD RED (attempt 1/5, try 1/5)");
+		for (let i = 0; i < 30; i++) h.sink.log(`agent-tool-line-${String(i).padStart(2, "0")}`);
+		h.flush();
+
+		const body = h0.body;
+		expect(body).toContain("Implementation — Phase 1/1: Core — TDD RED (attempt 1/5, try 1/5)");
+		expect(body).toContain("agent-tool-line-29");
+		expect(body).not.toContain("agent-tool-line-00");
+	});
 });
 
 // ─── SCENARIO-012: COMPLETED stages render COMPACT ────────────────────────

@@ -177,18 +177,24 @@ const isStickySectionLine = (line: Pick<SectionLine, "text">): boolean => {
 	);
 };
 
+const isImplementationActivityLine = (line: Pick<SectionLine, "text">): boolean => {
+	const text = line.text.trimStart();
+	return /^▶ Implementation — Phase \d+\/\d+: /.test(text) || text === "▶ Implementation — Summary";
+};
+
 const compactSectionLines = (
 	lines: readonly SectionLine[],
 	cap: number,
 	stageLabel: string,
 ): SectionLine[] => {
+	const latestImplementationActivity = [...lines].reverse().find(isImplementationActivityLine);
 	const ordinary = lines.filter((line) => !isStickySectionLine(line));
 	if (ordinary.length <= cap) return [...lines];
 	const ordinaryTail = new Set<SectionLine>(ordinary.slice(-cap));
 	const trimmed = ordinary.length - cap;
 	return [
 		{ kind: "trim", text: trimNoticeText(trimmed, stageLabel), createdAt: timestamp() },
-		...lines.filter((line) => isStickySectionLine(line) || ordinaryTail.has(line)),
+		...lines.filter((line) => line === latestImplementationActivity || isStickySectionLine(line) || ordinaryTail.has(line)),
 	];
 };
 
