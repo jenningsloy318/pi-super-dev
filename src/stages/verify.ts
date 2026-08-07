@@ -26,6 +26,7 @@ import { STAGE_MODELS } from "../render/schemas.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
+import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
 import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
 const REVIEW_MAX_ROUNDS = WORKFLOW_ATTEMPTS;
@@ -118,6 +119,74 @@ function ensureVerificationAttempts(s: PipelineState): VerificationAttemptRecord
 
 function buildErrors(s: PipelineState): string[] {
 	return ((s.buildGate as { errors?: string[] } | undefined)?.errors ?? []).filter((e): e is string => typeof e === "string");
+}
+
+function summarizeReviewFindings(s: PipelineState, max = 8): string[] {
+	const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
+	return findings.slice(0, max).map((f) => {
+		const file = String(f.file ?? "").trim();
+		const title = String(f.title ?? f.detail ?? "review finding").trim();
+		const severity = String(f.severity ?? "medium").trim();
+		return `${file ? `${file}: ` : ""}[${severity}] ${title}`;
+	});
+}
+
+function summarizeTestFailures(s: PipelineState, max = 8): string[] {
+	const api = ((s.apiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures ?? [])
+		.map((f) => ({ role: "api", failure: f }));
+	const ui = ((s.uiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures ?? [])
+		.map((f) => ({ role: "ui", failure: f }));
+	return [...api, ...ui].slice(0, max).map(({ role, failure }) => {
+		const file = String(failure.file ?? failure.path ?? "").trim();
+		const title = String(failure.title ?? failure.reason ?? failure.message ?? JSON.stringify(failure)).trim();
+		const method = String(failure.method ?? "").trim();
+		const subject = [method, file].filter(Boolean).join(" ");
+		return `${role}${subject ? ` ${subject}` : ""}: ${title}`;
+	});
+}
+
+function verificationRetryFeedbackBlock(s: PipelineState, kind: "review" | "integration"): string {
+	const feedback: RetryFeedback[] = [];
+	const lastFix = (s as Record<string, unknown>).__lastVerificationFix as { kind?: unknown; changed?: unknown; before?: unknown; after?: unknown } | undefined;
+	if (lastFix) {
+		const changed = lastFix.changed === true;
+		feedback.push({
+			stage: "verification",
+			gate: `previous-${String(lastFix.kind ?? "unknown")}-fix`,
+			location: "working tree",
+			observed: changed ? "previous fix changed repository state, but fresh gates still rejected the result" : "previous fix made no repository-state change",
+			expected: "each retry must make a targeted project change or explicitly prove no code edit is needed from the current evidence",
+			diagnostics: [`before=${String(lastFix.before ?? "unknown")} after=${String(lastFix.after ?? "unknown")}`],
+			nextAction: "Do not repeat the same fix shape. Use the current gate evidence below to make a different, targeted fix and then run the relevant checks.",
+		});
+	}
+	const reviewFindings = summarizeReviewFindings(s);
+	const errors = buildErrors(s).slice(0, 8);
+	if (kind === "review" && (reviewFindings.length || errors.length)) {
+		feedback.push({
+			stage: "verification",
+			gate: "review-build-evidence",
+			location: "fresh code review and deterministic build gate",
+			observed: `review=${String((s.review as { verdict?: unknown } | undefined)?.verdict ?? "unknown")}; build=${buildGreen(s) ? "pass" : "fail"}`,
+			expected: "review approved and deterministic build/test gate green",
+			missing: [...reviewFindings, ...errors],
+			nextAction: "Fix these review/build blockers directly. Avoid unrelated edits and re-run the smallest relevant check before reporting completion.",
+		});
+	}
+	const testFailures = summarizeTestFailures(s);
+	if (kind === "integration" && (testFailures.length || reviewFindings.length || errors.length)) {
+		const outcome = s.integration as { status?: unknown } | undefined;
+		feedback.push({
+			stage: "verification",
+			gate: "integration-evidence",
+			location: "fresh integration test result after review/build green evidence",
+			observed: `integration=${String(outcome?.status ?? "failed")}; review=${String((s.review as { verdict?: unknown } | undefined)?.verdict ?? "unknown")}; build=${buildGreen(s) ? "pass" : "fail"}`,
+			expected: "integration tests pass after a reviewed, build-green fix",
+			missing: [...testFailures, ...reviewFindings, ...errors],
+			nextAction: "Fix the failing integration behavior first, then preserve review/build correctness before the next test run.",
+		});
+	}
+	return renderRetryFeedbackBlock(feedback, "Verification retry evidence for this fix");
 }
 
 function testFailureCount(s: PipelineState): number {
@@ -448,9 +517,10 @@ const fixStepReview = branch((s: PipelineState) => !reviewApproved(s) || (s.buil
 			const findings = (s.review?.findings as unknown[]) ?? [];
 			const buildErrors = ((s.buildGate as { errors?: string[] } | undefined)?.errors) ?? [];
 			const baseFix = buildFixPrompt(setupOf(s), s.classify ?? null, findings, []);
-			const fixPrompt = buildErrors.length
-				? `${baseFix}\n\n## Build/test gate failures (make these pass)\n${buildErrors.map((e) => `- ${e}`).join("\n")}`
-				: baseFix;
+			const buildBlock = buildErrors.length
+				? `## Build/test gate failures (make these pass)\n${buildErrors.map((e) => `- ${e}`).join("\n")}`
+				: "";
+			const fixPrompt = [baseFix, buildBlock, verificationRetryFeedbackBlock(s, "review")].filter(Boolean).join("\n\n");
 			const r = await ctx.agent({ id: "pipeline.review.fix", agent: "implementer", prompt: fixPrompt });
 			return r.control ?? {};
 		},
@@ -692,9 +762,10 @@ const fixStepIntegration = task({
 		];
 		const buildErrors = ((s.buildGate as { errors?: string[] } | undefined)?.errors) ?? [];
 		const baseFix = buildFixPrompt(setupOf(s), s.classify ?? null, findings, testFailures);
-		const fixPrompt = buildErrors.length
-			? `${baseFix}\n\n## Build/test gate failures (make these pass)\n${buildErrors.map((e) => `- ${e}`).join("\n")}`
-			: baseFix;
+		const buildBlock = buildErrors.length
+			? `## Build/test gate failures (make these pass)\n${buildErrors.map((e) => `- ${e}`).join("\n")}`
+			: "";
+		const fixPrompt = [baseFix, buildBlock, verificationRetryFeedbackBlock(s, "integration")].filter(Boolean).join("\n\n");
 		const r = await ctx.agent({ id: "pipeline.integration.fix", agent: "implementer", prompt: fixPrompt });
 		return r.control ?? {};
 	},

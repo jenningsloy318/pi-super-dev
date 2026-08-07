@@ -300,6 +300,48 @@ describe("verificationConvergenceNode", () => {
 		expect(state.integration?.status).toBe("passed");
 	});
 
+	it("feeds prior fix result and fresh integration failures into the next fixer prompt", async () => {
+		let codeReviewCalls = 0;
+		let apiCalls = 0;
+		const fixPrompts: string[] = [];
+		const state = stateWithApi();
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				codeReviewCalls += 1;
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "api-tester") {
+				apiCalls += 1;
+				if (apiCalls === 1) {
+					return { text: "", control: { title: "API", date: "2026-08-07", pass: false, cases: 2, failures: [{ method: "GET", path: "/a", reason: "expected 200" }, { method: "POST", path: "/b", reason: "expected 201" }], summary: "fail" } };
+				}
+				if (apiCalls === 2) {
+					return { text: "", control: { title: "API", date: "2026-08-07", pass: false, cases: 1, failures: [{ method: "POST", path: "/b", reason: "still returns 500" }], summary: "still failing" } };
+				}
+				return { text: "", control: { title: "API", date: "2026-08-07", pass: true, cases: 1, failures: [], summary: "ok" } };
+			}
+			if (call.agent === "implementer") {
+				fixPrompts.push(call.prompt);
+				return { text: "", control: { filesCreated: [], filesModified: [], filesDeleted: [], fixesApplied: 1, summary: "attempted fix" } };
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("ok");
+		expect(codeReviewCalls).toBe(3);
+		expect(apiCalls).toBe(3);
+		expect(fixPrompts).toHaveLength(2);
+		expect(fixPrompts[1]).toMatch(/Verification retry evidence for this fix/);
+		expect(fixPrompts[1]).toMatch(/previous fix made no repository-state change/i);
+		expect(fixPrompts[1]).toMatch(/integration=failed/i);
+		expect(fixPrompts[1]).toMatch(/POST \/b.*still returns 500/i);
+	});
+
 	it("does not carry stale integration failures into the next review/build attempt", async () => {
 		let codeReviewCalls = 0;
 		let fixCalls = 0;

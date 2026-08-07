@@ -105,6 +105,20 @@ function mkState(phaseCount = 1): PipelineState {
 	};
 }
 
+function mkScenarioState(scenarioRefs: string[], phaseCount = 1): PipelineState {
+	const state = mkState(phaseCount);
+	state.spec = {
+		...state.spec,
+		scenarioRefs,
+		phases: (state.spec!.phases as Array<Record<string, unknown>>).map((phase) => ({ ...phase, scenarioRefs })),
+	};
+	state.bdd = {
+		docPath: "/tmp/sd/02-bdd-scenarios.md",
+		features: [{ name: "Feature", scenarios: scenarioRefs.map((id) => ({ id, title: `${id} behavior` })) }],
+	};
+	return state;
+}
+
 /**
  * Scripted StageContext whose `agent()` closure serves a SEQUENCE of distinct
  * tdd-guide controls (one per tdd-guide call, in order), so we can assert that
@@ -113,13 +127,17 @@ function mkState(phaseCount = 1): PipelineState {
 function mkCtx(opts: {
 	tddControls?: ControlObj[];
 	boundaryControls?: ControlObj[];
+	coverageControls?: ControlObj[];
 	onTddCall?: (call: AgentCall, index: number) => void;
+	onCoverageCall?: (call: AgentCall, index: number) => void;
 	onImplCall?: (call: AgentCall, index: number) => void;
-} = {}): { ctx: StageContext; tddCalls: AgentCall[]; boundaryCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
+} = {}): { ctx: StageContext; tddCalls: AgentCall[]; boundaryCalls: AgentCall[]; coverageCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
 	const queue = [...(opts.tddControls ?? [DEFAULT_TDD_CONTROL])];
 	const boundaryQueue = [...(opts.boundaryControls ?? [])];
+	const coverageQueue = [...(opts.coverageControls ?? [{ allCovered: true, coveredScenarios: [], missingScenarios: [], summary: "all covered" }])];
 	const tddCalls: AgentCall[] = [];
 	const boundaryCalls: AgentCall[] = [];
+	const coverageCalls: AgentCall[] = [];
 	const implCalls: AgentCall[] = [];
 	const logs: string[] = [];
 	const ctx: StageContext = {
@@ -141,6 +159,12 @@ function mkCtx(opts: {
 				const next = boundaryQueue.length > 1 ? boundaryQueue.shift()! : (boundaryQueue[0] ?? {});
 				return { text: "", control: next };
 			}
+			if (call.agent === "tdd-coverage-classifier") {
+				coverageCalls.push(call);
+				opts.onCoverageCall?.(call, coverageCalls.length);
+				const next = coverageQueue.length > 1 ? coverageQueue.shift()! : (coverageQueue[0] ?? {});
+				return { text: "", control: next };
+			}
 			if (call.agent === "implementer") {
 				implCalls.push(call);
 				opts.onImplCall?.(call, implCalls.length);
@@ -157,7 +181,7 @@ function mkCtx(opts: {
 		events: new EventEmitter(),
 		results: [],
 	};
-	return { ctx, tddCalls, boundaryCalls, implCalls, logs };
+	return { ctx, tddCalls, boundaryCalls, coverageCalls, implCalls, logs };
 }
 
 beforeEach(() => {
@@ -303,6 +327,64 @@ describe("P3 edges — unconfirmed RED blocks the implementer, unknown still deg
 		expect(implCalls[0].prompt).toMatch(/could not be confirmed/i);
 		expect(implCalls[0].prompt).toMatch(/unknown/i);
 		expect(implCalls[0].prompt).not.toMatch(/CONFIRMED-red|4 retries/i);
+	});
+});
+
+describe("P3 edges — RED scenario coverage gates the implementer", () => {
+	it("retries tdd-guide with verifier feedback when RED tests miss a BDD scenario", async () => {
+		redCheck.mockImplementation(() => "red");
+		const scenarios = ["SCENARIO-001", "SCENARIO-002"];
+		const { ctx, tddCalls, coverageCalls, implCalls, logs } = mkCtx({
+			tddControls: [
+				{ testFiles: ["tests/session-red.test.ts"] },
+				{ testFiles: ["tests/session-red.test.ts", "tests/session-expiry-red.test.ts"] },
+			],
+			coverageControls: [
+				{ allCovered: false, coveredScenarios: ["SCENARIO-001"], missingScenarios: ["SCENARIO-002"], summary: "SCENARIO-002 has no behavior-level test" },
+				{ allCovered: true, coveredScenarios: scenarios, missingScenarios: [], summary: "all expected scenarios covered" },
+			],
+		});
+
+		const res = (await (implementationStage as Stage).run(mkScenarioState(scenarios), ctx)) as ControlObj;
+
+		expect(res.allGreen).toBe(true);
+		expect(tddCalls).toHaveLength(2);
+		expect(coverageCalls).toHaveLength(2);
+		expect(implCalls).toHaveLength(1);
+		expect(tddCalls[1].prompt).toMatch(/RED coverage verifier rejected/i);
+		expect(tddCalls[1].prompt).toMatch(/SCENARIO-002/);
+		expect(tddCalls[1].prompt).toMatch(/behavior-level test/i);
+		expect(logs.some((l) => /RED scenario coverage FAIL.*SCENARIO-002/i.test(l))).toBe(true);
+		expect(logs.some((l) => /RED scenario coverage PASS/i.test(l))).toBe(true);
+	});
+
+	it("blocks the implementer when scenario coverage remains incomplete after RED retries", async () => {
+		redCheck.mockImplementation(() => "red");
+		const scenarios = ["SCENARIO-001", "SCENARIO-002"];
+		const { ctx, tddCalls, coverageCalls, implCalls, logs } = mkCtx({
+			tddControls: [{ testFiles: ["tests/session-red.test.ts"] }],
+			coverageControls: [{ allCovered: false, coveredScenarios: ["SCENARIO-001"], missingScenarios: ["SCENARIO-002"], summary: "still missing SCENARIO-002" }],
+		});
+
+		const res = (await (implementationStage as Stage).run(mkScenarioState(scenarios), ctx)) as ControlObj;
+
+		expect(res.allGreen).toBe(false);
+		expect(tddCalls).toHaveLength(5);
+		expect(coverageCalls).toHaveLength(5);
+		expect(implCalls).toHaveLength(0);
+		expect(logs.some((l) => /red-coverage-incomplete/i.test(l))).toBe(true);
+		expect(logs.some((l) => /stopped before implementation: RED generation exhausted/i.test(l))).toBe(true);
+	});
+
+	it("skips the coverage classifier when no scenario baseline is available", async () => {
+		redCheck.mockImplementation(() => "red");
+		const { ctx, coverageCalls, implCalls } = mkCtx();
+
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+
+		expect(res.allGreen).toBe(true);
+		expect(coverageCalls).toHaveLength(0);
+		expect(implCalls).toHaveLength(1);
 	});
 });
 

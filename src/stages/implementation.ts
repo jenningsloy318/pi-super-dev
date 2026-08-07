@@ -18,13 +18,14 @@ import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplement
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
-import { normalizePhases } from "../doc-validators.ts";
+import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } from "../doc-validators.ts";
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../build-runner.ts";
 import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
+import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
 
 const MAX_ATTEMPTS = WORKFLOW_ATTEMPTS;
 
-type RedEvidenceStatus = "red-behavior-failure" | "green-weak-test" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
+type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
 
 interface RedEvidence {
 	phaseId: string;
@@ -34,10 +35,21 @@ interface RedEvidence {
 	testFiles: string[];
 	changedFiles: string[];
 	forbiddenFiles: string[];
+	expectedScenarios?: string[];
+	coveredScenarios?: string[];
+	missingScenarios?: string[];
 	boundary?: RedBoundaryResult;
 	diagnostics?: RedCheckDiagnostic[];
 	redRetries: number;
 	reason?: string;
+}
+
+interface TddCoverageResult {
+	allCovered: boolean;
+	expectedScenarios: string[];
+	coveredScenarios: string[];
+	missingScenarios: string[];
+	summary: string;
 }
 
 interface AcceptedRedContext {
@@ -75,8 +87,59 @@ function listOrNone(values: string[]): string {
 
 function redEvidenceLogLine(e: RedEvidence): string {
 	const boundary = e.boundary ? ` ambiguousFiles=${listOrNone(e.boundary.ambiguousFiles)}` : "";
+	const coverage = e.missingScenarios?.length ? ` missingScenarios=${listOrNone(e.missingScenarios)}` : "";
 	const diagnostics = e.diagnostics?.length ? ` diagnostics=${e.diagnostics.length}` : " diagnostics=none";
-	return `Implementation ${e.phaseId} RED gate evidence: status=${e.status} oracle=${e.oracleStatus} retries=${e.redRetries} testFiles=${listOrNone(e.testFiles)} changedFiles=${listOrNone(e.changedFiles)} forbiddenFiles=${listOrNone(e.forbiddenFiles)}${boundary}${diagnostics}`;
+	return `Implementation ${e.phaseId} RED gate evidence: status=${e.status} oracle=${e.oracleStatus} retries=${e.redRetries} testFiles=${listOrNone(e.testFiles)} changedFiles=${listOrNone(e.changedFiles)} forbiddenFiles=${listOrNone(e.forbiddenFiles)}${boundary}${coverage}${diagnostics}`;
+}
+
+function uniqueScenarioIds(ids: string[]): string[] {
+	return [...new Set(ids)].sort((a, b) => Number(a.split("-")[1] ?? "0") - Number(b.split("-")[1] ?? "0"));
+}
+
+function scenarioIdsFromUnknown(value: unknown): string[] {
+	if (value == null) return [];
+	if (typeof value === "string") return extractScenarioIds(value);
+	if (typeof value === "number" && Number.isInteger(value)) return [`SCENARIO-${String(value).padStart(3, "0")}`];
+	if (Array.isArray(value)) return uniqueScenarioIds(value.flatMap(scenarioIdsFromUnknown));
+	if (typeof value === "object") return scenarioIdsFromUnknown(JSON.stringify(value));
+	return [];
+}
+
+function phaseTaskDescriptions(specControl: ControlObj | null | undefined, phaseName: string): string[] {
+	const tasks = Array.isArray(specControl?.tasks) ? specControl.tasks as Array<Record<string, unknown>> : [];
+	return tasks
+		.filter((task) => typeof task.phase === "string" && task.phase.trim() === phaseName)
+		.map((task) => String(task.description ?? "").trim())
+		.filter(Boolean);
+}
+
+function expectedScenariosForPhase(phase: unknown, specControl: ControlObj | null | undefined, bddControl: ControlObj | null | undefined): string[] {
+	const p = (phase && typeof phase === "object") ? phase as Record<string, unknown> : {};
+	const phaseName = String(p.name ?? "");
+	const explicit = uniqueScenarioIds([
+		...scenarioIdsFromUnknown(p.scenarioRefs),
+		...scenarioIdsFromUnknown(p.scenarios),
+		...scenarioIdsFromUnknown(p.name),
+		...scenarioIdsFromUnknown(p.description),
+		...scenarioIdsFromUnknown(phaseTaskDescriptions(specControl, phaseName)),
+	]);
+	if (explicit.length) return explicit;
+	const specRefs = extractScenarioRefsFromControl(specControl ?? undefined);
+	if (specRefs.length) return specRefs;
+	return scenarioIdsFromUnknown(bddControl?.features);
+}
+
+function tddCoverageRetryHint(result: TddCoverageResult): string {
+	const feedback: RetryFeedback = {
+		stage: "implementation",
+		gate: "red-scenario-coverage",
+		location: "TDD RED test set",
+		observed: `covered=${result.coveredScenarios.join(", ") || "none"}; verifier=${result.summary || "coverage incomplete"}`,
+		expected: `coverage for every expected BDD scenario: ${result.expectedScenarios.join(", ") || "unknown"}`,
+		missing: result.missingScenarios,
+		nextAction: "Add or revise RED tests so every missing SCENARIO-NNN has a behavior-level test. Keep the tests compiling/collecting; it is fine if they fail because the implementation behavior is still missing.",
+	};
+	return `\n\n${renderRetryFeedbackBlock([feedback], "RED coverage verifier rejected the previous test set")}`;
 }
 
 function restorePaths(cwd: string, paths: string[]): void {
@@ -130,6 +193,7 @@ function firstRedDiagnosticDetail(e: RedEvidence): string {
 function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	if (e.status === "polluted-red") return [`red-polluted: RED phase changed production file(s): ${e.forbiddenFiles.join(", ")}`];
 	const detail = firstRedDiagnosticDetail(e);
+	if (e.status === "coverage-incomplete") return [`red-coverage-incomplete: missing BDD scenario coverage: ${(e.missingScenarios ?? []).join(", ") || "unknown"}${e.reason ? `; ${e.reason}` : ""}`];
 	if (e.status === "green-weak-test") return [`red-not-confirmed: tests passed before implementation (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
 	if (e.status === "broken-test") return [`red-broken: tests did not compile/collect (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
 	return [];
@@ -152,12 +216,101 @@ function redDiagnosticsPrompt(diagnostics: RedCheckDiagnostic[] | undefined): st
 }
 
 function redGenerationRetryHint(e: RedEvidence): string | null {
+	if (e.status === "coverage-incomplete") return tddCoverageRetryHint({
+		allCovered: false,
+		expectedScenarios: e.expectedScenarios ?? [],
+		coveredScenarios: e.coveredScenarios ?? [],
+		missingScenarios: e.missingScenarios ?? [],
+		summary: e.reason ?? "BDD scenario coverage incomplete",
+	});
 	if (e.status === "green-weak-test") return redRePromptHint("green") + redDiagnosticsPrompt(e.diagnostics);
 	if (e.status === "broken-test") return redRePromptHint("broken") + redDiagnosticsPrompt(e.diagnostics);
 	if (e.status === "polluted-red") {
 		return `\n\nYour RED phase modified files outside the test boundary: ${e.forbiddenFiles.join(", ")}. Rewrite the RED change using test files or test-only support artifacts. Do not create or modify production implementation files.`;
 	}
 	return null;
+}
+
+function buildTddCoveragePrompt(args: { phaseName: string; phaseDescription?: string; expectedScenarios: string[]; testFiles: string[]; testSnippets: Array<{ path: string; content: string }>; bddPath?: string; specPath?: string }): string {
+	const snippets = args.testSnippets.length
+		? args.testSnippets.map((s) => [`### ${s.path}`, "```", s.content.slice(0, 4000), "```"].join("\n")).join("\n\n")
+		: "(No readable test file snippets were available.)";
+	return [
+		"## Purpose",
+		"Evaluate whether the RED tests cover the expected BDD scenario IDs for this implementation phase.",
+		"Do not write files, run commands, or change the repository.",
+		"",
+		"## Phase",
+		`- Name: ${args.phaseName}`,
+		`- Description: ${args.phaseDescription ?? ""}`,
+		`- BDD doc: ${args.bddPath ?? "N/A"}`,
+		`- Specification: ${args.specPath ?? "N/A"}`,
+		`- Expected scenarios: ${args.expectedScenarios.join(", ")}`,
+		`- Test files: ${args.testFiles.join(", ") || "none"}`,
+		"",
+		"## Test File Snippets",
+		snippets,
+		"",
+		"## Rules",
+		"A scenario is covered only when a test name, assertion, comment, data table, or nearby setup clearly maps to that SCENARIO-NNN behavior. Prefer explicit SCENARIO-NNN references, but accept unmistakable behavior-level coverage.",
+		"If a scenario is not clearly covered, list it as missing. Do not mark allCovered true unless every expected scenario is covered.",
+		"A test failing because implementation is missing can still be valid RED; this verifier only decides BDD scenario coverage.",
+		"",
+		"Output <control> JSON with: allCovered (boolean), coveredScenarios (array), missingScenarios (array), summary.",
+	].join("\n");
+}
+
+function readTestSnippets(cwd: string, testFiles: string[]): Array<{ path: string; content: string }> {
+	return testFiles.slice(0, 12).map((path) => {
+		try { return { path, content: readFileSync(join(cwd, path), "utf8") }; }
+		catch { return { path, content: "" }; }
+	}).filter((item) => item.content.trim().length > 0);
+}
+
+async function resolveTddScenarioCoverage(args: { ctx: StageContext; cwd: string; phaseId: string; phaseName: string; phase: unknown; expectedScenarios: string[]; testFiles: string[]; specControl: ControlObj | null | undefined; bddControl: ControlObj | null | undefined }): Promise<TddCoverageResult> {
+	if (args.expectedScenarios.length === 0) {
+		return { allCovered: true, expectedScenarios: [], coveredScenarios: [], missingScenarios: [], summary: "no expected BDD scenario baseline available" };
+	}
+	try {
+		const phaseDescription = typeof (args.phase as { description?: unknown }).description === "string" ? (args.phase as { description: string }).description : undefined;
+		const evaluated = await args.ctx.agent({
+			id: `pipeline.implementation.${args.phaseId}.tdd-coverage`,
+			agent: "tdd-coverage-classifier",
+			controlKeys: ["allCovered", "summary"],
+			prompt: buildTddCoveragePrompt({
+				phaseName: args.phaseName,
+				phaseDescription,
+				expectedScenarios: args.expectedScenarios,
+				testFiles: args.testFiles,
+				testSnippets: readTestSnippets(args.cwd, args.testFiles),
+				bddPath: typeof args.bddControl?.docPath === "string" ? args.bddControl.docPath : undefined,
+				specPath: typeof args.specControl?.specificationPath === "string" ? args.specControl.specificationPath : undefined,
+			}),
+		});
+		const control = evaluated.control ?? {};
+		const covered = uniqueScenarioIds(scenarioIdsFromUnknown(control.coveredScenarios));
+		const reportedMissing = uniqueScenarioIds(scenarioIdsFromUnknown(control.missingScenarios));
+		const expectedSet = new Set(args.expectedScenarios);
+		const coveredExpected = covered.filter((id) => expectedSet.has(id));
+		const missingByDiff = args.expectedScenarios.filter((id) => !coveredExpected.includes(id));
+		const missing = reportedMissing.length ? uniqueScenarioIds(reportedMissing.filter((id) => expectedSet.has(id))) : missingByDiff;
+		const allCovered = control.allCovered === true && missing.length === 0 && coveredExpected.length >= args.expectedScenarios.length;
+		return {
+			allCovered,
+			expectedScenarios: args.expectedScenarios,
+			coveredScenarios: coveredExpected,
+			missingScenarios: allCovered ? [] : (missing.length ? missing : missingByDiff),
+			summary: String(control.summary ?? evaluated.error ?? "coverage verifier returned incomplete control"),
+		};
+	} catch (err) {
+		return {
+			allCovered: false,
+			expectedScenarios: args.expectedScenarios,
+			coveredScenarios: [],
+			missingScenarios: args.expectedScenarios,
+			summary: `coverage verifier failed: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
 }
 
 function boundarySummary(result: RedBoundaryResult): string {
@@ -393,6 +546,7 @@ export const implementationStage: Stage = {
 		for (const [idx, phase] of phases.entries()) {
 			const phaseId = `phase-${pad(idx + 1)}`;
 			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
+			const expectedScenarios = expectedScenariosForPhase(phase, state.spec ?? null, state.bdd ?? null);
 			const phaseHeadline = `Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			const phaseLabel = `↳ Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			let phaseLifecycleStarted = false;
@@ -541,6 +695,24 @@ export const implementationStage: Stage = {
 						const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
 						ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
 						redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied, diagnostics: redDiagnostics });
+						if (redEvidence.status === "red-behavior-failure" && expectedScenarios.length > 0) {
+							announceActivity("RED scenario coverage", redTryDetail);
+							const coverage = await resolveTddScenarioCoverage({ ctx, cwd: setup.worktreePath, phaseId, phaseName, phase, expectedScenarios, testFiles, specControl: state.spec ?? null, bddControl: state.bdd ?? null });
+							if (coverage.allCovered) {
+								redEvidence = { ...redEvidence, expectedScenarios: coverage.expectedScenarios, coveredScenarios: coverage.coveredScenarios, missingScenarios: [] };
+								ctx.log(`Implementation ${phaseId} RED scenario coverage PASS: ${coverage.coveredScenarios.join(", ") || "none"}`);
+							} else {
+								redEvidence = {
+									...redEvidence,
+									status: "coverage-incomplete",
+									expectedScenarios: coverage.expectedScenarios,
+									coveredScenarios: coverage.coveredScenarios,
+									missingScenarios: coverage.missingScenarios,
+									reason: coverage.summary,
+								};
+								ctx.log(`Implementation ${phaseId} RED scenario coverage FAIL: missing=${coverage.missingScenarios.join(", ") || "unknown"}; ${coverage.summary}`);
+							}
+						}
 						appendImplementationEvidence(setup.specDirectory, redEvidence);
 						if (redEvidence.status === "polluted-red") {
 							restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);
