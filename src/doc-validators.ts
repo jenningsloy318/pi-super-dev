@@ -9,8 +9,9 @@
  *
  * These validators read the ACTUAL .md file the agent wrote and check its
  * content (regex / min-size), ported from the original super-dev-plugin's
- * scripts/gates/definitions.mjs. Gates prefer this; the old metadata checks
- * survive only as a fallback when no doc can be found on disk.
+ * scripts/gates/definitions.mjs. Gates prefer this; old metadata checks remain
+ * only as diagnostics or limited fallback where cross-document traceability is
+ * not required.
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -33,6 +34,96 @@ function globToRegExp(glob: string): RegExp {
 function countMatches(content: string, re: RegExp): number {
 	const global = re.flags.includes("g") ? re : new RegExp(re.source, re.flags + "g");
 	return (content.match(global) ?? []).length;
+}
+
+function uniqueSortedIds(ids: string[]): string[] {
+	return [...new Set(ids)].sort((a, b) => {
+		const [ap, an] = a.split("-");
+		const [bp, bn] = b.split("-");
+		if (ap !== bp) return ap.localeCompare(bp);
+		return Number(an) - Number(bn);
+	});
+}
+
+function normalizedId(prefix: "AC" | "SCENARIO", digits: string): string {
+	const width = prefix === "SCENARIO" ? 3 : 2;
+	return `${prefix}-${String(Number(digits)).padStart(width, "0")}`;
+}
+
+/** Extract normalized AC-NN identifiers from requirements/BDD text. */
+export function extractAcceptanceCriteriaIds(content: string): string[] {
+	return uniqueSortedIds([...content.matchAll(/\bAC-(\d+)\b/gi)].map((m) => normalizedId("AC", m[1] ?? "0")));
+}
+
+/** Extract normalized SCENARIO-NNN identifiers from BDD/spec text. */
+export function extractScenarioIds(content: string): string[] {
+	return uniqueSortedIds([...content.matchAll(/\bSCENARIO-(\d+)\b/gi)].map((m) => normalizedId("SCENARIO", m[1] ?? "0")));
+}
+
+function extractScenarioIdsFromValue(value: unknown): string[] {
+	const raw = Array.isArray(value) ? value : [value];
+	const ids: string[] = [];
+	for (const item of raw) {
+		if (typeof item === "number" && Number.isInteger(item)) {
+			ids.push(normalizedId("SCENARIO", String(item)));
+			continue;
+		}
+		if (typeof item !== "string") continue;
+		const matches = extractScenarioIds(item);
+		if (matches.length > 0) ids.push(...matches);
+		else if (/^\d+$/.test(item.trim())) ids.push(normalizedId("SCENARIO", item.trim()));
+	}
+	return uniqueSortedIds(ids);
+}
+
+/** Extract normalized SCENARIO-NNN identifiers from spec control.scenarioRefs. */
+export function extractScenarioRefsFromControl(control: ControlObj | undefined): string[] {
+	return extractScenarioIdsFromValue(control?.scenarioRefs);
+}
+
+function missingIds(required: string[], actual: string[]): string[] {
+	const actualSet = new Set(actual);
+	return required.filter((id) => !actualSet.has(id));
+}
+
+/** BDD must cover every requirements AC and must not cite nonexistent ACs. */
+export function bddTraceabilityErrors(requirementsContent: string, bddContent: string): string[] {
+	const requirementIds = extractAcceptanceCriteriaIds(requirementsContent);
+	const bddIds = extractAcceptanceCriteriaIds(bddContent);
+	const errors: string[] = [];
+	if (requirementIds.length === 0) errors.push("requirements doc has no AC-NN identifiers for BDD traceability");
+	if (bddIds.length === 0) errors.push("BDD doc has no AC-NN references for requirements traceability");
+	const uncovered = missingIds(requirementIds, bddIds);
+	if (uncovered.length > 0) errors.push(`BDD doc does not cover acceptance criteria: ${uncovered.join(", ")}`);
+	const dangling = missingIds(bddIds, requirementIds);
+	if (dangling.length > 0) errors.push(`BDD doc references acceptance criteria not found in requirements: ${dangling.join(", ")}`);
+	return errors;
+}
+
+/** Spec must cover every BDD scenario and tasks must map to declared phases. */
+export function specTraceabilityErrors(bddContent: string, specContent: string, spec: ControlObj | undefined): string[] {
+	const bddScenarioIds = extractScenarioIds(bddContent);
+	const specDocScenarioIds = extractScenarioIds(specContent);
+	const specControlScenarioIds = extractScenarioRefsFromControl(spec);
+	const combinedSpecIds = uniqueSortedIds([...specDocScenarioIds, ...specControlScenarioIds]);
+	const errors: string[] = [];
+	if (bddScenarioIds.length === 0) errors.push("BDD doc has no SCENARIO-NNN identifiers for spec traceability");
+	if (specControlScenarioIds.length === 0) errors.push("spec.scenarioRefs must include SCENARIO-NNN IDs from the BDD doc");
+	const uncovered = missingIds(bddScenarioIds, combinedSpecIds);
+	if (uncovered.length > 0) errors.push(`spec does not reference BDD scenarios: ${uncovered.join(", ")}`);
+	const dangling = missingIds(combinedSpecIds, bddScenarioIds);
+	if (dangling.length > 0) errors.push(`spec references scenarios not found in BDD doc: ${dangling.join(", ")}`);
+
+	const phases = normalizePhases(spec?.phases);
+	const phaseNames = new Set(phases.map((p) => p.name.trim()));
+	const tasks = Array.isArray(spec?.tasks) ? spec.tasks as Array<Record<string, unknown>> : [];
+	if (tasks.length === 0) errors.push("spec.tasks must be a non-empty array mapped to declared phase names");
+	tasks.forEach((task, index) => {
+		const phase = typeof task?.phase === "string" ? task.phase.trim() : "";
+		if (!phase) errors.push(`spec.tasks[${index}].phase is missing`);
+		else if (!phaseNames.has(phase)) errors.push(`spec.tasks[${index}].phase references unknown phase "${phase}"`);
+	});
+	return errors;
 }
 
 /**

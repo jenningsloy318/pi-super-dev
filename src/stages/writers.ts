@@ -55,7 +55,7 @@ export const specWriter: Stage = writerTask({
 	agent: "spec-writer",
 	requires: ["*-requirements.md", "*-bdd-scenarios.md"],
 	buildPrompt: (state, ctx) =>
-		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null),
+		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null),
 });
 
 export const specReviewWriter: Stage = writerTask({

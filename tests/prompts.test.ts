@@ -31,6 +31,7 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		// BDD now returns structured data (render pipeline); check for data-shape guidance, not a doc path
 		expect(buildBddPrompt(s, null, "t", null)).toContain("features");
 		expect(buildBddPrompt(s, null, "t", null)).toContain("structured output");
+		expect(buildBddPrompt(s, null, "t", null)).toContain("Every AC-NN");
 	});
 
 	it("excludes the stage's own slug so gate retries don't inflate the number", () => {
@@ -62,6 +63,12 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		const p = buildSpecPrompt(s, null, "t", null, null, null, null, null);
 		expect(p).toContain("avoid arbitrary local variable names");
 		expect(p).toContain("comment-stripped code");
+	});
+
+	it("spec prompt includes prototype evidence when a prototype report exists", () => {
+		const p = buildSpecPrompt(s, null, "t", null, null, null, null, null, { docPath: "/tmp/prototype-report.md", verdict: "pass", measurements: ["m1"], adjustments: ["a1"] });
+		expect(p).toContain("Prototype Report: /tmp/prototype-report.md");
+		expect(p).toContain("verdict, measurements, and adjustments");
 	});
 
 	it("implementation/fix prompts tell agents not to claim super-dev runtime artifacts", () => {

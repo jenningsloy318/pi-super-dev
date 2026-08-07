@@ -19,11 +19,25 @@ describe("researchComplete (answerable open issues trigger research retry)", () 
 		expect((await researchComplete(state({}), ctx)).pass).toBe(false);
 		expect((await researchComplete(state({ openIssues: [] }), ctx)).pass).toBe(false); // no docPath
 	});
-	it("PASSES only when a report exists with no answerable open issues", async () => {
-		expect((await researchComplete(state({ docPath: "/x.md", openIssues: [] }), ctx)).pass).toBe(true);
-		const withIssues = await researchComplete(state({ docPath: "/x.md", openIssues: ["unreleased v2", "unclear API"] }), ctx);
+	it("PASSES only when a sourced report exists with no answerable open issues", async () => {
+		expect((await researchComplete(state({ docPath: "/x.md", openIssues: [], sources: [{ title: "Docs", url: "https://example.com/docs" }] }), ctx)).pass).toBe(true);
+		const withIssues = await researchComplete(state({ docPath: "/x.md", openIssues: ["unreleased v2", "unclear API"], sources: [{ title: "Docs", url: "https://example.com/docs" }] }), ctx);
 		expect(withIssues.pass).toBe(false);
 		expect(withIssues.errors.join(" ")).toContain("answerable open issue");
+	});
+	it("FAILS when a report has no real source URLs and no unavailable-tool disclosure", async () => {
+		const r = await researchComplete(state({ docPath: "/x.md", openIssues: [], sources: [] }), ctx);
+		expect(r.pass).toBe(false);
+		expect(r.errors.join(" ")).toContain("source URL");
+	});
+	it("PASSES without sources only when web/search unavailability is disclosed and claims are unverified", async () => {
+		const r = await researchComplete(state({
+			docPath: "/x.md",
+			openIssues: [],
+			sources: [],
+			summary: "Web search tools were unavailable in this environment; claims below are unverified.",
+		}), ctx);
+		expect(r.pass).toBe(true);
 	});
 });
 

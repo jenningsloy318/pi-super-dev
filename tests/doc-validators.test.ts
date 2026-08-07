@@ -13,8 +13,13 @@ import { runHelper } from "../src/helpers.ts";
 import {
 	requirementsContentErrors,
 	bddContentErrors,
+	bddTraceabilityErrors,
 	specContentErrors,
+	specTraceabilityErrors,
 	specReviewContentErrors,
+	extractAcceptanceCriteriaIds,
+	extractScenarioIds,
+	extractScenarioRefsFromControl,
 	normalizePhases,
 	readSpecDoc,
 	toNumber,
@@ -34,6 +39,45 @@ function mkSetup(dir: string): SetupControl & { specDirectory: string } {
 		worktreeCreated: true,
 		initializedRepo: false,
 	};
+}
+
+function requirementsDoc(acIds = ["AC-01", "AC-02"]): string {
+	return [
+		"# Requirements",
+		"## Executive Summary",
+		"Add the thing. " + "lorem ipsum dolor ".repeat(22),
+		"## Acceptance Criteria",
+		...acIds.map((id) => `- ${id}: must satisfy ${id}`),
+		"## Non-Functional Requirements",
+		"Security and performance must remain acceptable.",
+	].join("\n");
+}
+
+function bddDoc(scenarios: Array<{ id: string; ac: string }>): string {
+	return [
+		"# BDD Scenarios",
+		...scenarios.flatMap((s) => [
+			`### SCENARIO-${s.id}: behavior for ${s.ac}`,
+			`**Given** a precondition tied to ${s.ac}`,
+			"**When** the actor performs the relevant action",
+			`**Then** the expected outcome is verified against ${s.ac}`,
+			`References: ${s.ac}`,
+		]),
+	].join("\n");
+}
+
+function specDoc(refs: string[]): string {
+	return [
+		"# Spec",
+		"## Summary",
+		"Implement the behavior described by the BDD scenarios. " + "details ".repeat(65),
+		"## Architecture",
+		"Use the existing module boundaries and keep the implementation deterministic.",
+		"## Testing Strategy",
+		"Unit and integration tests cover every referenced BDD scenario.",
+		"## BDD Scenario References",
+		...refs.map((r) => `- ${r}`),
+	].join("\n");
 }
 
 let dir: string;
@@ -105,6 +149,38 @@ describe("specContentErrors + specReviewContentErrors", () => {
 	});
 });
 
+describe("traceability validators", () => {
+	it("extracts normalized AC and scenario IDs from docs/control", () => {
+		expect(extractAcceptanceCriteriaIds("AC-1, ac-02, AC-02")).toEqual(["AC-01", "AC-02"]);
+		expect(extractScenarioIds("SCENARIO-1 plus scenario-002")).toEqual(["SCENARIO-001", "SCENARIO-002"]);
+		expect(extractScenarioRefsFromControl({ scenarioRefs: ["001", "SCENARIO-002"] })).toEqual(["SCENARIO-001", "SCENARIO-002"]);
+	});
+
+	it("requires BDD to cover every requirements acceptance criterion", () => {
+		expect(bddTraceabilityErrors(requirementsDoc(["AC-01", "AC-02"]), bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]))).toEqual([]);
+		const errors = bddTraceabilityErrors(requirementsDoc(["AC-01", "AC-02"]), bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-99" }]));
+		expect(errors.some((e) => e.includes("AC-02"))).toBe(true);
+		expect(errors.some((e) => e.includes("AC-99"))).toBe(true);
+	});
+
+	it("requires spec scenario refs and task phases to trace to BDD and declared phases", () => {
+		const goodControl = {
+			scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+			phases: [{ name: "Implementation" }],
+			tasks: [{ phase: "Implementation", description: "build it" }],
+		};
+		expect(specTraceabilityErrors(bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]), specDoc(["SCENARIO-001", "SCENARIO-002"]), goodControl)).toEqual([]);
+		const bad = specTraceabilityErrors(
+			bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]),
+			specDoc(["SCENARIO-001", "SCENARIO-099"]),
+			{ scenarioRefs: ["SCENARIO-001"], phases: [{ name: "Implementation" }], tasks: [{ phase: "Wrong", description: "x" }] },
+		);
+		expect(bad.some((e) => e.includes("SCENARIO-002"))).toBe(true);
+		expect(bad.some((e) => e.includes("SCENARIO-099"))).toBe(true);
+		expect(bad.some((e) => e.includes("unknown phase"))).toBe(true);
+	});
+});
+
 // ─── coercion helpers ───────────────────────────────────────────────────────
 
 describe("coercion", () => {
@@ -139,6 +215,7 @@ describe("gates validate real doc content", () => {
 	it("gate-bdd PASSES on a good doc even with a malformed/empty control object", async () => {
 		const specDir = `${dir}/docs/specifications/05-thing/`;
 		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}01-requirements.md`, requirementsDoc(["AC-01", "AC-02"]));
 		writeFileSync(
 			`${specDir}02-bdd-scenarios.md`,
 			[
@@ -166,6 +243,7 @@ describe("gates validate real doc content", () => {
 	it("gate-bdd FAILS on a stub doc", async () => {
 		const specDir = `${dir}/docs/specifications/05-thing/`;
 		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}01-requirements.md`, requirementsDoc(["AC-01", "AC-02"]));
 		writeFileSync(`${specDir}02-bdd-scenarios.md`, "stub");
 		const setup = mkSetup(specDir);
 		const r = await runHelper({
@@ -175,6 +253,20 @@ describe("gates validate real doc content", () => {
 		// Even though the control object claims 99 scenarios / 0.9 score, the
 		// actual doc is a stub → content validation fails. This is the whole point.
 		expect(r.value.pass).toBe(false);
+	});
+
+	it("gate-bdd FAILS when BDD does not cover every requirements AC", async () => {
+		const specDir = `${dir}/docs/specifications/05-thing/`;
+		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}01-requirements.md`, requirementsDoc(["AC-01", "AC-02"]));
+		writeFileSync(`${specDir}02-bdd-scenarios.md`, bddDoc([{ id: "001", ac: "AC-01" }]));
+		const setup = mkSetup(specDir);
+		const r = await runHelper({
+			name: "gate-bdd",
+			sources: { "write-bdd": { docPath: `${specDir}02-bdd-scenarios.md` }, setup },
+		});
+		expect(r.value.pass).toBe(false);
+		expect((r.value.errors as string[]).some((e) => e.includes("AC-02"))).toBe(true);
 	});
 
 	it("gate-requirements finds the doc via spec-dir glob when docPath is absent", async () => {
@@ -211,6 +303,58 @@ describe("gates validate real doc content", () => {
 		expect(pass.value.pass).toBe(true);
 		const fail = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Changes Requested" }, setup } });
 		expect(fail.value.pass).toBe(false);
+	});
+
+	it("gate-spec-trace PASSES with complete BDD coverage and valid task phases", async () => {
+		const specDir = `${dir}/docs/specifications/05-thing/`;
+		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}02-bdd-scenarios.md`, bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]));
+		writeFileSync(`${specDir}04-specification.md`, specDoc(["SCENARIO-001", "SCENARIO-002"]));
+		writeFileSync(`${specDir}05-implementation-plan.md`, "## Phase 1: Implementation\nDo it.");
+		writeFileSync(`${specDir}06-task-list.md`, "- [ ] **Implementation**: build it");
+		const setup = mkSetup(specDir);
+		const r = await runHelper({
+			name: "gate-spec-trace",
+			sources: {
+				"write-spec": {
+					specificationPath: `${specDir}04-specification.md`,
+					phaseCount: 1,
+					phases: [{ name: "Implementation" }],
+					tasks: [{ phase: "Implementation", description: "build it" }],
+					scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+				},
+				setup,
+			},
+		});
+		expect(r.value.pass).toBe(true);
+	});
+
+	it("gate-spec-trace FAILS on missing BDD scenario coverage and unknown task phase", async () => {
+		const specDir = `${dir}/docs/specifications/05-thing/`;
+		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}02-bdd-scenarios.md`, bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]));
+		writeFileSync(`${specDir}04-specification.md`, specDoc(["SCENARIO-001", "SCENARIO-099"]));
+		writeFileSync(`${specDir}05-implementation-plan.md`, "## Phase 1: Implementation\nDo it.");
+		writeFileSync(`${specDir}06-task-list.md`, "- [ ] **Wrong**: build it");
+		const setup = mkSetup(specDir);
+		const r = await runHelper({
+			name: "gate-spec-trace",
+			sources: {
+				"write-spec": {
+					specificationPath: `${specDir}04-specification.md`,
+					phaseCount: 1,
+					phases: [{ name: "Implementation" }],
+					tasks: [{ phase: "Wrong", description: "build it" }],
+					scenarioRefs: ["SCENARIO-001"],
+				},
+				setup,
+			},
+		});
+		expect(r.value.pass).toBe(false);
+		const errors = r.value.errors as string[];
+		expect(errors.some((e) => e.includes("SCENARIO-002"))).toBe(true);
+		expect(errors.some((e) => e.includes("SCENARIO-099"))).toBe(true);
+		expect(errors.some((e) => e.includes("unknown phase"))).toBe(true);
 	});
 });
 

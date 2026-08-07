@@ -63,16 +63,19 @@ const preMergeBuildStage: Stage = {
 	},
 };
 /** Merge is conservative (design report §C / audit Findings 1,2,4b): require an
- *  AFFIRMATIVE build-gate pass (not merely "not failed" — a missing result is a
- *  vacuous pass, the asymmetry the audit flagged vs `notBlocked` which correctly
- *  treats missing as blocking), AND implementation completeness (allGreen), AND
- *  review approval. Defense-in-depth: even if the tolerant sequence let a partial
- *  impl reach here, it cannot merge. */
+ *  AFFIRMATIVE verification + pre-merge build pass (not merely "not failed" — a
+ *  missing result is a vacuous pass, the asymmetry the audit flagged vs
+ *  `notBlocked` which correctly treats missing as blocking), AND implementation
+ *  completeness (allGreen), AND review approval. Defense-in-depth: even if the
+ *  tolerant sequence let a partial/failed verification flow onward, it cannot
+ *  merge. */
 export const canMerge = (s: PipelineState) => {
 	if (!notBlocked(s)) return false;
 	const impl = s.implementation as { allGreen?: boolean } | undefined;
 	if (impl?.allGreen !== true) return false; // completeness gate
 	if (!reviewApproved(s)) return false;     // defense-in-depth
+	const integration = s.integration as { pass?: boolean } | undefined;
+	if (integration?.pass !== true) return false; // Stage 10 verification convergence gate
 	const b = s.preMergeBuild as { pass?: boolean } | undefined;
 	return b?.pass === true;                   // affirmative pass, not !== false
 };
@@ -89,16 +92,46 @@ export const hasImplementation = (s: PipelineState) => {
 	return (i?.totalPhases ?? 0) > 0 && i?.allGreen === true;
 };
 
+function validResearchSourceCount(r: { sources?: unknown }): number {
+	const sources = Array.isArray(r.sources) ? r.sources : [];
+	return sources.filter((source) => {
+		if (!source || typeof source !== "object" || Array.isArray(source)) return false;
+		const url = (source as { url?: unknown }).url;
+		return typeof url === "string" && /^https?:\/\//i.test(url.trim());
+	}).length;
+}
+
+function researchUnavailableDisclosure(r: Record<string, unknown>): boolean {
+	const options = Array.isArray(r.options) ? r.options : [];
+	const text = [
+		r.summary,
+		...options.map((o) => typeof o === "object" && o !== null ? `${(o as { name?: unknown }).name ?? ""} ${(o as { tradeoffs?: unknown }).tradeoffs ?? ""}` : o),
+	]
+		.map((v) => String(v ?? ""))
+		.join("\n")
+		.toLowerCase();
+	const unavailable = /(?:web|search|mcp|firecrawl|anysearch|tavily|tinyfish|network|provider|tool)[\w\s/-]{0,80}(?:unavailable|not configured|unauthorized|failed|blocked|disabled)/i.test(text);
+	const unverified = /\bunverified\b|\bnot verified\b|\bunsupported by sources\b/i.test(text);
+	return unavailable && unverified;
+}
+
 /** A research report is complete only when it exists and leaves no answerable
  *  open issues. `openIssues` is reserved for concrete ambiguities that another
  *  research pass should try to resolve; generic caveats and unresolvable limits
- *  belong in the summary/options instead. The gate feeds these issues into the
- *  next attempt through the normal feedback path. */
+ *  belong in the summary/options instead. It must also include real researched
+ *  sources unless the report explicitly records unavailable web/search tooling
+ *  and marks its claims unverified. The gate feeds these issues into the next
+ *  attempt through the normal feedback path. */
 export const researchComplete = async (s: PipelineState, ctx: StageContext) => {
-	const r = s.research as { docPath?: string; openIssues?: unknown[] } | undefined;
+	const r = s.research as ({ docPath?: string; openIssues?: unknown[]; sources?: unknown } & Record<string, unknown>) | undefined;
 	if (!r || !r.docPath) {
 		ctx.log("Research: no report produced (agent returned nothing or timed out)");
 		return { pass: false, errors: ["no research report produced (agent returned nothing or timed out)"] };
+	}
+	const sourceCount = validResearchSourceCount(r);
+	if (sourceCount === 0 && !researchUnavailableDisclosure(r)) {
+		ctx.log("Research: no real source URLs and no explicit web-tool-unavailable/unverified disclosure");
+		return { pass: false, errors: ["research must include at least one real http(s) source URL, or explicitly disclose that web/search tools were unavailable and mark claims unverified"] };
 	}
 	const open = (r.openIssues as unknown[]) ?? [];
 	if (open.length > 0) {

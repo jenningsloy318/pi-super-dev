@@ -13,7 +13,9 @@ import {
 	isApprovedVerdict,
 	requirementsContentErrors,
 	bddContentErrors,
+	bddTraceabilityErrors,
 	specContentErrors,
+	specTraceabilityErrors,
 	specReviewContentErrors,
 } from "./doc-validators.ts";
 
@@ -114,12 +116,17 @@ function gateBdd(s: Record<string, unknown>): HelperResult {
 	const errors: string[] = [];
 	if (!bdd) errors.push("Missing upstream: write-bdd");
 	else {
-		const doc = readSpecDoc(setupSpecDir(s), bdd, "*-bdd-scenarios.md");
+		const dir = setupSpecDir(s);
+		const doc = readSpecDoc(dir, bdd, "*-bdd-scenarios.md");
 		if (doc) {
 			errors.push(...bddContentErrors(doc.content));
+			const requirementsDoc = readSpecDoc(dir, s["write-requirements"] as ControlObj | undefined, "*-requirements.md");
+			if (requirementsDoc) errors.push(...bddTraceabilityErrors(requirementsDoc.content, doc.content));
+			else errors.push("No requirements doc found for BDD traceability (no docPath, and no *-requirements.md in the spec dir)");
 		} else {
-			// No doc on disk — fall back to self-reported metadata (coerced).
-			if (!bdd.docPath) errors.push("No BDD doc found (no docPath, and no *-bdd-scenarios.md in the spec dir)");
+			// No doc on disk: metadata is useful diagnostics, but cannot satisfy the
+			// traceability gate because there is no artifact for downstream stages.
+			errors.push("No BDD doc found (docPath missing/unreadable, and no *-bdd-scenarios.md in the spec dir)");
 			if ((toNumber(bdd.scenarioCount) ?? 0) < 1) errors.push("No scenarios written");
 			const score = toNumber(bdd.coverageScore);
 			const edgeOk = toBool(bdd.edgeCasesCovered) || (score !== null && score >= 0.6);
@@ -148,10 +155,13 @@ function gateSpecTrace(s: Record<string, unknown>): HelperResult {
 		const doc = readSpecDoc(dir, spec, "*-specification.md", ["specificationPath", "docPath"]);
 		if (doc) {
 			errors.push(...specContentErrors(doc.content));
+			const bddDoc = readSpecDoc(dir, s["write-bdd"] as ControlObj | undefined, "*-bdd-scenarios.md");
+			if (bddDoc) errors.push(...specTraceabilityErrors(bddDoc.content, doc.content, spec));
+			else errors.push("No BDD doc found for spec traceability (no docPath, and no *-bdd-scenarios.md in the spec dir)");
 			if (!specDocExists(dir, "*-task-list.md")) errors.push("Task list file (*-task-list.md) missing");
 			if (!specDocExists(dir, "*-implementation-plan.md")) errors.push("Implementation plan file (*-implementation-plan.md) missing");
-		} else if (!spec.specificationPath) {
-			errors.push("No specification path returned and no *-specification.md in the spec dir");
+		} else {
+			errors.push("No specification doc found (specificationPath/docPath missing or unreadable, and no *-specification.md in the spec dir)");
 		}
 	}
 	return fail("gate-spec-trace", errors);
