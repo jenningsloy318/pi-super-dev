@@ -291,6 +291,24 @@ describe("Phase 2 — prompt output contract (AC-06 / SCENARIO-011)", () => {
 		expect(prompt.toLowerCase()).toMatch(/git[ -]?cross[ -]?check/);
 	});
 
+	it("buildFixPrompt preserves actionable review finding context", () => {
+		const prompt = buildFixPrompt(mkSetup(), null, [{
+			id: "SEC-1",
+			severity: "high",
+			title: "Admin middleware does not enforce expiration",
+			detail: "Expired admin sessions can still pass authorization.",
+			file: "auth-service/src/middleware/admin.ts",
+			line: 42,
+			evidence: ["getSession() can return stale data"],
+			recommendation: "Call the shared expiration policy before authorizing admin routes.",
+		}]);
+		expect(prompt).toContain("SEC-1 [high] Admin middleware does not enforce expiration");
+		expect(prompt).toContain("Location: auth-service/src/middleware/admin.ts:42");
+		expect(prompt).toContain("Expired admin sessions can still pass authorization.");
+		expect(prompt).toContain("getSession() can return stale data");
+		expect(prompt).toContain("Call the shared expiration policy");
+	});
+
 	it("buildImplementationSummaryPrompt is UNCHANGED — still consumes the flat filesModified list", () => {
 		// buildImplementationSummaryPrompt must NOT change its contract this phase
 		// (AC-10: the summary writer consumes the DERIVED flat list). Import here

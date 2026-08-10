@@ -20,7 +20,7 @@ vi.mock("../src/pi-spawn.ts", () => ({
 }));
 
 import { makeContext } from "../src/workflow.ts";
-import { debugWriter } from "../src/stages/writers.ts";
+import { debugWriter, docsWriter } from "../src/stages/writers.ts";
 import type { PipelineState, StageContext } from "../src/types.ts";
 
 let tempDirs: string[] = [];
@@ -113,6 +113,23 @@ describe("source-read-only agent boundary", () => {
 		} as unknown as StageContext;
 
 		await debugWriter.run({ setup: { worktreePath: "/tmp/project", specDirectory: "/tmp/project/docs/specifications/x" } } as unknown as PipelineState, ctx);
+
+		expect(captured).toBe("source-read-only");
+	});
+
+	it("wires documentation through source-read-only access mode", async () => {
+		let captured: string | undefined;
+		const ctx = {
+			budget: { check: () => true },
+			agent: vi.fn(async (call) => {
+				captured = call.accessMode;
+				return { text: "", control: null };
+			}),
+			log: vi.fn(),
+			task: "docs task",
+		} as unknown as StageContext;
+
+		await docsWriter.run({ setup: { worktreePath: "/tmp/project", specDirectory: "/tmp/project/docs/specifications/x" } } as unknown as PipelineState, ctx);
 
 		expect(captured).toBe("source-read-only");
 	});

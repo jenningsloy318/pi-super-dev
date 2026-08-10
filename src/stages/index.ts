@@ -17,7 +17,7 @@
  *   spec/review convergence ─► implementation ─►
  *   verification convergence (review/build → integration, restarting at review
  *   after every fix) ─►
- *   docs ─► cleanup ─► branch[!blocked]→merge
+ *   branch[verified]→docs ─► cleanup ─► branch[!blocked]→merge
  */
 
 import { task, sequence, branch, loop } from "../nodes.ts";
@@ -93,6 +93,19 @@ export const hasImplementation = (s: PipelineState) => {
 	return (i?.totalPhases ?? 0) > 0 && i?.allGreen === true;
 };
 
+/** Downstream write-capable stages may only run after Stage 10 has positively
+ *  verified the implementation. A tolerant sequence can carry a failed Stage 10
+ *  result forward, so this predicate is the explicit safety boundary for docs,
+ *  pre-merge build, cleanup, and merge. */
+export const hasVerifiedImplementation = (s: PipelineState) => {
+	if (!hasImplementation(s)) return false;
+	if (!reviewApproved(s)) return false;
+	const integration = s.integration as { pass?: boolean } | undefined;
+	if (integration?.pass !== true) return false;
+	const build = s.buildGate as { pass?: boolean } | undefined;
+	return build?.pass === true;
+};
+
 /** §D auto-iterate convergence loop (design report §D): re-run implementation
  *  until all phases are green, the global budget is exhausted, or Stage 9 marks
  *  the phase as no-progress blocked. Combined with the per-phase green-state
@@ -142,15 +155,22 @@ const pipeline = sequence(
 		// node owns review/build/integration freshness; a fix is never terminal
 		// evidence and always forces the next attempt to restart at review.
 		branch(hasImplementation, { yes: verificationConvergenceNode }),
-		task(docsWriter),
-		// Pre-merge hard build gate (Gap A): don't merge broken code. Run BEFORE
-		// cleanup so dependency cleanup cannot remove node_modules/toolchains needed
-		// by the final verification pass.
-		task(preMergeBuildStage),
-		task(cleanupTask),
-		// Conditional branch: merge only if cleanup found no sensitive data AND
-		// the pre-merge build gate did not fail.
-		branch(canMerge, { yes: task(mergeWriter) }),
+		// Downstream write-capable close-out stages run only after positive Stage 10
+		// verification. A failed/blocking verification in this tolerant sequence must
+		// not be followed by docs/cleanup/merge mutations.
+		branch(hasVerifiedImplementation, {
+			yes: sequence([
+				task(docsWriter),
+				// Pre-merge hard build gate (Gap A): don't merge broken code. Run BEFORE
+				// cleanup so dependency cleanup cannot remove node_modules/toolchains needed
+				// by the final verification pass.
+				task(preMergeBuildStage),
+				task(cleanupTask),
+				// Conditional branch: merge only if cleanup found no sensitive data AND
+				// the pre-merge build gate did not fail.
+				branch(canMerge, { yes: task(mergeWriter) }),
+			]),
+		}),
 	],
 	{ tolerant: true }, // best-effort: a non-setup stage failure is logged, not fatal
 );
@@ -158,7 +178,7 @@ const pipeline = sequence(
 export const SUPER_DEV_WORKFLOW: Workflow = {
 	id: "super-dev",
 	description:
-		"13-stage development pipeline composed from control-flow nodes: classify → requirements/BDD/research artifact convergence → [debug] → assessment → design → [prototype] → spec/review convergence → implementation (TDD) → verification convergence → docs → cleanup → merge.",
+		"13-stage development pipeline composed from control-flow nodes: classify → requirements/BDD/research artifact convergence → [debug] → assessment → design → [prototype] → spec/review convergence → implementation (TDD) → verification convergence → verified docs → cleanup → merge.",
 	root: pipeline,
 };
 

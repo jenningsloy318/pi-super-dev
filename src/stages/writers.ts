@@ -77,6 +77,7 @@ export const docsWriter: Stage = writerTask({
 	id: "docs",
 	label: "Stage 12 — Documentation",
 	agent: "docs-executor",
+	accessMode: "source-read-only",
 	requires: ["*-specification.md"],
 	buildPrompt: (state, ctx) => P.buildDocsPrompt(S(state), state.classify ?? null, ctx.task, state.spec ?? null),
 });

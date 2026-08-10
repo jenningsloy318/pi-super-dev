@@ -244,8 +244,40 @@ export function buildAdversarialPrompt(s: SetupControl, c: Classification | null
 	return [ctxBlock(s, c), "", "## Upstream Artifacts", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, `- Phases Completed: ${(implControl?.phasesCompleted as number) ?? 0}/${(implControl?.totalPhases as number) ?? 0}`, "", "## Task", task, "", "## Instructions", "Challenge the implementation from three critical lenses: Skeptic, Architect, Minimalist.", "Look for issues standard review misses: over-engineering, hidden complexity, missing error paths.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "## Data to return", "Return: title, date, verdict, summary, findings [{id, severity, title, detail, lens?}] (use lens: Skeptic|Architect|Minimalist)", "", "Output <control> JSON with: title, date, verdict, summary, findings."].join("\n");
 }
 export function buildFixPrompt(s: SetupControl, c: Classification | null, findings: unknown[], testFailures?: unknown[]): string {
-	const list = (findings ?? []).map((f) => { const o = f as { severity?: string; title?: string; message?: string }; return `- [${o.severity ?? "medium"}] ${o.title ?? o.message ?? JSON.stringify(f)}`; }).join("\n");
-	const tlist = (testFailures ?? []).map((f) => { const o = f as { method?: string; path?: string; reason?: string }; return `- ${o.method ?? ""} ${o.path ?? ""} — ${o.reason ?? JSON.stringify(f)}`; }).join("\n");
+	const clean = (value: unknown): string => {
+		if (value == null) return "";
+		if (typeof value === "object") return JSON.stringify(value);
+		return String(value).replace(/\s+/g, " ").trim();
+	};
+	const list = (findings ?? []).map((f, index) => {
+		const o = f as { id?: unknown; severity?: unknown; title?: unknown; message?: unknown; detail?: unknown; file?: unknown; line?: unknown; evidence?: unknown; recommendation?: unknown; ownerStage?: unknown };
+		const title = clean(o.title) || clean(o.message) || clean(f) || `Finding ${index + 1}`;
+		const id = clean(o.id);
+		const file = clean(o.file);
+		const line = clean(o.line);
+		const evidence = Array.isArray(o.evidence) ? o.evidence.map(clean).filter(Boolean).join("; ") : clean(o.evidence);
+		const detail = clean(o.detail);
+		const recommendation = clean(o.recommendation);
+		const ownerStage = clean(o.ownerStage);
+		const rows = [`- ${id ? `${id} ` : ""}[${clean(o.severity) || "medium"}] ${title}`];
+		if (file || line) rows.push(`  - Location: ${file || "unknown"}${line ? `:${line}` : ""}`);
+		if (detail && detail !== title) rows.push(`  - Detail: ${detail}`);
+		if (evidence) rows.push(`  - Evidence: ${evidence}`);
+		if (recommendation) rows.push(`  - Recommendation: ${recommendation}`);
+		if (ownerStage) rows.push(`  - Owning stage: ${ownerStage}`);
+		return rows.join("\n");
+	}).join("\n");
+	const tlist = (testFailures ?? []).map((f, index) => {
+		const o = f as { method?: unknown; path?: unknown; file?: unknown; title?: unknown; message?: unknown; reason?: unknown; expected?: unknown; actual?: unknown };
+		const method = clean(o.method);
+		const path = clean(o.path) || clean(o.file);
+		const reason = clean(o.reason) || clean(o.message) || clean(o.title) || clean(f) || `Failure ${index + 1}`;
+		const expected = clean(o.expected);
+		const actual = clean(o.actual);
+		const rows = [`- ${[method, path].filter(Boolean).join(" ") || `Failure ${index + 1}`} — ${reason}`];
+		if (expected || actual) rows.push(`  - Expected/actual: ${expected || "unknown"} / ${actual || "unknown"}`);
+		return rows.join("\n");
+	}).join("\n");
 	const parts = [ctxBlock(s, c), "", "## Code Review Findings to Address", list || "- (no specific findings)"];
 	if (tlist) parts.push("", "## API Test Failures to Address", tlist, "");
 	parts.push("", "## Instructions", "Fix the issues above. Make minimal, targeted changes.", "Run tests after each fix to ensure no regressions.", "Then update the existing `*-implementation-summary.md` in the spec directory: append a short note of what this fix round changed.", "", GIT_CROSSCHECK_WARNING, "Output <control> JSON with: filesCreated (array), filesModified (array), filesDeleted (array), fixesApplied (number), summary.");
@@ -269,7 +301,7 @@ export function buildApiTestPrompt(s: SetupControl, c: Classification | null, sp
 	return [ctxBlock(s, c), "", "## Service under test", `- API base URL: ${service.baseUrl}`, "- The server is ALREADY RUNNING — do not start or stop it.", "", "## Authentication", "Determine the auth scheme from the spec and source. If a credential is required it is in `.env` — load it (`set -a; . ./.env; set +a`) and reference it in your test script ONLY as `process.env.NAME`. NEVER print a secret value; redact any Authorization to `***` in every output.", "", "## Upstream Artifacts", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, "", "## Instructions", "Exercise every endpoint from the spec: full CRUD where applicable, unauthorized attempts (expect 401/403), and edge/invalid bodies (missing fields, wrong types, empty/oversized). Write a node test script using `fetch`, run it, and collect status + a short response excerpt per case.", "Do NOT modify production/source files while testing. If you need a script, put it outside the repository (for example under /tmp) or in an obvious test-only artifact; the harness rejects tester writes to implementation files.", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "The report must include: endpoints tested, a per-case table (method/path/body-summary/expected/actual/pass), an overall pass flag, and a failures list. Redact all credentials.", "", "Output <control> JSON with: pass (boolean), cases (number), failures (array of {method, path, reason}), summary."].join("\n");
 }
 export function buildDocsPrompt(s: SetupControl, c: Classification | null, task: string, specControl: R): string {
-	return [ctxBlock(s, c), "", "## Task", task, "", "## Upstream Artifacts", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, `- Spec Directory: ${s.specDirectory}`, "", "## Instructions", "Update documentation to reflect the implementation:", "- Review spec directory files for accuracy against the code", "- Update README, CHANGELOG, API docs as needed", "- Document any deviations from the specification", "The document will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the document.", "", "Output <control> JSON with: title, date, summary, docsUpdated, deviationsDocumented."].join("\n");
+	return [ctxBlock(s, c), "", "## Task", task, "", "## Upstream Artifacts", `- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`, `- Spec Directory: ${s.specDirectory}`, "", "## Instructions", "Prepare the documentation close-out for this verified implementation:", "- Review spec directory files for accuracy against the code", "- Record any README, CHANGELOG, API-doc, or architecture-doc updates that are still needed as recommendations in the documentation report", "- Document any deviations from the specification", "Do NOT edit production source, tests, configs, or project-level docs. The pipeline may render/update the spec-directory documentation artifact for you.", "", "Output <control> JSON with: title, date, summary, docsUpdated, deviationsDocumented."].join("\n");
 }
 export function buildCommitPrompt(s: SetupControl, phaseName: string): string {
 	return ["## Context", `- Worktree: ${s.worktreePath}`, "", "## Instructions", `Commit all changes for implementation phase: ${phaseName}`, "Use a conventional commit message that describes the phase work.", "Stage only files relevant to this phase."].join("\n");

@@ -26,8 +26,8 @@ import { STAGE_MODELS } from "../render/schemas.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
-import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
-import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
+import { recordConvergenceFindings, recordReviewFindingsFromControl, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
+import type { ControlObj, Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
 const setupOf = (s: PipelineState) => s.setup!;
 
@@ -48,6 +48,75 @@ export interface VerificationAttemptRecord {
 	fixKind?: "review" | "integration";
 	fixChanged?: boolean;
 	terminal?: boolean;
+}
+
+interface VerificationFailureItem {
+	fingerprint: string;
+	label: string;
+	source: "review" | "build" | "integration";
+}
+
+interface VerificationFailureFingerprintRound {
+	attempt: number;
+	items: VerificationFailureItem[];
+	fixKind?: "review" | "integration";
+	fixChanged?: boolean;
+	recurringFingerprints?: string[];
+}
+
+const VERIFICATION_STAGNATION_CHANGED_FIX_ATTEMPT_FLOOR = 3;
+
+function compactText(value: unknown): string {
+	if (value == null) return "";
+	if (Array.isArray(value)) return value.map(compactText).filter(Boolean).join("; ");
+	if (typeof value === "object") return JSON.stringify(value);
+	return String(value).replace(/\s+/g, " ").trim();
+}
+
+function shortFingerprint(parts: unknown[]): string {
+	return createHash("sha256").update(parts.map((part) => compactText(part).toLowerCase()).join("\n")).digest("hex").slice(0, 16);
+}
+
+function currentVerificationFailureItems(s: PipelineState): VerificationFailureItem[] {
+	const reviewFindings = ((s.review?.findings as Array<Record<string, unknown>> | undefined) ?? []).map((finding, index) => {
+		const id = compactText(finding.id);
+		const file = compactText(finding.file);
+		const line = compactText(finding.line);
+		const severity = compactText(finding.severity) || "medium";
+		const title = compactText(finding.title ?? finding.message) || `review finding ${index + 1}`;
+		const detail = compactText(finding.detail);
+		const identity = id ? ["review-id", id] : ["review", file, line, severity, title, detail];
+		const location = file ? `${file}${line ? `:${line}` : ""}: ` : "";
+		return {
+			fingerprint: shortFingerprint(identity),
+			label: `${location}[${severity}] ${title}`,
+			source: "review" as const,
+		};
+	});
+	const deterministicBuildErrors = buildErrors(s).map((error, index) => ({
+		fingerprint: shortFingerprint(["build", error]),
+		label: `build ${index + 1}: ${error}`,
+		source: "build" as const,
+	}));
+	const expectedRoles = new Set(expectedIntegrationRoles(s));
+	const integrationFailures = [
+		...(expectedRoles.has("api") ? (((s.apiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? []).map((failure) => ({ role: "api", failure })) : []),
+		...(expectedRoles.has("ui") ? (((s.uiTest as { failures?: Array<Record<string, unknown>> } | undefined)?.failures) ?? []).map((failure) => ({ role: "ui", failure })) : []),
+	].map(({ role, failure }, index) => {
+		const method = compactText(failure.method);
+		const path = compactText(failure.path ?? failure.file);
+		const title = compactText(failure.title ?? failure.reason ?? failure.message) || `integration failure ${index + 1}`;
+		return {
+			fingerprint: shortFingerprint(["integration", role, method, path, title]),
+			label: `${role}${method || path ? ` ${[method, path].filter(Boolean).join(" ")}` : ""}: ${title}`,
+			source: "integration" as const,
+		};
+	});
+	const outcome = s.integration as { status?: IntegrationOutcomeStatus; summary?: unknown } | undefined;
+	const statusFailure = outcome?.status && outcome.status !== "passed" && outcome.status !== "skipped-not-applicable" && integrationFailures.length === 0
+		? [{ fingerprint: shortFingerprint(["integration-status", outcome.status, outcome.summary]), label: `integration status: ${outcome.status}`, source: "integration" as const }]
+		: [];
+	return [...reviewFindings, ...deterministicBuildErrors, ...integrationFailures, ...statusFailure];
 }
 
 function gitText(cwd: string, args: string[]): string {
@@ -231,13 +300,6 @@ export function verificationFailureSignature(s: PipelineState): string {
 	return parts.join("\n---\n");
 }
 
-function verificationFailureCount(s: PipelineState): number {
-	const findings = (s.review?.findings as unknown[] | undefined) ?? [];
-	const integration = s.integration as { status?: IntegrationOutcomeStatus } | undefined;
-	const integrationPenalty = integration?.status && integration.status !== "passed" && integration.status !== "skipped-not-applicable" ? 1 : 0;
-	return findings.length + buildErrors(s).length + testFailureCount(s) + integrationPenalty;
-}
-
 function recordAttemptEnd(s: PipelineState, record: VerificationAttemptRecord, terminal = false): void {
 	record.endedAt = localTimestamp();
 	record.durationMs = Date.now() - Date.parse(record.startedAt);
@@ -253,35 +315,82 @@ function recordAttemptEnd(s: PipelineState, record: VerificationAttemptRecord, t
 	record.terminal = terminal;
 }
 
+function rememberVerificationFailureRound(s: PipelineState, record: VerificationAttemptRecord, items: VerificationFailureItem[]): VerificationFailureFingerprintRound[] {
+	const history = ((s as Record<string, unknown>).__verificationFailureFingerprintRounds as VerificationFailureFingerprintRound[] | undefined) ?? [];
+	(s as Record<string, unknown>).__verificationFailureFingerprintRounds = history;
+	const lastFix = (s as Record<string, unknown>).__lastVerificationFix as { kind?: "review" | "integration"; changed?: boolean } | undefined;
+	history.push({ attempt: record.attempt, items, fixKind: lastFix?.kind, fixChanged: lastFix?.changed });
+	return history;
+}
+
+function recurringVerificationFailures(current: VerificationFailureItem[], previous: VerificationFailureItem[] | undefined): VerificationFailureItem[] {
+	if (!previous?.length || current.length === 0) return [];
+	const previousFingerprints = new Set(previous.map((item) => item.fingerprint));
+	const seen = new Set<string>();
+	const recurring: VerificationFailureItem[] = [];
+	for (const item of current) {
+		if (!previousFingerprints.has(item.fingerprint) || seen.has(item.fingerprint)) continue;
+		seen.add(item.fingerprint);
+		recurring.push(item);
+	}
+	return recurring;
+}
+
+function recordVerificationReviewFindings(s: PipelineState, ctx: StageContext): void {
+	const written = recordReviewFindingsFromControl(s, s.review as ControlObj | undefined, {
+		detectedAtStage: "verification",
+		ownerStage: "implementation",
+		sourceGate: "verification-review",
+	});
+	if (written.length === 0) return;
+	const recurring = written.filter((finding) => finding.blocking && finding.seenCount > 1).length;
+	ctx.log(`Stage 10: convergence ledger recorded ${written.length} review finding(s) (${recurring} recurring blocker${recurring === 1 ? "" : "s"})`);
+}
+
 function recordVerificationStagnation(s: PipelineState, ctx: StageContext, record: VerificationAttemptRecord): boolean {
-	const sigHist = ((s as Record<string, unknown>).__verificationSignatures as string[] | undefined) ?? [];
-	const countHist = ((s as Record<string, unknown>).__verificationCounts as number[] | undefined) ?? [];
-	(s as Record<string, unknown>).__verificationSignatures = sigHist;
-	(s as Record<string, unknown>).__verificationCounts = countHist;
-	const count = verificationFailureCount(s);
-	if (!detectStagnation(record.failureSignature, count, sigHist, countHist)) return false;
+	const items = currentVerificationFailureItems(s);
+	const history = rememberVerificationFailureRound(s, record, items);
+	const previous = history.length >= 2 ? history[history.length - 2] : undefined;
+	const recurring = recurringVerificationFailures(items, previous?.items);
+	const currentRound = history[history.length - 1];
+	currentRound.recurringFingerprints = recurring.map((item) => item.fingerprint);
+	const lastFix = (s as Record<string, unknown>).__lastVerificationFix as { kind?: "review" | "integration"; changed?: boolean; before?: unknown; after?: unknown } | undefined;
+	if (!lastFix || recurring.length === 0) return false;
+	const attemptFloor = lastFix.changed === true ? VERIFICATION_STAGNATION_CHANGED_FIX_ATTEMPT_FLOOR : 2;
+	if (record.attempt < attemptFloor) {
+		ctx.log(`Stage 10: ${recurring.length} recurring blocker(s) after ${String(lastFix.kind ?? "unknown")} fix, but changed fixes require at least ${attemptFloor} verification attempts before stagnation stop`);
+		return false;
+	}
+	const previousRecurring = previous?.recurringFingerprints ?? [];
+	const currentRecurring = currentRound.recurringFingerprints;
+	const recurringSetShrank = lastFix.changed === true && previousRecurring.length > 0 && currentRecurring.length < previousRecurring.length;
+	if (recurringSetShrank) {
+		ctx.log(`Stage 10: recurring blocker set shrank ${previousRecurring.length}->${currentRecurring.length} after ${String(lastFix.kind ?? "unknown")} fix — continuing convergence`);
+		return false;
+	}
 	const findings = ((s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [])
 		.slice(0, 12)
 		.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null }));
 	(s as Record<string, unknown>).__verificationStagnated = {
-		rounds: sigHist.length,
+		rounds: history.length,
 		attempt: record.attempt,
 		status: (s.integration as { status?: unknown } | undefined)?.status ?? "review-build",
 		signature: record.failureSignature,
 		findings,
+		recurringBlockers: recurring.map((item) => ({ fingerprint: item.fingerprint, source: item.source, label: item.label })),
 	};
 	// Preserve the existing extension summary/report path, which keys off
 	// __stagnated for verify-loop blockers.
 	(s as Record<string, unknown>).__stagnated = {
-		rounds: sigHist.length,
+		rounds: history.length,
 		verdict: (s.review as { verdict?: string } | undefined)?.verdict,
 		findings,
 	};
-	ctx.log(`Stage 10: verification convergence stagnant across 2 consecutive attempts — stopping before another blind fix (attempt ${record.attempt})`);
+	ctx.log(`Stage 10: verification convergence stagnant on ${recurring.length} recurring blocker(s) after ${record.attempt - 1} fix cycle(s) — stopping before another blind fix (attempt ${record.attempt})`);
 	recordVerificationConvergenceFinding(s, {
 		title: "Verification convergence stagnant",
-		detail: `same verification failure signature repeated at attempt ${record.attempt}`,
-		evidence: [...summarizeReviewFindings(s), ...buildErrors(s), ...summarizeTestFailures(s)],
+		detail: `${recurring.length} verification blocker fingerprint(s) recurred after a targeted ${String(lastFix.kind ?? "unknown")} fix at attempt ${record.attempt}`,
+		evidence: recurring.map((item) => `${item.source}:${item.fingerprint} ${item.label}`).slice(0, 12),
 		sourceGate: "stagnation",
 	});
 	return true;
@@ -575,22 +684,18 @@ export const testFailuresSignature = (s: PipelineState): string => {
 };
 
 /**
- * GAP C: shared stagnation trigger for both loops. A loop is stagnant when the
- * CURRENT non-empty signature byte-matches the previous round's, OR when the
- * current non-zero finding/failure COUNT fails to decrease (n→n or n→n+1 scope
- * drift). A genuinely converging sequence (5→3→1) never triggers. Callers own
- * the history arrays; this pushes the current round then compares the last two.
+ * Legacy review/integration stagnation trigger. Count growth is not stagnation:
+ * a fresh reviewer can legitimately discover new findings after the previous
+ * fix. Only an identical non-empty signature repeated across consecutive rounds
+ * is treated as no-progress here; Stage 10's main convergence node uses the
+ * richer per-finding recurrence detector above.
  */
 const detectStagnation = (sig: string, count: number, sigHist: string[], countHist: number[]): boolean => {
 	sigHist.push(sig);
 	countHist.push(count);
 	const n = sigHist.length;
 	if (n < 2) return false;
-	if (sig !== "" && sigHist[n - 1] === sigHist[n - 2]) return true; // identical-signature trigger
-	const prev = countHist[n - 2];
-	const cur = countHist[n - 1];
-	if (cur > 0 && prev > 0 && cur >= prev) return true; // non-decreasing-count trigger
-	return false;
+	return sig !== "" && sigHist[n - 1] === sigHist[n - 2];
 };
 
 /** Stagnation: same review-findings signature on 2 consecutive rounds → break. */
@@ -825,8 +930,7 @@ export const verificationConvergenceNode: Node = {
 		delete (state as Record<string, unknown>).__verificationStagnated;
 		delete (state as Record<string, unknown>).__stagnated;
 		delete (state as Record<string, unknown>).__lastVerificationFix;
-		(state as Record<string, unknown>).__verificationSignatures = [];
-		(state as Record<string, unknown>).__verificationCounts = [];
+		(state as Record<string, unknown>).__verificationFailureFingerprintRounds = [];
 		const attempts = ensureVerificationAttempts(state);
 
 		let lastAttempt = 0;
@@ -850,6 +954,7 @@ export const verificationConvergenceNode: Node = {
 
 			const reviewResult = await reviewStep.run(state, ctx);
 			if (reviewResult.status === "cancelled") return reviewResult;
+			recordVerificationReviewFindings(state, ctx);
 			const buildResult = await buildGateStep.run(state, ctx);
 			if (buildResult.status === "cancelled") return buildResult;
 

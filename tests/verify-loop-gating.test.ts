@@ -7,7 +7,8 @@
  *
  * GAP A: testFailuresSignature + Stage 11 test-failure stagnation (__testStagnated).
  * GAP B: reviewLoopUntil requires reviewApproved AND buildGreen to exit.
- * GAP C: non-decreasing finding/failure count triggers stagnation (both detectors).
+ * GAP C: repeated failure fingerprints trigger stagnation; count growth alone
+ * does not.
  * GAP D: review loops are budget-bounded when no approval or stagnation signal exists.
  */
 import { describe, it, expect } from "vitest";
@@ -170,21 +171,26 @@ describe("GAP B — build-gated Stage 10 exit", () => {
 	});
 });
 
-// ─── GAP C — non-decreasing count stagnation (both detectors) ─────────────────
+// ─── GAP C — fingerprint stagnation (both detectors) ────────────────────────
 
-describe("GAP C — count-based stagnation", () => {
-	it("treats a non-decreasing finding count as stagnant but lets converging runs proceed", async () => {
-		// 5 → 5 (different files, same count) → stagnant on round 2.
+describe("GAP C — fingerprint-based stagnation", () => {
+	it("treats an identical failure signature as stagnant but ignores count-only growth", async () => {
 		const s = { review: { verdict: "Changes Requested", findings: mkFindings(5, "r1") } } as unknown as PipelineState;
 		expect(await reviewLoopUntil(s, logCtx())).toBe(false); // round 1: nothing to compare
-		s.review = { verdict: "Changes Requested", findings: mkFindings(5, "r2") }; // fresh sig, count 5→5
+		s.review = { verdict: "Changes Requested", findings: mkFindings(5, "r1") };
 		expect(await reviewLoopUntil(s, logCtx())).toBe(true);
 
-		// 5 → 6 (scope drift) → also stagnant.
+		// 5 -> 5 with different findings is fresh evidence, not stagnation.
+		const sameCount = { review: { verdict: "Changes Requested", findings: mkFindings(5, "s1") } } as unknown as PipelineState;
+		expect(await reviewLoopUntil(sameCount, logCtx())).toBe(false);
+		sameCount.review = { verdict: "Changes Requested", findings: mkFindings(5, "s2") };
+		expect(await reviewLoopUntil(sameCount, logCtx())).toBe(false);
+
+		// 5 -> 6 with different findings is also fresh evidence, not stagnation.
 		const drift = { review: { verdict: "Changes Requested", findings: mkFindings(5, "d1") } } as unknown as PipelineState;
 		expect(await reviewLoopUntil(drift, logCtx())).toBe(false);
 		drift.review = { verdict: "Changes Requested", findings: mkFindings(6, "d2") };
-		expect(await reviewLoopUntil(drift, logCtx())).toBe(true);
+		expect(await reviewLoopUntil(drift, logCtx())).toBe(false);
 
 		// 5 → 3 → 1 (converging) must NOT trigger stagnation.
 		const conv = { review: { verdict: "Changes Requested", findings: mkFindings(5, "c1") } } as unknown as PipelineState;
@@ -384,15 +390,20 @@ describe("verificationConvergenceNode", () => {
 		expect(state.integration?.status).toBe("passed");
 	});
 
-	it("does not run a final unreviewed fix when verification stagnates", async () => {
+	it("does not treat 8 to 9 different review findings as stagnation", async () => {
 		let codeReviewCalls = 0;
 		let fixCalls = 0;
 		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
 		const ctx = convergenceCtx(async (call: AgentCall) => {
 			if (call.agent === "code-reviewer") {
 				codeReviewCalls += 1;
-				const remaining = Math.max(1, 6 - codeReviewCalls);
-				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Changes Requested", summary: "fail", findings: mkFindings(remaining, `r${codeReviewCalls}`) } };
+				if (codeReviewCalls === 1) {
+					return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Changes Requested", summary: "first", findings: mkFindings(8, "first") } };
+				}
+				if (codeReviewCalls === 2) {
+					return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Changes Requested", summary: "fresh", findings: mkFindings(9, "second") } };
+				}
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
 			}
 			if (call.agent === "adversarial-reviewer") {
 				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
@@ -406,11 +417,92 @@ describe("verificationConvergenceNode", () => {
 
 		const result = await verificationConvergenceNode.run(state, ctx);
 
+		expect(result.status).toBe("ok");
+		expect(codeReviewCalls).toBe(3);
+		expect(fixCalls).toBe(2);
+		expect(state.integration?.status).toBe("skipped-not-applicable");
+	});
+
+	it("does not run a final unreviewed fix when a recurring verification blocker stagnates", async () => {
+		let codeReviewCalls = 0;
+		let fixCalls = 0;
+		const logs: string[] = [];
+		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
+		const cwd = state.setup!.worktreePath;
+		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				codeReviewCalls += 1;
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Changes Requested", summary: "fail", findings: [{ id: "F-admin-expiry", severity: "high", title: "Admin middleware does not enforce session expiration", detail: "expired session can pass", file: "auth-service/src/middleware/admin.ts", line: 42 }] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				mkdirSync(join(cwd, "src"), { recursive: true });
+				writeFileSync(join(cwd, "src", `fix-${fixCalls}.ts`), `export const fix${fixCalls} = true;\n`);
+				return { text: "", control: { filesCreated: [`src/fix-${fixCalls}.ts`], filesModified: [], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			return { text: "", control: {} };
+		}, logs);
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
 		expect(result.status).toBe("failed");
-		expect(codeReviewCalls).toBe(6);
-		expect(fixCalls).toBe(5);
+		expect(codeReviewCalls).toBe(3);
+		expect(fixCalls).toBe(2);
 		const attempts = (state as Record<string, unknown>).__verificationAttempts as unknown[];
-		expect(attempts).toHaveLength(6);
+		expect(attempts).toHaveLength(3);
+		expect(logs.join("\n")).toContain("recurring blocker");
+	});
+
+	it("continues when the recurring verification blocker set is shrinking", async () => {
+		let codeReviewCalls = 0;
+		let fixCalls = 0;
+		const logs: string[] = [];
+		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
+		const cwd = state.setup!.worktreePath;
+		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		const reviewSets = [
+			["A", "B", "C"],
+			["B", "C"],
+			["C"],
+			["C"],
+		];
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				const ids = reviewSets[Math.min(codeReviewCalls, reviewSets.length - 1)];
+				codeReviewCalls += 1;
+				return {
+					text: "",
+					control: {
+						title: "Review",
+						date: "2026-08-07",
+						verdict: "Changes Requested",
+						summary: "fail",
+						findings: ids.map((id) => ({ id, severity: "high", title: `Finding ${id}`, detail: `Issue ${id}`, file: `src/${id}.ts` })),
+					},
+				};
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				mkdirSync(join(cwd, "src"), { recursive: true });
+				writeFileSync(join(cwd, "src", `shrinking-${fixCalls}.ts`), `export const shrinking${fixCalls} = true;\n`);
+				return { text: "", control: { filesCreated: [`src/shrinking-${fixCalls}.ts`], filesModified: [], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			return { text: "", control: {} };
+		}, logs);
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("failed");
+		expect(codeReviewCalls).toBe(4);
+		expect(fixCalls).toBe(3);
+		expect(logs.join("\n")).toContain("recurring blocker set shrank 2->1");
 	});
 
 	it("rejects integration tester writes to production files instead of routing them to implementer", async () => {
