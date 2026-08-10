@@ -62,7 +62,7 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.1.21`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.1.22`.
 The foreground stream, run log, `package.json`, and `package-lock.json` use the
 same npm-valid semver value.
 
@@ -267,15 +267,14 @@ Grounded in [AWS Step Functions ASL](https://states-language.net/), the [Workflo
 sequence([
   task(setupStage),                                // fatal
   task(classifyStage),
-  gate({ validate: gateValidator(...), attempts: 5 }, task(requirementsWriter)),
-  gate({ validate: gateValidator(...), attempts: 5 }, task(bddWriter)),
-  gate({ validate: researchComplete, attempts: 5 }, task(researchWriter)),
+  requirementsConvergenceNode,                     // budget-bounded clarity loop
+  bddConvergenceNode,                              // budget-bounded AC coverage loop
+  researchConvergenceNode,                         // budget-bounded online ambiguity loop
   branch(isBug, { yes: task(debugWriter) }),
   task(assessmentWriter),
   task(designStage),
   task(prototypeStage),
-  gate({ validate: gateValidator(...), attempts: 5 }, task(specWriter)),
-  task(specReviewWriter),                           // advisory signal, not a gate
+  specConvergenceNode,                              // spec write → trace gate → review
   loop({ while: (s) => !s.implementation?.allGreen, times: 5 },
     task(implementationStage)),                     // per-phase TDD loop
   branch(hasImplementation, {

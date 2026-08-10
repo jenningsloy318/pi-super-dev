@@ -12,7 +12,7 @@
  *
  * The runner (`workflow.ts`) never changes.
  *
- *   setup ─► classify ─► gate(requirements) ─► gate(bdd) ─► gate(research) ─►
+ *   setup ─► classify ─► converge(requirements) ─► converge(bdd) ─► converge(research) ─►
  *   branch[bug]→debug ─► assessment ─► design ─► prototype ─►
  *   spec/review convergence ─► implementation ─►
  *   verification convergence (review/build → integration, restarting at review
@@ -20,10 +20,10 @@
  *   docs ─► cleanup ─► branch[!blocked]→merge
  */
 
-import { task, sequence, branch, gate, loop, gateValidator } from "../nodes.ts";
-import type { ControlObj, PipelineState, Stage, StageContext, Workflow } from "../types.ts";
+import { task, sequence, branch, loop } from "../nodes.ts";
+import type { ControlObj, PipelineState, Stage, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
-import { classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
+import { classifyStage, cleanupTask, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
@@ -31,6 +31,7 @@ import { WORKFLOW_ATTEMPTS, positiveIntFromEnv } from "../retry-policy.ts";
 import { implementationStage } from "./implementation.ts";
 import { verificationConvergenceNode, reviewApproved } from "./verify.ts";
 import { specConvergenceNode } from "./spec-convergence.ts";
+import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, researchComplete } from "./artifact-convergence.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -93,56 +94,6 @@ export const hasImplementation = (s: PipelineState) => {
 	return (i?.totalPhases ?? 0) > 0 && i?.allGreen === true;
 };
 
-function validResearchSourceCount(r: { sources?: unknown }): number {
-	const sources = Array.isArray(r.sources) ? r.sources : [];
-	return sources.filter((source) => {
-		if (!source || typeof source !== "object" || Array.isArray(source)) return false;
-		const url = (source as { url?: unknown }).url;
-		return typeof url === "string" && /^https?:\/\//i.test(url.trim());
-	}).length;
-}
-
-function researchUnavailableDisclosure(r: Record<string, unknown>): boolean {
-	const options = Array.isArray(r.options) ? r.options : [];
-	const text = [
-		r.summary,
-		...options.map((o) => typeof o === "object" && o !== null ? `${(o as { name?: unknown }).name ?? ""} ${(o as { tradeoffs?: unknown }).tradeoffs ?? ""}` : o),
-	]
-		.map((v) => String(v ?? ""))
-		.join("\n")
-		.toLowerCase();
-	const unavailable = /(?:web|search|mcp|firecrawl|anysearch|tavily|tinyfish|network|provider|tool)[\w\s/-]{0,80}(?:unavailable|not configured|unauthorized|failed|blocked|disabled)/i.test(text);
-	const unverified = /\bunverified\b|\bnot verified\b|\bunsupported by sources\b/i.test(text);
-	return unavailable && unverified;
-}
-
-/** A research report is complete only when it exists and leaves no answerable
- *  open issues. `openIssues` is reserved for concrete ambiguities that another
- *  research pass should try to resolve; generic caveats and unresolvable limits
- *  belong in the summary/options instead. It must also include real researched
- *  sources unless the report explicitly records unavailable web/search tooling
- *  and marks its claims unverified. The gate feeds these issues into the next
- *  attempt through the normal feedback path. */
-export const researchComplete = async (s: PipelineState, ctx: StageContext) => {
-	const r = s.research as ({ docPath?: string; openIssues?: unknown[]; sources?: unknown } & Record<string, unknown>) | undefined;
-	if (!r || !r.docPath) {
-		ctx.log("Research: no report produced (agent returned nothing or timed out)");
-		return { pass: false, errors: ["no research report produced (agent returned nothing or timed out)"] };
-	}
-	const sourceCount = validResearchSourceCount(r);
-	if (sourceCount === 0 && !researchUnavailableDisclosure(r)) {
-		ctx.log("Research: no real source URLs and no explicit web-tool-unavailable/unverified disclosure");
-		return { pass: false, errors: ["research must include at least one real http(s) source URL, or explicitly disclose that web/search tools were unavailable and mark claims unverified"] };
-	}
-	const open = (r.openIssues as unknown[]) ?? [];
-	if (open.length > 0) {
-		const preview = open.slice(0, 3).map((o) => String(o).slice(0, 80)).join("; ");
-		ctx.log(`Research: ${open.length} answerable open issue(s) remain; retrying research: ${preview}`);
-		return { pass: false, errors: [`research left ${open.length} answerable open issue(s): ${preview}`] };
-	}
-	return { pass: true, errors: [] };
-};
-
 /** §D auto-iterate convergence loop (design report §D): re-run implementation
  *  until all phases are green OR the convergence budget is exhausted. Combined
  *  with the per-phase green-state carry in implementation.ts, a re-run SKIPS
@@ -166,21 +117,15 @@ const pipeline = sequence(
 	[
 		task(setupStage),
 		task(classifyStage),
-		// Quality-gate loops: write → validate → re-write until the gate passes.
-		// Retries CONVERGE (the validator's errors are fed into the next attempt's
-		// prompt). The FOUNDATIONAL doc gates (requirements/bdd/research/spec) are
-		// FATAL on exhaustion: a foundational artifact that can't be produced after
-		// 5 converging attempts means every downstream stage would work off garbage
-		// (the "failed but still go on" cascading-failure gap). A fatal exhaustion
-		// throws FatalAbort, which propagates past this tolerant sequence so
-		// runWorkflow aborts honestly with the real reason (resume replays cached
-		// calls). Later loops (implementation/review) stay non-fatal — exhaustion
-		// there yields a `partial` status, not garbage. Specification + spec review
-		// are one convergence loop: trace-gate failures and review findings both feed
-		// back into the next spec-writer attempt.
-		gate({ validate: gateValidator("gate-requirements", "write-requirements", "requirements"), feedbackKey: "requirements", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(requirementsWriter)),
-		gate({ validate: gateValidator("gate-bdd", "write-bdd", "bdd"), feedbackKey: "bdd", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(bddWriter)),
-		gate({ validate: researchComplete, feedbackKey: "research", attempts: WORKFLOW_ATTEMPTS, fatal: true }, task(researchWriter)),
+		// Foundational artifact convergence: write → validate → rewrite until the
+		// artifact is clear, complete, and externally valid. These ambiguity-bearing
+		// stages are bounded by the global run budget/cancellation/environment, not by
+		// a local N-attempt cap, so they cannot fail merely because the fifth rewrite
+		// still had a resolvable gap. Later code-changing loops remain explicitly
+		// capped for safety.
+		requirementsConvergenceNode,
+		bddConvergenceNode,
+		researchConvergenceNode,
 		// Conditional branch: debug analysis only for bug fixes.
 		branch(isBug, { yes: task(debugWriter) }),
 		task(assessmentWriter),
@@ -216,7 +161,7 @@ const pipeline = sequence(
 export const SUPER_DEV_WORKFLOW: Workflow = {
 	id: "super-dev",
 	description:
-		"13-stage development pipeline composed from control-flow nodes: classify → requirements → BDD → research → [debug] → assessment → design → [prototype] → spec/review convergence → implementation (TDD) → verification convergence → docs → cleanup → merge.",
+		"13-stage development pipeline composed from control-flow nodes: classify → requirements/BDD/research artifact convergence → [debug] → assessment → design → [prototype] → spec/review convergence → implementation (TDD) → verification convergence → docs → cleanup → merge.",
 	root: pipeline,
 };
 
@@ -230,5 +175,6 @@ export {
 export { designStage } from "./design.ts";
 export { prototypeStage } from "./prototype.ts";
 export { specConvergenceNode } from "./spec-convergence.ts";
+export { requirementsConvergenceNode, bddConvergenceNode, researchConvergenceNode, researchComplete } from "./artifact-convergence.ts";
 export { implementationStage } from "./implementation.ts";
 export type { ControlObj };

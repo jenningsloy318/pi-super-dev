@@ -10,16 +10,22 @@ describe("shared retry-feedback coverage", () => {
 	it("routes every stage-level agent retry surface through the shared feedback renderer", () => {
 		const workflow = src("src/workflow.ts");
 		const stages = src("src/stages/index.ts");
+		const artifactConvergence = src("src/stages/artifact-convergence.ts");
 		const specConvergence = src("src/stages/spec-convergence.ts");
 		const implementation = src("src/stages/implementation.ts");
 		const verify = src("src/stages/verify.ts");
 		const subprocess = src("src/pi-spawn.ts");
 		const session = src("src/session-agent.ts");
 
-		// Foundational document gates: requirements, BDD, research.
+		// Foundational artifact convergence: requirements, BDD, research.
+		expect(stages).toContain("requirementsConvergenceNode");
+		expect(stages).toContain("bddConvergenceNode");
+		expect(stages).toContain("researchConvergenceNode");
 		for (const key of ["requirements", "bdd", "research"]) {
-			expect(stages).toContain(`feedbackKey: "${key}"`);
+			expect(artifactConvergence).toContain(`feedbackKey: "${key}"`);
 		}
+		expect(artifactConvergence).toContain("setArtifactFeedback");
+		expect(artifactConvergence).toContain("setRetryFeedback(state");
 		expect(specConvergence).toContain("setRetryFeedback(state");
 		expect(specConvergence).toContain("setSpecFeedback(state");
 		expect(workflow).toContain("convergenceRetryFeedback(state");

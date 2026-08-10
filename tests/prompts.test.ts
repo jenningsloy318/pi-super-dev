@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRequirementsPrompt, buildBddPrompt, buildDebugPrompt, buildAssessmentPrompt, buildPrototypePrompt, buildSpecPrompt, buildSpecReviewPrompt, buildTddPrompt, buildImplementPrompt, buildFixPrompt } from "../src/prompts.ts";
+import { buildRequirementsPrompt, buildBddPrompt, buildResearchPrompt, buildDebugPrompt, buildAssessmentPrompt, buildPrototypePrompt, buildSpecPrompt, buildSpecReviewPrompt, buildTddPrompt, buildImplementPrompt, buildFixPrompt } from "../src/prompts.ts";
 import type { SetupControl } from "../src/types.ts";
 
 function mkSetup(dir: string): SetupControl {
@@ -24,6 +24,7 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 
 	it("first doc: requirements asks for structured data", () => {
 		expect(buildRequirementsPrompt(s, null, "t")).toContain("acceptanceCriteria");
+		expect(buildRequirementsPrompt(s, null, "t")).toContain("openQuestions as unresolved ambiguity");
 	});
 
 	it("next doc counts existing + 1", () => {
@@ -32,6 +33,7 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		expect(buildBddPrompt(s, null, "t", null)).toContain("features");
 		expect(buildBddPrompt(s, null, "t", null)).toContain("structured output");
 		expect(buildBddPrompt(s, null, "t", null)).toContain("Every AC-NN");
+		expect(buildBddPrompt(s, null, "t", null)).toContain("invalid while any requirements AC is uncovered");
 	});
 
 	it("excludes the stage's own slug so gate retries don't inflate the number", () => {
@@ -59,7 +61,22 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		expect(p).toContain("acceptanceCriteriaRefs");
 		expect(p).toContain("phase.scenarioRefs or task.scenarioRefs");
 		expect(p).toContain("trace matrix");
+		expect(p).toContain("Do not pass ambiguity to implementation");
 		expect(p).toContain("RENDERED FOR YOU");
+	});
+
+	it("research retry prompt turns prior open issues into the next search agenda", () => {
+		const p = buildResearchPrompt(
+			s,
+			null,
+			"t",
+			null,
+			null,
+			{ docPath: "/tmp/research.md", openIssues: ["Which protocol version applies?"] },
+		);
+
+		expect(p).toContain("Open Issues to resolve in this research round");
+		expect(p).toContain("treat them as the search agenda for this round");
 	});
 
 	it("spec review prompt matches the gated review dimensions", () => {

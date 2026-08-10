@@ -1,5 +1,4 @@
 import { FatalAbort, gateValidator, task } from "../nodes.ts";
-import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
@@ -21,20 +20,19 @@ const specReviewTask = task(specReviewWriter);
 const validateSpecTrace = gateValidator("gate-spec-trace", "write-spec", "spec");
 const validateSpecReview = gateValidator("gate-spec-review", "review-spec", "specReview");
 
-function setSpecFeedback(state: PipelineState, source: string, attempt: number, max: number, errors: string[]) {
+function setSpecFeedback(state: PipelineState, source: string, errors: string[]) {
 	const feedback: RetryFeedback = {
 		stage: "spec",
-		attempt,
 		gate: source,
-		observed: `Spec convergence attempt ${attempt}/${max} was rejected by ${source}.`,
-		expected: "A specification that passes deterministic traceability and approved spec review before implementation starts.",
+		observed: `The latest specification was rejected by ${source}.`,
+		expected: "A specification that passes deterministic traceability and approved spec review with no unresolved ambiguity before implementation starts.",
 		missing: errors.slice(0, 8),
 		diagnostics: errors.slice(8, 12),
-		nextAction: "Rewrite the complete specification, implementation plan, and task list; preserve valid content and fix every rejected trace/review item before calling structured_output.",
+		nextAction: "Rewrite the complete specification, implementation plan, and task list; preserve valid content and resolve every rejected trace/review/ambiguity item before calling structured_output.",
 	};
 	setRetryFeedback(state as Record<string, unknown>, "spec", [
 		feedback,
-		...convergenceRetryFeedback(state, { stage: "spec", currentStage: "spec", attempt, gate: source }),
+		...convergenceRetryFeedback(state, { stage: "spec", currentStage: "spec", gate: source }),
 	]);
 }
 
@@ -105,17 +103,21 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
 
 /**
  * Stage 7/8 convergence: spec writing, deterministic trace validation, and
- * spec-review approval are one bounded loop. A reviewer-only retry cannot fix a
- * bad spec; review failures must feed back into the next spec-writer attempt.
+ * spec-review approval are one budget-bounded loop. A reviewer-only retry cannot
+ * fix a bad spec; review failures must feed back into the next spec-writer
+ * attempt. There is intentionally no per-stage retry cap here: spec/review must
+ * converge until all traceability, grounding, feasibility, and ambiguity issues
+ * are resolved, or until the global run budget/cancellation/environment stops it.
  */
 export const specConvergenceNode: Node = {
 	kind: "spec-convergence",
 	async run(state: PipelineState, ctx: StageContext) {
-		const max = WORKFLOW_ATTEMPTS;
 		let lastErrors: string[] = [];
-		for (let attempt = 1; attempt <= max; attempt++) {
+		let round = 0;
+		while (ctx.budget.check()) {
+			round++;
 			if (ctx.signal?.aborted) return { status: "cancelled" as const };
-			ctx.log(`spec convergence: attempt ${attempt}/${max} starting`);
+			ctx.log(`spec convergence: round ${round} starting`);
 			delete state.specReview;
 
 			const specResult = await specTask.run(state, ctx);
@@ -123,8 +125,8 @@ export const specConvergenceNode: Node = {
 			if (specResult.status === "failed") {
 				lastErrors = [`spec writer failed: ${specResult.error ?? "unknown error"}`];
 				recordSpecWriterFailure(state, "spec writer", specResult.error ?? "unknown error");
-				setSpecFeedback(state, "spec writer", attempt, max, lastErrors);
-				ctx.log(`spec convergence: ✗ spec writer failed attempt ${attempt}/${max} — ${lastErrors.join("; ")}`);
+				setSpecFeedback(state, "spec writer", lastErrors);
+				ctx.log(`spec convergence: ✗ spec writer failed round ${round} — ${lastErrors.join("; ")}`);
 				if (isNonRetryableAgentError(specResult.error)) throw new FatalAbort(nonRetryableAgentSummary(specResult.error));
 				continue;
 			}
@@ -135,19 +137,19 @@ export const specConvergenceNode: Node = {
 			if (!trace.pass) {
 				lastErrors = trace.errors;
 				recordSpecTraceErrors(state, lastErrors);
-				setSpecFeedback(state, "deterministic trace gate", attempt, max, lastErrors);
-				ctx.log(`spec convergence: ✗ trace gate failed attempt ${attempt}/${max}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
+				setSpecFeedback(state, "deterministic trace gate", lastErrors);
+				ctx.log(`spec convergence: ✗ trace gate failed round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
 				continue;
 			}
-			ctx.log(`spec convergence: trace gate passed attempt ${attempt}/${max}`);
+			ctx.log(`spec convergence: trace gate passed round ${round}`);
 
 			const reviewResult = await specReviewTask.run(state, ctx);
 			if (reviewResult.status === "cancelled") return reviewResult;
 			if (reviewResult.status === "failed") {
 				lastErrors = [`spec review failed: ${reviewResult.error ?? "unknown error"}`];
 				recordSpecWriterFailure(state, "spec review", reviewResult.error ?? "unknown error");
-				setSpecFeedback(state, "spec review", attempt, max, lastErrors);
-				ctx.log(`spec convergence: ✗ review failed attempt ${attempt}/${max} — ${lastErrors.join("; ")}`);
+				setSpecFeedback(state, "spec review", lastErrors);
+				ctx.log(`spec convergence: ✗ review failed round ${round} — ${lastErrors.join("; ")}`);
 				if (isNonRetryableAgentError(reviewResult.error)) throw new FatalAbort(nonRetryableAgentSummary(reviewResult.error));
 				continue;
 			}
@@ -159,20 +161,20 @@ export const specConvergenceNode: Node = {
 					return detected === "spec" || detected === "specReview";
 				});
 				clearSpecFeedback(state);
-				ctx.log(`spec convergence: ✓ trace + review approved (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
-				return { status: "ok" as const, attempts: attempt };
+				ctx.log(`spec convergence: ✓ trace + review approved (round ${round}${round > 1 ? ", after feedback" : ""})`);
+				return { status: "ok" as const, attempts: round };
 			}
 
 			recordReviewFindingsFromControl(state, state.specReview as ControlObj | undefined, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "spec-review" });
 			lastErrors = [...review.errors, ...compactReviewFindings(state.specReview as ControlObj | undefined)];
 			const upstream = upstreamBlockingSummary(state);
 			if (upstream.length) lastErrors.push(`upstream-owned blocking findings remain: ${upstream.join("; ")}`);
-			setSpecFeedback(state, "spec review", attempt, max, lastErrors);
-			ctx.log(`spec convergence: ✗ review gate failed attempt ${attempt}/${max}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
+			setSpecFeedback(state, "spec review", lastErrors);
+			ctx.log(`spec convergence: ✗ review gate failed round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
 		}
 
-		const msg = `spec convergence could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
-		ctx.log(`spec convergence: EXHAUSTED (FATAL — aborting run) — ${msg}`);
+		const msg = `spec convergence stopped before approval because the global agent budget was exhausted after ${round} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
+		ctx.log(`spec convergence: BUDGET EXHAUSTED (FATAL — aborting run) — ${msg}`);
 		throw new FatalAbort(msg);
 	},
 };

@@ -140,9 +140,35 @@ describe("specConvergenceNode", () => {
 		expect(result.attempts).toBe(2);
 		expect(seen[0]).toEqual([]);
 		const renderedFeedback = renderRetryFeedbackBlock(seen[1]);
-		expect(renderedFeedback).toContain("Spec convergence attempt 1/5 was rejected by spec review");
+		expect(renderedFeedback).toContain("The latest specification was rejected by spec review");
+		expect(renderedFeedback).not.toContain("1/5");
 		expect(renderedFeedback).toContain("Traceability gap");
 		expect(((state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined)?.spec).toBeUndefined();
+	});
+
+	it("continues spec/review convergence beyond the shared workflow attempt count", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				Array.from({ length: 6 }, () => specControl(["SCENARIO-001", "SCENARIO-002"])),
+				[
+					...Array.from({ length: 5 }, (_, i) => reviewControl("Changes Requested", [{ id: `AMB-${i + 1}`, severity: "high", title: `Ambiguity ${i + 1}`, detail: "Clarify before implementation.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Resolve ambiguity.", evidence: ["review evidence"] }])),
+					reviewControl("Approved"),
+				],
+				seen,
+			),
+		);
+
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(6);
+		expect(seen).toHaveLength(6);
+		expect(renderRetryFeedbackBlock(seen[5])).toContain("Ambiguity 5");
+		expect(renderRetryFeedbackBlock(seen[5])).not.toContain("/5");
 	});
 
 	it("does not run spec review until deterministic traceability passes", async () => {
