@@ -22,6 +22,8 @@ import { appendUserNotes, userNotesForAgent } from "./render/user-notes.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
+import { isNonRetryableAgentError } from "./agent-errors.ts";
+import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
 import type {
 	AgentCall,
 	AgentResult,
@@ -100,6 +102,7 @@ async function runWithTransientRetry<T extends { error?: string }>(
 	let last: T;
 	for (let attempt = 0; ; attempt++) {
 		last = await exec();
+		if (isNonRetryableAgentError(last.error)) return last;
 		if (!isTransientAgentError(last.error)) return last;
 		if (attempt >= delays.length) return last; // exhausted -> surface the transient error
 		const delay = delays[attempt];
@@ -131,9 +134,12 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// to this attempt's prompt so the agent fixes the specific failure instead
 		// of resampling the same distribution. The writer's call.id is `pipeline.<id>`.
 		const stageKey = (call.id ?? "").replace(/^pipeline\./, "");
-		const feedback = getRetryFeedback(state as Record<string, unknown>, stageKey);
-		const feedbackBlock = feedback?.length ? renderRetryFeedbackBlock(feedback) : "";
-		const prompt = feedback?.length
+		const feedback = getRetryFeedback(state as Record<string, unknown>, stageKey) ?? [];
+		const alreadyHasLedger = feedback.some((item) => typeof item === "object" && item !== null && "location" in item && String((item as { location?: unknown }).location ?? "").startsWith("convergence-ledger/"));
+		const ledgerFeedback = alreadyHasLedger ? [] : convergenceRetryFeedback(state, { stage: stageKey || call.agent, currentStage: normalizeConvergenceStage(stageKey, "implementation"), gate: "convergence-ledger" });
+		const combinedFeedback = [...feedback, ...ledgerFeedback];
+		const feedbackBlock = combinedFeedback.length ? renderRetryFeedbackBlock(combinedFeedback) : "";
+		const prompt = combinedFeedback.length
 			? `${call.prompt}\n\n${feedbackBlock}\nRe-produce the complete artifact, then call structured_output.`
 			: call.prompt;
 		// Option C: inject ONLY the fields this agent needs from prior stages'

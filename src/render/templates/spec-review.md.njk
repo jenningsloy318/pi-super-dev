@@ -15,8 +15,35 @@
 ### {{ f.id }}: {{ f.title }}
 
 - **Severity**: {{ f.severity }}
+{% if f.ownerStage %}- **Owner Stage**: {{ f.ownerStage }}
+{% endif %}{% if f.blocking %}- **Blocking**: {{ f.blocking }}
+{% endif %}{% if f.status %}- **Status**: {{ f.status }}
+{% endif %}{% if f.recommendation %}- **Recommendation**: {{ f.recommendation }}
+{% endif %}{% if f.priorFindingId %}- **Prior Finding**: {{ f.priorFindingId }}
+{% endif %}
 {{ f.detail }}
+{% if f.evidence %}
+
+Evidence:
+{% for e in f.evidence %}
+- {{ e }}
 {% endfor %}
+{% endif %}
+{% endfor %}
+
+{% if priorFindingResolutions %}
+## Prior Finding Resolutions
+
+{% for r in priorFindingResolutions %}
+### {{ r.findingId }}
+
+- **Status**: {{ r.status }}
+{% if r.ownerStage %}- **Owner Stage**: {{ r.ownerStage }}
+{% endif %}{% if r.evidence %}- **Evidence**: {{ r.evidence }}
+{% endif %}
+{{ r.response }}
+{% endfor %}
+{% endif %}
 
 ## Dimension Reviews
 

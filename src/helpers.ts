@@ -15,6 +15,7 @@ import {
 	bddContentErrors,
 	bddTraceabilityErrors,
 	specContentErrors,
+	specGroundingErrors,
 	specTraceabilityErrors,
 	specReviewContentErrors,
 } from "./doc-validators.ts";
@@ -155,6 +156,7 @@ function gateSpecTrace(s: Record<string, unknown>): HelperResult {
 		const doc = readSpecDoc(dir, spec, "*-specification.md", ["specificationPath", "docPath"]);
 		if (doc) {
 			errors.push(...specContentErrors(doc.content));
+			errors.push(...specGroundingErrors(((s["setup"] as SetupControl | undefined)?.worktreePath ?? ""), doc.content));
 			const bddDoc = readSpecDoc(dir, s["write-bdd"] as ControlObj | undefined, "*-bdd-scenarios.md");
 			const requirementsDoc = readSpecDoc(dir, s["write-requirements"] as ControlObj | undefined, "*-requirements.md");
 			if (bddDoc) errors.push(...specTraceabilityErrors(bddDoc.content, doc.content, spec, requirementsDoc?.content));

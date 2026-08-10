@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ControlObj, Stage, StageContext } from "../types.ts";
+import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
 import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
@@ -22,6 +22,7 @@ import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } f
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../build-runner.ts";
 import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
+import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 
 const MAX_ATTEMPTS = WORKFLOW_ATTEMPTS;
 
@@ -201,6 +202,36 @@ function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	if (e.status === "green-weak-test") return [`red-not-confirmed: tests passed before implementation (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
 	if (e.status === "broken-test") return [`red-broken: tests did not compile/collect (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
 	return [];
+}
+
+function ownerForImplementationFailure(reasons: string[], kind: "red-generation" | "implementation-gate"): ConvergenceOwnerStage {
+	const joined = reasons.join("\n");
+	if (/acceptance\s+criteria|\bAC-\d+\b/i.test(joined)) return "requirements";
+	if (/BDD|SCENARIO|scenario coverage|missing scenario/i.test(joined)) return "bdd";
+	if (/deliverable|missing pattern|requireContains|requireFiles|phase\.|task\.|spec\b/i.test(joined)) return "spec";
+	return kind === "red-generation" ? "implementation" : "implementation";
+}
+
+function recordImplementationConvergenceFailure(
+	state: PipelineState,
+	args: { phaseId: string; phaseName: string; kind: "red-generation" | "implementation-gate"; attemptsRun: number; reasons: string[] },
+): void {
+	const reasons = args.reasons.filter(Boolean);
+	if (reasons.length === 0) return;
+	const ownerStage = ownerForImplementationFailure(reasons, args.kind);
+	recordConvergenceFindings(state, {
+		detectedAtStage: "implementation",
+		ownerStage,
+		severity: "high",
+		blocking: true,
+		title: `Implementation ${args.phaseId} did not converge`,
+		detail: `${args.phaseName} failed after ${args.attemptsRun} attempt(s): ${reasons.slice(0, 5).join("; ")}`,
+		evidence: reasons,
+		sourceGate: args.kind,
+		recommendation: ownerStage === "implementation"
+			? "Feed these exact failing gates into the next implementer/TDD retry and avoid resampling unrelated tests."
+			: `Route the blocker to ${ownerStage} before asking implementation to retry again.`,
+	}, { detectedAtStage: "implementation", ownerStage, sourceGate: args.kind });
 }
 
 function redDiagnosticsPrompt(diagnostics: RedCheckDiagnostic[] | undefined): string {
@@ -1045,6 +1076,13 @@ export const implementationStage: Stage = {
 			if (tracker) tracker.commitEnd("phase", phaseId);
 			if (!green) {
 				// §D: record the failure so the next convergence iteration targets it
+				const terminalReasons = [
+					...attemptErrors,
+					...missingDeliverables.map((e) => `deliverable: ${e}`),
+					...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`),
+					...hollowFiles.map((e) => `hollow-file: ${e}`),
+				];
+				recordImplementationConvergenceFailure(state, { phaseId, phaseName, kind: terminalFailureKind, attemptsRun, reasons: terminalReasons });
 				phaseStatusUpsert(phaseStatus, phaseId, "failed");
 				emitPhaseStatus("failed");
 				lastFailuresUpsert(lastFailures, phaseId, [

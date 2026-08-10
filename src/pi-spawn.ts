@@ -518,7 +518,8 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		});
 		child.on("error", (err) => {
 			cleanup();
-			reject(new Error(`super-dev [${label}]: failed to spawn pi: ${err.message}`));
+			const pathPreview = (process.env.PATH ?? "").split(":").slice(0, 8).join(":");
+			reject(new Error(`super-dev [${label}]: failed to spawn pi: ${err.message}; cwd=${cwd}; PATH=${pathPreview || "(empty)"}`));
 		});
 		child.on("close", (code) => {
 			cleanup();

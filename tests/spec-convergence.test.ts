@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { specConvergenceNode } from "../src/stages/spec-convergence.ts";
 import { runHelper } from "../src/helpers.ts";
+import { getConvergenceLedger } from "../src/convergence-ledger.ts";
 import { renderRetryFeedbackBlock, type RetryFeedbackInput } from "../src/retry-feedback.ts";
 import type { AgentCall, AgentResult, Budget, ControlObj, HelperCall, PipelineState, SetupControl, StageContext } from "../src/types.ts";
 
@@ -62,6 +63,10 @@ function specControl(refs: string[], mappedRefs = refs, acRefs = ["AC-01", "AC-0
 		phases: [{ name: "Implementation", description: "Implement and test the behavior.", scenarioRefs: mappedRefs }],
 		tasks: [{ phase: "Implementation", description: "Implement behavior for mapped scenarios.", scenarioRefs: mappedRefs }],
 	};
+}
+
+function specControlWithResponses(responses: Array<Record<string, unknown>>): ControlObj {
+	return { ...specControl(["SCENARIO-001", "SCENARIO-002"]), reviewResponses: responses };
 }
 
 function reviewControl(verdict: string, findings: Array<Record<string, unknown>> = []): ControlObj {
@@ -165,5 +170,73 @@ describe("specConvergenceNode", () => {
 		expect(renderedFeedback).toContain("deterministic trace gate");
 		expect(renderedFeedback).toContain("SCENARIO-002");
 		expect(renderedFeedback).toContain("AC-02");
+	});
+
+	it("keeps prior spec-review findings in the ledger-backed retry prompt until verified", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				[
+					specControl(["SCENARIO-001", "SCENARIO-002"]),
+					specControlWithResponses([{ findingId: "TRACE-1", status: "addressed", response: "Mapped AC-02 to SCENARIO-002.", evidence: "phase scenarioRefs", ownerStage: "spec" }]),
+					specControlWithResponses([
+						{ findingId: "TRACE-1", status: "addressed", response: "Mapped AC-02 to SCENARIO-002.", evidence: "phase scenarioRefs", ownerStage: "spec" },
+						{ findingId: "GROUND-2", status: "addressed", response: "Named the concrete route file.", evidence: "deliverables", ownerStage: "spec" },
+					]),
+				],
+				[
+					reviewControl("Changes Requested", [{ id: "TRACE-1", severity: "high", title: "Traceability gap", detail: "Clarify AC-02 scenario mapping.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Map AC-02 to work.", evidence: ["AC-02 missing"] }]),
+					reviewControl("Changes Requested", [{ id: "GROUND-2", severity: "high", title: "Wrong route file", detail: "Specific route exists and must be named.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Use concrete route path.", evidence: ["refresh/route.ts exists"] }]),
+					reviewControl("Approved"),
+				],
+				seen,
+			),
+		);
+
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(3);
+		const secondAttemptFeedback = renderRetryFeedbackBlock(seen[1]);
+		expect(secondAttemptFeedback).toContain("TRACE-1");
+		const thirdAttemptFeedback = renderRetryFeedbackBlock(seen[2]);
+		expect(thirdAttemptFeedback).toContain("TRACE-1");
+		expect(thirdAttemptFeedback).toContain("GROUND-2");
+		const ledger = getConvergenceLedger(state);
+		expect(ledger.findings.find((f) => f.id === "TRACE-1")?.status).toBe("verified");
+		expect(ledger.findings.find((f) => f.id === "GROUND-2")?.status).toBe("verified");
+	});
+
+	it("surfaces upstream-owned review findings instead of losing their owner routing", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				[specControl(["SCENARIO-001", "SCENARIO-002"]), specControl(["SCENARIO-001", "SCENARIO-002"])],
+				[
+					reviewControl("Changes Requested", [{ id: "BDD-1", severity: "high", title: "BDD example missing", detail: "BDD does not define the refresh-cookie edge case.", ownerStage: "bdd", blocking: true, status: "open", recommendation: "Add the missing BDD scenario before spec locks phases.", evidence: ["no SCENARIO for refresh-cookie edge"] }]),
+					reviewControl("Approved"),
+				],
+				seen,
+			),
+		);
+
+		expect(result.status).toBe("ok");
+		const renderedFeedback = renderRetryFeedbackBlock(seen[1]);
+		expect(renderedFeedback).toContain("BDD-1");
+		expect(renderedFeedback).toContain("owner=bdd upstream");
+		const finding = getConvergenceLedger(state).findings.find((f) => f.id === "BDD-1");
+		expect(finding?.ownerStage).toBe("bdd");
+		expect(finding?.invalidatesStages).toContain("spec");
+		expect(finding?.invalidatesStages).toContain("implementation");
 	});
 });

@@ -22,7 +22,8 @@ describe("shared retry-feedback coverage", () => {
 		}
 		expect(specConvergence).toContain("setRetryFeedback(state");
 		expect(specConvergence).toContain("setSpecFeedback(state");
-		expect(workflow).toContain("renderRetryFeedbackBlock(feedback)");
+		expect(workflow).toContain("convergenceRetryFeedback(state");
+		expect(workflow).toContain("renderRetryFeedbackBlock(combinedFeedback)");
 
 		// Stage 9: RED retries and GREEN implementation retries.
 		for (const marker of [

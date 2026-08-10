@@ -2,6 +2,18 @@ import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
+import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
+import {
+	blockingConvergenceFindings,
+	convergenceRetryFeedback,
+	markConvergenceFindingsAddressedFromResponses,
+	markConvergenceFindingsVerified,
+	normalizeConvergenceStage,
+	ownerPrecedes,
+	recordConvergenceFindings,
+	recordReviewFindingsFromControl,
+	type ConvergenceOwnerStage,
+} from "../convergence-ledger.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
 
 const specTask = task(specWriter);
@@ -20,7 +32,10 @@ function setSpecFeedback(state: PipelineState, source: string, attempt: number, 
 		diagnostics: errors.slice(8, 12),
 		nextAction: "Rewrite the complete specification, implementation plan, and task list; preserve valid content and fix every rejected trace/review item before calling structured_output.",
 	};
-	setRetryFeedback(state as Record<string, unknown>, "spec", [feedback]);
+	setRetryFeedback(state as Record<string, unknown>, "spec", [
+		feedback,
+		...convergenceRetryFeedback(state, { stage: "spec", currentStage: "spec", attempt, gate: source }),
+	]);
 }
 
 function clearSpecFeedback(state: PipelineState) {
@@ -37,9 +52,55 @@ function compactReviewFindings(review: ControlObj | undefined): string[] {
 		const severity = typeof finding.severity === "string" ? finding.severity : "unspecified";
 		const title = typeof finding.title === "string" ? finding.title : "untitled";
 		const detail = typeof finding.detail === "string" ? finding.detail : "";
-		lines.push(`review ${id} severity=${severity}: ${title}${detail ? ` — ${detail}` : ""}`);
+		const owner = typeof finding.ownerStage === "string" ? ` owner=${finding.ownerStage}` : "";
+		const status = typeof finding.status === "string" ? ` status=${finding.status}` : "";
+		const recommendation = typeof finding.recommendation === "string" ? ` recommendation=${finding.recommendation}` : "";
+		lines.push(`review ${id} severity=${severity}${owner}${status}: ${title}${detail ? ` — ${detail}` : ""}${recommendation}`);
 	}
 	return lines;
+}
+
+function ownerForSpecTraceError(error: string): ConvergenceOwnerStage {
+	if (/No requirements doc|requirements doc has no AC-NN/i.test(error)) return "requirements";
+	if (/No BDD doc|BDD doc has no SCENARIO/i.test(error)) return "bdd";
+	if (/task list|implementation plan|phase|spec\./i.test(error)) return "spec";
+	return "spec";
+}
+
+function recordSpecTraceErrors(state: PipelineState, errors: string[]) {
+	recordConvergenceFindings(state, errors.map((error) => ({
+		detectedAtStage: "spec",
+		ownerStage: ownerForSpecTraceError(error),
+		severity: "high",
+		blocking: true,
+		title: error,
+		detail: error,
+		evidence: [error],
+		sourceGate: "deterministic-trace",
+		recommendation: "Rewrite the owning artifact or its trace mapping so downstream implementation receives a complete, grounded contract.",
+	})), { detectedAtStage: "spec", ownerStage: "spec", sourceGate: "deterministic-trace" });
+}
+
+function recordSpecWriterFailure(state: PipelineState, source: string, error: string) {
+	const environment = isNonRetryableAgentError(error);
+	recordConvergenceFindings(state, {
+		detectedAtStage: "spec",
+		ownerStage: environment ? "environment" : "spec",
+		severity: environment ? "fatal" : "high",
+		blocking: true,
+		title: `${source} failed`,
+		detail: environment ? nonRetryableAgentSummary(error) : error,
+		evidence: [error],
+		sourceGate: source,
+		recommendation: environment ? "Fix the local agent runtime/PATH before rerunning." : "Use the failure evidence in the next spec convergence attempt.",
+	}, { detectedAtStage: "spec", ownerStage: environment ? "environment" : "spec", sourceGate: source });
+}
+
+function upstreamBlockingSummary(state: PipelineState): string[] {
+	return blockingConvergenceFindings(state)
+		.filter((finding) => ownerPrecedes(finding.ownerStage, "spec"))
+		.slice(0, 6)
+		.map((finding) => `${finding.id} owner=${finding.ownerStage} status=${finding.status}: ${finding.title}`);
 }
 
 /**
@@ -61,14 +122,19 @@ export const specConvergenceNode: Node = {
 			if (specResult.status === "cancelled") return specResult;
 			if (specResult.status === "failed") {
 				lastErrors = [`spec writer failed: ${specResult.error ?? "unknown error"}`];
+				recordSpecWriterFailure(state, "spec writer", specResult.error ?? "unknown error");
 				setSpecFeedback(state, "spec writer", attempt, max, lastErrors);
 				ctx.log(`spec convergence: ✗ spec writer failed attempt ${attempt}/${max} — ${lastErrors.join("; ")}`);
+				if (isNonRetryableAgentError(specResult.error)) throw new FatalAbort(nonRetryableAgentSummary(specResult.error));
 				continue;
 			}
+			const addressed = markConvergenceFindingsAddressedFromResponses(state, (state.spec as ControlObj | undefined)?.reviewResponses);
+			if (addressed > 0) ctx.log(`spec convergence: spec response matrix addressed ${addressed} prior finding(s)`);
 
 			const trace = await validateSpecTrace(state, ctx);
 			if (!trace.pass) {
 				lastErrors = trace.errors;
+				recordSpecTraceErrors(state, lastErrors);
 				setSpecFeedback(state, "deterministic trace gate", attempt, max, lastErrors);
 				ctx.log(`spec convergence: ✗ trace gate failed attempt ${attempt}/${max}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
 				continue;
@@ -79,19 +145,28 @@ export const specConvergenceNode: Node = {
 			if (reviewResult.status === "cancelled") return reviewResult;
 			if (reviewResult.status === "failed") {
 				lastErrors = [`spec review failed: ${reviewResult.error ?? "unknown error"}`];
+				recordSpecWriterFailure(state, "spec review", reviewResult.error ?? "unknown error");
 				setSpecFeedback(state, "spec review", attempt, max, lastErrors);
 				ctx.log(`spec convergence: ✗ review failed attempt ${attempt}/${max} — ${lastErrors.join("; ")}`);
+				if (isNonRetryableAgentError(reviewResult.error)) throw new FatalAbort(nonRetryableAgentSummary(reviewResult.error));
 				continue;
 			}
 
 			const review = await validateSpecReview(state, ctx);
 			if (review.pass) {
+				markConvergenceFindingsVerified(state, (finding) => {
+					const detected = normalizeConvergenceStage(finding.detectedAtStage, "implementation");
+					return detected === "spec" || detected === "specReview";
+				});
 				clearSpecFeedback(state);
 				ctx.log(`spec convergence: ✓ trace + review approved (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
 				return { status: "ok" as const, attempts: attempt };
 			}
 
+			recordReviewFindingsFromControl(state, state.specReview as ControlObj | undefined, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "spec-review" });
 			lastErrors = [...review.errors, ...compactReviewFindings(state.specReview as ControlObj | undefined)];
+			const upstream = upstreamBlockingSummary(state);
+			if (upstream.length) lastErrors.push(`upstream-owned blocking findings remain: ${upstream.join("; ")}`);
 			setSpecFeedback(state, "spec review", attempt, max, lastErrors);
 			ctx.log(`spec convergence: ✗ review gate failed attempt ${attempt}/${max}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
 		}

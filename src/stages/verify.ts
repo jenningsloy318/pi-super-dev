@@ -27,6 +27,7 @@ import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
+import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
 const REVIEW_MAX_ROUNDS = WORKFLOW_ATTEMPTS;
@@ -145,6 +146,36 @@ function summarizeTestFailures(s: PipelineState, max = 8): string[] {
 	});
 }
 
+function ownerForVerificationFailure(lines: string[]): ConvergenceOwnerStage {
+	const joined = lines.join("\n");
+	if (/requirements?|acceptance\s+criteria|\bAC-\d+\b/i.test(joined)) return "requirements";
+	if (/BDD|SCENARIO|scenario/i.test(joined)) return "bdd";
+	if (/specification|spec\b|phase|task|deliverable/i.test(joined)) return "spec";
+	if (/spawn|ENOENT|EACCES|permission denied|command not found|service unavailable|runner unavailable/i.test(joined)) return "environment";
+	return "implementation";
+}
+
+function recordVerificationConvergenceFinding(
+	s: PipelineState,
+	args: { title: string; detail: string; evidence: string[]; sourceGate: string; severity?: string },
+): void {
+	const evidence = args.evidence.filter(Boolean);
+	const ownerStage = ownerForVerificationFailure([args.detail, ...evidence]);
+	recordConvergenceFindings(s, {
+		detectedAtStage: "verification",
+		ownerStage,
+		severity: args.severity ?? (ownerStage === "environment" ? "fatal" : "high"),
+		blocking: true,
+		title: args.title,
+		detail: args.detail,
+		evidence,
+		sourceGate: args.sourceGate,
+		recommendation: ownerStage === "implementation"
+			? "Use the fresh review/build/integration evidence in the next fix, then re-run review before integration."
+			: `Route the blocker to ${ownerStage} before another verification fix attempt.`,
+	}, { detectedAtStage: "verification", ownerStage, sourceGate: args.sourceGate });
+}
+
 function verificationRetryFeedbackBlock(s: PipelineState, kind: "review" | "integration"): string {
 	const feedback: RetryFeedback[] = [];
 	const lastFix = (s as Record<string, unknown>).__lastVerificationFix as { kind?: unknown; changed?: unknown; before?: unknown; after?: unknown } | undefined;
@@ -252,6 +283,12 @@ function recordVerificationStagnation(s: PipelineState, ctx: StageContext, recor
 		findings,
 	};
 	ctx.log(`Stage 10: verification convergence stagnant across 2 consecutive attempts — stopping before another blind fix (attempt ${record.attempt})`);
+	recordVerificationConvergenceFinding(s, {
+		title: "Verification convergence stagnant",
+		detail: `same verification failure signature repeated at attempt ${record.attempt}`,
+		evidence: [...summarizeReviewFindings(s), ...buildErrors(s), ...summarizeTestFailures(s)],
+		sourceGate: "stagnation",
+	});
 	return true;
 }
 
@@ -828,6 +865,12 @@ export const verificationConvergenceNode: Node = {
 				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
 				if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
 					ctx.log("Stage 10: verification max attempts exhausted after fresh review/build evidence; no final fix will run without re-review");
+					recordVerificationConvergenceFinding(state, {
+						title: "Verification review/build max attempts exhausted",
+						detail: `review=${String(record.reviewVerdict || "unknown")} build=${record.buildPass === true ? "pass" : "fail"} after ${attempt} attempt(s)`,
+						evidence: [...summarizeReviewFindings(state), ...buildErrors(state)],
+						sourceGate: "review-build-max-attempts",
+					});
 					return { status: "failed", error: "verification convergence max attempts exhausted" };
 				}
 				record.fixKind = "review";
@@ -858,7 +901,15 @@ export const verificationConvergenceNode: Node = {
 				state.integration = { pass: false, status: "failed", summary: testResult.error ?? "integration bringup/test block failed", expected: expectedIntegrationRoles(state) };
 				recordAttemptEnd(state, record, attempt >= VERIFICATION_MAX_ATTEMPTS);
 				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
-				if (attempt >= VERIFICATION_MAX_ATTEMPTS) return { status: "failed", error: testResult.error ?? "integration bringup/test block failed" };
+				if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
+					recordVerificationConvergenceFinding(state, {
+						title: "Integration test block failed after max attempts",
+						detail: testResult.error ?? "integration bringup/test block failed",
+						evidence: summarizeTestFailures(state),
+						sourceGate: "integration-test-block",
+					});
+					return { status: "failed", error: testResult.error ?? "integration bringup/test block failed" };
+				}
 				record.fixKind = "integration";
 				const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx);
 				record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
@@ -882,11 +933,23 @@ export const verificationConvergenceNode: Node = {
 
 			if (outcome.status !== "failed") {
 				ctx.log(`Stage 10: ${inconclusiveIntegrationMessage(outcome)}`);
+				recordVerificationConvergenceFinding(state, {
+					title: "Verification integration inconclusive",
+					detail: inconclusiveIntegrationMessage(outcome),
+					evidence: summarizeTestFailures(state),
+					sourceGate: "integration-inconclusive",
+				});
 				return { status: "failed", error: inconclusiveIntegrationMessage(outcome) };
 			}
 			if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
 			if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
 				ctx.log("Stage 10: verification max attempts exhausted after fresh integration evidence; no final fix will run without re-review");
+				recordVerificationConvergenceFinding(state, {
+					title: "Verification integration max attempts exhausted",
+					detail: `integration=${outcome.status} after ${attempt} attempt(s)`,
+					evidence: [...summarizeTestFailures(state), ...summarizeReviewFindings(state), ...buildErrors(state)],
+					sourceGate: "integration-max-attempts",
+				});
 				return { status: "failed", error: "verification convergence max attempts exhausted" };
 			}
 
@@ -896,6 +959,12 @@ export const verificationConvergenceNode: Node = {
 			if (fixResult.status === "cancelled") return fixResult;
 		}
 
+		recordVerificationConvergenceFinding(state, {
+			title: "Verification convergence max attempts exhausted",
+			detail: "verification loop reached its attempt cap",
+			evidence: [...summarizeTestFailures(state), ...summarizeReviewFindings(state), ...buildErrors(state)],
+			sourceGate: "verification-max-attempts",
+		});
 		return { status: "failed", error: "verification convergence max attempts exhausted" };
 	},
 };

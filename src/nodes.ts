@@ -45,6 +45,8 @@ import { renderAndWrite } from "./render/render.ts";
 import { auditAppend } from "./render/super-dev-dir.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { clearRetryFeedback, setRetryFeedback } from "./retry-feedback.ts";
+import { isNonRetryableAgentError, nonRetryableAgentSummary } from "./agent-errors.ts";
+import { markConvergenceFindingsVerified, recordConvergenceFindings, normalizeConvergenceStage } from "./convergence-ledger.ts";
 
 // ─── Shared helper types ────────────────────────────────────────────────────
 
@@ -447,6 +449,25 @@ export function gate(opts: GateOptions, node: Node): Node {
 					last = await target.run(state, ctx);
 					if (last.status === "cancelled") return last;
 					if (last.status === "failed") {
+						if (isNonRetryableAgentError(last.error)) {
+							lastErrors = [nonRetryableAgentSummary(last.error)];
+							recordConvergenceFindings(state, {
+								detectedAtStage: opts.feedbackKey ?? "gate",
+								ownerStage: "environment",
+								severity: "fatal",
+								blocking: true,
+								title: "Agent environment cannot start",
+								detail: lastErrors[0],
+								evidence: [last.error ?? "unknown"],
+								recommendation: "Fix the local agent runtime/PATH before rerunning; another LLM retry cannot repair this process-spawn failure.",
+								sourceGate: "stage-failure",
+							}, { detectedAtStage: opts.feedbackKey ?? "gate", ownerStage: "environment", sourceGate: "stage-failure" });
+							msg = `gate${label} stopped on ${lastErrors[0]}`;
+							ctx.log(`gate${label}: non-retryable stage failure — ${lastErrors[0]}`);
+							if (opts.feedbackKey) setRetryFeedback(state as Record<string, unknown>, opts.feedbackKey, lastErrors);
+							if (opts.fatal) throw new FatalAbort(msg);
+							return { status: "failed", error: msg, attempts: attempt };
+						}
 						if (attempt < max) {
 							ctx.log(`gate${label}: attempt ${attempt}/${max} stage failed — ${last.error ?? "unknown error"}; retrying`);
 							continue;
@@ -460,12 +481,26 @@ export function gate(opts: GateOptions, node: Node): Node {
 						// the key) is ever re-run (loop/converge). No-op when none was set.
 						if (opts.feedbackKey) {
 							clearRetryFeedback(state as Record<string, unknown>, opts.feedbackKey);
+							const owner = normalizeConvergenceStage(opts.feedbackKey, "implementation");
+							markConvergenceFindingsVerified(state, (finding) => finding.ownerStage === owner && finding.detectedAtStage === opts.feedbackKey);
 						}
 						auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: true, errors: [] } });
 						ctx.log(`gate${label}: ✓ validated (attempt ${attempt}${attempt > 1 ? ", after feedback" : ""})`);
 						return { status: "ok", attempts: attempt };
 					}
 					lastErrors = v.errors;
+					if (opts.feedbackKey && v.errors.length) {
+						recordConvergenceFindings(state, v.errors.map((error) => ({
+							detectedAtStage: opts.feedbackKey,
+							ownerStage: normalizeConvergenceStage(opts.feedbackKey, "implementation"),
+							severity: "high",
+							blocking: true,
+							title: error,
+							detail: error,
+							evidence: [error],
+							sourceGate: "validator",
+						})), { detectedAtStage: opts.feedbackKey, ownerStage: normalizeConvergenceStage(opts.feedbackKey, "implementation"), sourceGate: "validator" });
+					}
 					auditAppend({ stage: opts.feedbackKey ?? "gate", attempt, gate: { pass: false, errors: v.errors } });
 					ctx.log(`gate${label}: ✗ FAIL attempt ${attempt}/${max}${v.errors.length ? ` — ${v.errors.join("; ")}` : ""}`);
 					// Feed the errors forward so the next attempt's agent prompt names them.

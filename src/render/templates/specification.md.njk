@@ -27,3 +27,17 @@
 {% for ref in scenarioRefs %}
 - {{ ref }}
 {% endfor %}
+
+{% if reviewResponses %}
+## Prior Review Responses
+
+{% for r in reviewResponses %}
+### {{ r.findingId }}
+
+- **Status**: {{ r.status }}
+{% if r.ownerStage %}- **Owner Stage**: {{ r.ownerStage }}
+{% endif %}{% if r.evidence %}- **Evidence**: {{ r.evidence }}
+{% endif %}
+{{ r.response }}
+{% endfor %}
+{% endif %}

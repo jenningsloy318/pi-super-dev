@@ -111,7 +111,21 @@ const Finding = Type.Object({
 	lens: Type.Optional(Type.String()),
 	file: Type.Optional(Type.String()),
 	line: Type.Optional(Type.String()),
+	ownerStage: Type.Optional(Type.String({ description: "owning stage: requirements, bdd, research, assessment, design, prototype, spec, implementation, verification, environment" })),
+	blocking: Type.Optional(Type.Boolean()),
+	status: Type.Optional(Type.String({ description: "open, addressed, verified, deferred, or needs-human" })),
+	recommendation: Type.Optional(Type.String()),
+	evidence: Type.Optional(Type.Array(Type.String())),
+	priorFindingId: Type.Optional(Type.String()),
 }, { additionalProperties: false });
+
+const ReviewResponse = Type.Object({
+	findingId: Type.String(),
+	status: Type.String({ description: "addressed, verified, deferred, or needs-human" }),
+	response: Type.String(),
+	evidence: Type.Optional(Type.String()),
+	ownerStage: Type.Optional(Type.String()),
+});
 
 // CLOSED (`additionalProperties: false`) so this stage schema is STRICT-CAPABLE
 // (≥1 required non-Optional key + additionalProperties:false) and the
@@ -124,6 +138,7 @@ export const SpecReviewData = Type.Object({
 	verdict: Type.String(),
 	summary: Type.String(),
 	findings: Type.Array(Finding),
+	priorFindingResolutions: Type.Optional(Type.Array(ReviewResponse)),
 	dimensions: Type.Array(Type.Object({ name: Type.String(), status: Type.String(), notes: Type.String() }, { additionalProperties: false })),
 }, { additionalProperties: false });
 export type SpecReviewDataT = Static<typeof SpecReviewData>;
@@ -269,6 +284,7 @@ export const SpecificationData = Type.Object({
 	scenarioRefs: Type.Array(Type.String()),
 	phases: Type.Array(SpecPhase, { minItems: 1 }),
 	tasks: Type.Array(Type.Object({ phase: Type.String(), description: Type.String(), scenarioRefs: Type.Optional(Type.Array(Type.String())) })),
+	reviewResponses: Type.Optional(Type.Array(ReviewResponse)),
 	// Layer D (AC-04..08): an OPTIONAL spec-declared cargo build-gate contract.
 	// The specification stage MAY declare it for backend/integration features; it
 	// is threaded into RunOptions.gate and becomes the top-precedence scope tier.

@@ -15,7 +15,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ControlObj } from "./types.ts";
 import type { PhaseDeliverables } from "./render/schemas.ts";
 
@@ -173,6 +173,47 @@ export function specTraceabilityErrors(bddContent: string, specContent: string, 
 		if (!phase) errors.push(`spec.tasks[${index}].phase is missing`);
 		else if (!phaseNames.has(phase)) errors.push(`spec.tasks[${index}].phase references unknown phase "${phase}"`);
 	});
+	return errors;
+}
+
+function safeReadDir(path: string): string[] {
+	try { return readdirSync(path); } catch { return []; }
+}
+
+function mentionedNextCatchAllRoutes(specContent: string): string[] {
+	const matches = [...specContent.matchAll(/\b((?:[\w.-]+\/)*src\/app\/api\/[\w./-]+\/\[[^\]]*\.\.\.[^\]]+\]\/route\.(?:ts|tsx|js|jsx))\b/g)];
+	return [...new Set(matches.map((m) => m[1]).filter(Boolean))];
+}
+
+/**
+ * Deterministic grounding checks for specs that name existing framework route
+ * files. Conservative by design: only catches a known wrong-path pattern where
+ * a Next.js catch-all route is chosen even though an existing specific route
+ * under the same parent would take precedence for the endpoint named in spec.
+ */
+export function specGroundingErrors(worktreePath: string, specContent: string): string[] {
+	const errors: string[] = [];
+	if (!worktreePath) return errors;
+	for (const catchAllRoute of mentionedNextCatchAllRoutes(specContent)) {
+		const parent = dirname(catchAllRoute);
+		const routeRoot = dirname(parent);
+		const routeRootAbs = join(worktreePath, routeRoot);
+		for (const child of safeReadDir(routeRootAbs)) {
+			if (child.startsWith("[")) continue;
+			const specificRoute = join(routeRoot, child, "route.ts");
+			const specificRouteTsx = join(routeRoot, child, "route.tsx");
+			const specificRouteJs = join(routeRoot, child, "route.js");
+			const specificRouteJsx = join(routeRoot, child, "route.jsx");
+			const candidates = [specificRoute, specificRouteTsx, specificRouteJs, specificRouteJsx];
+			const existing = candidates.find((candidate) => existsSync(join(worktreePath, candidate)));
+			if (!existing) continue;
+			const childMentioned = new RegExp(`\\b${child.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(specContent);
+			const explicitSpecific = candidates.some((candidate) => specContent.includes(candidate));
+			if (childMentioned && !explicitSpecific) {
+				errors.push(`spec routes ${child} work to catch-all ${catchAllRoute}, but existing specific route ${existing} will take precedence; update the spec/tasks/deliverables to name the specific route or explain why it is intentionally unchanged`);
+			}
+		}
+	}
 	return errors;
 }
 

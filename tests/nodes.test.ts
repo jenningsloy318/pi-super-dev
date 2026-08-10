@@ -9,6 +9,7 @@ import {
 	task, sequence, branch, choose, parallel, loop, retry, gate, map, wait, tryCatch, noop,
 } from "../src/nodes.ts";
 import { FatalAbort } from "../src/nodes.ts";
+import { getConvergenceLedger } from "../src/convergence-ledger.ts";
 import type { AgentCall, AgentResult, Budget, Node, PipelineState, Stage, StageContext } from "../src/types.ts";
 
 /** A Stage whose `run` is an arbitrary pure function of state (no agent calls). */
@@ -261,6 +262,27 @@ describe("gate", () => {
 		await expect(
 			gate({ validate: () => ({ pass: false, errors: ["no doc produced"] }), feedbackKey: "g", attempts: 2, fatal: true }, node).run({}, mkCtx()),
 		).rejects.toThrow(/no doc produced/);
+	});
+	it("a non-retryable agent environment failure stops a fatal gate after one attempt", async () => {
+		let runs = 0;
+		const state: PipelineState = {};
+		const node = task({
+			id: "research",
+			label: "research",
+			async run() {
+				runs++;
+				throw new Error("super-dev [pipeline.research]: failed to spawn pi: spawn pi ENOENT");
+			},
+		});
+
+		await expect(
+			gate({ validate: () => ({ pass: false, errors: ["should not validate"] }), feedbackKey: "research", attempts: 5, fatal: true }, node).run(state, mkCtx()),
+		).rejects.toThrow(/non-retryable agent environment failure/);
+
+		expect(runs).toBe(1);
+		const envFinding = getConvergenceLedger(state).findings.find((f) => f.ownerStage === "environment");
+		expect(envFinding?.title).toBe("Agent environment cannot start");
+		expect(envFinding?.blocking).toBe(true);
 	});
 	it("a non-fatal gate still returns failed on exhaustion (default resilience preserved)", async () => {
 		const node = task(mockTask("g", () => 1));
