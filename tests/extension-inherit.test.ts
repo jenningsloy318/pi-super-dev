@@ -39,7 +39,7 @@ vi.mock("../src/pipeline.ts", () => ({
 		}
 		if (task.includes("[emit-phase-activity]")) {
 			const progress = options.progress as { phase?: (label: string) => void } | undefined;
-			progress?.phase?.("Implementation — Phase 1/2: Auth — TDD RED (attempt 1/5, try 1/5)");
+			progress?.phase?.("Implementation — Phase 1/2: Auth — TDD RED (attempt 1, try 1)");
 		}
 		if (task.includes("[emit-phase]")) {
 			const progress = options.progress as { stage?: (info: Record<string, unknown>) => void } | undefined;
@@ -285,7 +285,7 @@ describe("extension.execute() threads ctx.model/thinking into runPipelineTask as
 			vi.fn(),
 			{ mode: "tui", ui },
 		);
-		expect(ui.setWorkingMessage).toHaveBeenCalledWith("super-dev · Implementation — Phase 1/2: Auth — TDD RED (attempt 1/5, try 1/5)");
+		expect(ui.setWorkingMessage).toHaveBeenCalledWith("super-dev · Implementation — Phase 1/2: Auth — TDD RED (attempt 1, try 1)");
 	});
 
 	it("repeated implementation phase runs get a fresh display attempt and timing bracket", async () => {

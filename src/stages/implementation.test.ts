@@ -2,9 +2,9 @@
  * Stage 9 — Implementation retry loop, Phase 5 (AC-05).
  *
  * In-scope verdict: the phase must go GREEN when `gate.pass || gate.inScopePass`,
- * logging the ignored pre-existing out-of-scope failures, and terminate-early
- * ONLY on genuine in-scope failures (neither pass nor inScopePass after
- * MAX_ATTEMPTS). Covers AC-05 → SCENARIO-012/013/014/025/027.
+ * logging the ignored pre-existing out-of-scope failures, and stop ONLY on
+ * genuine in-scope failures (neither pass nor inScopePass before budget or
+ * no-progress stop). Covers AC-05 → SCENARIO-012/013/014/025/027.
  *
  * `runBuildGate` is fully stubbed via `vi.mock("../build-runner.ts")` so the
  * stage exercises only its retry/verdict logic — no real git/cargo. The ctx
@@ -209,30 +209,29 @@ describe("implementationStage retry loop — in-scope verdict (AC-05)", () => {
 		expect(mock.calls).toBe(1);
 	});
 
-	it("SCENARIO-013/027: genuine in-scope failures (neither pass nor inScopePass) → terminate early, allGreen false, no commit", async () => {
+	it("SCENARIO-013/027: genuine in-scope failures (neither pass nor inScopePass) → stop, allGreen false, no commit", async () => {
 		mock.result = GATE_GENUINE_FAIL;
 		const { ctx, fake } = makeCtx();
 		const control = (await implementationStage.run(makeState([{ name: "Phase A" }]), ctx)) as Record<string, unknown>;
 
-		// All 5 attempts were exhausted on a genuine in-scope failure.
-		expect(hasLog(fake.logs, "terminating early")).toBe(true);
-		expect(hasLog(fake.logs, "failed after 5 attempts")).toBe(true);
+		// The same genuine in-scope failure repeated after feedback, so no-progress stops it.
+		expect(hasLog(fake.logs, "terminating early")).toBe(false);
+		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
 		// inScopePass never granted a green here → no IN-SCOPE GREEN line.
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
 		// No commit for a genuinely broken phase.
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
 		expect(control.allGreen).toBe(false);
 		expect(control.phasesCompleted).toBe(0);
-		// 5 attempts ⇒ 5 gate invocations.
-		expect(mock.calls).toBe(5);
+		expect(mock.calls).toBe(2);
 	});
 
-	it("SCENARIO-013: terminate-early breaks the phase loop — later phases never run", async () => {
+	it("SCENARIO-013: no-progress stop breaks the phase loop — later phases never run", async () => {
 		mock.result = GATE_GENUINE_FAIL;
 		const { ctx, fake } = makeCtx();
 		const control = (await implementationStage.run(makeState([{ name: "Phase A" }, { name: "Phase B" }]), ctx)) as Record<string, unknown>;
 
-		expect(hasLog(fake.logs, "terminating early")).toBe(true);
+		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
 		expect(control.allGreen).toBe(false);
 		expect(control.phasesCompleted).toBe(0);
 		expect(control.totalPhases).toBe(2);

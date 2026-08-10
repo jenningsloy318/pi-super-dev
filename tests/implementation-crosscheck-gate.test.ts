@@ -12,7 +12,8 @@
  * + deliverable both pass (SCENARIO-013, AC-08). `changedNotClaimed` stays
  * advisory-only (SCENARIO-014); a miss feeds `claimedNotChanged` into the next
  * implementer retry under a `## Claimed changes not present in git — actually
- * create/wire these` block bounded by MAX_ATTEMPTS (SCENARIO-015); no claim →
+ * create/wire these` block bounded by the global budget and no-progress stop
+ * (SCENARIO-015); no claim →
  * trivial pass (SCENARIO-016); git-unavailable → no block (SCENARIO-017).
  *
  * The spec-10 deliverable bridge (AC-09 → SCENARIO-018) UNIONs
@@ -191,7 +192,7 @@ const GATE_PASS = {
 
 const DELIVERABLE_PASS = { pass: true, missing: [] as string[], ran: [] as string[] };
 
-/** Push `r` onto a queue `n` times (default MAX_ATTEMPTS=5 = persistent). */
+/** Push `r` onto a queue `n` times (default persistent failure sample). */
 const seedGate = (r: Record<string, unknown>, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.gateQ.push({ ...r });
 };
@@ -327,13 +328,13 @@ describe("Phase 4 — changeGate AND-ed into phase-green (AC-07/AC-08)", () => {
 		expect(res.phasesCompleted).toBe(0);
 		// No commit when not green.
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
-		// The gate was actually consulted (wiring present) and bounded by MAX_ATTEMPTS.
+		// The gate was actually consulted (wiring present) and no-progress bounded.
 		expect(mock.changeGateCalls).toBeGreaterThan(0);
 		// The phase record was probed per-attempt (AC-04 phase path: probeEnd).
 		expect(mock.tracker.probeCalls).toBeGreaterThan(0);
-		// Retries respected the attempt budget (5 implementer attempts, no more).
+		// Retries stopped once the same claimed-miss evidence repeated.
 		const implAttempts = fake.agentIds.filter((id) => /\.impl\.a\d+$/.test(id));
-		expect(implAttempts.length).toBeLessThanOrEqual(5);
+		expect(implAttempts.length).toBe(2);
 		// The attempt failure line should name the real gate reason instead of the
 		// old generic "deliverables unmet" message.
 		expect(hasLog(fake.logs, "claimed-not-changed: src/x.ts")).toBe(true);

@@ -1,9 +1,10 @@
 /**
- * Shared retry/attempt policy for super-dev workflow loops.
+ * Shared retry/attempt policy for low-level retry primitives.
  *
- * Keep every user-visible "try again" loop on the same default unless a caller
- * provides an explicit override. The policy is deliberately small and pure so it
- * can be imported by low-level control-flow nodes without creating cycles.
+ * Stage-level convergence loops should prefer the global agent budget plus
+ * no-progress/stagnation detection. Keep this default for explicit caller-owned
+ * retry/gate primitives and transient backend retries that need a small local
+ * circuit breaker.
  */
 export const WORKFLOW_ATTEMPTS = 5;
 

@@ -27,7 +27,6 @@ import { classifyStage, cleanupTask, debugWriter, assessmentWriter, specWriter, 
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
-import { WORKFLOW_ATTEMPTS, positiveIntFromEnv } from "../retry-policy.ts";
 import { implementationStage } from "./implementation.ts";
 import { verificationConvergenceNode, reviewApproved } from "./verify.ts";
 import { specConvergenceNode } from "./spec-convergence.ts";
@@ -95,21 +94,20 @@ export const hasImplementation = (s: PipelineState) => {
 };
 
 /** §D auto-iterate convergence loop (design report §D): re-run implementation
- *  until all phases are green OR the convergence budget is exhausted. Combined
- *  with the per-phase green-state carry in implementation.ts, a re-run SKIPS
- *  already-green phases and re-attempts only the failed one(s), seeded with the
- *  prior iteration's failure reasons. On exhaustion the run halts at the
- *  `hasImplementation`/`canMerge` gates (partial status; resume is the human
- *  recovery). Env-overridable via SUPER_DEV_MAX_CONVERGE_ITERS (default 5). */
-const MAX_CONVERGE_ITERS = positiveIntFromEnv("SUPER_DEV_MAX_CONVERGE_ITERS", WORKFLOW_ATTEMPTS);
+ *  until all phases are green, the global budget is exhausted, or Stage 9 marks
+ *  the phase as no-progress blocked. Combined with the per-phase green-state
+ *  carry in implementation.ts, a re-run SKIPS already-green phases and
+ *  re-attempts only the failed one(s), seeded with prior failure reasons. */
 const implAllGreen = (s: PipelineState) =>
 	((s.implementation as { allGreen?: boolean } | undefined)?.allGreen === true);
+const implConvergenceBlocked = (s: PipelineState) =>
+	((s.implementation as { convergenceBlocked?: boolean } | undefined)?.convergenceBlocked === true);
 
 // ─── Verify (Stage 10): fresh-evidence convergence loop ─────────────────────
 // Extracted to src/stages/verify.ts. Each attempt runs fresh review + build
 // evidence before integration. Any fix invalidates downstream evidence and the
 // next attempt starts at review again: review → fix → review → integration →
-// fix → review → integration, bounded by WORKFLOW_ATTEMPTS.
+// fix → review → integration, bounded by the verification loop's safety policy.
 
 // ─── The pipeline ───────────────────────────────────────────────────────────
 
@@ -121,8 +119,8 @@ const pipeline = sequence(
 		// artifact is clear, complete, and externally valid. These ambiguity-bearing
 		// stages are bounded by the global run budget/cancellation/environment, not by
 		// a local N-attempt cap, so they cannot fail merely because the fifth rewrite
-		// still had a resolvable gap. Later code-changing loops remain explicitly
-		// capped for safety.
+		// still had a resolvable gap. Later code-changing loops use the same global
+		// budget boundary plus no-progress/stagnation detection.
 		requirementsConvergenceNode,
 		bddConvergenceNode,
 		researchConvergenceNode,
@@ -132,13 +130,12 @@ const pipeline = sequence(
 		task(designStage),
 		task(prototypeStage),
 		specConvergenceNode,
-		// §D auto-iterate convergence loop: re-run implementation until allGreen OR
-		// MAX_CONVERGE_ITERS exhausted (default 5). The per-phase green-state carry
-		// in implementation.ts skips already-green phases each iteration and seeds
-		// failed phases with the prior iteration's reasons. Budget-bounded via the
-		// while predicate; a throw inside the stage exits the loop (task → failed).
+		// §D auto-iterate convergence loop: re-run implementation until allGreen,
+		// global budget exhaustion, or a no-progress block. The per-phase
+		// green-state carry in implementation.ts skips already-green phases each
+		// iteration and seeds failed phases with prior reasons.
 		loop(
-			{ while: (s, c) => !implAllGreen(s) && c.budget.check(), times: MAX_CONVERGE_ITERS },
+			{ while: (s, c) => !implAllGreen(s) && !implConvergenceBlocked(s) && c.budget.check() },
 			task(implementationStage),
 		),
 		// Verify only runs when implementation produced all phases. The convergence

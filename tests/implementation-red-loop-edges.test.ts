@@ -19,7 +19,7 @@
  *   4. A retry's NEW `control.testFiles` propagate to the NEXT runRedCheck
  *      call (not the stale original set).
  *   5. A retry that returns no testFiles falls back to the PRIOR testFiles.
- *   6. Cap-exhausted green/broken RED blocks the implementer instead of handing
+ *   6. No-progress green/broken RED blocks the implementer instead of handing
  *      weak/broken tests to GREEN.
  *   7. The `unknown` implementer prompt states the red was NOT confirmed.
  *   8. RED pollution (production edits during test-authoring) is detected,
@@ -299,11 +299,11 @@ describe("P3 edges — a retry's new control.testFiles propagate to the next ora
 	});
 });
 
-// ─── 4. Cap-exhausted / unknown implementer behavior ───────────────────────
+// ─── 4. No-progress / unknown implementer behavior ─────────────────────────
 
 describe("P3 edges — unconfirmed RED blocks the implementer, unknown still degrades", () => {
-	it("cap-exhausted (green) does not call the implementer", async () => {
-		redCheck.mockImplementation(() => "green"); // always green → cap exhaustion
+	it("no-progress stopped green RED does not call the implementer", async () => {
+		redCheck.mockImplementation(() => "green"); // always green → no-progress stop
 		const { ctx, implCalls, logs } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
@@ -312,8 +312,8 @@ describe("P3 edges — unconfirmed RED blocks the implementer, unknown still deg
 		expect(logs.some((l) => /red-not-confirmed/i.test(l))).toBe(true);
 	});
 
-	it("cap-exhausted (broken) does not call the implementer", async () => {
-		redCheck.mockImplementation(() => "broken"); // always broken → cap exhaustion
+	it("no-progress stopped broken RED does not call the implementer", async () => {
+		redCheck.mockImplementation(() => "broken"); // always broken → no-progress stop
 		const { ctx, implCalls, logs } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
@@ -362,7 +362,7 @@ describe("P3 edges — RED scenario coverage gates the implementer", () => {
 		expect(logs.some((l) => /RED scenario coverage PASS/i.test(l))).toBe(true);
 	});
 
-	it("blocks the implementer when scenario coverage remains incomplete after RED retries", async () => {
+	it("blocks the implementer when scenario coverage repeats without progress after RED retries", async () => {
 		redCheck.mockImplementation(() => "red");
 		const scenarios = ["SCENARIO-001", "SCENARIO-002"];
 		const { ctx, tddCalls, coverageCalls, implCalls, logs } = mkCtx({
@@ -373,11 +373,11 @@ describe("P3 edges — RED scenario coverage gates the implementer", () => {
 		const res = (await (implementationStage as Stage).run(mkScenarioState(scenarios), ctx)) as ControlObj;
 
 		expect(res.allGreen).toBe(false);
-		expect(tddCalls).toHaveLength(5);
-		expect(coverageCalls).toHaveLength(5);
+		expect(tddCalls).toHaveLength(2);
+		expect(coverageCalls).toHaveLength(2);
 		expect(implCalls).toHaveLength(0);
 		expect(logs.some((l) => /red-coverage-incomplete/i.test(l))).toBe(true);
-		expect(logs.some((l) => /stopped before implementation: RED generation exhausted/i.test(l))).toBe(true);
+		expect(logs.some((l) => /stopped before implementation: RED generation stopped after 2 tries.*no progress/i.test(l))).toBe(true);
 	});
 
 	it("skips the coverage classifier when no scenario baseline is available", async () => {
@@ -554,10 +554,11 @@ describe("P3 edges — RED pollution is detected and rolled back", () => {
 			const state = mkState();
 			state.setup!.worktreePath = dir;
 			state.setup!.specDirectory = join(dir, "docs", "specifications", "polluted");
-			const { ctx, implCalls, logs } = mkCtx({
+			const { ctx, tddCalls, implCalls, logs } = mkCtx({
 				tddControls: [{ testFiles: ["tests/red.test.ts"] }],
 				onTddCall: () => writeFileSync(join(dir, "src", "prod.ts"), "export const polluted = true;\n"),
 			});
+			ctx.budget.check = () => tddCalls.length < 3;
 
 			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
 
@@ -619,14 +620,10 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 		expect(redCheck.mock.calls[1][1]).toEqual(["phase2.test.ts"]);
 	});
 
-	it("a cap-exhausting phase 1 fails fast instead of leaking retry state into phase 2", async () => {
-		// Phase 1: five green results (cap-exhausted after MAX_RED_RETRIES=4, i.e.
-		// 1 initial + 4 retries = 5 oracle calls). Because unconfirmed RED is now a
-		// hard phase gate, phase 2 must not start.
+	it("a no-progress-stopped phase 1 fails fast instead of leaking retry state into phase 2", async () => {
+		// Phase 1 repeats the same green RED evidence. Because unconfirmed RED is now
+		// a hard phase gate, phase 2 must not start.
 		redCheck
-			.mockImplementationOnce(() => "green")
-			.mockImplementationOnce(() => "green")
-			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "red");
@@ -634,18 +631,15 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 			tddControls: [
 				{ testFiles: ["p1.test.ts"] }, // phase1 initial
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 1
-				{ testFiles: ["p1.test.ts"] }, // phase1 retry 2
-				{ testFiles: ["p1.test.ts"] }, // phase1 retry 3
-				{ testFiles: ["p1.test.ts"] }, // phase1 retry 4
 				{ testFiles: ["p2.test.ts"] }, // would be phase2 initial if phase1 passed
 			],
 		});
 
 		const res = (await (implementationStage as Stage).run(mkState(2), ctx)) as ControlObj;
 
-		expect(tddCalls).toHaveLength(5);
+		expect(tddCalls).toHaveLength(2);
 		expect(implCalls).toHaveLength(0);
-		expect(redCheck).toHaveBeenCalledTimes(5);
+		expect(redCheck).toHaveBeenCalledTimes(2);
 		expect(res.phasesCompleted).toBe(0);
 		expect(res.allGreen).toBe(false);
 		expect(logs.some((l) => /red-not-confirmed/i.test(l))).toBe(true);

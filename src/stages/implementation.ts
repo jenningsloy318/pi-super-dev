@@ -1,7 +1,9 @@
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
- * up to 5 attempts of TDD-write → implement → build-gate; commits on green.
+ * runs TDD-write → implement → build-gate until the phase is green, the global
+ * run budget is exhausted, or the same actionable failure repeats with no
+ * observable progress.
  * The build-gate is the DETERMINISTIC hard oracle (build-runner.ts) that
  * replaces the old QA self-report — no more vacuous pass on "agent said green".
  */
@@ -20,11 +22,8 @@ import { STAGE_MODELS } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
 import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } from "../doc-validators.ts";
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../build-runner.ts";
-import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
-
-const MAX_ATTEMPTS = WORKFLOW_ATTEMPTS;
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
 
@@ -57,6 +56,63 @@ interface AcceptedRedContext {
 	status: RedStatus;
 	testFiles: string[];
 	changedFiles: string[];
+}
+
+interface ProgressSignature {
+	failure: string;
+	footprint: string;
+}
+
+function normalizeSignatureText(value: string): string {
+	return value.replace(/\s+/g, " ").trim().slice(0, 800);
+}
+
+function stableUnique(values: string[]): string[] {
+	return [...new Set(values.map(normalizeSignatureText).filter(Boolean))].sort();
+}
+
+function failureSignature(reasons: string[]): string {
+	const normalized = stableUnique(reasons);
+	return normalized.length ? normalized.join("\n") : "phase gates unmet";
+}
+
+function structuredFootprint(changes: StructuredChanges): Record<string, string[]> {
+	return {
+		filesCreated: stableUnique(changes.filesCreated),
+		filesModified: stableUnique(changes.filesModified),
+		filesDeleted: stableUnique(changes.filesDeleted),
+	};
+}
+
+function changeFootprint(record: ChangeRecord | null, changes: StructuredChanges): string {
+	const gitActual = record?.gitActual;
+	if (gitActual) {
+		return JSON.stringify({
+			created: stableUnique(gitActual.created ?? []),
+			modified: stableUnique(gitActual.modified ?? []),
+			deleted: stableUnique(gitActual.deleted ?? []),
+		});
+	}
+	return JSON.stringify(structuredFootprint(changes));
+}
+
+function repeatedNoProgress(history: ProgressSignature[], next: ProgressSignature): boolean {
+	const previous = history[history.length - 1];
+	return !!previous && previous.failure === next.failure && previous.footprint === next.footprint;
+}
+
+function redEvidenceSignature(e: RedEvidence): string {
+	return JSON.stringify({
+		status: e.status,
+		oracleStatus: e.oracleStatus,
+		testFiles: stableUnique(e.testFiles),
+		changedFiles: stableUnique(e.changedFiles),
+		forbiddenFiles: stableUnique(e.forbiddenFiles),
+		missingScenarios: stableUnique(e.missingScenarios ?? []),
+		coveredScenarios: stableUnique(e.coveredScenarios ?? []),
+		reason: normalizeSignatureText(e.reason ?? ""),
+		diagnostics: stableUnique((e.diagnostics ?? []).map((d) => `${d.status}:${d.exitCode ?? "null"}:${d.signal ?? "none"}:${normalizeSignatureText(d.outputTail ?? "")}`)),
+	});
 }
 
 function gitLines(cwd: string, args: string[]): string[] {
@@ -410,11 +466,6 @@ function changedSinceSnapshot(cwd: string, before: Map<string, string | null>): 
 	return changed;
 }
 
-/** Per-attempt cap on RED-oracle re-prompts of the tdd-guide agent when the
- *  RED phase is NOT yet confirmed (green/broken). Counts retries AFTER the
- *  initial RED attempt, so `MAX_ATTEMPTS - 1` yields the same total try count as
- *  the outer green loop (5 total TDD tries by default). */
-const MAX_RED_RETRIES = Math.max(0, MAX_ATTEMPTS - 1);
 const pad = (n: number) => String(n).padStart(2, "0");
 
 export function runtimeInstructionFingerprint(specDir: string | undefined): string {
@@ -548,9 +599,10 @@ export function normalizeStringArray(v: unknown): string[] {
 
 // §D auto-iterate convergence loop — per-phase green state + failure reasons
 // carried across outer iterations (the loop in stages/index.ts re-runs this
-// stage until allGreen). Without these, a re-run would re-attempt GREEN phases
-// (state-confusion churn); with them, green phases are skipped and a failed
-// phase's prior-iteration reasons are seeded into its next attempt 1.
+// stage until allGreen or no-progress blocking). Without these, a re-run would
+// re-attempt GREEN phases (state-confusion churn); with them, green phases are
+// skipped and a failed phase's prior-iteration reasons are seeded into its next
+// attempt 1.
 export interface PhaseStatusEntry {
 	id: string;
 	status: "green" | "failed";
@@ -599,6 +651,8 @@ export const implementationStage: Stage = {
 		if (phaseStatus.length) ctx.log(`Implementation: resuming convergence iteration (${phaseStatus.filter((p) => p.status === "green").length}/${phases.length} phases already green)`);
 		let phasesCompleted = 0;
 		let allGreen = true;
+		let convergenceBlocked = false;
+		let convergenceBlockReason = "";
 		const filesModified: string[] = [];
 
 		for (const [idx, phase] of phases.entries()) {
@@ -627,7 +681,7 @@ export const implementationStage: Stage = {
 				ctx.phase(`${phaseHeadline}${suffix}`);
 			};
 			const attemptDetail = (attempt: number, extra?: string) =>
-				[`attempt ${attempt}/${MAX_ATTEMPTS}`, extra].filter(Boolean).join(", ");
+				[`attempt ${attempt}`, extra].filter(Boolean).join(", ");
 			// §D: skip a phase already green in a prior convergence iteration (don't
 			// re-touch done work — the state-confusion churn §F fought).
 			if (phaseStatus.some((p) => p.id === phaseId && p.status === "green")) {
@@ -641,6 +695,8 @@ export const implementationStage: Stage = {
 			let attemptsRun = 0;
 			let terminalFailureKind: "red-generation" | "implementation-gate" = "implementation-gate";
 			let terminalRedTries = 0;
+			let terminalStopReason: "budget" | "no-progress" | "failed" = "failed";
+			let attemptProgressHistory: ProgressSignature[] = [];
 			// AND-semantics (AC-03 → SCENARIO-011..015): the missing DELIVERABLE entries
 			// from the previous attempt, fed into the next implementer retry under a
 			// `## Deliverables still missing — create/wire these` block. Resets each
@@ -701,12 +757,8 @@ export const implementationStage: Stage = {
 			ensurePhaseRunning();
 			announceActivity();
 			if (tracker) tracker.begin("phase", phaseId);
-			for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+			for (let attempt = 1; ctx.budget.check(); attempt++) {
 				attemptsRun = attempt;
-				if (!ctx.budget.check()) {
-					allGreen = false;
-					return { phasesCompleted, totalPhases: phases.length, allGreen, filesModified, summary: "Budget exhausted" };
-				}
 				announceActivity("Route specialist", attemptDetail(attempt));
 				const specialist = await ctx.helper({ name: "route-specialist", sources: { "classify-task": state.classify }, options: { phase } });
 				const lang = (specialist.value.languageInstructions as string) ?? "";
@@ -735,9 +787,10 @@ export const implementationStage: Stage = {
 					const baselineDeliverablesSatisfied = phaseDeliverables ? deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables) : false;
 					let retries = 0;
 					let redHint = "";
-					while (true) {
+					const redProgressHistory: string[] = [];
+					while (ctx.budget.check()) {
 						const redDiagnostics: RedCheckDiagnostic[] = [];
-						const redTryDetail = attemptDetail(attempt, `try ${retries + 1}/${MAX_RED_RETRIES + 1}`);
+						const redTryDetail = attemptDetail(attempt, `try ${retries + 1}`);
 						const tddId = retries === 0
 							? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
 							: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
@@ -776,13 +829,21 @@ export const implementationStage: Stage = {
 							restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);
 						}
 						const retryHint = redGenerationRetryHint(redEvidence);
-						if (retryHint && retries < MAX_RED_RETRIES) {
+						if (retryHint) {
+							const signature = redEvidenceSignature(redEvidence);
+							const noProgress = redProgressHistory[redProgressHistory.length - 1] === signature;
+							redProgressHistory.push(signature);
+							if (noProgress) {
+								terminalStopReason = "no-progress";
+								ctx.log(`Implementation ${phaseId} RED generation stopped after repeated no-progress try ${retries + 1}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
+								break;
+							}
 							if (redEvidence.status === "green-weak-test" || redEvidence.status === "polluted-red") {
 								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
 							}
 							retries++;
 							redHint = retryHint;
-							ctx.log(`Implementation ${phaseId} RED generation retry ${retries}/${MAX_RED_RETRIES}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
+							ctx.log(`Implementation ${phaseId} RED generation retry ${retries}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
 							continue;
 						}
 						break;
@@ -820,7 +881,8 @@ export const implementationStage: Stage = {
 						attemptErrors = redFailures;
 						terminalFailureKind = "red-generation";
 						terminalRedTries = retries + 1;
-						ctx.log(`Implementation ${phaseId} RED generation failed after ${retries + 1} tries`);
+						if (terminalStopReason !== "no-progress") terminalStopReason = ctx.budget.check() ? "failed" : "budget";
+						ctx.log(`Implementation ${phaseId} RED generation stopped after ${retries + 1} tries${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""}`);
 						ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
 						ctx.log(redEvidenceLogLine(redEvidence));
 						break;
@@ -884,7 +946,8 @@ export const implementationStage: Stage = {
 				// spec-11 AC-07 (SCENARIO-015): a previous attempt claimed a file git did
 				// NOT show changed — feed the specific paths so the implementer actually
 				// creates/wires them instead of resampling. Mirrors the deliverables block
-				// above and is bounded by MAX_ATTEMPTS via the surrounding attempt loop.
+				// above and is bounded by the global run budget plus no-progress detection
+				// in the surrounding attempt loop.
 				if (claimedNotChanged.length) {
 					implParts.push(implementationRetrySection("Claimed changes not present in git — actually create/wire these", {
 						phase: phaseId,
@@ -1039,7 +1102,7 @@ export const implementationStage: Stage = {
 				// when the gate fully passed OR when every failure is a pre-existing
 				// out-of-scope crate the branch never touched (gate.inScopePass). The
 				// `if (!green)` branch below therefore fires ONLY on genuine in-scope
-				// failures — neither pass nor inScopePass after MAX_ATTEMPTS — so
+				// failures — neither pass nor inScopePass before the attempt loop stops — so
 				// pre-existing breakage elsewhere can no longer abort green in-scope work.
 				// spec-11 AC-07/AC-08 (SCENARIO-013): AND `changeGate.pass` so a
 				// claimed-but-never-changed file hard-fails EVEN WHEN build + deliverable
@@ -1068,8 +1131,20 @@ export const implementationStage: Stage = {
 					acceptedRed = null;
 					ctx.log(`Implementation ${phaseId} RED cache invalidated: confirmed RED test file(s) changed during GREEN`);
 				}
-				ctx.log(`Implementation ${phaseId} attempt ${attempt}/${MAX_ATTEMPTS} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
+				const progressSignature: ProgressSignature = {
+					failure: failureSignature(failureReasons),
+					footprint: changeFootprint(phaseChangeRec, projectStructured),
+				};
+				const noProgress = repeatedNoProgress(attemptProgressHistory, progressSignature);
+				attemptProgressHistory.push(progressSignature);
+				ctx.log(`Implementation ${phaseId} attempt ${attempt} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
+				if (noProgress) {
+					terminalStopReason = "no-progress";
+					ctx.log(`Implementation ${phaseId} stopped after repeated no-progress failure on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}`);
+					break;
+				}
 			}
+			if (!green && terminalStopReason !== "no-progress" && !ctx.budget.check()) terminalStopReason = "budget";
 			// Close the phase bracket EXACTLY ONCE after the attempt loop: the
 			// per-attempt probeEnd calls above computed the freshest cross-check
 			// without appending; commitEnd persists that final record as the
@@ -1094,9 +1169,15 @@ export const implementationStage: Stage = {
 					...hollowFiles.map((e) => `hollow-file: ${e}`),
 				]);
 				if (terminalFailureKind === "red-generation") {
-					ctx.log(`Implementation ${phaseId} stopped before implementation: RED generation exhausted after ${terminalRedTries} tries in implementation attempt ${attemptsRun} — convergence will retry this phase if budget remains`);
+					ctx.log(`Implementation ${phaseId} stopped before implementation: RED generation stopped after ${terminalRedTries} tries in implementation attempt ${attemptsRun}${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""}`);
 				} else {
-					ctx.log(`Implementation ${phaseId} failed after ${attemptsRun} attempts — terminating early`);
+					ctx.log(`Implementation ${phaseId} stopped after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""}`);
+				}
+				if (terminalStopReason === "no-progress") {
+					convergenceBlocked = true;
+					convergenceBlockReason = terminalFailureKind === "red-generation"
+						? `RED generation repeated the same failing evidence for ${phaseId}`
+						: `Implementation gates repeated the same failing evidence for ${phaseId}`;
 				}
 				allGreen = false;
 				break;
@@ -1114,6 +1195,8 @@ export const implementationStage: Stage = {
 			filesModified,
 			phaseStatus,
 			lastFailures,
+			convergenceBlocked,
+			convergenceBlockReason,
 			runtimeInstructionFingerprint: runtimeInstructionFingerprint(state.setup?.specDirectory),
 			invalidatedByRuntimeInstructions: false,
 			summary: allGreen ? `All ${phases.length} phases completed successfully` : `${phasesCompleted}/${phases.length} phases completed`,

@@ -10,8 +10,8 @@
  * `(gate.pass || gate.inScopePass) && deliverableCheck.pass`, the
  * PASS/FAIL+missing verdict is logged next to the build-gate log, and the
  * exhaustive `missing` list is fed into the next implementer retry under a
- * `## Deliverables still missing — create/wire these` block, bounded by
- * MAX_ATTEMPTS = 5.
+ * `## Deliverables still missing — create/wire these` block, bounded by the
+ * global run budget and no-progress detection.
  *
  * Both `runBuildGate` and `runDeliverableCheck` are fully stubbed via
  * `vi.mock("../src/build-runner.ts")` so the stage exercises ONLY its verdict
@@ -41,7 +41,7 @@ import type {
 // queue is empty the primitive returns a clean PASS default (backward-compat /
 // absent-deliverables behavior). `gateCalls` / `deliverableCalls` prove the
 // AND-semantics wiring actually invokes both primitives and respects
-// MAX_ATTEMPTS.
+// the implementation convergence loop.
 const mock = vi.hoisted(() => ({
 	gateQ: [] as Array<Record<string, unknown>>,
 	deliverableQ: [] as Array<Record<string, unknown>>,
@@ -137,11 +137,11 @@ const DELIVERABLE_FAIL = {
 	ran: ["file:src/screen.rs", "contains:src/screen.rs:fetch_us_data", "tests:list"],
 };
 
-/** Push `r` onto the gate queue `n` times (default MAX_ATTEMPTS=5 = persistent). */
+/** Push `r` onto the gate queue `n` times (default persistent failure sample). */
 const seedGate = (r: Record<string, unknown>, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.gateQ.push({ ...r });
 };
-/** Push `r` onto the deliverable queue `n` times (default MAX_ATTEMPTS=5). */
+/** Push `r` onto the deliverable queue `n` times (default persistent failure sample). */
 const seedDeliverable = (r: Record<string, unknown>, n = 5): void => {
 	for (let i = 0; i < n; i++) mock.deliverableQ.push({ ...r });
 };
@@ -270,7 +270,7 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		// the deliverable contract is unmet.
 		expect(hasLog(fake.logs, "Implementation phase-01 GREEN")).toBe(false);
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
-		expect(hasLog(fake.logs, "failed after 5 attempts — terminating early")).toBe(true);
+		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
@@ -278,7 +278,7 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(mock.deliverableCalls).toBeGreaterThan(0);
 	});
 
-	it("SCENARIO-013: MAX_ATTEMPTS (5) still bounds the retry when deliverables keep failing", async () => {
+	it("SCENARIO-013: repeated identical deliverable failures stop as no-progress", async () => {
 		seedGate(GATE_PASS);
 		seedDeliverable(DELIVERABLE_FAIL);
 		const { ctx } = mkCtx();
@@ -287,9 +287,9 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 			ctx,
 		);
 
-		// Exactly 5 attempts of each primitive — never a 6th, never unbounded.
-		expect(mock.gateCalls).toBe(5);
-		expect(mock.deliverableCalls).toBe(5);
+		// The same actionable failure repeated once after feedback, so the loop stops.
+		expect(mock.gateCalls).toBe(2);
+		expect(mock.deliverableCalls).toBe(2);
 	});
 
 	it("SCENARIO-012: a failed deliverable check feeds `## Deliverables still missing` into the NEXT implementer retry", async () => {
@@ -322,10 +322,14 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 	});
 
 	it("SCENARIO-012 (reset): the missing block reflects the MOST RECENT failing attempt only", async () => {
-		// All three attempts fail deliverable; the missing list is identical each
-		// time, so each retry prompt carries the current missing block.
+		// Attempts 1 and 2 fail with different missing lists, so attempt 3 receives
+		// the most recent failing block rather than being stopped as no-progress.
 		seedGate(GATE_PASS);
-		seedDeliverable(DELIVERABLE_FAIL);
+		mock.deliverableQ.push(
+			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen-v1.rs"] },
+			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen.rs"] },
+			{ ...DELIVERABLE_PASS },
+		);
 		const { ctx, fake } = mkCtx();
 		await (implementationStage as Stage).run(
 			mkState([{ name: "Phase A", deliverables: DELIVERABLES }]),
@@ -416,7 +420,7 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
-		expect(hasLog(fake.logs, "failed after 5 attempts — terminating early")).toBe(true);
+		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
 	});
 
 	it("SCENARIO-011/015 log: the deliverable-check verdict (with missing reasons) is logged next to the build-gate log", async () => {

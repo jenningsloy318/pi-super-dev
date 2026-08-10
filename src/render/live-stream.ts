@@ -173,7 +173,7 @@ const isStickySectionLine = (line: Pick<SectionLine, "text">): boolean => {
 		/^super-dev v\d+\.\d+\.\d+$/.test(text) ||
 		/^(?:Run started|Task|Launch cwd|Launch worktree|Launch branch|Run log): /.test(text) ||
 		/^(?:Stage|Phase) (?:start|end): /.test(text) ||
-		/^Implementation \S+ (?:RED gate FAIL|RED gate evidence|RED runner diagnostic|stopped before implementation|failed after \d+ attempts|attempt \d+\/\d+ FAIL|build-gate FAIL|deliverable-check FAIL)/.test(text)
+		/^Implementation \S+ (?:RED gate FAIL|RED gate evidence|RED runner diagnostic|stopped before implementation|stopped after \d+ attempt|attempt \d+ FAIL|build-gate FAIL|deliverable-check FAIL)/.test(text)
 	);
 };
 

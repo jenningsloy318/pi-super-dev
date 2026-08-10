@@ -6,24 +6,23 @@
  * `src/stages/implementation.ts` calls the `tdd-guide` agent and DISCARDS its
  * result (implementation.ts:70 has no left-hand assignment); `runRedCheck` —
  * delivered in P2 — is never invoked from the stage, and there is no
- * `MAX_RED_RETRIES` constant or `red-oracle` log line. So every assertion here
+ * `red-oracle` log line. So every assertion here
  * is RED until Phase P3 wires the loop.
  *
  * Contract (spec §B / AC-02 → SCENARIO-006/007/008/009/010):
  *   - After the initial `tdd-guide` call, capture its `control.testFiles` and
  *     call `runRedCheck(worktreePath, testFiles, { signal })` ONCE.
- *   - `while (status === "green" || status === "broken") && retries < MAX_RED_RETRIES`
+ *   - while the global budget allows and RED evidence is still changing,
  *       re-prompt `tdd-guide` (status-specific hint), re-run `runRedCheck`.
  *   - On `"red"` → proceed to the implementer with a CONFIRMED-red context.
  *   - On `"unknown"` → proceed without stalling, but explicitly tell the
  *     implementer RED could not be confirmed.
- *   - On cap exhaustion (still green/broken after MAX_RED_RETRIES=4 re-prompts)
- *     → HARD-fail the phase (`red-not-confirmed` / `red-broken`) and do NOT call
- *     the implementer.
+ *   - On repeated no-progress RED evidence → HARD-fail the phase
+ *     (`red-not-confirmed` / `red-broken`) and do NOT call the implementer.
  *   - Log EVERY red-oracle outcome as
  *       `Implementation ${phaseId} red-oracle: ${status} (ran: ...)`.
- *   - The OUTER `MAX_ATTEMPTS = 5` structure and the
- *     `gate.pass || gate.inScopePass` commit condition are UNCHANGED.
+ *   - The outer implementation loop remains budget-bounded and no-progress
+ *     guarded, while `gate.pass || gate.inScopePass` commit behavior is unchanged.
  *
  * RED status hardening: `green`/`broken` retry exhaustion is no longer a warning
  * path into the implementer. It is the bug this suite prevents: unconfirmed RED
@@ -264,30 +263,29 @@ describe("P3 — RED loop: unknown proceeds immediately, never stalls (SCENARIO-
 	});
 });
 
-describe("P3 — RED loop: green/broken triggers a bounded re-prompt (SCENARIO-007)", () => {
-	it("green → green → red: re-prompts tdd-guide until red, capped at MAX_RED_RETRIES=4", async () => {
-		redSeq("green", "green", "red");
+describe("P3 — RED loop: green/broken triggers a budgeted no-progress-guarded re-prompt (SCENARIO-007)", () => {
+	it("green → red: re-prompts tdd-guide until red while evidence changes", async () => {
+		redSeq("green", "red");
 		const { ctx, calls } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		// this case reaches red before the cap: 1 initial check + 2 retries = 3 oracle calls.
-		expect(redCheck).toHaveBeenCalledTimes(3);
-		// initial tdd-guide + 2 re-prompts = 3 tdd-guide calls.
-		expect(calls.tdd).toHaveLength(3);
+		// this case reaches red after one targeted retry: 1 initial check + 1 retry.
+		expect(redCheck).toHaveBeenCalledTimes(2);
+		expect(calls.tdd).toHaveLength(2);
 		// reached red → implementer prompt IS confirmed-red.
 		expect(calls.impl).toHaveLength(1);
 		expect(calls.impl[0].prompt).toMatch(/CONFIRMED-red/i);
 	});
 
-	it("broken is treated identically to green (re-prompts, same cap)", async () => {
-		redSeq("broken", "broken", "red");
+	it("broken is treated identically to green (re-prompts with the same no-progress guard)", async () => {
+		redSeq("broken", "red");
 		const { ctx, calls } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		expect(redCheck).toHaveBeenCalledTimes(3);
-		expect(calls.tdd).toHaveLength(3);
+		expect(redCheck).toHaveBeenCalledTimes(2);
+		expect(calls.tdd).toHaveLength(2);
 		expect(calls.impl[0].prompt).toMatch(/CONFIRMED-red/i);
 	});
 
@@ -304,19 +302,20 @@ describe("P3 — RED loop: green/broken triggers a bounded re-prompt (SCENARIO-0
 		expect(calls.logs.some((l) => l.includes("RED runner diagnostic") && l.includes("SyntaxError"))).toBe(true);
 	});
 
-	it("never exceeds MAX_RED_RETRIES re-prompts even if always-green", async () => {
-		// Always green: must NOT loop forever — capped at MAX_RED_RETRIES+1 calls.
+	it("stops on repeated no-progress evidence even if always-green", async () => {
+		// Always green with the same test evidence: must NOT loop forever.
 		redSeq("green");
 		const { ctx, calls } = mkCtx();
 
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		expect(redCheck).toHaveBeenCalledTimes(5); // 1 initial + MAX_RED_RETRIES(4)
-		expect(calls.tdd).toHaveLength(5);
+		expect(redCheck).toHaveBeenCalledTimes(2);
+		expect(calls.tdd).toHaveLength(2);
+		expect(calls.logs.some((l) => /RED generation stopped after repeated no-progress/i.test(l))).toBe(true);
 	});
 });
 
-describe("P3 — RED loop: cap exhaustion is a hard RED gate", () => {
+describe("P3 — RED loop: no-progress stop is a hard RED gate", () => {
 	it("always-green → does NOT proceed to implementer and records red-not-confirmed", async () => {
 		redSeq("green");
 		const { ctx, calls } = mkCtx();
@@ -326,10 +325,10 @@ describe("P3 — RED loop: cap exhaustion is a hard RED gate", () => {
 		expect(res.phasesCompleted).toBe(0);
 		expect(res.allGreen).toBe(false);
 		expect(calls.logs.some((l) => /RED gate FAIL: red-not-confirmed/i.test(l))).toBe(true);
-		expect(calls.logs.some((l) => /stopped before implementation: RED generation exhausted after 5 tries/i.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /stopped before implementation: RED generation stopped after 2 tries.*no progress/i.test(l))).toBe(true);
 	});
 
-	it("cap-exhausted (not red) never tells an implementer to green weak tests", async () => {
+	it("no-progress stopped RED never tells an implementer to green weak tests", async () => {
 		redSeq("green");
 		const { ctx, calls } = mkCtx();
 		await (implementationStage as Stage).run(mkState(), ctx);
@@ -340,20 +339,20 @@ describe("P3 — RED loop: cap exhaustion is a hard RED gate", () => {
 
 describe("P3 — RED loop: logs every red-oracle outcome", () => {
 	it("emits one `red-oracle: <status>` log per runRedCheck invocation", async () => {
-		redSeq("green", "green", "red");
+		redSeq("green", "red");
 		const { ctx, calls } = mkCtx();
 		await (implementationStage as Stage).run(mkState(), ctx);
 
 		const oracleLogs = calls.logs.filter((l) => /red-oracle:\s*(red|green|broken|unknown)\b/.test(l));
-		// one log per runRedCheck call (3 here).
-		expect(oracleLogs).toHaveLength(3);
+		// one log per runRedCheck call (2 here).
+		expect(oracleLogs).toHaveLength(2);
 		// ...and the final one is red.
 		expect(oracleLogs.some((l) => /red-oracle:\s*red\b/.test(l))).toBe(true);
 	});
 });
 
-describe("P3 — RED loop does NOT change the outer MAX_ATTEMPTS=5 / commit structure", () => {
-	it("when the hard gate fails every attempt, the phase fails after exactly MAX_ATTEMPTS=5", async () => {
+describe("P3 — RED loop does NOT change the outer commit structure", () => {
+	it("when the hard gate repeats the same failure, the phase stops on no-progress", async () => {
 		// RED loop passes immediately each attempt; the OUTER gate is what fails.
 		redSeq("red");
 		buildGate.mockImplementation(() => ({
@@ -366,8 +365,8 @@ describe("P3 — RED loop does NOT change the outer MAX_ATTEMPTS=5 / commit stru
 		const { ctx } = mkCtx();
 		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
 
-		// Outer attempt loop is preserved: 5 gate runs, then give up.
-		expect(buildGate).toHaveBeenCalledTimes(5);
+		// Outer attempt loop is no-progress guarded: repeated identical gate evidence stops.
+		expect(buildGate).toHaveBeenCalledTimes(2);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
 	});

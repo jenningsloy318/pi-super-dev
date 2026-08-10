@@ -8,7 +8,7 @@
  * GAP A: testFailuresSignature + Stage 11 test-failure stagnation (__testStagnated).
  * GAP B: reviewLoopUntil requires reviewApproved AND buildGreen to exit.
  * GAP C: non-decreasing finding/failure count triggers stagnation (both detectors).
- * GAP D: one final budget-checked reviewStep at Stage 10 max-rounds exhaustion.
+ * GAP D: review loops are budget-bounded when no approval or stagnation signal exists.
  */
 import { describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -204,12 +204,13 @@ describe("GAP C — count-based stagnation", () => {
 	});
 });
 
-// ─── GAP D — final review at Stage 10 max-rounds exhaustion ───────────────────
+// ─── GAP D — budget-bounded review loop ─────────────────────────────────────
 
-describe("GAP D — exhaustion epilogue", () => {
-	it("runs exactly one extra reviewStep after the loop exhausts (never approved, never stagnant)", async () => {
+describe("GAP D — budget-bounded review loop", () => {
+	it("stops on budget exhaustion when never approved and never stagnant", async () => {
 		const counts: Record<string, number> = {};
 		const ctx = driveCtx(counts);
+		ctx.budget = { check: () => (counts["code-reviewer"] ?? 0) < 3 } as never;
 		const state = {
 			setup: tmpWorktree(),
 			review: { verdict: "Changes Requested", findings: [] }, // empty findings → never stagnant
@@ -217,9 +218,7 @@ describe("GAP D — exhaustion epilogue", () => {
 
 		await expect(reviewStageNode.run(state, ctx)).resolves.toBeDefined();
 
-		// 5 loop rounds each run reviewStep (code-reviewer) once → 5, plus the
-		// GAP D epilogue's single final reviewStep → 6 total.
-		expect(counts["code-reviewer"]).toBe(6);
+		expect(counts["code-reviewer"]).toBe(3);
 	});
 });
 
@@ -385,7 +384,7 @@ describe("verificationConvergenceNode", () => {
 		expect(state.integration?.status).toBe("passed");
 	});
 
-	it("does not run a final unreviewed fix when max attempts are exhausted", async () => {
+	it("does not run a final unreviewed fix when verification stagnates", async () => {
 		let codeReviewCalls = 0;
 		let fixCalls = 0;
 		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
@@ -408,10 +407,10 @@ describe("verificationConvergenceNode", () => {
 		const result = await verificationConvergenceNode.run(state, ctx);
 
 		expect(result.status).toBe("failed");
-		expect(codeReviewCalls).toBe(5);
-		expect(fixCalls).toBe(4);
+		expect(codeReviewCalls).toBe(6);
+		expect(fixCalls).toBe(5);
 		const attempts = (state as Record<string, unknown>).__verificationAttempts as unknown[];
-		expect(attempts).toHaveLength(5);
+		expect(attempts).toHaveLength(6);
 	});
 
 	it("rejects integration tester writes to production files instead of routing them to implementer", async () => {

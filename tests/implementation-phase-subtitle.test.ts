@@ -74,20 +74,20 @@ describe("Implementation stage — per-phase pi-native subtitle", () => {
 		await implementationStage.run(mkState([{ name: "Core" }]), ctx);
 		expect(phaseCalls).toEqual(expect.arrayContaining([
 			"Implementation — Phase 1/1: Core",
-			"Implementation — Phase 1/1: Core — Route specialist (attempt 1/5)",
-			"Implementation — Phase 1/1: Core — TDD RED (attempt 1/5, try 1/5)",
-			"Implementation — Phase 1/1: Core — RED oracle (attempt 1/5, try 1/5)",
-			"Implementation — Phase 1/1: Core — RED boundary (attempt 1/5, try 1/5)",
-			"Implementation — Phase 1/1: Core — Implementation (attempt 1/5)",
-			"Implementation — Phase 1/1: Core — Build gate (attempt 1/5)",
-			"Implementation — Phase 1/1: Core — Deliverable check (attempt 1/5)",
-			"Implementation — Phase 1/1: Core — Change check (attempt 1/5)",
-			"Implementation — Phase 1/1: Core — Symbol check (attempt 1/5)",
+			"Implementation — Phase 1/1: Core — Route specialist (attempt 1)",
+			"Implementation — Phase 1/1: Core — TDD RED (attempt 1, try 1)",
+			"Implementation — Phase 1/1: Core — RED oracle (attempt 1, try 1)",
+			"Implementation — Phase 1/1: Core — RED boundary (attempt 1, try 1)",
+			"Implementation — Phase 1/1: Core — Implementation (attempt 1)",
+			"Implementation — Phase 1/1: Core — Build gate (attempt 1)",
+			"Implementation — Phase 1/1: Core — Deliverable check (attempt 1)",
+			"Implementation — Phase 1/1: Core — Change check (attempt 1)",
+			"Implementation — Phase 1/1: Core — Symbol check (attempt 1)",
 			"Implementation — Phase 1/1: Core — Commit",
 			"Implementation — Summary",
 		]));
-		const tddIdx = phaseCalls.indexOf("Implementation — Phase 1/1: Core — TDD RED (attempt 1/5, try 1/5)");
-		const implIdx = phaseCalls.indexOf("Implementation — Phase 1/1: Core — Implementation (attempt 1/5)");
+		const tddIdx = phaseCalls.indexOf("Implementation — Phase 1/1: Core — TDD RED (attempt 1, try 1)");
+		const implIdx = phaseCalls.indexOf("Implementation — Phase 1/1: Core — Implementation (attempt 1)");
 		expect(implIdx).toBeGreaterThan(tddIdx);
 	});
 

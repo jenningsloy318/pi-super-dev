@@ -1,6 +1,6 @@
 /**
  * Stage 10 — Verification Convergence
- * (review → fix → review → integration → fix → review → integration, max 5).
+ * (review → fix → review → integration → fix → review → integration).
  *
  * The main pipeline uses one convergence state machine so every product fix
  * invalidates downstream evidence: a review/build fix must be reviewed before
@@ -25,14 +25,9 @@ import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
-import { WORKFLOW_ATTEMPTS } from "../retry-policy.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
-
-const REVIEW_MAX_ROUNDS = WORKFLOW_ATTEMPTS;
-const INTEGRATION_MAX_RETRIES = Math.max(0, WORKFLOW_ATTEMPTS - 1);
-const VERIFICATION_MAX_ATTEMPTS = WORKFLOW_ATTEMPTS;
 
 const setupOf = (s: PipelineState) => s.setup!;
 
@@ -633,15 +628,15 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	return false;
 };
 
-/** Stage 10 — Review: review → fix → build gate, max 5. */
+/** Stage 10 — Review: review → fix → build gate, budget + stagnation bounded. */
 export const reviewLoopNode = loop(
-	{ until: reviewLoopUntil, times: REVIEW_MAX_ROUNDS },
+	{ while: (_s, ctx) => ctx.budget.check(), until: reviewLoopUntil },
 	sequence([reviewStep, fixStepReview, buildGateStep]),
 );
 
 /**
  * GAP D: the composed Stage 10 node = reviewLoopNode + one final
- * budget-checked reviewStep epilogue on max-round exhaustion OR stagnation.
+ * budget-checked reviewStep epilogue on stagnation.
  * The loop checks `until` before each body run, so a review+fix+build round can
  * leave a stale non-approved review in state immediately after the fix. The
  * epilogue refreshes the terminal fixed code before downstream merge gates read
@@ -649,10 +644,10 @@ export const reviewLoopNode = loop(
  * marker is cleared. No extra fix runs; the epilogue is non-fatal (never
  * throws).
  */
-async function finalSafetyReReview(state: PipelineState, ctx: StageContext, reason: "max-rounds" | "stagnation"): Promise<void> {
+async function finalSafetyReReview(state: PipelineState, ctx: StageContext, reason: "budget" | "stagnation"): Promise<void> {
 	const label = reason === "stagnation"
 		? "Stage 10: stagnation reached after a fix — final safety re-review (non-fatal)"
-		: "Stage 10: max rounds exhausted — final safety re-review (non-fatal)";
+		: "Stage 10: budget still allows a final safety re-review (non-fatal)";
 	ctx.log(label);
 	try {
 		await reviewStep.run(state, ctx);
@@ -700,7 +695,7 @@ export const reviewStageNode: Node = {
 		if (r.status === "cancelled") return r;
 		let stagnated = Boolean((state as Record<string, unknown>).__stagnated);
 		if (!reviewApproved(state) && ctx.budget.check()) {
-			await finalSafetyReReview(state, ctx, stagnated ? "stagnation" : "max-rounds");
+			await finalSafetyReReview(state, ctx, stagnated ? "stagnation" : "budget");
 		}
 		stagnated = Boolean((state as Record<string, unknown>).__stagnated);
 		if (stagnated && !reviewApproved(state)) {
@@ -712,7 +707,7 @@ export const reviewStageNode: Node = {
 				r = await reviewLoopNode.run(state, ctx);
 				if (r.status === "cancelled") return r;
 				if (!reviewApproved(state) && ctx.budget.check()) {
-					await finalSafetyReReview(state, ctx, Boolean((state as Record<string, unknown>).__stagnated) ? "stagnation" : "max-rounds");
+					await finalSafetyReReview(state, ctx, Boolean((state as Record<string, unknown>).__stagnated) ? "stagnation" : "budget");
 				}
 			}
 		}
@@ -834,12 +829,10 @@ export const verificationConvergenceNode: Node = {
 		(state as Record<string, unknown>).__verificationCounts = [];
 		const attempts = ensureVerificationAttempts(state);
 
-		for (let attempt = 1; attempt <= VERIFICATION_MAX_ATTEMPTS; attempt++) {
+		let lastAttempt = 0;
+		for (let attempt = 1; ctx.budget.check(); attempt++) {
+			lastAttempt = attempt;
 			if (ctx.signal?.aborted) return { status: "cancelled" };
-			if (!ctx.budget.check()) {
-				state.integration = { pass: false, status: "unknown-runner-unavailable", summary: "Budget exhausted before verification convergence attempt" };
-				return { status: "failed", error: "budget exhausted before verification convergence attempt" };
-			}
 			resetIntegrationAttemptState(state);
 			delete state.integration;
 
@@ -853,7 +846,7 @@ export const verificationConvergenceNode: Node = {
 				codeBefore: workingTreeSignature(state),
 			};
 			attempts.push(record);
-			ctx.log(`Stage 10 — Verification convergence attempt ${attempt}/${VERIFICATION_MAX_ATTEMPTS}: review + build`);
+			ctx.log(`Stage 10 — Verification convergence attempt ${attempt}: review + build`);
 
 			const reviewResult = await reviewStep.run(state, ctx);
 			if (reviewResult.status === "cancelled") return reviewResult;
@@ -861,18 +854,19 @@ export const verificationConvergenceNode: Node = {
 			if (buildResult.status === "cancelled") return buildResult;
 
 			if (!reviewApproved(state) || !buildGreen(state)) {
-				recordAttemptEnd(state, record, attempt >= VERIFICATION_MAX_ATTEMPTS);
+				recordAttemptEnd(state, record, false);
 				ctx.log(`Stage 10: review/build outcome attempt ${attempt}: review=${String(record.reviewVerdict || "unknown")} build=${record.buildPass === true ? "pass" : "fail"} findings=${record.reviewFindings} buildErrors=${record.buildErrors}`);
 				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
-				if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
-					ctx.log("Stage 10: verification max attempts exhausted after fresh review/build evidence; no final fix will run without re-review");
+				if (!ctx.budget.check()) {
+					record.terminal = true;
+					ctx.log("Stage 10: verification budget exhausted after fresh review/build evidence; no final fix will run without re-review");
 					recordVerificationConvergenceFinding(state, {
-						title: "Verification review/build max attempts exhausted",
+						title: "Verification review/build budget exhausted",
 						detail: `review=${String(record.reviewVerdict || "unknown")} build=${record.buildPass === true ? "pass" : "fail"} after ${attempt} attempt(s)`,
 						evidence: [...summarizeReviewFindings(state), ...buildErrors(state)],
-						sourceGate: "review-build-max-attempts",
+						sourceGate: "review-build-budget",
 					});
-					return { status: "failed", error: "verification convergence max attempts exhausted" };
+					return { status: "failed", error: "verification convergence budget exhausted" };
 				}
 				record.fixKind = "review";
 				const fixResult = await runVerificationFix("review", fixStepReview, state, ctx);
@@ -881,7 +875,7 @@ export const verificationConvergenceNode: Node = {
 				continue;
 			}
 
-			ctx.log(`Stage 10 — Verification convergence attempt ${attempt}/${VERIFICATION_MAX_ATTEMPTS}: integration`);
+			ctx.log(`Stage 10 — Verification convergence attempt ${attempt}: integration`);
 			const integrationWriteSnapshot = snapshotStatusFiles(state);
 			const testResult = await testBlock.run(state, ctx);
 			if (testResult.status === "cancelled") return testResult;
@@ -900,11 +894,12 @@ export const verificationConvergenceNode: Node = {
 			}
 			if (testResult.status === "failed") {
 				state.integration = { pass: false, status: "failed", summary: testResult.error ?? "integration bringup/test block failed", expected: expectedIntegrationRoles(state) };
-				recordAttemptEnd(state, record, attempt >= VERIFICATION_MAX_ATTEMPTS);
+				recordAttemptEnd(state, record, false);
 				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
-				if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
+				if (!ctx.budget.check()) {
+					record.terminal = true;
 					recordVerificationConvergenceFinding(state, {
-						title: "Integration test block failed after max attempts",
+						title: "Integration test block failed after budget exhaustion",
 						detail: testResult.error ?? "integration bringup/test block failed",
 						evidence: summarizeTestFailures(state),
 						sourceGate: "integration-test-block",
@@ -926,7 +921,7 @@ export const verificationConvergenceNode: Node = {
 			}
 
 			const outcome = setIntegrationOutcome(state);
-			recordAttemptEnd(state, record, outcome.status === "passed" || attempt >= VERIFICATION_MAX_ATTEMPTS);
+			recordAttemptEnd(state, record, outcome.status === "passed");
 			ctx.log(`Stage 10: integration outcome attempt ${attempt}: ${outcome.status} (expected: ${outcome.expected.join(",") || "none"})`);
 			if (outcome.status === "passed" && reviewApproved(state) && buildGreen(state)) {
 				return markIntegrationPassed(state, ctx, `Stage 10: verification converged after ${attempt} attempt(s)`);
@@ -943,15 +938,16 @@ export const verificationConvergenceNode: Node = {
 				return { status: "failed", error: inconclusiveIntegrationMessage(outcome) };
 			}
 			if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
-			if (attempt >= VERIFICATION_MAX_ATTEMPTS) {
-				ctx.log("Stage 10: verification max attempts exhausted after fresh integration evidence; no final fix will run without re-review");
+			if (!ctx.budget.check()) {
+				record.terminal = true;
+				ctx.log("Stage 10: verification budget exhausted after fresh integration evidence; no final fix will run without re-review");
 				recordVerificationConvergenceFinding(state, {
-					title: "Verification integration max attempts exhausted",
+					title: "Verification integration budget exhausted",
 					detail: `integration=${outcome.status} after ${attempt} attempt(s)`,
 					evidence: [...summarizeTestFailures(state), ...summarizeReviewFindings(state), ...buildErrors(state)],
-					sourceGate: "integration-max-attempts",
+					sourceGate: "integration-budget",
 				});
-				return { status: "failed", error: "verification convergence max attempts exhausted" };
+				return { status: "failed", error: "verification convergence budget exhausted" };
 			}
 
 			record.fixKind = "integration";
@@ -961,17 +957,19 @@ export const verificationConvergenceNode: Node = {
 		}
 
 		recordVerificationConvergenceFinding(state, {
-			title: "Verification convergence max attempts exhausted",
-			detail: "verification loop reached its attempt cap",
+			title: "Verification convergence budget exhausted",
+			detail: `verification loop exhausted the global agent budget after ${lastAttempt} attempt(s)`,
 			evidence: [...summarizeTestFailures(state), ...summarizeReviewFindings(state), ...buildErrors(state)],
-			sourceGate: "verification-max-attempts",
+			sourceGate: "verification-budget",
 		});
-		return { status: "failed", error: "verification convergence max attempts exhausted" };
+		state.integration = { pass: false, status: "unknown-runner-unavailable", summary: "Budget exhausted before verification convergence attempt" };
+		return { status: "failed", error: "verification convergence budget exhausted" };
 	},
 };
 
 /**
- * Stage 11 — Integration Testing: test → (fail? fix → re-review → build → re-test), max 5 total.
+ * Stage 11 — Integration Testing: test → (fail? fix → re-review → build → re-test),
+ * bounded by the global budget and repeated test-failure stagnation.
  *
  * Custom node (not loop()) because integrationTestsGreen used to be vacuously true before tests ran —
  * a loop's `until` check would exit immediately. This node runs tests FIRST
@@ -1028,15 +1026,13 @@ export const integrationLoopNode: Node = {
 		}
 		if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 
-		// 2. Retry loop: fix → re-review → build → re-test (max 4 retries = 5 total).
-		for (let attempt = 1; attempt <= INTEGRATION_MAX_RETRIES; attempt++) {
+		// 2. Retry loop: fix → re-review → build → re-test.
+		let retryAttempts = 0;
+		for (let attempt = 1; ctx.budget.check(); attempt++) {
+			retryAttempts = attempt;
 			if (ctx.signal?.aborted) return { status: "cancelled" };
-			if (!ctx.budget.check()) {
-				state.integration = { pass: false, summary: "Budget exhausted during integration retry" };
-				return { status: "failed", error: "budget exhausted during integration retry" };
-			}
 
-			ctx.log(`Stage 11: integration retry ${attempt}/${INTEGRATION_MAX_RETRIES} — fix + re-review + re-test`);
+			ctx.log(`Stage 11: integration retry ${attempt} — fix + re-review + re-test`);
 
 			await fixStepIntegration.run(state, ctx);
 			await reviewStep.run(state, ctx);
@@ -1058,9 +1054,9 @@ export const integrationLoopNode: Node = {
 			if (recordTestStagnation()) return { status: "failed", error: "integration testing stagnated (non-fatal)" };
 		}
 
-		ctx.log("Stage 11: integration testing max retries exhausted (non-fatal)");
-		const outcome = setIntegrationOutcome(state, "integration testing max retries exhausted");
-		state.integration = { ...state.integration, pass: false, status: outcome.status === "passed" ? "failed" : outcome.status, summary: "integration testing max retries exhausted", expected: outcome.expected, roleStatus: outcome.roleStatus };
-		return { status: "failed", error: "integration testing max retries exhausted" };
+		ctx.log(`Stage 11: integration testing budget exhausted after ${retryAttempts} retry attempt(s) (non-fatal)`);
+		const outcome = setIntegrationOutcome(state, "integration testing budget exhausted");
+		state.integration = { ...state.integration, pass: false, status: outcome.status === "passed" ? "failed" : outcome.status, summary: "integration testing budget exhausted", expected: outcome.expected, roleStatus: outcome.roleStatus };
+		return { status: "failed", error: "integration testing budget exhausted" };
 	},
 };

@@ -9,15 +9,15 @@
  *      `break` the whole stage so phase-2 is NEVER attempted (no phase-02
  *      agent ids, no extra primitive calls). This is the `allGreen=false; break`
  *      invariant that stops a false-green phase-1 from leaking into phase-2.
- *   2. ATTEMPT-3 BOUNDARY CONVERGENCE — FAIL, FAIL, PASS recovers on the LAST
- *      attempt (exactly 5 primitive calls, GREEN on attempt 5) proving
- *      MAX_ATTEMPTS is not off-by-one.
+ *   2. BEYOND-OLD-CAP CONVERGENCE — changing failures can continue past the old
+ *      fifth attempt and recover on attempt 6, proving Stage 9 is no longer
+ *      hard-capped at five local tries.
  *   3. MISSING-BLOCK INJECTION INDEPENDENT OF THE GATE RESULT — the
  *      `## Deliverables still missing` block is injected into the next retry
  *      even when attempt-1's BUILD-GATE itself failed (in-scope), proving the
  *      injection is keyed on the deliverable verdict alone, not the gate's.
  *   4. PER-ATTEMPT FAIL-LOG SURFACES DELIVERABLE REASONS — the
- *      `attempt N/3 FAIL: ...` log line carries each missing entry with the
+ *      `attempt N FAIL: ...` log line carries each missing entry with the
  *      `deliverable:` prefix so an audit trail exists even on the non-terminal
  *      attempts.
  *
@@ -194,7 +194,7 @@ beforeEach(() => {
 
 describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 	it("multi-phase early-termination: a deliverable FAIL in phase-1 aborts phase-2 entirely (SCENARIO-011 → stage control flow)", async () => {
-		// Both primitives fail persistently. Phase-1 burns all 5 attempts and the
+		// Both primitives fail persistently. Phase-1 stops on no-progress and the
 		// stage `break`s — phase-2 must NEVER be reached (no phase-02 agents, no
 		// extra primitive calls).
 		seedGate(GATE_PASS, 10);
@@ -210,32 +210,39 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 
 		// Phase-2 never started: no agent id references phase-02.
 		expect(fake.agentIds.some((id) => id.includes("phase-02"))).toBe(false);
-		// Only phase-1's 5 attempts ran each primitive — NOT 10.
-		expect(mock.gateCalls).toBe(5);
-		expect(mock.deliverableCalls).toBe(5);
+		// Only phase-1's no-progress-stopped attempts ran each primitive — NOT phase 2.
+		expect(mock.gateCalls).toBe(2);
+		expect(mock.deliverableCalls).toBe(2);
 		// Stage verdict reflects the abort.
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
-		expect(hasLog(fake.logs, "failed after 5 attempts — terminating early")).toBe(true);
+		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
 	});
 
-	it("attempt-5 boundary convergence: FAIL, FAIL, PASS recovers GREEN on the LAST attempt (SCENARIO-012/015)", async () => {
-		// Persistent green gate; deliverable fails four times then passes on attempt 5.
-		seedGate(GATE_PASS, 5);
-		mock.deliverableQ.push({ ...DELIVERABLE_FAIL }, { ...DELIVERABLE_FAIL }, { ...DELIVERABLE_FAIL }, { ...DELIVERABLE_FAIL }, { ...DELIVERABLE_PASS });
+	it("beyond-old-cap convergence: changing failures can recover GREEN on attempt 6 (SCENARIO-012/015)", async () => {
+		// Persistent green gate; deliverable failures change for five attempts, then
+		// pass on attempt 6. This proves Stage 9 is not locally hard-capped at five.
+		seedGate(GATE_PASS, 6);
+		mock.deliverableQ.push(
+			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen-1.rs"] },
+			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen-2.rs"] },
+			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen-3.rs"] },
+			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen-4.rs"] },
+			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen-5.rs"] },
+			{ ...DELIVERABLE_PASS },
+		);
 		const { ctx, fake } = mkCtx();
 		const res = (await (implementationStage as Stage).run(
 			mkState([{ name: "Phase A", deliverables: DELIVERABLES }]),
 			ctx,
 		)) as ControlObj;
 
-		// GREEN precisely on attempt 5 — MAX_ATTEMPTS boundary is not off-by-one.
-		expect(hasLog(fake.logs, "Implementation phase-01 GREEN on attempt 5")).toBe(true);
+		expect(hasLog(fake.logs, "Implementation phase-01 GREEN on attempt 6")).toBe(true);
 		expect(res.phasesCompleted).toBe(1);
 		expect(res.allGreen).toBe(true);
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(true);
-		expect(mock.gateCalls).toBe(5);
-		expect(mock.deliverableCalls).toBe(5);
+		expect(mock.gateCalls).toBe(6);
+		expect(mock.deliverableCalls).toBe(6);
 	});
 
 	it("missing-block injection is INDEPENDENT of the gate result: in-scope gate FAIL + deliverable FAIL still feeds the block to attempt 2", async () => {
@@ -274,7 +281,7 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 		await (implementationStage as Stage).run(mkState([{ name: "Phase A", deliverables: DELIVERABLES }]), ctx);
 
 		// The attempt-1 FAIL line exists and carries the deliverable reasons.
-		const attempt1Fail = fake.logs.find((l) => /phase-01 attempt 1\/5 FAIL/.test(l));
+		const attempt1Fail = fake.logs.find((l) => /phase-01 attempt 1 FAIL/.test(l));
 		expect(attempt1Fail, "expected a phase-01 attempt-1 FAIL log line").toBeDefined();
 		expect(attempt1Fail!).toContain("deliverable: missing file: src/screen.rs");
 		expect(attempt1Fail!).toContain("deliverable: missing pattern fetch_us_data in src/screen.rs");
@@ -282,7 +289,7 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 		// (gate logged before deliverable-check, which precedes the FAIL line).
 		const gateIdx = fake.logs.findIndex((l) => l.includes("phase-01 build-gate PASS"));
 		const deliverableIdx = fake.logs.findIndex((l) => l.includes("phase-01 deliverable-check FAIL"));
-		const failIdx = fake.logs.findIndex((l) => /phase-01 attempt 1\/5 FAIL/.test(l));
+		const failIdx = fake.logs.findIndex((l) => /phase-01 attempt 1 FAIL/.test(l));
 		expect(gateIdx).toBeGreaterThanOrEqual(0);
 		expect(deliverableIdx).toBeGreaterThan(gateIdx);
 		expect(failIdx).toBeGreaterThan(deliverableIdx);
@@ -295,7 +302,7 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 		const { ctx, fake } = mkCtx();
 		await (implementationStage as Stage).run(mkState([{ name: "Phase A", deliverables: DELIVERABLES }]), ctx);
 
-		const attempt1Fail = fake.logs.find((l) => /phase-01 attempt 1\/5 FAIL/.test(l));
+		const attempt1Fail = fake.logs.find((l) => /phase-01 attempt 1 FAIL/.test(l));
 		expect(attempt1Fail).toBeDefined();
 		// BOTH the in-scope gate error AND the deliverable reasons appear.
 		expect(attempt1Fail!).toContain("cannot find value");

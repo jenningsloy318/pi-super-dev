@@ -62,7 +62,7 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.1.22`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.1.23`.
 The foreground stream, run log, `package.json`, and `package-lock.json` use the
 same npm-valid semver value.
 
@@ -209,8 +209,8 @@ in git can no longer go green even when the build and deliverable checks
 both pass. `changedNotClaimed` (git edits the agent under-reported) stays
 **advisory** (logged, never fails) — only `claimedNotChanged` (claimed but
 not done) hard-fails, and the miss is fed back into the next implementer
-attempt as a `## Claimed changes not present in git` block, bounded by
-`MAX_ATTEMPTS`.
+attempt as a `## Claimed changes not present in git` block, bounded by the
+global run budget and repeated no-progress detection.
 
 The subsystem **never throws** and degrades when git is unavailable
 (`gitUnavailable` → record + `changeGate.pass = true`, never block), and is
@@ -275,7 +275,7 @@ sequence([
   task(designStage),
   task(prototypeStage),
   specConvergenceNode,                              // spec write → trace gate → review
-  loop({ while: (s) => !s.implementation?.allGreen, times: 5 },
+  loop({ while: (s, c) => !s.implementation?.allGreen && !s.implementation?.convergenceBlocked && c.budget.check() },
     task(implementationStage)),                     // per-phase TDD loop
   branch(hasImplementation, {
     yes: verificationConvergenceNode,               // review → fix → review → integration
