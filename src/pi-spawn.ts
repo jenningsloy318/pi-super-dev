@@ -18,7 +18,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { safetyPreamble } from "./safety.ts";
-import type { AgentProgress, SpawnResult } from "./types.ts";
+import type { AgentAccessMode, AgentProgress, SpawnResult } from "./types.ts";
 
 /** Agents that drive a browser for UI testing. They receive the `browser_execute`
  *  tool by explicitly loading pi-browser-cdp-extension via `-e` while ambient
@@ -262,6 +262,7 @@ export interface SpawnAgentOptions {
 	agent: string;
 	prompt: string;
 	cwd: string;
+	accessMode?: AgentAccessMode;
 	model?: string;
 	signal?: AbortSignal;
 	id?: string;
@@ -420,7 +421,8 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 	// `--no-extensions` disables ambient discovery; explicit `-e` role extensions
 	// still load, per pi CLI semantics.
 	for (const ext of extraExtensions) args.push("-e", ext);
-	args.push("--exclude-tools", "super_dev");
+	const excludedTools = opts.accessMode === "source-read-only" ? "super_dev,edit,write" : "super_dev";
+	args.push("--exclude-tools", excludedTools);
 	args.push("--system-prompt", promptPath);
 	// Model precedence: explicit param → SUPER_DEV_MODEL env → INHERITED
 	// main-session model (the parent's qualified `provider/id`, derived from the

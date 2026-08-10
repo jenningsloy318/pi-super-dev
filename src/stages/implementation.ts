@@ -320,6 +320,7 @@ async function resolveTddScenarioCoverage(args: { ctx: StageContext; cwd: string
 		const evaluated = await args.ctx.agent({
 			id: `pipeline.implementation.${args.phaseId}.tdd-coverage`,
 			agent: "tdd-coverage-classifier",
+			accessMode: "source-read-only",
 			controlKeys: ["allCovered", "summary"],
 			prompt: buildTddCoveragePrompt({
 				phaseName: args.phaseName,
@@ -371,6 +372,7 @@ async function resolveRedBoundary(args: { ctx: StageContext; phaseId: string; ph
 		const evaluated = await args.ctx.agent({
 			id: `pipeline.implementation.${args.phaseId}.red-boundary`,
 			agent: "red-boundary-classifier",
+			accessMode: "source-read-only",
 			controlKeys: ["classifications", "forbiddenFiles", "ambiguousFiles", "allAllowed"],
 			prompt: buildRedBoundaryPrompt({
 				changedFiles: ambiguous,
@@ -1118,7 +1120,7 @@ export const implementationStage: Stage = {
 		};
 		if (ctx.budget.check()) {
 			ctx.phase("Implementation — Summary");
-			const summaryResult = await ctx.agent({ id: "pipeline.implementation.summary", agent: "orchestrator", prompt: buildImplementationSummaryPrompt(setup, state.classify ?? null, control), schema: STAGE_MODELS["implementationSummary"]?.schema });
+			const summaryResult = await ctx.agent({ id: "pipeline.implementation.summary", agent: "orchestrator", accessMode: "source-read-only", prompt: buildImplementationSummaryPrompt(setup, state.classify ?? null, control), schema: STAGE_MODELS["implementationSummary"]?.schema });
 			renderAndWrite(setup, (m) => ctx.log(m), "implementationSummary", summaryResult.control as Record<string, unknown> | null);
 		}
 		const endInstructionFingerprint = runtimeInstructionFingerprint(state.setup?.specDirectory);

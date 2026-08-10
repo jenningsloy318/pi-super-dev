@@ -14,6 +14,7 @@ export const requirementsWriter: Stage = writerTask({
 	id: "requirements",
 	label: "Stage 2B — Requirements",
 	agent: "requirements-clarifier",
+	accessMode: "source-read-only",
 	buildPrompt: (state, ctx) => P.buildRequirementsPrompt(S(state), state.classify ?? null, ctx.task),
 });
 
@@ -21,6 +22,7 @@ export const bddWriter: Stage = writerTask({
 	id: "bdd",
 	label: "Stage 2C — BDD Scenarios",
 	agent: "bdd-scenario-writer",
+	accessMode: "source-read-only",
 	requires: ["*-requirements.md"],
 	buildPrompt: (state, ctx) => P.buildBddPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null),
 });
@@ -29,6 +31,7 @@ export const researchWriter: Stage = writerTask({
 	id: "research",
 	label: "Stage 3 — Research",
 	agent: "research-agent",
+	accessMode: "source-read-only",
 	requires: ["*-requirements.md"],
 	buildPrompt: (state, ctx) =>
 		P.buildResearchPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null),
@@ -38,6 +41,7 @@ export const debugWriter: Stage = writerTask({
 	id: "debug",
 	label: "Stage 4 — Debug Analysis",
 	agent: "debug-analyzer",
+	accessMode: "source-read-only",
 	requires: ["*-requirements.md"],
 	buildPrompt: (state, ctx) => P.buildDebugPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null),
 });
@@ -46,6 +50,7 @@ export const assessmentWriter: Stage = writerTask({
 	id: "assessment",
 	label: "Stage 5 — Code Assessment",
 	agent: "code-assessor",
+	accessMode: "source-read-only",
 	buildPrompt: (state, ctx) => P.buildAssessmentPrompt(S(state), state.classify ?? null, ctx.task, state.research ?? null, state.debug ?? null),
 });
 
@@ -53,6 +58,7 @@ export const specWriter: Stage = writerTask({
 	id: "spec",
 	label: "Stage 7 — Specification",
 	agent: "spec-writer",
+	accessMode: "source-read-only",
 	requires: ["*-requirements.md", "*-bdd-scenarios.md"],
 	buildPrompt: (state, ctx) =>
 		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null),
@@ -62,6 +68,7 @@ export const specReviewWriter: Stage = writerTask({
 	id: "specReview",
 	label: "Stage 8 — Spec Review",
 	agent: "spec-reviewer",
+	accessMode: "source-read-only",
 	requires: ["*-specification.md", "*-implementation-plan.md", "*-task-list.md"],
 	buildPrompt: (state) => P.buildSpecReviewPrompt(S(state), state.classify ?? null, state.spec ?? null),
 });

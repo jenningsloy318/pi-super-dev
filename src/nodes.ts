@@ -673,6 +673,7 @@ export function writerTask(spec: {
 	id: string;
 	label: string;
 	agent: string;
+	accessMode?: import("./types.ts").AgentAccessMode;
 	buildPrompt: (state: PipelineState, ctx: StageContext) => string;
 	fatal?: boolean;
 	/** Upstream artifact docs this writer needs (globs); checked by task() before run. */
@@ -689,6 +690,7 @@ export function writerTask(spec: {
 			const result = await ctx.agent({
 				id: `pipeline.${spec.id}`,
 				agent: spec.agent,
+				accessMode: spec.accessMode,
 				prompt: spec.buildPrompt(state, ctx),
 				schema: model?.schema,
 			});

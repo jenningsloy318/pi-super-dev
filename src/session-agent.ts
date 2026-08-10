@@ -39,7 +39,7 @@ import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.t
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
 import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
-import type { AgentProgress, SpawnResult } from "./types.ts";
+import type { AgentAccessMode, AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 /** Best-effort apply a thinking level to a live AgentSession (Phase 2). Calls
@@ -108,6 +108,7 @@ export interface SessionAgentOptions {
 	agent: string;
 	prompt: string;
 	cwd: string;
+	accessMode?: AgentAccessMode;
 	model?: string;
 	signal?: AbortSignal;
 	id?: string;
@@ -134,6 +135,17 @@ export interface SessionAgentOptions {
 	 *  session (ctx.thinkingLevel). ADDITIVE — loses to a per-call override and
 	 *  to SUPER_DEV_THINKING env, but wins over the role default. */
 	inheritedThinking?: ThinkingLevel;
+}
+
+export function sessionToolAccess(accessMode: AgentAccessMode | undefined): { useCodingTools: boolean; tools?: string[]; excludeTools: string[] } {
+	if (accessMode === "source-read-only") {
+		return {
+			useCodingTools: false,
+			tools: ["read", "bash", "grep", "find", "ls", "structured_output"],
+			excludeTools: ["super_dev", "edit", "write"],
+		};
+	}
+	return { useCodingTools: true, excludeTools: ["super_dev"] };
 }
 
 /** Build the structured_output schema. When `keys` is non-empty, each key is
@@ -395,6 +407,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const keys = opts.controlKeys ?? [];
 	const capture: Capture = { called: false, value: undefined };
 	const timeoutMs = opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent);
+	const toolAccess = sessionToolAccess(opts.accessMode);
 
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
@@ -450,11 +463,14 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		sessionManager: SessionManager.inMemory(opts.cwd),
 		settingsManager,
 		resourceLoader,
-		customTools: [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)],
+		customTools: toolAccess.useCodingTools
+			? [...createCodingTools(opts.cwd), structuredOutputTool(capture, keys, opts.schema)]
+			: [structuredOutputTool(capture, keys, opts.schema)],
+		...(toolAccess.tools ? { tools: toolAccess.tools } : {}),
 		// Recursion guard remains defense-in-depth: ambient extensions are disabled
 		// above, but an explicitly supplied safety factory or future local factory
 		// must still never expose this extension's spawner tool to specialists.
-		excludeTools: ["super_dev"],
+		excludeTools: toolAccess.excludeTools,
 		// Conditionally threaded so a run with NO resolvable model/thinking is
 		// byte-identical to today (neither creation option is set — SCENARIO-002/004).
 		...(resolvedModel ? { model: resolvedModel } : {}),
@@ -474,7 +490,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const unsub = opts.onProgress ? forwardProgress(session, opts.onProgress) : undefined;
 	let timedOut = false;
 	const label = opts.id ?? opts.agent;
-	opts.onProgress?.event(`session ${label}: start timeout=${timeoutMs}ms cwd=${opts.cwd} controlKeys=${keys.join(",") || "(none)"}`);
+	opts.onProgress?.event(`session ${label}: start timeout=${timeoutMs}ms cwd=${opts.cwd} access=${opts.accessMode ?? "write"} controlKeys=${keys.join(",") || "(none)"}`);
 	const onAbort = () => {
 		opts.onProgress?.event(`session ${label}: aborted by parent signal`);
 		void session.abort();

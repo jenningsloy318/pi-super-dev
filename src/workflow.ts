@@ -12,6 +12,10 @@
 
 import { EventEmitter } from "node:events";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
@@ -41,6 +45,129 @@ import type {
 
 const DEFAULT_MAX_AGENTS = 200;
 const DEFAULT_MAX_CONCURRENCY = 3;
+
+interface PathFingerprint {
+	status: string;
+	exists: boolean;
+	kind: "file" | "dir" | "other" | "missing";
+	hash?: string;
+}
+
+interface SourceBoundarySnapshot {
+	ok: boolean;
+	fingerprints: Map<string, PathFingerprint>;
+	allowedRoots: string[];
+	error?: string;
+}
+
+function normalizeRelPath(path: string): string {
+	return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function isInsidePath(child: string, parent: string): boolean {
+	const rel = relative(parent, child);
+	return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function allowedSourceReadOnlyRoots(cwd: string, specDirectory?: string): string[] {
+	const roots: string[] = [];
+	if (specDirectory) {
+		const abs = resolve(specDirectory);
+		if (isInsidePath(abs, resolve(cwd))) roots.push(abs);
+	}
+	return roots;
+}
+
+function isAllowedSourceReadOnlyPath(cwd: string, allowedRoots: string[], relPath: string): boolean {
+	const abs = resolve(cwd, relPath);
+	return allowedRoots.some((root) => abs === root || abs.startsWith(`${root}${sep}`));
+}
+
+function gitStatusEntries(cwd: string): { entries: Map<string, string>; error?: string } {
+	const r = spawnSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd, encoding: "utf8" });
+	if (r.error) return { entries: new Map(), error: r.error.message };
+	if (r.status !== 0) return { entries: new Map(), error: (r.stderr || r.stdout || `git status exited ${r.status}`).trim() };
+	const entries = new Map<string, string>();
+	const parts = r.stdout.split("\0").filter(Boolean);
+	for (let i = 0; i < parts.length; i++) {
+		const rec = parts[i];
+		if (rec.length < 4) continue;
+		const status = rec.slice(0, 2);
+		const path = normalizeRelPath(rec.slice(3));
+		entries.set(path, status);
+		if ((status[0] === "R" || status[0] === "C") && i + 1 < parts.length) {
+			entries.set(normalizeRelPath(parts[++i]), status);
+		}
+	}
+	return { entries };
+}
+
+function fingerprintPath(cwd: string, relPath: string, status: string): PathFingerprint {
+	const abs = resolve(cwd, relPath);
+	try {
+		if (!existsSync(abs)) return { status, exists: false, kind: "missing" };
+		const st = lstatSync(abs);
+		if (st.isDirectory()) return { status, exists: true, kind: "dir" };
+		if (!st.isFile() && !st.isSymbolicLink()) return { status, exists: true, kind: "other" };
+		const hash = createHash("sha256").update(readFileSync(abs)).digest("hex");
+		return { status, exists: true, kind: "file", hash };
+	} catch {
+		return { status, exists: existsSync(abs), kind: "other" };
+	}
+}
+
+function captureSourceBoundary(cwd: string, specDirectory?: string): SourceBoundarySnapshot {
+	const allowedRoots = allowedSourceReadOnlyRoots(cwd, specDirectory);
+	const { entries, error } = gitStatusEntries(cwd);
+	if (error) return { ok: false, fingerprints: new Map(), allowedRoots, error };
+	const fingerprints = new Map<string, PathFingerprint>();
+	for (const [relPath, status] of entries) {
+		if (isAllowedSourceReadOnlyPath(cwd, allowedRoots, relPath)) continue;
+		fingerprints.set(relPath, fingerprintPath(cwd, relPath, status));
+	}
+	return { ok: true, fingerprints, allowedRoots };
+}
+
+function sameFingerprint(a: PathFingerprint | undefined, b: PathFingerprint | undefined): boolean {
+	return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+function sourceBoundaryViolations(before: SourceBoundarySnapshot, after: SourceBoundarySnapshot): string[] {
+	const paths = new Set([...before.fingerprints.keys(), ...after.fingerprints.keys()]);
+	return [...paths].filter((path) => !sameFingerprint(before.fingerprints.get(path), after.fingerprints.get(path))).sort();
+}
+
+function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot, after: SourceBoundarySnapshot, paths: string[]): { restored: string[]; manual: string[] } {
+	const restored: string[] = [];
+	const manual: string[] = [];
+	for (const relPath of paths) {
+		if (before.fingerprints.has(relPath)) {
+			manual.push(relPath);
+			continue;
+		}
+		const fp = after.fingerprints.get(relPath);
+		if (!fp) continue;
+		const abs = resolve(cwd, relPath);
+		if (!isInsidePath(abs, resolve(cwd))) {
+			manual.push(relPath);
+			continue;
+		}
+		try {
+			if (fp.status === "??") {
+				rmSync(abs, { recursive: true, force: true });
+				restored.push(relPath);
+				continue;
+			}
+			let r = spawnSync("git", ["restore", "--staged", "--worktree", "--", relPath], { cwd, encoding: "utf8" });
+			if (r.status !== 0) r = spawnSync("git", ["checkout", "--", relPath], { cwd, encoding: "utf8" });
+			if (r.status === 0) restored.push(relPath);
+			else manual.push(relPath);
+		} catch {
+			manual.push(relPath);
+		}
+	}
+	return { restored, manual };
+}
 
 function makeBudget(maxAgents: number): Budget {
 	const s = { count: 0, max: maxAgents };
@@ -165,16 +292,21 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const timeoutMs = call.timeoutMs;
 		const timeoutLabel = timeoutMs !== undefined ? `${timeoutMs}ms` : "role-default";
 		const thinkingLabel = call.thinking ?? options.inheritedThinking ?? process.env.SUPER_DEV_THINKING ?? "role-default";
+		const accessMode = call.accessMode ?? "write";
 		const backend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
 			? "subprocess"
 			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
 		const inheritedModel = options.inheritedModelObject
 			? `${options.inheritedModelObject.provider}/${options.inheritedModelObject.id}`
 			: undefined;
+		const promptWithAccess = accessMode === "source-read-only"
+			? `${promptWithNotes}\n\n## Source mutation boundary\nThis call is source-read-only. You may inspect files and run diagnostics, but do not edit, write, stage, commit, delete, move, or generate files under the project worktree except temporary files outside the repository (for example under /tmp). The super-dev pipeline renders report artifacts for you.`
+			: promptWithNotes;
 		const common = {
 			agent: call.agent,
-			prompt: promptWithNotes,
+			prompt: promptWithAccess,
 			cwd: agentCwd,
+			accessMode,
 			controlKeys,
 			schema: call.schema,
 			model,
@@ -204,6 +336,23 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				text: (partial: string) => options.progress?.text(partial),
 			},
 		};
+		const sourceBoundaryBefore = accessMode === "source-read-only" ? captureSourceBoundary(agentCwd, state.setup?.specDirectory) : null;
+		if (sourceBoundaryBefore && !sourceBoundaryBefore.ok) log(`agent ${call.id ?? call.agent}: source-read-only boundary unavailable (${sourceBoundaryBefore.error}); relying on tool restrictions`);
+		function enforceSourceBoundary(): void {
+			if (!sourceBoundaryBefore?.ok) return;
+			const after = captureSourceBoundary(agentCwd, state.setup?.specDirectory);
+			if (!after.ok) {
+				log(`agent ${call.id ?? call.agent}: source-read-only boundary post-check unavailable (${after.error})`);
+				return;
+			}
+			const violations = sourceBoundaryViolations(sourceBoundaryBefore, after);
+			if (violations.length === 0) return;
+			const restored = restoreNewSourceViolations(agentCwd, sourceBoundaryBefore, after, violations);
+			const restoredLine = restored.restored.length ? ` restored=${restored.restored.join(", ")}` : "";
+			const manualLine = restored.manual.length ? ` manual=${restored.manual.join(", ")}` : "";
+			log(`agent ${call.id ?? call.agent}: source-read-only boundary violation paths=${violations.join(", ")}${restoredLine}${manualLine}`);
+			throw new Error(`source-read-only boundary violation: modified project files outside the spec artifact directory (${violations.join(", ")})`);
+		}
 		// Backend selectable. Default is 'session' (in-process createAgentSession):
 		// same SDK we peer-depend on, structured output via a schema, no spawn/
 		// stdout-buffering/<control>-parse fragility. The earlier failure (requirements
@@ -222,17 +371,25 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const exec = backend === "session" ? () => runAgentViaSession(common) : () => spawnAgent(common);
 		const label = call.id ?? call.agent;
 		const started = Date.now();
-		log(`agent ${label}: start agent=${call.agent} backend=${backend} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithNotes.length}`);
+		let boundaryChecked = false;
+		log(`agent ${label}: start agent=${call.agent} backend=${backend} access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
 		try {
 			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
+			boundaryChecked = true;
+			enforceSourceBoundary();
 			const elapsed = Date.now() - started;
 			log(`agent ${label}: end elapsed=${elapsed}ms control=${result.control ? "yes" : "no"} model=${result.model ?? "unknown"}${result.error ? ` error=${result.error}` : ""}`);
 			return result;
 		} catch (err) {
+			let finalErr = err;
+			if (!boundaryChecked) {
+				try { enforceSourceBoundary(); }
+				catch (boundaryErr) { finalErr = boundaryErr; }
+			}
 			const elapsed = Date.now() - started;
-			const message = err instanceof Error ? err.message : String(err);
+			const message = finalErr instanceof Error ? finalErr.message : String(finalErr);
 			log(`agent ${label}: threw elapsed=${elapsed}ms error=${message}`);
-			throw err;
+			throw finalErr;
 		}
 	}
 	// Resume (v0.3.0): always CAPTURE agent results so any interrupted run is

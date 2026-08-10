@@ -111,6 +111,11 @@ describe("buildSpawnArgs", () => {
 		expect(args[args.indexOf("--exclude-tools") + 1]).toBe("super_dev");
 	});
 
+	it("source-read-only subprocess agents exclude edit and write tools", () => {
+		const args = buildSpawnArgs({ agent: "debug-analyzer", prompt: "x", cwd: "/tmp", accessMode: "source-read-only" }, "/tmp/a.md");
+		expect(args[args.indexOf("--exclude-tools") + 1]).toBe("super_dev,edit,write");
+	});
+
 	it("browser agents keep ambient discovery disabled and load browser_execute only through explicit -e paths", () => {
 		const ext = "/agent/npm/node_modules/pi-browser-cdp-extension/extensions/browser-execute.ts";
 		for (const agent of ["qa-agent", "ui-tester"]) {

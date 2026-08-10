@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { missingKeys, deliveryDisciplineFor } from "../src/session-agent.ts";
+import { missingKeys, deliveryDisciplineFor, sessionToolAccess } from "../src/session-agent.ts";
 
 describe("deliveryDisciplineFor", () => {
 	it("gives code-writing agents a code-centric discipline (edits, not a document)", () => {
@@ -59,6 +59,21 @@ describe("missingKeys", () => {
 	});
 	it("returns [] when everything is present", () => {
 		expect(missingKeys({ a: 1, b: "x" }, ["a", "b"])).toEqual([]);
+	});
+});
+
+describe("sessionToolAccess", () => {
+	it("keeps write-mode sessions on coding tools with only super_dev excluded", () => {
+		expect(sessionToolAccess(undefined)).toEqual({ useCodingTools: true, excludeTools: ["super_dev"] });
+		expect(sessionToolAccess("write")).toEqual({ useCodingTools: true, excludeTools: ["super_dev"] });
+	});
+
+	it("uses a read/diagnostic allowlist for source-read-only sessions", () => {
+		expect(sessionToolAccess("source-read-only")).toEqual({
+			useCodingTools: false,
+			tools: ["read", "bash", "grep", "find", "ls", "structured_output"],
+			excludeTools: ["super_dev", "edit", "write"],
+		});
 	});
 });
 

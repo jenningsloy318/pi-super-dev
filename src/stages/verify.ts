@@ -311,6 +311,7 @@ async function resolveIntegrationWriteBoundary(args: { ctx: StageContext; state:
 		const evaluated = await args.ctx.agent({
 			id: "pipeline.integration.write-boundary",
 			agent: "red-boundary-classifier",
+			accessMode: "source-read-only",
 			controlKeys: ["classifications", "forbiddenFiles", "ambiguousFiles", "allAllowed"],
 			prompt: buildRedBoundaryPrompt({
 				changedFiles: ambiguous,
@@ -493,7 +494,7 @@ const reviewStep = parallel(
 			label: "Stage 10a — Code Review",
 			async run(s, ctx) {
 				if (!ctx.budget.check()) return failedReviewControl("codeReview", "Agent budget exhausted before code review");
-				const r = await ctx.agent({ id: "pipeline.verify.code-review", agent: "code-reviewer", prompt: buildCodeReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["codeReview"]?.schema });
+				const r = await ctx.agent({ id: "pipeline.verify.code-review", agent: "code-reviewer", accessMode: "source-read-only", prompt: buildCodeReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["codeReview"]?.schema });
 				const control = r.error
 					? failedReviewControl("codeReview", `code-reviewer failed: ${r.error}`)
 					: validReviewControl(r.control)
@@ -508,7 +509,7 @@ const reviewStep = parallel(
 			label: "Stage 10b — Adversarial Review",
 			async run(s, ctx) {
 				if (!ctx.budget.check()) return failedReviewControl("adversarialReview", "Agent budget exhausted before adversarial review");
-				const r = await ctx.agent({ id: "pipeline.verify.adversarial", agent: "adversarial-reviewer", prompt: buildAdversarialPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["adversarialReview"]?.schema });
+				const r = await ctx.agent({ id: "pipeline.verify.adversarial", agent: "adversarial-reviewer", accessMode: "source-read-only", prompt: buildAdversarialPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["adversarialReview"]?.schema });
 				const control = r.error
 					? failedReviewControl("adversarialReview", `adversarial-reviewer failed: ${r.error}`)
 					: validReviewControl(r.control)
@@ -731,7 +732,7 @@ const apiTestStep = withServiceDeps(["api"],
 			if (!ctx.budget.check()) return failedTestControl("apiTest", "Agent budget exhausted before API testing");
 			const api = s.services?.api;
 			if (!api) return failedTestControl("apiTest", "API service was expected but is not available");
-			const r = await ctx.agent({ id: "pipeline.integration.api-test", agent: "api-tester", prompt: buildApiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, api), schema: STAGE_MODELS["apiTest"]?.schema });
+			const r = await ctx.agent({ id: "pipeline.integration.api-test", agent: "api-tester", accessMode: "source-read-only", prompt: buildApiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, api), schema: STAGE_MODELS["apiTest"]?.schema });
 			const control = r.error ? failedTestControl("apiTest", `api-tester failed: ${r.error}`) : ((r.control as Record<string, unknown> | null) ?? failedTestControl("apiTest", "api-tester produced no structured test result"));
 			renderAndWrite(s.setup!, (m) => ctx.log(m), "apiTest", control);
 			return control;
@@ -755,7 +756,7 @@ const uiTestTaskNode = task({
 		const ui = s.services?.ui;
 		if (!ui) return failedTestControl("uiTest", "UI service was expected but is not available");
 		const api = s.services?.api;
-		const r = await ctx.agent({ id: "pipeline.integration.ui-test", agent: "ui-tester", prompt: buildUiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, ui, api), schema: STAGE_MODELS["uiTest"]?.schema });
+		const r = await ctx.agent({ id: "pipeline.integration.ui-test", agent: "ui-tester", accessMode: "source-read-only", prompt: buildUiTestPrompt(setupOf(s), s.classify ?? null, s.spec ?? null, ui, api), schema: STAGE_MODELS["uiTest"]?.schema });
 		const control = r.error ? failedTestControl("uiTest", `ui-tester failed: ${r.error}`) : ((r.control as Record<string, unknown> | null) ?? failedTestControl("uiTest", "ui-tester produced no structured test result"));
 		renderAndWrite(s.setup!, (m) => ctx.log(m), "uiTest", control);
 		return control;

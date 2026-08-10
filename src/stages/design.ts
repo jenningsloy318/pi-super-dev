@@ -27,6 +27,7 @@ export const designStage: Stage = {
 		const result = await ctx.agent({
 			id: "pipeline.design",
 			agent: designerAgent,
+			accessMode: "source-read-only",
 			prompt: buildDesignPrompt(setup, state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null, state.assessment ?? null, designerAgent),
 			schema: STAGE_MODELS["design"]?.schema,
 		});

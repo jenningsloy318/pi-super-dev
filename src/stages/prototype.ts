@@ -32,6 +32,7 @@ export const prototypeStage: Stage = {
 			const result = await ctx.agent({
 				id: `pipeline.prototype.r${pad(round)}`,
 				agent: "prototype-runner",
+				accessMode: "source-read-only",
 				prompt: buildPrototypePrompt(setup, state.classify ?? null, ctx.task, design, constants, round, last),
 				schema: STAGE_MODELS["prototype"]?.schema,
 			});

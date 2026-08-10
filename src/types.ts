@@ -50,6 +50,13 @@ export interface AgentCall {
 	id: string;
 	agent: string;
 	prompt: string;
+	/**
+	 * Per-call mutation contract. `source-read-only` means the child agent may
+	 * inspect the project and run diagnostics, but must not mutate project source
+	 * or config files. The pipeline itself may still render/update its own spec
+	 * artifacts outside the child agent call.
+	 */
+	accessMode?: AgentAccessMode;
 	/** Control keys the caller expects back (for the session backend's
 	 *  structured_output schema). Optional; omitted for non-writer calls. */
 	controlKeys?: string[];
@@ -66,6 +73,8 @@ export interface AgentCall {
 	 *  default. Threaded into `common` for both backends. */
 	thinking?: import("./pi-spawn.ts").ThinkingLevel;
 }
+
+export type AgentAccessMode = "write" | "source-read-only";
 
 export interface AgentResult extends SpawnResult {}
 
