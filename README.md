@@ -62,14 +62,15 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.01.20`.
-The foreground stream and run log show the short version label only. This metadata
-is intentionally separate from the npm package version in `package.json`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.1.21`.
+The foreground stream, run log, `package.json`, and `package-lock.json` use the
+same npm-valid semver value.
 
 Versioning rule: every commit that changes the extension increments the patch
-number. Patch values run from `01` to `99`; after `99`, increment the minor
-number and reset patch to `01`. Minor values follow the same `01` to `99` rollover;
-after minor `99`, increment major and reset minor/patch to `01`.
+number. Patch values run from `1` to `99`; after `99`, increment the minor
+number and reset patch to `1`. Minor values follow the same `1` to `99` rollover;
+after minor `99`, increment major and reset minor/patch to `1`. Each bump updates
+`src/version.ts`, `package.json`, and `package-lock.json` together.
 
 ## Configuration
 
