@@ -1,4 +1,5 @@
 import { localTimestamp } from "./render/time.ts";
+import { inferReviewFindingStatus, reviewFindingBlocks } from "./review-findings.ts";
 import type { RetryFeedback } from "./retry-feedback.ts";
 import type { ControlObj, PipelineState } from "./types.ts";
 
@@ -214,8 +215,9 @@ function normalizeFinding(input: ConvergenceFindingInput, defaults: { detectedAt
 	const detail = compact(input.detail, title) || title;
 	const evidence = asEvidence(input.evidence);
 	const sourceGate = compact(input.sourceGate, defaults.sourceGate ?? "") || undefined;
-	const status = normalizeStatus(input.status, "open");
-	const blocking = normalizeBlocking(input.blocking, severity);
+	const inferredStatus = inferReviewFindingStatus(input as Record<string, unknown>, "open");
+	const status = normalizeStatus(input.status, inferredStatus === "verified" || inferredStatus === "deferred" || inferredStatus === "needs-human" ? inferredStatus : "open");
+	const blocking = ["addressed", "verified", "deferred"].includes(status) ? false : status === "needs-human" ? true : typeof input.blocking === "boolean" ? input.blocking : reviewFindingBlocks(input as Record<string, unknown>) || normalizeBlocking(input.blocking, severity);
 	const fingerprint = stableHash([ownerStage, sourceGate ?? "", title, detail].join("\n").toLowerCase());
 	const rawId = compact(input.id);
 	const id = rawId || `CF-${ownerStage}-${fingerprint}`;

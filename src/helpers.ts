@@ -5,6 +5,7 @@
  */
 
 import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
+import { reviewHasBlockingFinding, reviewHasFindings } from "./review-findings.ts";
 import {
 	readSpecDoc,
 	specDocExists,
@@ -206,15 +207,6 @@ function gateReview(s: Record<string, unknown>): HelperResult {
 
 const VERDICT_RANK: Record<string, number> = { Approved: 0, "Approved with Comments": 1, "Changes Requested": 2, Blocked: 3 };
 
-function findingSeverity(review: ControlObj | undefined): string[] {
-	const findings = (review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
-	return findings.map((f) => String(f.severity ?? "").trim().toLowerCase()).filter(Boolean);
-}
-
-function hasBlockingReviewFinding(review: ControlObj | undefined): boolean {
-	return findingSeverity(review).some((s) => /^(critical|blocker|high|fatal|reject)/i.test(s));
-}
-
 function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefined): { verdict: string; syntheticFindings: ControlObj[] } {
 	const fail = (reason: string) => ({
 		verdict: "Changes Requested",
@@ -230,10 +222,16 @@ function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefin
 		// loss/security veto. Do not let advisory red-team comments create an endless
 		// merge blocker once code review approves. If a CONTEST payload nevertheless
 		// carries high/critical findings, keep it blocking for safety.
-		return { verdict: hasBlockingReviewFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
+		return { verdict: reviewHasBlockingFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
 	}
 	if (raw === "REJECT") return { verdict: "Blocked", syntheticFindings: [] };
-	if (raw in VERDICT_RANK) return { verdict: raw, syntheticFindings: [] };
+	if (raw === "Approved" || raw === "Approved with Comments") {
+		return { verdict: reviewHasBlockingFinding(review) ? "Changes Requested" : raw, syntheticFindings: [] };
+	}
+	if (raw === "Changes Requested") {
+		return { verdict: reviewHasFindings(review) && !reviewHasBlockingFinding(review) ? "Approved with Comments" : "Changes Requested", syntheticFindings: [] };
+	}
+	if (raw === "Blocked") return { verdict: "Blocked", syntheticFindings: [] };
 	return fail(`Invalid verdict in ${sourceName} review output: ${raw}`);
 }
 

@@ -12,8 +12,32 @@
 ### {{ f.id }}: {{ f.title }}
 
 - **Severity**: {{ f.severity }}
+{% if f.status %}
+- **Status**: {{ f.status }}
+{% endif %}
+- **Blocking**: {{ f.blocking | default('unspecified') }}
+- **Confidence**: {{ f.confidence | default('unspecified') }}
 {% if f.lens %}
 - **Lens**: {{ f.lens }}
 {% endif %}
+{% if f.file %}
+- **File**: `{{ f.file }}`
+{% endif %}
+{% if f.line %}
+- **Line**: {{ f.line }}
+{% endif %}
 {{ f.detail }}
+{% if f.evidence %}
+
+**Evidence**
+{% for item in f.evidence %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% if f.recommendation %}
+
+**Recommendation**
+
+{{ f.recommendation }}
+{% endif %}
 {% endfor %}

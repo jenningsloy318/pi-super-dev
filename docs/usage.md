@@ -35,13 +35,13 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The extension metadata is currently `super-dev v0.01.03`. The TUI dashboard and
-run log show the short version label only. This runtime metadata is intentionally
-separate from the npm package version in `package.json`.
+The extension metadata is currently `super-dev v0.1.25`. The TUI dashboard,
+run log, `src/version.ts`, `package.json`, and `package-lock.json` use the same
+npm-valid semver value.
 
 Versioning rule: every commit that changes the extension increments the patch
-number (`01` through `99`). After patch `99`, increment minor and reset patch to
-`01`; minor follows the same `01` through `99` rollover before incrementing major.
+number (`1` through `99`). After patch `99`, increment minor and reset patch to
+`1`; minor follows the same `1` through `99` rollover before incrementing major.
 
 ## Runtime data directory
 
@@ -57,18 +57,22 @@ Super-dev stores both configuration and run artifacts under `~/.super-dev/`:
 
 1. **Setup** creates a git worktree (unless `skipWorktree`) and a spec dir.
 2. **Classify** decides task type (feature / bug / refactor) and UI scope.
-3. **Requirements → BDD → Research** run inside quality-gate loops (up to 5
-   rounds each — the writer re-runs until a deterministic validator passes).
+3. **Requirements → BDD → Research** run inside quality-gate loops bounded by
+   run budget/cancellation and stop only when deterministic validators pass or
+   a non-retryable blocker is found.
 4. **Debug** only runs for bugs (branch).
 5. **Assessment → Design → Prototype** — design is routed to the right
    specialist by `route-designer`; prototype only runs when the design
    declares numeric constants worth validating.
-6. **Spec → Spec-review** — spec runs in the same 5-attempt quality gate;
-   spec-review is advisory signal that flows into implementation/review.
+6. **Spec → Spec-review** — spec/review runs as an ambiguity-resolution loop;
+   spec-review feedback flows into implementation/review until the spec is
+   approved or a blocker needs user guidance.
 7. **Implementation** — per-phase TDD loop: tests → implement → QA → build
-   gate, with up to 5 attempts per phase, commit on green.
+   gate, commit on green; repeated no-progress failures stop before blind
+   retries.
 8. **Code review** — parallel `code-reviewer` + `adversarial-reviewer`; results
-   merged into a single verdict; loop up to 5 times with `implementer` fixes.
+   merged into a single verdict; review/build/integration fixes restart at fresh
+   review and stop on verified convergence or recurring blockers.
 9. **Docs → Cleanup** — cleanup blocks the merge if it finds secrets or
    large binaries.
 10. **Merge** — only runs when cleanup did not block.

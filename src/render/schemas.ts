@@ -114,6 +114,7 @@ const Finding = Type.Object({
 	ownerStage: Type.Optional(Type.String({ description: "owning stage: requirements, bdd, research, assessment, design, prototype, spec, implementation, verification, environment" })),
 	blocking: Type.Optional(Type.Boolean()),
 	status: Type.Optional(Type.String({ description: "open, addressed, verified, deferred, or needs-human" })),
+	confidence: Type.Optional(Type.Number({ description: "0..1 confidence that this is a real current issue" })),
 	recommendation: Type.Optional(Type.String()),
 	evidence: Type.Optional(Type.Array(Type.String())),
 	priorFindingId: Type.Optional(Type.String()),

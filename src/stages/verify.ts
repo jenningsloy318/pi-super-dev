@@ -27,6 +27,7 @@ import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
 import { recordConvergenceFindings, recordReviewFindingsFromControl, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
+import { inferReviewFindingStatus, reviewFindingBlocks, reviewFindingSeverity } from "../review-findings.ts";
 import type { ControlObj, Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
 const setupOf = (s: PipelineState) => s.setup!;
@@ -54,6 +55,9 @@ interface VerificationFailureItem {
 	fingerprint: string;
 	label: string;
 	source: "review" | "build" | "integration";
+	file?: string | null;
+	severity?: string | null;
+	title?: string | null;
 }
 
 interface VerificationFailureFingerprintRound {
@@ -78,21 +82,27 @@ function shortFingerprint(parts: unknown[]): string {
 }
 
 function currentVerificationFailureItems(s: PipelineState): VerificationFailureItem[] {
-	const reviewFindings = ((s.review?.findings as Array<Record<string, unknown>> | undefined) ?? []).map((finding, index) => {
-		const id = compactText(finding.id);
-		const file = compactText(finding.file);
-		const line = compactText(finding.line);
-		const severity = compactText(finding.severity) || "medium";
-		const title = compactText(finding.title ?? finding.message) || `review finding ${index + 1}`;
-		const detail = compactText(finding.detail);
-		const identity = id ? ["review-id", id] : ["review", file, line, severity, title, detail];
-		const location = file ? `${file}${line ? `:${line}` : ""}: ` : "";
-		return {
-			fingerprint: shortFingerprint(identity),
-			label: `${location}[${severity}] ${title}`,
-			source: "review" as const,
-		};
-	});
+	const reviewFindings = ((s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [])
+		.filter(reviewFindingBlocks)
+		.map((finding, index) => {
+			const id = compactText(finding.id);
+			const file = compactText(finding.file);
+			const line = compactText(finding.line);
+			const severity = reviewFindingSeverity(finding);
+			const title = compactText(finding.title ?? finding.message) || `review finding ${index + 1}`;
+			const detail = compactText(finding.detail);
+			const status = inferReviewFindingStatus(finding);
+			const identity = id ? ["review-id", id, status, title, detail] : ["review", file, line, severity, title, detail];
+			const location = file ? `${file}${line ? `:${line}` : ""}: ` : "";
+			return {
+				fingerprint: shortFingerprint(identity),
+				label: `${location}[${severity}] ${title}`,
+				source: "review" as const,
+				file: file || null,
+				severity,
+				title,
+			};
+		});
 	const deterministicBuildErrors = buildErrors(s).map((error, index) => ({
 		fingerprint: shortFingerprint(["build", error]),
 		label: `build ${index + 1}: ${error}`,
@@ -371,6 +381,7 @@ function recordVerificationStagnation(s: PipelineState, ctx: StageContext, recor
 	const findings = ((s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [])
 		.slice(0, 12)
 		.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null }));
+	const recurringFindings = recurring.map((item) => ({ file: item.file ?? null, severity: item.severity ?? null, title: item.title ?? item.label }));
 	(s as Record<string, unknown>).__verificationStagnated = {
 		rounds: history.length,
 		attempt: record.attempt,
@@ -384,7 +395,7 @@ function recordVerificationStagnation(s: PipelineState, ctx: StageContext, recor
 	(s as Record<string, unknown>).__stagnated = {
 		rounds: history.length,
 		verdict: (s.review as { verdict?: string } | undefined)?.verdict,
-		findings,
+		findings: recurringFindings,
 	};
 	ctx.log(`Stage 10: verification convergence stagnant on ${recurring.length} recurring blocker(s) after ${record.attempt - 1} fix cycle(s) — stopping before another blind fix (attempt ${record.attempt})`);
 	recordVerificationConvergenceFinding(s, {

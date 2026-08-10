@@ -457,6 +457,84 @@ describe("verificationConvergenceNode", () => {
 		expect(logs.join("\n")).toContain("recurring blocker");
 	});
 
+	it("does not count a verified prior finding with the same id as a recurring blocker", async () => {
+		let adversarialCalls = 0;
+		let fixCalls = 0;
+		const logs: string[] = [];
+		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
+		const cwd = state.setup!.worktreePath;
+		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				adversarialCalls += 1;
+				if (adversarialCalls === 1) {
+					return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "REJECT", summary: "raw URL leak", findings: [{ id: "skeptic-auth-url-secret-logging", severity: "high", title: "Auth route logging can disclose URL-carried secrets", detail: "Raw auth URL is logged before route handling.", file: "auth-service/src/api/v1/auth/auth.ts" }] } };
+				}
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "CONTEST", summary: "prior issue fixed", findings: [{ id: "skeptic-auth-url-secret-logging", severity: "high", title: "Prior finding verified: auth-route URL-carried secrets are no longer logged", detail: "Verified response to prior rejection: the raw auth URL logging issue has been addressed.", file: "auth-service/src/api/v1/auth/auth.ts" }] } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				mkdirSync(join(cwd, "src"), { recursive: true });
+				writeFileSync(join(cwd, "src", "auth-log-fix.ts"), "export const authLogFix = true;\n");
+				return { text: "", control: { filesCreated: ["src/auth-log-fix.ts"], filesModified: [], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			return { text: "", control: {} };
+		}, logs);
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("ok");
+		expect(adversarialCalls).toBe(2);
+		expect(fixCalls).toBe(1);
+		expect(state.review?.verdict).toBe("Approved with Comments");
+		expect(logs.join("\n")).not.toContain("verification convergence stagnant");
+	});
+
+	it("exits review convergence when final findings are explicitly non-blocking", async () => {
+		let codeReviewCalls = 0;
+		let adversarialCalls = 0;
+		let fixCalls = 0;
+		const logs: string[] = [];
+		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
+		const cwd = state.setup!.worktreePath;
+		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				codeReviewCalls += 1;
+				if (codeReviewCalls === 1) {
+					return { text: "", control: { title: "Review", date: "2026-08-10", verdict: "Approved", summary: "ok", findings: [] } };
+				}
+				return { text: "", control: { title: "Review", date: "2026-08-10", verdict: "Changes Requested", summary: "one follow-up", findings: [{ id: "CR-001", severity: "Medium", status: "open", blocking: false, title: "SCENARIO-006 test should use real TTL alignment", detail: "This is a useful verification improvement, but the reviewer marked it non-blocking.", file: "auth-service/src/__tests__/session-expiration-regression.test.ts" }] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				adversarialCalls += 1;
+				if (adversarialCalls === 1) {
+					return { text: "", control: { title: "Adv", date: "2026-08-10", verdict: "REJECT", summary: "raw URL leak", findings: [{ id: "skeptic-auth-url-secret-logging", severity: "high", status: "open", blocking: true, title: "Auth route logging can disclose URL-carried secrets", detail: "Raw auth URL is logged before route handling.", file: "auth-service/src/api/v1/auth/auth.ts" }] } };
+				}
+				return { text: "", control: { title: "Adv", date: "2026-08-10", verdict: "CONTEST", summary: "prior fixed", findings: [{ id: "skeptic-auth-url-secret-logging", severity: "high", status: "verified", blocking: false, title: "Prior finding verified: auth-route URL-carried secrets are no longer logged", detail: "Verified response to prior rejection: the raw auth URL logging issue has been addressed.", file: "auth-service/src/api/v1/auth/auth.ts" }, { id: "skeptic-invalid-bearer", severity: "medium", status: "open", blocking: false, title: "Invalid Bearer header can plausibly bypass the browser-cookie expiration guard", detail: "UNCERTAIN but important: this needs follow-up proof before it is a blocker.", file: "auth-service/src/api/v1/auth/auth.ts" }] } };
+			}
+			if (call.agent === "implementer") {
+				fixCalls += 1;
+				mkdirSync(join(cwd, "src"), { recursive: true });
+				writeFileSync(join(cwd, "src", "url-log-fix.ts"), "export const urlLogFix = true;\n");
+				return { text: "", control: { filesCreated: ["src/url-log-fix.ts"], filesModified: [], filesDeleted: [], fixesApplied: 1, summary: "fixed" } };
+			}
+			return { text: "", control: {} };
+		}, logs);
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("ok");
+		expect(codeReviewCalls).toBe(2);
+		expect(adversarialCalls).toBe(2);
+		expect(fixCalls).toBe(1);
+		expect(state.review?.verdict).toBe("Approved with Comments");
+		expect(logs.join("\n")).not.toContain("verification convergence stagnant");
+	});
+
 	it("continues when the recurring verification blocker set is shrinking", async () => {
 		let codeReviewCalls = 0;
 		let fixCalls = 0;

@@ -70,6 +70,57 @@ describe("helpers: routing", () => {
 		const reject = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "REJECT" } } });
 		expect(reject.value.verdict).toBe("Blocked");
 	});
+	it("merge-review-verdicts does not let a verified prior high-severity note block CONTEST", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved" },
+				"adversarial-review": {
+					verdict: "CONTEST",
+					findings: [{
+						id: "skeptic-auth-url-secret-logging",
+						severity: "high",
+						title: "Prior finding verified: auth-route URL-carried secrets are no longer logged",
+						detail: "Verified response to prior rejection: raw auth URL logging has been addressed.",
+					}],
+				},
+			},
+		});
+		expect(r.value.verdict).toBe("Approved with Comments");
+	});
+	it("merge-review-verdicts downgrades Changes Requested when every finding is non-blocking", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": {
+					verdict: "Changes Requested",
+					findings: [{
+						id: "CR-001",
+						severity: "Medium",
+						status: "open",
+						blocking: false,
+						title: "Synthetic test should become stronger",
+						detail: "Useful follow-up, but not a merge blocker for the current fix.",
+					}],
+				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Approved with Comments");
+	});
+	it("merge-review-verdicts keeps Changes Requested when a finding is explicitly blocking", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": {
+					verdict: "Changes Requested",
+					findings: [{ severity: "Medium", status: "needs-human", blocking: true, title: "Spec ambiguity", detail: "Requires human decision." }],
+				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
 });
 
 describe("control parser", () => {

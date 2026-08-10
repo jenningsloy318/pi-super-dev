@@ -62,7 +62,7 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The runtime-visible super-dev extension metadata is currently `super-dev v0.1.24`.
+The runtime-visible super-dev extension metadata is currently `super-dev v0.1.25`.
 The foreground stream, run log, `package.json`, and `package-lock.json` use the
 same npm-valid semver value.
 
