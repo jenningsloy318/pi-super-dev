@@ -1340,13 +1340,22 @@ const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.|(^|\/)test_|(^|\/)tests?\/|__te
  *  Never throws — unreadable files are skipped. */
 function collectTestFileContents(cwd: string, deliverables: DeliverableContract): { text: string; files: string[] } {
 	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd)];
-	// Scan the TOUCHED / evidence module dirs FIRST, then cwd last: the MAX_FILES
-	// cap must not be exhausted by an unrelated root subtree before reaching the
-	// module that actually holds the phase's RED tests (large-monorepo false
-	// `missing scenario`). Set iteration is insertion order, so evidence dirs win.
-	const dirs = new Set<string>([...projectDirsFromEvidence(cwd, evidence), cwd]);
+	// Scan order matters because of the MAX_FILES cap: in a large repo an unrelated
+	// root subtree must not exhaust it before the module that holds the phase's RED
+	// tests is reached. Priority:
+	//   1. the IMMEDIATE parent directories of touched/evidence FILES — the exact
+	//      dirs the RED tests live in (works even in a root-only repo, where
+	//      projectDirsFromEvidence collapses everything back to cwd);
+	//   2. the resolved project/module roots from that evidence;
+	//   3. cwd last (broad fallback).
+	// Set iteration is insertion order, so earlier entries win the cap.
+	const evidenceFileDirs = evidence
+		.map((p) => dirname(resolve(cwd, p)))
+		.filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } });
+	const dirs = new Set<string>([...evidenceFileDirs, ...projectDirsFromEvidence(cwd, evidence), cwd]);
 	const collected: string[] = [];
 	const files: string[] = [];
+	const seenFiles = new Set<string>();
 	const MAX_FILES = 200;
 	const MAX_BYTES = 256 * 1024;
 	const walk = (dir: string, depth: number): void => {
@@ -1361,6 +1370,11 @@ function collectTestFileContents(cwd: string, deliverables: DeliverableContract)
 			try { isDir = statSync(abs).isDirectory(); } catch { continue; }
 			if (isDir) { walk(abs, depth + 1); continue; }
 			if (!TEST_FILE_RE.test(abs)) continue;
+			// A dir may appear more than once across the priority tiers (e.g. an
+			// evidence-file dir that is also under cwd) — dedupe so a file counted in
+			// tier 1 is not re-counted (and re-charged against the cap) under cwd.
+			if (seenFiles.has(abs)) continue;
+			seenFiles.add(abs);
 			try {
 				collected.push(readFileSync(abs, "utf8").slice(0, MAX_BYTES));
 				files.push(abs);

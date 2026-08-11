@@ -850,7 +850,10 @@ export const implementationStage: Stage = {
 						const tddStepSeq = ++stepSeq;
 						emitStep(`TDD RED (${redTryDetail})`, "running", tddStepSeq);
 						const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint });
-						emitStep(`TDD RED (${redTryDetail})`, "ok", tddStepSeq);
+						// Reflect an agent error/timeout in the step glyph: a ✓ TDD RED next to
+						// an errored call misrepresents what happened (R1 fail-closes the phase
+						// regardless, but the dashboard should not show success).
+						emitStep(`TDD RED (${redTryDetail})`, tdd.error ? "failed" : "ok", tddStepSeq);
 						const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
 						testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
 						announceActivity("RED oracle", redTryDetail);
@@ -1115,7 +1118,7 @@ export const implementationStage: Stage = {
 				const implStepSeq = ++stepSeq;
 				emitStep(`Implementation (${attemptDetail(attempt)})`, "running", implStepSeq);
 				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
-				emitStep(`Implementation (${attemptDetail(attempt)})`, "ok", implStepSeq);
+				emitStep(`Implementation (${attemptDetail(attempt)})`, impl.error ? "failed" : "ok", implStepSeq);
 				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
 				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads
 				// it (and back-tolerates the legacy flat filesModified array). The flat

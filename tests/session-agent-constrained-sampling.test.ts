@@ -29,6 +29,7 @@ import {
 	SpecReviewData,
 	AdversarialReviewData,
 	ImplementationSummaryData,
+	RedReviewData,
 } from "../src/render/schemas.ts";
 
 // ─── schemas in the test vocabulary ─────────────────────────────────────────
@@ -187,6 +188,7 @@ describe("production stage schemas are strict-capable (F1/AR-01: Feature 2 is AC
 		expect(isStrictCapable(SpecReviewData)).toBe(true);
 		expect(isStrictCapable(AdversarialReviewData)).toBe(true);
 		expect(isStrictCapable(ImplementationSummaryData)).toBe(true);
+		expect(isStrictCapable(RedReviewData)).toBe(true);
 	});
 
 	it("structuredOutputTool attaches constrainedSampling when given a real stage schema", () => {

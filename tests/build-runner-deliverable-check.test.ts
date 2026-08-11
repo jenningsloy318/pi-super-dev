@@ -200,6 +200,27 @@ describe("runDeliverableCheck — requireScenarios (anti-brittle stable-tag grad
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("finds the tag even when >200 unrelated test files precede it in a root-only repo (scan-order fix)", () => {
+		// Root-only manifest: projectDirsFromEvidence collapses everything to cwd, so
+		// the fix must prioritize the touched FILE's own directory, not just roots.
+		const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-scenario-bigrepo-"));
+		mkdirSync(join(cwd, "aaa"), { recursive: true });
+		mkdirSync(join(cwd, "zzz"), { recursive: true });
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "root" }));
+		for (let i = 0; i < 201; i++) writeFileSync(join(cwd, "aaa", `u${i}.test.ts`), "it('unrelated', () => { expect(1).toBe(1); })\n");
+		writeFileSync(join(cwd, "zzz", "target.test.ts"), "it('covers SCENARIO-999', () => { expect(f()).toBe(1); })\n");
+		try {
+			// The touched file is the target; its dir must be scanned before the 201 aaa files.
+			const res = runDeliverableCheck(cwd, {
+				requireScenarios: ["SCENARIO-999"],
+				requireContains: [{ file: "zzz/target.test.ts", pattern: "SCENARIO-999" }],
+			});
+			expect(res.missing).not.toContain("missing scenario: SCENARIO-999");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 });
 
 // === SCENARIO-001: all-present → pass:true, ran complete ====================

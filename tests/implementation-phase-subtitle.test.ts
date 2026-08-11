@@ -33,7 +33,7 @@ const mkState = (phases: Array<{ name?: string }>): PipelineState =>
 	} as unknown as PipelineState);
 
 /** Capture ctx.phase() announcements, emitted dashboard phase rows, AND the order of implementer spawns. */
-function mkCtx() {
+function mkCtx(opts: { tddError?: string; budgetCheck?: () => boolean } = {}) {
 	const phaseCalls: string[] = [];
 	const emittedStages: Array<{ id: string; label: string; status: string; kind?: string; parentId?: string }> = [];
 	const events: string[] = [];
@@ -42,10 +42,11 @@ function mkCtx() {
 		async helper(): Promise<HelperResult> { return { value: { languageInstructions: "" }, digest: "" }; },
 		async agent(call): Promise<AgentResult> {
 			if (call.agent === "implementer") events.push(`impl:${call.id}`);
+			if (call.agent === "tdd-guide" && opts.tddError) return { text: "", control: null, error: opts.tddError };
 			return { text: "ok", control: {} };
 		},
 		parallel: async (cs: Array<() => Promise<AgentResult>>) => Promise.all(cs.map((c) => c())),
-		budget: { check: () => true, spent() { this.count++; return true; }, count: 0 } satisfies Budget,
+		budget: { check: opts.budgetCheck ?? (() => true), spent() { this.count++; return true; }, count: 0 } satisfies Budget,
 		log: () => {},
 		phase: (label: string) => { phaseCalls.push(label); events.push(`phase:${label}`); },
 		events: { on: () => () => {}, emit: (_name: string, payload: { id: string; label: string; status: string; kind?: string; parentId?: string }) => { emittedStages.push(payload); return true; } } as never,
@@ -117,6 +118,18 @@ describe("Implementation stage — per-phase pi-native subtitle", () => {
 			expect(s.id).toMatch(/^implementation\.phase-01\.step-\d+$/);
 		}
 		expect(stepRows.some((s) => /TDD RED/.test(s.label))).toBe(true);
+	});
+
+	it("marks the TDD RED step row FAILED (not ok) when the tdd-guide agent errors", async () => {
+		// Bound the retry loop: on a tdd error R1 fail-closes and retries, so cap it.
+		let n = 0;
+		const { ctx, emittedStages } = mkCtx({ tddError: "timed out after 1200000ms", budgetCheck: () => n++ < 6 });
+		await implementationStage.run(mkState([{ name: "Scaffold" }]), ctx);
+		const tddRows = emittedStages.filter((e) => e.kind === "step" && /TDD RED/.test(e.label));
+		// Every TDD RED step attempted here errored → none should be recorded ok.
+		expect(tddRows.length).toBeGreaterThan(0);
+		expect(tddRows.some((s) => s.status === "failed")).toBe(true);
+		expect(tddRows.some((s) => s.status === "ok")).toBe(false);
 	});
 
 	it("announces the phase BEFORE its implementer is spawned", async () => {

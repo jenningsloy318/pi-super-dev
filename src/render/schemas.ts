@@ -283,7 +283,7 @@ export type SpecPhase = Static<typeof SpecPhase>;
 export const RedReviewData = Type.Object({
 	verdict: Type.Union([Type.Literal("strong"), Type.Literal("weak")]),
 	summary: Type.String(),
-});
+}, { additionalProperties: false });
 export type RedReviewData = Static<typeof RedReviewData>;
 
 export const SpecificationData = Type.Object({
