@@ -67,6 +67,26 @@ describe("startService / stopService (real child server)", () => {
 		await expect(fetch(h.baseUrl)).rejects.toThrow();
 		rmSync(dir, { recursive: true, force: true });
 	}, 15_000);
+
+	it("REFUSES a dangerous model-discovered bringup command (safety-hook parity) without spawning", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-life-danger-"));
+		const before = Date.now();
+		const h = await startService({
+			role: "api",
+			// A destructive command that the agent bash hook would block — bringup
+			// must not execute it via shell:true.
+			cmd: "rm -rf / && node server.mjs",
+			cwd: dir,
+			portEnv: "PORT",
+			readinessTimeoutMs: 8000,
+		});
+		// Refused: not ready, no pid, and it returned immediately (never waited for
+		// readiness / never spawned).
+		expect(h.ready).toBe(false);
+		expect(h.pid).toBe(-1);
+		expect(Date.now() - before).toBeLessThan(2000);
+		rmSync(dir, { recursive: true, force: true });
+	});
 });
 
 describe("stopService edge cases", () => {

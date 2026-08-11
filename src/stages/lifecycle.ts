@@ -21,6 +21,7 @@ import { createServer } from "node:net";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Node, NodeResult, PipelineState, ServiceHandle, ServiceMap, Stage, StageContext } from "../types.ts";
+import { checkBashCommand } from "../safety.ts";
 
 /** How to start one service. `portEnv` is the env-var name that receives the
  *  chosen free port (e.g. "PORT"); `readyUrl` is polled (defaults to the base). */
@@ -95,6 +96,15 @@ export function loadDotEnv(cwd: string): Record<string, string> {
  *  throws — bringup records not-ready services and `withServiceDeps` skips. */
 export async function startService(spec: StartSpec, opts: { port?: number } = {}): Promise<ServiceHandle> {
 	const port = opts.port ?? (await pickFreePort());
+	// The service command is MODEL-DISCOVERED (assessment output) and runs via
+	// shell:true with the full env + .env — it never passes through the agent bash
+	// safety hook. Screen it with the SAME denylist before spawning: a dangerous
+	// bringup command (rm -rf, curl|sh, env exfiltration, …) is refused, returning
+	// a not-ready handle so withServiceDeps skips it instead of executing it.
+	const safety = checkBashCommand(spec.cmd);
+	if (safety.blocked) {
+		return { role: spec.role, baseUrl: `http://127.0.0.1:${port}`, pid: -1, port, cmd: spec.cmd, external: false, ready: false };
+	}
 	const env: Record<string, string> = {
 		...(process.env as Record<string, string>),
 		...loadDotEnv(spec.cwd),

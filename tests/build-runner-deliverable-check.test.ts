@@ -221,6 +221,51 @@ describe("runDeliverableCheck — requireScenarios (anti-brittle stable-tag grad
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("reads the exact evidence test file directly (tier 1) so 200+ unrelated siblings can't exhaust the cap first", () => {
+		// The target is declared as deliverable evidence (requireContains points at
+		// it). tier-1 reads that file DIRECTLY before any dir walk, so the tagged
+		// file is seen regardless of how many unrelated siblings exist. This is the
+		// mechanism that fixes the real (git-touched) standalone case.
+		const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-scenario-tier1-"));
+		mkdirSync(join(cwd, "aaa"), { recursive: true });
+		mkdirSync(join(cwd, "zzz"), { recursive: true });
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "root" }));
+		for (let i = 0; i < 250; i++) writeFileSync(join(cwd, "aaa", `u${i}.test.ts`), "it('unrelated', () => { expect(1).toBe(1); })\n");
+		writeFileSync(join(cwd, "zzz", "target.test.ts"), "it('covers SCENARIO-999', () => { expect(f()).toBe(1); })\n");
+		try {
+			const res = runDeliverableCheck(cwd, {
+				requireScenarios: ["SCENARIO-999"],
+				requireContains: [{ file: "zzz/target.test.ts", pattern: "SCENARIO-999" }],
+			});
+			expect(res.missing).not.toContain("missing scenario: SCENARIO-999");
+			expect(res.pass).toBe(true);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("does NOT match a scenario tag in a file OUTSIDE the worktree (evidence-path escape guard)", () => {
+		// A model-authored deliverable path like ../sibling/tests/x.test.ts must not
+		// let scenario matching read outside cwd and falsely pass.
+		const base = mkdtempSync(join(tmpdir(), "sd-dcheck-escape-"));
+		const cwd = join(base, "wt");
+		const sibling = join(base, "sibling", "tests");
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		mkdirSync(sibling, { recursive: true });
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "app" }));
+		writeFileSync(join(sibling, "outside.test.ts"), "it('covers SCENARIO-777', () => { expect(f()).toBe(1); })\n");
+		try {
+			const res = runDeliverableCheck(cwd, {
+				requireScenarios: ["SCENARIO-777"],
+				requireContains: [{ file: "../sibling/tests/outside.test.ts", pattern: "x" }],
+			});
+			// The tag exists only outside the worktree → must be reported missing.
+			expect(res.missing).toContain("missing scenario: SCENARIO-777");
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
+	});
 });
 
 // === SCENARIO-001: all-present → pass:true, ran complete ====================

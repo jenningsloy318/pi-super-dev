@@ -227,6 +227,16 @@ function isInsideOrSame(root: string, path: string): boolean {
 	return rel === "" || (!!rel && !rel.startsWith("..") && !rel.startsWith("/"));
 }
 
+/** Resolve a deliverable path against cwd, returning the absolute path ONLY if it
+ *  stays inside the worktree; otherwise null. The single safe resolver every
+ *  deliverable filesystem access goes through so a model-authored `../escape`
+ *  path can never read/exist-check outside cwd. Never throws. */
+function resolveInsideCwd(cwd: string, file: string): string | null {
+	if (typeof file !== "string" || file.length === 0) return null;
+	const abs = resolve(cwd, file);
+	return isInsideOrSame(resolve(cwd), abs) ? abs : null;
+}
+
 function hasAnyManifest(dir: string, names = PROJECT_MANIFEST_NAMES): boolean {
 	return names.some((name) => existsSync(join(dir, name)));
 }
@@ -1208,7 +1218,11 @@ function readForDeliverable(
 	cwd: string,
 	file: string,
 ): { ok: true; text: string } | { ok: false; exists: boolean } {
-	const abs = join(cwd, file);
+	const abs = resolveInsideCwd(cwd, file);
+	// A deliverable path that resolves OUTSIDE the worktree (e.g. a model-authored
+	// `../outside.txt`) must never be read — treat it as missing so it can't
+	// satisfy a require* assertion against an external file.
+	if (abs === null) return { ok: false, exists: false };
 	try {
 		if (!existsSync(abs)) return { ok: false, exists: false };
 		return { ok: true, text: readFileSync(abs, "utf8") };
@@ -1338,50 +1352,88 @@ const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.|(^|\/)test_|(^|\/)tests?\/|__te
  *  deliverable + touched-file directories, for requireScenarios tag matching.
  *  Bounded (file count + per-file size) so a huge tree cannot stall the gate.
  *  Never throws — unreadable files are skipped. */
-function collectTestFileContents(cwd: string, deliverables: DeliverableContract): { text: string; files: string[] } {
+function collectTestFileContents(cwd: string, deliverables: DeliverableContract, stopWhen?: (text: string) => boolean): { text: string; files: string[] } {
+	const root = resolve(cwd);
 	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd)];
-	// Scan order matters because of the MAX_FILES cap: in a large repo an unrelated
-	// root subtree must not exhaust it before the module that holds the phase's RED
-	// tests is reached. Priority:
-	//   1. the IMMEDIATE parent directories of touched/evidence FILES — the exact
-	//      dirs the RED tests live in (works even in a root-only repo, where
-	//      projectDirsFromEvidence collapses everything back to cwd);
-	//   2. the resolved project/module roots from that evidence;
-	//   3. cwd last (broad fallback).
-	// Set iteration is insertion order, so earlier entries win the cap.
-	const evidenceFileDirs = evidence
-		.map((p) => dirname(resolve(cwd, p)))
-		.filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } });
-	const dirs = new Set<string>([...evidenceFileDirs, ...projectDirsFromEvidence(cwd, evidence), cwd]);
 	const collected: string[] = [];
 	const files: string[] = [];
 	const seenFiles = new Set<string>();
-	const MAX_FILES = 200;
+	let done = false; // set once stopWhen is satisfied — short-circuits everything
+	const MAX_FILES = 200;        // cap for the untrusted TIER-2 directory walk
+	const MAX_EVIDENCE_FILES = 2000; // separate, generous cap for the EXPLICIT
+	// touched/declared evidence list (tier 1) — a finite, trusted set, so it must
+	// NOT be starved by the tier-2 walk cap (finding: the 201st touched test, the
+	// tagged one, was never opened because files.length had already hit MAX_FILES).
 	const MAX_BYTES = 256 * 1024;
+	const readInto = (abs: string, cap: number): void => {
+		if (done || files.length >= cap || seenFiles.has(abs)) return;
+		seenFiles.add(abs);
+		try {
+			collected.push(readFileSync(abs, "utf8").slice(0, MAX_BYTES));
+			files.push(abs);
+			// Early-exit the moment the caller's target is satisfied (every required
+			// scenario tag seen). Combined with tier-1's own budget, this makes the
+			// MAX_FILES cap irrelevant whenever the tag is in a touched/declared file.
+			if (stopWhen && stopWhen(collected.join("\n"))) done = true;
+		} catch { /* unreadable — skip */ }
+	};
+	// Worktree-escape guard: a model-authored deliverable path like
+	// `../sibling/tests/x.test.ts` must NOT let scenario matching read outside the
+	// worktree (and pass against an external file). Filter every resolved evidence
+	// path through isInsideOrSame BEFORE using it.
+	const insideEvidence = evidence
+		.map((p) => resolve(cwd, p))
+		.filter((abs) => isInsideOrSame(root, abs));
+
+	// TIER 1 — read the EXACT evidence test FILES directly, before any dir walk.
+	// This is the fix for the standalone-requireScenarios case: when the touched
+	// set lists unrelated sibling tests around the tagged one, a dir walk would
+	// exhaust the cap on the siblings and never reach the target. Reading the
+	// specific evidence files first (plus stopWhen early-exit) guarantees the
+	// tagged file is seen whenever it is a touched/declared deliverable — which is
+	// ALWAYS true in the real pipeline (RED tests are git-touched, so
+	// touchedFilePaths surfaces them here). The tier-2 dir walk below is only a
+	// best-effort fallback for tags in files that are neither touched nor declared;
+	// there the MAX_FILES cap still applies (a huge unrelated dir could bound it),
+	// but that path is not how the pipeline feeds RED tests.
+	for (const abs of insideEvidence) {
+		if (done) break;
+		if (!TEST_FILE_RE.test(abs)) continue;
+		try { if (!statSync(abs).isFile()) continue; } catch { continue; }
+		readInto(abs, MAX_EVIDENCE_FILES);
+	}
+
+	// TIER 2+ — walk directories to catch tagged tests not in the evidence list:
+	// the immediate parent dirs of evidence files, then resolved project roots,
+	// then cwd last. All filtered to inside-worktree. Bounded by its OWN cap
+	// (walkCount) so tier-1's larger read does not disable the fallback, and so a
+	// huge unrelated tree still can't stall the gate.
+	const evidenceFileDirs = insideEvidence
+		.map((abs) => dirname(abs))
+		.filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } });
+	const dirs = new Set<string>(
+		[...evidenceFileDirs, ...projectDirsFromEvidence(cwd, evidence), root]
+			.filter((d) => isInsideOrSame(root, d)),
+	);
+	let walkCount = 0;
 	const walk = (dir: string, depth: number): void => {
-		if (depth > 6 || files.length >= MAX_FILES) return;
+		if (done || depth > 6 || walkCount >= MAX_FILES) return;
 		let entries: string[] = [];
 		try { entries = readdirSync(dir); } catch { return; }
 		for (const name of entries) {
-			if (files.length >= MAX_FILES) return;
+			if (done || walkCount >= MAX_FILES) return;
 			if (name === "node_modules" || name === ".git" || name === "target" || name === "dist" || name === "build") continue;
 			const abs = join(dir, name);
 			let isDir = false;
 			try { isDir = statSync(abs).isDirectory(); } catch { continue; }
 			if (isDir) { walk(abs, depth + 1); continue; }
 			if (!TEST_FILE_RE.test(abs)) continue;
-			// A dir may appear more than once across the priority tiers (e.g. an
-			// evidence-file dir that is also under cwd) — dedupe so a file counted in
-			// tier 1 is not re-counted (and re-charged against the cap) under cwd.
-			if (seenFiles.has(abs)) continue;
-			seenFiles.add(abs);
-			try {
-				collected.push(readFileSync(abs, "utf8").slice(0, MAX_BYTES));
-				files.push(abs);
-			} catch { /* unreadable — skip */ }
+			if (seenFiles.has(abs)) continue; // already read in tier 1 — don't recount
+			walkCount++;
+			readInto(abs, Number.POSITIVE_INFINITY); // walkCount already bounds tier 2
 		}
 	};
-	for (const dir of dirs) walk(dir, 0);
+	for (const dir of dirs) { if (done) break; walk(dir, 0); }
 	return { text: collected.join("\n"), files };
 }
 
@@ -1639,7 +1691,8 @@ export function runDeliverableCheck(
 		if (Array.isArray(files)) {
 			for (const p of files) {
 				ran.push(`file:${p}`);
-				if (!existsSync(join(cwd, p))) {
+				const abs = resolveInsideCwd(cwd, p);
+				if (abs === null || !existsSync(abs)) {
 					missing.push(`missing file: ${p}`);
 				}
 			}
@@ -1734,14 +1787,16 @@ export function runDeliverableCheck(
 		// a missing test list. Absent tag ⇒ `missing scenario: SCENARIO-NNN`.
 		const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
 		if (scenarios.length > 0) {
-			const haystack = collectTestFileContents(cwd, deliverables);
+			const tagRes = scenarios.map((tag) => new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i"));
+			// Stop reading files as soon as EVERY required tag has appeared — the
+			// MAX_FILES cap then can't hide a tag that exists, regardless of touched-
+			// file ordering. Word-boundary, case-insensitive (`SCENARIO-024` matches,
+			// `SCENARIO-0240` does not).
+			const haystack = collectTestFileContents(cwd, deliverables, (text) => tagRes.every((re) => re.test(text)));
 			ran.push(haystack.files.length ? `scenarios:${haystack.files.length} test file(s)` : "scenarios:no-test-files");
-			for (const tag of scenarios) {
-				// Word-boundary, case-insensitive: `SCENARIO-024` matches but
-				// `SCENARIO-0240` does not.
-				const re = new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i");
-				if (!re.test(haystack.text)) {
-					missing.push(`missing scenario: ${tag}`);
+			for (let i = 0; i < scenarios.length; i++) {
+				if (!tagRes[i].test(haystack.text)) {
+					missing.push(`missing scenario: ${scenarios[i]}`);
 				}
 			}
 		}
@@ -1777,7 +1832,8 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 		const files = deliverables.requireFiles;
 		if (!Array.isArray(files) || files.length === 0) return false;
 		for (const p of files) {
-			if (!existsSync(join(cwd, p))) return false;
+			const abs = resolveInsideCwd(cwd, p);
+			if (abs === null || !existsSync(abs)) return false;
 		}
 		for (const entry of deliverables.requireContains ?? []) {
 			const rd = readForDeliverable(cwd, entry.file);
@@ -1791,10 +1847,9 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 			// candidate test file (same stable-tag match as runDeliverableCheck).
 			const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
 			if (scenarios.length > 0) {
-				const { text } = collectTestFileContents(cwd, deliverables);
-				for (const tag of scenarios) {
-					if (!new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i").test(text)) return false;
-				}
+				const tagRes = scenarios.map((tag) => new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i"));
+				const { text } = collectTestFileContents(cwd, deliverables, (t) => tagRes.every((re) => re.test(t)));
+				if (!tagRes.every((re) => re.test(text))) return false;
 			}
 		return true;
 	} catch {
