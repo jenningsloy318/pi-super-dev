@@ -915,7 +915,7 @@ export const implementationStage: Stage = {
 						}));
 					}
 				}
-				if (attemptErrors.length) {
+				if (attemptErrors.filter((e) => !/^deliverable:\s*missing (test|scenario):/i.test(e)).length) {
 					implParts.push(implementationRetrySection("Previous attempt failed the build/test gate — fix these", {
 						phase: phaseId,
 						attempt,
@@ -923,7 +923,10 @@ export const implementationStage: Stage = {
 						location: "previous GREEN attempt",
 						observed: "the prior implementation attempt did not satisfy all phase gates",
 						expected: "all deterministic build/test and phase gates pass",
-						missing: attemptErrors,
+						// Exclude `deliverable: missing test:` — the implementer is forbidden
+						// from authoring RED tests; those route back to RED regeneration, so
+						// asking for them here is the forbidden action (deadlock root cause).
+						missing: attemptErrors.filter((e) => !/^deliverable:\s*missing (test|scenario):/i.test(e)),
 						nextAction: "Make a targeted code or test-support change for these exact failures, then run the relevant checks before calling structured_output.",
 					}));
 				}
@@ -931,16 +934,16 @@ export const implementationStage: Stage = {
 				// build-green but its DELIVERABLE CONTRACT was unmet, the exhaustive
 				// `missing` list is injected here so the implementer creates the files /
 				// does the wiring / adds the named tests instead of resampling.
-				if (missingDeliverables.length) {
+				if (missingDeliverables.filter((e) => !/^missing (test|scenario):/i.test(e)).length) {
 					implParts.push(implementationRetrySection("Deliverables still missing — create/wire these", {
 						phase: phaseId,
 						attempt,
 						gate: "deliverable-check",
 						location: "phase deliverable contract",
-						observed: "the prior attempt built but did not satisfy declared deliverables",
-						expected: "every required file, pattern, forbidden-pattern removal, and named test exists in the owning module",
-						missing: missingDeliverables,
-						nextAction: "Create, wire, or rename the missing deliverables directly. Do not claim completion until this list is empty.",
+						observed: "the prior attempt built but did not satisfy declared non-test deliverables",
+						expected: "every required file, pattern, and forbidden-pattern removal exists in the owning module",
+						missing: missingDeliverables.filter((e) => !/^missing (test|scenario):/i.test(e)),
+						nextAction: "Create, wire, or rename the missing deliverables directly. Do NOT create or edit test files — required tests are authored by the RED phase. Do not claim completion until this list is empty.",
 					}));
 				}
 				// spec-11 AC-07 (SCENARIO-015): a previous attempt claimed a file git did
@@ -1127,6 +1130,19 @@ export const implementationStage: Stage = {
 					...tddOracleFailures,
 				];
 				attemptErrors = failureReasons;
+				// Root-cause fix (deadlock): a `missing test: <name>` deliverable can
+				// ONLY be satisfied by the RED author (tdd-guide) — the implementer is
+				// forbidden from adding/altering RED tests (tdd-tests-modified-during-green).
+				// Previously the retry told the implementer to "add the named tests",
+				// producing the unsatisfiable A-vs-B gate contradiction that stalled the
+				// phase at no-progress. Route it back to RED regeneration instead: drop the
+				// accepted RED so the next attempt re-runs tdd-guide, which now receives the
+				// exact requireTests names via buildTddPrompt and can author them.
+				const missingTestDeliverables = missingDeliverables.filter((e) => /^missing (test|scenario):/i.test(e));
+				if (missingTestDeliverables.length && acceptedRed && !invalidateAcceptedRed) {
+					acceptedRed = null;
+					ctx.log(`Implementation ${phaseId} routing missing-test deliverable(s) back to RED regeneration (implementer cannot add RED tests): ${missingTestDeliverables.join("; ")}`);
+				}
 				if (invalidateAcceptedRed) {
 					acceptedRed = null;
 					ctx.log(`Implementation ${phaseId} RED cache invalidated: confirmed RED test file(s) changed during GREEN`);
@@ -1139,6 +1155,41 @@ export const implementationStage: Stage = {
 				attemptProgressHistory.push(progressSignature);
 				ctx.log(`Implementation ${phaseId} attempt ${attempt} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
 				if (noProgress) {
+					// HITL escalation (parity with gate-exhaustion + verify-stagnation):
+					// repeated identical failure is exactly where a human decision helps —
+					// often an unsatisfiable gate contradiction or a spec ambiguity, not a
+					// fixable code gap. Before the silent phase-fail (which abandons all
+					// later phases), give the user a chance to inject guidance and continue.
+					// Bounded by ESCALATION_RETRY_CAP; never throws; a dismissal/headless
+					// run falls straight through to the pre-existing no-progress break.
+					const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
+					if (escalate) {
+						try {
+							const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
+							const failure: import("../types.ts").EscalationFailure = {
+								kind: "stagnation",
+								stage: "implementation",
+								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable gate contradiction or a spec ambiguity. Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
+								severity: "soft",
+								findings: failureReasons.slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
+								worktreePath: setup.worktreePath,
+								specDirectory: setup.specDirectory,
+							};
+							const decision = await runEscalation(state, failure, escalate);
+							if (decision) {
+								applyRetryDecision(state, decision, { worktreePath: setup.worktreePath, specDirectory: setup.specDirectory });
+								if (decision.choice === "retry-with-guidance" && ctx.budget.check()) {
+									// Reset the no-progress window so the guided attempt is judged
+									// fresh (not instantly re-flagged against the pre-guidance signature),
+									// and drop the accepted RED so guidance can reshape tests too.
+									attemptProgressHistory = [];
+									acceptedRed = null;
+									ctx.log(`Implementation ${phaseId} no-progress escalation: retrying with user guidance`);
+									continue;
+								}
+							}
+						} catch { /* never-throw: fall through to the terminal break */ }
+					}
 					terminalStopReason = "no-progress";
 					ctx.log(`Implementation ${phaseId} stopped after repeated no-progress failure on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}`);
 					break;

@@ -112,7 +112,30 @@ describe("runWorkflow honest status", () => {
 			wf(seed({ implementation: { totalPhases: 2, allGreen: true } })),
 			"t",
 		);
-		expect(s.status).toBe("partial");
+		expect(s.status).toBe("partial");	});
+	it("logs an honest PARTIAL completion line (not a bare 'complete') when phases are unfinished", async () => {
+		const logs: string[] = [];
+		await runWorkflow(
+			wf(seed({ implementation: { totalPhases: 3, phasesCompleted: 1, allGreen: false, convergenceBlocked: true } })),
+			"t",
+			{ progress: { log: (m: string) => logs.push(m), phase() {} } } as never,
+		);
+		const complete = logs.find((l) => l.includes('Workflow "test" complete'));
+		expect(complete).toBeDefined();
+		expect(complete).toContain("PARTIAL");
+		expect(complete).toContain("1/3");
+		expect(complete).toContain("convergence blocked");
+	});
+	it("logs a plain 'complete' when implementation is fully green", async () => {
+		const logs: string[] = [];
+		await runWorkflow(
+			wf(seed({ implementation: { totalPhases: 2, phasesCompleted: 2, allGreen: true }, review: { verdict: "Approved" } })),
+			"t",
+			{ progress: { log: (m: string) => logs.push(m), phase() {} } } as never,
+		);
+		const complete = logs.find((l) => l.includes('Workflow "test" complete'));
+		expect(complete).toBeDefined();
+		expect(complete).not.toContain("PARTIAL");
 	});
 	it("reports 'partial' when a deterministic build gate failed despite approval", async () => {
 		const s = await runWorkflow(

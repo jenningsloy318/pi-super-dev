@@ -472,7 +472,20 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		progress?.log(`Workflow "${workflow.id}" aborted: ${abortError}`);
 	}
 
-	if (!aborted) progress?.log(`Workflow "${workflow.id}" complete`);
+	if (!aborted) {
+		// Honest completion log: a `tolerant` sequence reaches this point even when
+		// Stage 9 only partially implemented (some phases failed / were abandoned).
+		// Surface that explicitly instead of a bare "complete" that reads as success
+		// (run 2026-08-10T10-54-20-663Z shipped "complete" with only 1/3 phases).
+		const implEnd = state.implementation as { totalPhases?: number; phasesCompleted?: number; allGreen?: boolean; convergenceBlocked?: boolean } | undefined;
+		const total = implEnd?.totalPhases ?? 0;
+		const done = implEnd?.phasesCompleted ?? 0;
+		if (total > 0 && implEnd?.allGreen !== true) {
+			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: implementation finished ${done}/${total} phase(s)${implEnd?.convergenceBlocked ? " (convergence blocked — no-progress)" : ""}; downstream docs/merge stages were skipped for unverified work. Resume to continue the remaining phase(s).`);
+		} else {
+			progress?.log(`Workflow "${workflow.id}" complete`);
+		}
+	}
 
 	// Deduped list of stages that ended in `failed` (with their error).
 	const seen = new Set<string>();

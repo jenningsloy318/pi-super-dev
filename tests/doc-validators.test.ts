@@ -23,6 +23,8 @@ import {
 	extractAcceptanceCriteriaRefsFromControl,
 	extractMappedScenarioRefsFromControl,
 	normalizePhases,
+	phaseIndependenceErrors,
+	phaseTestDeliverableErrors,
 	readSpecDoc,
 	toNumber,
 	toBool,
@@ -187,6 +189,87 @@ describe("traceability validators", () => {
 		expect(bad.some((e) => e.includes("SCENARIO-099"))).toBe(true);
 		expect(bad.some((e) => e.includes("AC-02"))).toBe(true);
 		expect(bad.some((e) => e.includes("unknown phase"))).toBe(true);
+	});
+});
+
+describe("phaseIndependenceErrors (cascade-fail monolith guard)", () => {
+	const norm = (p: unknown) => normalizePhases(p);
+
+	it("flags a phase that is over-large on BOTH axes (many scenarios AND many files)", () => {
+		const phases = norm([{
+			name: "Phase 2",
+			description: "everything at once",
+			scenarioRefs: ["SCENARIO-001", "SCENARIO-002", "SCENARIO-003", "SCENARIO-004", "SCENARIO-005", "SCENARIO-006", "SCENARIO-007", "SCENARIO-008", "SCENARIO-009"],
+			deliverables: { requireFiles: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"] },
+		}]);
+		const errors = phaseIndependenceErrors(phases, []);
+		expect(errors.length).toBe(1);
+		expect(errors[0]).toContain("cascade-fail monolith");
+		expect(errors[0]).toContain("Phase 2");
+	});
+
+	it("does NOT flag a phase broad on only ONE axis (many scenarios, few files)", () => {
+		const phases = norm([{
+			name: "Cohesive",
+			description: "many small scenarios, one file",
+			scenarioRefs: ["SCENARIO-001", "SCENARIO-002", "SCENARIO-003", "SCENARIO-004", "SCENARIO-005", "SCENARIO-006", "SCENARIO-007", "SCENARIO-008", "SCENARIO-009"],
+			deliverables: { requireFiles: ["one.ts"] },
+		}]);
+		expect(phaseIndependenceErrors(phases, [])).toEqual([]);
+	});
+
+	it("does NOT flag a phase broad on only ONE axis (many files, few scenarios)", () => {
+		const phases = norm([{
+			name: "Wiring",
+			description: "one behavior across many files",
+			scenarioRefs: ["SCENARIO-001"],
+			deliverables: { requireFiles: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"] },
+		}]);
+		expect(phaseIndependenceErrors(phases, [])).toEqual([]);
+	});
+
+	it("counts scenarios mapped via task rows, not just phase.scenarioRefs", () => {
+		const phases = norm([{ name: "P", description: "d", deliverables: { requireFiles: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"] } }]);
+		const tasks = Array.from({ length: 9 }, (_, i) => ({ phase: "P", description: "t", scenarioRefs: [`SCENARIO-${String(i + 1).padStart(3, "0")}`] }));
+		const errors = phaseIndependenceErrors(phases, tasks);
+		expect(errors.length).toBe(1);
+	});
+
+	it("returns no errors for a phase with no deliverables (backward compat)", () => {
+		expect(phaseIndependenceErrors(norm([{ name: "P", description: "d" }]), [])).toEqual([]);
+	});
+});
+
+describe("phaseTestDeliverableErrors (scenario-mapped phase must declare a test deliverable)", () => {
+	const norm = (p: unknown) => normalizePhases(p);
+
+	it("flags a scenario-mapped phase that declares neither requireScenarios nor requireTests", () => {
+		const phases = norm([{ name: "P", description: "d", scenarioRefs: ["SCENARIO-001"], deliverables: { requireFiles: ["src/x.ts"] } }]);
+		const errors = phaseTestDeliverableErrors(phases, []);
+		expect(errors.length).toBe(1);
+		expect(errors[0]).toContain("no test deliverable");
+		expect(errors[0]).toContain("P");
+	});
+
+	it("passes when the phase declares requireScenarios", () => {
+		const phases = norm([{ name: "P", description: "d", scenarioRefs: ["SCENARIO-001"], deliverables: { requireScenarios: ["SCENARIO-001"] } }]);
+		expect(phaseTestDeliverableErrors(phases, [])).toEqual([]);
+	});
+
+	it("passes when the phase declares requireTests", () => {
+		const phases = norm([{ name: "P", description: "d", scenarioRefs: ["SCENARIO-001"], deliverables: { requireTests: ["covers it"] } }]);
+		expect(phaseTestDeliverableErrors(phases, [])).toEqual([]);
+	});
+
+	it("exempts a phase that maps no scenarios (pure wiring/config)", () => {
+		const phases = norm([{ name: "Wiring", description: "d", deliverables: { requireFiles: ["src/x.ts"] } }]);
+		expect(phaseTestDeliverableErrors(phases, [])).toEqual([]);
+	});
+
+	it("counts scenarios mapped via task rows too", () => {
+		const phases = norm([{ name: "P", description: "d" }]);
+		const tasks = [{ phase: "P", description: "t", scenarioRefs: ["SCENARIO-005"] }];
+		expect(phaseTestDeliverableErrors(phases, tasks).length).toBe(1);
 	});
 });
 

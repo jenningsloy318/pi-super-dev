@@ -262,6 +262,7 @@ export const PhaseDeliverables = Type.Object({
 	requireContains: Type.Optional(Type.Array(Type.Object({ file: Type.String(), pattern: Type.String() }))),
 	requireNotContains: Type.Optional(Type.Array(Type.Object({ file: Type.String(), pattern: Type.String() }))),
 	requireTests: Type.Optional(Type.Array(Type.String())),
+	requireScenarios: Type.Optional(Type.Array(Type.String())),
 });
 export type PhaseDeliverables = Static<typeof PhaseDeliverables>;
 

@@ -173,6 +173,82 @@ export function specTraceabilityErrors(bddContent: string, specContent: string, 
 		if (!phase) errors.push(`spec.tasks[${index}].phase is missing`);
 		else if (!phaseNames.has(phase)) errors.push(`spec.tasks[${index}].phase references unknown phase "${phase}"`);
 	});
+	errors.push(...phaseIndependenceErrors(phases, tasks));
+	return errors;
+}
+
+/**
+ * Phase-independence heuristic (learned from run 2026-08-10T10-54-20-663Z, where
+ * a single Phase 2 bundling ~10 scenarios across ~6 files cascade-failed and
+ * abandoned Phase 3). The spec prompt ASKS for coarse-but-independent phases;
+ * this makes the ask enforceable. A phase is flagged as over-large ONLY when it
+ * is egregious on BOTH axes at once — many mapped scenarios AND many distinct
+ * required files — because that combination is what makes a phase an
+ * all-or-nothing monolith whose failure blocks every later phase. Single-axis
+ * breadth (many small scenarios in one file, or many files for one behavior) is
+ * left alone to avoid over-fragmenting genuinely cohesive work. Thresholds are
+ * deliberately generous so only true monoliths hard-fail.
+ */
+export function phaseIndependenceErrors(
+	phases: NormalizedPhase[],
+	tasks: Array<Record<string, unknown>>,
+): string[] {
+	const SCENARIO_LIMIT = 8; // per phase
+	const FILE_LIMIT = 5;     // distinct requireFiles/requireContains targets per phase
+	const errors: string[] = [];
+	for (const phase of phases) {
+		const phaseScenarioRefs = extractScenarioIdsFromValue(phase.scenarioRefs);
+		const taskScenarioRefs = tasks
+			.filter((t) => typeof t?.phase === "string" && t.phase.trim() === phase.name.trim())
+			.flatMap((t) => extractScenarioIdsFromValue(t.scenarioRefs));
+		const scenarioCount = new Set([...phaseScenarioRefs, ...taskScenarioRefs]).size;
+		const d = phase.deliverables;
+		const files = new Set<string>([
+			...((d?.requireFiles ?? []) as string[]),
+			...((d?.requireContains ?? []) as Array<{ file?: string }>).map((e) => e?.file ?? "").filter(Boolean),
+		]).size;
+		if (scenarioCount > SCENARIO_LIMIT && files > FILE_LIMIT) {
+			errors.push(
+				`phase "${phase.name}" is a cascade-fail monolith: ${scenarioCount} scenarios across ${files} files (>${SCENARIO_LIMIT} scenarios AND >${FILE_LIMIT} files) — split it into smaller independently-shippable phases so one failure does not abandon later phases`,
+			);
+		}
+	}
+	return errors;
+}
+
+/**
+ * Test-coverage-deliverable guard (Fix 6 — closes the invariant that a phase's
+ * gradeable criteria must be declared). A phase that maps ≥1 BDD scenario is, by
+ * definition, delivering testable behavior — yet without a `requireScenarios` or
+ * `requireTests` deliverable the deterministic gate has NOTHING to assert about
+ * that phase's tests, so it can compile green while delivering zero test
+ * coverage (the "silent-empty-success" hole, one level up from the symbol gate).
+ * Flag any scenario-mapped phase whose deliverables declare neither. Phases that
+ * map no scenarios (pure wiring/config) are exempt — they have nothing to cover.
+ * requireScenarios is the RECOMMENDED remedy (stable tag); requireTests also
+ * satisfies the guard for the rare case where no scenario tag applies.
+ */
+export function phaseTestDeliverableErrors(
+	phases: NormalizedPhase[],
+	tasks: Array<Record<string, unknown>>,
+): string[] {
+	const errors: string[] = [];
+	for (const phase of phases) {
+		const phaseScenarioRefs = extractScenarioIdsFromValue(phase.scenarioRefs);
+		const taskScenarioRefs = tasks
+			.filter((t) => typeof t?.phase === "string" && t.phase.trim() === phase.name.trim())
+			.flatMap((t) => extractScenarioIdsFromValue(t.scenarioRefs));
+		const scenarioCount = new Set([...phaseScenarioRefs, ...taskScenarioRefs]).size;
+		if (scenarioCount === 0) continue; // no mapped behavior → nothing to cover
+		const d = phase.deliverables as { requireScenarios?: unknown[]; requireTests?: unknown[] } | undefined;
+		const hasScenarioDeliverable = Array.isArray(d?.requireScenarios) && d.requireScenarios.length > 0;
+		const hasTestDeliverable = Array.isArray(d?.requireTests) && d.requireTests.length > 0;
+		if (!hasScenarioDeliverable && !hasTestDeliverable) {
+			errors.push(
+				`phase "${phase.name}" maps ${scenarioCount} BDD scenario(s) but declares no test deliverable — add deliverables.requireScenarios (preferred: the SCENARIO-NNN tags it covers) or deliverables.requireTests so the phase cannot go green without proving test coverage`,
+			);
+		}
+	}
 	return errors;
 }
 

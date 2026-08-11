@@ -155,6 +155,53 @@ describe("runDeliverableCheck — backward-compat (SCENARIO-014)", () => {
 	});
 });
 
+describe("runDeliverableCheck — requireScenarios (anti-brittle stable-tag grading)", () => {
+	it("PASSES when the SCENARIO-NNN tag is present in a test file, even if the it() title is reworded", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-scenario-"));
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "app" }));
+		// A completely different English title — only the stable tag matters.
+		writeFileSync(join(cwd, "src", "expiry.test.ts"), "it('rejects a totally reworded description SCENARIO-024', () => {})\n");
+		try {
+			const res = runDeliverableCheck(cwd, { requireScenarios: ["SCENARIO-024"] });
+			expect(res.pass).toBe(true);
+			expect(res.missing).toEqual([]);
+			expect(listSpawns()).toBe(0); // scenario grep never spawns a runner
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("FAILS with `missing scenario:` when no test file carries the tag", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-scenario-miss-"));
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "app" }));
+		writeFileSync(join(cwd, "src", "expiry.test.ts"), "it('covers SCENARIO-001 only', () => {})\n");
+		try {
+			const res = runDeliverableCheck(cwd, { requireScenarios: ["SCENARIO-024", "SCENARIO-001"] });
+			expect(res.pass).toBe(false);
+			expect(res.missing).toContain("missing scenario: SCENARIO-024");
+			expect(res.missing).not.toContain("missing scenario: SCENARIO-001");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("does not confuse SCENARIO-024 with SCENARIO-0240 (word boundary)", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-scenario-boundary-"));
+		mkdirSync(join(cwd, "src"), { recursive: true });
+		writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "app" }));
+		writeFileSync(join(cwd, "src", "x.test.ts"), "it('SCENARIO-0240 unrelated', () => {})\n");
+		try {
+			const res = runDeliverableCheck(cwd, { requireScenarios: ["SCENARIO-024"] });
+			expect(res.pass).toBe(false);
+			expect(res.missing).toContain("missing scenario: SCENARIO-024");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
 // === SCENARIO-001: all-present → pass:true, ran complete ====================
 
 describe("runDeliverableCheck — every deliverable satisfied (SCENARIO-001)", () => {

@@ -179,11 +179,11 @@ interface FakeCtx {
  * by attempt (id ends `.impl.a<N>`) so SCENARIO-012's missing-injection can be
  * asserted without spawning a real agent.
  */
-function mkCtx(): { ctx: StageContext; fake: FakeCtx } {
+function mkCtx(escalate?: RunOptions["escalate"]): { ctx: StageContext; fake: FakeCtx } {
 	const fake: FakeCtx = { logs: [], agentIds: [], implByAttempt: new Map(), tddCalls: 0 };
 	const ctx: StageContext = {
 		task: "",
-		options: {} as RunOptions,
+		options: { escalate } as RunOptions,
 		state: {} as PipelineState,
 		async helper(): Promise<HelperResult> {
 			return { value: { languageInstructions: "" }, digest: "" };
@@ -292,6 +292,44 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(mock.deliverableCalls).toBe(2);
 	});
 
+	it("no-progress fires the HITL escalation; retry-with-guidance continues the loop instead of failing the phase", async () => {
+		// File-only deliverable fail (no `missing test:` → no RED reroute), so the
+		// stall is a pure implementation-gate no-progress. First two attempts repeat
+		// the same failure → no-progress; escalation returns retry-with-guidance →
+		// the loop continues; attempt 3's deliverable passes → GREEN.
+		const FILE_FAIL = { pass: false, missing: ["missing file: src/screen.rs"], ran: ["file:src/screen.rs"] };
+		seedGate(GATE_PASS);
+		mock.deliverableQ.push({ ...FILE_FAIL }, { ...FILE_FAIL }, { ...DELIVERABLE_PASS });
+		let asked = 0;
+		const escalate = async () => { asked++; return { choice: "retry-with-guidance" as const }; };
+		const { ctx, fake } = mkCtx(escalate);
+		const res = (await (implementationStage as Stage).run(
+			mkState([{ name: "Phase A", deliverables: DELIVERABLES }]),
+			ctx,
+		)) as ControlObj;
+
+		expect(asked).toBe(1); // escalation fired exactly once at the no-progress point
+		expect(hasLog(fake.logs, "no-progress escalation: retrying with user guidance")).toBe(true);
+		expect(res.allGreen).toBe(true);
+		expect(res.phasesCompleted).toBe(1);
+	});
+
+	it("no-progress with NO escalate callback falls through to the pre-existing phase-fail (headless parity)", async () => {
+		const FILE_FAIL = { pass: false, missing: ["missing file: src/screen.rs"], ran: ["file:src/screen.rs"] };
+		seedGate(GATE_PASS);
+		mock.deliverableQ.push({ ...FILE_FAIL }, { ...FILE_FAIL }, { ...FILE_FAIL });
+		const { ctx, fake } = mkCtx(); // no escalate
+		const res = (await (implementationStage as Stage).run(
+			mkState([{ name: "Phase A", deliverables: DELIVERABLES }]),
+			ctx,
+		)) as ControlObj;
+
+		expect(hasLog(fake.logs, "no-progress escalation")).toBe(false);
+		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
+		expect(res.allGreen).toBe(false);
+		expect(res.phasesCompleted).toBe(0);
+	});
+
 	it("SCENARIO-012: a failed deliverable check feeds `## Deliverables still missing` into the NEXT implementer retry", async () => {
 		seedGate(GATE_PASS);
 		seedDeliverable(DELIVERABLE_FAIL);
@@ -308,17 +346,24 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(attempt1).not.toContain("Deliverables still missing");
 
 		// Attempt 2's prompt is built AFTER attempt 1's deliverable check failed
-		// → it MUST carry the missing block with EVERY exhaustive entry.
+		// → it MUST carry the missing block for NON-TEST deliverables the implementer
+		// can satisfy. A `missing test:` entry is EXCLUDED (authoring RED tests is
+		// tdd-guide's job — routed back to RED regeneration, not the implementer) to
+		// avoid the A-vs-B gate deadlock (tests-must-exist vs tests-must-not-be-modified).
 		const attempt2 = fake.implByAttempt.get(2);
 		expect(attempt2, "expected an attempt-2 implementer prompt").toBeDefined();
 		expect(attempt2!).toContain("## Deliverables still missing — create/wire these");
 		expect(attempt2!).toContain("gate=deliverable-check");
-		for (const entry of DELIVERABLE_FAIL.missing) {
+		for (const entry of DELIVERABLE_FAIL.missing.filter((e) => !/^missing test:/i.test(e))) {
 			expect(attempt2!).toContain(entry);
 		}
-		expect(fake.tddCalls).toBe(1);
-		expect(fake.agentIds.some((id) => id.includes("phase-01.tdd.a2"))).toBe(false);
-		expect(fake.logs.some((line) => line.includes("reusing accepted RED for attempt 2"))).toBe(true);
+		// The `missing test:` deliverable is NOT delegated to the implementer.
+		expect(attempt2!).not.toContain("missing test: screen::fetches_us_market_data");
+		// Instead it routes back to RED regeneration: a fresh tdd-guide call runs for
+		// attempt 2 (which now receives the exact requireTests names via buildTddPrompt).
+		expect(fake.tddCalls).toBe(2);
+		expect(fake.agentIds.some((id) => id.includes("phase-01.tdd.a2"))).toBe(true);
+		expect(fake.logs.some((line) => line.includes("routing missing-test deliverable(s) back to RED regeneration"))).toBe(true);
 	});
 
 	it("SCENARIO-012 (reset): the missing block reflects the MOST RECENT failing attempt only", async () => {

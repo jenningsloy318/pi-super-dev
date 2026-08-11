@@ -1101,12 +1101,19 @@ function hasVitestScript(cwd: string): boolean {
  *                          dead `_ => {}` match arm / leftover stub).
  *   - requireTests       — test names that MUST appear in the project test list
  *                          (tolerant substring-OR-regex match).
+ *   - requireScenarios   — BDD SCENARIO-NNN tags that MUST appear in the phase's
+ *                          test FILE CONTENTS. Stable-by-construction: a reworded
+ *                          `it(...)` title never breaks it (the tag is the unique
+ *                          id), so it is the anti-brittle counterpart to
+ *                          requireTests. Unifies with the RED scenario-coverage
+ *                          classifier's model (both key off SCENARIO-NNN).
  */
 export interface DeliverableContract {
 	requireFiles?: string[];
 	requireContains?: Array<{ file: string; pattern: string }>;
 	requireNotContains?: Array<{ file: string; pattern: string }>;
 	requireTests?: string[];
+	requireScenarios?: string[];
 }
 
 /**
@@ -1301,6 +1308,63 @@ function deliverableEvidencePaths(deliverables: DeliverableContract): string[] {
 	for (const entry of deliverables.requireContains ?? []) if (entry && typeof entry.file === "string") paths.push(entry.file);
 	for (const entry of deliverables.requireNotContains ?? []) if (entry && typeof entry.file === "string") paths.push(entry.file);
 	return paths;
+}
+
+/** Normalize a requireScenarios list into canonical `SCENARIO-NNN` tags (deduped,
+ *  drops blanks/non-strings). Accepts `SCENARIO-24`, `scenario-024`, `24`, or a
+ *  free-form string containing a tag; zero-pads to 3 digits to match the spec's
+ *  own `SCENARIO-NNN` rendering. Never throws. */
+function normalizeScenarioTags(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const out: string[] = [];
+	for (const item of value) {
+		if (typeof item === "number" && Number.isInteger(item)) {
+			out.push(`SCENARIO-${String(item).padStart(3, "0")}`);
+			continue;
+		}
+		if (typeof item !== "string") continue;
+		const matches = [...item.matchAll(/\bSCENARIO-(\d+)\b/gi)].map((m) => `SCENARIO-${String(Number(m[1] ?? "0")).padStart(3, "0")}`);
+		if (matches.length) out.push(...matches);
+		else if (/^\d+$/.test(item.trim())) out.push(`SCENARIO-${String(Number(item.trim())).padStart(3, "0")}`);
+	}
+	return [...new Set(out)];
+}
+
+/** Test-file globs recognised across the pipeline's supported stacks (ts/js,
+ *  rust, python, go). Matched on the file BASENAME or path segment. */
+const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.|(^|\/)test_|(^|\/)tests?\/|__tests__\/)/i;
+
+/** Collect the concatenated contents of candidate test files under the
+ *  deliverable + touched-file directories, for requireScenarios tag matching.
+ *  Bounded (file count + per-file size) so a huge tree cannot stall the gate.
+ *  Never throws — unreadable files are skipped. */
+function collectTestFileContents(cwd: string, deliverables: DeliverableContract): { text: string; files: string[] } {
+	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd)];
+	const dirs = new Set<string>([cwd, ...projectDirsFromEvidence(cwd, evidence)]);
+	const collected: string[] = [];
+	const files: string[] = [];
+	const MAX_FILES = 200;
+	const MAX_BYTES = 256 * 1024;
+	const walk = (dir: string, depth: number): void => {
+		if (depth > 6 || files.length >= MAX_FILES) return;
+		let entries: string[] = [];
+		try { entries = readdirSync(dir); } catch { return; }
+		for (const name of entries) {
+			if (files.length >= MAX_FILES) return;
+			if (name === "node_modules" || name === ".git" || name === "target" || name === "dist" || name === "build") continue;
+			const abs = join(dir, name);
+			let isDir = false;
+			try { isDir = statSync(abs).isDirectory(); } catch { continue; }
+			if (isDir) { walk(abs, depth + 1); continue; }
+			if (!TEST_FILE_RE.test(abs)) continue;
+			try {
+				collected.push(readFileSync(abs, "utf8").slice(0, MAX_BYTES));
+				files.push(abs);
+			} catch { /* unreadable — skip */ }
+		}
+	};
+	for (const dir of dirs) walk(dir, 0);
+	return { text: collected.join("\n"), files };
 }
 
 function testListPlansForDeliverables(cwd: string, deliverables: DeliverableContract): TestListPlan[] {
@@ -1642,6 +1706,27 @@ export function runDeliverableCheck(
 			}
 		}
 
+		// (e) requireScenarios — the ANTI-BRITTLE counterpart to requireTests: a
+		// BDD SCENARIO-NNN tag MUST appear in the phase's test FILE CONTENTS. Test
+		// files carry the tag in an `it("SCENARIO-024 ...")` title, a comment, or a
+		// tag constant; unlike a full English test name, the tag is a stable unique
+		// id that survives rewording (RTM best practice: unique id per test case).
+		// Matched by grepping the candidate test files under the deliverable +
+		// touched-file directories, so it never spawns a runner and never blocks on
+		// a missing test list. Absent tag ⇒ `missing scenario: SCENARIO-NNN`.
+		const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
+		if (scenarios.length > 0) {
+			const haystack = collectTestFileContents(cwd, deliverables);
+			ran.push(haystack.files.length ? `scenarios:${haystack.files.length} test file(s)` : "scenarios:no-test-files");
+			for (const tag of scenarios) {
+				// Word-boundary, case-insensitive: `SCENARIO-024` matches but
+				// `SCENARIO-0240` does not.
+				const re = new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i");
+				if (!re.test(haystack.text)) {
+					missing.push(`missing scenario: ${tag}`);
+				}
+			}
+		}
 		return { pass: missing.length === 0, missing, ran };
 	} catch (err) {
 		// NEVER-THROW invariant (SCENARIO-010): any thrown error (e.g. a
@@ -1684,6 +1769,15 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 			const rd = readForDeliverable(cwd, entry.file);
 			if (rd.ok && tolerantMatch(entry.pattern, deliverableMatchText(entry.file, rd.text))) return false;
 		}
+			// requireScenarios: every declared SCENARIO-NNN tag must appear in a
+			// candidate test file (same stable-tag match as runDeliverableCheck).
+			const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
+			if (scenarios.length > 0) {
+				const { text } = collectTestFileContents(cwd, deliverables);
+				for (const tag of scenarios) {
+					if (!new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i").test(text)) return false;
+				}
+			}
 		return true;
 	} catch {
 		return false;
