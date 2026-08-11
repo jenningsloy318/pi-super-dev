@@ -377,7 +377,7 @@ async function resolveTddScenarioCoverage(args: { ctx: StageContext; cwd: string
 			id: `pipeline.implementation.${args.phaseId}.tdd-coverage`,
 			agent: "tdd-coverage-classifier",
 			accessMode: "source-read-only",
-			controlKeys: ["allCovered", "summary"],
+			controlKeys: ["allCovered", "coveredScenarios", "missingScenarios", "summary"],
 			prompt: buildTddCoveragePrompt({
 				phaseName: args.phaseName,
 				phaseDescription,
@@ -861,6 +861,29 @@ export const implementationStage: Stage = {
 						const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
 						ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
 						redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied, diagnostics: redDiagnostics });
+						// R1 — FAIL CLOSED on an unclassifiable/absent RED when the phase is
+						// SUPPOSED to have tests. `unknown-*` produces no failure reason and no
+						// retry hint, so without this the implementer proceeds with NO confirmed
+						// RED (and skips the assertion + review gates, which only fire on
+						// red-behavior-failure). If tdd-guide errored/timed out, returned no
+						// testFiles, or the runner couldn't classify — AND the phase declares
+						// expected scenarios or a test deliverable — treat it as a broken RED so
+						// it retries instead of silently shipping untested code.
+						{
+							const requiresTests = expectedScenarios.length > 0
+								|| normalizeStringArray(phaseDeliverables?.requireTests).length > 0
+								|| normalizeStringArray((phaseDeliverables as { requireScenarios?: unknown } | undefined)?.requireScenarios).length > 0;
+							const unknownRed = redEvidence.status === "unknown-unclassified" || redEvidence.status === "unknown-no-runner";
+							if (unknownRed && (requiresTests || tdd.error)) {
+								const why = tdd.error
+									? `the TDD agent did not complete (${tdd.error})`
+									: testFiles.length === 0
+										? "the TDD agent returned no test files"
+										: "the RED test status could not be confirmed";
+								ctx.log(`Implementation ${phaseId} RED fail-closed: ${why}; phase requires tests — retrying instead of proceeding without a confirmed RED`);
+								redEvidence = { ...redEvidence, status: "broken-test", reason: `RED not confirmed: ${why}` };
+							}
+						}
 						if (redEvidence.status === "red-behavior-failure" && expectedScenarios.length > 0) {
 							announceActivity("RED scenario coverage", redTryDetail);
 							const coverage = await resolveTddScenarioCoverage({ ctx, cwd: setup.worktreePath, phaseId, phaseName, phase, expectedScenarios, testFiles, specControl: state.spec ?? null, bddControl: state.bdd ?? null });
@@ -910,7 +933,8 @@ export const implementationStage: Stage = {
 						if (!retryHint && redEvidence.status === "red-behavior-failure" && testFiles.length > 0) {
 							const review = await runStep(
 								"RED review", redTryDetail,
-								(r: { control?: { verdict?: unknown; summary?: unknown } | null }) => String(r?.control?.verdict ?? "").toLowerCase() !== "weak",
+								// Fail CLOSED: the step is "ok" only on an explicit STRONG verdict.
+								(r: { control?: { verdict?: unknown } | null }) => String(r?.control?.verdict ?? "").toLowerCase() === "strong",
 								() => ctx.agent({
 									id: `pipeline.implementation.${phaseId}.red-review.a${attempt}.t${retries + 1}`,
 									agent: "code-reviewer",
@@ -919,14 +943,24 @@ export const implementationStage: Stage = {
 									schema: RED_REVIEW_SCHEMA,
 								}),
 							);
+							// R2 — fail CLOSED: proceed to implementation ONLY on an explicit
+							// "strong" verdict. Anything else — "weak", an invalid verdict, a
+							// missing control object, or an agent error/timeout (null control) —
+							// routes back to tdd-guide. A review gate that defaults to "pass" on
+							// malformed output is worse than no gate (it looks like protection).
 							const verdict = String((review.control as { verdict?: unknown } | null)?.verdict ?? "").toLowerCase();
-							if (verdict === "weak") {
-								const summary = String((review.control as { summary?: unknown } | null)?.summary ?? "test assertions are not bound to the scenario's observable behavior");
-								ctx.log(`Implementation ${phaseId} RED review: WEAK — ${summary}`);
-								redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review flagged weak tests: ${summary}` };
-								retryHint = `An independent reviewer judged your RED tests WEAK: ${summary}. Strengthen the assertions so each binds the scenario's OBSERVABLE behavior (concrete expected values/outputs/status codes), not implementation details or tautologies, then re-run.`;
+							if (verdict !== "strong") {
+								const summary = String((review.control as { summary?: unknown } | null)?.summary ?? "")
+									|| (verdict === "weak"
+										? "test assertions are not bound to the scenario's observable behavior"
+										: review.error
+											? `RED review did not complete (${review.error})`
+											: "RED review returned no usable verdict");
+								ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (${verdict || review.error || "no verdict"}) — ${summary}`);
+								redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review not strong: ${summary}` };
+								retryHint = `An independent reviewer did not confirm your RED tests as STRONG: ${summary}. Strengthen the assertions so each binds the scenario's OBSERVABLE behavior (concrete expected values/outputs/status codes), not implementation details or tautologies, then re-run.`;
 							} else {
-								ctx.log(`Implementation ${phaseId} RED review: OK (${verdict || "acceptable"})`);
+								ctx.log(`Implementation ${phaseId} RED review: STRONG`);
 							}
 						}
 						if (retryHint) {

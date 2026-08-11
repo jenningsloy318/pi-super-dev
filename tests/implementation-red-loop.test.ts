@@ -225,6 +225,25 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 		expect(res.phasesCompleted).toBe(1);
 	});
 
+	it("R1 (fail-closed): an UNKNOWN red status for a scenario-requiring phase does NOT proceed to the implementer", async () => {
+		redSeq("unknown"); // runner can't classify (e.g. tdd-guide returned no usable tests)
+		// A phase that maps a scenario MUST have confirmed RED before implementation.
+		const state = {
+			setup: { worktreePath: "/tmp/sd-red-loop", specDirectory: "/tmp/sd", defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "p3", worktreeCreated: false, initializedRepo: false },
+			classify: { taskType: "bug", uiScope: "none", language: "frontend", isWebUi: false },
+			spec: { scenarioRefs: ["SCENARIO-001"], phases: [{ name: "P3", description: "x", scenarioRefs: ["SCENARIO-001"] }] },
+		} as unknown as PipelineState;
+		// Bound the RED retry loop so the test terminates (no-progress/budget stop).
+		let n = 0;
+		const { ctx, calls } = mkCtx({ budgetCheck: () => n++ < 8 });
+		const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+		// Must NOT ship untested code: implementer never runs, phase not completed.
+		expect(calls.impl).toHaveLength(0);
+		expect(res.phasesCompleted).toBe(0);
+		expect(calls.logs.some((l) => /RED fail-closed/.test(l))).toBe(true);
+	});
+
 	it("augments the implementer prompt with a CONFIRMED-red note when status === 'red'", async () => {
 		redSeq("red");
 		const { ctx, calls } = mkCtx();
@@ -246,7 +265,20 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 		// Only proceeds to the implementer after the STRONG verdict.
 		expect(calls.impl).toHaveLength(1);
 		expect(res.phasesCompleted).toBe(1);
-		expect(calls.logs.some((l) => /RED review: WEAK/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /RED review: NOT STRONG/.test(l))).toBe(true);
+	});
+
+	it("Tier 2 (R2, fail-closed): a MISSING/invalid review verdict also routes back to tdd-guide (not treated as pass)", async () => {
+		redSeq("red", "red");
+		// First review returns no usable verdict (empty ⇒ not "strong"); second is strong.
+		const { ctx, calls } = mkCtx({ reviewVerdicts: ["", "strong"] as never });
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+
+		// Non-strong (here: empty/invalid) must NOT fail open → tdd-guide re-prompted.
+		expect(calls.tdd).toHaveLength(2);
+		expect(calls.impl).toHaveLength(1); // proceeds only after the strong verdict
+		expect(res.phasesCompleted).toBe(1);
+		expect(calls.logs.some((l) => /RED review: NOT STRONG/.test(l))).toBe(true);
 	});
 
 	it("logs the red-oracle outcome as `Implementation phase-01 red-oracle: red (ran: ...)`", async () => {

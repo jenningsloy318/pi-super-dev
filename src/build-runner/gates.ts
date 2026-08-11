@@ -1340,7 +1340,11 @@ const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.|(^|\/)test_|(^|\/)tests?\/|__te
  *  Never throws — unreadable files are skipped. */
 function collectTestFileContents(cwd: string, deliverables: DeliverableContract): { text: string; files: string[] } {
 	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd)];
-	const dirs = new Set<string>([cwd, ...projectDirsFromEvidence(cwd, evidence)]);
+	// Scan the TOUCHED / evidence module dirs FIRST, then cwd last: the MAX_FILES
+	// cap must not be exhausted by an unrelated root subtree before reaching the
+	// module that actually holds the phase's RED tests (large-monorepo false
+	// `missing scenario`). Set iteration is insertion order, so evidence dirs win.
+	const dirs = new Set<string>([...projectDirsFromEvidence(cwd, evidence), cwd]);
 	const collected: string[] = [];
 	const files: string[] = [];
 	const MAX_FILES = 200;

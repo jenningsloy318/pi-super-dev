@@ -137,6 +137,18 @@ describe("runWorkflow honest status", () => {
 		expect(complete).toBeDefined();
 		expect(complete).not.toContain("PARTIAL");
 	});
+	it("R5: logs PARTIAL when implementation is green but a hard gate failed (log derives from status, not allGreen)", async () => {
+		const logs: string[] = [];
+		await runWorkflow(
+			wf(seed({ implementation: { totalPhases: 2, phasesCompleted: 2, allGreen: true }, review: { verdict: "Approved" }, preMergeBuild: { pass: false } })),
+			"t",
+			{ progress: { log: (m: string) => logs.push(m), phase() {} } } as never,
+		);
+		const complete = logs.find((l) => l.includes('Workflow "test" complete'));
+		expect(complete).toBeDefined();
+		// Previously said bare "complete" because allGreen was true; now derived from status.
+		expect(complete).toContain("PARTIAL");
+	});
 	it("reports 'partial' when a deterministic build gate failed despite approval", async () => {
 		const s = await runWorkflow(
 			wf(seed({ implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" }, preMergeBuild: { pass: false } })),
