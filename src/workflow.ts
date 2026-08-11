@@ -23,6 +23,7 @@ import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, fi
 import { extractControlKeys } from "./control.ts";
 import { knowledgeForAgent } from "./render/knowledge.ts";
 import { appendUserNotes, userNotesForAgent } from "./render/user-notes.ts";
+import { getConfig } from "./render/super-dev-dir.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
@@ -239,10 +240,32 @@ async function runWithTransientRetry<T extends { error?: string }>(
 	}
 }
 
+/** Resolve the model for a specific agent call under precedence A (cross-model
+ *  policy in config wins over a one-off global --model):
+ *    call.model  →  agentModels[call.agent]  →  globalModel  →  undefined.
+ *  `undefined` means "no explicit model" — the backends then fall back to the
+ *  inherited main-session model, preserving the no-default rule. Pure + exported
+ *  for unit tests. */
+export function resolveAgentModel(
+	call: { agent: string; model?: string },
+	agentModels: Record<string, string>,
+	globalModel?: string,
+): string | undefined {
+	const perCall = call.model?.trim();
+	if (perCall) return perCall;
+	const byRole = agentModels[call.agent]?.trim();
+	if (byRole) return byRole;
+	return globalModel;
+}
+
 function makeContext(state: PipelineState, task: string, options: RunOptions, log: (m: string) => void): StageContext {
 	const budget = makeBudget(options.maxAgents ?? DEFAULT_MAX_AGENTS);
 	const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 	const model = options.model;
+	// Per-agent cross-model policy, read ONCE per run (config is a small JSON file).
+	// resolveAgentModel applies precedence A: call.model > config.agentModels[role]
+	// > global options.model. Failure to read config degrades to {} (today's behavior).
+	const agentModels = (() => { try { return getConfig().agentModels ?? {}; } catch { return {}; } })();
 	const signal = options.signal;
 	// Single EventEmitter for the whole context: `ctx.phase()` emits on it and
 	// runWorkflow subscribes ("phase"/"stage") to route into the progress sink.
@@ -309,7 +332,10 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			accessMode,
 			controlKeys,
 			schema: call.schema,
-			model,
+			// Per-agent model (precedence A). Falls back to the global `model`, then
+			// (in the backend) to the inherited main-session model. Enables cross-model
+			// review via ~/.super-dev config.agentModels.
+			model: resolveAgentModel(call, agentModels, model),
 			// Thread the inherited DEFAULTS (live main-session model object +
 			// thinking level) through the shared `common` object so BOTH backends
 			// receive them. ADDITIVE — each backend applies them BELOW an explicit
@@ -372,7 +398,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const label = call.id ?? call.agent;
 		const started = Date.now();
 		let boundaryChecked = false;
-		log(`agent ${label}: start agent=${call.agent} backend=${backend} access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
+		log(`agent ${label}: start agent=${call.agent} backend=${backend} access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${common.model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
 		try {
 			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
 			boundaryChecked = true;
@@ -519,7 +545,13 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 
 	let status: RunStatus;
 	if (aborted || phases === 0) {
-		status = "failed"; // no implementation produced (gate aborted, or spec had no phases)
+		// `phases === 0` means the implementation stage produced no phases (gate
+		// aborted before impl, or an empty spec). NOTE (F-8): this couples runStatus
+		// to the super-dev implementation-stage shape — a future workflow with no
+		// implementation stage would need a distinct "no impl expected" signal here
+		// rather than being reported as failed. Fine while super-dev is the only
+		// consumer and every run is expected to implement.
+		status = "failed";
 	} else if (green && reviewRan && approved && !hardGateFailed && !mergeNotConfirmed && failedStages.length === 0) {
 		status = "success";
 	} else {

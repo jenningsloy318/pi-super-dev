@@ -119,6 +119,9 @@ interface CapturedCalls {
 function mkCtx(opts: {
 	tddControl?: ControlObj;
 	budgetCheck?: () => boolean;
+	/** Tier-2 RED-review verdicts, consumed in order per code-reviewer call.
+	 *  Default: always "strong" (review passes → no extra retry). */
+	reviewVerdicts?: Array<"strong" | "weak">;
 } = {}): { ctx: StageContext; calls: CapturedCalls } {
 	const calls: CapturedCalls = {
 		tdd: [],
@@ -127,6 +130,7 @@ function mkCtx(opts: {
 		helper: 0,
 		logs: [],
 	};
+	const reviewQ = [...(opts.reviewVerdicts ?? [])];
 	const ctx: StageContext = {
 		task: "",
 		options: {} as RunOptions,
@@ -143,6 +147,11 @@ function mkCtx(opts: {
 			if (call.agent === "implementer") {
 				calls.impl.push(call);
 				return { text: "", control: { filesModified: ["src/x.ts"] } };
+			}
+			if (call.agent === "code-reviewer") {
+				calls.orch.push(call);
+				const verdict = reviewQ.shift() ?? "strong";
+				return { text: "", control: { verdict, summary: verdict === "weak" ? "assertions are tautological" : "ok" } };
 			}
 			calls.orch.push(call);
 			return { text: "", control: {} };
@@ -223,6 +232,21 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 
 		expect(calls.impl).toHaveLength(1);
 		expect(calls.impl[0].prompt).toMatch(/CONFIRMED-red/i);
+	});
+
+	it("Tier 2: a WEAK RED review re-prompts tdd-guide before implementation, then proceeds on STRONG", async () => {
+		redSeq("red", "red"); // two RED oracle passes (initial + after re-prompt)
+		const { ctx, calls } = mkCtx({ reviewVerdicts: ["weak", "strong"] });
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+
+		// WEAK verdict routed back to tdd-guide once → two tdd-guide calls total.
+		expect(calls.tdd).toHaveLength(2);
+		// The re-prompt carried the reviewer's weakness feedback.
+		expect(calls.tdd[1].prompt).toMatch(/WEAK|weak|assertion/);
+		// Only proceeds to the implementer after the STRONG verdict.
+		expect(calls.impl).toHaveLength(1);
+		expect(res.phasesCompleted).toBe(1);
+		expect(calls.logs.some((l) => /RED review: WEAK/.test(l))).toBe(true);
 	});
 
 	it("logs the red-oracle outcome as `Implementation phase-01 red-oracle: red (ran: ...)`", async () => {

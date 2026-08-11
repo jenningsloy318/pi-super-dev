@@ -29,6 +29,15 @@ export interface SuperDevConfig {
 	 *    stagnation fires AND the run is in TUI/RPC mode (ctx.hasUI). Headless
 	 *    runs always fall back to "informative". */
 	escalation: "informative" | "interactive";
+	/** Per-agent-role model overrides. Keys are agent role names (e.g.
+	 *  "code-reviewer", "adversarial-reviewer"); values are qualified "provider/id"
+	 *  model strings. Lets you run review on a DIFFERENT model than implementation
+	 *  (cross-model review — no output graded by the same model that wrote it).
+	 *  Precedence: this config OVERRIDES the global --model/SUPER_DEV_MODEL for the
+	 *  listed roles (a cross-model policy must not be silently undone by a one-off
+	 *  --model), but an explicit per-call model still wins. Unlisted roles are
+	 *  unaffected. Empty/absent = today's behavior. */
+	agentModels?: Record<string, string>;
 }
 
 const DEFAULT_CONFIG: SuperDevConfig = {

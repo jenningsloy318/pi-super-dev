@@ -64,6 +64,14 @@ describe("extractControl", () => {
 		expect(extractControl(t)).toEqual({ verdict: "Approved" });
 	});
 
+	it("parses a COMPACT fenced block with no trailing newline before the fence (F-4)", () => {
+		// Before the fix the closing `\s` required exactly one whitespace char, so a
+		// compact ```json{...}``` fell through to findLastJsonObject and could pick up
+		// a later prose object instead.
+		const t = 'text ```json{"verdict":"Approved"}``` trailing {"decoy":true}';
+		expect(extractControl(t)).toEqual({ verdict: "Approved" });
+	});
+
 	it("tolerates trailing commas", () => {
 		const t = '<control>{"a": 1, "b": [1,2,],}</control>';
 		expect(extractControl(t)).toEqual({ a: 1, b: [1, 2] });

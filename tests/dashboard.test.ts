@@ -164,6 +164,22 @@ describe("packDashboardLines", () => {
 		expect(lines.some((l) => l.includes("    ● ↳ Phase 2/3: API"))).toBe(true);
 	});
 
+	it("renders level-3 step rows nested under a phase without inflating the stage count", () => {
+		const lines = packDashboardLines([
+			{ id: "implementation", label: "Stage 9 — Implementation", status: "running" },
+			{ id: "implementation.phase-01", label: "↳ Phase 1/3: Core", status: "running", kind: "phase", parentId: "implementation" },
+			{ id: "implementation.phase-01.step-01", label: "· TDD RED (attempt 1, try 1)", status: "ok", kind: "step", parentId: "implementation.phase-01" },
+			{ id: "implementation.phase-01.step-02", label: "· RED review (attempt 1, try 1)", status: "ok", kind: "step", parentId: "implementation.phase-01" },
+			{ id: "implementation.phase-01.step-03", label: "· Implementation (attempt 1)", status: "running", kind: "step", parentId: "implementation.phase-01" },
+		], undefined, 120);
+		// Stage counter counts ONLY the top-level stage — not the phase or the 3 steps.
+		expect(lines.find((l) => l.startsWith(DASHBOARD_HEADER_PREFIX))).toContain("0/1");
+		// Step rows render at the deepest (8-space) indent.
+		expect(lines.some((l) => l.includes("        ✓ · TDD RED (attempt 1, try 1)"))).toBe(true);
+		expect(lines.some((l) => l.includes("        ✓ · RED review (attempt 1, try 1)"))).toBe(true);
+		expect(lines.some((l) => l.includes("        ● · Implementation (attempt 1)"))).toBe(true);
+	});
+
 	it("renders a dimmed recent-activity tail when recentLogs are supplied", () => {
 		const logs = ["Implementation phase-01 red-oracle: red", "Implementation phase-01 build-gate PASS"];
 		const lines = packDashboardLines(stages(5, 2), undefined, 80, undefined, 0, "esc to abort", { recentLogs: logs });

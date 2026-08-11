@@ -204,6 +204,27 @@ describe("loop", () => {
 		await loop({ times: 4 }, body).run({}, mkCtx());
 		expect(n).toBe(4);
 	});
+	it("fail-fasts on a failed body by default (non-tolerant)", async () => {
+		let n = 0;
+		const body: Node = { kind: "task", async run() { n++; return { status: "failed", error: "x" }; } };
+		const r = await loop({ times: 5 }, body).run({}, mkCtx());
+		expect(r.status).toBe("failed");
+		expect(n).toBe(1); // stopped after the first failure
+	});
+	it("tolerant loop keeps iterating past a failed body (F-2)", async () => {
+		let n = 0;
+		const body: Node = { kind: "task", async run() { n++; return { status: "failed", error: `f${n}` }; } };
+		const r = await loop({ times: 3, tolerant: true }, body).run({}, mkCtx());
+		expect(n).toBe(3); // ran all iterations despite each failing
+		expect(r.status).toBe("failed"); // returns the LAST result
+		expect(r.attempts).toBe(3);
+	});
+	it("reports the ACTUAL iteration count, not `times`, when while exits early (F-5)", async () => {
+		const body: Node = { kind: "task", async run() { return { status: "ok" }; } };
+		// `while` false on the first check → zero iterations
+		const r = await loop({ while: () => false, times: 5 }, body).run({}, mkCtx());
+		expect(r.attempts).toBeUndefined(); // not 5
+	});
 });
 
 describe("retry", () => {

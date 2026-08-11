@@ -276,6 +276,16 @@ export const SpecPhase = Type.Object({
 });
 export type SpecPhase = Static<typeof SpecPhase>;
 
+/** Plan 2 Tier 2 — independent RED test-quality review verdict. `verdict` is
+ *  "strong" (assertions bind observable behavior) or "weak" (tautologies, stub
+ *  constants, implementation-detail coupling). A "weak" verdict routes the RED
+ *  phase back to tdd-guide. Kept tiny so the reviewer returns a crisp decision. */
+export const RedReviewData = Type.Object({
+	verdict: Type.Union([Type.Literal("strong"), Type.Literal("weak")]),
+	summary: Type.String(),
+});
+export type RedReviewData = Static<typeof RedReviewData>;
+
 export const SpecificationData = Type.Object({
 	title: Type.String(),
 	date: Type.String(),

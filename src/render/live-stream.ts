@@ -57,7 +57,7 @@ export interface StageInfo {
 	id: string;
 	label: string;
 	status?: string;
-	kind?: "stage" | "phase";
+	kind?: "stage" | "phase" | "step";
 	parentId?: string;
 }
 

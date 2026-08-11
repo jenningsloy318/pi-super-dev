@@ -94,12 +94,29 @@ describe("Implementation stage — per-phase pi-native subtitle", () => {
 	it("emits implementation phases as dashboard sub-stage lifecycle rows", async () => {
 		const { ctx, emittedStages } = mkCtx();
 		await implementationStage.run(mkState([{ name: "Scaffold" }, { name: "Wire API" }]), ctx);
-		expect(emittedStages).toEqual([
+		// Phase-level (level-2) lifecycle rows — filter out the level-3 step rows,
+		// which interleave (TDD RED / RED review / Implementation) and are asserted
+		// separately below.
+		const phaseRows = emittedStages.filter((e) => e.kind === "phase");
+		expect(phaseRows).toEqual([
 			{ id: "implementation.phase-01", label: "↳ Phase 1/2: Scaffold", status: "running", kind: "phase", parentId: "implementation" },
 			{ id: "implementation.phase-01", label: "↳ Phase 1/2: Scaffold", status: "ok", kind: "phase", parentId: "implementation" },
 			{ id: "implementation.phase-02", label: "↳ Phase 2/2: Wire API", status: "running", kind: "phase", parentId: "implementation" },
 			{ id: "implementation.phase-02", label: "↳ Phase 2/2: Wire API", status: "ok", kind: "phase", parentId: "implementation" },
 		]);
+	});
+
+	it("emits level-3 step rows nested under each phase (3-level display)", async () => {
+		const { ctx, emittedStages } = mkCtx();
+		await implementationStage.run(mkState([{ name: "Scaffold" }]), ctx);
+		const stepRows = emittedStages.filter((e) => e.kind === "step");
+		// At least the TDD RED step is emitted, parented to the phase, with a step id.
+		expect(stepRows.length).toBeGreaterThan(0);
+		for (const s of stepRows) {
+			expect(s.parentId).toBe("implementation.phase-01");
+			expect(s.id).toMatch(/^implementation\.phase-01\.step-\d+$/);
+		}
+		expect(stepRows.some((s) => /TDD RED/.test(s.label))).toBe(true);
 	});
 
 	it("announces the phase BEFORE its implementer is spawned", async () => {

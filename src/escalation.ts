@@ -36,12 +36,21 @@ function retryMap(state: PipelineState): EscalationRetryMap {
 	return created;
 }
 
+/** Budget key for a blocker. Keyed by kind AND stage (F-3): two structurally
+ *  distinct fatal gates (e.g. requirements vs spec) both use kind
+ *  "gate-exhaustion", so keying by kind alone let the first gate's retries starve
+ *  the second gate's escalation entirely. Including `stage` (which carries the
+ *  gate's feedbackKey / stage name) gives each named failure site its own budget. */
+function budgetKey(failure: EscalationFailure): string {
+	return `${failure.kind}:${failure.stage ?? ""}`;
+}
+
 /**
  * Remaining retries for the blocker described by `failure` (floored at 0).
- * Reads `state.__escalationRetries[failure.kind]`.
+ * Reads `state.__escalationRetries[budgetKey(failure)]`.
  */
 export function escalationBudgetRemaining(state: PipelineState, failure: EscalationFailure): number {
-	const used = retryMap(state)[failure.kind] ?? 0;
+	const used = retryMap(state)[budgetKey(failure)] ?? 0;
 	return Math.max(0, ESCALATION_RETRY_CAP - used);
 }
 
@@ -63,7 +72,7 @@ export async function runEscalation(
 	if (escalationBudgetRemaining(state, failure) <= 0) return undefined;
 	// Charge the budget BEFORE awaiting so even a throwing/dismissed callback
 	// counts toward termination (guaranteed bounded spend).
-	retryMap(state)[failure.kind] = (retryMap(state)[failure.kind] ?? 0) + 1;
+	retryMap(state)[budgetKey(failure)] = (retryMap(state)[budgetKey(failure)] ?? 0) + 1;
 	try {
 		return await escalate(failure);
 	} catch {

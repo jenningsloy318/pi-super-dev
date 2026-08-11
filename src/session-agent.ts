@@ -364,11 +364,30 @@ export async function summarizeSlug(task: string, cwd: string, opts: { signal?: 
 	const agentDir = getAgentDir();
 	let session;
 	try {
+		// Isolate the slug session identically to specialist sessions (#11): without
+		// an explicit resourceLoader it would discover ambient extensions/skills from
+		// the pi agent dir, inconsistent with the isolation contract every other
+		// session honors. A slug generator needs none of them.
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			appendSystemPromptOverride: () => [],
+			agentsFilesOverride: () => ({ agentsFiles: [] }),
+		});
+		await resourceLoader.reload();
 		({ session } = await createAgentSession({
 			cwd,
 			agentDir,
 			sessionManager: SessionManager.inMemory(cwd),
-			settingsManager: SettingsManager.create(cwd, agentDir),
+			settingsManager,
+			resourceLoader,
 			customTools: [defineTool({
 				name: "structured_output",
 				label: "Slug",
@@ -570,6 +589,11 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 				nextAction: "Call structured_output again with all keys filled from the work already done. Do not redo the work; return the complete object.",
 			};
 			const fix = renderRetryFeedbackBlock([feedback], "Corrective Re-Prompt");
+			// NOTE (#6): capture.value MERGES across corrective calls by design here —
+			// self-heal #2 fires when call #1 was valid but OMITTED keys, so merging call
+			// #2's newly-supplied keys onto call #1 yields the correct union. Resetting
+			// would risk losing call #1's valid keys if the re-prompt returns only the
+			// previously-missing ones. Merge is the safe default for the missing-keys path.
 			try {
 				await session.prompt(fix);
 			} catch (err) {
@@ -600,6 +624,8 @@ function dumpTrace(opts: SessionAgentOptions, keys: string[], capture: Capture, 
 		mkdirSync(dir, { recursive: true });
 		const safe = (opts.id ?? opts.agent).replace(/[^A-Za-z0-9_.-]+/g, "_");
 		const file = join(dir, `${Date.now()}-${safe}.json`);
+		// The trace holds the full session (task, prompts, tool inputs/outputs) which
+		// can contain repo paths and any secret a tool surfaced — restrict to owner (0o600).
 		writeFileSync(file, JSON.stringify({
 			agent: opts.agent,
 			id: opts.id,
@@ -609,6 +635,8 @@ function dumpTrace(opts: SessionAgentOptions, keys: string[], capture: Capture, 
 			structuredOutputValue: capture.value,
 			correctiveNote,
 			messages,
-		}, null, 2));
+		}, null, 2), { mode: 0o600 });
+		// The trace holds the full session (task, prompts, tool inputs/outputs) which
+		// can contain repo paths and any secret a tool surfaced — restrict to owner.
 	} catch { /* best-effort */ }
 }

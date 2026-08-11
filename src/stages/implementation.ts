@@ -16,9 +16,9 @@ import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
-import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, rustDiscipline } from "../prompts.ts";
+import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
-import { STAGE_MODELS } from "../render/schemas.ts";
+import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
 import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } from "../doc-validators.ts";
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../build-runner.ts";
@@ -456,6 +456,28 @@ function snapshotFiles(cwd: string, paths: string[]): Map<string, string | null>
 	return out;
 }
 
+/** Recognizable assertion calls across the pipeline's supported stacks. A RED
+ *  test file that contains ZERO of these is HOLLOW — it may fail/pass for reasons
+ *  unrelated to the behavior under test (e.g. only a bare `it("...", () => {})`),
+ *  so a later minimal implementation can make it "green" without proving anything.
+ *  This is the cheap, deterministic Tier-1 guard (weak-but-present assertions are
+ *  Tier 2's job). Comment-stripping is intentionally skipped — a false NEGATIVE
+ *  (assertion in a comment) is safe here because it only avoids a reject. */
+const ASSERTION_RE = /\b(?:expect|assert|assert_eq|assert_ne|assertEquals|assertTrue|assertFalse|should|require\.|assert\.|t\.Error|t\.Fatal|t\.Errorf|t\.Fatalf|XCTAssert)\b|\bassert!|\bassert_eq!|\bassert_ne!/;
+
+/** Return the RED test files (from a content snapshot) that contain no
+ *  recognizable assertion call. Empty list = every file has at least one. Files
+ *  that couldn't be read (null) are skipped — absence of content is not evidence
+ *  of a hollow test and must not block. Pure; never throws. */
+export function assertionPresenceGaps(snapshot: Map<string, string | null>): string[] {
+	const gaps: string[] = [];
+	for (const [path, content] of snapshot) {
+		if (content == null) continue;
+		if (!ASSERTION_RE.test(content)) gaps.push(path);
+	}
+	return gaps;
+}
+
 function changedSinceSnapshot(cwd: string, before: Map<string, string | null>): string[] {
 	const changed: string[] = [];
 	for (const [path, oldContent] of before) {
@@ -680,6 +702,36 @@ export const implementationStage: Stage = {
 				const suffix = activity ? ` — ${activity}${detail ? ` (${detail})` : ""}` : "";
 				ctx.phase(`${phaseHeadline}${suffix}`);
 			};
+			// Level-3 (step) dashboard rows: nested under the phase row so the
+			// implementation stage shows stage → phase → step. Each step (and retry)
+			// persists as its own row with its own ok/failed glyph (full audit trail).
+			// `seq` disambiguates repeated step labels across attempts/retries so a new
+			// row is emitted per occurrence rather than overwriting the prior one.
+			let stepSeq = 0;
+			const emitStep = (label: string, status: "running" | "ok" | "failed", seq: number): void => {
+				ctx.events.emit("stage", {
+					id: `implementation.${phaseId}.step-${pad(seq)}`,
+					label: `· ${label}`,
+					status,
+					kind: "step",
+					parentId: `implementation.${phaseId}`,
+				});
+			};
+			/** Announce + run a phase step: emits a running level-3 row, runs `fn`,
+			 *  then marks the row ok/failed by `okIf(result)`. Returns fn's result. */
+			const runStep = async <T>(label: string, detail: string | undefined, okIf: (r: T) => boolean, fn: () => Promise<T>): Promise<T> => {
+				const seq = ++stepSeq;
+				announceActivity(label, detail);
+				emitStep(`${label}${detail ? ` (${detail})` : ""}`, "running", seq);
+				try {
+					const r = await fn();
+					emitStep(`${label}${detail ? ` (${detail})` : ""}`, okIf(r) ? "ok" : "failed", seq);
+					return r;
+				} catch (err) {
+					emitStep(`${label}${detail ? ` (${detail})` : ""}`, "failed", seq);
+					throw err;
+				}
+			};
 			const attemptDetail = (attempt: number, extra?: string) =>
 				[`attempt ${attempt}`, extra].filter(Boolean).join(", ");
 			// §D: skip a phase already green in a prior convergence iteration (don't
@@ -795,7 +847,10 @@ export const implementationStage: Stage = {
 							? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
 							: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
 						announceActivity("TDD RED", redTryDetail);
+						const tddStepSeq = ++stepSeq;
+						emitStep(`TDD RED (${redTryDetail})`, "running", tddStepSeq);
 						const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint });
+						emitStep(`TDD RED (${redTryDetail})`, "ok", tddStepSeq);
 						const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
 						testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
 						announceActivity("RED oracle", redTryDetail);
@@ -828,7 +883,52 @@ export const implementationStage: Stage = {
 						if (redEvidence.status === "polluted-red") {
 							restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);
 						}
-						const retryHint = redGenerationRetryHint(redEvidence);
+						// Plan 2 Tier 1 — hollow-assertion guard: a RED sample that fails for
+						// the RIGHT reason (red-behavior-failure, coverage OK) can still be
+						// HOLLOW if a test file contains no recognizable assertion — a later
+						// minimal impl would "pass" it without proving anything. Reject it here
+						// so tdd-guide adds real assertions, routed through the SAME retry
+						// machinery below (no-progress detection, restore, redHint). Cheap +
+						// deterministic; weak-but-present assertions are Tier 2's job.
+						let retryHint = redGenerationRetryHint(redEvidence);
+						if (!retryHint && redEvidence.status === "red-behavior-failure" && testFiles.length > 0) {
+							const hollow = assertionPresenceGaps(snapshotFiles(setup.worktreePath, testFiles));
+							if (hollow.length > 0) {
+								ctx.log(`Implementation ${phaseId} RED hollow-assertion guard: no assertion found in ${hollow.join(", ")}`);
+								redEvidence = { ...redEvidence, status: "green-weak-test", reason: `hollow RED test(s) — no assertion call found in: ${hollow.join(", ")}` };
+								retryHint = `Your RED test file(s) ${hollow.join(", ")} contain no recognizable assertion (expect/assert/should/…). A test with no assertion proves nothing — a trivial implementation would make it pass. Add explicit assertions that bind each scenario's observable behavior to a concrete expected value, then re-run so the tests fail for the RIGHT reason.`;
+							}
+						}
+						// Plan 2 Tier 2 — independent RED test-QUALITY review. Tier 1 only
+						// catches TRULY hollow tests (no assertion); Tier 2 catches WEAK ones
+						// (assertion present but not bound to the scenario's observable
+						// behavior — e.g. asserting a stub constant, testing an implementation
+						// detail, or a tautology). An INDEPENDENT reviewer (cross-model when
+						// config.agentModels.code-reviewer is set — Plan 1) audits the RED test
+						// cases; a WEAK verdict routes back to tdd-guide via the SAME retry
+						// machinery. Runs every phase, on accepted-but-not-yet-implemented RED.
+						if (!retryHint && redEvidence.status === "red-behavior-failure" && testFiles.length > 0) {
+							const review = await runStep(
+								"RED review", redTryDetail,
+								(r: { control?: { verdict?: unknown; summary?: unknown } | null }) => String(r?.control?.verdict ?? "").toLowerCase() !== "weak",
+								() => ctx.agent({
+									id: `pipeline.implementation.${phaseId}.red-review.a${attempt}.t${retries + 1}`,
+									agent: "code-reviewer",
+									accessMode: "source-read-only",
+									prompt: buildRedReviewPrompt(setup, state.classify ?? null, phase, testFiles, expectedScenarios, state.spec ?? null, state.bdd ?? null),
+									schema: RED_REVIEW_SCHEMA,
+								}),
+							);
+							const verdict = String((review.control as { verdict?: unknown } | null)?.verdict ?? "").toLowerCase();
+							if (verdict === "weak") {
+								const summary = String((review.control as { summary?: unknown } | null)?.summary ?? "test assertions are not bound to the scenario's observable behavior");
+								ctx.log(`Implementation ${phaseId} RED review: WEAK — ${summary}`);
+								redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review flagged weak tests: ${summary}` };
+								retryHint = `An independent reviewer judged your RED tests WEAK: ${summary}. Strengthen the assertions so each binds the scenario's OBSERVABLE behavior (concrete expected values/outputs/status codes), not implementation details or tautologies, then re-run.`;
+							} else {
+								ctx.log(`Implementation ${phaseId} RED review: OK (${verdict || "acceptable"})`);
+							}
+						}
 						if (retryHint) {
 							const signature = redEvidenceSignature(redEvidence);
 							const noProgress = redProgressHistory[redProgressHistory.length - 1] === signature;
@@ -978,7 +1078,10 @@ export const implementationStage: Stage = {
 				implParts.push(redImplementContext(redStatus));
 				const implPrompt = implParts.join("\n\n");
 				announceActivity("Implementation", attemptDetail(attempt));
+				const implStepSeq = ++stepSeq;
+				emitStep(`Implementation (${attemptDetail(attempt)})`, "running", implStepSeq);
 				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
+				emitStep(`Implementation (${attemptDetail(attempt)})`, "ok", implStepSeq);
 				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
 				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads
 				// it (and back-tolerates the legacy flat filesModified array). The flat

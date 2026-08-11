@@ -49,7 +49,7 @@ describe("rollbackWorktreeTo — discrete-argv spawnSync (no shell:true) (SCENAR
 		const calls = spawn.mock.calls as unknown as Array<[string, string[], unknown]>;
 		expect(calls).toHaveLength(2);
 		expect(calls[0][0]).toBe("git");
-		expect(calls[0][1]).toEqual(["-C", WORKTREE, "reset", "--hard", "HEAD"]);
+		expect(calls[0][1]).toEqual(["-C", WORKTREE, "reset", "--hard", "--end-of-options", "HEAD"]);
 		expect(calls[1][0]).toBe("git");
 		expect(calls[1][1]).toEqual(["-C", WORKTREE, "clean", "-fd", "-e", "docs/specifications/", "-e", ".resume-cache.jsonl", "-e", ".user-notes.json", "-e", "change-tracker.jsonl", "-e", "stagnation-report.md", "-e", "escalation-report.md"]);
 	});
@@ -58,14 +58,14 @@ describe("rollbackWorktreeTo — discrete-argv spawnSync (no shell:true) (SCENAR
 		spawn.mockImplementation(() => ({ status: 0, stdout: "", stderr: "" }));
 		rollbackWorktreeTo(WORKTREE);
 		const calls = spawn.mock.calls as unknown as Array<[string, string[]]>;
-		expect(calls[0][1]).toEqual(["-C", WORKTREE, "reset", "--hard", "HEAD"]);
+		expect(calls[0][1]).toEqual(["-C", WORKTREE, "reset", "--hard", "--end-of-options", "HEAD"]);
 	});
 
 	it("threads an explicit commit ref through as a discrete argv element", () => {
 		spawn.mockImplementation(() => ({ status: 0, stdout: "", stderr: "" }));
 		rollbackWorktreeTo(WORKTREE, "abc123");
 		const calls = spawn.mock.calls as unknown as Array<[string, string[]]>;
-		expect(calls[0][1]).toEqual(["-C", WORKTREE, "reset", "--hard", "abc123"]);
+		expect(calls[0][1]).toEqual(["-C", WORKTREE, "reset", "--hard", "--end-of-options", "abc123"]);
 	});
 
 	it("never opts into shell:true on either invocation (safety.ts denylist bypass)", () => {

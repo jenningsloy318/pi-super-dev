@@ -72,6 +72,10 @@ export interface AgentCall {
 	 *  absent the resolved level falls back to SUPER_DEV_THINKING then the role
 	 *  default. Threaded into `common` for both backends. */
 	thinking?: import("./pi-spawn.ts").ThinkingLevel;
+	/** Optional per-call model override ("provider/id"). Highest precedence — wins
+	 *  over config.agentModels and the global --model/SUPER_DEV_MODEL. Rarely set by
+	 *  stages; the usual cross-model policy is declared in ~/.super-dev config. */
+	model?: string;
 }
 
 export type AgentAccessMode = "write" | "source-read-only";
@@ -137,9 +141,10 @@ export interface StageProgressEvent {
 	label: string;
 	status: NodeStatus | "running" | "partial";
 	error?: string;
-	/** Optional dashboard-only hierarchy marker. Phase rows are displayed as
-	 *  subordinate progress items and are excluded from top-level stage counts. */
-	kind?: "stage" | "phase";
+	/** Optional dashboard-only hierarchy marker. `phase` rows are subordinate to
+	 *  their stage; `step` rows are subordinate to a phase (level 3 — e.g. TDD RED,
+	 *  RED review, Implementation). Both are excluded from top-level stage counts. */
+	kind?: "stage" | "phase" | "step";
 	parentId?: string;
 }
 
@@ -232,6 +237,12 @@ export interface StageContext {
 	state: PipelineState;
 	agent(call: AgentCall): Promise<AgentResult>;
 	helper(call: HelperCall): Promise<HelperResult>;
+	/**
+	 * @deprecated Use the `parallel()` NODE builder from nodes.ts instead. This
+	 * ctx method does NOT propagate the abort signal or run scope tracking, so
+	 * using it breaks resume-cache keying and cancellation (F-6). It has no
+	 * callers today; kept only for interface stability. Prefer `parallel([...])`.
+	 */
 	parallel(calls: Array<() => Promise<AgentResult>>): Promise<AgentResult[]>;
 	budget: Budget;
 	log(message: string): void;

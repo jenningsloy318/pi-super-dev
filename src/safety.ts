@@ -32,6 +32,11 @@ const DANGEROUS: ReadonlyArray<readonly [RegExp, string]> = [
 	[/rm\s+-rf\s+\/(?!\w)/, "rm -rf /"],
 	[/rm\s+-rf\s+~/, "rm -rf ~"],
 	[/rm\s+-rf\s+\.\./, "rm -rf .."],
+	// A recursive-force rm of the current directory or a bare glob wipes the whole
+	// worktree just as effectively as `rm -rf .` — the three patterns above missed
+	// `.`, `./`, and `*` (verified bypass). Match `.`/`./`/`*` as the target.
+	[/rm\s+-rf\s+\.\/?(?:\s|$)/, "rm -rf . (current directory)"],
+	[/rm\s+-rf\s+\*/, "rm -rf * (glob)"],
 	[/git\s+reset\s+--hard/, "git reset --hard"],
 	[/git\s+push\s.*--force(?!-)/, "git push --force"],
 	[/git\s+push\s.*-f\s/, "git push -f"],
@@ -44,6 +49,12 @@ const DANGEROUS: ReadonlyArray<readonly [RegExp, string]> = [
 	[/DELETE\s+FROM\s+\S+$/i, "DELETE FROM (no WHERE clause)"],
 	[/curl\s.*\|\s*(?:sh|bash)/, "curl | sh"],
 	[/wget\s.*\|\s*(?:sh|bash)/, "wget | sh"],
+	// Env-exfiltration: the child pi process inherits the full parent env (API keys,
+	// cloud creds) so it can authenticate. Block the obvious paths that ship that env
+	// off-box — `printenv`/`env`/`export`/`set` fed into a network tool, in either
+	// order (pipe or command-substitution argument).
+	[/\b(?:printenv|env|export|set)\b[\s\S]*\|[\s\S]*\b(?:curl|wget|nc|ncat|telnet)\b/i, "env piped to network tool"],
+	[/\b(?:curl|wget|nc|ncat)\b[\s\S]*\$\((?:\s*(?:printenv|env|export|set))/i, "network tool sending env via command substitution"],
 	[/chmod\s+777/, "chmod 777"],
 	[/chmod\s+-R\s+777/, "chmod -R 777"],
 	[/chmod\s+\+s/, "chmod +s (setuid)"],
@@ -100,6 +111,16 @@ export function checkProtectedWrite(file: string, cwd: string): CheckResult {
 	const target = isAbsolute(file) ? file : resolve(cwd, file);
 	const rel = relative(cwd, target).replace(/\\/g, "/");
 
+	// Worktree-escape guard: any path that resolves OUTSIDE the child cwd (a `..`
+	// prefix after normalization, or an absolute path that isn't under cwd) is
+	// blocked outright. Without this, the `^`-anchored PROTECTED_DIRS patterns
+	// below never match an escaping path (e.g. `../.git/hooks/pre-commit` or
+	// `/etc/...`), so a specialist agent could write anywhere on disk. Specialist
+	// agents must only mutate their own worktree.
+	if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
+		return { blocked: true, reason: `'${file}' is outside the working directory` };
+	}
+
 	for (const re of PROTECTED_DIRS) {
 		if (re.test(rel)) return { blocked: true, reason: `'${file}' is in a protected directory` };
 	}
@@ -148,7 +169,7 @@ export function createSafetyExtensionFactory(): (pi: ExtensionAPI) => void {
 export function safetyPreamble(): string {
 	return [
 		"## Safety guardrails (MANDATORY — refuse and propose a safer alternative)",
-		"Refuse to run shell commands that match any of: rm -rf /, rm -rf ~, rm -rf .., git reset --hard, git push --force/-f, git clean -fd, git branch -D, DROP TABLE/DATABASE, TRUNCATE TABLE, DELETE FROM without WHERE, curl|sh, wget|sh, chmod 777, chmod +s, kubectl delete namespace/--all, npm unpublish, cargo yank, mkfs, dd to a device, writes to raw devices.",
-		"Refuse to OVERWRITE existing secret files (.env, .env.*, *.pem, *.key, *.p12, *.pfx, *.keystore, id_rsa*, id_ed25519*, *.secret, token.json, service-account*.json) or anything under secrets/, .git/, credentials/. Creating new files (including .env.example) is allowed.",
+		"Refuse to run shell commands that match any of: rm -rf /, rm -rf ~, rm -rf .., rm -rf . (current dir), rm -rf * (glob), git reset --hard, git push --force/-f, git clean -fd, git branch -D, DROP TABLE/DATABASE, TRUNCATE TABLE, DELETE FROM without WHERE, curl|sh, wget|sh, chmod 777, chmod +s, kubectl delete namespace/--all, npm unpublish, cargo yank, mkfs, dd to a device, writes to raw devices.",
+		"Refuse to OVERWRITE existing secret files (.env, .env.*, *.pem, *.key, *.p12, *.pfx, *.keystore, id_rsa*, id_ed25519*, *.secret, token.json, service-account*.json) or anything under secrets/, .git/, credentials/. Creating new files (including .env.example) is allowed. NEVER write, edit, or delete any path outside this worktree directory (no absolute paths, no `..` traversal).",
 	].join("\n");
 }

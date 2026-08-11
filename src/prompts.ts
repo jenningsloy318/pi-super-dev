@@ -265,6 +265,44 @@ export function rustDiscipline(s: SetupControl): string {
 	return s?.language === "rust" ? RUST_SELF_VERIFY_DISCIPLINE : "";
 }
 
+/** Plan 2 Tier 2 — independent RED test-quality review. An INDEPENDENT reviewer
+ *  (cross-model when configured) audits the RED test cases BEFORE implementation:
+ *  do the assertions bind each scenario's OBSERVABLE behavior, or are they weak
+ *  (tautologies, asserting a stub constant, coupling to implementation details)?
+ *  A "weak" verdict routes the RED phase back to tdd-guide. Read-only. */
+export function buildRedReviewPrompt(
+	s: SetupControl,
+	c: Classification | null,
+	phase: { name: string; description?: string },
+	testFiles: string[],
+	expectedScenarios: string[],
+	specControl: R,
+	bddControl: R,
+): string {
+	return [
+		ctxBlock(s, c),
+		"",
+		"## RED test review (test-quality gate, BEFORE implementation)",
+		`- Phase: ${phase.name}`,
+		`- Test files to review: ${testFiles.join(", ") || "(none)"}`,
+		`- Scenarios these tests must cover: ${expectedScenarios.join(", ") || "(derive from the BDD doc)"}`,
+		`- Specification: ${(specControl?.specificationPath as string) ?? "N/A"}`,
+		`- BDD Scenarios: ${(bddControl?.docPath as string) ?? "N/A"}`,
+		"",
+		"## Instructions",
+		"Read the test files above. There is NO implementation yet — this is the RED phase. Judge ONLY test QUALITY, not whether they pass.",
+		"For each mapped scenario, decide whether its test asserts the scenario's OBSERVABLE behavior with a concrete expected value (status code, returned value, emitted effect, error).",
+		"A test is WEAK if any of: it has no meaningful assertion; it asserts a tautology (e.g. expect(true).toBe(true)); it asserts a hard-coded stub/constant rather than computed behavior; it only checks an implementation detail (an internal call/shape) instead of the scenario's contract; or a trivial/wrong implementation would satisfy it.",
+		"Return verdict=\"strong\" ONLY when EVERY mapped scenario has at least one behavior-binding assertion. Otherwise verdict=\"weak\" and name the specific weak tests/scenarios and the missing assertion in summary.",
+		"You are read-only: do NOT edit any file.",
+		"",
+		"## Data to return",
+		"Return: verdict (\"strong\" | \"weak\"), summary (one line; when weak, name the weak tests/scenarios and the missing assertion).",
+		"",
+		"Output <control> JSON with: verdict, summary.",
+	].join("\n");
+}
+
 export function buildImplementPrompt(s: SetupControl, c: Classification | null, phase: { name: string; description?: string; deliverables?: unknown }, specialist: R, specControl: R): string {
 	const li = (specialist?.languageInstructions as string) ?? "";
 	const rust = rustDiscipline(s);

@@ -42,15 +42,23 @@ describe("escalationBudgetRemaining — bounded + per-blocker (AC-01)", () => {
 
 	it("floors the remaining budget at 0 once the cap is reached", () => {
 		const s = freshState();
-		(s as Record<string, unknown>).__escalationRetries = { stagnation: ESCALATION_RETRY_CAP };
+		(s as Record<string, unknown>).__escalationRetries = { "stagnation:review": ESCALATION_RETRY_CAP };
 		expect(escalationBudgetRemaining(s, failure())).toBe(0);
 	});
 
-	it("tracks budget per-blocker (kind-keyed), not globally", () => {
+	it("tracks budget per-blocker (kind+stage-keyed), not globally", () => {
 		const s = freshState();
-		(s as Record<string, unknown>).__escalationRetries = { stagnation: ESCALATION_RETRY_CAP };
+		(s as Record<string, unknown>).__escalationRetries = { "stagnation:review": ESCALATION_RETRY_CAP };
 		// A different blocker (gate-exhaustion) is independent — still full budget.
 		expect(escalationBudgetRemaining(s, failure({ kind: "gate-exhaustion" }))).toBe(
+			ESCALATION_RETRY_CAP,
+		);
+	});
+	it("tracks budget per-STAGE too: same kind, different stage is independent (F-3)", () => {
+		const s = freshState();
+		(s as Record<string, unknown>).__escalationRetries = { "gate-exhaustion:requirements": ESCALATION_RETRY_CAP };
+		// Same kind, different stage → its own budget, not starved by requirements.
+		expect(escalationBudgetRemaining(s, failure({ kind: "gate-exhaustion", stage: "spec" }))).toBe(
 			ESCALATION_RETRY_CAP,
 		);
 	});
@@ -64,7 +72,7 @@ describe("runEscalation — never-throw + bounded (AC-01 / AC-10)", () => {
 	it("returns undefined and does NOT call escalate when the budget is exhausted", async () => {
 		const escalate = vi.fn<Escalate>();
 		const s = freshState();
-		(s as Record<string, unknown>).__escalationRetries = { stagnation: ESCALATION_RETRY_CAP };
+		(s as Record<string, unknown>).__escalationRetries = { "stagnation:review": ESCALATION_RETRY_CAP };
 		const decision = await runEscalation(s, failure(), escalate);
 		expect(decision).toBeUndefined();
 		expect(escalate).not.toHaveBeenCalled();

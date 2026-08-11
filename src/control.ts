@@ -21,7 +21,7 @@ export function extractControl(text: string): ControlObj | null {
 		const parsed = tryParseJsonObject(tag[1]);
 		if (parsed) return parsed;
 	}
-	for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)\s```/gi)) {
+	for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)) {
 		const parsed = tryParseJsonObject(match[1]);
 		if (parsed) return parsed;
 	}

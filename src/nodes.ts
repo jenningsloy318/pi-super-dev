@@ -61,13 +61,24 @@ type Validator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: bo
 async function runConcurrent<T>(fns: Array<() => Promise<T>>, concurrency = Infinity, signal?: AbortSignal): Promise<T[]> {
 	const results = [] as T[];
 	const queue = fns.map((fn, i) => [i, fn] as const);
+	// F-1: when one branch THROWS (e.g. FatalAbort), Promise.all rejects but the
+	// other in-flight workers would keep pulling from the queue and running —
+	// spawning agents, burning budget, writing shared state AFTER the caller has
+	// already aborted. This flag makes siblings stop starting new work the moment
+	// any branch throws, mirroring the existing signal?.aborted short-circuit.
+	let threw = false;
 	async function worker(): Promise<void> {
 		while (queue.length > 0) {
-			if (signal?.aborted) return; // #6 sibling-cancellation: don't start remaining branches
+			if (signal?.aborted || threw) return; // #6 sibling-cancellation + F-1 sibling-throw
 			const entry = queue.shift();
 			if (!entry) return;
 			const [i, fn] = entry;
-			results[i] = await fn();
+			try {
+				results[i] = await fn();
+			} catch (err) {
+				threw = true; // stop siblings from starting new work
+				throw err;    // propagate to Promise.all (preserves original error)
+			}
 		}
 	}
 	const n = Math.min(concurrency, fns.length);
@@ -91,7 +102,6 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
 	});
 
 const OK: NodeResult = { status: "ok" };
-const NOOP_RESULT: NodeResult = { status: "ok" };
 const failed = (error: string): NodeResult => ({ status: "failed", error });
 const cancelled = (): NodeResult => ({ status: "cancelled" });
 
@@ -343,6 +353,11 @@ export interface LoopOptions {
 	while?: Predicate;
 	until?: Predicate;
 	times?: number;
+	/** When true, a `failed` body result does NOT exit the loop — the loop keeps
+	 *  iterating (bounded by while/until/times) and returns the LAST result. Mirrors
+	 *  `sequence`'s tolerant option (F-2). Default false: `failed` fail-fasts, as
+	 *  before. `cancelled` always exits regardless. */
+	tolerant?: boolean;
 }
 
 /** Arbitrary-cycle iteration (WCP10). `while`/`until` checked before each body run. */
@@ -352,15 +367,17 @@ export function loop(opts: LoopOptions, body: Node): Node {
 		async run(state, ctx) {
 			const max = opts.times ?? Infinity;
 			let last: NodeResult = OK;
+			let ran = 0; // F-5: report the ACTUAL iteration count, not `times`
 			for (let attempt = 1; attempt <= max; attempt++) {
 				if (ctx.signal?.aborted) return { status: "cancelled" };
 				if (opts.while && !(await opts.while(state, ctx))) break;
 				if (opts.until && (await opts.until(state, ctx))) break;
 				last = await body.run(state, ctx);
+				ran++;
 				if (last.status === "cancelled") return last;
-				if (last.status === "failed") return last;
+				if (last.status === "failed" && !opts.tolerant) return last;
 			}
-			return { ...last, attempts: max === Infinity ? undefined : max };
+			return { ...last, attempts: ran || undefined };
 		},
 	};
 }
@@ -647,7 +664,11 @@ export function tryCatch(body: Node, opts: TryCatchOptions = {}): Node {
 			} catch (err) {
 				// FatalAbort must propagate (run finally first for the teardown guarantee).
 				if (isFatalAbort(err)) {
-					if (opts.finally) await opts.finally.run(state, ctx);
+					// The finally node must NOT be able to lose the FatalAbort: if it throws,
+					// swallow its error so the original abort still propagates (F-7).
+					if (opts.finally) {
+						try { await opts.finally.run(state, ctx); } catch { /* teardown error must not mask the abort */ }
+					}
 					throw err;
 				}
 				const error = err instanceof Error ? err.message : String(err);
@@ -663,7 +684,7 @@ export function tryCatch(body: Node, opts: TryCatchOptions = {}): Node {
 
 /** No-op node (ASL Pass). */
 export function noop(): Node {
-	return { kind: "noop", async run() { return NOOP_RESULT; } };
+	return { kind: "noop", async run() { return OK; } };
 }
 
 // ─── Convenience stage builders ─────────────────────────────────────────────

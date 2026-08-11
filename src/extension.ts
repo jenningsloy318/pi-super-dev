@@ -513,7 +513,7 @@ export default function activate(pi: ExtensionAPI): void {
 			type StageViewState = {
 				label: string;
 				status: string;
-				kind?: "stage" | "phase";
+				kind?: "stage" | "phase" | "step";
 				parentId?: string;
 				startedAt?: string;
 				endedAt?: string;
@@ -719,7 +719,7 @@ export default function activate(pi: ExtensionAPI): void {
 			const d = (result.details ?? {}) as {
 				summaryLines?: string[];
 				transcriptTail?: TranscriptLine[];
-				stages?: Array<{ id?: string; label: string; status: string; kind?: "stage" | "phase"; parentId?: string; startedAt?: string; endedAt?: string; durationMs?: number }>;
+				stages?: Array<{ id?: string; label: string; status: string; kind?: "stage" | "phase" | "step"; parentId?: string; startedAt?: string; endedAt?: string; durationMs?: number }>;
 				logPath?: string;
 			};
 			// During streaming (onUpdate), details are empty — fall back to plain content

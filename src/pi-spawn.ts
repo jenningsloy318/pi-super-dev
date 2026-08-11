@@ -512,7 +512,11 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 					if (se.kind === "tool") onProgress.event(`→ ${se.summary}`);
 				}
 			}
-			if (lineBuf.length > LINE_CAP) lineBuf = ""; // stay bounded on a runaway line
+			// Stay bounded on a runaway line, but keep the TAIL rather than dropping the
+			// whole buffer: a >LINE_CAP line (e.g. a huge message_end) would otherwise
+			// discard the partial final assistant text, leaving extractControl to run on
+			// stale earlier output. Keeping the tail lets the next newline still close a line.
+			if (lineBuf.length > LINE_CAP) lineBuf = lineBuf.slice(-LINE_CAP);
 		});
 		child.stderr.on("data", (c: Buffer) => {
 			stderrBuf += c.toString("utf8");

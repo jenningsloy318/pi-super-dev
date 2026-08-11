@@ -183,6 +183,28 @@ pre-existing out-of-scope failures, and terminates early only on genuine
 in-scope failures. See the JSDoc on `DEFAULT_TIMEOUT_MS` for the full timeout
 fallback matrix.
 
+
+### Cross-model review (`config.json` → `agentModels`)
+
+By default every specialist agent runs on the same model. To review code with a
+*different* model than the one that wrote it (so no output is graded by its own
+author — a stronger review signal), map agent roles to models in
+`~/.super-dev/config.json`:
+
+```json
+{
+  "agentModels": {
+    "code-reviewer": "openai/gpt-5.4",
+    "adversarial-reviewer": "google/gemini-3-pro"
+  }
+}
+```
+
+Values are qualified `provider/id` strings. This **overrides** a one-off global
+`--model`/`SUPER_DEV_MODEL` for the listed roles (a cross-model policy should not
+be silently undone by a temporary flag); unlisted roles are unaffected. The
+resolved model per agent is shown on each `agent … start … model=…` log line.
+
 ## Phase-green trust (claimed-vs-actual cross-check)
 
 Beyond the deterministic build/test/typecheck gate and the spec-declared

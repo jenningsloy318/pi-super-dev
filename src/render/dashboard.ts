@@ -212,7 +212,7 @@ export type DashboardEntry = {
 	id: string;
 	label: string;
 	status: string;
-	kind?: "stage" | "phase";
+	kind?: "stage" | "phase" | "step";
 	parentId?: string;
 	startedAt?: string;
 	endedAt?: string;
@@ -242,8 +242,10 @@ export function packDashboardLines(
 	// are subordinate dashboard items derived from the implementation plan and
 	// must not inflate the workflow stage counter.
 	const TERMINAL = new Set(["ok", "failed", "skipped"]);
-	const isPhase = (e: DashboardEntry) => e.kind === "phase" || /^implementation\.phase-\d+/.test(e.id);
-	const topEntries = entries.filter((e) => !isPhase(e));
+	const isStep = (e: DashboardEntry) => e.kind === "step" || /^implementation\.phase-\d+\./.test(e.id);
+	const isPhase = (e: DashboardEntry) => (e.kind === "phase" || /^implementation\.phase-\d+$/.test(e.id)) && !isStep(e);
+	// Top-level stage counter excludes BOTH phase (level 2) and step (level 3) rows.
+	const topEntries = entries.filter((e) => !isPhase(e) && !isStep(e));
 	const done = topEntries.filter((e) => TERMINAL.has(e.status)).length;
 	const running = topEntries.find((e) => e.status === "running");
 	// Elapsed clock (only when supplied): a ticking `· 2m14s` is unmistakable
@@ -290,7 +292,7 @@ export function packDashboardLines(
 		pushGap();
 		lines.push(truncLine(theme ? theme.fg(token, `── ${label} ──`) : `── ${label} ──`, width));
 		for (const e of rows) {
-			const indent = isPhase(e) ? "    " : "  ";
+			const indent = isStep(e) ? "        " : isPhase(e) ? "    " : "  ";
 			lines.push(truncLine(`${indent}${statusGlyph(e.status, theme)} ${e.label}${stageTimingSuffix(e)}`, width));
 		}
 		lines.push("");
