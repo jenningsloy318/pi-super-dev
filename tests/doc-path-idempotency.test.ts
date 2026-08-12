@@ -101,4 +101,30 @@ describe("renderAndWrite doc-path idempotency (retry re-uses the same NN-<slug>.
 		expect(filesFor("implementation-plan")).toHaveLength(1);
 		expect(filesFor("task-list")).toHaveLength(1);
 	});
+
+	it("the multi-doc spec stage assigns DISTINCT consecutive indices to its 3 docs (not all the same NN)", () => {
+		// Regression: reserveStageDocs resolved each slug independently, so on a
+		// fresh run all three computed the same "next free" index and collided
+		// (08-specification.md / 08-implementation-plan.md / 08-task-list.md).
+		writeFileSync(join(dir, "01-requirements.md"), "x");
+		writeFileSync(join(dir, "02-requirements-review.md"), "x");
+		writeFileSync(join(dir, "03-bdd-scenarios.md"), "x");
+		writeFileSync(join(dir, "04-bdd-review.md"), "x");
+		writeFileSync(join(dir, "05-research-report.md"), "x");
+		writeFileSync(join(dir, "06-debug-analysis.md"), "x");
+		writeFileSync(join(dir, "07-code-assessment.md"), "x");
+
+		const reserved = reserveStageDocs(setup(), "spec");
+		const indices = reserved.map((d) => Number(d.name.slice(0, 2)));
+		// Three DISTINCT indices …
+		expect(new Set(indices).size).toBe(3);
+		// … consecutive, starting right after the 7 existing docs (08, 09, 10).
+		expect(indices).toEqual([8, 9, 10]);
+
+		// And they actually WRITE to those distinct paths.
+		renderAndWrite(setup(), () => {}, "spec", specControl());
+		expect(filesFor("specification")).toEqual(["08-specification.md"]);
+		expect(filesFor("implementation-plan")).toEqual(["09-implementation-plan.md"]);
+		expect(filesFor("task-list")).toEqual(["10-task-list.md"]);
+	});
 });

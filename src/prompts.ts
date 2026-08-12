@@ -78,6 +78,27 @@ function phaseScenarioRefsFor(specControl: R, phase: { name: string; scenarioRef
 	return mergeScenarioRefs([phase.scenarioRefs, ...taskRefs]);
 }
 
+/** A stage that writes several docs at once (the spec stage: specification +
+ *  implementation-plan + task-list) resolves ALL its slugs together so they get
+ *  DISTINCT indices. Resolving each slug independently via specDoc() is the bug
+ *  behind three docs colliding on the same number (08-specification.md,
+ *  08-implementation-plan.md, 08-task-list.md): on a fresh run none exist yet,
+ *  and nextDocNumber only excludes the SAME slug, so every slug computes the
+ *  identical "next free" index. Here:
+ *   - a slug with an EXISTING `NN-<slug>.md` reuses it (idempotent across retries);
+ *   - not-yet-existing slugs take consecutive indices from a base that counts the
+ *     files NOT owned by this group, so they never collide with each other or
+ *     with prior stages' docs. */
+export function specDocs(s: SetupControl, slugs: string[]): string[] {
+	// Base = count of numbered docs that are NOT one of this group's slugs, +1.
+	let base = nextDocNumber(s.specDirectory, slugs);
+	return slugs.map((slug) => {
+		const existing = existingDocForSlug(s.specDirectory, slug);
+		if (existing) return `${s.specDirectory}${existing}`;
+		return `${s.specDirectory}${pad(base++)}-${slug}.md`;
+	});
+}
+
 /** A single stage's doc path, STABLE across retries: if a `NN-<slug>.md` file
  *  already exists in the spec dir, reuse it (overwrite in place); otherwise
  *  allocate the next free index. Without the reuse step, a stage that re-runs
@@ -101,13 +122,6 @@ function existingDocForSlug(specDir: string, slug: string): string | null {
 			.sort();
 		return matches[0] ?? null;
 	} catch { return null; }
-}
-
-/** A stage that writes several docs at once (the spec stage): they take
- *  consecutive numbers base, base+1, … in the given slug order. */
-function specDocRange(s: SetupControl, slugs: string[]): string[] {
-	const base = nextDocNumber(s.specDirectory, slugs);
-	return slugs.map((slug, i) => `${s.specDirectory}${pad(base + i)}-${slug}.md`);
 }
 
 function ctxBlock(setup: SetupControl, c: Classification | null): string {

@@ -14,7 +14,7 @@ import { Value } from "typebox/value";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { specDoc } from "../prompts.ts";
+import { specDoc, specDocs } from "../prompts.ts";
 import type { SetupControl } from "../types.ts";
 import { appendToKnowledge } from "./knowledge.ts";
 
@@ -102,8 +102,13 @@ export function reserveStageDocs(setup: SetupControl, stageId: string): Reserved
 	const model = STAGE_MODELS[stageId];
 	if (!model) return [];
 	const slugs = [model.slug, ...(model.additionalDocs?.map((d) => d.slug) ?? [])];
-	return slugs.map((slug) => {
-		const path = specDoc(setup, slug);
+	// Resolve ALL of the stage's slugs together so a multi-doc stage (spec →
+	// specification + implementation-plan + task-list) gets DISTINCT consecutive
+	// indices. Resolving each slug independently made them collide on the same
+	// index on a fresh run (08-specification / 08-implementation-plan / 08-task-list).
+	const paths = specDocs(setup, slugs);
+	return slugs.map((slug, i) => {
+		const path = paths[i]!;
 		return { slug, path, name: path.slice(path.lastIndexOf("/") + 1) };
 	});
 }
