@@ -78,9 +78,29 @@ function phaseScenarioRefsFor(specControl: R, phase: { name: string; scenarioRef
 	return mergeScenarioRefs([phase.scenarioRefs, ...taskRefs]);
 }
 
-/** A single stage's doc path: next free number + the slug. */
+/** A single stage's doc path, STABLE across retries: if a `NN-<slug>.md` file
+ *  already exists in the spec dir, reuse it (overwrite in place); otherwise
+ *  allocate the next free index. Without the reuse step, a stage that re-runs
+ *  (spec/review convergence, any gate retry) produced a NEW `NN-<slug>.md` every
+ *  round — e.g. 06-specification.md, then 09-specification.md, then 12-… —
+ *  because nextDocNumber only excluded the SAME slug while OTHER slugs' files
+ *  inflated the count. Reusing the existing per-slug file is the correct
+ *  idempotent behavior (one artifact per slug, updated in place). */
 export function specDoc(s: SetupControl, slug: string): string {
+	const existing = existingDocForSlug(s.specDirectory, slug);
+	if (existing) return `${s.specDirectory}${existing}`;
 	return `${s.specDirectory}${pad(nextDocNumber(s.specDirectory, [slug]))}-${slug}.md`;
+}
+
+/** Return the FIRST existing `NN-<slug>.md` filename in the spec dir (lowest
+ *  index wins if duplicates already exist from a pre-fix run), or null. */
+function existingDocForSlug(specDir: string, slug: string): string | null {
+	try {
+		const matches = readdirSync(specDir)
+			.filter((entry) => new RegExp(`^\\d{2}-${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.md$`).test(entry))
+			.sort();
+		return matches[0] ?? null;
+	} catch { return null; }
 }
 
 /** A stage that writes several docs at once (the spec stage): they take
