@@ -4,11 +4,20 @@
  *   - deterministic helper tasks (classify, cleanup)
  */
 
-import { writerTask, helperTask } from "../nodes.ts";
+import { writerTask, helperTask, isFatalAbort } from "../nodes.ts";
 import type { Stage, SetupControl } from "../types.ts";
 import * as P from "../prompts.ts";
+import { ClassificationData } from "../render/schemas.ts";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
+
+/** A source-read-only boundary violation (a read-only agent mutated project
+ *  files that could not all be restored) is a SAFETY error: it must never be
+ *  swallowed by a convenience fallback — the pipeline has to stop so the user
+ *  sees the unrestored mutation. Matched by the message thrown in workflow.ts. */
+function isSafetyBoundaryError(err: unknown): boolean {
+	return err instanceof Error && /source-read-only boundary violation/i.test(err.message);
+}
 
 export const requirementsWriter: Stage = writerTask({
 	id: "requirements",
@@ -142,17 +151,53 @@ export const mergeWriter: Stage = writerTask({
 	buildPrompt: (state) => P.buildMergePrompt(S(state)),
 });
 
-/** Classify the task via a helper. Needs the runtime task text from ctx. */
+/** Classify the task for pipeline routing (Stage 2A). Uses an LLM classifier
+ *  (intent-aware) instead of the old keyword regex, which misread compound tasks
+ *  ("add upload page with error handling" → bug/none because it matched "error").
+ *  Falls back to the deterministic `classify-task` helper if the agent produces
+ *  nothing, so routing always has a value. The `language`/`isWebUi` fields come
+ *  from setup detection; the LLM decides `taskType`/`uiScope`. */
 export const classifyStage: Stage = {
 	id: "classify",
 	label: "Stage 2A — Classify Task",
 	async run(state, ctx) {
-		const result = await ctx.helper({
-			name: "classify-task",
-			sources: { setup: state.setup },
-			options: { runtimeTask: ctx.task },
-		});
-		return result.value;
+		const setup = S(state);
+		const fallback = await ctx.helper({ name: "classify-task", sources: { setup }, options: { runtimeTask: ctx.task } });
+		const base = fallback.value as { taskType?: string; uiScope?: string; language?: string; isWebUi?: boolean; skipStages?: unknown };
+		if (!ctx.budget.check()) {
+			ctx.log("classify: budget exhausted — using deterministic classification");
+			return base;
+		}
+		// The classifier is a routing convenience, never a hard dependency: an
+		// ordinary failure (backend/session error, empty/invalid control) degrades to
+		// the deterministic fallback so Stage 2A ALWAYS yields a classification (a
+		// missing state.classify recreates the bad routing context this stage fixes).
+		// SAFETY/FATAL errors are NOT swallowed: a source-read-only boundary
+		// violation (a read-only agent mutated project files) and any FatalAbort must
+		// propagate so the pipeline stops — continuing after an unrestored mutation is
+		// exactly the failure the boundary guard exists to prevent.
+		try {
+			const result = await ctx.agent({
+				id: "pipeline.classify",
+				agent: "task-classifier",
+				accessMode: "source-read-only",
+				prompt: P.buildClassifyPrompt(setup, ctx.task),
+				schema: ClassificationData,
+			});
+			const c = result.control as { taskType?: string; uiScope?: string; rationale?: string } | null;
+			if (!c || !c.taskType || !c.uiScope) {
+				ctx.log(`classify: LLM classifier produced no usable result${result.error ? ` (${result.error})` : ""} — using deterministic fallback (${base.taskType}/${base.uiScope})`);
+				return base;
+			}
+			ctx.log(`classify: taskType=${c.taskType} uiScope=${c.uiScope}${c.rationale ? ` — ${c.rationale}` : ""}`);
+			// Keep the setup-derived language/isWebUi; the LLM owns taskType/uiScope.
+			return { taskType: c.taskType, uiScope: c.uiScope, language: base.language, isWebUi: base.isWebUi, skipStages: base.skipStages ?? [], rationale: c.rationale };
+		} catch (err) {
+			if (isFatalAbort(err) || isSafetyBoundaryError(err)) throw err; // never swallow safety/fatal
+			const msg = err instanceof Error ? err.message : String(err);
+			ctx.log(`classify: LLM classifier threw (${msg}) — using deterministic fallback (${base.taskType}/${base.uiScope})`);
+			return base;
+		}
 	},
 };
 

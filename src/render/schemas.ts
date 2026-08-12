@@ -305,6 +305,19 @@ export const RedReviewData = Type.Object({
 }, { additionalProperties: false });
 export type RedReviewData = Static<typeof RedReviewData>;
 
+/** LLM task-classification (Stage 2A). Replaces the shallow BUG_RE/isWebUi regex
+ *  that misread compound tasks (e.g. "add upload page with error handling" →
+ *  bug/none because it saw the word "error"). The classifier reads the task text
+ *  (and may inspect the repo) and returns a grounded routing decision. `rationale`
+ *  is a one-line justification kept for the run log. CLOSED so it is strict-capable
+ *  for constrained sampling. */
+export const ClassificationData = Type.Object({
+	taskType: Type.Union([Type.Literal("bug"), Type.Literal("feature"), Type.Literal("refactor")]),
+	uiScope: Type.Union([Type.Literal("none"), Type.Literal("ui-only"), Type.Literal("ui+arch")]),
+	rationale: Type.String(),
+}, { additionalProperties: false });
+export type ClassificationData = Static<typeof ClassificationData>;
+
 export const SpecificationData = Type.Object({
 	title: Type.String(),
 	date: Type.String(),

@@ -22,6 +22,12 @@ Find ambiguity, untestable acceptance criteria, internal conflicts, missing non-
 - **D5 Feasibility/Scope**: The requirements are achievable and bounded; no hidden mega-requirement; no gold-plating.
 - **D6 Resolved decisions**: `openQuestions` is empty or only holds genuine user-only blockers — not deferred design work masquerading as a requirement.
 
+## The `Task Type` / `UI Scope` context line is a HINT, not authority
+
+The context block shows a `Task Type` and `UI Scope` produced by a fast upstream router. It is a routing hint, and it can be WRONG (a compound "add an upload page with error handling" may be misrouted to `bug`/`none`). Do NOT reject legitimate requirements merely because they exceed that hint — judge the requirements against the ACTUAL task the user asked for.
+
+When the requirements genuinely contradict the routing metadata (e.g. the task clearly needs UI but `UI Scope=none`, or it is clearly a new feature but `Task Type=bug`), that is an UPSTREAM CLASSIFICATION defect, not a requirements defect the writer can fix — the requirements writer cannot change `taskType`/`uiScope`. Record ONE finding with `ownerStage: classify` (blocking, high) describing the mismatch, so the pipeline escalates the scope decision to a human instead of forcing the requirements writer to oscillate between satisfying the real task and obeying bad metadata. Do NOT re-open this as a `requirements`-owned finding round after round.
+
 ## Verdict Rules
 
 - Any internal contradiction, or an untestable/ambiguous AC that blocks implementation → REJECTED or REVISIONS NEEDED (blocking finding).
@@ -29,7 +35,7 @@ Find ambiguity, untestable acceptance criteria, internal conflicts, missing non-
 - Only minor wording/clarity nits → APPROVED WITH COMMENTS (suggestion-only PASS — the loop proceeds).
 - Clean → APPROVED.
 
-Mark each finding `blocking: true` for correctness/completeness defects; `blocking: false` for suggestions. Set `ownerStage: requirements` (or the true upstream owner if the defect is actually inherited).
+Mark each finding `blocking: true` for correctness/completeness defects; `blocking: false` for suggestions. Set `ownerStage: requirements` for defects the requirements writer can fix; `ownerStage: classify` for a routing/scope mismatch the writer cannot fix (see above); or the true upstream owner if the defect is otherwise inherited.
 
 ## Confidence Gate
 

@@ -106,6 +106,13 @@ const approvedWithRevisions: ControlObj = {
 	summary: "minor nit only",
 	findings: [{ id: "S1", severity: "low", title: "rename for clarity", detail: "cosmetic", blocking: false, ownerStage: "requirements", status: "open" }],
 } as ControlObj;
+/** A blocking finding owned by an UPSTREAM stage (classify) that the requirements
+ *  writer structurally cannot fix — e.g. a scope/routing mismatch. */
+const upstreamOwned = (id: string): ControlObj => ({
+	verdict: "Changes Requested",
+	summary: "scope mismatch",
+	findings: [{ id, severity: "high", title: `scope mismatch ${id}`, detail: `UI Scope=none but task needs UI ${id}`, blocking: true, ownerStage: "classify", status: "open" }],
+} as ControlObj);
 
 const hasLog = (logs: string[], needle: string) => logs.some((l) => l.includes(needle));
 
@@ -139,6 +146,20 @@ describe("artifactConvergenceNode — upstream review layer", () => {
 		expect(escalate.mock.calls[0]![0].kind).toBe("stagnation");
 		expect(hasLog(script.logs, "STALL detected")).toBe(true);
 		expect(hasLog(script.logs, "accepted the limitation")).toBe(true);
+	});
+
+	it("upstream-owned (classify) blocking finding ⇒ escalates IMMEDIATELY (round 1, no stall wait)", async () => {
+		// A finding owned by `classify` (upstream of requirements) cannot be fixed by
+		// the requirements writer, so the loop must escalate on the FIRST round rather
+		// than oscillate. Verified: escalate fires with writerRounds === 1.
+		const script: Script = { reviews: [upstreamOwned("REQ-SCOPE"), approved], logs: [], writerRounds: 0 };
+		const escalate = vi.fn<Escalate>().mockResolvedValue({ choice: "accept-limitation" });
+		const ctx = makeCtx(script, escalate);
+		const result = await requirementsConvergenceNode.run(makeState(), ctx);
+		expect(result.status).toBe("ok");
+		expect(escalate).toHaveBeenCalledTimes(1);
+		expect(script.writerRounds).toBe(1); // escalated on round 1, did NOT wait for a stall
+		expect(hasLog(script.logs, "UPSTREAM-OWNED blocker detected")).toBe(true);
 	});
 
 	it("no escalate wired ⇒ never blocks; a later approval still converges", async () => {

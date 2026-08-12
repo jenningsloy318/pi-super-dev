@@ -307,25 +307,33 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					if (!approved) {
 						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
 						lastErrors = compactReviewFindings(reviewControl);
-						// Stall detection → HITL escalation. The reviewer keeps flagging the
-						// same blocking findings the writer can't fix; ask the user before
-						// spinning further (bounded by ESCALATION_RETRY_CAP per stage).
+						// HITL escalation triggers (bounded by ESCALATION_RETRY_CAP per stage):
+						//  (a) a blocking finding owned by a STRICTLY UPSTREAM stage — the
+						//      current writer structurally cannot fix it (e.g. a scope/routing
+						//      mismatch owned by `classify`), so escalate IMMEDIATELY rather than
+						//      forcing the writer to oscillate for rounds; OR
+						//  (b) a STALL — the same blocking signature recurred across rounds.
+						const ownStage = normalizeConvergenceStage(options.feedbackKey, options.feedbackKey);
+						const upstreamOwned = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, ownStage));
 						const signature = blockingSignature(state, review.ownerStage);
 						const stalled = signature.length > 0 && signature === priorBlockingSignature;
 						priorBlockingSignature = signature;
-						if (stalled) {
+						if (upstreamOwned.length > 0 || stalled) {
 							const escalate = getEscalate(ctx);
+							const reason = upstreamOwned.length > 0
+								? `${options.feedbackKey} review surfaced blocking finding(s) owned by an upstream stage the ${options.feedbackKey} writer cannot fix: ${upstreamOwned.map((f) => `${f.id} owner=${f.ownerStage}`).join(", ")}`
+								: `${options.feedbackKey} review stalled: the same blocking finding(s) recurred across review rounds`;
 							const failure: EscalationFailure = {
 								kind: "stagnation",
 								stage: options.feedbackKey,
-								message: `${options.feedbackKey} review stalled: the same blocking finding(s) recurred across review rounds — ${lastErrors.join("; ")}`,
+								message: `${reason} — ${lastErrors.join("; ")}`,
 								severity: "soft",
 								worktreePath: state.setup?.worktreePath,
 								specDirectory: state.setup?.specDirectory,
-								findings: blockingConvergenceFindings(state).filter((f) => f.ownerStage === review.ownerStage || ownerPrecedes(f.ownerStage, review.ownerStage)).slice(0, 6).map((f) => ({ severity: f.severity, title: f.title })),
+								findings: blockingConvergenceFindings(state).filter((f) => f.ownerStage === review.ownerStage || ownerPrecedes(f.ownerStage, ownStage)).slice(0, 6).map((f) => ({ severity: f.severity, title: f.title })),
 							};
 							if (escalate && escalationBudgetRemaining(state, failure) > 0) {
-								ctx.log(`${options.feedbackKey} convergence: STALL detected — escalating to user (HITL)`);
+								ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length > 0 ? "UPSTREAM-OWNED blocker" : "STALL"} detected — escalating to user (HITL)`);
 								const decision = await runEscalation(state, failure, escalate);
 								if (decision) {
 									applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });
@@ -335,7 +343,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 										return { status: "ok" as const, attempts: round };
 									}
 									if (decision.choice === "abandon") {
-										throw new FatalAbort(`${options.feedbackKey} convergence: user abandoned the run at review stall — ${failure.message}`);
+										throw new FatalAbort(`${options.feedbackKey} convergence: user abandoned the run at review escalation — ${failure.message}`);
 									}
 									// retry-with-guidance / revise-manually: fall through to another round
 									// (guidance was persisted to .user-notes.json for the next attempt).

@@ -128,6 +128,33 @@ function ctxBlock(setup: SetupControl, c: Classification | null): string {
 	return ["## Context", `- Worktree: ${setup.worktreePath}`, `- Spec Directory: ${setup.specDirectory}`, `- Language: ${c?.language ?? setup.language}`, `- Task Type: ${c?.taskType ?? "unknown"}`, `- UI Scope: ${c?.uiScope ?? "none"}`, `- Default Branch: ${setup.defaultBranch ?? "main"}`].join("\n");
 }
 
+/** LLM task classifier (Stage 2A). Replaces the brittle keyword regex with an
+ *  intent-aware routing decision. Research on agent routing (2026) is consistent:
+ *  regex/keyword routers are brittle and miss compound intent, so production
+ *  systems fall through to an LLM classifier for anything non-trivial. */
+export function buildClassifyPrompt(s: SetupControl, task: string): string {
+	return [
+		"## Context",
+		`- Worktree: ${s.worktreePath}`,
+		`- Detected language: ${s.language}`,
+		`- Repo UI auto-detected: ${s.isWebUi ? "yes" : "no"}`,
+		"",
+		"## Task",
+		task,
+		"",
+		"## Instructions",
+		"Classify this task for pipeline routing. Judge by the task's actual INTENT, not by isolated keywords — a feature that merely mentions 'error handling' is NOT a bug, and a task that asks for a page/upload/chart needs UI scope even if the repo auto-detect missed it.",
+		"You MAY read/grep the repo lightly to confirm referenced pages/endpoints, but keep it fast.",
+		"",
+		"## Data to return",
+		"- taskType: 'bug' (fixing incorrect behavior in existing functionality) | 'feature' (new capability/endpoint/page/flow) | 'refactor' (restructure, no behavior change)",
+		"- uiScope: 'none' (backend/API/library only) | 'ui-only' (frontend, no new backend) | 'ui+arch' (both UI and backend/architecture)",
+		"- rationale: one sentence citing the concrete task signals you used",
+		"",
+		"Output <control> JSON with: taskType, uiScope, rationale.",
+	].join("\n");
+}
+
 export function buildRequirementsPrompt(s: SetupControl, c: Classification | null, task: string): string {
 	return [ctxBlock(s, c), "", "## Task", task, "", "## Instructions", "Produce an implementation-ready requirements document.", "Resolve ambiguity into explicit acceptance criteria or non-functional constraints before returning. The pipeline treats openQuestions as unresolved ambiguity, so leave openQuestions empty unless a specific user-only decision blocks all implementation; never use it for generic caveats or future work.", "The document will be RENDERED FOR YOU from your structured output — focus on CONTENT, not format. Do NOT write the document yourself.", "", "## Data to return", "Return the requirements as structured data:", "- title: the feature/fix title", "- date: today's date (YYYY-MM-DD)", "- type: 'feature' | 'bug-fix' | 'refactor' | 'enhancement'", "- priority: 'high' | 'medium' | 'low' | 'critical'", "- executiveSummary: 2-3 sentence summary", "- acceptanceCriteria: array of { id: 'AC-01', statement: string } (at least 2)", "- nonFunctional: array of performance/security/accessibility notes (at least 1)", "- openQuestions (optional): array of strings; must be empty when the task can proceed", "", "Output <control> JSON with: title, date, type, priority, executiveSummary, acceptanceCriteria, nonFunctional, openQuestions."].join("\n");
 }
