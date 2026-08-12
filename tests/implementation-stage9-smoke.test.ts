@@ -76,6 +76,10 @@ function contextFor(root: string): { ctx: StageContext; calls: { tdd: AgentCall[
 				writeFileSync(join(root, "src", "math.js"), "function add(a, b) { return a + b; }\nmodule.exports = { add };\n");
 				return { text: "", control: { filesCreated: [], filesModified: ["src/math.js"], filesDeleted: [] } };
 			}
+			if (call.agent === "code-reviewer") {
+				// RED test-quality review (R2): STRONG so accepted RED proceeds to GREEN.
+				return { text: "", control: { verdict: "strong", summary: "ok" } };
+			}
 			return { text: "", control: {} };
 		},
 		async parallel(cbs) { return Promise.all(cbs.map((cb) => cb())); },

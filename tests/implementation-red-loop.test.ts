@@ -196,6 +196,26 @@ function redSeq(...statuses: string[]): void {
 	});
 }
 
+/** Like redSeq but CYCLES the statuses indefinitely (A,B,A,B,…) — used to model
+ *  the oscillation livelock (green↔broken) that the old consecutive-identical
+ *  no-progress check missed. */
+function redCycle(...statuses: string[]): void {
+	let i = 0;
+	redCheck.mockImplementation((_cwd: string, _targets: string[], opts?: { onResult?: (diagnostic: unknown) => void }) => {
+		const s = statuses[i % statuses.length] ?? "unknown";
+		i++;
+		opts?.onResult?.({
+			plan: { cwd: "/tmp/sd-red-loop", argv: ["node", "--import", "tsx", "--test", "tests/red.test.ts"] },
+			language: "backend",
+			status: s,
+			exitCode: s === "green" ? 0 : 1,
+			signal: null,
+			outputTail: s === "broken" ? "SyntaxError: Cannot use import statement outside a module" : "AssertionError: expected missing behavior",
+		});
+		return s;
+	});
+}
+
 beforeEach(() => {
 	redCheck.mockReset();
 	buildGate.mockReset();
@@ -367,7 +387,24 @@ describe("P3 — RED loop: green/broken triggers a budgeted no-progress-guarded 
 
 		expect(redCheck).toHaveBeenCalledTimes(2);
 		expect(calls.tdd).toHaveLength(2);
-		expect(calls.logs.some((l) => /RED generation stopped after repeated no-progress/i.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /RED generation stopped after 2 tries.*no progress/i.test(l))).toBe(true);
+	});
+
+	it("RC-3: stops an A-B-A-B OSCILLATION (green↔broken) within a few tries, not dozens", async () => {
+		// The real 47-retry/15h livelock: consecutive signatures always DIFFER, so
+		// the old `history[last] === sig` check never fired. Cycle detection must
+		// catch the recurrence and stop.
+		redCycle("green", "broken");
+		const { ctx, calls } = mkCtx();
+
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		// Must terminate quickly once a prior state recurs — far below the old
+		// unbounded behavior (and below MAX_RED_RETRIES=6).
+		expect(calls.tdd.length).toBeLessThanOrEqual(6);
+		expect(calls.tdd.length).toBeGreaterThanOrEqual(3); // needs ≥3 to observe a cycle
+		expect(calls.impl).toHaveLength(0); // never proceeds to implementer
+		expect(calls.logs.some((l) => /oscillating|no progress/i.test(l))).toBe(true);
 	});
 });
 

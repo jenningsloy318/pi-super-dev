@@ -413,6 +413,52 @@ describe("runRedCheck — npm / vitest / jest classification", () => {
 		}
 	});
 
+	it("RC-1: a package with NO test script under a RECURSIVE root script never gets the monorepo-wide `-r … -- <file>` plan", () => {
+		// The 15h livelock: auth-service had no `test` script, so the resolver fell
+		// back to root `pnpm -r run test -- <file>` — which forwards the file to every
+		// workspace, runs their whole suite, and reads green (red-not-confirmed
+		// forever). With no scoped runner detectable, the resolver must emit NO
+		// recursive-fanout plan.
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "pnpm -r run test" } }));
+			writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+			mkdirSync(join(dir, "auth-service", "src"), { recursive: true });
+			writeFileSync(join(dir, "auth-service", "package.json"), JSON.stringify({ name: "auth-service" }));
+			writeFileSync(join(dir, "auth-service", "src", "session.test.ts"), "it('x', () => { expect(1).toBe(2); })\n");
+		});
+		try {
+			const plans: Array<{ cwd: string; argv: string[] }> = [];
+			mockRunner(out(0, "whatever"));
+			runRedCheck(d, ["auth-service/src/session.test.ts"], { onPlan: (pp) => plans.push(...pp) });
+			for (const pl of plans) {
+				const joined = pl.argv.join(" ");
+				expect(joined).not.toMatch(/-r\b/);
+				expect(joined).not.toMatch(/run test -- /);
+			}
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("RC-1: a package WITH vitest runs a direct scoped `vitest run <file>`, not the recursive root script", () => {
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "pnpm -r run test" } }));
+			mkdirSync(join(dir, "auth-service", "src"), { recursive: true });
+			writeFileSync(join(dir, "auth-service", "package.json"), JSON.stringify({ name: "auth-service", scripts: { test: "vitest run" }, devDependencies: { vitest: "1" } }));
+			writeFileSync(join(dir, "auth-service", "src", "session.test.ts"), "it('x', () => { expect(1).toBe(2); })\n");
+		});
+		try {
+			const plans: Array<{ cwd: string; argv: string[] }> = [];
+			mockRunner(out(1, "❯ src/session.test.ts:1:1\nTests  1 failed (1)"));
+			expect(runRedCheck(d, ["auth-service/src/session.test.ts"], { onPlan: (pp) => plans.push(...pp) })).toBe("red");
+			expect(plans.some((pl) => pl.cwd === join(d, "auth-service") && pl.argv.join(" ").includes("vitest run src/session.test.ts"))).toBe(true);
+			expect(plans.every((pl) => !/-r\b/.test(pl.argv.join(" ")))).toBe(true);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+
 	it("runs a node:test target from the owning package directory before classifying RED", () => {
 		const d = tmpProj((dir) => {
 			writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "pnpm -r run test" } }));

@@ -465,14 +465,22 @@ function snapshotFiles(cwd: string, paths: string[]): Map<string, string | null>
  *  (assertion in a comment) is safe here because it only avoids a reject. */
 const ASSERTION_RE = /\b(?:expect|assert|assert_eq|assert_ne|assertEquals|assertTrue|assertFalse|should|require\.|assert\.|t\.Error|t\.Fatal|t\.Errorf|t\.Fatalf|XCTAssert)\b|\bassert!|\bassert_eq!|\bassert_ne!/;
 
-/** Return the RED test files (from a content snapshot) that contain no
- *  recognizable assertion call. Empty list = every file has at least one. Files
- *  that couldn't be read (null) are skipped — absence of content is not evidence
- *  of a hollow test and must not block. Pure; never throws. */
+/** A RED artifact that is an actual TEST file (by name) — vs a test-only SUPPORT
+ *  artifact (a fixture/helper imported by a test). The hollow-assertion guard
+ *  applies ONLY to test files: a support fixture legitimately has no assertion,
+ *  so flagging it would falsely reject a valid RED set. */
+const TEST_FILE_NAME_RE = /(\.test\.|\.spec\.|_test\.|(^|\/)test_|(^|\/)tests?\/|__tests__\/)/i;
+
+/** Return the RED TEST files (from a content snapshot) that contain no
+ *  recognizable assertion call. Non-test-named support artifacts are skipped
+ *  (they may legitimately have no assertion). Files that couldn't be read (null)
+ *  are skipped — absence of content is not evidence of a hollow test and must not
+ *  block. Pure; never throws. */
 export function assertionPresenceGaps(snapshot: Map<string, string | null>): string[] {
 	const gaps: string[] = [];
 	for (const [path, content] of snapshot) {
 		if (content == null) continue;
+		if (!TEST_FILE_NAME_RE.test(path)) continue; // support artifact, not a test
 		if (!ASSERTION_RE.test(content)) gaps.push(path);
 	}
 	return gaps;
@@ -489,6 +497,15 @@ function changedSinceSnapshot(cwd: string, before: Map<string, string | null>): 
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
+
+/** Hard ceiling on RED-generation tries within one implementation attempt (RC-3).
+ *  Cycle detection handles oscillation; this bounds a non-repeating drift the
+ *  signature hash might not catch, so a phase can never spin ~indefinitely on the
+ *  global budget alone (the 47-retry/15h livelock). Env-overridable for tuning. */
+const MAX_RED_RETRIES = (() => {
+	const raw = Number.parseInt(process.env.SUPER_DEV_MAX_RED_RETRIES ?? "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : 6;
+})();
 
 export function runtimeInstructionFingerprint(specDir: string | undefined): string {
 	const notes = userNotesForAgent(specDir);
@@ -968,11 +985,55 @@ export const implementationStage: Stage = {
 						}
 						if (retryHint) {
 							const signature = redEvidenceSignature(redEvidence);
-							const noProgress = redProgressHistory[redProgressHistory.length - 1] === signature;
+							// Cycle/oscillation detection (RC-3): the previous check only
+							// compared the IMMEDIATELY-previous signature, so an A→B→A→B
+							// livelock (e.g. red-not-confirmed ↔ red-polluted) evaded it and ran
+							// for dozens of retries / hours. Stop when EITHER (a) this exact
+							// signature has already been seen this phase (a cycle — the loop is
+							// revisiting a state it cannot escape), OR (b) a hard retry ceiling
+							// is hit (belt-and-braces against a non-repeating drift the signature
+							// hashing might miss). Both are "no-progress": the RED phase is not
+							// converging and further blind retries only burn budget.
+							const seenBefore = redProgressHistory.includes(signature);
+							const hitCeiling = retries + 1 >= MAX_RED_RETRIES;
 							redProgressHistory.push(signature);
-							if (noProgress) {
+							if (seenBefore || hitCeiling) {
 								terminalStopReason = "no-progress";
-								ctx.log(`Implementation ${phaseId} RED generation stopped after repeated no-progress try ${retries + 1}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
+								const why = seenBefore
+									? `RED generation is oscillating (a prior failure state recurred) after ${retries + 1} tries`
+									: `RED generation did not converge within ${MAX_RED_RETRIES} tries`;
+								ctx.log(`Implementation ${phaseId} RED generation stopped — ${why}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
+								// HITL escalation (parity with the implementation no-progress path):
+								// a non-converging RED is usually a spec/toolchain problem (e.g. no
+								// test runner for the package), not something more retries fix.
+								const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
+								if (escalate) {
+									try {
+										const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
+										const failure: import("../types.ts").EscalationFailure = {
+											kind: "stagnation",
+											stage: "implementation-red",
+											message: `RED test generation for phase "${phaseName}" is not converging (${why}). This is typically a spec or test-toolchain issue — e.g. the target package has no runnable test command, so a new test cannot be observed to fail. Inspect the recurring RED evidence or provide guidance before retrying.`,
+											severity: "soft",
+											findings: (redEvidenceFailureReasons(redEvidence).length ? redEvidenceFailureReasons(redEvidence) : [redEvidence.reason ?? redEvidence.status]).slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
+											worktreePath: setup.worktreePath,
+											specDirectory: setup.specDirectory,
+										};
+										const decision = await runEscalation(state, failure, escalate);
+										if (decision) {
+											applyRetryDecision(state, decision, { worktreePath: setup.worktreePath, specDirectory: setup.specDirectory });
+											if (decision.choice === "retry-with-guidance" && ctx.budget.check()) {
+												// Guided retry: clear the cycle window so the guided attempt is
+												// judged fresh, and re-prompt with the user's guidance.
+												redProgressHistory.length = 0;
+												retries++;
+												redHint = retryHint;
+												ctx.log(`Implementation ${phaseId} RED no-progress escalation: retrying with user guidance`);
+												continue;
+											}
+										}
+									} catch { /* never-throw: fall through to the terminal break */ }
+								}
 								break;
 							}
 							if (redEvidence.status === "green-weak-test" || redEvidence.status === "polluted-red") {

@@ -873,8 +873,21 @@ function npmRedCheckPlans(cwd: string, targets: string[], cmds: ProjectCommands)
 		}
 
 		if (scripts.test) {
-			if (/vitest/i.test(scripts.test) || hasPackageTool(pkgDir, pkg, "vitest")) plans.push({ cwd: pkgDir, argv: pmExec(pm, "vitest", ["run", rel]) });
-			else plans.push({ cwd: pkgDir, argv: pm === "deno" ? ["deno", "task", "test", rel] : [pm, "run", "test", "--", rel] });
+			// RC-1: a package `test` script only scopes to a single file if the runner
+			// accepts the file as a positional arg. `pnpm -r run test` (recursive) does
+			// NOT — it forwards the arg to EVERY workspace, which ignore it and run their
+			// whole suite (→ the new test never runs in isolation → the RED oracle sees
+			// the pre-existing suite pass → "red-not-confirmed" forever, the 15h livelock).
+			// So: prefer a DIRECT runner invocation whenever we can detect one; only use
+			// the `run test -- <file>` form when the script is NOT a recursive fan-out.
+			if (/vitest/i.test(scripts.test) || hasPackageTool(pkgDir, pkg, "vitest")) { plans.push({ cwd: pkgDir, argv: pmExec(pm, "vitest", ["run", rel]) }); continue; }
+			if (isJsTsTarget(target) && hasPackageTool(pkgDir, pkg, "tsx")) { plans.push({ cwd: pkgDir, argv: ["node", "--import", "tsx", "--test", rel] }); continue; }
+			const recursive = /\bpnpm\b[^\n]*\s-r\b|\bpnpm\b[^\n]*--recursive|\bturbo\b|\bnx\s+run-many|--workspaces\b/.test(scripts.test);
+			if (!recursive) { plans.push({ cwd: pkgDir, argv: pm === "deno" ? ["deno", "task", "test", rel] : [pm, "run", "test", "--", rel] }); continue; }
+			// Recursive/monorepo test script with no directly-runnable runner for this
+			// package: fall through so the caller surfaces an honest "no scoped runner"
+			// blocker instead of running the whole monorepo and misreading it as green.
+			fallbackTargets.push(target);
 			continue;
 		}
 
@@ -882,13 +895,29 @@ function npmRedCheckPlans(cwd: string, targets: string[], cmds: ProjectCommands)
 			plans.push({ cwd: pkgDir, argv: pmExec(pm, "vitest", ["run", rel]) });
 			continue;
 		}
+		// No package `test` script and no vitest: try a direct tsx/node runner for a
+		// JS/TS file before giving up to the (non-scoping) root fallback.
+		if (isJsTsTarget(target) && hasPackageTool(pkgDir, pkg, "tsx")) {
+			plans.push({ cwd: pkgDir, argv: ["node", "--import", "tsx", "--test", rel] });
+			continue;
+		}
 
 		fallbackTargets.push(target);
 	}
 	if (fallbackTargets.length > 0) {
 		const usesVitest = cmds.ran.some((label) => /vitest/i.test(label)) || hasVitestScript(cwd);
+		// Recursion lives in the root package.json `test` SCRIPT BODY (e.g.
+		// "pnpm -r run test"), not in the resolved argv (which is just
+		// ["pnpm","run","test"]). Read the script text to detect the fan-out.
+		const rootTestScript = String(packageScripts(readPackageJson(cwd)).test ?? "");
+		const rootRecursive = /\bpnpm\b[^\n]*\s-r\b|--recursive|\bturbo\b|nx\s+run-many|--workspaces\b|\blerna\b/.test(rootTestScript);
 		if (usesVitest) plans.push({ cwd, argv: ["vitest", "run", ...fallbackTargets] });
-		else if (cmds.test && cmds.test.length > 0) plans.push({ cwd, argv: [...cmds.test, "--", ...fallbackTargets] });
+		// Only use the root `test -- <files>` form when it is NOT a recursive
+		// monorepo fan-out — that form ignores the file args and runs every package
+		// (RC-1). When the only root command is recursive and no scoped runner was
+		// found, emit NO plan for these targets: runRedCheck then reports a no-runner
+		// state (broken) instead of a false green, and the RED loop surfaces it.
+		else if (cmds.test && cmds.test.length > 0 && !rootRecursive) plans.push({ cwd, argv: [...cmds.test, "--", ...fallbackTargets] });
 	}
 	return plans.filter((plan) => plan.argv.length > 0);
 }

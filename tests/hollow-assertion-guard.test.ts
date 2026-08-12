@@ -41,4 +41,14 @@ describe("assertionPresenceGaps", () => {
 		}));
 		expect(gaps).toEqual(["hollow.test.ts"]);
 	});
+
+	it("does NOT flag a test-only SUPPORT artifact (non-test-named file, e.g. a fixture)", () => {
+		// A RED set may include a fixture/helper imported by the test; it legitimately
+		// has no assertion and must not be treated as a hollow test.
+		const gaps = assertionPresenceGaps(snap({
+			"src/runtime/manifest_fixture.ts": "export const fixture = 'red';",
+			"src/session-policy.test.ts": "expect(f()).toBe(1)",
+		}));
+		expect(gaps).toEqual([]);
+	});
 });

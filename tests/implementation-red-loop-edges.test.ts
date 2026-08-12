@@ -131,6 +131,7 @@ function mkCtx(opts: {
 	onTddCall?: (call: AgentCall, index: number) => void;
 	onCoverageCall?: (call: AgentCall, index: number) => void;
 	onImplCall?: (call: AgentCall, index: number) => void;
+	redReviewVerdict?: string;
 } = {}): { ctx: StageContext; tddCalls: AgentCall[]; boundaryCalls: AgentCall[]; coverageCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
 	const queue = [...(opts.tddControls ?? [DEFAULT_TDD_CONTROL])];
 	const boundaryQueue = [...(opts.boundaryControls ?? [])];
@@ -169,6 +170,12 @@ function mkCtx(opts: {
 				implCalls.push(call);
 				opts.onImplCall?.(call, implCalls.length);
 				return { text: "", control: { filesModified: ["src/x.ts"] } };
+			}
+			if (call.agent === "code-reviewer") {
+				// RED test-quality review (R2): default to STRONG so accepted RED
+				// proceeds — these edge tests exercise the RED-oracle/boundary/coverage
+				// paths, not the review gate. Overridable via opts.redReviewVerdict.
+				return { text: "", control: { verdict: opts.redReviewVerdict ?? "strong", summary: "ok" } };
 			}
 			return { text: "", control: {} };
 		},
@@ -416,7 +423,7 @@ describe("P3 edges — RED pollution is detected and rolled back", () => {
 				onTddCall: (_call, index) => {
 					mkdirSync(join(dir, "tests"), { recursive: true });
 					if (index === 1) writeFileSync(join(dir, weakPath), "it('too weak', () => {});\n");
-					else writeFileSync(join(dir, redPath), "it('real red', () => { throw new Error('red'); });\n");
+					else writeFileSync(join(dir, redPath), "it('real red', () => { expect(1).toBe(2); });\n");
 				},
 			});
 
@@ -493,7 +500,7 @@ describe("P3 edges — RED pollution is detected and rolled back", () => {
 						return;
 					}
 					mkdirSync(join(dir, "tests"), { recursive: true });
-					writeFileSync(join(dir, "tests", "red.test.ts"), "import { describe, it } from 'vitest';\ndescribe('red', () => { it('fails first', () => { throw new Error('red'); }); });\n");
+					writeFileSync(join(dir, "tests", "red.test.ts"), "import { describe, it } from 'vitest';\ndescribe('red', () => { it('fails first', () => { expect(1).toBe(2); }); });\n");
 				},
 			});
 
@@ -665,7 +672,7 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 				tddControls: [{ testFiles: [testPath] }],
 				onTddCall: () => {
 					mkdirSync(join(dir, "tests"), { recursive: true });
-					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { throw new Error('red'); });\n");
+					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { expect(1).toBe(2); });\n");
 				},
 			});
 
@@ -698,7 +705,7 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 				tddControls: [{ testFiles: [testPath] }],
 				onTddCall: () => {
 					mkdirSync(join(dir, "tests"), { recursive: true });
-					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { throw new Error('red'); });\n");
+					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { expect(1).toBe(2); });\n");
 				},
 				onImplCall: () => {
 					writeFileSync(join(dir, testPath), "it('forces real behavior', () => {});\n");
@@ -735,7 +742,7 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 				tddControls: [{ testFiles: [testPath] }, { testFiles: [testPath] }],
 				onTddCall: () => {
 					mkdirSync(join(dir, "tests"), { recursive: true });
-					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { throw new Error('red'); });\n");
+					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { expect(1).toBe(2); });\n");
 				},
 				onImplCall: (_call, index) => {
 					if (index === 1) {
