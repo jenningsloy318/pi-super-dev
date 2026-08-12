@@ -314,7 +314,24 @@ export function ownerPrecedes(ownerStage: ConvergenceOwnerStage, currentStage: C
 	return (STAGE_ORDER.get(ownerStage) ?? Number.MAX_SAFE_INTEGER) < (STAGE_ORDER.get(currentStage) ?? Number.MAX_SAFE_INTEGER);
 }
 
-export function markConvergenceFindingsAddressedFromResponses(state: PipelineState, responsesValue: unknown): number {
+/**
+ * Apply a response matrix (writer `reviewResponses` OR reviewer
+ * `priorFindingResolutions`) to the ledger.
+ *
+ * `source` encodes WHO is speaking, which bounds how far a response may advance
+ * a finding's status:
+ *  - `"writer"` (default): a writer response is only a CLAIM. `verified` and
+ *    `deferred` are CLAMPED to `addressed` — a writer must not self-clear a
+ *    blocker; it stays blocking until a reviewer verifies it (matches the
+ *    documented "keep prior findings until verified" contract).
+ *  - `"reviewer"`: the reviewer is the verification authority, so `verified`
+ *    and `deferred` are honored and clear the blocker.
+ */
+export function markConvergenceFindingsAddressedFromResponses(
+	state: PipelineState,
+	responsesValue: unknown,
+	source: "writer" | "reviewer" = "writer",
+): number {
 	const responses = Array.isArray(responsesValue) ? responsesValue as Array<Record<string, unknown>> : [];
 	let count = 0;
 	for (const response of responses) {
@@ -323,7 +340,11 @@ export function markConvergenceFindingsAddressedFromResponses(state: PipelineSta
 		const status = normalizeStatus(response.status, "addressed");
 		const finding = ledger(state).findings.find((candidate) => candidate.id === findingId || candidate.priorFindingId === findingId);
 		if (!finding) continue;
-		finding.status = status === "verified" ? "verified" : status === "deferred" ? "deferred" : "addressed";
+		// Only a reviewer may VERIFY/DEFER a finding out of the blocking set. A
+		// writer's verified/deferred claim is clamped to `addressed` (still blocking).
+		finding.status = source === "reviewer"
+			? (status === "verified" ? "verified" : status === "deferred" ? "deferred" : "addressed")
+			: "addressed";
 		finding.lastSeenAt = localTimestamp();
 		const entry: ConvergenceFindingResponse = {
 			findingId,

@@ -72,4 +72,30 @@ describe("convergence ledger review finding taxonomy", () => {
 		expect(getConvergenceLedger(state).findings[0]!.status).toBe("verified");
 		expect(blockingConvergenceFindings(state)).toEqual([]);
 	});
+
+	// Regression (review-finding round 3): a WRITER response cannot self-verify a
+	// blocker out of the set — `verified`/`deferred` from a writer is clamped to
+	// `addressed`. Only a REVIEWER response (`source: "reviewer"`) may verify/defer.
+	it("clamps a writer's verified/deferred claim to addressed; reviewer verify clears", () => {
+		const state = {} as PipelineState;
+		recordReviewFindingsFromControl(state, {
+			verdict: "Changes Requested",
+			findings: [{ id: "F1", severity: "high", status: "open", blocking: true, title: "AC-01 not measurable", detail: "fix it" }],
+		}, { detectedAtStage: "requirementsReview", ownerStage: "requirements", sourceGate: "requirements-review" });
+
+		// Writer CLAIMS verified → clamped to addressed, STILL blocking.
+		markConvergenceFindingsAddressedFromResponses(state, [{ findingId: "F1", status: "verified", response: "I fixed it, trust me" }], "writer");
+		expect(getConvergenceLedger(state).findings[0]!.status).toBe("addressed");
+		expect(blockingConvergenceFindings(state).map((f) => f.id)).toEqual(["F1"]);
+
+		// Writer CLAIMS deferred → also clamped to addressed, STILL blocking.
+		markConvergenceFindingsAddressedFromResponses(state, [{ findingId: "F1", status: "deferred", response: "not important" }], "writer");
+		expect(getConvergenceLedger(state).findings[0]!.status).toBe("addressed");
+		expect(blockingConvergenceFindings(state).map((f) => f.id)).toEqual(["F1"]);
+
+		// Reviewer VERIFIES via priorFindingResolutions → clears it.
+		markConvergenceFindingsAddressedFromResponses(state, [{ findingId: "F1", status: "verified", response: "confirmed resolved" }], "reviewer");
+		expect(getConvergenceLedger(state).findings[0]!.status).toBe("verified");
+		expect(blockingConvergenceFindings(state)).toEqual([]);
+	});
 });

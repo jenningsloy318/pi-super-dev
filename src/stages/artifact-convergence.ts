@@ -301,7 +301,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					const reviewControl = (state as Record<string, unknown>)[review.reviewStateKey] as ControlObj | undefined;
 					// The reviewer's verification of prior findings also updates the ledger
 					// (a finding it confirms resolved is marked, so it stops blocking).
-					const resolved = markConvergenceFindingsAddressedFromResponses(state, reviewControl?.priorFindingResolutions);
+					const resolved = markConvergenceFindingsAddressedFromResponses(state, reviewControl?.priorFindingResolutions, "reviewer");
 					if (resolved > 0) ctx.log(`${options.feedbackKey} convergence: reviewer resolved ${resolved} prior finding(s)`);
 					const approved = reviewVerdictApproves(reviewControl?.verdict) && !reviewHasBlockingFinding(reviewControl);
 					if (!approved) {
