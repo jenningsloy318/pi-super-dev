@@ -11,7 +11,7 @@
  * own stable path across re-runs.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderAndWrite, reserveStageDocs } from "../src/render/render.ts";
@@ -40,6 +40,24 @@ const specControl = () => ({
 	acceptanceCriteriaRefs: ["AC-01"], scenarioRefs: ["SCENARIO-001"],
 	phases: [{ name: "P1", description: "d" }],
 	tasks: [{ phase: "P1", description: "do it" }],
+});
+
+/** A spec control whose phase declares a formal test-deliverable contract — the
+ *  field the spec-reviewer keeps demanding but the plan template used to drop. */
+const specControlWithDeliverables = () => ({
+	title: "T", date: "2026-08-12", summary: "s",
+	architecture: "a", testingStrategy: "t",
+	acceptanceCriteriaRefs: ["AC-01"], scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+	phases: [{
+		name: "P1", description: "d", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+		deliverables: {
+			requireScenarios: ["SCENARIO-001", "SCENARIO-002"],
+			requireTests: ["parses supa csv"],
+			requireFiles: ["parser.go"],
+			requireContains: [{ file: "parser.go", pattern: "ParseSupaCSV" }],
+		},
+	}],
+	tasks: [{ phase: "P1", description: "do it", scenarioRefs: ["SCENARIO-001"] }],
 });
 
 const filesFor = (slug: string) => readdirSync(dir).filter((f) => new RegExp(`^\\d{2}-${slug}\\.md$`).test(f));
@@ -126,5 +144,24 @@ describe("renderAndWrite doc-path idempotency (retry re-uses the same NN-<slug>.
 		expect(filesFor("specification")).toEqual(["08-specification.md"]);
 		expect(filesFor("implementation-plan")).toEqual(["09-implementation-plan.md"]);
 		expect(filesFor("task-list")).toEqual(["10-task-list.md"]);
+	});
+
+	it("the rendered implementation plan carries the formal deliverables contract (not just prose Scenario refs)", () => {
+		// Regression (run 2026-08-12T07-24-15: spec/review looped 8 rounds). The
+		// spec-writer emitted phases[].deliverables.requireScenarios, but the plan
+		// template only rendered `Scenario refs:` and DROPPED deliverables — so the
+		// reviewer, reading the rendered md, kept opening the same unfixable
+		// "scenario-mapped phases lack formal test deliverables" blocking finding.
+		const s = setup();
+		renderAndWrite(s, () => {}, "spec", specControlWithDeliverables());
+		const planFile = readdirSync(dir).find((f) => /-implementation-plan\.md$/.test(f))!;
+		const plan = readFileSync(join(dir, planFile), "utf8");
+		// The enforceable metadata the reviewer checks for MUST be in the rendered doc.
+		expect(plan).toContain("deliverables.requireScenarios");
+		expect(plan).toContain("SCENARIO-001");
+		expect(plan).toContain("SCENARIO-002");
+		expect(plan).toContain("deliverables.requireTests");
+		expect(plan).toContain("parses supa csv");
+		expect(plan).toContain("ParseSupaCSV");
 	});
 });

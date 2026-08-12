@@ -12,4 +12,28 @@
 {% if phase.scenarioRefs %}
 Scenario refs: {{ phase.scenarioRefs | join(", ") }}
 {% endif %}
+{% if phase.deliverables %}
+### Test deliverables (enforced contract)
+{% if phase.deliverables.requireScenarios %}
+- deliverables.requireScenarios: {{ phase.deliverables.requireScenarios | join(", ") }}
+{% endif %}
+{% if phase.deliverables.requireTests %}
+- deliverables.requireTests: {{ phase.deliverables.requireTests | join(", ") }}
+{% endif %}
+{% if phase.deliverables.requireFiles %}
+- deliverables.requireFiles: {{ phase.deliverables.requireFiles | join(", ") }}
+{% endif %}
+{% if phase.deliverables.requireContains %}
+- deliverables.requireContains:
+{% for c in phase.deliverables.requireContains %}
+  - `{{ c.file }}` matches `{{ c.pattern }}`
+{% endfor %}
+{% endif %}
+{% if phase.deliverables.requireNotContains %}
+- deliverables.requireNotContains:
+{% for c in phase.deliverables.requireNotContains %}
+  - `{{ c.file }}` must NOT match `{{ c.pattern }}`
+{% endfor %}
+{% endif %}
+{% endif %}
 {% endfor %}

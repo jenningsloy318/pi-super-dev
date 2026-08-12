@@ -88,6 +88,19 @@ describe("spec-doc numbering (computed from disk: count + 1)", () => {
 		expect(p).toContain("BDD SCENARIO-NNN coverage");
 	});
 
+	it("spec review prompt uses the render-set implementationPlanPath/taskListPath (not N/A)", () => {
+		// Regression: renderAndWrite sets control.implementationPlanPath /
+		// control.taskListPath (slug→camelCase+Path), but the prompt read
+		// planPath/tasksPath (never set) → the reviewer saw "Plan: N/A / Tasks: N/A"
+		// and was not pointed at the plan doc that carries the deliverables contract.
+		const control = { specificationPath: "/tmp/01-specification.md", implementationPlanPath: "/tmp/02-implementation-plan.md", taskListPath: "/tmp/03-task-list.md", phaseCount: 3 };
+		const p = buildSpecReviewPrompt(s, null, control);
+		expect(p).toContain("Plan: /tmp/02-implementation-plan.md");
+		expect(p).toContain("Tasks: /tmp/03-task-list.md");
+		expect(p).not.toContain("Plan: N/A");
+		expect(p).not.toContain("Tasks: N/A");
+	});
+
 	it("spec prompt warns deliverable regexes not to overfit examples or comments", () => {
 		const p = buildSpecPrompt(s, null, "t", null, null, null, null, null);
 		expect(p).toContain("avoid arbitrary local variable names");
