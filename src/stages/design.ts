@@ -35,12 +35,20 @@ export const designStage: Stage = {
 			prompt: buildDesignPrompt(setup, state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null, state.assessment ?? null, designerAgent),
 			schema: STAGE_MODELS["design"]?.schema,
 		});
-		renderAndWrite(setup, (m) => ctx.log(m), "design", result.control as Record<string, unknown> | null);
 		if (!result.control) {
 			// A designer WAS selected but timed out / returned no control: a FAILURE,
 			// not a skip. Return null; designConvergenceNode retries (its `skipped`
 			// predicate is false for a non-bug task) instead of bypassing the gate.
 			ctx.log(`Design: designer ${designerAgent} produced no design artifact${result.error ? ` — ${result.error}` : ""}`);
+			return null;
+		}
+		// renderAndWrite returns the written doc path, or NULL when schema/render
+		// validation failed (incomplete control → no NN-design.md on disk). A null
+		// here means the design review would run against a MISSING document, so treat
+		// it as a failure and retry rather than passing the gate on a phantom design.
+		const docPath = renderAndWrite(setup, (m) => ctx.log(m), "design", result.control as Record<string, unknown>);
+		if (!docPath) {
+			ctx.log(`Design: designer ${designerAgent} returned control that failed schema/render — no design doc written; retrying`);
 			return null;
 		}
 		ctx.log(`Design complete (agent: ${designerAgent})`);

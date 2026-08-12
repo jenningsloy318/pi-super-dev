@@ -16,7 +16,10 @@
  *  - no escalate callback wired ⇒ the loop keeps looping (never blocks), and a
  *    later approval still converges (additive baseline).
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, readdirSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext, Escalate } from "../types.ts";
 import { requirementsConvergenceNode, designConvergenceNode } from "./artifact-convergence.ts";
 
@@ -183,9 +186,26 @@ describe("artifactConvergenceNode — upstream review layer", () => {
 // when a selected designer times out. designConvergenceNode must distinguish
 // them by CLASSIFICATION: taskType==="bug" ⇒ skip+converge; otherwise a null
 // design is a FAILURE ⇒ retry, never a silent bypass of the design review gate.
-function makeDesignCtx(opts: { taskType: string; designerReturnsNull: boolean; reviews: ControlObj[]; logs: string[]; maxRounds?: number }): StageContext {
+// design is a FAILURE ⇒ retry, never a silent bypass of the design review gate.
+// These use a REAL temp spec dir so renderAndWrite actually validates + writes
+// the NN-design.md (Fix A: a control that fails schema/render writes no doc and
+// must NOT pass the gate).
+const VALID_DESIGN = { title: "D", date: "2026-08-12", summary: "s", designer: "architecture-designer", modules: [{ name: "M", description: "d" }], hasNumericConstants: "no" };
+
+function designState(taskType: string, specDir: string, worktree: string): PipelineState {
+	return {
+		task: "t",
+		options: {} as never,
+		setup: { worktreePath: worktree, specDirectory: specDir, defaultBranch: "main", language: "backend", isWebUi: false, specIdentifier: "01", worktreeCreated: false, initializedRepo: false },
+		classify: { taskType, uiScope: "none", language: "backend", isWebUi: false },
+	} as unknown as PipelineState;
+}
+
+/** designControls: per-round `pipeline.design` control (null = timeout). */
+function makeDesignCtx(opts: { designControls: Array<Record<string, unknown> | null>; reviews: ControlObj[]; logs: string[]; taskType?: string; maxRounds?: number }): StageContext {
 	let rounds = 0;
 	let designRounds = 0;
+	let reviewRounds = 0;
 	return {
 		task: "t",
 		options: {},
@@ -198,13 +218,14 @@ function makeDesignCtx(opts: { taskType: string; designerReturnsNull: boolean; r
 		signal: undefined,
 		async agent(call: AgentCall): Promise<AgentResult> {
 			if (call.id === "pipeline.design") {
+				const ctrl = opts.designControls[Math.min(designRounds, opts.designControls.length - 1)];
 				designRounds++;
-				if (opts.designerReturnsNull) return { text: "", control: null, error: "timeout" };
-				return { text: "", control: { docPath: "/tmp/spec/06-design.md", modules: [{ name: "M", description: "d" }] } as ControlObj };
+				return ctrl == null ? { text: "", control: null, error: "timeout" } : { text: "", control: ctrl as ControlObj };
 			}
 			if (call.id === "pipeline.designReview") {
-				const idx = Math.min(designRounds - 1, opts.reviews.length - 1);
-				return { text: "", control: opts.reviews[idx] };
+				const ctrl = opts.reviews[Math.min(reviewRounds, opts.reviews.length - 1)];
+				reviewRounds++;
+				return { text: "", control: ctrl };
 			}
 			return { text: "", control: {} as ControlObj };
 		},
@@ -223,20 +244,22 @@ function makeDesignCtx(opts: { taskType: string; designerReturnsNull: boolean; r
 	} as unknown as StageContext;
 }
 
-function designState(taskType: string): PipelineState {
-	return {
-		task: "t",
-		options: {} as never,
-		setup: { worktreePath: "/tmp/wt", specDirectory: "/tmp/spec", defaultBranch: "main", language: "backend", isWebUi: false, specIdentifier: "01", worktreeCreated: false, initializedRepo: false },
-		classify: { taskType, uiScope: "none", language: "backend", isWebUi: false },
-	} as unknown as PipelineState;
-}
-
 describe("designConvergenceNode — skip vs designer-failure (review-finding #1)", () => {
+	let specDir = "";
+	let worktree = "";
+	beforeEach(() => {
+		worktree = mkdtempSync(join(tmpdir(), "sd-dwt-"));
+		specDir = mkdtempSync(join(tmpdir(), "sd-dspec-")) + "/";
+	});
+	afterEach(() => {
+		for (const d of [specDir, worktree]) if (d && existsSync(d)) rmSync(d, { recursive: true, force: true });
+		specDir = worktree = "";
+	});
+
 	it("bug fix ⇒ intentional skip ⇒ converges WITHOUT running design review", async () => {
 		const logs: string[] = [];
-		const ctx = makeDesignCtx({ taskType: "bug", designerReturnsNull: false, reviews: [approved], logs });
-		const result = await designConvergenceNode.run(designState("bug"), ctx);
+		const ctx = makeDesignCtx({ taskType: "bug", designControls: [VALID_DESIGN], reviews: [approved], logs });
+		const result = await designConvergenceNode.run(designState("bug", specDir, worktree), ctx);
 		expect(result.status).toBe("ok");
 		expect(hasLog(logs, "skipped (no artifact produced)")).toBe(true);
 		expect(hasLog(logs, "review approved")).toBe(false); // review never ran
@@ -244,39 +267,29 @@ describe("designConvergenceNode — skip vs designer-failure (review-finding #1)
 
 	it("feature + designer returns null (timeout) ⇒ NOT a skip ⇒ retries, does not bypass the gate", async () => {
 		const logs: string[] = [];
-		// designer times out the first round, succeeds the second, then review approves.
-		let call = 0;
-		const ctx = {
-			task: "t",
-			options: {},
-			state: {} as PipelineState,
-			budget: { check: (() => { let r = 0; return () => r++ < 40; })(), spent: () => true, count: 0 },
-			log: (m: string) => logs.push(m),
-			phase: () => {},
-			events: { on() {}, off() {}, emit() {} },
-			results: [],
-			signal: undefined,
-			async agent(c: AgentCall): Promise<AgentResult> {
-				if (c.id === "pipeline.design") {
-					call++;
-					if (call === 1) return { text: "", control: null, error: "timeout" };
-					return { text: "", control: { docPath: "/tmp/spec/06-design.md", modules: [{ name: "M", description: "d" }] } as ControlObj };
-				}
-				if (c.id === "pipeline.designReview") return { text: "", control: approved };
-				return { text: "", control: {} as ControlObj };
-			},
-			async helper(c: { name: string }) {
-				if (c.name === "route-designer") return { value: { designerAgent: "architecture-designer", reason: "feature" } as ControlObj, digest: "" };
-				return { value: { pass: true, errors: [] } as ControlObj, digest: "PASS" };
-			},
-			async parallel() { return []; },
-		} as unknown as StageContext;
-		const result = await designConvergenceNode.run(designState("feature"), ctx);
+		// timeout round 1, valid design round 2, then review approves.
+		const ctx = makeDesignCtx({ taskType: "feature", designControls: [null, { ...VALID_DESIGN }], reviews: [approved], logs });
+		const result = await designConvergenceNode.run(designState("feature", specDir, worktree), ctx);
 		expect(result.status).toBe("ok");
-		// The timeout round is a FAILURE (retried), NOT a silent skip.
 		expect(hasLog(logs, "no artifact produced")).toBe(true);
 		expect(hasLog(logs, "skipped (no artifact produced)")).toBe(false);
 		expect(hasLog(logs, "review approved")).toBe(true); // gate DID run after the retry
-		expect(call).toBe(2); // designer re-ran
+	});
+
+	// Fix A (review-finding: renderAndWrite null ignored): an INCOMPLETE control
+	// passes result.control != null but FAILS schema/render, so NO NN-design.md is
+	// written. This must be a failure→retry, NOT a silent gate bypass.
+	it("feature + control that fails schema/render (no design doc) ⇒ retries, does not approve on a phantom design", async () => {
+		const logs: string[] = [];
+		// round 1: control present but missing required fields (modules/designer) →
+		// renderAndWrite returns null, no doc written. round 2: valid → doc written.
+		const incomplete = { title: "only a title" };
+		const ctx = makeDesignCtx({ taskType: "feature", designControls: [incomplete, { ...VALID_DESIGN }], reviews: [approved], logs });
+		const result = await designConvergenceNode.run(designState("feature", specDir, worktree), ctx);
+		expect(result.status).toBe("ok");
+		// The incomplete round wrote NO doc and was retried, not approved.
+		expect(hasLog(logs, "failed schema/render")).toBe(true);
+		// Exactly one design doc exists on disk (from the valid round).
+		expect(readdirSync(specDir).filter((f) => /-design\.md$/.test(f)).length).toBe(1);
 	});
 });

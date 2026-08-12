@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockingConvergenceFindings, getConvergenceLedger, recordReviewFindingsFromControl } from "../src/convergence-ledger.ts";
+import { blockingConvergenceFindings, getConvergenceLedger, markConvergenceFindingsAddressedFromResponses, markConvergenceFindingsVerified, recordReviewFindingsFromControl } from "../src/convergence-ledger.ts";
 import type { PipelineState } from "../src/types.ts";
 
 describe("convergence ledger review finding taxonomy", () => {
@@ -46,5 +46,30 @@ describe("convergence ledger review finding taxonomy", () => {
 		}, { detectedAtStage: "verification", ownerStage: "implementation", sourceGate: "verification-review" });
 
 		expect(blockingConvergenceFindings(state).map((finding) => finding.id)).toEqual(["AMB-1"]);
+	});
+
+	// Semantics (review-finding clarification): a writer's `reviewResponses` marks
+	// a finding `addressed` — the writer's CLAIM, not a confirmed fix. It stays
+	// blocking (re-surfaced to the reviewer) until the reviewer VERIFIES it. Only
+	// a `verified`/`deferred` status clears it from the blocking set. This matches
+	// the spec-convergence "keep prior findings until verified" contract.
+	it("an addressed finding STAYS blocking (writer claim) until verified; verified clears it", () => {
+		const state = {} as PipelineState;
+		recordReviewFindingsFromControl(state, {
+			verdict: "Changes Requested",
+			findings: [{ id: "F1", severity: "high", status: "open", blocking: true, title: "AC-01 not measurable", detail: "add a concrete assertion" }],
+		}, { detectedAtStage: "requirementsReview", ownerStage: "requirements", sourceGate: "requirements-review" });
+		expect(blockingConvergenceFindings(state).map((f) => f.id)).toEqual(["F1"]);
+
+		// Writer claims F1 addressed → status addressed, but STILL blocking (unverified).
+		const n = markConvergenceFindingsAddressedFromResponses(state, [{ findingId: "F1", status: "addressed", response: "clarified AC-01" }]);
+		expect(n).toBe(1);
+		expect(getConvergenceLedger(state).findings[0]!.status).toBe("addressed");
+		expect(blockingConvergenceFindings(state).map((f) => f.id)).toEqual(["F1"]);
+
+		// Reviewer VERIFIES F1 → it leaves the blocking set.
+		markConvergenceFindingsVerified(state, (f) => f.id === "F1");
+		expect(getConvergenceLedger(state).findings[0]!.status).toBe("verified");
+		expect(blockingConvergenceFindings(state)).toEqual([]);
 	});
 });

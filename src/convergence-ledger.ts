@@ -294,6 +294,17 @@ export function activeConvergenceFindings(state: PipelineState): ConvergenceFind
 	return ledger(state).findings.filter((finding) => ["open", "addressed", "needs-human"].includes(finding.status));
 }
 
+/**
+ * Findings that BLOCK progress and are surfaced in retry feedback / stagnation.
+ *
+ * `addressed` is INTENTIONALLY still blocking: it is the WRITER'S CLAIM that a
+ * finding is resolved, not a confirmed fix. It stays in the retry feedback so
+ * the reviewer re-checks it, and only leaves the blocking set when the reviewer
+ * VERIFIES it (`markConvergenceFindingsVerified` → `verified`) or explicitly
+ * defers it. This mirrors the spec-convergence contract ("keep prior findings
+ * in the retry prompt until verified") — a writer must not self-clear a blocker
+ * by merely asserting it addressed. `needs-human` also stays blocking.
+ */
 export function blockingConvergenceFindings(state: PipelineState): ConvergenceFinding[] {
 	return activeConvergenceFindings(state).filter((finding) => finding.blocking);
 }
