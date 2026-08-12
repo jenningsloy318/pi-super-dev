@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderAndWrite } from "../src/render/render.ts";
+import { renderAndWrite, reserveStageDocs } from "../src/render/render.ts";
 import type { SetupControl } from "../src/types.ts";
 
 let dir: string;
@@ -58,6 +58,26 @@ describe("renderAndWrite doc-path idempotency (retry re-uses the same NN-<slug>.
 		});
 		expect(second).toBe(first);
 		expect(filesFor("requirements")).toHaveLength(1);
+	});
+
+	it("reserveStageDocs resolves the exact NN-<slug>.md paths at stage start (stable across calls)", () => {
+		// spec is multi-doc: specification + implementation-plan + task-list.
+		const a = reserveStageDocs(setup(), "spec");
+		expect(a.map((d) => d.slug)).toEqual(["specification", "implementation-plan", "task-list"]);
+		expect(a.every((d) => /^\d{2}-.+\.md$/.test(d.name))).toBe(true);
+		// Reserving again (before any write) returns the SAME paths — deterministic.
+		const b = reserveStageDocs(setup(), "spec");
+		expect(b.map((d) => d.path)).toEqual(a.map((d) => d.path));
+	});
+
+	it("logs the reserved doc filename into the stream (`doc → NN-<slug>.md`)", () => {
+		const lines: string[] = [];
+		renderAndWrite(setup(), (m) => lines.push(m), "requirements", {
+			title: "T", date: "2026-08-12", type: "feature", priority: "high",
+			executiveSummary: "e", acceptanceCriteria: [{ id: "AC-01", statement: "x" }, { id: "AC-02", statement: "y" }],
+			nonFunctional: ["nf"], openQuestions: [],
+		});
+		expect(lines.some((l) => /requirements: doc → \d{2}-requirements\.md/.test(l))).toBe(true);
 	});
 
 	it("the multi-doc spec stage keeps ONE file per slug across re-runs (the 06/09/11 bug)", () => {

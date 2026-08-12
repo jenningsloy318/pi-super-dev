@@ -708,6 +708,10 @@ export function writerTask(spec: {
 		async run(state, ctx) {
 			if (!ctx.budget.check()) return undefined;
 			const model = STAGE_MODELS[spec.id];
+			// Stick a stream log at stage START naming which AGENT is working. The
+			// exact doc filename it will write is logged by renderAndWrite (`doc → …`,
+			// stable across retries — overwritten in place, never a new index).
+			ctx.log(`${spec.id}: agent ${spec.agent} working`);
 			const result = await ctx.agent({
 				id: `pipeline.${spec.id}`,
 				agent: spec.agent,
