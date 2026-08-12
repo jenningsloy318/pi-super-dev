@@ -2,12 +2,12 @@ import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
-import { isApprovedVerdict } from "../doc-validators.ts";
 import { reviewHasBlockingFinding } from "../review-findings.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import {
 	blockingConvergenceFindings,
 	convergenceRetryFeedback,
+	markConvergenceFindingsAddressedFromResponses,
 	markConvergenceFindingsVerified,
 	normalizeConvergenceStage,
 	ownerPrecedes,
@@ -208,6 +208,20 @@ function getEscalate(ctx: StageContext): Escalate | undefined {
 	return (ctx as { options?: { escalate?: Escalate } }).options?.escalate;
 }
 
+/** Review-verdict approval for the upstream reviewers. Unlike the strict
+ *  `isApprovedVerdict` (which rejects ANY verdict containing "revision"), this
+ *  honors the reviewer contract that "APPROVED WITH REVISIONS" is a SUGGESTION-
+ *  ONLY pass — approved when the verdict affirmatively approves and is not an
+ *  explicit rejection. "REVISIONS NEEDED" / "Changes Requested" / "Rejected"
+ *  stay rejected. AND-ed with `!reviewHasBlockingFinding` at the call site so a
+ *  blocking finding still blocks regardless of verdict wording. */
+function reviewVerdictApproves(verdict: unknown): boolean {
+	const v = String(verdict ?? "").trim().toLowerCase();
+	if (!v) return false;
+	if (/(changes?\s+requested|revisions?\s+needed|reject|contest|blocked|fail|declined)/i.test(v)) return false;
+	return /\b(approved|pass|accept)/i.test(v);
+}
+
 export function artifactConvergenceNode(options: ArtifactConvergenceOptions): Node {
 	const stageTask = task(options.stage);
 	const reviewTask = options.review ? task(options.review.stage) : null;
@@ -242,6 +256,26 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					return { status: "ok" as const, attempts: round };
 				}
 
+				// The writer reported ok but produced NO artifact (returned null — e.g. a
+				// selected designer timed out). This is a FAILURE, not a skip: retry so a
+				// missing artifact never slips past the deterministic + review gates.
+				if ((state as Record<string, unknown>)[options.feedbackKey] == null) {
+					lastErrors = [`${options.feedbackKey} agent produced no artifact (empty/failed output)`];
+					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-empty`);
+					setArtifactFeedback(options, state, lastErrors);
+					ctx.log(`${options.feedbackKey} convergence: ✗ no artifact produced round ${round} — retrying`);
+					continue;
+				}
+
+				// Apply the writer's response matrix to the convergence ledger (mirrors
+				// spec-convergence): a prior finding the rewrite claims to have addressed
+				// is marked addressed so it stops being re-injected as an active blocker.
+				if (options.review) {
+					const artifact = (state as Record<string, unknown>)[options.feedbackKey] as ControlObj | undefined;
+					const addressed = markConvergenceFindingsAddressedFromResponses(state, artifact?.reviewResponses);
+					if (addressed > 0) ctx.log(`${options.feedbackKey} convergence: writer response matrix addressed ${addressed} prior finding(s)`);
+				}
+
 				const result = options.validate ? await options.validate(state, ctx) : { pass: true, errors: [] };
 				if (!result.pass) {
 					lastErrors = result.errors;
@@ -265,7 +299,11 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						continue;
 					}
 					const reviewControl = (state as Record<string, unknown>)[review.reviewStateKey] as ControlObj | undefined;
-					const approved = isApprovedVerdict(reviewControl?.verdict) && !reviewHasBlockingFinding(reviewControl);
+					// The reviewer's verification of prior findings also updates the ledger
+					// (a finding it confirms resolved is marked, so it stops blocking).
+					const resolved = markConvergenceFindingsAddressedFromResponses(state, reviewControl?.priorFindingResolutions);
+					if (resolved > 0) ctx.log(`${options.feedbackKey} convergence: reviewer resolved ${resolved} prior finding(s)`);
+					const approved = reviewVerdictApproves(reviewControl?.verdict) && !reviewHasBlockingFinding(reviewControl);
 					if (!approved) {
 						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
 						lastErrors = compactReviewFindings(reviewControl);
@@ -361,6 +399,10 @@ export const designConvergenceNode = artifactConvergenceNode({
 	feedbackKey: "design",
 	expected: "A design with defined interface contracts, grounded/feasible architecture, and no requirement/design conflicts, ready for the spec to consume.",
 	nextAction: "Revise the design so every module has a defined input/output/error contract, every referenced integration point is grounded in the actual codebase, and it satisfies every requirement without unjustified complexity, before calling structured_output.",
-	skipped: (s) => !s.design,
+	// Intentional skip is decided by CLASSIFICATION (bug fixes are not redesigned),
+	// NOT by `!s.design` — otherwise a designer that timed out (also leaving
+	// state.design undefined) would be mistaken for a skip and bypass the review
+	// gate. For a non-bug task, an absent design means the designer FAILED → retry.
+	skipped: (s) => s.classify?.taskType === "bug",
 	review: { stage: designReviewWriter, reviewStateKey: "designReview", ownerStage: "design" },
 });
