@@ -1,24 +1,57 @@
 import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
-import type { Node, PipelineState, Stage, StageContext } from "../types.ts";
+import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
+import { isApprovedVerdict } from "../doc-validators.ts";
+import { reviewHasBlockingFinding } from "../review-findings.ts";
+import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import {
+	blockingConvergenceFindings,
+	convergenceRetryFeedback,
 	markConvergenceFindingsVerified,
 	normalizeConvergenceStage,
+	ownerPrecedes,
 	recordConvergenceFindings,
+	recordReviewFindingsFromControl,
 	type ConvergenceOwnerStage,
 } from "../convergence-ledger.ts";
-import { bddWriter, requirementsWriter, researchWriter } from "./writers.ts";
+import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
+import { designStage } from "./design.ts";
 
 type ArtifactValidator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
 
+/** Optional Fagan-style LLM review step layered on top of the deterministic
+ *  validate (shift-left): after the artifact passes its deterministic gate, a
+ *  reviewer agent judges CONTENT quality across stage-specific dimensions and
+ *  returns a verdict. A non-approved verdict (or any blocking finding) feeds the
+ *  review findings back into the next writer attempt — same convergence loop, so
+ *  a reviewer-only retry can never masquerade as a fix. When the SAME blocking
+ *  findings recur unchanged (a stall), the run escalates to the user (HITL). */
+interface ArtifactReviewOptions {
+	/** The reviewer writer stage (e.g. requirementsReviewWriter). */
+	stage: Stage;
+	/** State key its control object lands under (e.g. "requirementsReview"). */
+	reviewStateKey: string;
+	/** Owning stage for recorded findings (e.g. "requirements"). */
+	ownerStage: ConvergenceOwnerStage;
+}
+
 interface ArtifactConvergenceOptions {
 	stage: Stage;
-	feedbackKey: "requirements" | "bdd" | "research";
-	validate: ArtifactValidator;
+	feedbackKey: "requirements" | "bdd" | "research" | "design";
+	/** Deterministic validator. OPTIONAL: the design stage has no deterministic
+	 *  gate (its quality is judged only by the LLM review), so it omits this. */
+	validate?: ArtifactValidator;
 	expected: string;
 	nextAction: string;
 	ownerForError?: (error: string) => ConvergenceOwnerStage;
+	/** OPTIONAL upstream review+fix step. Absent ⇒ deterministic-validate-only
+	 *  (byte-identical to today, e.g. research). */
+	review?: ArtifactReviewOptions;
+	/** OPTIONAL skip predicate: when it returns true after the writer runs, the
+	 *  stage produced no artifact (e.g. design skipped for a bug fix) and the node
+	 *  converges immediately without review. */
+	skipped?: (state: PipelineState) => boolean;
 }
 
 function validResearchSourceCount(r: { sources?: unknown }): number {
@@ -120,17 +153,75 @@ function recordArtifactErrors(options: ArtifactConvergenceOptions, state: Pipeli
 	}), { detectedAtStage: options.feedbackKey, ownerStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), sourceGate });
 }
 
+/** Compact a reviewer control object into feedback lines the next writer attempt
+ *  can act on (mirrors spec-convergence.compactReviewFindings). */
+function compactReviewFindings(review: ControlObj | undefined): string[] {
+	const lines: string[] = [];
+	if (typeof review?.verdict === "string" && review.verdict.trim()) lines.push(`review verdict: ${review.verdict.trim()}`);
+	if (typeof review?.summary === "string" && review.summary.trim()) lines.push(`review summary: ${review.summary.trim()}`);
+	const findings = Array.isArray(review?.findings) ? review.findings as Array<Record<string, unknown>> : [];
+	for (const finding of findings.slice(0, 8)) {
+		const id = typeof finding.id === "string" ? finding.id : "finding";
+		const severity = typeof finding.severity === "string" ? finding.severity : "unspecified";
+		const title = typeof finding.title === "string" ? finding.title : "untitled";
+		const detail = typeof finding.detail === "string" ? finding.detail : "";
+		const owner = typeof finding.ownerStage === "string" ? ` owner=${finding.ownerStage}` : "";
+		const status = typeof finding.status === "string" ? ` status=${finding.status}` : "";
+		const recommendation = typeof finding.recommendation === "string" ? ` recommendation=${finding.recommendation}` : "";
+		lines.push(`review ${id} severity=${severity}${owner}${status}: ${title}${detail ? ` — ${detail}` : ""}${recommendation}`);
+	}
+	return lines;
+}
+
+/** Set the writer's retry feedback for a rejected REVIEW round: the compacted
+ *  review findings PLUS the convergence-ledger's blocking items, so upstream-owned
+ *  findings are threaded (not silently retried on the current stage alone). */
+function setReviewFeedback(options: ArtifactConvergenceOptions, state: PipelineState, source: string, errors: string[]): void {
+	const feedback: RetryFeedback = {
+		stage: options.feedbackKey,
+		gate: source,
+		observed: `The latest ${options.feedbackKey} artifact was rejected by ${source}.`,
+		expected: options.expected,
+		missing: errors.slice(0, 8),
+		diagnostics: errors.slice(8, 12),
+		nextAction: options.nextAction,
+	};
+	setRetryFeedback(state as Record<string, unknown>, options.feedbackKey, [
+		feedback,
+		...convergenceRetryFeedback(state, { stage: options.feedbackKey, currentStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), gate: source }),
+	]);
+}
+
+/** A stable signature of this stage's still-active blocking findings. When two
+ *  consecutive review rounds produce the SAME signature the reviewer keeps
+ *  flagging the same defects the writer cannot fix — a stall worth escalating. */
+function blockingSignature(state: PipelineState, owner: ConvergenceOwnerStage): string {
+	return blockingConvergenceFindings(state)
+		.filter((f) => f.ownerStage === owner || ownerPrecedes(f.ownerStage, owner))
+		.map((f) => f.fingerprint)
+		.sort()
+		.join("|");
+}
+
+/** Read the inline HITL escalate callback threaded through ctx.options. */
+function getEscalate(ctx: StageContext): Escalate | undefined {
+	return (ctx as { options?: { escalate?: Escalate } }).options?.escalate;
+}
+
 export function artifactConvergenceNode(options: ArtifactConvergenceOptions): Node {
 	const stageTask = task(options.stage);
+	const reviewTask = options.review ? task(options.review.stage) : null;
 	return {
 		kind: `${options.feedbackKey}-convergence`,
 		async run(state: PipelineState, ctx: StageContext) {
 			let round = 0;
 			let lastErrors: string[] = [];
+			let priorBlockingSignature = "";
 			while (ctx.budget.check()) {
 				round++;
 				if (ctx.signal?.aborted) return { status: "cancelled" as const };
 				ctx.log(`${options.feedbackKey} convergence: round ${round} starting`);
+				if (options.review) delete (state as Record<string, unknown>)[options.review.reviewStateKey];
 
 				const stageResult = await stageTask.run(state, ctx);
 				if (stageResult.status === "cancelled") return stageResult;
@@ -143,18 +234,88 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					continue;
 				}
 
-				const result = await options.validate(state, ctx);
-				if (result.pass) {
+				// Stage produced no artifact by design (e.g. design skipped for a bug
+				// fix): nothing to validate or review — converge immediately.
+				if (options.skipped?.(state)) {
 					clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
-					markConvergenceFindingsVerified(state, (finding) => finding.ownerStage === normalizeConvergenceStage(options.feedbackKey, options.feedbackKey) && finding.detectedAtStage === options.feedbackKey);
-					ctx.log(`${options.feedbackKey} convergence: complete (round ${round}${round > 1 ? ", after feedback" : ""})`);
+					ctx.log(`${options.feedbackKey} convergence: skipped (no artifact produced) — complete (round ${round})`);
 					return { status: "ok" as const, attempts: round };
 				}
 
-				lastErrors = result.errors;
-				recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-validation`);
-				setArtifactFeedback(options, state, lastErrors);
-				ctx.log(`${options.feedbackKey} convergence: continuing after round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
+				const result = options.validate ? await options.validate(state, ctx) : { pass: true, errors: [] };
+				if (!result.pass) {
+					lastErrors = result.errors;
+					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-validation`);
+					setArtifactFeedback(options, state, lastErrors);
+					ctx.log(`${options.feedbackKey} convergence: continuing after round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
+					continue;
+				}
+				ctx.log(`${options.feedbackKey} convergence: deterministic validation passed round ${round}`);
+
+				// Fagan-style LLM review layer (shift-left). Absent ⇒ deterministic-only.
+				if (options.review && reviewTask) {
+					const review = options.review;
+					const reviewResult = await reviewTask.run(state, ctx);
+					if (reviewResult.status === "cancelled") return reviewResult;
+					if (reviewResult.status === "failed") {
+						lastErrors = [`${review.reviewStateKey} review failed: ${reviewResult.error ?? "unknown error"}`];
+						setReviewFeedback(options, state, `${options.feedbackKey} review`, lastErrors);
+						ctx.log(`${options.feedbackKey} convergence: ✗ review failed round ${round} — ${lastErrors.join("; ")}`);
+						if (isNonRetryableAgentError(reviewResult.error)) throw new FatalAbort(nonRetryableAgentSummary(reviewResult.error));
+						continue;
+					}
+					const reviewControl = (state as Record<string, unknown>)[review.reviewStateKey] as ControlObj | undefined;
+					const approved = isApprovedVerdict(reviewControl?.verdict) && !reviewHasBlockingFinding(reviewControl);
+					if (!approved) {
+						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
+						lastErrors = compactReviewFindings(reviewControl);
+						// Stall detection → HITL escalation. The reviewer keeps flagging the
+						// same blocking findings the writer can't fix; ask the user before
+						// spinning further (bounded by ESCALATION_RETRY_CAP per stage).
+						const signature = blockingSignature(state, review.ownerStage);
+						const stalled = signature.length > 0 && signature === priorBlockingSignature;
+						priorBlockingSignature = signature;
+						if (stalled) {
+							const escalate = getEscalate(ctx);
+							const failure: EscalationFailure = {
+								kind: "stagnation",
+								stage: options.feedbackKey,
+								message: `${options.feedbackKey} review stalled: the same blocking finding(s) recurred across review rounds — ${lastErrors.join("; ")}`,
+								severity: "soft",
+								worktreePath: state.setup?.worktreePath,
+								specDirectory: state.setup?.specDirectory,
+								findings: blockingConvergenceFindings(state).filter((f) => f.ownerStage === review.ownerStage || ownerPrecedes(f.ownerStage, review.ownerStage)).slice(0, 6).map((f) => ({ severity: f.severity, title: f.title })),
+							};
+							if (escalate && escalationBudgetRemaining(state, failure) > 0) {
+								ctx.log(`${options.feedbackKey} convergence: STALL detected — escalating to user (HITL)`);
+								const decision = await runEscalation(state, failure, escalate);
+								if (decision) {
+									applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });
+									if (decision.choice === "accept-limitation") {
+										clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
+										ctx.log(`${options.feedbackKey} convergence: user accepted the limitation — proceeding (round ${round})`);
+										return { status: "ok" as const, attempts: round };
+									}
+									if (decision.choice === "abandon") {
+										throw new FatalAbort(`${options.feedbackKey} convergence: user abandoned the run at review stall — ${failure.message}`);
+									}
+									// retry-with-guidance / revise-manually: fall through to another round
+									// (guidance was persisted to .user-notes.json for the next attempt).
+									priorBlockingSignature = ""; // guidance changes the inputs; reset stall tracking
+								}
+							}
+						}
+						setReviewFeedback(options, state, `${options.feedbackKey} review`, lastErrors);
+						ctx.log(`${options.feedbackKey} convergence: ✗ review rejected round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
+						continue;
+					}
+					ctx.log(`${options.feedbackKey} convergence: ✓ review approved round ${round}`);
+				}
+
+				clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
+				markConvergenceFindingsVerified(state, (finding) => (finding.ownerStage === normalizeConvergenceStage(options.feedbackKey, options.feedbackKey) && finding.detectedAtStage === options.feedbackKey) || (options.review ? finding.detectedAtStage === options.review.reviewStateKey : false));
+				ctx.log(`${options.feedbackKey} convergence: complete (round ${round}${round > 1 ? ", after feedback" : ""})`);
+				return { status: "ok" as const, attempts: round };
 			}
 
 			const msg = `${options.feedbackKey} convergence stopped before all ambiguity/validation issues were resolved because the global agent budget was exhausted after ${round} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
@@ -170,6 +331,7 @@ export const requirementsConvergenceNode = artifactConvergenceNode({
 	validate: requirementsComplete,
 	expected: "An implementation-ready requirements document with concrete AC-NN acceptance criteria, non-functional requirements, and no unresolved open questions.",
 	nextAction: "Rewrite the requirements artifact to resolve every open question into explicit acceptance criteria or non-functional constraints before calling structured_output.",
+	review: { stage: requirementsReviewWriter, reviewStateKey: "requirementsReview", ownerStage: "requirements" },
 });
 
 export const bddConvergenceNode = artifactConvergenceNode({
@@ -178,6 +340,7 @@ export const bddConvergenceNode = artifactConvergenceNode({
 	validate: bddComplete,
 	expected: "BDD scenarios that cover every requirements AC-NN with no dangling acceptance-criteria references.",
 	nextAction: "Rewrite the complete BDD artifact so every AC-NN has scenario coverage, preserving valid scenarios and adding the missing edge/error paths before calling structured_output.",
+	review: { stage: bddReviewWriter, reviewStateKey: "bddReview", ownerStage: "bdd" },
 });
 
 export const researchConvergenceNode = artifactConvergenceNode({
@@ -186,4 +349,18 @@ export const researchConvergenceNode = artifactConvergenceNode({
 	validate: researchComplete,
 	expected: "A source-backed research report with every answerable open issue resolved before downstream assessment/spec work starts.",
 	nextAction: "Continue online research until each open issue is answered with source evidence. If a question is genuinely unresolvable because tools are unavailable, explicitly disclose that and mark affected claims unverified instead of leaving it in openIssues.",
+});
+
+/** Stage 6 design convergence: the design has no deterministic gate (its quality
+ *  is judged only by the design-reviewer's Fagan-style inspection), and it may be
+ *  SKIPPED entirely for bug fixes — in which case it produces no artifact and
+ *  converges immediately. Otherwise it loops write → review → fix until the
+ *  design-reviewer approves (or a stall escalates to the user). */
+export const designConvergenceNode = artifactConvergenceNode({
+	stage: designStage,
+	feedbackKey: "design",
+	expected: "A design with defined interface contracts, grounded/feasible architecture, and no requirement/design conflicts, ready for the spec to consume.",
+	nextAction: "Revise the design so every module has a defined input/output/error contract, every referenced integration point is grounded in the actual codebase, and it satisfies every requirement without unjustified complexity, before calling structured_output.",
+	skipped: (s) => !s.design,
+	review: { stage: designReviewWriter, reviewStateKey: "designReview", ownerStage: "design" },
 });

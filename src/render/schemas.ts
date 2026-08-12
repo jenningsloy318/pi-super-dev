@@ -144,6 +144,22 @@ export const SpecReviewData = Type.Object({
 }, { additionalProperties: false });
 export type SpecReviewDataT = Static<typeof SpecReviewData>;
 
+// Upstream reviewer schemas (requirements/bdd/design) share the SpecReview shape
+// — verdict + findings + dimensions — so a re-defined CLOSED object keeps each
+// one independently strict-capable for constrained sampling (Feature 2).
+const upstreamReviewObject = () => Type.Object({
+	title: Type.String(),
+	date: Type.String(),
+	verdict: Type.String(),
+	summary: Type.String(),
+	findings: Type.Array(Finding),
+	priorFindingResolutions: Type.Optional(Type.Array(ReviewResponse)),
+	dimensions: Type.Array(Type.Object({ name: Type.String(), status: Type.String(), notes: Type.String() }, { additionalProperties: false })),
+}, { additionalProperties: false });
+export const RequirementsReviewData = upstreamReviewObject();
+export const BddReviewData = upstreamReviewObject();
+export const DesignReviewData = upstreamReviewObject();
+
 // CLOSED so this stage schema is STRICT-CAPABLE in production (Feature 2).
 export const CodeReviewData = Type.Object({
 	title: Type.String(),
@@ -239,6 +255,9 @@ export const STAGE_MODELS: Record<string, StageModel> = {
 	assessment: { slug: "code-assessment", schema: CodeAssessmentData, template: "code-assessment.md.njk" },
 	research: { slug: "research-report", schema: ResearchData, template: "research-report.md.njk" },
 	specReview: { slug: "spec-review", schema: SpecReviewData, template: "spec-review.md.njk" },
+	requirementsReview: { slug: "requirements-review", schema: RequirementsReviewData, template: "requirements-review.md.njk" },
+	bddReview: { slug: "bdd-review", schema: BddReviewData, template: "bdd-review.md.njk" },
+	designReview: { slug: "design-review", schema: DesignReviewData, template: "design-review.md.njk" },
 	codeReview: { slug: "code-review", schema: CodeReviewData, template: "code-review.md.njk" },
 	adversarialReview: { slug: "adversarial-review", schema: AdversarialReviewData, template: "adversarial-review.md.njk" },
 	implementationSummary: { slug: "implementation-summary", schema: ImplementationSummaryData, template: "implementation-summary.md.njk" },

@@ -30,7 +30,7 @@ import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../bui
 import { implementationStage } from "./implementation.ts";
 import { verificationConvergenceNode, reviewApproved } from "./verify.ts";
 import { specConvergenceNode } from "./spec-convergence.ts";
-import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, researchComplete } from "./artifact-convergence.ts";
+import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -140,7 +140,7 @@ const pipeline = sequence(
 		// Conditional branch: debug analysis only for bug fixes.
 		branch(isBug, { yes: task(debugWriter) }),
 		task(assessmentWriter),
-		task(designStage),
+		designConvergenceNode,
 		task(prototypeStage),
 		specConvergenceNode,
 		// §D auto-iterate convergence loop: re-run implementation until allGreen,
@@ -188,10 +188,11 @@ export { setupStage } from "./setup.ts";
 export {
 	classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter,
 	debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter,
+	requirementsReviewWriter, bddReviewWriter, designReviewWriter,
 } from "./writers.ts";
 export { designStage } from "./design.ts";
 export { prototypeStage } from "./prototype.ts";
 export { specConvergenceNode } from "./spec-convergence.ts";
-export { requirementsConvergenceNode, bddConvergenceNode, researchConvergenceNode, researchComplete } from "./artifact-convergence.ts";
+export { requirementsConvergenceNode, bddConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence.ts";
 export { implementationStage } from "./implementation.ts";
 export type { ControlObj };

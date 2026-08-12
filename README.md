@@ -195,10 +195,21 @@ author — a stronger review signal), map agent roles to models in
 {
   "agentModels": {
     "code-reviewer": "openai/gpt-5.4",
-    "adversarial-reviewer": "google/gemini-3-pro"
+    "adversarial-reviewer": "google/gemini-3-pro",
+    "spec-reviewer": "openai/gpt-5.4",
+    "requirements-reviewer": "openai/gpt-5.4",
+    "bdd-reviewer": "openai/gpt-5.4",
+    "design-reviewer": "google/gemini-3-pro"
   }
 }
 ```
+
+The upstream **shift-left reviewers** (`requirements-reviewer`, `bdd-reviewer`,
+`design-reviewer`) apply Fagan-style inspection to each artifact as it is written
+— catching ambiguity, coverage gaps, and undefined interface contracts at the
+source instead of letting them cascade into the spec. Each runs in its stage's
+convergence loop (write → review → fix), renders its own `NN-<slug>-review.md`,
+and — like the other reviewers — can be mapped to a different model here.
 
 Values are qualified `provider/id` strings. This **overrides** a one-off global
 `--model`/`SUPER_DEV_MODEL` for the listed roles (a cross-model policy should not

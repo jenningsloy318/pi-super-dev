@@ -180,6 +180,48 @@ export function buildSpecPrompt(s: SetupControl, c: Classification | null, task:
 	parts.push("", "## Task", task, "", "## Instructions", "Write the technical specification, implementation plan, and task list.", "The documents will be RENDERED FOR YOU — focus on CONTENT. Do NOT write the documents.", "Build an explicit trace matrix from Requirements AC-NN IDs to BDD SCENARIO-NNN IDs to implementation phases/tasks. The spec is invalid unless every requirements acceptance criterion and every BDD scenario is covered by that matrix.", "Break implementation into phases. Each phase must be independently testable. Prefer FEWER, COARSER, independently-shippable phases (each with its own deliverable); avoid over-decomposing a feature into many tiny interdependent phases — if two phases must share state or edit the same files, MERGE them into one phase. Granular interdependent phases cascade-fail; coarse independent phases converge.", "If a Prototype Report is present, incorporate its verdict, measurements, and adjustments into the architecture, testing strategy, and phase deliverables; do not ignore failed or borderline prototype evidence.", "Every requirements AC-NN from the Requirements doc must appear in acceptanceCriteriaRefs and in the specification narrative. Every BDD scenario from the BDD Scenarios doc must appear in scenarioRefs, in the specification narrative, and in at least one phase.scenarioRefs or task.scenarioRefs entry. Every task.phase must exactly match a declared phase.name.", "If retry feedback names convergence-ledger finding IDs, include reviewResponses entries for every ID: findingId, status, response, evidence, and ownerStage. Do not drop unresolved prior findings; either address them with evidence, mark needs-human with the exact ambiguity, or explain why they are deferred/non-blocking.", "When a finding is owned by an upstream artifact (requirements, BDD, research, assessment, design, or prototype), do not pretend a spec-only rewrite fixed it unless the spec can fully resolve the inconsistency. Preserve the ownerStage in reviewResponses so the next review can verify the routing.", "Do not pass ambiguity to implementation. If a decision is still unclear, resolve it using upstream evidence or route it explicitly through reviewResponses with ownerStage and blocking status so the review can stop the pipeline before code is written.", "", "## Data to return", "Return the specification as structured data:", "- title, date, summary", "- architecture: the technical architecture (prose)", "- testingStrategy: how the feature will be tested (prose)", "- acceptanceCriteriaRefs: array of AC-NN IDs from the Requirements doc", "- scenarioRefs: array of SCENARIO-NNN IDs from the BDD Scenarios doc", "- phases: array of { name, description, deliverables? } (at least 1, each independently testable; may also include scenarioRefs?: string[] to map BDD scenarios to phases)", "- tasks: array of { phase, description, scenarioRefs? }", "- reviewResponses (optional on first attempt, REQUIRED on retries with convergence-ledger IDs): [{ findingId, status, response, evidence?, ownerStage? }]", "- gate (optional, Rust/backend only): { packages: [real cargo package names whose tests must pass], workspace: boolean (true = run cargo test --workspace), integration: [paths to e2e/integration test files to also run] }", "- deliverables (optional, per phase): declare when a phase's deliverable is NOT compiler-checkable — { requireFiles: [paths that must exist], requireContains: [{ file, pattern } regex that must appear], requireNotContains: [{ file, pattern } regex that must NOT appear], requireScenarios: [SCENARIO-NNN tags that must appear in the phase's test file contents], requireTests: [full test names that must exist in the test list] }. Phases that create a file, wire a call site X→Y, make new sources reachable, or cover a scenario MUST declare deliverables — without them a phase compiles green while delivering nothing. Deliverables are AND-ed with build-green, so a missing file/pattern/scenario/test fails the phase even when the build passes. PREFER requireScenarios over requireTests: a SCENARIO-NNN tag is a STABLE id that survives test rewording, whereas a full requireTests name is brittle (a reworded `it(...)` title false-negatives forever and the implementer is forbidden from editing RED tests to fix it). Use requireTests only when no scenario tag applies. For requireContains, assert semantic anchors and avoid arbitrary local variable names from examples: prefer flexible identifier regex such as `[A-Za-z_$][\\w$]*\\.POST` over `h\\.POST`; patterns for code files are matched against comment-stripped code, so comments do not satisfy wiring assertions.", "", "Output <control> JSON with: title, date, summary, architecture, testingStrategy, acceptanceCriteriaRefs, scenarioRefs, phases, tasks, reviewResponses, gate.");
 	return parts.join("\n");
 }
+/** Shared builder for the upstream-stage reviewers (requirements/bdd/design).
+ *  Each reviews the just-written artifact against its stage-specific dimensions
+ *  (encoded in the agent .md) and returns a verdict + blocking/suggestion
+ *  findings — caught EARLY so upstream defects don't cascade into the spec. The
+ *  reviewer is read-only and never rewrites the artifact. `upstream` lists the
+ *  prior-stage docs it should cross-check against. `priorResponses` are the
+ *  writer's responses to a prior review round, threaded so the reviewer can
+ *  verify each was actually resolved (mirrors buildSpecReviewPrompt). */
+export function buildUpstreamReviewPrompt(
+	s: SetupControl,
+	c: Classification | null,
+	args: { stage: "requirements" | "bdd" | "design"; docPath?: string; upstream: Array<{ label: string; path?: string }>; priorResponses?: Array<Record<string, unknown>> },
+): string {
+	const upstreamLines = args.upstream.filter((u) => u.path).map((u) => `- ${u.label}: ${u.path}`);
+	const stageLabel = args.stage === "bdd" ? "BDD scenarios" : args.stage;
+	const responses = Array.isArray(args.priorResponses) ? args.priorResponses : [];
+	const responseLines = responses.length
+		? ["", "## Prior Finding Responses to Verify", ...responses.map((r) => `- ${String(r.findingId ?? "finding")}: status=${String(r.status ?? "unknown")} ownerStage=${String(r.ownerStage ?? "unknown")} evidence=${String(r.evidence ?? "none")} response=${String(r.response ?? "")}`)]
+		: [];
+	return [
+		ctxBlock(s, c),
+		"",
+		`## ${stageLabel} artifact to review`,
+		`- Document: ${args.docPath ?? "N/A"}`,
+		...(upstreamLines.length ? ["", "## Upstream artifacts to cross-check", ...upstreamLines] : []),
+		...responseLines,
+		"",
+		"## Instructions",
+		`Review the ${stageLabel} artifact against the review dimensions defined for your role. Find defects EARLY — a defect caught here is orders of magnitude cheaper than at spec or code review.`,
+		"Read the ACTUAL artifact (and the upstream docs) before judging; ground every finding in a specific section, AC, scenario, or module.",
+		"Mark blocking=true for correctness/completeness/consistency/contract defects; blocking=false for suggestions. Set ownerStage to the true owning stage — this stage, or an upstream stage when the defect is inherited.",
+		"Use verdict 'Changes Requested' when any blocking finding exists; 'Approved with Comments' when only suggestions remain; 'Approved' when clean.",
+		"For prior findings, set status=verified ONLY when the response and current artifact actually resolve it; if it remains open or regressed, keep blocking=true and set priorFindingId to the old findingId.",
+		"Score each dimension. Produce a verdict. Do NOT rewrite the artifact — the document is RENDERED FOR YOU from your structured data.",
+		"",
+		"## Data to return",
+		"Return: title, date, verdict, summary, findings [{id, severity, title, detail, ownerStage, blocking, status, recommendation, evidence, priorFindingId?}], priorFindingResolutions? [{findingId, status, response, evidence?, ownerStage?}], dimensions [{name, status, notes}]",
+		"",
+		"Output <control> JSON with: title, date, verdict, summary, findings, priorFindingResolutions, dimensions.",
+	].join("\n");
+}
+
 export function buildSpecReviewPrompt(s: SetupControl, c: Classification | null, specControl: R): string {
 	const responses = Array.isArray(specControl?.reviewResponses) ? specControl.reviewResponses as Array<Record<string, unknown>> : [];
 	const responseLines = responses.length

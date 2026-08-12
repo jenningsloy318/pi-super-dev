@@ -64,6 +64,59 @@ export const specWriter: Stage = writerTask({
 		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null),
 });
 
+/** Upstream Fagan-style reviewers (shift-left): each reviews the just-written
+ *  artifact against its stage dimensions and returns a verdict + findings, so
+ *  defects are caught at the source instead of cascading into the spec. The id
+ *  matches its STAGE_MODELS entry so the review doc renders as NN-<slug>.md. */
+export const requirementsReviewWriter: Stage = writerTask({
+	id: "requirementsReview",
+	label: "Stage 2B — Requirements Review",
+	agent: "requirements-reviewer",
+	accessMode: "source-read-only",
+	requires: ["*-requirements.md"],
+	buildPrompt: (state) =>
+		P.buildUpstreamReviewPrompt(S(state), state.classify ?? null, {
+			stage: "requirements",
+			docPath: (state.requirements?.docPath as string) ?? undefined,
+			upstream: [],
+			priorResponses: (state.requirements?.reviewResponses as Array<Record<string, unknown>>) ?? undefined,
+		}),
+});
+
+export const bddReviewWriter: Stage = writerTask({
+	id: "bddReview",
+	label: "Stage 2C — BDD Review",
+	agent: "bdd-reviewer",
+	accessMode: "source-read-only",
+	requires: ["*-bdd-scenarios.md"],
+	buildPrompt: (state) =>
+		P.buildUpstreamReviewPrompt(S(state), state.classify ?? null, {
+			stage: "bdd",
+			docPath: (state.bdd?.docPath as string) ?? undefined,
+			upstream: [{ label: "Requirements", path: (state.requirements?.docPath as string) ?? undefined }],
+			priorResponses: (state.bdd?.reviewResponses as Array<Record<string, unknown>>) ?? undefined,
+		}),
+});
+
+export const designReviewWriter: Stage = writerTask({
+	id: "designReview",
+	label: "Stage 6B — Design Review",
+	agent: "design-reviewer",
+	accessMode: "source-read-only",
+	requires: ["*-design.md"],
+	buildPrompt: (state) =>
+		P.buildUpstreamReviewPrompt(S(state), state.classify ?? null, {
+			stage: "design",
+			docPath: (state.design?.docPath as string) ?? undefined,
+			upstream: [
+				{ label: "Requirements", path: (state.requirements?.docPath as string) ?? undefined },
+				{ label: "Research", path: (state.research?.docPath as string) ?? undefined },
+				{ label: "Code Assessment", path: (state.assessment?.docPath as string) ?? undefined },
+			],
+			priorResponses: (state.design?.reviewResponses as Array<Record<string, unknown>>) ?? undefined,
+		}),
+});
+
 export const specReviewWriter: Stage = writerTask({
 	id: "specReview",
 	label: "Stage 8 — Spec Review",
