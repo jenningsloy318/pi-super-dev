@@ -20,6 +20,17 @@ import { designStage } from "./design.ts";
 
 type ArtifactValidator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
 
+/** Hard liveness ceiling for every artifact-convergence loop (requirements, bdd,
+ *  research, design). Termination normally comes from reviewer approval, the
+ *  stall/HITL escalation path, or the global run budget — but a stochastic
+ *  reviewer that never approves (and never stalls) would otherwise loop until the
+ *  global budget exhausts (and a test with budget.check=()=>true loops forever →
+ *  OOM). This cap is the unconditional floor: it FatalAborts exactly like the
+ *  global-budget-exhaustion path, deliberately WITHOUT consuming the shared
+ *  `stagnation:<feedbackKey>` escalation budget. See
+ *  docs/requirements/convergence-loop-unbounded-cap-fix.md. */
+export const MAX_CONVERGENCE_ROUNDS = 8;
+
 /** Optional Fagan-style LLM review step layered on top of the deterministic
  *  validate (shift-left): after the artifact passes its deterministic gate, a
  *  reviewer agent judges CONTENT quality across stage-specific dimensions and
@@ -52,6 +63,10 @@ interface ArtifactConvergenceOptions {
 	 *  stage produced no artifact (e.g. design skipped for a bug fix) and the node
 	 *  converges immediately without review. */
 	skipped?: (state: PipelineState) => boolean;
+	/** OPTIONAL override of the hard round ceiling (default MAX_CONVERGENCE_ROUNDS).
+	 *  Tests use a small value to assert the cap fires; production leaves it unset.
+	 *  The cap is a liveness floor, not a quality target. */
+	maxRounds?: number;
 }
 
 function validResearchSourceCount(r: { sources?: unknown }): number {
@@ -228,12 +243,25 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 	return {
 		kind: `${options.feedbackKey}-convergence`,
 		async run(state: PipelineState, ctx: StageContext) {
+			const maxRounds = options.maxRounds ?? MAX_CONVERGENCE_ROUNDS;
 			let round = 0;
 			let lastErrors: string[] = [];
 			let priorBlockingSignature = "";
 			while (ctx.budget.check()) {
 				round++;
 				if (ctx.signal?.aborted) return { status: "cancelled" as const };
+				if (round > maxRounds) {
+					// Unconditional liveness floor. The stall path below routes ACTIONABLE
+					// stagnation (a recurring blocking finding) to HITL escalation; this cap
+					// is the safety net for NON-actionable non-convergence (e.g. a stochastic
+					// reviewer that never approves). It FatalAborts exactly like the global-
+					// budget-exhaustion path below — deliberately NOT escalating, so it does
+					// NOT consume the shared `stagnation:<feedbackKey>` escalation budget
+					// (ESCALATION_RETRY_CAP) that the stall path relies on.
+					const msg = `${options.feedbackKey} convergence did not converge within ${maxRounds} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
+					ctx.log(`${options.feedbackKey} convergence: ROUND CAP (${maxRounds}) EXHAUSTED (FATAL — aborting run) — ${msg}`);
+					throw new FatalAbort(msg);
+				}
 				ctx.log(`${options.feedbackKey} convergence: round ${round} starting`);
 				if (options.review) delete (state as Record<string, unknown>)[options.review.reviewStateKey];
 
@@ -286,7 +314,10 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				}
 				ctx.log(`${options.feedbackKey} convergence: deterministic validation passed round ${round}`);
 
-				// Fagan-style LLM review layer (shift-left). Absent ⇒ deterministic-only.
+				// Fagan-style LLM review layer (shift-left). A passed deterministic gate
+				// INTENTIONALLY falls through to the reviewer — content quality is judged
+				// even when the structural gate passes (a deterministic pass does NOT skip
+				// the review). Absent ⇒ deterministic-only.
 				if (options.review && reviewTask) {
 					const review = options.review;
 					const reviewResult = await reviewTask.run(state, ctx);

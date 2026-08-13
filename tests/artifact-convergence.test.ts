@@ -21,12 +21,16 @@ function setup(dir: string): SetupControl {
 	};
 }
 
-function budget(): Budget {
-	return { count: 0, check: () => true, spent() { this.count++; return true; } };
+function budget(maxRounds = 20): Budget {
+	// Bounded: the old `check: () => true` let a never-approving reviewer loop
+	// forever (→ OOM). 20 is well above the 6-round convergence these scenarios
+	// exercise; the MAX_CONVERGENCE_ROUNDS liveness cap is the real backstop.
+	let calls = 0;
+	return { count: 0, check: () => calls++ < maxRounds, spent() { this.count++; return true; } };
 }
 
 function ctx(state: PipelineState, controls: ControlObj[], seen: RetryFeedbackInput[][]): StageContext {
-	let calls = 0;
+	let writerCalls = 0;
 	return {
 		task: "implement feature",
 		options: {},
@@ -40,7 +44,14 @@ function ctx(state: PipelineState, controls: ControlObj[], seen: RetryFeedbackIn
 			const key = (call.id ?? "").replace(/^pipeline\./, "");
 			const fb = ((state as Record<string, unknown>).__feedback as Record<string, RetryFeedbackInput[]> | undefined)?.[key] ?? [];
 			seen.push([...fb]);
-			return { text: "", control: controls[Math.min(calls++, controls.length - 1)] };
+			// The shift-left reviewer (requirementsReview / bddReview) must APPROVE for
+			// the loop to converge once the deterministic gate passes. The pre-review
+			// era this file was written for never supplied verdicts, so (after the
+			// review-layer regression) it looped forever → OOM. research has NO reviewer.
+			if (key === "requirementsReview" || key === "bddReview") {
+				return { text: "", control: { verdict: "Approved", summary: "approved", findings: [] } as ControlObj };
+			}
+			return { text: "", control: controls[Math.min(writerCalls++, controls.length - 1)] };
 		},
 		async helper(call: HelperCall) { return runHelper(call); },
 		async parallel(calls) { return Promise.all(calls.map((call) => call())); },

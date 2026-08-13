@@ -14,6 +14,7 @@ import {
 	type ConvergenceOwnerStage,
 } from "../convergence-ledger.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
+import { MAX_CONVERGENCE_ROUNDS } from "./artifact-convergence.ts";
 
 const specTask = task(specWriter);
 const specReviewTask = task(specReviewWriter);
@@ -105,18 +106,28 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
  * Stage 7/8 convergence: spec writing, deterministic trace validation, and
  * spec-review approval are one budget-bounded loop. A reviewer-only retry cannot
  * fix a bad spec; review failures must feed back into the next spec-writer
- * attempt. There is intentionally no per-stage retry cap here: spec/review must
- * converge until all traceability, grounding, feasibility, and ambiguity issues
- * are resolved, or until the global run budget/cancellation/environment stops it.
+ * attempt. The loop is bounded by the hard MAX_CONVERGENCE_ROUNDS liveness cap
+ * (shared with artifact-convergence): termination normally comes from trace+
+ * review approval, the global run budget, or cancellation, but a stochastic
+ * spec-reviewer that never approves is guaranteed to stop at the cap rather than
+ * loop forever. See docs/requirements/convergence-loop-unbounded-cap-fix.md.
  */
 export const specConvergenceNode: Node = {
 	kind: "spec-convergence",
 	async run(state: PipelineState, ctx: StageContext) {
 		let lastErrors: string[] = [];
 		let round = 0;
+		const maxRounds = MAX_CONVERGENCE_ROUNDS;
 		while (ctx.budget.check()) {
 			round++;
 			if (ctx.signal?.aborted) return { status: "cancelled" as const };
+			if (round > maxRounds) {
+				// Hard liveness floor (see artifact-convergence.ts): a stochastic
+				// spec-reviewer that never approves must stop here, not loop forever.
+				const msg = `spec convergence did not converge within ${maxRounds} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
+				ctx.log(`spec convergence: ROUND CAP (${maxRounds}) EXHAUSTED (FATAL — aborting run) — ${msg}`);
+				throw new FatalAbort(msg);
+			}
 			ctx.log(`spec convergence: round ${round} starting`);
 			delete state.specReview;
 

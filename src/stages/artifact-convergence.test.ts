@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext, Escalate } from "../types.ts";
-import { requirementsConvergenceNode, designConvergenceNode } from "./artifact-convergence.ts";
+import { requirementsConvergenceNode, designConvergenceNode, MAX_CONVERGENCE_ROUNDS } from "./artifact-convergence.ts";
 
 // The reviewer's control object lands under state.requirementsReview via the
 // task() wrapper (state[stage.id] = result). The deterministic validator
@@ -199,6 +199,31 @@ describe("artifactConvergenceNode — upstream review layer", () => {
 		const result = await requirementsConvergenceNode.run(makeState(), ctx);
 		expect(result.status).toBe("ok");
 		expect(hasLog(script.logs, "writer response matrix addressed 1 prior finding")).toBe(true);
+	});
+});
+
+// --- liveness: hard round cap (convergence-loop-unbounded-cap-fix) ---------
+// A stochastic reviewer that NEVER approves (and never stalls — a fresh finding
+// each round) must be GUARANTEED to stop at the MAX_CONVERGENCE_ROUNDS cap, not
+// loop until the global budget exhausts (the pre-cap OOM root cause). The cap
+// FatalAborts like the budget-exhaustion path and must NOT escalate (so it does
+// not consume the stall path's shared stagnation budget).
+describe("artifactConvergenceNode — liveness round cap", () => {
+	it("a node that never converges FatalAborts at MAX_CONVERGENCE_ROUNDS (never loops forever)", async () => {
+		const rejectEvery = (n: number): ControlObj => ({
+			verdict: "Changes Requested",
+			summary: "no",
+			findings: [{ id: `F${n}`, severity: "high", title: `gap ${n}`, detail: `d${n}`, blocking: true, ownerStage: "requirements", status: "open" }],
+		} as ControlObj);
+		// Fresh finding id each round ⇒ distinct fingerprint ⇒ no stall, no escalation.
+		const reviews = Array.from({ length: 20 }, (_, i) => rejectEvery(i + 1));
+		const script: Script = { reviews, logs: [], writerRounds: 0 };
+		const ctx = makeCtx(script); // no escalate wired
+		await expect(requirementsConvergenceNode.run(makeState(), ctx)).rejects.toThrow(
+			new RegExp(`did not converge within ${MAX_CONVERGENCE_ROUNDS} round\\(s\\)`),
+		);
+		expect(script.writerRounds).toBe(MAX_CONVERGENCE_ROUNDS); // ran N full rounds, aborted at the start of round N+1
+		expect(hasLog(script.logs, "ROUND CAP")).toBe(true);
 	});
 });
 
