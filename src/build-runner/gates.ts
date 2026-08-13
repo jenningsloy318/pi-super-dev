@@ -725,6 +725,68 @@ function emitRedPlans(opts: RedCheckOptions | undefined, plans: RedExecutionPlan
 	try { opts?.onPlan?.(plans.map((plan) => ({ cwd: plan.cwd, argv: [...plan.argv] }))); } catch { /* diagnostics must never affect the oracle */ }
 }
 
+// Source extensions tried when resolving a relative module specifier to a file
+// on disk (greenfield RED detection). Mirrors Node/TS resolver basics.
+const RED_SOURCE_EXTS = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
+
+/** Extract candidate RELATIVE module specifiers (`./…` or `../…`) mentioned in
+ *  runner output. Bare specifiers (`express`, `node:fs`) and absolute paths are
+ *  ignored — they are external/package resolution concerns, not the module
+ *  under test. Pure + never throws. */
+function extractRelativeSpecifiers(out: string): string[] {
+	const re = /(?:^|[^\w./])(\.{1,2}\/[^\s'")\]]+)/g;
+	const specs = new Set<string>();
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(out))) {
+		const clean = m[1].replace(/[:;,.)+]+$/, "");
+		if (clean) specs.add(clean);
+	}
+	return [...specs];
+}
+
+/** Does a relative specifier resolve to an EXISTING source file under `cwd` or
+ *  the directory of any RED target? (A test in `src/persistence.test.ts` that
+ *  imports `./persistence` resolves the module under `src/`.) Pure + never
+ *  throws (existsSync is wrapped). */
+function relativeModuleExists(cwd: string, spec: string, targets: string[]): boolean {
+	try {
+		const dirs = [cwd, ...targets.map((t) => join(cwd, dirname(t)))];
+		for (const dir of dirs) {
+			const base = resolve(dir, spec);
+			for (const ext of RED_SOURCE_EXTS) {
+				if (existsSync(base + ext)) return true;
+				if (existsSync(join(base, "index" + (ext || ".ts")))) return true;
+			}
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+/** GREENFIELD RED: a test failing ONLY because it imports a not-yet-created
+ *  RELATIVE project module is failing because the implementation is missing —
+ *  the textbook greenfield RED (the contract `buildTddPrompt` states is valid).
+ *  Detected so `classifyRedStatus` returns "red" instead of "broken".
+ *
+ *  Conservative by design:
+ *  - SyntaxError / `No test files found` / `Cannot find package` → NOT
+ *    greenfield (those are genuinely broken).
+ *  - No RELATIVE specifier present → NOT greenfield (a bare package miss stays
+ *    broken).
+ *  - With `cwd`: greenfield only when EVERY extracted relative specifier
+ *    resolves to an ABSENT file. An existing module that fails to load is a
+ *    real load failure → broken (never mis-read as greenfield). Pure + never
+ *    throws. */
+function isGreenfieldModuleMissing(out: string, cwd?: string, targets: string[] = []): boolean {
+	if (/SyntaxError|No test files found|Cannot find package/i.test(out)) return false;
+	if (!/Failed to load url|ERR_MODULE_NOT_FOUND|Cannot find module|Could not resolve|does not exist|not found/i.test(out)) return false;
+	const specs = extractRelativeSpecifiers(out);
+	if (specs.length === 0) return false;
+	if (!cwd) return true;
+	return specs.every((spec) => !relativeModuleExists(cwd, spec, targets));
+}
+
 /**
  * Classify a runner's COMBINED stdout+stderr into a RED-phase status using
  * per-language heuristics (spec §A.2, AC-01). Pure + NEVER throws. Precedence
@@ -732,8 +794,11 @@ function emitRedPlans(opts: RedCheckOptions | undefined, plans: RedExecutionPlan
  * RED (exit≠0 + a failure marker) → UNKNOWN (ambiguous). This order guarantees
  * a compile error that also emits a `FAILED` marker is `broken` (the test
  * never ran), not `red` (review finding: precedence over red).
+ *
+ * `ctx` carries `cwd` + `targets` so the npm-family greenfield check can verify
+ * whether an imported relative module actually exists on disk.
  */
-function classifyRedStatus(language: string, combined: string, ok: boolean): RedStatus {
+function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?: { cwd?: string; targets?: string[] }): RedStatus {
 	const out = combined ?? "";
 	if (language === "rust") {
 		// BROKEN — compile failed (no test executed).
@@ -760,10 +825,23 @@ function classifyRedStatus(language: string, combined: string, ok: boolean): Red
 		return "unknown";
 	}
 	// npm family: vitest / jest / npm run test (frontend + backend).
-	// BROKEN — collection/parse failure before any test ran.
-	if (/SyntaxError/i.test(out) || /failed to load/i.test(out) || /No test files found/i.test(out) || /ERR_MODULE_NOT_FOUND/i.test(out) || /Cannot find package/i.test(out)) {
-		return "broken";
-	}
+	// BROKEN — test/source syntax error before any test ran.
+	if (/SyntaxError/i.test(out)) return "broken";
+	// BROKEN — the positional filter matched no test file (no run).
+	if (/No test files found/i.test(out)) return "broken";
+	// BROKEN — a missing EXTERNAL dependency (bare package specifier).
+	if (/Cannot find package/i.test(out)) return "broken";
+	// RED (greenfield) — the test imports a not-yet-created RELATIVE project
+	// module; the suite fails to load solely because the implementation is
+	// missing. This is the textbook greenfield RED (matches buildTddPrompt's
+	// stated contract). Distinguished from a real load failure by the relative
+	// module being ABSENT on disk; an existing module that fails to load is
+	// caught by the next rule and stays broken.
+	if (isGreenfieldModuleMissing(out, ctx?.cwd, ctx?.targets)) return "red";
+	// BROKEN — any OTHER collection/load failure (config load, an existing
+	// module that throws at import, a missing bare specifier that isn't
+	// "Cannot find package", …).
+	if (/failed to load|ERR_MODULE_NOT_FOUND|Cannot find module/i.test(out)) return "broken";
 	if (ok) return "green";
 	// RED — a failing-test marker appeared after a successful collection.
 	if (
@@ -1067,7 +1145,7 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 			try {
 				const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
 				const combined = "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
-				const status = r.error ? "unknown" : classifyRedStatus(plan.language, combined, r.status === 0);
+				const status = r.error ? "unknown" : classifyRedStatus(plan.language, combined, r.status === 0, { cwd: plan.cwd, targets });
 				emitRedDiagnostic(opts, {
 					plan: { cwd: plan.cwd, argv: [...plan.argv] },
 					language: plan.language,

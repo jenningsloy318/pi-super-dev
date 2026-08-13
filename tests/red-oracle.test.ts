@@ -393,6 +393,41 @@ describe("runRedCheck — npm / vitest / jest classification", () => {
 		}
 	});
 
+	it("GREENFIELD RED: a test importing a not-yet-created relative module is red (AC alignment with buildTddPrompt)", () => {
+		// The textbook greenfield RED: the module under test does not exist yet, so
+		// vitest fails to LOAD it at collection time. buildTddPrompt states this is a
+		// valid RED; the oracle must agree. (Real vitest 3.2.6 wording, reproduced.)
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { test: "vitest run" }, devDependencies: { vitest: "1" } }));
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "persistence.test.ts"), "// imports ./persistence");
+			// NOTE: src/persistence.ts deliberately NOT created.
+		});
+		try {
+			mockRunner(out(1, "FAIL  src/persistence.test.ts [ src/persistence.test.ts ]\nError: Cannot find module './persistence' imported from '/d/src/persistence.test.ts'\n ❯ src/persistence.test.ts:2:1\nCaused by: Error: Failed to load url ./persistence (resolved id: ./persistence) in /d/src/persistence.test.ts. Does the file exist?\nTest Files  1 failed (1)\n      Tests  no tests"));
+			expect(runRedCheck(d, ["src/persistence.test.ts"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("GREENFIELD guard: the same load-failure output with the module file PRESENT stays broken (no false greenfield)", () => {
+		// If the imported relative module DOES exist on disk, the load failure is a
+		// genuine collection/load error, not a greenfield missing module → broken.
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { test: "vitest run" }, devDependencies: { vitest: "1" } }));
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "persistence.test.ts"), "// imports ./persistence");
+			writeFileSync(join(dir, "src", "persistence.ts"), "export const readEntry = () => 0;"); // module EXISTS
+		});
+		try {
+			mockRunner(out(1, "FAIL  src/persistence.test.ts [ src/persistence.test.ts ]\nError: Cannot find module './persistence' imported from '/d/src/persistence.test.ts'\nCaused by: Error: Failed to load url ./persistence (resolved id: ./persistence) in /d/src/persistence.test.ts. Does the file exist?"));
+			expect(runRedCheck(d, ["src/persistence.test.ts"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	it("classifies `No test files found` (no run) as broken", () => {
 		const d = vitestProj();
 		try {

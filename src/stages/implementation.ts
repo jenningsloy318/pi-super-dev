@@ -623,16 +623,45 @@ export function parseStructuredChanges(control: unknown): StructuredChanges {
 	};
 }
 
+/** Decode one string element that may itself be a JSON-encoded array (LLM
+ *  shape-drift: an array-typed control field sometimes arrives as the STRING
+ *  `'["src/x.test.ts"]'`, or even nested). Wrapping such a blob whole yields a
+ *  single malformed filename that the test runner's substring filter matches to
+ *  nothing (`No test files found` forever). Recursively decodes JSON-array
+ *  strings; falls back to a bare-string wrap when the payload is not valid
+ *  JSON. Pure + never throws. */
+function normalizeStringElement(s: string): string[] {
+	const trimmed = s.trim();
+	if (!trimmed) return [];
+	if (trimmed[0] === "[") {
+		try {
+			const parsed: unknown = JSON.parse(trimmed);
+			if (Array.isArray(parsed)) {
+				return parsed.flatMap((x) => (typeof x === "string" ? normalizeStringElement(x) : []));
+			}
+		} catch {
+			/* not valid JSON → fall through to bare-string wrap */
+		}
+	}
+	return [trimmed];
+}
+
 /** Normalize an agent-returned array field into a genuine `string[]`.
- *  Agents unreliably return array-typed control fields as a bare string, an
- *  object, a number, or null/undefined (the same shape-drift that
- *  `normalizePhases` defends against for `spec.phases`). A bare `?? []` only
- *  catches null/undefined — a string value sails through and later `.join()` /
- *  spread / iteration crashes (`testFiles.join is not a function`). This helper
- *  coerces defensively: array → string-filtered; bare string → `[v]`; else []. */
+ *  Agents unreliably return array-typed control fields as a bare string, a
+ *  JSON-encoded string/array, an object, a number, or null/undefined (the same
+ *  shape-drift that `normalizePhases` defends against for `spec.phases`). A bare
+ *  `?? []` only catches null/undefined — a string or JSON blob sails through
+ *  and later `.join()` / spread / iteration crashes, or a malformed filename is
+ *  passed to the test runner. This helper coerces defensively: array →
+ *  string-filtered and element-decoded; string → decoded if a JSON array else
+ *  wrapped; else []. */
 export function normalizeStringArray(v: unknown): string[] {
-	if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
-	if (typeof v === "string" && v.trim()) return [v.trim()];
+	if (Array.isArray(v)) {
+		return v.flatMap((item) => (typeof item === "string" ? normalizeStringElement(item) : []));
+	}
+	if (typeof v === "string") {
+		return normalizeStringElement(v);
+	}
 	return [];
 }
 

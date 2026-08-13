@@ -33,6 +33,29 @@ describe("normalizeStringArray — agent-shape defense", () => {
 		}
 	});
 
+	it("decodes a JSON-array STRING into its real elements (LLM shape-drift: the malformed-vitest-filter bug)", () => {
+		// The run-2026-08-12 RED loop deadlock: tdd-guide returned testFiles as the
+		// STRING '["src/persistence.test.ts"]'. The old wrap produced one filename
+		// '["src/persistence.test.ts"]' which vitest's substring filter matched to
+		// nothing (`No test files found` forever). Must decode to the real path.
+		expect(normalizeStringArray('["src/persistence.test.ts"]')).toEqual(["src/persistence.test.ts"]);
+		expect(normalizeStringArray('  ["src/a.ts", "src/b.ts"]  ')).toEqual(["src/a.ts", "src/b.ts"]);
+		// non-string elements inside the decoded array are dropped.
+		expect(normalizeStringArray('["a.ts", 42, "b.ts"]')).toEqual(["a.ts", "b.ts"]);
+	});
+
+	it("decodes array-wrapped JSON-array strings (element-level shape-drift)", () => {
+		// An ARRAY whose single element is itself a JSON-array string must also
+		// decode — a naive `Array.isArray` + string-filter would pass the blob through.
+		expect(normalizeStringArray(['["src/persistence.test.ts"]'])).toEqual(["src/persistence.test.ts"]);
+		expect(normalizeStringArray(['["a.ts", "b.ts"]', "c.ts"])).toEqual(["a.ts", "b.ts", "c.ts"]);
+	});
+
+	it("falls back to a bare-string wrap when a bracketed string is not a JSON string array", () => {
+		expect(normalizeStringArray("[not json")).toEqual(["[not json"]); // invalid JSON → bare wrap
+		expect(normalizeStringArray("[1, 2, 3]")).toEqual([]); // valid JSON number array → no string filenames (consistent with array-input non-string dropping)
+	});
+
 	it("the result is always `.join`-able (the original crash surface)", () => {
 		// Every branch must yield a value on which `.join()` works.
 		expect(normalizeStringArray("foo.rs").join(",")).toBe("foo.rs");
