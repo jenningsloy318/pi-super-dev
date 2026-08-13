@@ -338,7 +338,10 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 	if (!interactive) return undefined;
 	try {
 		const choice = await ctx.ui?.select?.(
-			"Review loop stagnant — how to proceed?",
+			formatEscalationPrompt(
+				{ kind: "stagnation", stage: "verify", severity: "soft", message, findings: findingsRaw },
+				"Review loop stagnant — how to proceed?",
+			),
 			["Revise spec & re-run from design", "Accept findings as known limitations", "Abandon worktree"],
 			{ timeout: 120_000 },
 		);
@@ -372,6 +375,26 @@ function mapEscalateChoice(choice: unknown): EscalationDecision | undefined {
 	return undefined;
 }
 
+/** Format the FULL blocker (message + structured findings) into the interactive
+ *  escalation prompt, so the user sees WHAT blocked the run — not merely that a
+ *  blocker exists — before choosing how to proceed. The finding layout mirrors
+ *  escalation-report.md (one source of truth for the blocker text). */
+function formatEscalationPrompt(
+	failure: { kind?: string; stage?: string; severity?: string; message: string; findings?: readonly { file?: string | null; severity?: string | null; title?: string | null }[] },
+	headline: string,
+): string {
+	const meta = [
+		failure.stage && `Stage: ${failure.stage}`,
+		failure.kind && `Kind: ${failure.kind}`,
+		failure.severity && `Severity: ${failure.severity}`,
+	].filter(Boolean).join("   ");
+	const findings = (failure.findings ?? []).filter((f) => (f.title ?? "").trim() || (f.file ?? "").trim());
+	const findingLines = findings.length
+		? ["", "Findings:", ...findings.map((f) => `- [${f.severity ?? "?"}] ${f.file ? "`" + f.file + "` " : ""}${f.title ?? ""}`)]
+		: [];
+	return [headline, ...(meta ? ["", meta] : []), "", failure.message, ...findingLines].join("\n");
+}
+
 /**
  * Build the inline `escalate` callback for a run (spec-18 / AC-01). ALWAYS
  * writes `escalation-report.md` via {@link writeEscalationReport}; then — ONLY
@@ -392,7 +415,7 @@ export function makeEscalate(ctx: any): Escalate {
 				const options =
 					failure.severity === "hard" ? ESCALATE_OPTIONS_HARD : ESCALATE_OPTIONS_SOFT;
 				const choice = await ctx.ui?.select?.(
-					"Super-dev hit a blocker — how to proceed?",
+					formatEscalationPrompt(failure, "Super-dev hit a blocker — how to proceed?"),
 					options,
 					{ timeout: 300_000 },
 				);

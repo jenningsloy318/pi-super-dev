@@ -365,6 +365,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 							};
 							if (escalate && escalationBudgetRemaining(state, failure) > 0) {
 								ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length > 0 ? "UPSTREAM-OWNED blocker" : "STALL"} detected — escalating to user (HITL)`);
+							ctx.log(`  blocker: ${failure.message}`);
 								const decision = await runEscalation(state, failure, escalate);
 								if (decision) {
 									applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });

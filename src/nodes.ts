@@ -528,6 +528,7 @@ export function gate(opts: GateOptions, node: Node): Node {
 				}
 			msg = `gate${label} could not pass after ${max} attempt(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
 			ctx.log(`gate: EXHAUSTED${opts.fatal ? " (FATAL — aborting run)" : " (non-fatal)"} — ${opts.fatal ? "aborting" : "proceeding with best-available artifact"}`);
+			if (msg) ctx.log(`  blocker (${opts.feedbackKey ?? "gate"}): ${msg}`);
 			if (opts.fatal) {
 				// spec-18 HITL: before aborting, give the user a chance to decide
 				// (pause-then-continue via ctx.ui.select). Only fires when an escalate

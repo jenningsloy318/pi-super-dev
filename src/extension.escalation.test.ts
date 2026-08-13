@@ -122,6 +122,33 @@ describe("makeEscalate — interactive path (AC-01)", () => {
 			rmSync(d, { recursive: true, force: true });
 		}
 	});
+
+	it("surfaces the FULL blocker (message + findings) in the prompt — not just 'a blocker'", async () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-esc-mk-"));
+		try {
+			const select = vi.fn().mockResolvedValue("Abandon");
+			const escalate = makeEscalate({ hasUI: true, ui: { select, input: vi.fn() } });
+			const failure: EscalationFailure = {
+				kind: "gate-exhaustion",
+				stage: "requirements",
+				severity: "hard",
+				message: "the requirements gate could not pass after 2 attempts: spec gap X",
+				specDirectory: d,
+				findings: [{ file: "docs/req.md", severity: "blocker", title: "missing acceptance criteria" }],
+			};
+			await escalate(failure);
+			const prompt = String(select.mock.calls[0]?.[0] ?? "");
+			// The prompt must carry the blocker context the user needs to decide…
+			expect(prompt).toContain(failure.message);
+			expect(prompt).toContain("missing acceptance criteria");
+			expect(prompt).toContain("docs/req.md");
+			expect(prompt).toContain("Stage: requirements");
+			// …not just the generic "hit a blocker" headline.
+			expect(prompt.length).toBeGreaterThan("Super-dev hit a blocker — how to proceed?".length);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("handleStagnation — delegates report-writing to writeEscalationReport (Phase 2)", () => {
