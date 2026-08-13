@@ -198,6 +198,28 @@ const compactSectionLines = (
 	];
 };
 
+/** Strip the trailing " (attempt N)" suffix the dashboard occurrence tracker
+ *  appends, so a stage's BASE label matches its pre-suffix `▶` phase banner. */
+const baseStageLabel = (label: string): string =>
+	label.replace(/\s*\(attempt \d+\)\s*$/, "").trim();
+
+/** A `▶ <label>` phase banner is REDUNDANT when its label is a known pipeline
+ *  stage — the section header (`▌ <label>`) already carries that title, so
+ *  rendering the banner too would duplicate it. And because `task()` emits the
+ *  banner BEFORE its `stage:{running}` event, the "(attempt N)" suffix later
+ *  added to the stage-event label breaks the sink's phase→stage re-tag, leaving
+ *  the banner stranded in the PREVIOUS section (the visible bug). Suppressing
+ *  stage-level banners removes both the duplicate and the stray. Sub-phase
+ *  banners (e.g. "Implementation — Phase 1/N: …") match no stage label → kept. */
+const isRedundantStageBanner = (
+	line: Pick<SectionLine, "kind" | "text">,
+	knownStageBaseLabels: Set<string>,
+): boolean => {
+	if (line.kind !== "phase") return false;
+	if (!line.text.startsWith("▶ ")) return false;
+	return knownStageBaseLabels.has(baseStageLabel(line.text.slice(2)));
+};
+
 /** Leading status bar drawn in the section-header status color (TUI only). */
 const STATUS_BAR = "▌";
 
@@ -447,6 +469,13 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 			groups.push(empty);
 		}
 
+		// Base labels of every stage that fired a structured `stage` event. Used to
+		// suppress the REDUNDANT stage-level `▶ <label>` phase banners (the section
+		// header `▌ <label>` is the canonical title); sub-phase banners match no
+		// stage label and are preserved.
+		const knownStageBaseLabels = new Set<string>();
+		for (const meta of stageMeta.values()) knownStageBaseLabels.add(baseStageLabel(meta.label));
+
 		const themed = mode === "tui" && theme;
 		const themeArg = themed ? theme : undefined;
 
@@ -466,7 +495,11 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 			// Per-stage trim notice appears INSIDE its own section (not a single
 			// global preamble) — SCENARIO-011. Sticky lifecycle/launch diagnostics
 			// survive outside the ordinary-line cap.
-			const sectionLines = compactSectionLines(group.lines, cap, group.stageLabel);
+			// Drop stage-level `▶ <label>` banners that duplicate this header (and
+			// would otherwise strand in the previous section once the "(attempt N)"
+			// suffix breaks the phase→stage re-tag). Sub-phase banners are preserved.
+			const dedupedLines = group.lines.filter((line) => !isRedundantStageBanner(line, knownStageBaseLabels));
+			const sectionLines = compactSectionLines(dedupedLines, cap, group.stageLabel);
 			// Each line is themed per-kind (TUI) or raw (non-TUI) and indented
 			// TWO spaces under its header (SCENARIO-010).
 			for (const line of sectionLines) {
@@ -487,12 +520,24 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// line PLUS the blank separators actually EMITTED — there are
 		// (sections−1) of those, NOT one per section (the prior accounting counted a
 		// phantom trailing separator, inflating the budget by one).
+		// Sticky stage headers: when the body overflows TOTAL_SECTION_CAP, collapse
+		// the OLDEST sections to HEADER-ONLY first — every stage title stays pinned
+		// at the top while only the final (live) section keeps its scrolling log
+		// body. Dropping headers outright is a LAST RESORT (pathologically many
+		// stages). The final section is never collapsed or dropped. Budget counts
+		// each rendered line + the (sections−1) blank separators actually emitted.
 		const sectionLens = sections.map((s) => s.length);
 		let total =
 			sectionLens.reduce((sum, n) => sum + n, 0) + Math.max(0, sections.length - 1);
+		for (let i = 0; i < sections.length - 1 && total > TOTAL_SECTION_CAP; i++) {
+			if (sectionLens[i]! <= 1) continue; // already header-only
+			total -= sectionLens[i]! - 1;
+			sections[i] = [sections[i]![0]!]; // header-only: keep the title, drop the body
+			sectionLens[i] = 1;
+		}
 		let start = 0;
 		while (start < sections.length - 1 && total > TOTAL_SECTION_CAP) {
-			total -= sectionLens[start]! + 1; // this section + the separator after it
+			total -= sectionLens[start]! + 1; // last resort: drop the oldest header + its separator
 			start++;
 		}
 		const bodyLines: string[] = [];

@@ -480,3 +480,76 @@ describe("AC-03 edge cases: aggregate cap, empty transcript, live buffer, per-se
 		expect(ls[0]).toContain("FirstSection");
 	});
 });
+
+// ─── Sticky stage headers + stranded-banner suppression ─────────────────────
+// Two related fixes: (1) the `▶ <stage>` phase banner task() emits right before
+// its stage-running event used to DUPLICATE the section header `▌ <stage>` — and,
+// because the dashboard appends " (attempt N)" only to the stage-event label,
+// the banner's base label broke the phase→stage re-tag and stranded itself in
+// the PREVIOUS section. Stage-level banners are now suppressed (the header is
+// the canonical title). (2) When the body overflows TOTAL_SECTION_CAP, old
+// sections collapse to HEADER-ONLY instead of being dropped — every stage title
+// stays pinned while only the live section's body scrolls.
+describe("sticky stage headers + redundant-banner suppression", () => {
+	it("suppresses the stranded `▶ <stage>` banner that duplicates a section header (attempt-suffix re-tag gap)", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "tui", theme: mockTheme(), onUpdate: h0.onUpdate });
+		// Reproduce the real task() ordering: the requirements stage runs, then the
+		// review stage's PHASE banner fires while currentStage is still requirements
+		// (emitted before its own stage-running event), then the review stage event
+		// arrives carrying the " (attempt 2)" suffix the dashboard adds.
+		h.sink.stage({ id: "requirements", label: "Stage 2B — Requirements", status: "running" });
+		h.sink.log("requirements-work-marker");
+		h.sink.stage({ id: "requirements", label: "Stage 2B — Requirements", status: "ok" });
+		h.sink.phase("Stage 2B — Requirements Review"); // stranded: base label, pre-stage-event
+		h.sink.stage({ id: "requirementsReview", label: "Stage 2B — Requirements Review (attempt 2)", status: "running" });
+		h.sink.log("review-work-marker");
+		h.flush();
+		const body = h0.body;
+		// The canonical section header survives (with its attempt suffix)...
+		expect(body).toContain("Stage 2B — Requirements Review (attempt 2)");
+		// ...but the redundant `▶ <base label>` banner is NOT rendered as a log line.
+		expect(body).not.toContain("▶ Stage 2B — Requirements Review");
+	});
+
+	it("preserves sub-phase banners (Implementation phases are NOT stage labels)", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "tui", theme: mockTheme(), onUpdate: h0.onUpdate });
+		h.sink.stage({ id: "implementation", label: "Stage 9 — Implementation", status: "running" });
+		h.sink.phase("Implementation — Phase 1/1: Core — TDD RED (attempt 1, try 1)");
+		h.sink.log("agent-tool-line-29");
+		h.flush();
+		const body = h0.body;
+		// The stage-level banner (matching the stage label) is suppressed...
+		expect(body).not.toContain("▶ Stage 9 — Implementation");
+		// ...but the sub-phase banner (no stage label match) is kept.
+		expect(body).toContain("Implementation — Phase 1/1: Core — TDD RED (attempt 1, try 1)");
+	});
+
+	it("sticky headers: over TOTAL_SECTION_CAP, old completed sections collapse to header-only (titles persist, not dropped)", () => {
+		const cap = LiveStreamNS.TOTAL_SECTION_CAP;
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "tui", theme: mockTheme(), onUpdate: h0.onUpdate, tailLines: 1_000_000 });
+		// Many large COMPLETED stages (each header + trim + 3-line tail ≈ 5 lines)
+		// plus a final live stage → total well over the cap, so the aggregate
+		// collapse must engage.
+		for (let s = 0; s < 90; s++) {
+			h.sink.stage({ id: `stage-${s}`, label: `StickyStage${s}`, status: "ok" });
+			for (let l = 0; l < 40; l++) h.sink.log(`s${s}-l${l}-sticky`);
+		}
+		h.sink.stage({ id: "live", label: "LiveStage", status: "running" });
+		for (let l = 0; l < 40; l++) h.sink.log(`live-l${l}`);
+		h.flush();
+		const body = h0.body;
+		// Body is still bounded by the cap...
+		expect(lines(body).length).toBeLessThanOrEqual(cap);
+		// ...yet the OLDEST completed title survives (the old drop-whole-sections
+		// behavior would have removed StickyStage0 ENTIRELY once over the cap).
+		expect(body).toContain("StickyStage0");
+		expect(body).toContain("StickyStage89");
+		expect(body).toContain("LiveStage");
+		// The live section keeps its scrolling body; a collapsed old stage does not.
+		expect(body).toContain("live-l39");
+		expect(body).not.toContain("s0-l39-sticky");
+	});
+});
