@@ -15,7 +15,7 @@ import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts
 import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
-import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
+import { buildRedBoundaryPrompt, classifyObviousRedPath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../render/schemas.ts";
@@ -211,7 +211,7 @@ function restorePaths(cwd: string, paths: string[]): void {
 }
 
 function restoreUnacceptedRedChanges(ctx: StageContext, cwd: string, phaseId: string, paths: string[]): void {
-	const restorable = paths.filter((p) => !isInternalRuntimeClaim(p));
+	const restorable = paths.filter((p) => !isInternalRuntimeClaim(p) && !isSubstrateArtifact(p));
 	if (restorable.length === 0) return;
 	restorePaths(cwd, restorable);
 	ctx.log(`Implementation ${phaseId} RED cleanup: restored unaccepted RED change(s): ${restorable.join(", ")}`);

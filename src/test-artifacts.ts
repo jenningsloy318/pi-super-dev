@@ -1,6 +1,6 @@
 import { isInternalRuntimeClaim } from "./tracking.ts";
 
-export type RedBoundaryCategory = "test" | "support" | "runtime" | "production" | "ambiguous";
+export type RedBoundaryCategory = "test" | "support" | "runtime" | "substrate" | "production" | "ambiguous";
 export type RedBoundarySource = "deterministic" | "agent" | "fallback";
 
 export interface RedBoundaryClassification {
@@ -66,6 +66,36 @@ function isRuntimeEvidencePath(path: string): boolean {
 	return RUNTIME_EVIDENCE_BASENAMES.has(basename);
 }
 
+/** Conventional dependency-installation and tool/cache directories that are
+ * NEVER hand-written production implementation. A truly-greenfield repo must
+ * bootstrap some of these during RED (e.g. `node_modules/` via `npm install`,
+ * vitest's `.vite/` cache) to make its test collect+run, so they are allowed
+ * through the RED boundary deterministically rather than flagged as pollution
+ * and torn down by cleanup. Only names that can never be a meaningful source
+ * path are included here — generic names like `build`/`dist`/`bin`/`obj`/
+ * `target`/`coverage` are deliberately EXCLUDED because they are also used as
+ * real hand-written source directories in many projects. */
+const SUBSTRATE_SEGMENTS = new Set([
+	"node_modules",
+	".vite",
+	".turbo",
+	".next",
+	".nuxt",
+	".svelte-kit",
+	".angular",
+	".parcel-cache",
+	".cache",
+	".esbuild",
+	".gradle",
+	".pytest_cache",
+	"__pycache__",
+]);
+
+export function isSubstrateArtifact(path: string): boolean {
+	const segments = normalizePath(path).split("/");
+	return segments.some((seg) => SUBSTRATE_SEGMENTS.has(seg));
+}
+
 function decision(path: string, category: RedBoundaryCategory, allowed: boolean, confidence: number, source: RedBoundarySource, reason: string): RedBoundaryClassification {
 	return { path: normalizePath(path), category, allowed, confidence, source, reason };
 }
@@ -83,6 +113,9 @@ export function classifyObviousRedPath(path: string): RedBoundaryClassification 
 	if (isInternalRuntimeClaim(normalized) || isRuntimeEvidencePath(normalized)) {
 		return decision(normalized, "runtime", true, 1, "deterministic", "known super-dev runtime artifact");
 	}
+	if (isSubstrateArtifact(normalized)) {
+		return decision(normalized, "substrate", true, 1, "deterministic", "conventional dependency/tool-cache directory (not production implementation)");
+	}
 	if (hasObviousTestToken(normalized)) {
 		return decision(normalized, "test", true, 0.95, "deterministic", "path contains an obvious test/spec/e2e/snapshot token");
 	}
@@ -90,12 +123,12 @@ export function classifyObviousRedPath(path: string): RedBoundaryClassification 
 }
 
 function isAllowedCategory(category: RedBoundaryCategory): boolean {
-	return category === "test" || category === "support" || category === "runtime";
+	return category === "test" || category === "support" || category === "runtime" || category === "substrate";
 }
 
 function normalizeCategory(value: unknown): RedBoundaryCategory {
 	const v = typeof value === "string" ? value.trim().toLowerCase() : "";
-	if (v === "test" || v === "support" || v === "runtime" || v === "production" || v === "ambiguous") return v;
+	if (v === "test" || v === "support" || v === "runtime" || v === "production" || v === "ambiguous" || v === "substrate") return v;
 	return "ambiguous";
 }
 
@@ -164,7 +197,7 @@ export function buildRedBoundaryPrompt(args: { changedFiles: string[]; testFiles
 		`Reported test targets: ${args.testFiles.length ? args.testFiles.join(", ") : "none"}`,
 		`Changed files requiring classification: ${args.changedFiles.join(", ")}`,
 		"Return structured_output with:",
-		"- classifications: [{ path, category: 'test'|'support'|'runtime'|'production'|'ambiguous', confidence: 0..1, reason }]",
+		"- classifications: [{ path, category: 'test'|'support'|'runtime'|'production'|'ambiguous'|'substrate', confidence: 0..1, reason }]",
 		"- forbiddenFiles: production or unsafe paths",
 		"- ambiguousFiles: paths you cannot confidently allow",
 		"- allAllowed: true only when every changed file is safe for RED",
