@@ -369,6 +369,32 @@ describe("P3 edges — RED scenario coverage gates the implementer", () => {
 		expect(logs.some((l) => /RED scenario coverage PASS/i.test(l))).toBe(true);
 	});
 
+	it("treats coverage as PASS when the classifier's granular list is complete even if its allCovered boolean drifts", async () => {
+		// Regression: the tdd-coverage-classifier reliably enumerates coveredScenarios
+		// but routinely flubs/omits the derived `allCovered` boolean (LLM shape drift).
+		// Coverage must be decided by the authoritative diff over the granular list,
+		// not the brittle boolean — otherwise a genuinely-covered RED falsely retries
+		// until MAX_RED_RETRIES exhausts the phase. Control below has a COMPLETE list
+		// but NO allCovered field (simulating the drift seen in the live run).
+		redCheck.mockImplementation(() => "red");
+		const scenarios = ["SCENARIO-001", "SCENARIO-002"];
+		const { ctx, tddCalls, coverageCalls, implCalls, logs } = mkCtx({
+			tddControls: [{ testFiles: ["tests/session-red.test.ts"] }],
+			coverageControls: [
+				{ coveredScenarios: scenarios, missingScenarios: [], summary: "all expected scenarios explicitly covered" },
+			],
+		});
+
+		const res = (await (implementationStage as Stage).run(mkScenarioState(scenarios), ctx)) as ControlObj;
+
+		expect(res.allGreen).toBe(true);
+		expect(tddCalls).toHaveLength(1);
+		expect(coverageCalls).toHaveLength(1);
+		expect(implCalls).toHaveLength(1);
+		expect(logs.some((l) => /RED scenario coverage PASS/i.test(l))).toBe(true);
+		expect(logs.some((l) => /RED scenario coverage FAIL/i.test(l))).toBe(false);
+	});
+
 	it("blocks the implementer when scenario coverage repeats without progress after RED retries", async () => {
 		redCheck.mockImplementation(() => "red");
 		const scenarios = ["SCENARIO-001", "SCENARIO-002"];

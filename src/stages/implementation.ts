@@ -395,7 +395,12 @@ async function resolveTddScenarioCoverage(args: { ctx: StageContext; cwd: string
 		const coveredExpected = covered.filter((id) => expectedSet.has(id));
 		const missingByDiff = args.expectedScenarios.filter((id) => !coveredExpected.includes(id));
 		const missing = reportedMissing.length ? uniqueScenarioIds(reportedMissing.filter((id) => expectedSet.has(id))) : missingByDiff;
-		const allCovered = control.allCovered === true && missing.length === 0 && coveredExpected.length >= args.expectedScenarios.length;
+		// Authoritative coverage = the diff over the classifier's granular coveredScenarios
+		// list. Do NOT also require control.allCovered === true: that boolean is a derived
+		// summary of the same list and is the brittle channel — LLM shape drift routinely
+		// emits every scenario in coveredScenarios (so the diff passes) while flubbing or
+		// omitting the aggregate boolean, which would falsely fail a genuinely-covered RED.
+		const allCovered = missing.length === 0 && coveredExpected.length >= args.expectedScenarios.length;
 		return {
 			allCovered,
 			expectedScenarios: args.expectedScenarios,
