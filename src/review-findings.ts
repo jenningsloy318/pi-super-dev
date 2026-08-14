@@ -51,3 +51,18 @@ export function reviewHasBlockingFinding(review: { findings?: unknown } | undefi
 	const findings = (review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
 	return findings.some(reviewFindingBlocks);
 }
+
+/** True when any OPEN finding carries a high/critical-class severity, regardless
+ *  of its per-finding `blocking` flag. Findings already verified/addressed/
+ *  resolved/deferred no longer count — a resolved high note must not keep the
+ *  verdict pinned at Changes Requested. Severity vocabulary mirrors the
+ *  blocking-fallback list in {@link reviewFindingBlocks} (critical | blocker |
+ *  fatal | high | error | fail | reject, case-insensitive prefix). */
+export function reviewHasHighSeverityFinding(review: { findings?: unknown } | undefined): boolean {
+	const findings = (review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
+	return findings.some((f) => {
+		const status = inferReviewFindingStatus(f);
+		if (["verified", "addressed", "resolved", "fixed", "deferred"].includes(status)) return false;
+		return /^(critical|blocker|fatal|high|error|fail|reject)/.test(reviewFindingSeverity(f).toLowerCase());
+	});
+}

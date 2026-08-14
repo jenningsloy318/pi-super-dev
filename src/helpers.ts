@@ -5,7 +5,7 @@
  */
 
 import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
-import { reviewHasBlockingFinding, reviewHasFindings } from "./review-findings.ts";
+import { reviewHasBlockingFinding, reviewHasFindings, reviewHasHighSeverityFinding } from "./review-findings.ts";
 import {
 	readSpecDoc,
 	specDocExists,
@@ -221,15 +221,24 @@ function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefin
 		// concerns that need an author response, while REJECT is the production/data
 		// loss/security veto. Do not let advisory red-team comments create an endless
 		// merge blocker once code review approves. If a CONTEST payload nevertheless
-		// carries high/critical findings, keep it blocking for safety.
-		return { verdict: reviewHasBlockingFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
+		// carries high/critical findings, keep it blocking for safety. Blocking is
+		// judged by the blocking flag OR the severity fallback (a high finding is
+		// blocking even when the reviewer followed the "blocking = must stop merge"
+		// narrow convention and left it false).
+		return { verdict: reviewHasBlockingFinding(review) || reviewHasHighSeverityFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
 	}
 	if (raw === "REJECT") return { verdict: "Blocked", syntheticFindings: [] };
 	if (raw === "Approved" || raw === "Approved with Comments") {
 		return { verdict: reviewHasBlockingFinding(review) ? "Changes Requested" : raw, syntheticFindings: [] };
 	}
 	if (raw === "Changes Requested") {
-		return { verdict: reviewHasFindings(review) && !reviewHasBlockingFinding(review) ? "Approved with Comments" : "Changes Requested", syntheticFindings: [] };
+		// Reviewers use "blocking" narrowly ("true only when it must stop merge"),
+		// so an explicit Changes Requested can arrive with a High finding flagged
+		// blocking:false. Downgrade to Approved with Comments ONLY when every
+		// finding is non-blocking AND none carries a high/critical-class severity
+		// (open findings only — verified/resolved highs no longer pin the verdict).
+		const downgrade = reviewHasFindings(review) && !reviewHasBlockingFinding(review) && !reviewHasHighSeverityFinding(review);
+		return { verdict: downgrade ? "Approved with Comments" : "Changes Requested", syntheticFindings: [] };
 	}
 	if (raw === "Blocked") return { verdict: "Blocked", syntheticFindings: [] };
 	return fail(`Invalid verdict in ${sourceName} review output: ${raw}`);

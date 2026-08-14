@@ -108,6 +108,69 @@ describe("helpers: routing", () => {
 		});
 		expect(r.value.verdict).toBe("Approved with Comments");
 	});
+	it("merge-review-verdicts KEEPS Changes Requested when an open High finding is non-blocking (severity fallback beats the blocking flag)", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": {
+					verdict: "Changes Requested",
+					findings: [{
+						id: "CR-1",
+						severity: "High",
+						status: "open",
+						blocking: false,
+						title: "Race in cache invalidation",
+						detail: "Must fix before merge per reviewer's explicit request.",
+					}],
+				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
+	it("merge-review-verdicts still downgrades when the only High finding is already verified", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": {
+					verdict: "Changes Requested",
+					findings: [{
+						id: "CR-1",
+						severity: "High",
+						status: "verified",
+						blocking: false,
+						title: "Previously flagged race",
+						detail: "Confirmed fixed in this revision.",
+					}],
+				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Approved with Comments");
+	});
+	it("merge-review-verdicts keeps CONTEST blocking on an open High finding even without the blocking flag", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved" },
+				"adversarial-review": { verdict: "CONTEST", findings: [{ severity: "High", status: "open", blocking: false, title: "data-loss shape" }] },
+			},
+		});
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
+	it("merge-review-verdicts keeps Changes Requested when a Critical finding is non-blocking", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": {
+					verdict: "Changes Requested",
+					findings: [{ severity: "Critical", status: "open", blocking: false, title: "SQL injection" }],
+				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
 	it("merge-review-verdicts keeps Changes Requested when a finding is explicitly blocking", async () => {
 		const r = await runHelper({
 			name: "merge-review-verdicts",
