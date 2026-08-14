@@ -530,6 +530,78 @@ const MAX_RED_RETRIES = (() => {
 	return Number.isFinite(raw) && raw > 0 ? raw : 6;
 })();
 
+/** Hard cap on implementer-driven (challenge) RED re-authors per phase. When the
+ *  implementer PROVES a confirmed RED test is unsatisfiable (internal
+ *  contradiction, or compile errors in the test it cannot fix because tests are
+ *  READ-ONLY), the stage drops acceptedRed and re-runs tdd-guide WITH the
+ *  implementer's diagnosis — instead of blind re-authoring (which reproduces
+ *  the same contradiction). Bounded so a flailing implementer cannot loop
+ *  forever; after the cap the existing no-progress/HITL path takes over.
+ *  Env-overridable for tuning. */
+const MAX_CHALLENGE_REAUTHORS = (() => {
+	const raw = Number.parseInt(process.env.SUPER_DEV_MAX_CHALLENGE_REAUTHORS ?? "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : 2;
+})();
+
+/** A concrete implementer report that a confirmed RED test is unsatisfiable.
+ *  `reason` carries the impossibility proof (e.g. "line 338 asserts
+ *  typeof==='object'; line 346 calls it — no value is both"). Defensive parse of
+ *  untrusted agent control; never throws. */
+export interface TestDefect {
+	testFile: string;
+	lines?: string;
+	reason: string;
+}
+
+/** Parse the implementer's optional `testDefects` control field. Accepts only
+ *  objects with a non-empty testFile AND reason (a defect without a proof is
+ *  not actionable and is dropped, so the channel cannot be used as a vague
+ *  escape hatch). Bounded to 6 entries. Never throws. */
+export function parseTestDefects(control: unknown): TestDefect[] {
+	if (control == null || typeof control !== "object" || Array.isArray(control)) return [];
+	const raw = (control as Record<string, unknown>).testDefects;
+	if (!Array.isArray(raw)) return [];
+	const out: TestDefect[] = [];
+	for (const entry of raw) {
+		if (entry == null || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const e = entry as Record<string, unknown>;
+		const testFile = typeof e.testFile === "string" ? e.testFile.trim() : "";
+		const reason = typeof e.reason === "string" ? e.reason.trim() : "";
+		if (!testFile || !reason) continue;
+		const lines = typeof e.lines === "string" ? e.lines.trim() : undefined;
+		out.push({ testFile, reason, ...(lines ? { lines } : {}) });
+	}
+	return out.slice(0, 6);
+}
+
+/** Trim an implementer reasoning trace to its tail (the most recent diagnosis),
+ *  bounded so a long agent transcript cannot bloat the RED re-author prompt. */
+function trimImplementerText(text: string | undefined, max = 1200): string {
+	const t = (text ?? "").trim();
+	if (!t) return "";
+	return t.length <= max ? t : `…${t.slice(-max)}`;
+}
+
+/** Build the evidence suffix appended to the tdd-guide re-author prompt when
+ *  re-authoring because the implementer proved the prior RED unsatisfiable.
+ *  Prefers structured testDefects; falls back to a trimmed implementer
+ *  reasoning tail so even a model that ignores the testDefects contract still
+ *  surfaces its diagnosis instead of re-authoring blind. */
+function formatReauthorEvidence(defects: TestDefect[], implTextTail: string): string {
+	const parts: string[] = [];
+	if (defects.length) {
+		parts.push("## PRIOR RED TEST WAS UNSATISFIABLE — re-author a satisfiable test");
+		parts.push("The implementer PROVED the previously-accepted RED test cannot be satisfied by ANY conforming implementation. Do NOT reproduce the same contradiction. Fix the named defects and author a test that is internally consistent AND that at least one conforming implementation could pass:");
+		for (const d of defects) parts.push(`- ${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`);
+	}
+	if (implTextTail.trim()) {
+		parts.push("");
+		parts.push("Implementer's latest diagnosis (for context):");
+		parts.push(implTextTail.trim());
+	}
+	return parts.length ? `\n\n${parts.join("\n")}` : "";
+}
+
 export function runtimeInstructionFingerprint(specDir: string | undefined): string {
 	const notes = userNotesForAgent(specDir);
 	let hash = 2166136261;
@@ -841,6 +913,15 @@ export const implementationStage: Stage = {
 			// detect implementer edits to test files on EVERY retry — not only on
 			// the attempt where RED freshly ran.
 			let redTestSnapshot = new Map<string, string | null>();
+			// Evidence-carrying RED re-author (unsatisfiable-test loop): when the
+			// implementer proves a confirmed RED test is unsatisfiable (testDefects),
+			// we re-run tdd-guide WITH the implementer's diagnosis instead of blind.
+			// `reauthorEvidence` is appended to the tdd-guide prompt; cleared once a
+			// fresh RED is accepted. `challengeReauthors` bounds the proactive loop.
+			let reauthorEvidence = "";
+			let challengeReauthors = 0;
+			let implDefects: TestDefect[] = [];
+			let implTextTail = "";
 			// Phase bracketing (spec-11 Phase 3, AC-04 → SCENARIO-008/009): snapshot the
 			// git baseline BEFORE the attempts so each per-attempt `tracker.end`
 			// computes the delta from phase start; the change-gate reads the freshest
@@ -923,7 +1004,7 @@ export const implementationStage: Stage = {
 						announceActivity("TDD RED", redTryDetail);
 						const tddStepSeq = ++stepSeq;
 						emitStep(`TDD RED (${redTryDetail})`, "running", tddStepSeq);
-						const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint });
+						const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint + reauthorEvidence });
 						// Reflect an agent error/timeout in the step glyph: a ✓ TDD RED next to
 						// an errored call misrepresents what happened (R1 fail-closes the phase
 						// regardless, but the dashboard should not show success).
@@ -1143,6 +1224,9 @@ export const implementationStage: Stage = {
 						break;
 					}
 					acceptedRed = { status: redStatus, testFiles: [...testFiles], changedFiles: [...redChangedFiles] };
+				// A freshly (re)accepted RED consumed any prior challenge evidence —
+				// clear it so a later UNRELATED re-author does not carry stale proof.
+				reauthorEvidence = "";
 					// Capture the confirmed RED test contents once; persisted across GREEN
 					// attempts via the hoisted redTestSnapshot so a later GREEN edit to a
 					// test file is detectable on every retry, not only this attempt.
@@ -1263,6 +1347,13 @@ export const implementationStage: Stage = {
 				// EXCLUDED (a deleted file is not a "modified" display entry). dedupe via
 				// the existing `filesModified.includes` guard (first-seen order preserved).
 				const structured = parseStructuredChanges(impl.control);
+				// Capture the implementer's diagnosis for the evidence-carrying RED
+				// re-author (unsatisfiable-test loop). `testDefects` is the structured,
+				// preferred signal; the trimmed .text tail is a fallback so a model
+				// that ignores the contract still surfaces its reasoning. Kept per
+				// phase (latest attempt) and consumed when RED is re-authored.
+				implDefects = parseTestDefects(impl.control);
+				implTextTail = trimImplementerText(impl.text);
 				const projectStructured: StructuredChanges = {
 					filesCreated: structured.filesCreated.filter((f) => !isInternalRuntimeClaim(f)),
 					filesModified: structured.filesModified.filter((f) => !isInternalRuntimeClaim(f)),
@@ -1433,6 +1524,25 @@ export const implementationStage: Stage = {
 					acceptedRed = null;
 					ctx.log(`Implementation ${phaseId} routing missing-test deliverable(s) back to RED regeneration (implementer cannot add RED tests): ${missingTestDeliverables.join("; ")}`);
 				}
+				// Implementer-driven RED re-author (unsatisfiable-test loop): if the
+				// implementer PROVED a confirmed RED test is unsatisfiable (testDefects)
+				// and this attempt still did not go green, the named test is genuinely
+				// blocking. Drop acceptedRed and re-run tdd-guide WITH the implementer's
+				// proof so the re-author fixes the contradiction instead of reproducing
+				// it. Bounded by MAX_CHALLENGE_REAUTHORS; after the cap the existing
+				// no-progress/HITL path below takes over. NOT an escape hatch: requires a
+				// confirmed RED (acceptedRed) the implementer failed against AND a named
+				// defect with a proof; the re-authored test still passes RED strength
+				// review, and the no-progress detector guards a bad-faith loop.
+				if (acceptedRed && implDefects.length && challengeReauthors < MAX_CHALLENGE_REAUTHORS) {
+					challengeReauthors++;
+					reauthorEvidence = formatReauthorEvidence(implDefects, implTextTail);
+					const defectFiles = implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}`).join("; ");
+					ctx.log(`Implementation ${phaseId} implementer challenge: confirmed RED test reported unsatisfiable — re-authoring RED with evidence (${challengeReauthors}/${MAX_CHALLENGE_REAUTHORS}; defects: ${defectFiles})`);
+					attemptProgressHistory = [];
+					acceptedRed = null;
+					continue;
+				}
 				const progressSignature: ProgressSignature = {
 					failure: failureSignature(failureReasons),
 					footprint: changeFootprint(phaseChangeRec, projectStructured),
@@ -1455,9 +1565,9 @@ export const implementationStage: Stage = {
 							const failure: import("../types.ts").EscalationFailure = {
 								kind: "stagnation",
 								stage: "implementation",
-								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable gate contradiction or a spec ambiguity. Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
+								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
 								severity: "soft",
-								findings: failureReasons.slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
+								findings: [...failureReasons.slice(0, 12).map((r) => ({ file: null, severity: null, title: r })), ...implDefects.map((d) => ({ file: d.testFile, severity: null, title: `unsatisfiable: ${d.reason}` }))].slice(0, 12),
 								worktreePath: setup.worktreePath,
 								specDirectory: setup.specDirectory,
 							};
@@ -1468,6 +1578,12 @@ export const implementationStage: Stage = {
 									// Reset the no-progress window so the guided attempt is judged
 									// fresh (not instantly re-flagged against the pre-guidance signature),
 									// and drop the accepted RED so guidance can reshape tests too.
+									// Carry the implementer's diagnosis so the guided re-author is
+									// evidence-backed, not blind (parity with the challenge edge). Even
+									// without structured testDefects, a model that proved the test
+									// unsatisfiable only in its .text reasoning still gets that proof
+									// routed to the RED author.
+									reauthorEvidence = formatReauthorEvidence(implDefects, implTextTail);
 									attemptProgressHistory = [];
 									acceptedRed = null;
 									ctx.log(`Implementation ${phaseId} no-progress escalation: retrying with user guidance`);

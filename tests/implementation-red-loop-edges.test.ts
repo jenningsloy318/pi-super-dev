@@ -131,11 +131,14 @@ function mkCtx(opts: {
 	onTddCall?: (call: AgentCall, index: number) => void;
 	onCoverageCall?: (call: AgentCall, index: number) => void;
 	onImplCall?: (call: AgentCall, index: number) => void;
+	implControls?: ControlObj[];
+	implText?: string;
 	redReviewVerdict?: string;
 } = {}): { ctx: StageContext; tddCalls: AgentCall[]; boundaryCalls: AgentCall[]; coverageCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
 	const queue = [...(opts.tddControls ?? [DEFAULT_TDD_CONTROL])];
 	const boundaryQueue = [...(opts.boundaryControls ?? [])];
 	const coverageQueue = [...(opts.coverageControls ?? [{ allCovered: true, coveredScenarios: [], missingScenarios: [], summary: "all covered" }])];
+	const implQueue = [...(opts.implControls ?? [])];
 	const tddCalls: AgentCall[] = [];
 	const boundaryCalls: AgentCall[] = [];
 	const coverageCalls: AgentCall[] = [];
@@ -169,7 +172,8 @@ function mkCtx(opts: {
 			if (call.agent === "implementer") {
 				implCalls.push(call);
 				opts.onImplCall?.(call, implCalls.length);
-				return { text: "", control: { filesModified: ["src/x.ts"] } };
+				const next = implQueue.length > 1 ? implQueue.shift()! : (implQueue[0] ?? { filesModified: ["src/x.ts"] });
+				return { text: opts.implText ?? "", control: next };
 			}
 			if (call.agent === "code-reviewer") {
 				// RED test-quality review (R2): default to STRONG so accepted RED
@@ -801,5 +805,93 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+// ─── 11. Implementer-driven RED re-author (unsatisfiable-test loop) ─────────
+//
+// When the implementer PROVES a confirmed RED test is unsatisfiable
+// (testDefects) and the attempt still does not go green, the stage drops the
+// accepted RED and re-runs tdd-guide WITH the implementer's diagnosis, instead
+// of blind re-authoring (which would reproduce the same contradiction). Bounded
+// by MAX_CHALLENGE_REAUTHORS (default 2); after the cap the no-progress/HITL
+// path terminates the phase.
+describe("P3 edges — implementer challenge of an unsatisfiable RED test", () => {
+	beforeEach(() => {
+		// The unsatisfiable-test case manifests as a FAILED build/test gate the
+		// implementer cannot fix (tests are read-only). Mock the gate to fail so the
+		// attempt reaches the failure path where the challenge edge lives.
+		buildGate.mockImplementation(() => ({ pass: false, inScopePass: false, ran: ["npm test"], errors: ["test failed: expected green"], outOfScopeErrors: [] }));
+	});
+
+	it("re-authors RED with the implementer's proof when testDefects is emitted and the test stays red", async () => {
+		// runRedCheck returns "red" so the RED phase confirms.
+		redCheck.mockImplementation(() => "red");
+		const defect = { testFile: "tests/red.test.ts", lines: "L338,L346", reason: "contradiction: asserts typeof object AND calls it as a function" };
+		const { ctx, tddCalls, implCalls, logs } = mkCtx({
+			tddControls: [{ testFiles: ["tests/red.test.ts"] }],
+			implControls: [{ filesModified: ["src/x.ts"], testDefects: [defect] }],
+		});
+
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		// RED was re-authored: tdd-guide ran MORE than once.
+		expect(tddCalls.length).toBeGreaterThan(1);
+		// The re-author prompt carries the implementer's impossibility proof.
+		expect(tddCalls[1].prompt).toContain("PRIOR RED TEST WAS UNSATISFIABLE");
+		expect(tddCalls[1].prompt).toContain(defect.reason);
+		expect(tddCalls[1].prompt).toContain(defect.testFile);
+		// The implementer challenge was logged.
+		expect(logs.some((l) => /implementer challenge/.test(l))).toBe(true);
+	});
+
+	it("bounds challenge-driven re-authors (terminates instead of looping forever)", async () => {
+		redCheck.mockImplementation(() => "red");
+		const defect = { testFile: "tests/red.test.ts", reason: "unsatisfiable: proof" };
+		const { ctx, tddCalls, implCalls } = mkCtx({
+			tddControls: [{ testFiles: ["tests/red.test.ts"] }],
+			implControls: [{ filesModified: ["src/x.ts"], testDefects: [defect] }],
+		});
+
+		// Must terminate (no hang). Default cap is 2 challenge re-authors.
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		// tdd-guide is called for: attempt1 + 2 challenge re-authors = 3 RED
+		// authorings (plus possible no-progress attempts that REUSE red, not re-author).
+		expect(tddCalls.length).toBeLessThanOrEqual(5);
+		expect(implCalls.length).toBeLessThanOrEqual(6);
+	});
+
+	it("includes the implementer .text diagnosis alongside structured testDefects", async () => {
+		redCheck.mockImplementation(() => "red");
+		const defect = { testFile: "tests/red.test.ts", reason: "contradiction" };
+		const { ctx, tddCalls } = mkCtx({
+			tddControls: [{ testFiles: ["tests/red.test.ts"] }],
+			implControls: [{ filesModified: ["src/x.ts"], testDefects: [defect] }],
+			implText: "Detailed proof: line 10 asserts X and line 20 asserts not-X.",
+		});
+
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		expect(tddCalls.length).toBeGreaterThan(1);
+		// Both the structured defect AND the free-form .text proof are surfaced.
+		expect(tddCalls[1].prompt).toContain("PRIOR RED TEST WAS UNSATISFIABLE");
+		expect(tddCalls[1].prompt).toContain(defect.reason);
+		expect(tddCalls[1].prompt).toContain("Implementer's latest diagnosis");
+		expect(tddCalls[1].prompt).toContain("line 10 asserts X");
+	});
+
+	it("does NOT challenge when the implementer emits no defect (normal failure path unchanged)", async () => {
+		redCheck.mockImplementation(() => "red");
+		const { ctx, tddCalls, logs } = mkCtx({
+			tddControls: [{ testFiles: ["tests/red.test.ts"] }],
+			implControls: [{ filesModified: ["src/x.ts"] }], // no testDefects, no text
+		});
+
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		// No challenge: RED authored once (reused across attempts); no challenge log.
+		expect(logs.some((l) => /implementer challenge/.test(l))).toBe(false);
+		expect(tddCalls).toHaveLength(1);
 	});
 });
