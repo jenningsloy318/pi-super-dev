@@ -518,6 +518,22 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		opts.onProgress?.event(`session ${label}: aborted by parent signal`);
 		void session.abort();
 	};
+	// W-1 soft deadline (docs/requirements/llm-judge-routing-layer.md §1.4): at 80%
+	// of the wall clock, abort the current stream and hand the SAME session one
+	// wrap-up turn with the remaining 20% as its grace window. A hard timeout
+	// discards everything (control=no); a wrap-up converts the already-done work
+	// into a delivered — possibly partial — structured result. Only armed when a
+	// structured_output contract exists (keys); a no-keys call has no salvageable
+	// control and keeps the plain hard timeout.
+	let softDeadlineFired = false;
+	const softTimer = keys.length
+		? setTimeout(() => {
+				if (capture.called) return;
+				softDeadlineFired = true;
+				opts.onProgress?.event(`session ${label}: soft deadline reached — aborting exploration for wrap-up`);
+				try { void session.abort(); } catch { /* ignore */ }
+			}, Math.round(timeoutMs * 0.8))
+		: undefined;
 	const timer = setTimeout(() => {
 		timedOut = true;
 		opts.onProgress?.event(`session ${label}: timeout after ${timeoutMs}ms; aborting agent session`);
@@ -545,7 +561,9 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		try {
 			await session.prompt(task);
 		} catch (err) {
-			if (!timedOut && !opts.signal?.aborted) throw err;
+			// A soft-deadline abort must fall through to the wrap-up turn below, not
+			// rethrow — the session still holds every bit of work done so far.
+			if (!timedOut && !softDeadlineFired && !opts.signal?.aborted) throw err;
 		}
 
 		// Self-heal #1: when the specialist returns normally without ever calling
@@ -555,17 +573,27 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		// a rendered doc; pushing that to a cold gate retry wastes minutes and is
 		// easy for users to cancel before attempt 2. Do not do this on timeout/abort.
 		if (!capture.called && keys.length > 0 && !timedOut && !opts.signal?.aborted) {
-			correctiveNote = "corrective re-prompt (no structured_output)";
+			correctiveNote = softDeadlineFired ? "wrap-up prompt (soft deadline)" : "corrective re-prompt (no structured_output)";
 			opts.onProgress?.event(`↻ ${opts.id ?? opts.agent}: ${correctiveNote}`);
-			const feedback: RetryFeedback = {
-				stage: "agent-session",
-				gate: "required-structured-output",
-				location: "final structured_output tool call",
-				observed: "agent ended without calling the required structured_output tool",
-				expected: `structured_output called with all required keys: ${keys.join(", ")}`,
-				missing: keys,
-				nextAction: "Do not read more files and do not answer in prose. Using the work/context already in this session, call structured_output now with every required key filled.",
-			};
+			const feedback: RetryFeedback = softDeadlineFired
+				? {
+					stage: "agent-session",
+					gate: "required-structured-output",
+					location: "final structured_output tool call",
+					observed: "the session hit its soft deadline while still exploring",
+					expected: `structured_output called with all required keys: ${keys.join(", ")}`,
+					missing: keys,
+					nextAction: "DEADLINE REACHED — stop ALL exploration and tool use now. Using only the work and context already in this session, call structured_output immediately with every required key filled. An imperfect complete answer delivered now beats a perfect answer the hard timeout will discard.",
+				}
+				: {
+					stage: "agent-session",
+					gate: "required-structured-output",
+					location: "final structured_output tool call",
+					observed: "agent ended without calling the required structured_output tool",
+					expected: `structured_output called with all required keys: ${keys.join(", ")}`,
+					missing: keys,
+					nextAction: "Do not read more files and do not answer in prose. Using the work/context already in this session, call structured_output now with every required key filled.",
+				};
 			const fix = renderRetryFeedbackBlock([feedback], "Corrective Re-Prompt");
 			try {
 				await session.prompt(fix);
@@ -612,6 +640,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		return { text: "", control: null, error: err instanceof Error ? err.message : String(err) };
 	} finally {
 		clearTimeout(timer);
+		clearTimeout(softTimer);
 		opts.signal?.removeEventListener("abort", onAbort);
 		unsub?.();
 		if (process.env.SUPER_DEV_DEBUG) dumpTrace(opts, keys, capture, correctiveNote, session.messages);
