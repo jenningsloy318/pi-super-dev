@@ -266,3 +266,143 @@ describe("R-1 fix routing through the full review loop", () => {
 		}
 	});
 });
+
+describe("R-2 tests/validation third review angle", () => {
+	it("specDeclaresTestDeliverables keys on structured spec fields only", async () => {
+		const { specDeclaresTestDeliverables } = await import("../src/stages/verify.ts");
+		expect(specDeclaresTestDeliverables(null)).toBe(false);
+		expect(specDeclaresTestDeliverables({})).toBe(false);
+		expect(specDeclaresTestDeliverables({ phases: [{ name: "p" }] })).toBe(false);
+		expect(specDeclaresTestDeliverables({ phases: [{ name: "p", deliverables: { requireTests: ["a.test.ts"] } }] })).toBe(true);
+		expect(specDeclaresTestDeliverables({ phases: [{ name: "p", deliverables: { requireScenarios: ["SCENARIO-001"] } }] })).toBe(true);
+		expect(specDeclaresTestDeliverables({ scenarioRefs: ["SCENARIO-001"] })).toBe(true);
+	});
+
+	it("third reviewer runs only when the spec declares test deliverables and joins the verdict", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sd-review-r2-"));
+		try {
+			const specDirectory = join(root, "docs", "specifications", "01-r2") + "/";
+			mkdirSync(specDirectory, { recursive: true });
+			writeFileSync(join(specDirectory, "06-specification.md"), "# Specification\n");
+			const state: PipelineState = {
+				setup: {
+					worktreePath: root,
+					specDirectory,
+					defaultBranch: "main",
+					language: "frontend",
+					isWebUi: true,
+					specIdentifier: "01-r2",
+					worktreeCreated: false,
+					initializedRepo: false,
+				},
+				classify: { taskType: "feature", uiScope: "ui+arch", language: "frontend", isWebUi: true },
+				spec: {
+					specificationPath: join(specDirectory, "06-specification.md"),
+					scenarioRefs: ["SCENARIO-001"],
+					phases: [{ name: "core", deliverables: { requireScenarios: ["SCENARIO-001"] } }],
+				},
+				implementation: { phasesCompleted: 1, totalPhases: 1, allGreen: true },
+			};
+			let testsReviewCalls = 0;
+			let fixCalls = 0;
+			const prompts: string[] = [];
+			const ctx: StageContext = {
+				task: "implement feature",
+				options: {},
+				state,
+				budget: { check: () => true, spent: () => true, count: 0 },
+				log: () => {},
+				phase: () => {},
+				events: new EventEmitter(),
+				results: [],
+				helper: runHelper,
+				parallel: async () => [],
+				agent: async (call: AgentCall) => {
+					if (call.id === "pipeline.verify.tests-review") {
+						testsReviewCalls += 1;
+						prompts.push(call.prompt ?? "");
+						return { text: "", control: { title: "Tests Review", date: "2026-08-15", verdict: "Changes Requested", summary: "scenario tag missing", findings: [
+							{ id: "TR-1", severity: "high", title: "SCENARIO-001 not bound in tests", detail: "verbatim tag absent", file: "src/a.test.ts", blocking: true },
+						] } };
+					}
+					if (call.agent === "code-reviewer") {
+						return { text: "", control: { title: "Review", date: "2026-08-15", verdict: "Approved", summary: "ok", findings: [] } };
+					}
+					if (call.agent === "adversarial-reviewer") {
+						return { text: "", control: { title: "Adversarial", date: "2026-08-15", verdict: "PASS", summary: "ok", findings: [] } };
+					}
+					if (call.agent === "implementer") {
+						fixCalls += 1;
+						return { text: "", control: { filesCreated: [], filesModified: ["src/a.test.ts"], filesDeleted: [], fixesApplied: 1, summary: "bound tag" } };
+					}
+					return { text: "", control: {} };
+				},
+			};
+
+			// Round 1: both primary reviewers approve but the tests angle blocks on a
+			// missing scenario binding → merged verdict must be Changes Requested.
+			const { reviewStep } = await import("../src/stages/verify.ts");
+			await reviewStep.run(state, ctx);
+			expect(testsReviewCalls).toBe(1);
+			expect(prompts[0]).toContain("TESTS AND VALIDATION");
+			const review = state.review as { verdict?: string; findings?: Array<{ id?: string }> };
+			expect(review?.verdict).toBe("Changes Requested");
+			expect(review?.findings?.some((f) => f.id === "TR-1")).toBe(true);
+			expect(fixCalls).toBe(0);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("R-2 third reviewer skip path", () => {
+	it("never spawns the tests-reviewer when the spec declares no test deliverables", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sd-review-r2skip-"));
+		try {
+			const specDirectory = join(root, "docs", "specifications", "01-r2s") + "/";
+			mkdirSync(specDirectory, { recursive: true });
+			writeFileSync(join(specDirectory, "06-specification.md"), "# Specification\n");
+			const state: PipelineState = {
+				setup: {
+					worktreePath: root,
+					specDirectory,
+					defaultBranch: "main",
+					language: "frontend",
+					isWebUi: true,
+					specIdentifier: "01-r2s",
+					worktreeCreated: false,
+					initializedRepo: false,
+				},
+				classify: { taskType: "refactor", uiScope: "none", language: "frontend", isWebUi: false },
+				spec: { specificationPath: join(specDirectory, "06-specification.md") },
+				implementation: { phasesCompleted: 1, totalPhases: 1, allGreen: true },
+			};
+			const agentIds: string[] = [];
+			const ctx: StageContext = {
+				task: "chore",
+				options: {},
+				state,
+				budget: { check: () => true, spent: () => true, count: 0 },
+				log: () => {},
+				phase: () => {},
+				events: new EventEmitter(),
+				results: [],
+				helper: runHelper,
+				parallel: async () => [],
+				agent: async (call: AgentCall) => {
+					agentIds.push(call.id);
+					if (call.agent === "code-reviewer") return { text: "", control: { title: "Review", date: "2026-08-15", verdict: "Approved", summary: "ok", findings: [] } };
+					if (call.agent === "adversarial-reviewer") return { text: "", control: { title: "Adversarial", date: "2026-08-15", verdict: "PASS", summary: "ok", findings: [] } };
+					return { text: "", control: {} };
+				},
+			};
+			const { reviewStep } = await import("../src/stages/verify.ts");
+			await reviewStep.run(state, ctx);
+			expect(agentIds).not.toContain("pipeline.verify.tests-review");
+			expect((state.review as { verdict?: string }).verdict).toBe("Approved");
+			expect((state as { testsReview?: unknown }).testsReview).toBeUndefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});

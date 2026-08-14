@@ -281,3 +281,29 @@ describe("R-1 merge-layer finding triage", () => {
 		expect(r.value.deferredFindings).toHaveLength(1);
 	});
 });
+
+describe("R-2 optional tests-review merge source", () => {
+	it("absent tests-review source keeps the two-source verdict unchanged", async () => {
+		const r = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved", findings: [] }, "adversarial-review": { verdict: "PASS", findings: [] } } });
+		expect(r.value.verdict).toBe("Approved");
+	});
+	it("present tests-review source joins the strictest-verdict ranking", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved", findings: [] },
+				"adversarial-review": { verdict: "PASS", findings: [] },
+				"tests-review": { verdict: "Changes Requested", findings: [{ id: "TR-1", severity: "high", title: "missing scenario binding", blocking: true }] },
+			},
+		});
+		expect(r.value.verdict).toBe("Changes Requested");
+		expect((r.value.findings as Array<{ id?: string }>).some((f) => f.id === "TR-1")).toBe(true);
+	});
+	it("empty-object tests-review source is ignored (skip marker shape)", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: { "code-review": { verdict: "Approved", findings: [] }, "adversarial-review": { verdict: "PASS", findings: [] }, "tests-review": {} },
+		});
+		expect(r.value.verdict).toBe("Approved");
+	});
+});

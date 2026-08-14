@@ -248,14 +248,22 @@ function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefin
 function mergeReviewVerdicts(s: Record<string, unknown>): HelperResult {
 	const codeReview = s["code-review"] as ControlObj | undefined;
 	const adversarial = s["adversarial-review"] as ControlObj | undefined;
+	const testsReview = s["tests-review"] as ControlObj | undefined;
 	const code = normalizeReviewVerdict("code-review", codeReview);
 	const adv = normalizeReviewVerdict("adversarial-review", adversarial);
-	const verdict = VERDICT_RANK[code.verdict] >= VERDICT_RANK[adv.verdict] ? code.verdict : adv.verdict;
+	// R-2: the optional tests/validation source — present ONLY when the spec
+	// declares test deliverables (the join excludes it otherwise). Same
+	// normalization; participates in the strictest-verdict ranking.
+	const tst = testsReview && Object.keys(testsReview).length > 0 ? normalizeReviewVerdict("tests-review", testsReview) : null;
+	const candidates = [code, adv, ...(tst ? [tst] : [])];
+	const verdict = candidates.reduce((acc, cur) => (VERDICT_RANK[cur.verdict] >= VERDICT_RANK[acc.verdict] ? cur : acc)).verdict;
 	const findings = [
 		...((codeReview?.findings as unknown[]) ?? []),
 		...((adversarial?.findings as unknown[]) ?? []),
+		...((testsReview?.findings as unknown[]) ?? []),
 		...code.syntheticFindings,
 		...adv.syntheticFindings,
+		...(tst?.syntheticFindings ?? []),
 	];
 	// R-1: deterministic merge-layer finding triage (industry: only in-scope
 	// findings above the severity threshold should drive the fix loop). The

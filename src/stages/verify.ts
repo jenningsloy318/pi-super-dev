@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../nodes.ts";
-import { buildCodeReviewPrompt, buildAdversarialPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
+import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -546,8 +546,8 @@ const buildGreen = (s: PipelineState) => {
 	return b?.pass === true;
 };
 
-function failedReviewControl(kind: "codeReview" | "adversarialReview", reason: string): Record<string, unknown> {
-	const title = kind === "codeReview" ? "Code review did not complete" : "Adversarial review did not complete";
+function failedReviewControl(kind: "codeReview" | "adversarialReview" | "testsReview", reason: string): Record<string, unknown> {
+	const title = kind === "codeReview" ? "Code review did not complete" : kind === "testsReview" ? "Tests review did not complete" : "Adversarial review did not complete";
 	return {
 		title,
 		date: new Date().toISOString().slice(0, 10),
@@ -601,8 +601,31 @@ function markIntegrationPassed(s: PipelineState, ctx: StageContext, message: str
 
 // ─── shared steps ───────────────────────────────────────────────────────────
 
-/** Both reviewers in parallel → merged verdict under state.review. */
-const reviewStep = parallel(
+/**
+ * R-2: deterministic gate for the tests/validation review angle. TRUE when the
+ * spec declares test work — any phase deliverables with requireTests /
+ * requireScenarios entries, or top-level BDD scenarioRefs. Keys ONLY on the
+ * structured spec control (no LLM, language-agnostic). NEVER throws.
+ */
+export function specDeclaresTestDeliverables(spec: unknown): boolean {
+	try {
+		const sp = (spec ?? {}) as { scenarioRefs?: unknown; phases?: Array<{ deliverables?: { requireTests?: unknown; requireScenarios?: unknown } } | null> };
+		const phases = Array.isArray(sp.phases) ? sp.phases : [];
+		const anyPhase = phases.some((p) => {
+			const d = (p?.deliverables ?? {}) as { requireTests?: unknown; requireScenarios?: unknown };
+			const t = Array.isArray(d.requireTests) ? d.requireTests.length : 0;
+			const sc = Array.isArray(d.requireScenarios) ? d.requireScenarios.length : 0;
+			return t + sc > 0;
+		});
+		const topScenarios = Array.isArray(sp.scenarioRefs) ? sp.scenarioRefs.length : 0;
+		return anyPhase || topScenarios > 0;
+	} catch {
+		return false;
+	}
+}
+
+/** Reviewers in parallel → merged verdict under state.review. Exported for R-2 tests. */
+export const reviewStep = parallel(
 	[
 		task({
 			id: "codeReview",
@@ -634,11 +657,32 @@ const reviewStep = parallel(
 				return control;
 			},
 		}),
+		task({
+			id: "testsReview",
+			label: "Stage 10a2 — Tests & Coverage Review",
+			async run(s, ctx) {
+				// R-2: the tests/validation angle runs ONLY for spec-declared test work.
+				// Returning undefined leaves state.testsReview unset so the merge join
+				// excludes this source entirely (no phantom third verdict).
+				if (!specDeclaresTestDeliverables(s.spec)) return undefined;
+				if (!ctx.budget.check()) return failedReviewControl("testsReview", "Agent budget exhausted before tests review");
+				const r = await ctx.agent({ id: "pipeline.verify.tests-review", agent: "code-reviewer", accessMode: "source-read-only", prompt: buildTestsReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["codeReview"]?.schema });
+				return r.error
+					? failedReviewControl("testsReview", `tests-reviewer failed: ${r.error}`)
+					: validReviewControl(r.control)
+						? r.control
+						: failedReviewControl("testsReview", "tests-reviewer produced no valid structured review verdict");
+			},
+		}),
 	],
 	{
 		into: "review",
-		join: async (_results, s, ctx) =>
-			(await ctx.helper({ name: "merge-review-verdicts", sources: { "code-review": s.codeReview ?? {}, "adversarial-review": s.adversarialReview ?? {} } })).value,
+		join: async (_results, s, ctx) => {
+			const sources: Record<string, unknown> = { "code-review": s.codeReview ?? {}, "adversarial-review": s.adversarialReview ?? {} };
+			const tr = s.testsReview as Record<string, unknown> | undefined;
+			if (tr && Object.keys(tr).length > 0) sources["tests-review"] = tr;
+			return (await ctx.helper({ name: "merge-review-verdicts", sources })).value;
+		},
 	},
 );
 

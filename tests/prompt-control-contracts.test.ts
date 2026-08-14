@@ -34,6 +34,7 @@ import {
 	buildImplementationSummaryPrompt,
 	buildCodeReviewPrompt,
 	buildAdversarialPrompt,
+	buildTestsReviewPrompt,
 	buildFixPrompt,
 	buildUiTestPrompt,
 	buildApiTestPrompt,
@@ -149,6 +150,10 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildAdversarialPrompt", () => {
 		expectKeys(buildAdversarialPrompt(s, null, "task", null, null), ["title", "date", "verdict", "summary", "findings"]);
+	});
+
+	it("buildTestsReviewPrompt (R-2 tests/validation angle)", () => {
+		expectKeys(buildTestsReviewPrompt(s, null, "task", null, null), ["title", "date", "verdict", "summary", "findings"]);
 	});
 
 	it("buildFixPrompt", () => {
