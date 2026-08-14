@@ -60,6 +60,12 @@ export interface AgentCall {
 	/** Control keys the caller expects back (for the session backend's
 	 *  structured_output schema). Optional; omitted for non-writer calls. */
 	controlKeys?: string[];
+	/** Keys whose EMPTY-ARRAY value counts as present (backends otherwise treat
+	 *  every declared key as required-non-blank). Used for optional-by-contract
+	 *  keys like the implementer's `testDefects`: the model must EMIT the key,
+	 *  and `[]` is the explicit "none" value. Default allow-list (file-list keys)
+	 *  is always merged in by the backends. */
+	allowEmptyArraysFor?: string[];
 	/** Optional TypeBox schema for typed structured_output (render pipeline stages).
 	 *  When provided, the structured_output tool uses this typed schema instead of
 	 *  the permissive Type.Any-per-key schema, so the model returns typed data. */

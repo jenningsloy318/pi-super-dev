@@ -312,6 +312,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			? `${promptWithKnowledge}\n\n## User context (added during the run)\n${userNotes}`
 			: promptWithKnowledge;
 		const controlKeys = call.controlKeys ?? extractControlKeys(call.prompt);
+		const allowEmptyArraysFor = call.allowEmptyArraysFor;
 		const timeoutMs = call.timeoutMs;
 		const timeoutLabel = timeoutMs !== undefined ? `${timeoutMs}ms` : "role-default";
 		const thinkingLabel = call.thinking ?? options.inheritedThinking ?? process.env.SUPER_DEV_THINKING ?? "role-default";
@@ -331,6 +332,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			cwd: agentCwd,
 			accessMode,
 			controlKeys,
+			// Optional-by-contract keys whose empty-array value counts as present
+			// (Fix 1d threading; undefined for every legacy caller).
+			allowEmptyArraysFor,
 			schema: call.schema,
 			// Per-agent model (precedence A). Falls back to the global `model`, then
 			// (in the backend) to the inherited main-session model. Enables cross-model

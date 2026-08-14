@@ -50,19 +50,66 @@ function tryParseJsonObject(raw: string): ControlObj | null {
 /** The list of control keys a stage expects, parsed from its prompt.
  *  Every `build*Prompt` ends with a line like:
  *      Output <control> JSON with: docPath, featureName, acCount, openQuestions, summary.
- *  We parse that comma-list (stripping inline `(type)` annotations) so the
+ *  We parse that comma-list (stripping balanced `(…)` annotations) so the
  *  session backend can declare those keys in its `structured_output` tool
  *  schema — which is what actually makes the model fill them (see
  *  docs/findings/session-backend-requirements-gate.md). Returns [] if the
  *  prompt has no such line (e.g. commit tasks), which safely degrades to the
- *  permissive schema. */
+ *  permissive schema.
+ *
+ *  HARDENED (v0.1.52 casualty): the list is split on commas at NESTING DEPTH
+ *  ZERO only — commas inside `(…)`/`{…}`/`[…]` shapes do not separate keys.
+ *  The old naive split broke `testDefects (optional array of {testFile, lines,
+ *  reason} — emit ONLY when…)`: the fragment carrying `testDefects` had an
+ *  unclosed paren, failed the identifier filter, and was silently DROPPED
+ *  while the inner word `lines` leaked through as a phantom key — which made
+ *  the v0.1.51 unsatisfiable-RED-test challenge channel unreachable in real
+ *  runs. A segment is accepted when it starts with a valid identifier whose
+ *  remainder is empty or an annotation/shape continuation (`(`, `[`, em-dash,
+ *  `;`). Unparseable fragments are logged, not silently discarded. */
 export function extractControlKeys(prompt: string): string[] {
-	const m = prompt.match(/<control>\s*JSON\s*with:\s*([^\n.]+)/i);
+	const m = prompt.match(/<control>\s*JSON\s*with:\s*([^\n]+)/i);
 	if (!m) return [];
-	return m[1]
-		.split(",")
-		.map((s) => s.replace(/\([^)]*\)/g, "").trim())
-		.filter((s) => /^[A-Za-z_][\w]*$/.test(s));
+	const raw = m[1].replace(/\.\s*$/, ""); // sentence-final period only — mid-line periods stay
+	// Aggregate drift signal: unbalanced parens in a control line mean prose
+	// is leaking into the contract — warn once (the split below still rescues
+	// the leading identifier of each segment, so keys are NOT lost).
+	const parenDepth = [...raw].reduce((d, ch) => (ch === "(" ? d + 1 : ch === ")" ? d - 1 : d), 0);
+	if (parenDepth !== 0) console.warn(`[control] unbalanced parentheses in control-key line (${parenDepth > 0 ? "unclosed" : "extra closing"}); keys rescued by leading-identifier extraction`);
+	// Depth-aware comma split (nesting depth 0).
+	const segments: string[] = [];
+	let depth = 0;
+	let start = 0;
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i];
+		if (ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ")" || ch === "}" || ch === "]") depth = Math.max(0, depth - 1);
+		else if (ch === "," && depth === 0) {
+			segments.push(raw.slice(start, i));
+			start = i + 1;
+		}
+	}
+	segments.push(raw.slice(start));
+	const keys: string[] = [];
+	for (const segment of segments) {
+		const t = segment.trim();
+		if (!t) continue;
+		// Key = leading identifier; the remainder must be empty or an
+		// annotation/shape continuation. A period, hyphen, or other attached
+		// junk ("b.g. note", "good-key", "123bad") rejects the segment.
+		const id = /^([A-Za-z_]\w*)/.exec(t);
+		if (id) {
+			const rest = t.slice(id[1].length);
+			if (rest === "" || /^\s*[\u2014\u2013;(\[:]/.test(rest)) {
+				keys.push(id[1]);
+				continue;
+			}
+		}
+		// Surface drift instead of silently dropping keys (the failure mode
+		// that hid the challenge channel for two versions).
+		console.warn(`[control] unparseable control-key fragment dropped: ${JSON.stringify(t.slice(0, 120))}`);
+	}
+	return keys;
 }
 
 /** Which declared keys are missing/blank in a captured control object. */

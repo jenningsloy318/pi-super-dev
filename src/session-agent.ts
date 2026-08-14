@@ -117,6 +117,10 @@ export interface SessionAgentOptions {
 	 *  tool schema so the model fills them). When omitted, a fully permissive
 	 *  schema is used. Derived from the prompt by workflow.ts. */
 	controlKeys?: string[];
+	/** Keys whose EMPTY-ARRAY value counts as present in the completeness
+	 *  check (merged over the default file-list allow-list). The key must
+	 *  still be EMITTED — undefined is always missing. */
+	allowEmptyArraysFor?: string[];
 	schema?: unknown;
 	onProgress?: AgentProgress;
 	/** Optional per-agent thinking level (Phase 2). When set, the session backend
@@ -574,7 +578,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		// omitted declared keys, send ONE corrective turn in the same session
 		// (same context, same files written) naming exactly what's missing.
 		const afterFirst = capture.called ? (capture.value as Record<string, unknown> | undefined) : undefined;
-		const emptyArrayOk = new Set(["filesCreated", "filesModified", "filesDeleted"]);
+		const emptyArrayOk = new Set(["filesCreated", "filesModified", "filesDeleted", ...(opts.allowEmptyArraysFor ?? [])]);
 		const missing = missingKeys(afterFirst, keys, { allowEmptyArraysFor: emptyArrayOk });
 		if (capture.called && missing.length > 0 && !timedOut && !opts.signal?.aborted) {
 			correctiveNote = `corrective re-prompt (missing: ${missing.join(", ")})`;

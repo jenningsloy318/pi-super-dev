@@ -285,6 +285,10 @@ export interface SpawnAgentOptions {
 	 *  backend cannot pass a structured_output schema, so it appends an explicit
 	 *  text contract and does one corrective retry when these keys are missing. */
 	controlKeys?: string[];
+	/** Keys whose EMPTY-ARRAY value counts as present (merged over the default
+	 *  file-list allow-list, matching the session backend). The key must still
+	 *  be EMITTED — undefined is always missing. */
+	allowEmptyArraysFor?: string[];
 	/** Live progress from the spawned agent (tool calls + streaming text). */
 	onProgress?: AgentProgress;
 }
@@ -321,16 +325,20 @@ export function buildSubprocessTaskPrompt(prompt: string, controlKeys: string[] 
 	].join("\n");
 }
 
-function controlError(control: Record<string, unknown> | null, keys: string[]): string | undefined {
-	const missing = missingControlKeys(control, keys);
+/** Default empty-array allow-list — identical to the session backend's, so both
+ *  backends enforce the same completeness contract by default (parity). */
+const DEFAULT_EMPTY_ARRAY_OK = ["filesCreated", "filesModified", "filesDeleted"];
+
+function controlError(control: Record<string, unknown> | null, keys: string[], allowEmptyArraysFor?: string[]): string | undefined {
+	const missing = missingControlKeys(control, keys, { allowEmptyArraysFor: [...DEFAULT_EMPTY_ARRAY_OK, ...(allowEmptyArraysFor ?? [])] });
 	if (missing.length === 0) return undefined;
 	return control
 		? `missing required control keys: ${missing.join(", ")}`
 		: `agent produced no control object; missing required control keys: ${missing.join(", ")}`;
 }
 
-function withControlError(result: SpawnResult, keys: string[]): SpawnResult {
-	const err = controlError(result.control, keys);
+function withControlError(result: SpawnResult, keys: string[], allowEmptyArraysFor?: string[]): SpawnResult {
+	const err = controlError(result.control, keys, allowEmptyArraysFor);
 	return err && !result.error ? { ...result, error: err } : result;
 }
 
@@ -339,8 +347,8 @@ function compactPreviousOutput(text: string, maxChars = 12_000): string {
 	return `[previous output truncated to last ${maxChars} chars]\n${text.slice(-maxChars)}`;
 }
 
-function buildSubprocessCorrectivePrompt(originalPrompt: string, previous: SpawnResult, keys: string[]): string {
-	const missing = missingControlKeys(previous.control, keys);
+function buildSubprocessCorrectivePrompt(originalPrompt: string, previous: SpawnResult, keys: string[], allowEmptyArraysFor?: string[]): string {
+	const missing = missingControlKeys(previous.control, keys, { allowEmptyArraysFor: [...DEFAULT_EMPTY_ARRAY_OK, ...(allowEmptyArraysFor ?? [])] });
 	const feedback: RetryFeedback = {
 		stage: "agent-subprocess",
 		gate: "required-control-output",
@@ -374,18 +382,18 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 		const args = buildSpawnArgs(opts, promptPath, roleExtensions);
 		opts.onProgress?.event(`subprocess ${label}: spawn timeout=${timeoutMs}ms cwd=${opts.cwd} roleExtensions=${roleExtensions.length ? roleExtensions.join(", ") : "(none)"} argv=${summarizeSpawnArgs(args)}`);
 		const first = await runPi(args, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
-		const firstError = controlError(first.control, requiredKeys);
-		if (!firstError || first.error || opts.signal?.aborted) return withControlError(first, requiredKeys);
+		const firstError = controlError(first.control, requiredKeys, opts.allowEmptyArraysFor);
+		if (!firstError || first.error || opts.signal?.aborted) return withControlError(first, requiredKeys, opts.allowEmptyArraysFor);
 
 		opts.onProgress?.event(`↻ ${label}: corrective subprocess retry (${firstError})`);
 		const retryOpts: SpawnAgentOptions = {
 			...opts,
-			prompt: buildSubprocessCorrectivePrompt(opts.prompt, first, requiredKeys),
+			prompt: buildSubprocessCorrectivePrompt(opts.prompt, first, requiredKeys, opts.allowEmptyArraysFor),
 		};
 		const retryArgs = buildSpawnArgs(retryOpts, promptPath, roleExtensions);
 		opts.onProgress?.event(`subprocess ${label}: corrective retry argv=${summarizeSpawnArgs(retryArgs)}`);
 		const retry = await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
-		return withControlError(retry, requiredKeys);
+		return withControlError(retry, requiredKeys, opts.allowEmptyArraysFor);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}

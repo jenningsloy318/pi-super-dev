@@ -76,3 +76,54 @@ describe("spawnAgent subprocess control repair", () => {
 		expect(result.control).toEqual({ docPath: "docs/01-requirements.md", summary: "ok" });
 	});
 });
+
+describe("spawnAgent optionality: optional-by-contract empty arrays (Fix 1d)", () => {
+	const implKeys = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"];
+
+	it("testDefects: [] on a green run does NOT trigger a corrective retry", async () => {
+		harness.reset([
+			msg('Done.\n<control>{"filesCreated":[],"filesModified":["src/a.ts"],"filesDeleted":[],"testsPassCount":"45","summary":"ok","testDefects":[]}</control>'),
+		]);
+		const result = await spawnAgent({
+			agent: "implementer",
+			prompt: "implement",
+			controlKeys: implKeys,
+			allowEmptyArraysFor: ["testDefects"],
+		} as Parameters<typeof spawnAgent>[0]);
+		expect(result.error).toBeUndefined();
+		expect(result.control).toMatchObject({ testsPassCount: "45", testDefects: [] });
+		// Exactly ONE spawn: no corrective retry.
+		expect(harness.state.calls.length).toBe(1);
+	});
+
+	it("testDefects ABSENT still triggers exactly one corrective retry", async () => {
+		harness.reset([
+			msg('Done.\n<control>{"filesCreated":[],"filesModified":["src/a.ts"],"filesDeleted":[],"testsPassCount":"45","summary":"ok"}</control>'),
+			msg('Done.\n<control>{"filesCreated":[],"filesModified":["src/a.ts"],"filesDeleted":[],"testsPassCount":"45","summary":"ok","testDefects":[]}</control>'),
+		]);
+		const result = await spawnAgent({
+			agent: "implementer",
+			prompt: "implement",
+			controlKeys: implKeys,
+			allowEmptyArraysFor: ["testDefects"],
+		} as Parameters<typeof spawnAgent>[0]);
+		expect(result.error).toBeUndefined();
+		expect(result.control).toMatchObject({ testDefects: [] });
+		expect(harness.state.calls.length).toBe(2);
+	});
+
+	it("default behavior unchanged: empty non-allow-listed array is still an error without the option", async () => {
+		harness.reset([
+			msg('Done.\n<control>{"filesCreated":[],"filesModified":["src/a.ts"],"filesDeleted":[],"testsPassCount":"45","summary":"ok","testDefects":[]}</control>'),
+			msg('Done.\n<control>{"filesCreated":[],"filesModified":["src/a.ts"],"filesDeleted":[],"testsPassCount":"45","summary":"ok","testDefects":[{"testFile":"a.test.ts","lines":"5","reason":"r"}]}</control>'),
+		]);
+		const result = await spawnAgent({
+			agent: "implementer",
+			prompt: "implement",
+			controlKeys: implKeys,
+		} as Parameters<typeof spawnAgent>[0]);
+		expect(result.error).toBeUndefined();
+		expect(result.control).toMatchObject({ testDefects: [{ testFile: "a.test.ts", lines: "5", reason: "r" }] });
+		expect(harness.state.calls.length).toBe(2);
+	});
+});

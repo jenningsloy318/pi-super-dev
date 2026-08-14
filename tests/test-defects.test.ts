@@ -59,3 +59,15 @@ describe("parseTestDefects (defensive parse of untrusted control)", () => {
 		expect(parseTestDefects({ testDefects: many })).toHaveLength(6);
 	});
 });
+
+describe("parseTestDefects lines coercion (Fix 1f)", () => {
+	it("numeric line numbers are coerced to strings instead of silently dropped", () => {
+		const out = parseTestDefects({ testDefects: [{ testFile: "a.test.ts", lines: 606, reason: "contradiction" }] });
+		expect(out).toEqual([{ testFile: "a.test.ts", lines: "606", reason: "contradiction" }]);
+	});
+
+	it("non-finite numbers are dropped (undefined lines), strings preserved", () => {
+		expect(parseTestDefects({ testDefects: [{ testFile: "a.test.ts", lines: Number.NaN, reason: "r" }] })).toEqual([{ testFile: "a.test.ts", reason: "r" }]);
+		expect(parseTestDefects({ testDefects: [{ testFile: "a.test.ts", lines: "606-610", reason: "r" }] })).toEqual([{ testFile: "a.test.ts", lines: "606-610", reason: "r" }]);
+	});
+});

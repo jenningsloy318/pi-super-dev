@@ -557,6 +557,12 @@ export interface TestDefect {
  *  objects with a non-empty testFile AND reason (a defect without a proof is
  *  not actionable and is dropped, so the channel cannot be used as a vague
  *  escape hatch). Bounded to 6 entries. Never throws. */
+/** The implementer's structured-output contract, declared at the call site
+ *  (Fix 1a) so the challenge channel cannot be broken by prompt-text drift.
+ *  Must stay in sync with buildImplementPrompt's control line (enforced by
+ *  tests/prompt-control-contracts.test.ts). */
+const IMPLEMENTER_CONTROL_KEYS = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"];
+
 export function parseTestDefects(control: unknown): TestDefect[] {
 	if (control == null || typeof control !== "object" || Array.isArray(control)) return [];
 	const raw = (control as Record<string, unknown>).testDefects;
@@ -568,7 +574,12 @@ export function parseTestDefects(control: unknown): TestDefect[] {
 		const testFile = typeof e.testFile === "string" ? e.testFile.trim() : "";
 		const reason = typeof e.reason === "string" ? e.reason.trim() : "";
 		if (!testFile || !reason) continue;
-		const lines = typeof e.lines === "string" ? e.lines.trim() : undefined;
+		// Fix 1f: models frequently emit line numbers as NUMBERS — coerce instead
+		// of silently dropping the field (which weakened the impossibility proof's
+		// precision in escalation and re-author prompts).
+		const lines = typeof e.lines === "number" && Number.isFinite(e.lines)
+			? String(Math.trunc(e.lines))
+			: typeof e.lines === "string" && e.lines.trim() ? e.lines.trim() : undefined;
 		out.push({ testFile, reason, ...(lines ? { lines } : {}) });
 	}
 	return out.slice(0, 6);
@@ -1338,7 +1349,21 @@ export const implementationStage: Stage = {
 				announceActivity("Implementation", attemptDetail(attempt));
 				const implStepSeq = ++stepSeq;
 				emitStep(`Implementation (${attemptDetail(attempt)})`, "running", implStepSeq);
-				const impl = await ctx.agent({ id: `pipeline.implementation.${phaseId}.impl.a${attempt}`, agent: "implementer", prompt: implPrompt });
+				const impl = await ctx.agent({
+					id: `pipeline.implementation.${phaseId}.impl.a${attempt}`,
+					agent: "implementer",
+					prompt: implPrompt,
+					// Fix 1a: the implementer's control contract is declared EXPLICITLY
+					// (parity with verify.ts:430) so the challenge channel never depends
+					// on prose parsing. `testDefects` MUST be declared for the model to
+					// emit it (v0.1.52: the undeclared key made the channel unreachable
+					// while a phantom `lines` key got filled instead).
+					controlKeys: IMPLEMENTER_CONTROL_KEYS,
+					// Fix 1c/1d: `testDefects: []` is the explicit "no proven defect"
+					// value — it must NOT trigger a corrective re-prompt in either
+					// backend. Absence (undefined) still does.
+					allowEmptyArraysFor: ["testDefects"],
+				});
 				emitStep(`Implementation (${attemptDetail(attempt)})`, impl.error ? "failed" : "ok", implStepSeq);
 				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
 				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads

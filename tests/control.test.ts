@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractControl, extractControlKeys } from "../src/control.ts";
+import { extractControl, extractControlKeys, missingControlKeys } from "../src/control.ts";
 
 describe("extractControlKeys", () => {
 	it("parses the requirements-style key list", () => {
@@ -94,5 +94,27 @@ describe("extractControl", () => {
 	it("returns null when nothing parses", () => {
 		expect(extractControl("just prose, no object")).toBeNull();
 		expect(extractControl("")).toBeNull();
+	});
+});
+
+describe("missingControlKeys optionality (Fix 1c/1d support)", () => {
+	it("absent key is ALWAYS missing, even when allow-listed", () => {
+		// The contract is emit-[]-when-none: the key must be PRESENT.
+		expect(missingControlKeys({ a: 1 }, ["a", "testDefects"], { allowEmptyArraysFor: ["testDefects"] })).toEqual(["testDefects"]);
+	});
+
+	it("empty array is valid ONLY when allow-listed", () => {
+		expect(missingControlKeys({ testDefects: [] }, ["testDefects"], { allowEmptyArraysFor: ["testDefects"] })).toEqual([]);
+		expect(missingControlKeys({ testDefects: [] }, ["testDefects"])).toEqual(["testDefects"]);
+		expect(missingControlKeys({ testDefects: [] }, ["testDefects"], { allowEmptyArraysFor: "*" })).toEqual([]);
+	});
+
+	it("non-empty array is always valid; blank strings and null stay missing", () => {
+		const control = { testDefects: [{ testFile: "a.test.ts", reason: "r" }], filesModified: [], summary: "" };
+		expect(
+			missingControlKeys(control, ["testDefects", "filesModified", "summary"], {
+				allowEmptyArraysFor: new Set(["filesCreated", "filesModified", "filesDeleted", "testDefects"]),
+			}),
+		).toEqual(["summary"]);
 	});
 });
