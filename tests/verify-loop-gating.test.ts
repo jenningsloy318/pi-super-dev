@@ -216,10 +216,18 @@ describe("GAP D — budget-bounded review loop", () => {
 	it("stops on budget exhaustion when never approved and never stagnant", async () => {
 		const counts: Record<string, number> = {};
 		const ctx = driveCtx(counts);
+		// R-1: each round yields a FRESH actionable finding (signature always
+		// changes → never stagnant; actionable work exists → no no-actionable
+		// break), so the loop's only exit is budget exhaustion.
+		let merges = 0;
+		ctx.helper = (async () => {
+			merges += 1;
+			return { value: { verdict: "Changes Requested", findings: [{ id: `F-${merges}`, severity: "high", title: `T${merges}`, file: "a.ts" }], deferredFindings: [] } };
+		}) as never;
 		ctx.budget = { check: () => (counts["code-reviewer"] ?? 0) < 3 } as never;
 		const state = {
 			setup: tmpWorktree(),
-			review: { verdict: "Changes Requested", findings: [] }, // empty findings → never stagnant
+			review: { verdict: "Changes Requested", findings: [{ id: "F-0", severity: "high", title: "T0", file: "a.ts" }] },
 		} as unknown as PipelineState;
 
 		await expect(reviewStageNode.run(state, ctx)).resolves.toBeDefined();

@@ -6,7 +6,7 @@
 
 import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
 import { spawnSync } from "node:child_process";
-import { reviewHasBlockingFinding, reviewHasFindings, reviewHasHighSeverityFinding } from "./review-findings.ts";
+import { reviewHasBlockingFinding, reviewHasFindings, reviewHasHighSeverityFinding, inferReviewFindingStatus, reviewFindingSeverity } from "./review-findings.ts";
 import {
 	readSpecDoc,
 	specDocExists,
@@ -257,8 +257,85 @@ function mergeReviewVerdicts(s: Record<string, unknown>): HelperResult {
 		...code.syntheticFindings,
 		...adv.syntheticFindings,
 	];
+	// R-1: deterministic merge-layer finding triage (industry: only in-scope
+	// findings above the severity threshold should drive the fix loop). The
+	// merged `findings` returned to state.review now carries ONLY actionable
+	// fix-now items (open ∧ blocking/high); verified/resolved confirmations are
+	// dropped from the fix loop entirely, and advisory / needs-human /
+	// cross-stage items move to the `deferredFindings` ledger (surfaced in the
+	// escalation evidence, never fed back into reviewer prompts).
+	const triaged = triageReviewFindings(findings);
 	const dims = [...new Set([...((codeReview?.dimensionsCovered as unknown[]) ?? []), ...((adversarial?.dimensionsCovered as unknown[]) ?? [])] as string[])];
-	return ok(`Merged verdict: ${verdict} (${findings.length} finding(s))`, { verdict, findings, dimensionsCovered: dims });
+	return ok(
+		`Merged verdict: ${verdict} (${triaged.fixNow.length} actionable, ${triaged.deferred.length} deferred, ${triaged.droppedVerified} verified/resolved)`,
+		{ verdict, findings: triaged.fixNow, deferredFindings: triaged.deferred, dimensionsCovered: dims },
+	);
+}
+
+/** Stages whose findings the code implementer may legitimately act on. */
+const IMPLEMENTATION_OWNER_STAGES = new Set(["implementation", "verification", "environment", ""]);
+
+export interface ReviewFindingTriage {
+	/** Open ∧ (blocking ∨ high/critical severity) — the ONLY findings routed to the fix writer. */
+	fixNow: unknown[];
+	/** Advisory / needs-human / cross-stage items — logged, never fixed, never shown to reviewers. */
+	deferred: Array<Record<string, unknown> & { deferralReason: string }>;
+	/** Count of status=verified/addressed/resolved/fixed findings dropped from the fix loop. */
+	droppedVerified: number;
+}
+
+/**
+ * R-1 deterministic finding triage. Pure (no spawn, no LLM); keys on the
+ * structured finding contract (status / blocking / severity / ownerStage).
+ * Order of precedence per finding:
+ *   1. verified-class status → dropped (confirmations are not work items);
+ *   2. needs-human → deferred "needs human verification" (never the fixer's);
+ *   3. cross-stage ownerStage (∉ implementation/verification/environment) →
+ *      deferred "cross-stage owner" (upstream artifact defect the code fixer
+ *      cannot legitimately fix — log-and-exclude, the documented pattern for
+ *      cross-boundary findings);
+ *   4. blocking flag ∨ high/critical severity → fixNow;
+ *   5. otherwise (incl. explicit status=deferred) → deferred "advisory".
+ * Cross-language by construction (structured fields only). NEVER throws.
+ */
+export function triageReviewFindings(findings: unknown[]): ReviewFindingTriage {
+	const fixNow: unknown[] = [];
+	const deferred: Array<Record<string, unknown> & { deferralReason: string }> = [];
+	let droppedVerified = 0;
+	for (const f of Array.isArray(findings) ? findings : []) {
+		try {
+			const o = (f ?? {}) as Record<string, unknown>;
+			const status = inferReviewFindingStatus(o);
+			if (["verified", "addressed", "resolved", "fixed"].includes(status)) {
+				droppedVerified++;
+				continue;
+			}
+			if (status === "needs-human") {
+				deferred.push({ ...o, deferralReason: "needs human verification" });
+				continue;
+			}
+			if (status === "deferred") {
+				deferred.push({ ...o, deferralReason: "reviewer-deferred" });
+				continue;
+			}
+			const ownerStage = String(o.ownerStage ?? "").trim().toLowerCase();
+			if (!IMPLEMENTATION_OWNER_STAGES.has(ownerStage)) {
+				deferred.push({ ...o, deferralReason: `cross-stage owner: ${ownerStage || "unknown"}` });
+				continue;
+			}
+			const blockingFlag = o.blocking === true || /^(true|yes|1)$/i.test(String(o.blocking ?? "").trim());
+			const high = /^(critical|blocker|fatal|high|error|fail|reject)/.test(reviewFindingSeverity(o).toLowerCase());
+			if (blockingFlag || high) {
+				fixNow.push(f);
+			} else {
+				deferred.push({ ...o, deferralReason: "advisory (non-blocking, below high)" });
+			}
+		} catch {
+			// Unreadable finding — keep it actionable so it can never silently vanish.
+			fixNow.push(f);
+		}
+	}
+	return { fixNow, deferred, droppedVerified };
 }
 
 // ─── cleanup ────────────────────────────────────────────────────────────────

@@ -64,7 +64,10 @@ describe("helpers: routing", () => {
 		expect(pass.value.verdict).toBe("Approved");
 		const contest = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "CONTEST", findings: [{ severity: "medium", title: "quality concern" }] } } });
 		expect(contest.value.verdict).toBe("Approved with Comments");
-		expect((contest.value.findings as unknown[]).length).toBe(1);
+		// R-1: advisory (non-blocking, below high) CONTEST findings move to the
+		// deferred ledger — they no longer drive the fix loop.
+		expect((contest.value.findings as unknown[]).length).toBe(0);
+		expect((contest.value.deferredFindings as unknown[]).length).toBe(1);
 		const highContest = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "CONTEST", findings: [{ severity: "high", title: "blocking concern" }] } } });
 		expect(highContest.value.verdict).toBe("Changes Requested");
 		const reject = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "REJECT" } } });
@@ -204,5 +207,77 @@ describe("control parser", () => {
 	it("tolerates trailing commas", () => {
 		const out = extractControl('```json\n{"a":1, "b":2,}\n```');
 		expect(out?.a).toBe(1);
+	});
+});
+
+describe("R-1 merge-layer finding triage", () => {
+	const f = (over: Record<string, unknown>) => ({ id: "F", severity: "low", title: "T", detail: "d", file: "a.ts", ...over });
+
+	it("drops verified/resolved confirmations from the fix loop", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Changes Requested", findings: [f({ id: "V1", status: "verified", severity: "high" }), f({ id: "V2", status: "resolved", blocking: true })] },
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.findings).toHaveLength(0);
+		expect(r.value.deferredFindings).toHaveLength(0);
+	});
+
+	it("routes open blocking/high findings to fix-now and advisory to the ledger", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": {
+					verdict: "Changes Requested",
+					findings: [
+						f({ id: "B1", severity: "high", blocking: false }),
+						f({ id: "A1", severity: "low", blocking: false }),
+						f({ id: "B2", severity: "medium", blocking: true }),
+					],
+				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		const ids = (r.value.findings as Array<{ id: string }>).map((x) => x.id).sort();
+		expect(ids).toEqual(["B1", "B2"]);
+		const ledger = r.value.deferredFindings as Array<{ id: string; deferralReason: string }>;
+		expect(ledger.map((x) => x.id)).toEqual(["A1"]);
+		expect(ledger[0].deferralReason).toContain("advisory");
+	});
+
+	it("defers needs-human and cross-stage findings even when blocking/high", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": {
+					verdict: "Changes Requested",
+					findings: [
+						f({ id: "H1", severity: "high", blocking: true, status: "needs-human" }),
+						f({ id: "X1", severity: "high", blocking: true, ownerStage: "requirements" }),
+						f({ id: "I1", severity: "high", blocking: true, ownerStage: "implementation" }),
+					],
+				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect((r.value.findings as Array<{ id: string }>).map((x) => x.id)).toEqual(["I1"]);
+		const ledger = r.value.deferredFindings as Array<{ id: string; deferralReason: string }>;
+		const byId = new Map(ledger.map((x) => [x.id, x.deferralReason]));
+		expect(byId.get("H1")).toContain("needs human");
+		expect(byId.get("X1")).toContain("cross-stage");
+	});
+
+	it("keeps explicit status=deferred findings out of the fix loop", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Changes Requested", findings: [f({ id: "D1", severity: "high", status: "deferred" })] },
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.findings).toHaveLength(0);
+		expect(r.value.deferredFindings).toHaveLength(1);
 	});
 });

@@ -661,7 +661,16 @@ const buildGateStep = task({
 // ─── Stage 10 — Review loop ─────────────────────────────────────────────────
 
 /** Fix review findings and deterministic build failures (Stage 10c). */
-const fixStepReview = branch((s: PipelineState) => !reviewApproved(s) || (s.buildGate !== undefined && !buildGreen(s)), {
+const fixStepReview = branch((s: PipelineState) => {
+	if (reviewApproved(s) && !(s.buildGate !== undefined && !buildGreen(s))) return false;
+	// R-1: run the fixer ONLY when there is actionable work. Post-triage
+	// `s.review.findings` carries fix-now items only (open ∧ blocking/high);
+	// advisory / needs-human / cross-stage residue lives in deferredFindings and
+	// must NOT spawn pointless implementer rounds with an empty work list.
+	const findings = (s.review?.findings as unknown[]) ?? [];
+	const buildErrors = ((s.buildGate as { errors?: string[] } | undefined)?.errors) ?? [];
+	return findings.length > 0 || buildErrors.length > 0;
+}, {
 	yes: task({
 		id: "reviewFix",
 		label: "Stage 10c — Address Findings",
@@ -728,6 +737,26 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	(s as Record<string, unknown>).__reviewSignatures = sigHist;
 	(s as Record<string, unknown>).__reviewCounts = countHist;
 	if (approvedAndBuildGreen) return true;
+	// R-1: not approved but NOTHING actionable remains (post-triage findings
+	// empty, build green) — the residue is advisory / needs-human / cross-stage
+	// ledger items: decisions no code fixer can make. Break immediately for the
+	// terminal re-review → HITL escalation instead of burning implementer
+	// rounds on an empty work list.
+	const deferredFindings = ((s.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
+	const deferredVisibility = deferredFindings.slice(0, 6).map((f) => ({
+		file: f.file ?? null,
+		severity: f.severity ?? null,
+		title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}`,
+	}));
+	if (findings.length === 0 && buildGreen(s)) {
+		(s as Record<string, unknown>).__stagnated = {
+			rounds: sigHist.length,
+			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
+			findings: deferredVisibility,
+		};
+		ctx.log(`Stage 10: review not approved but no actionable findings remain (${deferredFindings.length} deferred) — breaking for human decision (non-fatal; ${sigHist.length} rounds)`);
+		return true;
+	}
 	if (stagnant) {
 		// Defer HITL/background escalation until reviewStageNode performs a final
 		// safety re-review of the code that was just fixed. The loop checks `until`
@@ -736,7 +765,7 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 		(s as Record<string, unknown>).__stagnated = {
 			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
-			findings: findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })),
+			findings: [...findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })), ...deferredVisibility],
 		};
 		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds — breaking for terminal re-review (non-fatal; ${sigHist.length} rounds)`);
 		return true;
