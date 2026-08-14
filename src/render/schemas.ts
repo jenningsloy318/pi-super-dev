@@ -298,10 +298,19 @@ export type SpecPhase = Static<typeof SpecPhase>;
 /** Plan 2 Tier 2 — independent RED test-quality review verdict. `verdict` is
  *  "strong" (assertions bind observable behavior) or "weak" (tautologies, stub
  *  constants, implementation-detail coupling). A "weak" verdict routes the RED
- *  phase back to tdd-guide. Kept tiny so the reviewer returns a crisp decision. */
+ *  phase back to tdd-guide. `contradictions` (Fix 4) carries JOINT
+ *  satisfiability findings: named test pairs/lines plus an impossibility proof
+ *  when NO conforming implementation can pass all tests simultaneously —
+ *  emitted as [] when the suite is jointly satisfiable. Kept tiny so the
+ *  reviewer returns a crisp decision. */
 export const RedReviewData = Type.Object({
 	verdict: Type.Union([Type.Literal("strong"), Type.Literal("weak")]),
 	summary: Type.String(),
+	contradictions: Type.Array(Type.Object({
+		tests: Type.String(),
+		lines: Type.Optional(Type.String()),
+		proof: Type.String(),
+	})),
 }, { additionalProperties: false });
 export type RedReviewData = Static<typeof RedReviewData>;
 

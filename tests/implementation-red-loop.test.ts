@@ -122,6 +122,8 @@ function mkCtx(opts: {
 	/** Tier-2 RED-review verdicts, consumed in order per code-reviewer call.
 	 *  Default: always "strong" (review passes → no extra retry). */
 	reviewVerdicts?: Array<"strong" | "weak">;
+	/** Per-review contradiction lists (parallel queue to reviewVerdicts; Fix 4). */
+	reviewContradictions?: Array<Array<{ tests: string; lines?: string; proof: string }>>;
 } = {}): { ctx: StageContext; calls: CapturedCalls } {
 	const calls: CapturedCalls = {
 		tdd: [],
@@ -131,6 +133,7 @@ function mkCtx(opts: {
 		logs: [],
 	};
 	const reviewQ = [...(opts.reviewVerdicts ?? [])];
+	const contradictionQ = [...(opts.reviewContradictions ?? [])];
 	const ctx: StageContext = {
 		task: "",
 		options: {} as RunOptions,
@@ -151,7 +154,8 @@ function mkCtx(opts: {
 			if (call.agent === "code-reviewer") {
 				calls.orch.push(call);
 				const verdict = reviewQ.shift() ?? "strong";
-				return { text: "", control: { verdict, summary: verdict === "weak" ? "assertions are tautological" : "ok" } };
+				const contradictions = contradictionQ.shift() ?? [];
+				return { text: "", control: { verdict, summary: verdict === "weak" ? "assertions are tautological" : "ok", contradictions } };
 			}
 			calls.orch.push(call);
 			return { text: "", control: {} };
@@ -286,6 +290,34 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 		expect(calls.impl).toHaveLength(1);
 		expect(res.phasesCompleted).toBe(1);
 		expect(calls.logs.some((l) => /RED review: NOT STRONG/.test(l))).toBe(true);
+	});
+
+	it("Fix 4: a STRONG verdict WITH named contradictions routes back to tdd-guide carrying the impossibility proof", async () => {
+		redSeq("red", "red");
+		const { ctx, calls } = mkCtx({
+			reviewVerdicts: ["strong", "strong"],
+			reviewContradictions: [[{ tests: "SCENARIO-016 vs SCENARIO-029", lines: "606", proof: "byte-identical samples cannot differ across validators" }], []],
+		});
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+
+		// The contradiction overrides the STRONG verdict: tdd-guide re-authored once.
+		expect(calls.tdd).toHaveLength(2);
+		// The re-prompt carried the reviewer's contradiction + proof.
+		expect(calls.tdd[1].prompt).toMatch(/jointly unsatisfiable/);
+		expect(calls.tdd[1].prompt).toMatch(/byte-identical samples cannot differ/);
+		// Implementation proceeds only after the clean STRONG (no contradictions).
+		expect(calls.impl).toHaveLength(1);
+		expect(res.phasesCompleted).toBe(1);
+		expect(calls.logs.some((l) => /RED review: CONTRADICTIONS/.test(l))).toBe(true);
+	});
+
+	it("Fix 4: a STRONG verdict with contradictions: [] proceeds directly (no re-author)", async () => {
+		redSeq("red");
+		const { ctx, calls } = mkCtx({ reviewVerdicts: ["strong"], reviewContradictions: [[]] });
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+		expect(calls.tdd).toHaveLength(1);
+		expect(calls.impl).toHaveLength(1);
+		expect(res.phasesCompleted).toBe(1);
 	});
 
 	it("Tier 2 (R2, fail-closed): a MISSING/invalid review verdict also routes back to tdd-guide (not treated as pass)", async () => {

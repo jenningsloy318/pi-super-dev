@@ -557,6 +557,28 @@ export interface TestDefect {
  *  objects with a non-empty testFile AND reason (a defect without a proof is
  *  not actionable and is dropped, so the channel cannot be used as a vague
  *  escape hatch). Bounded to 6 entries. Never throws. */
+/** Fix 4 — parse the RED reviewer's joint-satisfiability findings from its
+ *  control object. Bounded (4 entries) and defensive: malformed entries are
+ *  skipped, never thrown. Mirrors parseTestDefects' tolerance. */
+export function parseRedContradictions(control: unknown): Array<{ tests: string; lines?: string; proof: string }> {
+	if (control == null || typeof control !== "object" || Array.isArray(control)) return [];
+	const raw = (control as Record<string, unknown>).contradictions;
+	if (!Array.isArray(raw)) return [];
+	const out: Array<{ tests: string; lines?: string; proof: string }> = [];
+	for (const entry of raw) {
+		if (entry == null || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const e = entry as Record<string, unknown>;
+		const tests = typeof e.tests === "string" ? e.tests.trim() : "";
+		const proof = typeof e.proof === "string" ? e.proof.trim() : "";
+		if (!tests || !proof) continue;
+		const lines = typeof e.lines === "number" && Number.isFinite(e.lines)
+			? String(Math.trunc(e.lines))
+			: typeof e.lines === "string" && e.lines.trim() ? e.lines.trim() : undefined;
+		out.push({ tests, proof, ...(lines ? { lines } : {}) });
+	}
+	return out.slice(0, 4);
+}
+
 /** The implementer's structured-output contract, declared at the call site
  *  (Fix 1a) so the challenge channel cannot be broken by prompt-text drift.
  *  Must stay in sync with buildImplementPrompt's control line (enforced by
@@ -1110,6 +1132,9 @@ export const implementationStage: Stage = {
 									accessMode: "source-read-only",
 									prompt: buildRedReviewPrompt(setup, state.classify ?? null, phase, testFiles, expectedScenarios, state.spec ?? null, state.bdd ?? null),
 									schema: RED_REVIEW_SCHEMA,
+									// `contradictions: []` is the explicit jointly-satisfiable value;
+									// it must not trigger a corrective re-prompt (Fix 1c/1d pattern).
+									allowEmptyArraysFor: ["contradictions"],
 								}),
 							);
 							// R2 — fail CLOSED: proceed to implementation ONLY on an explicit
@@ -1118,18 +1143,31 @@ export const implementationStage: Stage = {
 							// routes back to tdd-guide. A review gate that defaults to "pass" on
 							// malformed output is worse than no gate (it looks like protection).
 							const verdict = String((review.control as { verdict?: unknown } | null)?.verdict ?? "").toLowerCase();
-							if (verdict !== "strong") {
-								const summary = String((review.control as { summary?: unknown } | null)?.summary ?? "")
+							// Fix 4 — joint-satisfiability findings: even a STRONG verdict is
+							// overridden by named contradictions (the v0.1.52 recurrence: a
+							// contradictory suite passed a strength-only review and reached
+							// implementation, where the implementer proved the impossibility
+							// ~30 expensive minutes later).
+							const contradictionList = parseRedContradictions(review.control);
+							if (verdict !== "strong" || contradictionList.length > 0) {
+								let summary = String((review.control as { summary?: unknown } | null)?.summary ?? "")
 									|| (verdict === "weak"
 										? "test assertions are not bound to the scenario's observable behavior"
 										: review.error
 											? `RED review did not complete (${review.error})`
 											: "RED review returned no usable verdict");
-								ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (${verdict || review.error || "no verdict"}) — ${summary}`);
-								redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review not strong: ${summary}` };
-								retryHint = `An independent reviewer did not confirm your RED tests as STRONG: ${summary}. Strengthen the assertions so each binds the scenario's OBSERVABLE behavior (concrete expected values/outputs/status codes), not implementation details or tautologies, then re-run.`;
+								if (contradictionList.length > 0) {
+									summary = `joint-satisfiability contradiction(s): ${contradictionList.map((c) => c.tests).join("; ")}`;
+									ctx.log(`Implementation ${phaseId} RED review: CONTRADICTIONS (${verdict || "no verdict"}) — ${summary}`);
+									redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review found jointly unsatisfiable tests: ${summary}` };
+									retryHint = `An independent reviewer PROVED these RED tests are jointly unsatisfiable — NO conforming implementation can pass them all. Rewrite or remove the contradicting tests: ${contradictionList.map((c) => `${c.tests}${c.lines ? ` (${c.lines})` : ""}: ${c.proof}`).join(" | ")}. Resolve the contradiction in favor of the specification's observable behavior and re-run.`;
+								} else {
+									ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (${verdict || review.error || "no verdict"}) — ${summary}`);
+									redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review not strong: ${summary}` };
+									retryHint = `An independent reviewer did not confirm your RED tests as STRONG: ${summary}. Strengthen the assertions so each binds the scenario's OBSERVABLE behavior (concrete expected values/outputs/status codes), not implementation details or tautologies, then re-run.`;
+								}
 							} else {
-								ctx.log(`Implementation ${phaseId} RED review: STRONG`);
+								ctx.log(`Implementation ${phaseId} RED review: STRONG (no contradictions)`);
 							}
 						}
 						if (retryHint) {

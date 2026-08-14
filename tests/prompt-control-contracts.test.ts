@@ -125,7 +125,7 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 	});
 
 	it("buildRedReviewPrompt", () => {
-		expectKeys(buildRedReviewPrompt(s, null, { name: "p" }, ["tests/a.test.ts"], [], null, null), ["verdict", "summary"]);
+		expectKeys(buildRedReviewPrompt(s, null, { name: "p" }, ["tests/a.test.ts"], [], null, null), ["verdict", "summary", "contradictions"]);
 	});
 
 	it("buildImplementPrompt — testDefects present, NO phantom `lines` (the v0.1.52 regression)", () => {

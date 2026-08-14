@@ -397,12 +397,13 @@ export function buildRedReviewPrompt(
 		"For each mapped scenario, decide whether its test asserts the scenario's OBSERVABLE behavior with a concrete expected value (status code, returned value, emitted effect, error).",
 		"A test is WEAK if any of: it has no meaningful assertion; it asserts a tautology (e.g. expect(true).toBe(true)); it asserts a hard-coded stub/constant rather than computed behavior; it only checks an implementation detail (an internal call/shape) instead of the scenario's contract; or a trivial/wrong implementation would satisfy it.",
 		"Return verdict=\"strong\" ONLY when EVERY mapped scenario has at least one behavior-binding assertion. Otherwise verdict=\"weak\" and name the specific weak tests/scenarios and the missing assertion in summary.",
+		"JOINT SATISFIABILITY (mandatory second dimension): verify at least ONE conforming implementation could pass ALL these tests SIMULTANEOUSLY. Cross-check scenarios that share fixtures, sample data, or assert on the same behavior for internal contradictions (e.g. one scenario requires byte-identical output across validators while another mandates different error tokens for the same inputs; one requires a value both X and not-X). If NO conforming implementation can pass all tests, report each contradiction in `contradictions` with the exact test names/lines and a concise impossibility proof, and ALSO set verdict=\"weak\". When the suite is jointly satisfiable, emit contradictions as an empty array [] — never omit the key.",
 		"You are read-only: do NOT edit any file.",
 		"",
 		"## Data to return",
-		"Return: verdict (\"strong\" | \"weak\"), summary (one line; when weak, name the weak tests/scenarios and the missing assertion).",
+		"Return: verdict (\"strong\" | \"weak\"), summary (one line; when weak, name the weak tests/scenarios and the missing assertion), contradictions (array of {tests, lines, proof}; [] when jointly satisfiable).",
 		"",
-		"Output <control> JSON with: verdict, summary.",
+		"Output <control> JSON with: verdict, summary, contradictions (array of {tests, lines, proof} — ALWAYS emit; use [] when the suite is jointly satisfiable).",
 	].join("\n");
 }
 
