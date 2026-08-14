@@ -474,10 +474,29 @@ export function detectProjectCommands(cwd: string): ProjectCommands {
 		const cmds: ProjectCommands = { language: "python", ran: [] };
 		const pyproject = readMaybe(cwd, "pyproject.toml");
 		const setupCfg = readMaybe(cwd, "setup.cfg");
-		const hasPytest = has("pytest.ini") || has("tox.ini") || /\[(tool\.pytest|tool:pytest|pytest)/.test(pyproject + setupCfg);
-		if (hasPytest) {
+		// GAP-E fix: pytest is zero-config by design (discovers test_*.py with no
+		// config file), so recognize it from ANY of: config files/sections, a
+		// requirements.txt/pyproject dependency entry, or a conftest.py. Without
+		// this, a plain python repo resolves NO test command → the RED oracle
+		// returns `unknown` forever → every attempt fails as unverified (a
+		// stagnation loop with no code cause).
+		const hasPytestConfig = has("pytest.ini") || has("tox.ini") || /\[(tool\.pytest|tool:pytest|pytest)/.test(pyproject + setupCfg);
+		const reqText = readMaybe(cwd, "requirements.txt");
+		const hasPytestDependency =
+			/(?:^|\n)\s*(?:-r\s+\S+\s*\n\s*)?-?\s*pytest(?:[=<>~!;\s#]|\n|$)/.test(reqText) ||
+			/["'\s,=\[]pytest\s*(?:[=<>~!#"',\]\s]|$)/.test(pyproject + setupCfg) ||
+			has("conftest.py") ||
+			has("tests/conftest.py");
+		if (hasPytestConfig || hasPytestDependency) {
 			cmds.test = ["pytest", "-q"];
 			cmds.ran.push("pytest");
+		} else {
+			// Default: pytest's zero-config discovery is the de-facto python test
+			// runner. If pytest is genuinely absent from the environment the spawn
+			// fails honestly (spawn error surfaced by the gate) instead of the
+			// silent `unknown` that made every attempt unverifiable.
+			cmds.test = ["pytest", "-q"];
+			cmds.ran.push("pytest (default)");
 		}
 		const hasMypy = has("mypy.ini") || has(".mypy.ini") || /\[mypy\]/.test(setupCfg) || /tool\.mypy/.test(pyproject);
 		if (hasMypy) {

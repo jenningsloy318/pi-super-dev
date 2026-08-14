@@ -331,6 +331,15 @@ function buildDependencyBootstraps(cwd: string, cmds: ProjectCommands, requiredD
 	// command, so no separate cargo fetch is needed (and it would add noise to
 	// existing gate command accounting).
 	for (const dir of findManifestDirs(cwd, ["poetry.lock"])) if (shouldConsider(dir)) add(dir, ["poetry", "install", "--no-interaction"], isRequired(dir));
+	// GAP-F fix: uv is the preferred python package manager (agents/lang/python.md)
+	// but was missing from the bootstrap list — a uv.lock project with no
+	// .venv ended up running a global/absent interpreter. `uv sync` creates the
+	// project venv and installs locked deps (updates the lock only if needed).
+	for (const dir of findManifestDirs(cwd, ["uv.lock"])) {
+		if (!shouldConsider(dir)) continue;
+		if (existsSync(join(dir, ".venv"))) continue; // already synced — skip the spawn
+		add(dir, ["uv", "sync"], isRequired(dir));
+	}
 	for (const dir of findManifestDirs(cwd, ["Pipfile"])) if (shouldConsider(dir)) add(dir, ["pipenv", "install", "--deploy"], isRequired(dir));
 	for (const dir of findManifestDirs(cwd, ["requirements.txt"])) {
 		if (!shouldConsider(dir)) continue;
