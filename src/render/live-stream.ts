@@ -175,7 +175,18 @@ const isStickySectionLine = (line: Pick<SectionLine, "text">): boolean => {
 		/^super-dev v\d+\.\d+\.\d+$/.test(text) ||
 		/^(?:Run started|Task|Launch cwd|Launch worktree|Launch branch|Run log): /.test(text) ||
 		/^(?:Stage|Phase) (?:start|end): /.test(text) ||
-		/^Implementation \S+ (?:RED gate FAIL|RED gate evidence|RED runner diagnostic|stopped before implementation|stopped after \d+ attempt|attempt \d+ FAIL|build-gate FAIL|deliverable-check FAIL)/.test(text)
+		/^Implementation \S+ (?:RED gate FAIL|RED gate evidence|RED runner diagnostic|stopped before implementation|stopped after \d+ attempt|attempt \d+ FAIL|build-gate FAIL|deliverable-check FAIL)/.test(text) ||
+		// Lifecycle anchors — pin each stage's key events (which agent ran, for
+		// how long, and what artifact it wrote) so a collapsed completed section
+		// still answers them without opening the full run log. This is the
+		// per-stage "spine" the user asked to keep pinned alongside the title:
+		// the agent/session start+end brackets, the "<stage>: agent … working"
+		// announcement, and the doc/rendered artifact writes.
+		/^agent \S+: (?:start|end) /.test(text) ||
+		/^session \S+: start /.test(text) ||
+		/^[\w.]+: agent \S+ working$/.test(text) ||
+		/^[\w.]+: doc \u2192 /.test(text) ||
+		/^[\w.]+: rendered /.test(text)
 	);
 };
 
@@ -488,8 +499,9 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// WHOLE leading sections — never slicing mid-section (which would leave
 		// dangling indented lines with no header) and never dropping a header
 		// while keeping its orphaned lines.
-		const sections: string[][] = groups.map((group) => {
+		const sectionBuild = groups.map((group) => {
 			const sec: string[] = [renderSectionHeader(group, themeArg)];
+			const anchors: string[] = [];
 
 			// Per-stage tail budget: running (incl. unknown / pre-stage) shows a
 			// generous recent tail; completed stages render COMPACT (header +
@@ -523,10 +535,16 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 				const rendered = themed
 					? themeLine(line.kind, text, theme)
 					: text;
-				sec.push(`  ${rendered}`);
+				const pushed = `  ${rendered}`;
+				sec.push(pushed);
+				// Sticky lines double as anchors so the aggregate cap can keep them when
+				// it collapses a section (header + anchors) instead of header-only.
+				if (isStickySectionLine(line) || isImplementationActivityLine(line)) anchors.push(pushed);
 			}
-			return sec;
+			return { sec, anchors };
 		});
+		const sections: string[][] = sectionBuild.map((b) => b.sec);
+		const sectionAnchors: string[][] = sectionBuild.map((b) => b.anchors);
 
 		// Aggregate cap (TOTAL_SECTION_CAP): drop WHOLE leading sections (the
 		// oldest, typically completed) until the body fits, ALWAYS keeping at
@@ -541,13 +559,15 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// stages). The final section is never collapsed or dropped. Budget counts
 		// each rendered line + the (sections−1) blank separators actually emitted.
 		const sectionLens = sections.map((s) => s.length);
+		const anchorLens = sectionAnchors.map((a) => a.length);
 		let total =
 			sectionLens.reduce((sum, n) => sum + n, 0) + Math.max(0, sections.length - 1);
 		for (let i = 0; i < sections.length - 1 && total > TOTAL_SECTION_CAP; i++) {
-			if (sectionLens[i]! <= 1) continue; // already header-only
-			total -= sectionLens[i]! - 1;
-			sections[i] = [sections[i]![0]!]; // header-only: keep the title, drop the body
-			sectionLens[i] = 1;
+			const collapsedLen = 1 + anchorLens[i]!; // header + this section's sticky anchors
+			if (sectionLens[i]! <= collapsedLen) continue; // already header + anchors
+			total -= sectionLens[i]! - collapsedLen;
+			sections[i] = [sections[i]![0]!, ...sectionAnchors[i]!];
+			sectionLens[i] = collapsedLen;
 		}
 		let start = 0;
 		while (start < sections.length - 1 && total > TOTAL_SECTION_CAP) {

@@ -622,3 +622,73 @@ describe("pinned stage titles + END-glyph on completed headers", () => {
 		expect(body).not.toContain("fail-ordinary-noise");
 	});
 });
+
+// ─── Sticky lifecycle anchors (agent/session start+end, doc/rendered writes) ──
+// The user asked that each stage pin not just its title + start/end markers but
+// its full lifecycle spine: which agent ran (and for how long) and what artifact
+// was written. These lines are sticky anchors retained in completed sections
+// AND when the aggregate cap collapses a section (header + anchors, not
+// header-only).
+describe("sticky lifecycle anchors (agent/session/doc/rendered)", () => {
+	const lifecycle = [
+		"Stage start: BDD Review at 2026-08-14T10:49:34.975+08:00",
+		"bddReview: agent bdd-reviewer working",
+		"agent pipeline.bddReview: start agent=bdd-reviewer backend=session access=source-read-only timeout=role-default thinking=high cwd=/repo model=antigravity/gemini-3.6-flash controlKeys=title,date,verdict,summary promptChars=2589",
+		"session pipeline.bddReview: start timeout=480000ms cwd=/repo access=source-read-only controlKeys=title,date,verdict,summary",
+		"agent pipeline.bddReview: end elapsed=219964ms control=yes model=unknown",
+		"bddReview: doc → 04-bdd-review.md",
+		"bddReview: rendered /home/me/04-bdd-review.md (10235 bytes)",
+		"Stage end: BDD Review status=ok at 2026-08-14T10:53:14.974+08:00 duration=3m 40s",
+	];
+
+	it("pins every lifecycle anchor line of a completed stage (ordinary chatter dropped)", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate, showTimestamps: false });
+		h.sink.stage({ id: "bddReview", label: "Stage 2C — BDD Review", status: "running" });
+		for (const line of lifecycle) h.sink.log(line);
+		for (let i = 0; i < 20; i++) h.sink.log(`bdd-noise-${i}`);
+		h.sink.stage({ id: "bddReview", label: "Stage 2C — BDD Review", status: "ok" });
+		// a trailing live stage so BDD Review is genuinely completed
+		h.sink.stage({ id: "impl", label: "Implementation", status: "running" });
+		h.sink.log("live-now");
+		h.flush();
+		const body = h0.body;
+		for (const line of lifecycle) expect(body).toContain(line);
+		expect(body).not.toContain("bdd-noise-0");
+		expect(body).not.toContain("bdd-noise-19");
+	});
+
+	it("survives aggregate cap pressure: collapses to header + anchors, not header-only", () => {
+		const cap = LiveStreamNS.TOTAL_SECTION_CAP;
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate, tailLines: 1_000_000 });
+		// Many completed stages, each with its lifecycle anchors + lots of ordinary
+		// noise, so the total far exceeds the cap and the aggregate collapse engages.
+		for (let s = 0; s < 60; s++) {
+			h.sink.stage({ id: `s${s}`, label: `Stage ${s}`, status: "running" });
+			h.sink.log(`s${s}: agent agent-${s} working`);
+			h.sink.log(`agent pipeline.s${s}: start agent=agent-${s} backend=session`);
+			h.sink.log(`agent pipeline.s${s}: end elapsed=1000ms control=yes model=unknown`);
+			h.sink.log(`s${s}: doc → 0${s}-doc.md`);
+			h.sink.log(`s${s}: rendered /home/me/0${s}-doc.md (500 bytes)`);
+			for (let i = 0; i < 30; i++) h.sink.log(`s${s}-noise-${i}`);
+			h.sink.stage({ id: `s${s}`, label: `Stage ${s}`, status: "ok" });
+		}
+		h.sink.stage({ id: "live", label: "LiveStage", status: "running" });
+		for (let i = 0; i < 40; i++) h.sink.log(`live-l${i}`);
+		h.flush();
+		const body = h0.body;
+		// Body still bounded by the cap.
+		expect(lines(body).length).toBeLessThanOrEqual(cap);
+		// A RECENT stage near the live end keeps its full anchor spine (header +
+		// anchors). The oldest stages are dropped outright (last resort) once 60
+		// stages x ~6 anchors exceeds the cap; every stage that SURVIVES keeps its
+		// anchors (the prior header-only collapse would have stripped them).
+		expect(body).toContain("s59: agent agent-59 working");
+		expect(body).toContain("agent pipeline.s59: start agent=agent-59");
+		expect(body).toContain("agent pipeline.s59: end elapsed=1000ms");
+		expect(body).toContain("s59: rendered /home/me/059-doc.md");
+		// Ordinary noise is still dropped (anchors pin, chatter does not).
+		expect(body).not.toContain("s59-noise-0");
+	});
+});
