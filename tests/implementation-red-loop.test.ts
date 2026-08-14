@@ -124,6 +124,10 @@ function mkCtx(opts: {
 	reviewVerdicts?: Array<"strong" | "weak">;
 	/** Per-review contradiction lists (parallel queue to reviewVerdicts; Fix 4). */
 	reviewContradictions?: Array<Array<{ tests: string; lines?: string; proof: string }>>;
+	/** Scripted implementer responses (Fix 3/5): per-attempt text + control. */
+	implResults?: Array<{ text: string; control: ControlObj | null }>;
+	/** Escalate callback (captures the EscalationFailure) for no-progress tests. */
+	escalate?: RunOptions["escalate"];
 } = {}): { ctx: StageContext; calls: CapturedCalls } {
 	const calls: CapturedCalls = {
 		tdd: [],
@@ -136,7 +140,7 @@ function mkCtx(opts: {
 	const contradictionQ = [...(opts.reviewContradictions ?? [])];
 	const ctx: StageContext = {
 		task: "",
-		options: {} as RunOptions,
+		options: { escalate: opts.escalate } as RunOptions,
 		state: {} as PipelineState,
 		async helper(): Promise<HelperResult> {
 			calls.helper++;
@@ -149,6 +153,8 @@ function mkCtx(opts: {
 			}
 			if (call.agent === "implementer") {
 				calls.impl.push(call);
+				const scripted = opts.implResults?.shift();
+				if (scripted) return { text: scripted.text, control: scripted.control };
 				return { text: "", control: { filesModified: ["src/x.ts"] } };
 			}
 			if (call.agent === "code-reviewer") {
@@ -511,5 +517,117 @@ describe("P3 — RED loop does NOT change the outer commit structure", () => {
 
 		expect(res.phasesCompleted).toBe(1);
 		expect(res.allGreen).toBe(true);
+	});
+});
+
+describe("no-progress escalation evidence conservation (Fix 3 + Fix 5)", () => {
+	/** Persistently-failing build gate so consecutive implementer attempts
+	 *  produce an identical failure signature → repeatedNoProgress at attempt 2. */
+	beforeEach(() => {
+		buildGate.mockImplementation(() => ({
+			pass: false,
+			inScopePass: false,
+			ran: ["npm test"],
+			errors: ["assert save(1) === 2 — SCENARIO-029 determinism"],
+			outOfScopeErrors: [],
+		}));
+	});
+
+	const PROOF_TEXT = "I have proven the test is unsatisfiable: SCENARIO-029 requires byte-identical samples while SCENARIO-016 requires a G4 error in dimErrs — no conforming implementation can satisfy both.";
+
+	it("Fix 3: proof carried ONLY in implementer text (no structured testDefects) is surfaced in the escalation message + findings", async () => {
+		redSeq("red", "red");
+		const failures: Array<{ message: string; findings: Array<{ title?: string }> }> = [];
+		const escalate = (async (failure: { message: string; findings: Array<{ title?: string }> }) => {
+			failures.push(failure);
+			return undefined; // dismissed → terminal no-progress break
+		}) as unknown as RunOptions["escalate"];
+		const { ctx, calls } = mkCtx({
+			reviewVerdicts: ["strong"],
+			implResults: [
+				{ text: PROOF_TEXT, control: { filesModified: ["src/x.ts"] } },
+				{ text: PROOF_TEXT, control: { filesModified: ["src/x.ts"] } },
+			],
+			escalate,
+		});
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		expect(calls.impl).toHaveLength(2); // no-progress fired at attempt 2
+		expect(failures).toHaveLength(1);
+		// The reasoning tail rides along, raw and bounded.
+		expect(failures[0].message).toContain("Implementer's latest diagnosis (reasoning tail):");
+		expect(failures[0].message).toContain("byte-identical samples");
+		// A finding leads with the diagnosis first line.
+		expect(failures[0].findings.some((f) => (f.title ?? "").startsWith("implementer diagnosis: I have proven the test is unsatisfiable"))).toBe(true);
+	});
+
+	it("Fix 5: the same shape against a CONFIRMED RED logs the text-proof advisory and marks the message text-evidence-only (never auto re-authors)", async () => {
+		redSeq("red", "red");
+		const failures: Array<{ message: string }> = [];
+		const escalate = (async (failure: { message: string }) => {
+			failures.push(failure);
+			return undefined;
+		}) as unknown as RunOptions["escalate"];
+		const { ctx, calls } = mkCtx({
+			reviewVerdicts: ["strong"],
+			implResults: [
+				{ text: PROOF_TEXT, control: { filesModified: ["src/x.ts"] } },
+				{ text: PROOF_TEXT, control: { filesModified: ["src/x.ts"] } },
+			],
+			escalate,
+		});
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		expect(calls.tdd).toHaveLength(1); // text alone NEVER triggers a re-author
+		expect(failures[0].message).toContain("POSSIBLE UNSATISFIABLE RED (text evidence only — unverified)");
+		expect(calls.logs.some((l) => /advisory: implementer text matches unsatisfiability markers/.test(l))).toBe(true);
+	});
+
+	it("Fix 3 scoping: a tail WITHOUT proof markers is still surfaced, but never flagged as a suspected unsatisfiable RED", async () => {
+		redSeq("red", "red");
+		const failures: Array<{ message: string }> = [];
+		const escalate = (async (failure: { message: string }) => {
+			failures.push(failure);
+			return undefined;
+		}) as unknown as RunOptions["escalate"];
+		const { ctx } = mkCtx({
+			reviewVerdicts: ["strong"],
+			implResults: [
+				{ text: "Tried flipping the order of operations; the off-by-one persists in the merge step.", control: { filesModified: ["src/x.ts"] } },
+				{ text: "Tried flipping the order of operations; the off-by-one persists in the merge step.", control: { filesModified: ["src/x.ts"] } },
+			],
+			escalate,
+		});
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		expect(failures[0].message).toContain("Implementer's latest diagnosis (reasoning tail):");
+		expect(failures[0].message).not.toContain("POSSIBLE UNSATISFIABLE RED");
+	});
+
+	it("Fix 3 precedence: structured testDefects take precedence over the text tail (no duplicate diagnosis block)", async () => {
+		// MAX_CHALLENGE_REAUTHORS defaults to 2: attempts 1-2's defects are
+		// consumed by the challenge re-author loop (the Fix 1 path); after the
+		// cap, attempts 3-4 carry the SAME defects into no-progress, where the
+		// structured report is the surfaced evidence and the text tail is NOT
+		// duplicated (implDiagnosisTail is scoped to the defects-empty case).
+		redSeq("red", "red", "red", "red");
+		const failures: Array<{ message: string }> = [];
+		const escalate = (async (failure: { message: string }) => {
+			failures.push(failure);
+			return undefined;
+		}) as unknown as RunOptions["escalate"];
+		const defect = { testFile: "tests/a.test.ts", lines: "606", reason: "SCENARIO-016 vs 029 contradiction" };
+		const scripted = { text: PROOF_TEXT, control: { filesModified: ["src/x.ts"], testDefects: [defect] } };
+		const { ctx, calls } = mkCtx({
+			reviewVerdicts: ["strong"],
+			implResults: [scripted, scripted, scripted, scripted],
+			escalate,
+		});
+		await (implementationStage as Stage).run(mkState(), ctx);
+
+		// Initial RED author + 2 challenge re-authors (attempts 1-2).
+		expect(calls.tdd).toHaveLength(3);
+		expect(failures[0].message).toContain("THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: tests/a.test.ts (606): SCENARIO-016 vs 029 contradiction");
+		expect(failures[0].message).not.toContain("reasoning tail");
 	});
 });

@@ -585,6 +585,11 @@ export function parseRedContradictions(control: unknown): Array<{ tests: string;
  *  tests/prompt-control-contracts.test.ts). */
 const IMPLEMENTER_CONTROL_KEYS = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"];
 
+/** Fix 5 — cheap text-proof heuristic markers. ADVISORY ONLY: text alone never
+ *  auto-triggers a re-author (`.text` is always present; the no-progress guard
+ *  exists precisely because of that) — it only flags the escalation message. */
+const UNSATISFIABLE_TEXT_RE = /unsatisfiab|contradict|cannot be satisfied/i;
+
 export function parseTestDefects(control: unknown): TestDefect[] {
 	if (control == null || typeof control !== "object" || Array.isArray(control)) return [];
 	const raw = (control as Record<string, unknown>).testDefects;
@@ -1625,12 +1630,32 @@ export const implementationStage: Stage = {
 					if (escalate) {
 						try {
 							const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
+							// Fix 3 — evidence conservation at the human boundary: when the
+							// structured challenge channel yielded nothing (no testDefects — the
+							// v0.1.52 inert-channel case, or an attempt that timed out with
+							// control=no and never called structured_output), the implementer's
+							// LAST reasoning text may still carry the impossibility proof. Surface
+							// it raw (already bounded to trimImplementerText's 1200-char tail);
+							// the user must never have to guess that a proof exists.
+							const implDiagnosisTail = implDefects.length === 0 ? implTextTail.trim() : "";
+							// Fix 5 — advisory-only text-proof heuristic: flag (never auto-trigger)
+							// when the tail claims unsatisfiability while failing a confirmed RED.
+							const textProofSuspect = implDiagnosisTail.length > 0 && acceptedRed !== null && UNSATISFIABLE_TEXT_RE.test(implDiagnosisTail);
+							if (textProofSuspect) {
+								ctx.log(`Implementation ${phaseId} advisory: implementer text matches unsatisfiability markers without structured testDefects — surfacing the reasoning tail to the user (no automatic re-author from text alone)`);
+							}
 							const failure: import("../types.ts").EscalationFailure = {
 								kind: "stagnation",
 								stage: "implementation",
-								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
+								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
 								severity: "soft",
-								findings: [...failureReasons.slice(0, 12).map((r) => ({ file: null, severity: null, title: r })), ...implDefects.map((d) => ({ file: d.testFile, severity: null, title: `unsatisfiable: ${d.reason}` }))].slice(0, 12),
+								findings: [
+									...implDefects.map((d) => ({ file: d.testFile, severity: null, title: `unsatisfiable: ${d.reason}` })),
+									// The diagnosis finding leads the failure reasons so it survives the
+									// 12-entry slice — it is the highest-value evidence for the decision.
+									...(implDiagnosisTail ? [{ file: null, severity: null, title: `implementer diagnosis: ${implDiagnosisTail.split("\n")[0].slice(0, 200)}` }] : []),
+									...failureReasons.slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
+								].slice(0, 12),
 								worktreePath: setup.worktreePath,
 								specDirectory: setup.specDirectory,
 							};
