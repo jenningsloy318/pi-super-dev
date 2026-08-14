@@ -6,7 +6,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
-import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors } from "./scope.ts";
+import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors, parseFailingNpmTestFiles } from "./scope.ts";
+import { verifyUntouchedFailuresAgainstBaseline, type BaselineCheckResult, type BaselineVerifyInput } from "./baseline.ts";
 
 export interface RedCheckPlan {
 	cwd: string;
@@ -142,6 +143,15 @@ export interface BuildGateResult {
 	 * preserving the pre-change abort semantics exactly.
 	 */
 	inScopePass: boolean;
+	/**
+	 * B-6: outcome of the merge-base baseline verification performed when the
+	 * lenient out-of-scope pass was about to be granted. "regression" strips
+	 * `inScopePass` (the failing untouched subjects PASS at baseline — the
+	 * failure is new on this branch); "preexisting" evidence-backs the lenient
+	 * pass; "unknown" degrades to the historical lenient behavior. Present
+	 * ONLY when a baseline verification actually ran.
+	 */
+	baselineCheck?: BaselineCheckResult;
 	/**
 	 * pi session/model correlation tag (AC-10 / SCENARIO-016,017). Present ONLY
 	 * when at least one of `process.env.PI_SESSION_ID` / `process.env.PI_MODEL`
@@ -468,9 +478,84 @@ function moduleBuildPlans(cwd: string, rootCmds: ProjectCommands): BuildCommandP
  * detected (`pass` true, `ran` empty). Respects an AbortSignal: a signal that is
  * already aborted skips remaining commands; one that fires mid-run is honored.
  */
+/** Extract out-of-scope crate subjects from rust error blocks (crates/<pkg>/ + -p <pkg> markers). */
+function parseOutOfScopeCrateSubjects(blocks: string[]): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const block of blocks) {
+		const text = typeof block === "string" ? block : String(block ?? "");
+		let m: RegExpExecArray | null;
+		const dir = /(?:^|[\s"'`])crates\/([A-Za-z0-9_-]+)\//g;
+		while ((m = dir.exec(text)) !== null) {
+			if (!seen.has(m[1])) { seen.add(m[1]); out.push(m[1]); }
+		}
+		const flag = /-p\s+([A-Za-z0-9_-]+)/g;
+		while ((m = flag.exec(text)) !== null) {
+			if (!seen.has(m[1])) { seen.add(m[1]); out.push(m[1]); }
+		}
+	}
+	return out;
+}
+
+/**
+ * B-6 decision core — exported for hermetic testing. When the gate is about to
+ * grant the lenient all-out-of-scope pass, the failing subjects are verified
+ * against the merge-base baseline (see ./baseline.ts). "regression" strips the
+ * lenient pass and appends a synthetic in-scope error block; "preexisting" /
+ * "unknown" keep it (unknown == the historical behavior). The historical
+ * formula (`pass || (errors.length > 0 && outOfScopeErrors.length === errors.length)`)
+ * is preserved byte-for-byte whenever no baseline verification runs (gate
+ * green, partial out-of-scope, no default branch, or no parseable subjects).
+ * NEVER throws.
+ */
+export function resolveInScopePassWithBaseline(args: {
+	pass: boolean;
+	errors: string[];
+	outOfScopeErrors: string[];
+	language: string;
+	pm?: string;
+	cwd: string;
+	defaultBranch?: string;
+	signal?: AbortSignal;
+	/** Injectable verifier (tests). Defaults to {@link verifyUntouchedFailuresAgainstBaseline}. */
+	baselineVerify?: (input: BaselineVerifyInput) => BaselineCheckResult;
+}): { inScopePass: boolean; errors: string[]; baselineCheck?: BaselineCheckResult } {
+	const historical = args.pass || (args.errors.length > 0 && args.outOfScopeErrors.length === args.errors.length);
+	if (args.pass || !args.defaultBranch) return { inScopePass: historical, errors: args.errors };
+	if (!(args.errors.length > 0 && args.outOfScopeErrors.length === args.errors.length)) {
+		return { inScopePass: historical, errors: args.errors };
+	}
+	try {
+		const subjects =
+			args.language === "rust"
+				? parseOutOfScopeCrateSubjects(args.outOfScopeErrors)
+				: [...new Set(args.outOfScopeErrors.flatMap((b) => parseFailingNpmTestFiles(typeof b === "string" ? b : String(b ?? ""))))];
+		if (subjects.length === 0) return { inScopePass: historical, errors: args.errors };
+		const verify = args.baselineVerify ?? verifyUntouchedFailuresAgainstBaseline;
+		const outcome = verify({
+			cwd: args.cwd,
+			defaultBranch: args.defaultBranch,
+			language: args.language,
+			pm: args.pm,
+			subjects,
+			signal: args.signal,
+		});
+		if (outcome.status === "regression") {
+			return {
+				inScopePass: false,
+			errors: [...args.errors, `[baseline-verify] regression — the failing out-of-scope subject(s) PASS at the merge-base baseline, so the failure is NEW on this branch: ${outcome.evidence}`],
+				baselineCheck: outcome,
+			};
+		}
+		return { inScopePass: historical, errors: args.errors, baselineCheck: outcome };
+	} catch {
+		return { inScopePass: historical, errors: args.errors };
+	}
+}
+
 export function runBuildGate(
 	cwd: string,
-	opts: { timeoutMs?: number; testPackages?: string[]; gate?: GateOptions; signal?: AbortSignal } = {},
+	opts: { timeoutMs?: number; testPackages?: string[]; gate?: GateOptions; signal?: AbortSignal; defaultBranch?: string; baselineVerify?: (input: BaselineVerifyInput) => BaselineCheckResult } = {},
 ): BuildGateResult {
 	const cmds0 = detectProjectCommands(cwd);
 	const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
@@ -659,8 +744,25 @@ export function runBuildGate(
 		cmds0.language === "rust"
 			? classifyOutOfScopeErrors(errors, classScope).outOfScopeErrors
 			: classifyOutOfScopeNpmErrors(errors, cwd);
-	const inScopePass =
-		pass || (errors.length > 0 && outOfScopeErrors.length === errors.length);
+	// B-6: the historical formula granted the lenient pass whenever EVERY error
+	// block was out-of-scope, WITHOUT checking that the failing subjects were
+	// actually failing before the branch. Now the same subjects are re-run in an
+	// isolated checkout of the merge-base: "preexisting"/"unknown" keep the
+	// lenient pass (unknown == the old behavior, degraded on any ambiguity);
+	// "regression" (subjects pass at baseline) strips it so the phase must fix.
+	const baselineDecision = resolveInScopePassWithBaseline({
+		pass,
+		errors,
+		outOfScopeErrors,
+		language: cmds0.language,
+		pm: cmds0.pm,
+		cwd,
+		defaultBranch: opts.defaultBranch,
+		signal: opts.signal,
+		baselineVerify: opts.baselineVerify,
+	});
+	const inScopePass = baselineDecision.inScopePass;
+	const errorsWithBaseline = baselineDecision.errors;
 	// AC-10 / SCENARIO-016,017: pi session/model correlation tag. Defensive read
 	// of the bash-session env vars pi 0.82.0 exposes to built-in bash tools. The
 	// field is OMITTED entirely when BOTH are absent so the captured build run is
@@ -689,9 +791,10 @@ export function runBuildGate(
 		allTestsPass,
 		typecheckSuccess,
 		ran,
-		errors,
+		errors: errorsWithBaseline,
 		outOfScopeErrors,
 		inScopePass,
+		...(baselineDecision.baselineCheck ? { baselineCheck: baselineDecision.baselineCheck } : {}),
 		...(correlation ? { correlation } : {}),
 	};
 }

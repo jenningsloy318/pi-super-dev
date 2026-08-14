@@ -977,7 +977,7 @@ export const implementationStage: Stage = {
 				announceActivity("Resume verification");
 				resetDeliverableCheckCache();
 				announceActivity("Build gate", "resume verification");
-				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
 				announceActivity("Deliverable check", "resume verification");
 				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
@@ -1249,7 +1249,7 @@ export const implementationStage: Stage = {
 						resetDeliverableCheckCache();
 						announceActivity("Already-satisfied verification", attemptDetail(attempt));
 						announceActivity("Build gate", attemptDetail(attempt));
-						const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+						const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
 						announceActivity("Deliverable check", attemptDetail(attempt));
 						const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
 						ctx.log(`Implementation ${phaseId} RED already-satisfied: build=${gate.pass || gate.inScopePass}, deliverables=${deliverableCheck.pass}`);
@@ -1434,7 +1434,7 @@ export const implementationStage: Stage = {
 				// a QA agent's self-report (vacuous-pass risk). Non-fatal when nothing
 				// is detectable (greenfield): ran is empty and pass is true.
 				announceActivity("Build gate", attemptDetail(attempt));
-				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
 				// AR-02: emit the pi session/model correlation tag to the run trace.

@@ -53,7 +53,7 @@ const preMergeBuildStage: Stage = {
 	label: "Pre-merge build gate",
 	async run(state, ctx) {
 		const setup = state.setup!;
-		const r = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+		const r = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
 		ctx.log(`Pre-merge build-gate ${r.pass ? "PASS" : "FAIL"} (ran: ${r.ran.join(", ") || "no commands"})${r.pass ? "" : " — merge will be skipped"}`);
 		// AR-02: emit the pi session/model correlation tag to the run trace so the
 		// captured correlation field is observable (not write-only). No-op when the

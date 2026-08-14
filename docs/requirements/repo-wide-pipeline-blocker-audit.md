@@ -63,6 +63,30 @@
 - **Code-vs-contract drift:** `tests/red-oracle.test.ts:20-22` documents the intended contract as "per-stem `cargo test -p <pkg> --test <stem>` … fall back to `cargo test -p <pkg>`" — the `-p <pkg>` half was never implemented. Existing tests only use single-crate `tests/*.rs` targets.
 - **Fix direction:** Resolve the owning package (`crates/<seg>` or root) and emit `cargo test -p <pkg> --test <stem>`; restrict stem resolution to targets under a `tests/` directory; fall back to scoped `cargo test -p <pkg>` otherwise (matching the documented contract and closing B-2 simultaneously).
 
+### B-6 IMPLEMENTATION SPEC (probe-validated 2026-08-14, decided ① cross-language baseline)
+
+**Core:** when a phase-boundary gate would grant `inScopePass` on "all failures out-of-scope", re-run the project test suite at the branch baseline (merge-base of HEAD and the default branch) in an ISOLATED temp checkout and compare failing-target identities:
+- baseline ALSO fails that target → genuinely pre-existing → out-of-scope leniency holds;
+- baseline passes (or never ran) that target → regression caused by in-scope edits → reclassify in-scope → `inScopePass=false` → failure feeds the implementer retry.
+
+**Baseline runner (`src/build-runner/baseline.ts`, new):**
+1. Resolve `mergeBase = git merge-base HEAD <defaultBranch>` (defaultBranch threaded from `state.setup` into the gate call — today gates know only cwd; thread a `baseline?: { defaultBranch }` option through `runBuildGate` call sites in implementation.ts / verify.ts / stages/index.ts). No defaultBranch / no merge-base → **no leniency without proof**: treat all out-of-scope failures as in-scope (stricter than today; matches scope.ts's own "ambiguity NEVER grants a false green" convention). TODO-verify: pre-existing-failing repos without baseline capability — acceptable stricter behavior, log the reason.
+2. `git worktree add --detach <tmpdir> <mergeBase>` (shares objects; never touches the feature worktree's uncommitted changes).
+3. Bootstrap deps in the temp worktree per language (reuse `buildDependencyBootstraps` semantics: npm ci / pnpm install --frozen-lockfile / uv sync / go mod implicit / cargo implicit).
+4. Run the project's `cmds.test` (NOT scoped to targets — baseline needs the full failing-target inventory).
+5. Parse the baseline failing-target set per language (probe-validated shapes):
+   - npm family: `❯ <path>` pointers (VITEST_FAIL_PTR_RE) + `FAIL <path>` (JEST_FAIL_LINE_RE) → file paths;
+   - python: `^FAILED (<path>::<name>)` short-summary lines → file paths (pytest 8.x probe);
+   - go: `--- FAIL: <name>` blocks carry `<file>:<line>` messages + `^FAIL\t<pkg>` lines → collect BOTH file paths and package paths (probe: `old_test.go:3: msg`, `FAIL\tp`);
+   - rust: run WITHOUT `-q` and collect `thread '<t>' panicked at <path>` locations + `--> <path>` lines (crate-level superset; -q hides paths — probe: `-q` shows only `failures: old`).
+6. Match the classifier's out-of-scope blocks against the baseline set at the block's OWN granularity (file path for npm/py/go; crate/dir prefix for rust — normalize to forward slashes, repo-relative).
+7. Cache the parsed baseline set per `(realRepoPath, mergeBase)` in a module Map (one baseline run per commit, not per phase); `git worktree remove --force` the temp dir after parsing.
+8. Never-throw; ANY failure inside the baseline runner → treat as "no baseline" → step-1 strictness.
+
+**Gate wiring:** in `runBuildGate` where `inScopePass = pass || (errors.length > 0 && outOfScopeErrors.length === errors.length)`: when leniency would fire AND a baseline is requested, filter `outOfScopeErrors` through the baseline set first; log which blocks kept leniency vs which were reclassified. `verify.ts:652` and the pre-merge gate use `r.pass` — unaffected.
+
+**Tests:** per language — npm untouched-failing-file (baseline also fails → leniency holds), npm regression (baseline passes → in-scope, phase not green), pytest/go/rust equivalents, no-defaultBranch strict path, baseline-runner-failure strict path, cache single-run assertion.
+
 ---
 
 ## Part 2 — HIGH

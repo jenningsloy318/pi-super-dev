@@ -649,7 +649,7 @@ const buildGateStep = task({
 	requires: ["*-specification.md"],
 	async run(s, ctx) {
 		if (!ctx.budget.check()) return undefined;
-		const r = runBuildGate(setupOf(s).worktreePath, { gate: (s.spec?.gate) as GateOptions | undefined, signal: ctx.signal });
+		const r = runBuildGate(setupOf(s).worktreePath, { gate: (s.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setupOf(s).defaultBranch });
 		if (!r.pass && r.ran.length) ctx.log(`build-gate FAIL (ran: ${r.ran.join(", ")}): ${r.errors.join("; ")}`);
 		// AR-02: emit the pi session/model correlation tag to the run trace.
 		const corr = buildGateCorrelationLine(r);
