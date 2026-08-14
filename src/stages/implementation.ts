@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
 import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
@@ -501,6 +501,24 @@ function changedSinceSnapshot(cwd: string, before: Map<string, string | null>): 
 	return changed;
 }
 
+/** Restore confirmed RED test files that the GREEN implementer modified,
+ *  writing the snapshot's original content back to disk. Returns the count
+ *  actually restored (files whose snapshot content was non-null and wrote
+ *  successfully). This re-establishes the honest RED oracle so the phase can
+ *  retry the implementer WITHOUT re-running the RED phase — the RED tests are
+ *  still valid; only the implementer overstepped by editing them. Best-effort:
+ *  a write failure is skipped (the next changedSinceSnapshot re-check will
+ *  still flag an unrestored file). */
+function restoreRedTestFiles(cwd: string, snapshot: Map<string, string | null>, modified: string[]): number {
+	let restored = 0;
+	for (const path of modified) {
+		const content = snapshot.get(path);
+		if (content == null) continue;
+		try { writeFileSync(join(cwd, path), content); restored++; } catch { /* best-effort */ }
+	}
+	return restored;
+}
+
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** Hard ceiling on RED-generation tries within one implementation attempt (RC-3).
@@ -818,6 +836,11 @@ export const implementationStage: Stage = {
 			// failure. The cache is invalidated only when the GREEN attempt changes a
 			// confirmed RED test file, because that corrupts the test oracle itself.
 			let acceptedRed: AcceptedRedContext | null = null;
+			// Snapshot of the confirmed RED test files' contents (captured when RED
+			// confirms), persisted across GREEN attempts so changedSinceSnapshot can
+			// detect implementer edits to test files on EVERY retry — not only on
+			// the attempt where RED freshly ran.
+			let redTestSnapshot = new Map<string, string | null>();
 			// Phase bracketing (spec-11 Phase 3, AC-04 → SCENARIO-008/009): snapshot the
 			// git baseline BEFORE the attempts so each per-attempt `tracker.end`
 			// computes the delta from phase start; the change-gate reads the freshest
@@ -1120,8 +1143,11 @@ export const implementationStage: Stage = {
 						break;
 					}
 					acceptedRed = { status: redStatus, testFiles: [...testFiles], changedFiles: [...redChangedFiles] };
+					// Capture the confirmed RED test contents once; persisted across GREEN
+					// attempts via the hoisted redTestSnapshot so a later GREEN edit to a
+					// test file is detectable on every retry, not only this attempt.
+					if (redStatus === "red" && testFiles.length > 0) redTestSnapshot = snapshotFiles(setup.worktreePath, testFiles);
 				}
-				const redTestSnapshot = redStatus === "red" && testFiles.length > 0 ? snapshotFiles(setup.worktreePath, testFiles) : new Map<string, string | null>();
 				const redTargetsExist = Array.from(redTestSnapshot.values()).some((content) => content !== null);
 				const confirmedRedTargets = redStatus === "red" && testFiles.length > 0 && (redChangedFiles.length > 0 || redTargetsExist);
 				// Feed the previous attempt's REAL build/test errors into this attempt
@@ -1130,6 +1156,22 @@ export const implementationStage: Stage = {
 				// whether the tests are CONFIRMED-red or unverified.
 				const basePrompt = buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null);
 				const implParts: string[] = [basePrompt];
+				// Forceful, prominent retry feedback when the PRIOR attempt edited a
+				// confirmed RED test file during GREEN (a contract violation — even a
+				// comment-only edit is detected and restored). Placed FIRST so the
+				// implementer sees it before any other retry guidance.
+				if (attemptErrors.some((e) => e.startsWith("tdd-tests-modified-during-green"))) {
+					implParts.push(implementationRetrySection("STOP editing the test files — they are READ-ONLY during GREEN", {
+						phase: phaseId,
+						attempt,
+						gate: "post-red-oracle",
+						location: "confirmed RED test files",
+						observed: "the previous GREEN attempt EDITED one or more confirmed RED test files. Any change — even a comment or header — is rejected and was RESTORED from the confirmed RED snapshot, so the edit had no effect.",
+						expected: "the confirmed RED test files remain byte-for-byte unchanged; only production/source code is modified",
+						missing: [],
+						nextAction: "Do NOT create, edit, or modify ANY test file — not even a comment, import, or header. The test files are the frozen RED oracle that judges your implementation. Implement ONLY production/source code (the module under test) to make the existing tests pass. If a test looks stale or wrong, that is the RED phase's job — leave the test file untouched.",
+					}));
+				}
 				// §D: seed attempt 1 with the PRIOR convergence iteration's failure reasons
 				// so re-attempts target the real failures instead of resampling.
 				if (attempt === 1) {
@@ -1320,14 +1362,27 @@ export const implementationStage: Stage = {
 				claimedNotChanged = changeGate.claimedNotChanged;
 				hollowFiles = symbolGate.hollowFiles;
 				const tddOracleFailures: string[] = [];
-				let invalidateAcceptedRed = false;
-				if (confirmedRedTargets) {
+				// Detect GREEN-phase corruption of the confirmed RED tests on EVERY attempt
+				// (the snapshot persists alongside acceptedRed), not only when RED freshly
+				// ran. If the implementer edited a test file, RESTORE the honest RED
+				// contents and retry the implementer with forceful feedback — do NOT
+				// invalidate/re-run RED. The RED tests are valid; re-running tdd-guide
+				// would re-author the same tests and the implementer would edit them
+				// again (the prior non-converging loop). Restoring + a forceful retry
+				// converges without wasting RED re-runs.
+				if (acceptedRed) {
 					const modifiedRedTests = changedSinceSnapshot(setup.worktreePath, redTestSnapshot);
 					if (modifiedRedTests.length) {
-						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")}`);
-						invalidateAcceptedRed = true;
-						ctx.log(`Implementation ${phaseId} post-red-oracle: skipped because confirmed RED test file(s) changed during GREEN (${modifiedRedTests.join(", ")})`);
-					} else {
+						const restoredCount = restoreRedTestFiles(setup.worktreePath, redTestSnapshot, modifiedRedTests);
+						ctx.log(`Implementation ${phaseId} post-red-oracle: implementer modified confirmed RED test file(s) during GREEN — RESTORED ${restoredCount}/${modifiedRedTests.length} (${modifiedRedTests.join(", ")}); keeping confirmed RED (no re-generation).`);
+						// Re-run the oracle against the RESTORED tests so the retry feedback
+						// carries the real status (green = the edit was the only blocker;
+						// red = real assertions still need production code).
+						announceActivity("Post-RED oracle (restored)", attemptDetail(attempt));
+						const restoredStatus = runRedCheck(setup.worktreePath, acceptedRed.testFiles, redCheckOptions(ctx, phaseId));
+						ctx.log(`Implementation ${phaseId} post-red-oracle: restored tests re-checked → ${restoredStatus} (ran: ${acceptedRed.testFiles.join(",") || "n/a"})`);
+						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")} (RESTORED from confirmed RED; re-check=${restoredStatus})`);
+					} else if (confirmedRedTargets) {
 						announceActivity("Post-RED oracle", attemptDetail(attempt));
 						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId));
 						ctx.log(`Implementation ${phaseId} post-red-oracle: ${postRedStatus} (ran: ${testFiles.join(",") || "n/a"})`);
@@ -1374,13 +1429,9 @@ export const implementationStage: Stage = {
 				// accepted RED so the next attempt re-runs tdd-guide, which now receives the
 				// exact requireTests names via buildTddPrompt and can author them.
 				const missingTestDeliverables = missingDeliverables.filter((e) => /^missing (test|scenario):/i.test(e));
-				if (missingTestDeliverables.length && acceptedRed && !invalidateAcceptedRed) {
+				if (missingTestDeliverables.length && acceptedRed) {
 					acceptedRed = null;
 					ctx.log(`Implementation ${phaseId} routing missing-test deliverable(s) back to RED regeneration (implementer cannot add RED tests): ${missingTestDeliverables.join("; ")}`);
-				}
-				if (invalidateAcceptedRed) {
-					acceptedRed = null;
-					ctx.log(`Implementation ${phaseId} RED cache invalidated: confirmed RED test file(s) changed during GREEN`);
 				}
 				const progressSignature: ProgressSignature = {
 					failure: failureSignature(failureReasons),

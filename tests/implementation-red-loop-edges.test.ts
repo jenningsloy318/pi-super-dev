@@ -747,8 +747,8 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 		}
 	});
 
-	it("invalidates the accepted RED cache and re-runs tdd-guide after a GREEN attempt edits RED tests", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "sd-red-cache-invalidate-"));
+	it("RESTORES (does not invalidate) the confirmed RED tests when a GREEN attempt edits them, and reuses the accepted RED next attempt", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-red-cache-restore-"));
 		try {
 			execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
 			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
@@ -756,25 +756,32 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 			writeFileSync(join(dir, "README.md"), "baseline\n");
 			execFileSync("git", ["add", "."], { cwd: dir });
 			execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+			// redCheck #1: confirm RED on attempt 1. #2: post-restore re-check on attempt 1.
+			// #3: attempt 2 post-RED oracle (accepted RED reused → redStatus/testFiles
+			// restored from acceptedRed → confirmedRedTargets true → else-branch runs).
 			redCheck
 				.mockImplementationOnce(() => "red")
 				.mockImplementationOnce(() => "red")
 				.mockImplementationOnce(() => "green");
 			const state = mkState();
 			state.setup!.worktreePath = dir;
-			state.setup!.specDirectory = join(dir, "docs", "specifications", "cache-invalidate");
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "cache-restore");
 			const testPath = "tests/red.test.ts";
+			const honest = "it('forces real behavior', () => { expect(1).toBe(2); });\n";
+			const modified = "it('forces real behavior', () => {});\n";
 			const { ctx, tddCalls, implCalls, logs } = mkCtx({
-				tddControls: [{ testFiles: [testPath] }, { testFiles: [testPath] }],
+				tddControls: [{ testFiles: [testPath] }],
 				onTddCall: () => {
 					mkdirSync(join(dir, "tests"), { recursive: true });
-					writeFileSync(join(dir, testPath), "it('forces real behavior', () => { expect(1).toBe(2); });\n");
+					writeFileSync(join(dir, testPath), honest);
 				},
 				onImplCall: (_call, index) => {
 					if (index === 1) {
-						writeFileSync(join(dir, testPath), "it('forces real behavior', () => {});\n");
+						// attempt 1: implementer corrupts the confirmed RED test
+						writeFileSync(join(dir, testPath), modified);
 						return;
 					}
+					// attempt 2: implementer behaves (does not touch the test)
 					mkdirSync(join(dir, "src"), { recursive: true });
 					writeFileSync(join(dir, "src", "impl.ts"), "export const implemented = true;\n");
 				},
@@ -782,11 +789,15 @@ describe("P3 edges — confirmed RED targets must become green after implementat
 
 			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
 
-			expect(tddCalls).toHaveLength(2);
+			// NEW contract: the test edit is RESTORED and the confirmed RED is KEPT —
+			// tdd-guide is NOT re-run (length 1, not 2), and the loop still converges.
+			expect(tddCalls).toHaveLength(1);
 			expect(implCalls).toHaveLength(2);
 			expect(res.allGreen).toBe(true);
-			expect(logs.some((l) => /RED cache invalidated/i.test(l))).toBe(true);
-			expect(logs.some((l) => /reusing accepted RED for attempt 2/i.test(l))).toBe(false);
+			expect(logs.some((l) => /RESTORED/.test(l))).toBe(true);
+			expect(logs.some((l) => /keeping confirmed RED/i.test(l))).toBe(true);
+			expect(logs.some((l) => /reusing accepted RED for attempt 2/i.test(l))).toBe(true);
+			expect(logs.some((l) => /RED cache invalidated/i.test(l))).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
