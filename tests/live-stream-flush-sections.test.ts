@@ -244,7 +244,7 @@ describe("SCENARIO-011: the running stage honors RUNNING_TAIL_LINES (15)", () =>
 // ─── SCENARIO-012: COMPLETED stages render COMPACT ────────────────────────
 
 describe("SCENARIO-012: completed stages render COMPACT", () => {
-	it("shows at most COMPLETED_TAIL_LINES (3) tail lines for a completed stage", () => {
+	it("drops ALL ordinary chatter from a completed stage (header + sticky lifecycle only — titles stay pinned)", () => {
 		const h0 = bodyHolder();
 		const h = createLiveStream({ mode: "tui", theme: mockTheme(), onUpdate: h0.onUpdate });
 		// An earlier completed stage (status ok) with many lines.
@@ -257,7 +257,10 @@ describe("SCENARIO-012: completed stages render COMPACT", () => {
 		h.flush();
 
 		const shown = markers.filter((m) => h0.body.includes(m)).length;
-		expect(shown).toBeLessThanOrEqual(3);
+		// PINNED TITLES: completed sections render HEADER + sticky lifecycle ONLY —
+		// ordinary chatter is dropped entirely (0 of the 10 markers) so every
+		// stage title stays visible instead of being flushed off the viewport.
+		expect(shown).toBe(0);
 	});
 
 	it("keeps sticky run metadata and stage/phase lifecycle lines visible outside the completed tail cap", () => {
@@ -297,7 +300,7 @@ describe("SCENARIO-012: completed stages render COMPACT", () => {
 		expect(body).toContain("Implementation phase-01 RED runner diagnostic");
 		expect(body).toContain("Phase start: ↳ Phase 1/1: Core");
 		expect(body).toContain("Phase end: ↳ Phase 1/1: Core status=ok");
-		expect(ordinary.filter((m) => body.includes(m))).toHaveLength(3);
+		expect(ordinary.filter((m) => body.includes(m))).toHaveLength(0);
 	});
 
 	it("renders a completed stage with zero visible lines as header-only (still emits its header)", () => {
@@ -451,20 +454,25 @@ describe("AC-03 edge cases: aggregate cap, empty transcript, live buffer, per-se
 
 		const ls = lines(h0.body);
 		const trimLines = ls.filter((l) => l.toLowerCase().includes("trim"));
-		expect(trimLines.length, "one trim notice per trimmed section").toBeGreaterThanOrEqual(2);
+		// PINNED TITLES: the COMPLETED research section renders header + sticky
+		// lifecycle only (no ordinary tail, NO trim notice). Only the RUNNING
+		// impl section (20 > RUNNING_TAIL_LINES) still emits a per-stage trim
+		// notice INSIDE its own section (not a single global preamble).
+		expect(trimLines.length, "trim notice only in the trimmed RUNNING section").toBeGreaterThanOrEqual(1);
 
-		// The research-stage trim notice must sit BETWEEN its own header and the
-		// impl-stage header (i.e. INSIDE the research section), proving per-stage
-		// placement rather than a single global preamble.
 		const researchHeader = ls.findIndex((l) => l.includes("ResearchA"));
 		const implHeader = ls.findIndex((l) => l.includes("ImplB"));
 		expect(researchHeader).toBeGreaterThanOrEqual(0);
 		expect(implHeader).toBeGreaterThan(researchHeader);
+		// The completed research section has NO trim notice between its header and
+		// the impl header (ordinary chatter dropped, not trimmed-and-noticed).
 		const researchTrim = ls.findIndex(
 			(l, i) => i > researchHeader && i < implHeader && l.toLowerCase().includes("trim"),
 		);
-		expect(researchTrim).toBeGreaterThan(researchHeader);
-		expect(researchTrim).toBeLessThan(implHeader);
+		expect(researchTrim, "completed section has no trim notice").toBe(-1);
+		// The running impl section's trim notice sits AFTER its own header.
+		const implTrim = ls.findIndex((l, i) => i > implHeader && l.toLowerCase().includes("trim"));
+		expect(implTrim).toBeGreaterThan(implHeader);
 	});
 
 	it("does not prepend a stray leading blank line before the first section header", () => {
@@ -551,5 +559,66 @@ describe("sticky stage headers + redundant-banner suppression", () => {
 		// The live section keeps its scrolling body; a collapsed old stage does not.
 		expect(body).toContain("live-l39");
 		expect(body).not.toContain("s0-l39-sticky");
+	});
+});
+
+// ─── Pinned stage titles + END-glyph on completed headers ────────────────────
+// Completed sections render HEADER + sticky lifecycle ONLY (ordinary chatter
+// dropped) so EVERY stage title — and its Stage/Phase start+end markers — stays
+// visible instead of being flushed off the top of the viewport by a tall body.
+// The completed header also carries a status glyph (✓/✗) as a visible END
+// marker, symmetric with the running header's animated START glyph.
+describe("pinned stage titles + END-glyph on completed headers", () => {
+	it("keeps EVERY stage title visible across many completed stages + a live tail (ordinary chatter dropped)", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate, showTimestamps: true });
+		// 20 completed stages, each with ordinary noise + a Stage start/end lifecycle line.
+		for (let s = 0; s < 20; s++) {
+			h.sink.stage({ id: `stage-${s}`, label: `Stage ${s} — Work`, status: "running" });
+			h.sink.log(`Stage start: Stage ${s} — Work at 2026-08-06T22:00:00.000+08:00`);
+			for (let i = 0; i < 12; i++) h.sink.log(`noise-${s}-${i}`);
+			h.sink.log(`Stage end: Stage ${s} — Work status=ok at 2026-08-06T22:01:00.000+08:00 duration=1m 00s`);
+			h.sink.stage({ id: `stage-${s}`, label: `Stage ${s} — Work`, status: "ok" });
+		}
+		// A final live stage carrying the scrolling tail.
+		h.sink.stage({ id: "live", label: "Stage 20 — Live", status: "running" });
+		for (let i = 0; i < 30; i++) h.sink.log(`live-line-${i}`);
+		h.flush();
+		const body = h0.body;
+		// EVERY completed stage title is pinned (visible), not flushed away.
+		for (let s = 0; s < 20; s++) expect(body).toContain(`Stage ${s} — Work`);
+		expect(body).toContain("Stage 20 — Live");
+		// Every stage's sticky start+end lifecycle markers survive (the sticky lines
+		// the user asked to keep pinned), while ordinary noise is dropped.
+		expect(body).toContain("Stage start: Stage 0 — Work");
+		expect(body).toContain("Stage end: Stage 0 — Work status=ok");
+		expect(body).toContain("Stage start: Stage 19 — Work");
+		expect(body).toContain("Stage end: Stage 19 — Work status=ok");
+		expect(body).not.toContain("noise-0-0");
+		expect(body).not.toContain("noise-19-11");
+		// The live stage keeps its scrolling recent tail.
+		expect(body).toContain("live-line-29");
+	});
+
+	it("a completed TUI header carries the ✓ END-glyph (ok) and ✗ (failed)", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "tui", theme: mockTheme(), onUpdate: h0.onUpdate });
+		h.sink.stage({ id: "okstage", label: "OkDone", status: "ok" });
+		h.sink.log("ok-ordinary-noise");
+		h.sink.stage({ id: "failstage", label: "FailDone", status: "failed" });
+		h.sink.log("fail-ordinary-noise");
+		h.sink.stage({ id: "live", label: "LiveNow", status: "running" });
+		h.sink.log("live-now");
+		h.flush();
+		const body = h0.body;
+		// The completed ok header carries the ✓ success glyph as its END marker...
+		expect(body).toContain("✓");
+		expect(body).toContain("OkDone");
+		// ...and the failed header carries ✗.
+		expect(body).toContain("✗");
+		expect(body).toContain("FailDone");
+		// Ordinary chatter from the completed stages is dropped (sticky-only).
+		expect(body).not.toContain("ok-ordinary-noise");
+		expect(body).not.toContain("fail-ordinary-noise");
 	});
 });

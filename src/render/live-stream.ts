@@ -28,7 +28,7 @@
  * (no-ANSI-leak + TUI mirror).
  */
 
-import { runningGlyph, type DashboardTheme } from "./dashboard.js";
+import { runningGlyph, statusGlyph, type DashboardTheme } from "./dashboard.js";
 import { classifyLine, themeLine, statusFgToken } from "./stream-theme.js";
 import type { LineKind } from "./stream-theme.js";
 import { groupByStage, type StageGroup } from "./stage-grouping.js";
@@ -126,9 +126,11 @@ const DEFAULT_TAIL_SNAPSHOT = 50;
  */
 export const RUNNING_TAIL_LINES = 15;
 /**
- * Max tail lines shown for a COMPLETED (ok/failed/skipped) stage's section —
- * completed work renders COMPACT so the live view stays scannable (header +
- * ≤ this many tail lines, or header-only when the stage has no lines).
+ * Historical per-completed-stage ordinary-tail budget. SUPERSEDED: completed
+ * sections now render HEADER + STICKY LIFECYCLE lines only (the title + its
+ * start/end markers stay pinned; ordinary chatter is dropped to keep the body
+ * short — see `flushSectionStack`). Kept exported for backwards compatibility
+ * and the constant-export test contract.
  */
 export const COMPLETED_TAIL_LINES = 3;
 /**
@@ -269,7 +271,10 @@ const renderSectionHeader = (
 		const glyph = runningGlyph(Math.floor(Date.now() / 100));
 		return fg(token, `${STATUS_BAR}${glyph} ${bold(label)}`);
 	}
-	return fg(token, `${STATUS_BAR} ${label}`);
+	// Completed header carries the status glyph (✓/✗/↷/!) as a visible END
+	// marker on the pinned title line (symmetric with the running header's
+	// animated glyph = START marker).
+	return fg(token, `${STATUS_BAR}${statusGlyph(status, theme)} ${label}`);
 };
 
 /**
@@ -491,15 +496,24 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 			// ≤ COMPLETED_TAIL_LINES tail, or header-only when empty).
 			const isRunning =
 				group.status === undefined || group.status === "running";
-			const cap = isRunning ? RUNNING_TAIL_LINES : COMPLETED_TAIL_LINES;
-			// Per-stage trim notice appears INSIDE its own section (not a single
-			// global preamble) — SCENARIO-011. Sticky lifecycle/launch diagnostics
-			// survive outside the ordinary-line cap.
 			// Drop stage-level `▶ <label>` banners that duplicate this header (and
 			// would otherwise strand in the previous section once the "(attempt N)"
 			// suffix breaks the phase→stage re-tag). Sub-phase banners are preserved.
 			const dedupedLines = group.lines.filter((line) => !isRedundantStageBanner(line, knownStageBaseLabels));
-			const sectionLines = compactSectionLines(dedupedLines, cap, group.stageLabel);
+			// PINNED TITLES: a COMPLETED stage renders its HEADER + STICKY LIFECYCLE
+			// lines only (Stage/Phase start+end, launch diagnostics, RED-gate
+			// evidence, Implementation phase banners) — ordinary chatter is DROPPED
+			// so the body stays short enough that EVERY stage title (and its
+			// start/end markers) stays visible instead of scrolling off the top of
+			// the viewport. The whole-run body is re-rendered every flush and pi
+			// follows the live tail, so a tall body pushes older titles off-screen;
+			// shrinking completed sections to title + lifecycle pins them all.
+			// Ordinary detail is retained in the on-disk run log + final result.
+			// The RUNNING stage still shows its generous recent tail
+			// (RUNNING_TAIL_LINES) with a per-stage trim notice.
+			const sectionLines = isRunning
+				? compactSectionLines(dedupedLines, RUNNING_TAIL_LINES, group.stageLabel)
+				: dedupedLines.filter((line) => isStickySectionLine(line) || isImplementationActivityLine(line));
 			// Each line is themed per-kind (TUI) or raw (non-TUI) and indented
 			// TWO spaces under its header (SCENARIO-010).
 			for (const line of sectionLines) {
