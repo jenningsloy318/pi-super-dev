@@ -15,7 +15,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
@@ -681,7 +681,41 @@ export const reviewStep = parallel(
 			const sources: Record<string, unknown> = { "code-review": s.codeReview ?? {}, "adversarial-review": s.adversarialReview ?? {} };
 			const tr = s.testsReview as Record<string, unknown> | undefined;
 			if (tr && Object.keys(tr).length > 0) sources["tests-review"] = tr;
-			return (await ctx.helper({ name: "merge-review-verdicts", sources })).value;
+			const merged = (await ctx.helper({ name: "merge-review-verdicts", sources })).value as {
+				verdict: string;
+				findings: unknown[];
+				deferredFindings: Array<Record<string, unknown>>;
+				dimensionsCovered?: string[];
+			};
+			// R-5: deterministic finding verification (cheap subset of the
+			// verify-before-fix pattern): a fix-now finding citing a `file` that does
+			// not exist in the worktree cannot be acted on by the implementer — demote
+			// it to the ledger with the reason instead of sending the fixer hunting a
+			// fabricated path. Findings WITHOUT a file field are untouched (behavior
+			// findings are legitimate). NEVER throws; on any check error the finding
+			// stays actionable (fail-open toward the fixer, never toward silence).
+			try {
+				const wt = setupOf(s).worktreePath;
+				const fixNow: unknown[] = [];
+				const deferred = [...(merged.deferredFindings ?? [])];
+				for (const f of merged.findings ?? []) {
+					const o = (f ?? {}) as Record<string, unknown>;
+					const rawFile = String(o.file ?? "").trim();
+					// Authoritative check is the WORKTREE only (plus absolute paths, which
+					// join() passes through). NEVER check the process cwd — the pipeline
+					// host's own source tree could contain a same-named relative path and
+					// false-verify a fabricated location.
+					const rel = rawFile.replace(/^\.\//, "");
+					if (rel && !existsSync(join(wt, rel))) {
+						deferred.push({ ...o, deferralReason: "unverifiable location (file does not exist)" });
+					} else {
+						fixNow.push(f);
+					}
+				}
+				return { ...merged, findings: fixNow, deferredFindings: deferred };
+			} catch {
+				return merged;
+			}
 		},
 	},
 );

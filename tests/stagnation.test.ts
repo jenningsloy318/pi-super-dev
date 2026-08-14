@@ -47,6 +47,8 @@ describe("reviewStageNode terminal re-review", () => {
 	it("re-reviews after a stagnation break so stale pre-fix findings do not block merge", async () => {
 		const root = mkdtempSync(join(tmpdir(), "sd-review-stale-"));
 		try {
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "a.ts"), "export const a = 1;\n");
 			const specDirectory = join(root, "docs", "specifications", "01-review") + "/";
 			mkdirSync(specDirectory, { recursive: true });
 			writeFileSync(join(specDirectory, "06-specification.md"), "# Specification\n");
@@ -183,6 +185,10 @@ describe("R-1 fix routing through the full review loop", () => {
 	it("advisory-only rounds never spawn the implementer; blocking findings do", async () => {
 		const root = mkdtempSync(join(tmpdir(), "sd-review-r1-"));
 		try {
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "a.ts"), "export const a = 1;\n");
+			writeFileSync(join(root, "src", "b.ts"), "export const b = 1;\n");
+			writeFileSync(join(root, "src", "c.ts"), "export const c = 1;\n");
 			const specDirectory = join(root, "docs", "specifications", "01-r1") + "/";
 			mkdirSync(specDirectory, { recursive: true });
 			writeFileSync(join(specDirectory, "06-specification.md"), "# Specification\n");
@@ -281,6 +287,8 @@ describe("R-2 tests/validation third review angle", () => {
 	it("third reviewer runs only when the spec declares test deliverables and joins the verdict", async () => {
 		const root = mkdtempSync(join(tmpdir(), "sd-review-r2-"));
 		try {
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "a.test.ts"), "import { it } from \"vitest\";\nit(\"placeholder\", () => {});\n");
 			const specDirectory = join(root, "docs", "specifications", "01-r2") + "/";
 			mkdirSync(specDirectory, { recursive: true });
 			writeFileSync(join(specDirectory, "06-specification.md"), "# Specification\n");
@@ -401,6 +409,66 @@ describe("R-2 third reviewer skip path", () => {
 			expect(agentIds).not.toContain("pipeline.verify.tests-review");
 			expect((state.review as { verdict?: string }).verdict).toBe("Approved");
 			expect((state as { testsReview?: unknown }).testsReview).toBeUndefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("R-5 finding location verification", () => {
+	it("demotes fix-now findings citing nonexistent files to the ledger", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sd-review-r5-"));
+		try {
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "real.ts"), "export const x = 1;\n");
+			const specDirectory = join(root, "docs", "specifications", "01-r5") + "/";
+			mkdirSync(specDirectory, { recursive: true });
+			writeFileSync(join(specDirectory, "06-specification.md"), "# Specification\n");
+			const state: PipelineState = {
+				setup: {
+					worktreePath: root,
+					specDirectory,
+					defaultBranch: "main",
+					language: "frontend",
+					isWebUi: true,
+					specIdentifier: "01-r5",
+					worktreeCreated: false,
+					initializedRepo: false,
+				},
+				classify: { taskType: "feature", uiScope: "ui+arch", language: "frontend", isWebUi: true },
+				spec: { specificationPath: join(specDirectory, "06-specification.md") },
+				implementation: { phasesCompleted: 1, totalPhases: 1, allGreen: true },
+			};
+			const ctx: StageContext = {
+				task: "implement feature",
+				options: {},
+				state,
+				budget: { check: () => true, spent: () => true, count: 0 },
+				log: () => {},
+				phase: () => {},
+				events: new EventEmitter(),
+				results: [],
+				helper: runHelper,
+				parallel: async () => [],
+				agent: async (call: AgentCall) => {
+					if (call.agent === "code-reviewer") {
+						return { text: "", control: { title: "Review", date: "2026-08-15", verdict: "Changes Requested", summary: "two highs", findings: [
+							{ id: "OK-1", severity: "high", title: "Real file issue", detail: "d", file: "src/real.ts", blocking: true },
+							{ id: "GHOST-1", severity: "high", title: "Fabricated path", detail: "d", file: "src/does-not-exist.ts", blocking: true },
+						] } };
+					}
+					if (call.agent === "adversarial-reviewer") {
+						return { text: "", control: { title: "Adversarial", date: "2026-08-15", verdict: "PASS", summary: "ok", findings: [] } };
+					}
+					return { text: "", control: {} };
+				},
+			};
+			const { reviewStep } = await import("../src/stages/verify.ts");
+			await reviewStep.run(state, ctx);
+			const review = state.review as { findings?: Array<{ id?: string }>; deferredFindings?: Array<{ id?: string; deferralReason?: string }> };
+			expect(review?.findings?.map((f) => f.id)).toEqual(["OK-1"]);
+			const ghost = review?.deferredFindings?.find((f) => f.id === "GHOST-1");
+			expect(ghost?.deferralReason).toContain("unverifiable location");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
