@@ -151,6 +151,55 @@ export const mergeWriter: Stage = writerTask({
 	buildPrompt: (state) => P.buildMergePrompt(S(state)),
 });
 
+/** A-2 (audit): deterministic merge confirmation. The merge agent's `merged`
+ *  self-report is never trusted on its own — this stage re-derives the fact
+ *  from git: the feature branch head (the worktree's checked-out branch) must
+ *  be an ancestor of the default branch head, and a reported commitSha must
+ *  exist. An unconfirmed merge is rewritten to merged:false with the reason,
+ *  so runWorkflow reports partial — never success — until git confirms. */
+export const mergeVerifyTask: Stage = {
+	id: "merge-verify",
+	label: "Stage 14B — Merge Verification",
+	async run(state, ctx) {
+		const merge = state.merge as { merged?: boolean; commitSha?: string; mergeCommand?: string; summary?: string } | undefined;
+		if (!merge || merge.merged !== true) return { status: "ok" }; // nothing claimed — mergeNotConfirmed already covers it
+		const setup = state.setup;
+		if (!setup?.worktreePath || !setup.defaultBranch) {
+			state.merge = { ...merge, merged: false, verification: "FAILED: setup context missing — cannot confirm the merge" };
+			ctx.log(`Merge verification FAILED: setup context missing (worktreePath/defaultBranch) — refusing to trust the merge self-report`);
+			return { status: "ok" };
+		}
+		const { execFileSync } = await import("node:child_process");
+		const gitOk = (args: string[]): string | null => {
+			try { return execFileSync("git", args, { cwd: setup.worktreePath, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 15_000 }).trim(); }
+			catch { return null; }
+		};
+		const gitBool = (args: string[]): boolean => {
+			try { execFileSync("git", args, { cwd: setup.worktreePath, encoding: "utf-8", stdio: "ignore", timeout: 15_000 }); return true; }
+			catch { return false; }
+		};
+		const featureBranch = gitOk(["branch", "--show-current"]);
+		const reasons: string[] = [];
+		if (!featureBranch) reasons.push("could not determine the worktree's current branch (detached HEAD?)");
+		const defHead = gitOk(["rev-parse", "--verify", `refs/heads/${setup.defaultBranch}`]);
+		if (!defHead) reasons.push(`default branch ref "${setup.defaultBranch}" could not be resolved`);
+		const featureHead = featureBranch ? gitOk(["rev-parse", "--verify", `refs/heads/${featureBranch}`]) : null;
+		if (featureBranch && !featureHead) reasons.push(`feature branch ref "${featureBranch}" could not be resolved`);
+		const ancestor = featureHead && defHead ? gitBool(["merge-base", "--is-ancestor", featureHead, defHead]) : false;
+		if (featureHead && defHead && !ancestor) reasons.push(`feature head ${featureHead.slice(0, 12)} is NOT an ancestor of ${setup.defaultBranch} head ${defHead.slice(0, 12)} (merge never landed, or landed in the wrong direction)`);
+		const reportedSha = String(merge.commitSha ?? "").trim();
+		if (reportedSha && !gitOk(["rev-parse", "--verify", `${reportedSha}^{commit}`])) reasons.push(`reported commitSha ${reportedSha.slice(0, 12)} does not exist`);
+		if (reasons.length === 0) {
+			state.merge = { ...merge, merged: true, verification: `git-confirmed: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains ${featureBranch}` };
+			ctx.log(`Merge verification PASSED: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains feature head (${featureHead!.slice(0, 12)})`);
+		} else {
+			state.merge = { ...merge, merged: false, verification: `FAILED: ${reasons.join("; ")}` };
+			ctx.log(`Merge verification FAILED: ${reasons.join("; ")} — reporting unmerged (run status will be partial, not success)`);
+		}
+		return { status: "ok" };
+	},
+};
+
 /** Classify the task for pipeline routing (Stage 2A). Uses an LLM classifier
  *  (intent-aware) instead of the old keyword regex, which misread compound tasks
  *  ("add upload page with error handling" → bug/none because it matched "error").

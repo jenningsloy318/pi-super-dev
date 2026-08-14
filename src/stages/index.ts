@@ -23,7 +23,7 @@
 import { task, sequence, branch, loop } from "../nodes.ts";
 import type { ControlObj, PipelineState, Stage, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
-import { classifyStage, cleanupTask, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter } from "./writers.ts";
+import { classifyStage, cleanupTask, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter, mergeVerifyTask } from "./writers.ts";
 import { designStage } from "./design.ts";
 import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
@@ -168,7 +168,10 @@ const pipeline = sequence(
 				task(cleanupTask),
 				// Conditional branch: merge only if cleanup found no sensitive data AND
 				// the pre-merge build gate did not fail.
-				branch(canMerge, { yes: task(mergeWriter) }),
+				// A-2: the merge self-report is gated by a deterministic git
+				// verification stage (feature head must be an ancestor of the default
+				// head) before the run may claim the merge happened.
+				branch(canMerge, { yes: sequence([task(mergeWriter), task(mergeVerifyTask)]) }),
 			]),
 		}),
 	],
@@ -188,6 +191,7 @@ export { setupStage } from "./setup.ts";
 export {
 	classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter,
 	debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter,
+	mergeVerifyTask,
 	requirementsReviewWriter, bddReviewWriter, designReviewWriter,
 } from "./writers.ts";
 export { designStage } from "./design.ts";
