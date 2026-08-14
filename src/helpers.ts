@@ -5,6 +5,7 @@
  */
 
 import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
+import { spawnSync } from "node:child_process";
 import { reviewHasBlockingFinding, reviewHasFindings, reviewHasHighSeverityFinding } from "./review-findings.ts";
 import {
 	readSpecDoc,
@@ -268,6 +269,42 @@ const LANG_MARKERS: Record<string, string[]> = {
 	rust: ["Cargo.toml", "Cargo.lock"], go: ["go.mod", "go.sum"], frontend: ["package.json", "tsconfig.json"], python: ["pyproject.toml", "setup.py", "requirements.txt"],
 };
 
+/** A-3: files that would actually be carried into the merge — committed
+ *  changes vs the default-branch merge-base, plus staged and tracked
+ *  working-tree modifications. Untracked files never qualify (git ignores them
+ *  at merge time), so pipeline-copied env files cannot block. Returns null
+ *  when git is unavailable / not a repo so the caller can fall back to the
+ *  legacy root scan. NEVER throws. */
+function gitCarriedFiles(cwd: string, defaultBranch?: string): string[] | null {
+	const run = (args: string[]): string[] | null => {
+		try {
+			const r = spawnSync("git", args, { cwd, encoding: "utf-8", timeout: 15_000 });
+			if (r.error || r.status !== 0) return null;
+			return String(r.stdout).split("\n").map((l: string) => l.trim()).filter(Boolean);
+		} catch { return null; }
+	};
+	const tracked = run(["ls-files"]);
+	if (tracked === null) return null;
+	const files = new Set<string>();
+	let baselineWorked = false;
+	if (defaultBranch) {
+		const base = run(["merge-base", "HEAD", defaultBranch]);
+		const diff = base && base[0] ? run(["diff", "--name-only", "--diff-filter=ACMR", `${base[0]}...HEAD`]) : null;
+		if (diff) { baselineWorked = true; for (const f of diff) files.add(f); }
+	}
+	if (!baselineWorked) {
+		// No usable baseline (missing default ref / orphan history): the
+		// conservative superset is the full tracked list — still excludes
+		// untracked files, so copied env files never block.
+		for (const f of tracked) files.add(f);
+	}
+	for (const args of [["diff", "--name-only", "--cached", "--diff-filter=ACMR"], ["diff", "--name-only", "--diff-filter=ACMR"]]) {
+		const d = run(args);
+		if (d) for (const f of d) files.add(f);
+	}
+	return [...files];
+}
+
 async function cleanup(_s: Record<string, unknown>, context?: Record<string, unknown>): Promise<HelperResult> {
 	const cwd = context?.cwd as string | undefined;
 	const worktreeCreated = context?.worktreeCreated === true;
@@ -319,8 +356,22 @@ async function cleanup(_s: Record<string, unknown>, context?: Record<string, unk
 		try { for (const e of await readdir(cwd, { withFileTypes: true })) if (e.isDirectory() && BUILD_DIRS.has(e.name)) directoriesRemoved.push(`${e.name} (skipped — in-place run)`); } catch { /* unreadable */ }
 	}
 
+	// A-3 (audit): scan the GIT-CARRIED view — only content that would actually
+	// reach the merge (committed changes vs the default-branch baseline, staged
+	// entries, tracked working-tree modifications). Untracked worktree files —
+	// notably the .env files setup itself copies into worktrees so integration
+	// tests can authenticate — are never merged and must not block. Falls back
+	// to the legacy root readdir scan only when git is unusable (non-repo dir).
 	const sensitiveDataFindings: string[] = [];
-	try { for (const e of await readdir(cwd)) for (const re of SENSITIVE_RE) if (re.test(e)) { sensitiveDataFindings.push(`Sensitive file detected: ${e}`); break; } } catch { /* unreadable */ }
+	const carried = gitCarriedFiles(cwd, context?.defaultBranch as string | undefined);
+	if (carried !== null) {
+		for (const rel of carried) {
+			const base = rel.split("/").pop() ?? rel;
+			for (const re of SENSITIVE_RE) if (re.test(base)) { sensitiveDataFindings.push(`Sensitive file in merge set: ${rel}`); break; }
+		}
+	} else {
+		try { for (const e of await readdir(cwd)) for (const re of SENSITIVE_RE) if (re.test(e)) { sensitiveDataFindings.push(`Sensitive file detected: ${e}`); break; } } catch { /* unreadable */ }
+	}
 	const blocked = sensitiveDataFindings.length > 0;
 	const mode = worktreeCreated ? "worktree cleaned" : "in-place — detection only (no removal)";
 	const cleanSummary = worktreeCreated ? `${commandsRun.length} command(s), ${directoriesRemoved.length} dir(s) removed` : `${directoriesRemoved.length} dir(s) detected (not removed)`;

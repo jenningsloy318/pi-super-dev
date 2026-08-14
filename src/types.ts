@@ -175,6 +175,10 @@ export interface SetupControl {
 	worktreeCreated: boolean;
 	/** True when setup had to `git init` the directory first. */
 	initializedRepo: boolean;
+	/** A-3 observability: untracked env files setup copied into a created
+	 *  worktree (integration-test credentials). Logging-only — these files are
+	 *  untracked, never merged, and excluded from the sensitive-data scan. */
+	copiedEnvFiles?: string[];
 }
 
 export interface Classification {

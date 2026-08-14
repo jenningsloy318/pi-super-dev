@@ -531,6 +531,9 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		state.cleanup !== undefined &&
 		(state.cleanup as { blocked?: boolean }).blocked !== true;
 	const mergeNotConfirmed = mergeRequired && (state.merge as { merged?: boolean } | undefined)?.merged !== true;
+	// A-3 status honesty: a cleanup-blocked run skipped the merge — that is never
+	// a clean success, whatever else passed. Surface as partial with the reason.
+	const cleanupBlocked = (state.cleanup as { blocked?: boolean } | undefined)?.blocked === true;
 
 	let status: RunStatus;
 	if (aborted || phases === 0) {
@@ -541,7 +544,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		// rather than being reported as failed. Fine while super-dev is the only
 		// consumer and every run is expected to implement.
 		status = "failed";
-	} else if (green && reviewRan && approved && !hardGateFailed && !mergeNotConfirmed && failedStages.length === 0) {
+	} else if (green && reviewRan && approved && !hardGateFailed && !mergeNotConfirmed && !cleanupBlocked && failedStages.length === 0) {
 		status = "success";
 	} else {
 		status = "partial";
@@ -558,7 +561,9 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 			const total = phases;
 			const done = impl?.phasesCompleted ?? 0;
 			const reason = green
-				? "review/build/integration/merge or a stage did not fully pass"
+				? cleanupBlocked
+					? "cleanup blocked the merge — sensitive file(s) detected in the merge set (see state.cleanup.sensitiveDataFindings)"
+					: "review/build/integration/merge or a stage did not fully pass"
 				: `implementation finished ${done}/${total} phase(s)${impl?.convergenceBlocked ? " (convergence blocked — no-progress)" : ""}`;
 			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.`);
 		} else {

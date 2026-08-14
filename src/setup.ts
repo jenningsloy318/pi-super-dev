@@ -259,7 +259,8 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	// Git worktree creation does not copy ignored files. Copy .env files from the
 	// main checkout recursively before loading root .env so app/test startup in
 	// the isolated worktree has the same local configuration as the source repo.
-	if (worktreeCreated) copyEnvFilesToWorktree(cwd, worktreePath);
+	let copiedEnvFiles: string[] = [];
+	if (worktreeCreated) copiedEnvFiles = copyEnvFilesToWorktree(cwd, worktreePath);
 	// Load .env (TEST_API_KEY etc.) from the worktree so spawned agents inherit it.
 	loadDotEnv(worktreePath);
 
@@ -273,5 +274,5 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 		clearUserNotes(specDirectory);
 	}
 
-	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo };
+	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo, copiedEnvFiles };
 }

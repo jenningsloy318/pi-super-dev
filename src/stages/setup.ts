@@ -25,6 +25,12 @@ export const setupStage: Stage = {
 			} catch { /* fallback below */ }
 		}
 		const setup = runSetup(ctx.task, { cwd: ctx.options.cwd, skipWorktree: ctx.options.skipWorktree, slug, resumeSpecIdentifier: resumeId });
+		// A-3 observability (logging-only): make it visible WHY an untracked .env
+		// in the worktree does not block the merge — setup itself copied it for
+		// integration-test credentials; the sensitive scan is git-carried-only.
+		if (setup.copiedEnvFiles && setup.copiedEnvFiles.length > 0) {
+			ctx.log(`Setup copied ${setup.copiedEnvFiles.length} untracked env file(s) into the worktree for integration testing (never merged; excluded from the sensitive-data scan): ${setup.copiedEnvFiles.join(", ")}`);
+		}
 		// spec-11 AC-05 / SCENARIO-010 (review finding CR-01): ACTUALLY install the
 		// per-run ChangeTracker singleton the instant the setup's `worktreePath`
 		// + `specDirectory` are finalized — right here, before any producing stage
