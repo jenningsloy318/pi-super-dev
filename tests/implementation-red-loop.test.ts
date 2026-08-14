@@ -35,7 +35,7 @@
  * No `pi` subprocess, no network, no LLM, no disk.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type {
 	AgentCall,
@@ -107,6 +107,7 @@ interface CapturedCalls {
 	tdd: AgentCall[];
 	impl: AgentCall[];
 	orch: AgentCall[];
+	judge: AgentCall[];
 	helper: number;
 	logs: string[];
 }
@@ -128,14 +129,18 @@ function mkCtx(opts: {
 	implResults?: Array<{ text: string; control: ControlObj | null }>;
 	/** Escalate callback (captures the EscalationFailure) for no-progress tests. */
 	escalate?: RunOptions["escalate"];
+	/** Scripted judge controls (J9-a/J9-b), consumed in order per judge call. */
+	judgeResults?: Array<Record<string, unknown> | null>;
 } = {}): { ctx: StageContext; calls: CapturedCalls } {
 	const calls: CapturedCalls = {
 		tdd: [],
 		impl: [],
 		orch: [],
+		judge: [],
 		helper: 0,
 		logs: [],
 	};
+	const judgeQ = [...(opts.judgeResults ?? [])];
 	const reviewQ = [...(opts.reviewVerdicts ?? [])];
 	const contradictionQ = [...(opts.reviewContradictions ?? [])];
 	const ctx: StageContext = {
@@ -156,6 +161,11 @@ function mkCtx(opts: {
 				const scripted = opts.implResults?.shift();
 				if (scripted) return { text: scripted.text, control: scripted.control };
 				return { text: "", control: { filesModified: ["src/x.ts"] } };
+			}
+			if (call.agent === "judge") {
+				calls.judge.push(call);
+				const scripted = judgeQ.shift();
+				return { text: "", control: scripted ?? null };
 			}
 			if (call.agent === "code-reviewer") {
 				calls.orch.push(call);
@@ -630,4 +640,142 @@ describe("no-progress escalation evidence conservation (Fix 3 + Fix 5)", () => {
 		expect(failures[0].message).toContain("THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: tests/a.test.ts (606): SCENARIO-016 vs 029 contradiction");
 		expect(failures[0].message).not.toContain("reasoning tail");
 	});
+});
+// ─── J9-a / J9-b: judge routing at the Stage 9 no-progress boundaries ────────
+
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resetJudgeBudgets } from "../src/stages/judge.ts";
+
+describe("judge routing layer (J9-a RED no-progress + J9-b implementer no-progress)", () => {
+	const QUOTE = "expect(save(1)).toBe(2); // SCENARIO-029 determinism";
+	let wt: string;
+	beforeEach(() => {
+		resetJudgeBudgets();
+		delete process.env.SUPER_DEV_DISABLE_JUDGE;
+		wt = mkdtempSync(join(tmpdir(), "sd-judge-"));
+		mkdirSync(join(wt, "tests"), { recursive: true });
+		writeFileSync(join(wt, "tests", "red.test.ts"), `import { save } from "../src/save";\n${QUOTE}\n`);
+		redCheck.mockImplementation((_cwd: string, _targets: string[], opts?: { onResult?: (diagnostic: unknown) => void }) => {
+			opts?.onResult?.({
+				plan: { cwd: wt, argv: ["vitest", "run", "tests/red.test.ts"] },
+				language: "backend",
+				status: "red",
+				exitCode: 1,
+				signal: null,
+				outputTail: "FAIL tests/red.test.ts > save determinism\n" + QUOTE,
+			});
+			return "red";
+		});
+	});
+	afterEach(() => {
+		try { rmSync(wt, { recursive: true, force: true }); } catch { /* tmp */ }
+	});
+	const judgeState = (): PipelineState => {
+		const base = mkState();
+		return { ...base, setup: { ...base.setup!, worktreePath: wt, specDirectory: join(wt, "docs", "specifications", "p3") } };
+	};
+
+	it("J9-a: RED ceiling consults the judge; re-author-tests restarts RED with the diagnosis", async () => {
+		// Identical broken evidence every try → signature ceiling after MAX_RED_RETRIES.
+		redSeq("broken", "broken", "broken", "broken", "broken", "broken", "broken", "broken");
+		const { ctx, calls } = mkCtx({
+			judgeResults: [{
+				diagnosis: "the oracle output format is unknown to the classifier — the tests are fine but reference an unresolved module",
+				route: "re-author-tests",
+				confidence: 0.9,
+				evidence: [{ file: "tests/red.test.ts", quote: QUOTE }],
+			}],
+		});
+		await (implementationStage as Stage).run(judgeState(), ctx);
+		// First call routes re-author-tests (RED restarts); the restarted RED stalls
+		// identically again and consults the judge a SECOND time — per-signature
+		// budget is 2, and with an empty queue the second call degrades to HITL.
+		expect(calls.judge).toHaveLength(2);
+		expect(calls.tdd.length).toBeGreaterThan(1); // RED loop restarted with the diagnosis
+	}, 20_000);
+
+	it("J9-a: a verified escalate-now verdict surfaces the diagnosis in the HITL message", async () => {
+		redSeq("broken", "broken", "broken", "broken", "broken", "broken", "broken", "broken");
+		const failures: Array<{ message: string }> = [];
+		const escalate = (async (failure: { message: string }) => {
+			failures.push(failure);
+			return undefined;
+		}) as unknown as RunOptions["escalate"];
+		const { ctx, calls } = mkCtx({
+			judgeResults: [{
+				diagnosis: "toolchain output unclassifiable; human must decide the test command",
+				route: "escalate-now",
+				confidence: 0.9,
+				evidence: [{ file: "tests/red.test.ts", quote: QUOTE }],
+			}],
+			escalate,
+		});
+		await (implementationStage as Stage).run(judgeState(), ctx);
+		expect(calls.judge).toHaveLength(1);
+		expect(failures).toHaveLength(1);
+		expect(failures[0].message).toContain("JUDGE DIAGNOSIS (verified evidence)");
+		expect(failures[0].message).toContain("toolchain output unclassifiable");
+	}, 20_000);
+
+	it("J9-b: challenge-test synthesizes the defect and re-runs the existing challenge edge", async () => {
+		redSeq("red");
+		buildGate.mockImplementation(() => ({
+			pass: false,
+			inScopePass: false,
+			ran: ["npm test"],
+			errors: ["tests failed identically"],
+			outOfScopeErrors: [],
+		}));
+		const { ctx, calls } = mkCtx({
+			judgeResults: [{
+				diagnosis: "SCENARIO-029 contradicts SCENARIO-016 — the RED test is unsatisfiable",
+				route: "challenge-test",
+				confidence: 0.95,
+				evidence: [{ file: "tests/red.test.ts", quote: QUOTE }],
+			}],
+			implResults: [
+				{ text: "attempt 1 reasoning", control: { filesModified: ["src/x.ts"] } },
+				{ text: "attempt 2 reasoning", control: { filesModified: ["src/x.ts"] } },
+				{ text: "attempt 3 reasoning", control: { filesModified: ["src/x.ts"] } },
+			],
+			escalate: (async () => undefined) as unknown as RunOptions["escalate"],
+		});
+		await (implementationStage as Stage).run(judgeState(), ctx);
+		expect(calls.judge.length).toBeGreaterThanOrEqual(1);
+		// The re-author round-trips through tdd-guide with the judge-verified proof.
+		const lastTdd = calls.tdd[calls.tdd.length - 1];
+		expect(lastTdd.prompt).toContain("judge-verified: SCENARIO-029 contradicts SCENARIO-016");
+		// And the implementer gets another attempt (not an immediate HITL stop).
+		expect(calls.impl.length).toBeGreaterThanOrEqual(3);
+	}, 20_000);
+
+	it("J9-b: judge degraded (no control) keeps today's escalation exactly", async () => {
+		redSeq("red");
+		buildGate.mockImplementation(() => ({
+			pass: false,
+			inScopePass: false,
+			ran: ["npm test"],
+			errors: ["tests failed identically"],
+			outOfScopeErrors: [],
+		}));
+		const failures: Array<{ message: string }> = [];
+		const escalate = (async (failure: { message: string }) => {
+			failures.push(failure);
+			return undefined;
+		}) as unknown as RunOptions["escalate"];
+		const { ctx, calls } = mkCtx({
+			judgeResults: [null],
+			implResults: [
+				{ text: "r1", control: { filesModified: ["src/x.ts"] } },
+				{ text: "r2", control: { filesModified: ["src/x.ts"] } },
+			],
+			escalate,
+		});
+		await (implementationStage as Stage).run(judgeState(), ctx);
+		expect(calls.judge).toHaveLength(1);
+		expect(failures).toHaveLength(1);
+		expect(failures[0].message).not.toContain("JUDGE DIAGNOSIS");
+	}, 20_000);
 });
