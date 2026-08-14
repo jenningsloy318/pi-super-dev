@@ -35,6 +35,7 @@ import {
 	buildCodeReviewPrompt,
 	buildAdversarialPrompt,
 	buildTestsReviewPrompt,
+	buildJudgePrompt,
 	buildFixPrompt,
 	buildUiTestPrompt,
 	buildApiTestPrompt,
@@ -154,6 +155,10 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildTestsReviewPrompt (R-2 tests/validation angle)", () => {
 		expectKeys(buildTestsReviewPrompt(s, null, "task", null, null), ["title", "date", "verdict", "summary", "findings"]);
+	});
+
+	it("buildJudgePrompt (LLM judge routing layer)", () => {
+		expectKeys(buildJudgePrompt("scope", "context", ["re-author-tests", "escalate-now"]), ["diagnosis", "route", "confidence", "evidence"]);
 	});
 
 	it("buildFixPrompt", () => {
