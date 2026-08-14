@@ -796,6 +796,144 @@ function isGreenfieldModuleMissing(out: string, cwd?: string, targets: string[] 
 	return specs.every((spec) => !relativeModuleExists(cwd, spec, targets));
 }
 
+/** Python module existence check for the greenfield detector: a dotted
+ *  module name resolves to <root>/<dotted-as-path>.py or
+ *  <root>/<dotted-as-path>/__init__.py under any of the conventional roots
+ *  (repo root, src/, tests/). Pure + never throws. */
+function pythonModuleExists(cwd: string, dotted: string): boolean {
+	const rel = dotted.replace(/\./g, "/");
+	for (const root of [cwd, join(cwd, "src"), join(cwd, "tests")]) {
+		try {
+			if (existsSync(join(root, rel + ".py"))) return true;
+			if (existsSync(join(root, rel, "__init__.py"))) return true;
+		} catch {
+			/* best-effort */
+		}
+	}
+	return false;
+}
+
+/** GREENFIELD RED (python): pytest collection failed with ModuleNotFoundError
+ *  for module(s) that do NOT exist under any conventional root — the
+ *  implementation is simply not written yet (the contract buildTddPrompt
+ *  states is valid RED). An EXISTING module that fails to import (RuntimeError
+ *  at import time, circular import, …) produces ERROR collecting WITHOUT a
+ *  ModuleNotFoundError and stays broken.
+ *  Probed byte-for-byte against pytest 8.3.5 (exit 2):
+ *      "ERROR collecting tests/test_thing.py"
+ *      "E   ModuleNotFoundError: No module named 'mypkg'"          */
+function isPythonGreenfieldCollectionFailure(out: string, cwd?: string): boolean {
+	if (!/ERROR collecting/i.test(out)) return false;
+	if (/SyntaxError/i.test(out)) return false;
+	const names = [...out.matchAll(/ModuleNotFoundError: No module named '([^']+)'/g)].map((m) => m[1]);
+	if (names.length === 0) return false;
+	if (!cwd) return true;
+	return names.every((name) => !pythonModuleExists(cwd, name));
+}
+
+/** Go: does the directory (relative to the module root) contain ONLY *_test.go
+ *  files (zero production .go)? An absent dir counts (nothing production
+ *  there yet). Pure + never throws. */
+function goDirHasOnlyTestFiles(cwd: string, relDir: string): boolean {
+	try {
+		const dir = resolve(cwd, relDir);
+		if (!existsSync(dir)) return true;
+		const entries = readdirSync(dir).filter((e) => e.endsWith(".go"));
+		return entries.length > 0 && entries.every((e) => e.endsWith("_test.go"));
+	} catch {
+		return false;
+	}
+}
+
+/** Read the `module <path>` directive from go.mod (null when unreadable). */
+function readGoModuleName(cwd: string): string | null {
+	try {
+		const text = readFileSync(join(cwd, "go.mod"), "utf8");
+		const m = /(?:^|\n)module\s+(\S+)/.exec(text);
+		return m ? m[1] : null;
+	} catch {
+		return null;
+	}
+}
+
+/** GREENFIELD RED (go): the build failed ONLY because the code under test
+ *  does not exist yet, in one of two probed shapes (go 1.26.3):
+ *   1. `path/file_test.go:L:C: undefined: Ident` + `FAIL\t<pkg> [build failed]`
+ *      where the referenced directory contains ONLY *_test.go files.
+ *   2. `no required module provides package <module>/<dir>; to add it:`
+ *      (a same-module package whose directory is absent) + `[setup failed]`.
+ *  Any diagnostic on a PRODUCTION .go file, or any non-`undefined` diagnostic,
+ *  means the suite is genuinely broken → not greenfield. Pure + never throws. */
+function isGoGreenfieldBuildFailure(out: string, cwd?: string): boolean {
+	const errorLines = [...out.matchAll(/([^\s:]+\.go):\d+:\d+: ([^\n]+)/g)];
+	const undefinedLines = errorLines.filter((m) => /^undefined: /.test(m[2]));
+	if (undefinedLines.length > 0) {
+		if (errorLines.length !== undefinedLines.length) return false;
+		const files = undefinedLines.map((m) => m[1]);
+		if (!files.every((f) => /_test\.go$/.test(f))) return false;
+		if (!cwd) return true;
+		return files.every((f) => goDirHasOnlyTestFiles(cwd, dirname(f)));
+	}
+	const missingPkg = [...out.matchAll(/no required module provides package (\S+?)[;\s]/g)].map((m) => m[1]);
+	if (missingPkg.length > 0) {
+		if (!cwd) return true;
+		const modulePath = readGoModuleName(cwd);
+		if (!modulePath) return false;
+		return missingPkg.every((pkg) => pkg.startsWith(modulePath + "/") && !existsSync(join(cwd, pkg.slice(modulePath.length + 1))));
+	}
+	return false;
+}
+
+/** Read the [package].name from Cargo.toml, normalized to the lib name
+ *  (hyphens → underscores). Null when unreadable. */
+function readCargoPackageName(cwd: string): string | null {
+	try {
+		const text = readFileSync(join(cwd, "Cargo.toml"), "utf8");
+		const pkg = /\[package\]([^\[]*)/.exec(text);
+		const m = pkg ? /name\s*=\s*"([^"]+)"/.exec(pkg[1]) : null;
+		return m ? m[1].replace(/-/g, "_") : null;
+	} catch {
+		return null;
+	}
+}
+
+/** GREENFIELD RED (rust): the crate failed to compile ONLY because the code
+ *  under test does not exist yet, in one of three shapes (cargo 1.95.0):
+ *   1. greenfield crate (no src/lib.rs): `error[E0433]: cannot find module or
+ *      crate `<this-crate>` ` naming THIS crate.
+ *   2. undeclared module: `error[E0432]: unresolved import `<crate>::<mod>`
+ *      where the leading segment is this crate (`crate::`/`self::`/`super::`
+ *      also count as internal).
+ *   3. declared-but-absent module: `error[E0583]: file not found for module
+ *      `<mod>` `.
+ *  An EXTERNAL unresolved crate (serde_json, …) is broken — the test author
+ *  referenced a dependency missing from Cargo.toml. Any unresolved-EXTERNAL
+ *  diagnostic anywhere disqualifies greenfield. Pure + never throws. */
+function isRustGreenfieldCompileFailure(out: string, cwd?: string): boolean {
+	if (!/error\[E04(32|33)\]|error\[E0583\]/.test(out)) return false;
+	const crateName = cwd ? readCargoPackageName(cwd) : null;
+	const isInternalPath = (path: string): boolean => {
+		const first = path.split("::")[0];
+		if (first === "crate" || first === "self" || first === "super") return true;
+		return crateName !== null && first === crateName;
+	};
+	let sawInternal = false;
+	for (const m of out.matchAll(/error\[E0432\]: unresolved import `([^`]+)`/g)) {
+		if (!isInternalPath(m[1])) return false;
+		sawInternal = true;
+	}
+	for (const m of out.matchAll(/error\[E0433\]: cannot find module or crate `([^`]+)`/g)) {
+		// E0433 naming THIS crate ⇒ the lib target does not exist (greenfield
+		// crate). Naming anything else ⇒ external dependency missing → broken.
+		if (crateName === null || m[1] !== crateName) return false;
+		sawInternal = true;
+	}
+	for (const m of out.matchAll(/error\[E0583\]: file not found for module `([^`]+)`/g)) {
+		sawInternal = true; // by definition a module of THIS crate whose file is absent
+	}
+	return sawInternal;
+}
+
 /**
  * Classify a runner's COMBINED stdout+stderr into a RED-phase status using
  * per-language heuristics (spec §A.2, AC-01). Pure + NEVER throws. Precedence
@@ -810,6 +948,10 @@ function isGreenfieldModuleMissing(out: string, cwd?: string, targets: string[] 
 function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?: { cwd?: string; targets?: string[] }): RedStatus {
 	const out = combined ?? "";
 	if (language === "rust") {
+		// RED (greenfield) — the crate failed to compile solely because the code
+		// under test does not exist yet (missing crate/module targets). Cross-
+		// language parity with the npm isGreenfieldModuleMissing check below.
+		if (isRustGreenfieldCompileFailure(out, ctx?.cwd)) return "red";
 		// BROKEN — compile failed (no test executed).
 		if (/error\[E[0-9]/i.test(out) || /could not compile/i.test(out)) return "broken";
 		// BROKEN — matched no test binary (the RED phase produced no executable).
@@ -821,6 +963,9 @@ function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?
 		return "unknown";
 	}
 	if (language === "python") {
+		// RED (greenfield) — collection failed solely because the module under
+		// test does not exist yet (the buildTddPrompt greenfield contract).
+		if (isPythonGreenfieldCollectionFailure(out, ctx?.cwd)) return "red";
 		// BROKEN — pytest could not even collect.
 		if (/ERROR collecting/i.test(out)) return "broken";
 		if (ok) return "green";
@@ -828,6 +973,10 @@ function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?
 		return "unknown";
 	}
 	if (language === "go") {
+		// RED (greenfield) — the build failed solely because the code under test
+		// does not exist yet (undefined ident in a test-only package dir, or a
+		// same-module package whose directory is absent).
+		if (isGoGreenfieldBuildFailure(out, ctx?.cwd)) return "red";
 		if (/build failed/i.test(out) || /setup failed/i.test(out) || /no required module provides package/i.test(out)) return "broken";
 		if (ok) return "green";
 		if (/^--- FAIL:/m.test(out) || /^FAIL\b/m.test(out) || /\bpanic:/i.test(out)) return "red";

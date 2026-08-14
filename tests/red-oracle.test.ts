@@ -621,3 +621,215 @@ describe("runRedCheck — reuses shared timeout envelope (AC-01)", () => {
 		}
 	});
 });
+
+describe("runRedCheck — cross-language GREENFIELD RED parity (Fix 6)", () => {
+	// All fixtures below are byte-level captures from empirical probes against
+	// the REAL toolchains available in this environment: pytest 8.3.5,
+	// go 1.26.3, cargo 1.95.0 (same methodology as the vitest 3.2.6 probe).
+
+	function pyProj(setup: (dir: string) => void): string {
+		return tmpProj((dir) => {
+			writeFileSync(join(dir, "pyproject.toml"), '[project]\nname = "p"\nversion = "0.1.0"\n');
+			mkdirSync(join(dir, "tests"), { recursive: true });
+			writeFileSync(join(dir, "tests", "test_thing.py"), "from mypkg.persistence import save\n\ndef test_save():\n    assert save(1) == 2\n");
+			setup(dir);
+		});
+	}
+
+	const PY_GREENFIELD_OUT = `
+==================================== ERRORS ====================================
+_____________________ ERROR collecting tests/test_thing.py _____________________
+ImportError while importing test module '/tmp/x/tests/test_thing.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/test_thing.py:1: in <module>
+    from mypkg.persistence import save
+E   ModuleNotFoundError: No module named 'mypkg'
+=========================== short test summary info ============================
+ERROR tests/test_thing.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.09s`;
+
+	it("python: collection ModuleNotFoundError for an ABSENT module → greenfield RED", () => {
+		const d = pyProj(() => {}); // no mypkg anywhere
+		try {
+			mockRunner(out(2, PY_GREENFIELD_OUT, ""));
+			expect(runRedCheck(d, ["tests/test_thing.py"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("python: missing SUBMODULE under an existing package → greenfield RED", () => {
+		const d = pyProj((dir) => {
+			mkdirSync(join(dir, "mypkg"));
+			writeFileSync(join(dir, "mypkg", "__init__.py"), "");
+			// mypkg/persistence.py deliberately absent
+		});
+		try {
+			mockRunner(out(2, PY_GREENFIELD_OUT.replace("No module named 'mypkg'", "No module named 'mypkg.persistence'"), ""));
+			expect(runRedCheck(d, ["tests/test_thing.py"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("python: module EXISTS on disk but import fails (RuntimeError) → broken, NOT greenfield", () => {
+		const d = pyProj((dir) => {
+			mkdirSync(join(dir, "mypkg"));
+			writeFileSync(join(dir, "mypkg", "__init__.py"), "");
+		});
+		try {
+			// mypkg exists → even a ModuleNotFoundError naming it must NOT be greenfield
+			mockRunner(out(2, PY_GREENFIELD_OUT, ""));
+			expect(runRedCheck(d, ["tests/test_thing.py"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("python: collection error WITHOUT ModuleNotFoundError (RuntimeError at import) → broken", () => {
+		const d = pyProj(() => {});
+		try {
+			const runtimeOut = PY_GREENFIELD_OUT.replace(
+				"E   ModuleNotFoundError: No module named 'mypkg'",
+				"mypkg/persistence.py:1: in <module>\nE   RuntimeError: boom at import",
+			);
+			mockRunner(out(2, runtimeOut, ""));
+			expect(runRedCheck(d, ["tests/test_thing.py"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	function goProj(setup: (dir: string) => void): string {
+		return tmpProj((dir) => {
+			writeFileSync(join(dir, "go.mod"), "module example.com/p\n\ngo 1.26\n");
+			mkdirSync(join(dir, "api"), { recursive: true });
+			writeFileSync(join(dir, "api", "handler_test.go"), "package api\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\tif Foo() != 2 {\n\t\tt.Fatal(\"expected 2\")\n\t}\n}\n");
+			setup(dir);
+		});
+	}
+
+	const GO_UNDEFINED_OUT = "# example.com/p/api [example.com/p/api.test]\napi/handler_test.go:6:5: undefined: Foo\nFAIL\texample.com/p/api [build failed]\nFAIL";
+
+	it("go: undefined ident in a test-ONLY package dir → greenfield RED", () => {
+		const d = goProj(() => {}); // api/ has only handler_test.go
+		try {
+			mockRunner(out(1, GO_UNDEFINED_OUT, ""));
+			expect(runRedCheck(d, ["api/handler_test.go"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("go: undefined ident but PRODUCTION .go present in the dir → broken, NOT greenfield", () => {
+		const d = goProj((dir) => {
+			writeFileSync(join(dir, "api", "handler.go"), "package api\n\nfunc Foo() int { return 0 }\n");
+		});
+		try {
+			mockRunner(out(1, GO_UNDEFINED_OUT, ""));
+			expect(runRedCheck(d, ["api/handler_test.go"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("go: same-module package directory ABSENT → greenfield RED", () => {
+		const d = goProj(() => {}); // example.com/p/missing dir does not exist
+		try {
+			const missingPkgOut = "# example.com/p/api\napi/handler_test.go:6:2: no required module provides package example.com/p/missing; to add it:\n\tgo get example.com/p/missing\nFAIL\texample.com/p/api [setup failed]\nFAIL";
+			mockRunner(out(1, missingPkgOut, ""));
+			expect(runRedCheck(d, ["api/handler_test.go"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("go: EXTERNAL module missing (different module path) → broken", () => {
+		const d = goProj(() => {});
+		try {
+			const externalOut = "# example.com/p/api\napi/handler_test.go:6:2: no required module provides package github.com/external/dep; to add it:\n\tgo get github.com/external/dep\nFAIL\texample.com/p/api [setup failed]\nFAIL";
+			mockRunner(out(1, externalOut, ""));
+			expect(runRedCheck(d, ["api/handler_test.go"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	function rsProj(setup: (dir: string) => void): string {
+		return tmpProj((dir) => {
+			writeFileSync(join(dir, "Cargo.toml"), '[package]\nname = "p"\nversion = "0.1.0"\nedition = "2021"\n');
+			mkdirSync(join(dir, "tests"), { recursive: true });
+			writeFileSync(join(dir, "tests", "it.rs"), "use p::thing::save;\n\n#[test]\nfn save_doubles() {\n    assert_eq!(save(1), 2);\n}\n");
+			setup(dir);
+		});
+	}
+
+	it("rust: greenfield crate (no src/lib.rs) E0433 naming THIS crate → greenfield RED", () => {
+		const d = rsProj(() => {}); // no src/ at all
+		try {
+			const out_text = "error[E0433]: cannot find module or crate `p` in this scope\n --> tests/it.rs:1:5\n  |\n1 | use p::thing::save;\n  |     ^ use of unresolved module or unlinked crate `p`\n  |\n  = help: if you wanted to use a crate named `p`, use `cargo add p` to add it to your Cargo.toml\n\nFor more information about this error, see `rustc --explain E0433`.\nerror: could not compile `p` (test \"it\") due to 1 previous error";
+			mockRunner(out(101, out_text, ""));
+			expect(runRedCheck(d, ["tests/it.rs"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("rust: E0432 unresolved import of THIS crate's undeclared module → greenfield RED", () => {
+		const d = rsProj((dir) => {
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "lib.rs"), "pub fn placeholder() {}\n"); // lib exists, mod thing undeclared
+		});
+		try {
+			const out_text = "error[E0432]: unresolved import `p::thing`\n --> tests/it.rs:1:8\n  |\n1 | use p::thing::save;\n  |        ^^^^^ could not find `thing` in `p`\n\nFor more information about this error, see `rustc --explain E0432`.\nerror: could not compile `p` (test \"it\") due to 1 previous error";
+			mockRunner(out(101, out_text, ""));
+			expect(runRedCheck(d, ["tests/it.rs"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("rust: E0432 naming an EXTERNAL crate (serde_json) → broken, NOT greenfield", () => {
+		const d = rsProj((dir) => {
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "lib.rs"), "pub fn placeholder() {}\n");
+		});
+		try {
+			const out_text = "error[E0432]: unresolved import `serde_json`\n --> tests/it.rs:1:5\n  |\n1 | use serde_json::Value;\n  |     ^^^^^^^^^^ use of unresolved module or unlinked crate `serde_json`\n\nerror[E0433]: cannot find module or crate `serde_json` in this scope\n --> tests/it.rs:5:21\n\nFor more information about this error, see `rustc --explain E0432`.\nerror: could not compile `p` (test \"it\") due to 2 previous errors";
+			mockRunner(out(101, out_text, ""));
+			expect(runRedCheck(d, ["tests/it.rs"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("rust: E0583 file-not-found for a declared module → greenfield RED", () => {
+		const d = rsProj((dir) => {
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "lib.rs"), "pub mod thing;\n"); // declared, file absent
+		});
+		try {
+			const out_text = "error[E0583]: file not found for module `thing`\n --> src/lib.rs:1:1\n  |\n1 | pub mod thing;\n  | ^^^^^^^^^^^^^^\n  |\n  = help: to create the module `thing`, create file \"src/thing.rs\" or \"src/thing/mod.rs\"\n\nFor more information about this error, see `rustc --explain E0583`.\nerror: could not compile `p` (lib) due to 1 previous error";
+			mockRunner(out(101, out_text, ""));
+			expect(runRedCheck(d, ["tests/it.rs"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("rust: ordinary compile error in EXISTING code (E0308) → broken (greenfield check must not over-match)", () => {
+		const d = rsProj((dir) => {
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "lib.rs"), "pub fn placeholder() {}\n");
+		});
+		try {
+			const out_text = "error[E0308]: mismatched types\n --> src/thing.rs:2:12\n\nFor more information about this error, see `rustc --explain E0308`.\nerror: could not compile `p` (lib) due to 1 previous error";
+			mockRunner(out(101, out_text, ""));
+			expect(runRedCheck(d, ["tests/it.rs"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+});
