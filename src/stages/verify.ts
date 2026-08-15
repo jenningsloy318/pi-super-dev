@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
+import { runJudge } from "./judge.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -796,6 +797,33 @@ const detectStagnation = (sig: string, count: number, sigHist: string[], countHi
 	return sig !== "" && sigHist[n - 1] === sigHist[n - 2];
 };
 
+/**
+ * J10-a/J10-b (judge routing layer): one verified diagnosis at the Stage 10
+ * break boundaries, surfaced INSIDE __stagnated so the escalation prompt shows
+ * WHY the loop stopped — not just that it stopped. The judge never overrides
+ * the break itself (routes at these wiring points are diagnosis-only:
+ * escalate-now is implied, and nothing reroutes the review loop).
+ */
+async function judgeStage10Diagnosis(s: PipelineState, ctx: StageContext, scope: string, contextLines: string[]): Promise<{ diagnosis: string; evidence: string } | null> {
+	try {
+		const out = await runJudge(ctx, {
+			scope,
+			signature: findingsSignature(s) || String((s.review as { verdict?: string } | undefined)?.verdict ?? "unknown"),
+			worktreePath: s.setup?.worktreePath ?? "",
+			specDirectory: s.setup?.specDirectory,
+			context: contextLines.join("\n"),
+			allowedRoutes: ["escalate-now"],
+		});
+		if ((out.status === "routed" || out.status === "escalate") && out.verdict.diagnosis) {
+			return {
+				diagnosis: out.verdict.diagnosis,
+				evidence: out.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | "),
+			};
+		}
+	} catch { /* INV-6: judge never becomes a new blocker */ }
+	return null;
+}
+
 /** Stagnation: same review-findings signature on 2 consecutive rounds → break. */
 export const findingsSignature = (s: PipelineState): string => {
 	const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
@@ -845,12 +873,25 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	const noBuildDriver = buildErrors(s).length === 0;
 	const deadState = buildGreen(s) || (s.buildGate === undefined && roundsCompleted > 0);
 	if (findings.length === 0 && noBuildDriver && deadState) {
+		// J10-b: classify the residue (cross-stage blocker vs advisory noise vs
+		// spec contradiction) so the human sees a verified why.
+		const judged = await judgeStage10Diagnosis(s, ctx, "stage10.no-actionable", [
+			"## Review verdict",
+			String((s.review as { verdict?: string } | undefined)?.verdict ?? "unknown"),
+			"## Deferred ledger (no code fixer can act on these)",
+			...deferredFindings.slice(0, 8).map((f) => `- [${String(f.deferralReason ?? "advisory")}] ${String(f.severity ?? "")} ${String(f.title ?? "")} (${String(f.file ?? "no file")})`),
+			"## Build gate",
+			s.buildGate ? `pass=${String((s.buildGate as { pass?: boolean }).pass)} errors=${buildErrors(s).length}` : "absent (precondition-skipped)",
+		]);
 		(s as Record<string, unknown>).__stagnated = {
 			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
-			findings: deferredVisibility,
+			findings: [
+				...(judged ? [{ file: null, severity: null, title: `judge diagnosis: ${judged.diagnosis.slice(0, 200)}` }] : []),
+				...deferredVisibility,
+			],
 		};
-		ctx.log(`Stage 10: review not approved but no actionable findings remain (${deferredFindings.length} deferred) — breaking for human decision (non-fatal; ${sigHist.length} rounds)`);
+		ctx.log(`Stage 10: review not approved but no actionable findings remain (${deferredFindings.length} deferred)${judged ? ` — judge: ${judged.diagnosis}` : ""} — breaking for human decision (non-fatal; ${sigHist.length} rounds)`);
 		return true;
 	}
 	if (stagnant) {
@@ -858,12 +899,27 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 		// safety re-review of the code that was just fixed. The loop checks `until`
 		// before each body run, so escalating here can notify a false blocker while
 		// the terminal fixed code has not been reviewed yet.
+		// J10-a: a verified diagnosis of WHY the fixer cannot converge rides in
+		// __stagnated (leading finding) so the escalation prompt explains the
+		// stall — recurring findings alone say what, never why.
+		const judged = await judgeStage10Diagnosis(s, ctx, "stage10.stagnation", [
+			"## Recurring findings (identical signature across consecutive rounds)",
+			...findings.slice(0, 12).map((f) => `- ${String(f.severity ?? "")} ${String(f.title ?? "")} (${String(f.file ?? "no file")}) status=${String(f.status ?? "open")}`),
+			"## Deferred ledger",
+			...deferredFindings.slice(0, 8).map((f) => `- [${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}`),
+			"## Review verdict",
+			String((s.review as { verdict?: string } | undefined)?.verdict ?? "unknown"),
+		]);
 		(s as Record<string, unknown>).__stagnated = {
 			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
-			findings: [...findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })), ...deferredVisibility],
+			findings: [
+				...(judged ? [{ file: null, severity: null, title: `judge diagnosis: ${judged.diagnosis.slice(0, 200)}` }] : []),
+				...findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })),
+				...deferredVisibility,
+			],
 		};
-		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds — breaking for terminal re-review (non-fatal; ${sigHist.length} rounds)`);
+		ctx.log(`Stage 10: review findings stagnant across 2 consecutive rounds${judged ? ` — judge: ${judged.diagnosis}` : ""} — breaking for terminal re-review (non-fatal; ${sigHist.length} rounds)`);
 		return true;
 	}
 	return false;

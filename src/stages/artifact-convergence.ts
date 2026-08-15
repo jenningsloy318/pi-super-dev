@@ -4,6 +4,7 @@ import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stag
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import { reviewHasBlockingFinding } from "../review-findings.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
+import { runJudge } from "./judge.ts";
 import {
 	blockingConvergenceFindings,
 	convergenceRetryFeedback,
@@ -247,9 +248,39 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 			let round = 0;
 			let lastErrors: string[] = [];
 			let priorBlockingSignature = "";
+			let convergenceJudgeTried = false;
 			while (ctx.budget.check()) {
 				round++;
 				if (ctx.signal?.aborted) return { status: "cancelled" as const };
+				// J10-c (judge routing layer): one round before the cap, ONE verified
+				// diagnosis so the fatal message explains WHY convergence failed — the
+				// judge can only abort early (escalate-now) with its diagnosis attached,
+				// never extend the cap or touch the writer loop.
+				if (round === maxRounds - 1 && !convergenceJudgeTried) {
+					convergenceJudgeTried = true;
+					try {
+						const out = await runJudge(ctx, {
+							scope: `stage10.convergence-cap.${options.feedbackKey}`,
+							signature: priorBlockingSignature || `${options.feedbackKey}:rounds`,
+							worktreePath: state.setup?.worktreePath ?? "",
+							specDirectory: state.setup?.specDirectory,
+							context: [
+								`## Convergence loop: ${options.feedbackKey}`,
+								`round ${round} of cap ${maxRounds}; still not converged.`,
+								"## Recurring errors across rounds",
+								...(lastErrors.length ? lastErrors.slice(0, 8) : ["(none recorded)"]),
+							].join("\n"),
+							allowedRoutes: ["escalate-now"],
+						});
+						if ((out.status === "routed" || out.status === "escalate") && out.verdict.route === "escalate-now") {
+							ctx.log(`${options.feedbackKey} convergence: JUDGE ESCALATE — ${out.verdict.diagnosis}`);
+							throw new FatalAbort(`${options.feedbackKey} convergence did not converge within ${maxRounds} round(s): ${out.verdict.diagnosis}`);
+						}
+					} catch (err) {
+						if (err instanceof FatalAbort) throw err;
+						/* INV-6: judge infra failure never blocks the loop */
+					}
+				}
 				if (round > maxRounds) {
 					// Unconditional liveness floor. The stall path below routes ACTIONABLE
 					// stagnation (a recurring blocking finding) to HITL escalation; this cap

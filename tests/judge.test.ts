@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -191,4 +191,63 @@ describe("judge prompt control contracts", () => {
 		expect(prompt).not.toContain("undefined");
 		expect(prompt).not.toContain("null,");
 	});
+});
+
+// ─── J10: judge diagnosis at the Stage 10 break boundaries ──────────────────
+
+import { reviewLoopUntil } from "../src/stages/verify.ts";
+import type { PipelineState } from "../src/types.ts";
+
+describe("J10 stage10 stagnation diagnosis", () => {
+	let wt: string;
+	beforeEach(() => {
+		resetJudgeBudgets();
+		wt = tmpWorktree();
+		mkdirSync(join(wt, "src"), { recursive: true });
+		writeFileSync(join(wt, "src", "a.ts"), "export const a = 1;\n");
+	});
+	afterEach(() => {
+		try { rmSync(wt, { recursive: true, force: true }); } catch { /* tmp */ }
+	});
+
+	const mkState = (withHist: boolean): PipelineState => {
+		const s = {
+			setup: { worktreePath: wt, specDirectory: join(wt, "docs", "specifications", "x"), defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "x", worktreeCreated: false, initializedRepo: false },
+			review: { verdict: "Changes Requested", findings: [{ id: "F1", severity: "high", title: "T", file: "src/a.ts" }] },
+			buildGate: { pass: true, ran: [], errors: [] },
+		} as unknown as PipelineState;
+		if (withHist) (s as Record<string, unknown>).__reviewSignatures = ["old-sig", "old-sig"];
+		return s;
+	};
+
+	it("J10-a: the stagnation break carries a verified judge diagnosis as the leading finding", async () => {
+		const { ctx } = makeCtx(() => ({
+			control: {
+				diagnosis: "the fixer cannot converge because the finding is owned by the spec stage, not the code",
+				route: "escalate-now",
+				confidence: 0.9,
+				evidence: [{ file: "src/a.ts", quote: "export const a = 1;" }],
+			} as Record<string, unknown>,
+		}));
+		const s = mkState(true); // prior signatures identical to current → stagnant
+		// seed identical history so the CURRENT signature repeats
+		const cur = (await import("../src/stages/verify.ts")).findingsSignature(s);
+		(s as Record<string, unknown>).__reviewSignatures = [cur, cur];
+		const broke = await reviewLoopUntil(s, ctx);
+		expect(broke).toBe(true);
+		const stag = (s as Record<string, unknown>).__stagnated as { findings?: Array<{ title?: string }> };
+		expect(stag?.findings?.[0]?.title).toContain("judge diagnosis:");
+		expect(stag?.findings?.[0]?.title).toContain("owned by the spec stage");
+	}, 10_000);
+
+	it("J10 degraded (judge fails) keeps the break without a diagnosis finding", async () => {
+		const { ctx } = makeCtx(() => ({ control: null, error: "infra down" }));
+		const s = mkState(true);
+		const cur = (await import("../src/stages/verify.ts")).findingsSignature(s);
+		(s as Record<string, unknown>).__reviewSignatures = [cur, cur];
+		const broke = await reviewLoopUntil(s, ctx);
+		expect(broke).toBe(true);
+		const stag = (s as Record<string, unknown>).__stagnated as { findings?: Array<{ title?: string }> };
+		expect(stag?.findings?.[0]?.title ?? "").not.toContain("judge diagnosis:");
+	}, 10_000);
 });
