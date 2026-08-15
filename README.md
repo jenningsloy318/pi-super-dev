@@ -199,10 +199,26 @@ author — a stronger review signal), map agent roles to models in
     "spec-reviewer": "openai/gpt-5.4",
     "requirements-reviewer": "openai/gpt-5.4",
     "bdd-reviewer": "openai/gpt-5.4",
-    "design-reviewer": "google/gemini-3-pro"
+    "design-reviewer": "google/gemini-3-pro",
+    "judge": "openai/gpt-5.4"
   }
 }
 ```
+
+All six reviewer roles — the three **shift-left reviewers** (`requirements-reviewer`,
+`bdd-reviewer`, `design-reviewer`), the spec-stage `spec-reviewer`, and the two
+Stage 10 reviewers `code-reviewer` / `adversarial-reviewer` — plus the **judge**
+role can be mapped here. Two details worth knowing:
+
+- The **tests/validation review angle** (Stage 10a2, runs when the spec declares
+  `requireTests`/`requireScenarios` deliverables) reuses the `code-reviewer`
+  role, so it follows that mapping automatically — no separate key.
+- The **judge** (LLM judge routing layer, Stages 9/10) runs at most 2 calls per
+  failure signature / 12 per run and always degrades silently to today's
+  behavior when unavailable, so mapping it to a strong model is cheap and safe.
+  The judge only ever routes within a closed set (`re-author-tests`,
+  `challenge-test`, `fix-environment`, `continue`, `escalate-now`) — it can
+  never grant a pass/green. Unmapped, it falls back to role-default resolution.
 
 The upstream **shift-left reviewers** (`requirements-reviewer`, `bdd-reviewer`,
 `design-reviewer`) apply Fagan-style inspection to each artifact as it is written
@@ -215,6 +231,13 @@ Values are qualified `provider/id` strings. This **overrides** a one-off global
 `--model`/`SUPER_DEV_MODEL` for the listed roles (a cross-model policy should not
 be silently undone by a temporary flag); unlisted roles are unaffected. The
 resolved model per agent is shown on each `agent … start … model=…` log line.
+
+**Backend visibility caveat:** a mapped model must be resolvable by the backend
+the role runs on. Reviewers and the judge run in the host pi session, so any
+provider extension active there works. `research-agent` is isolated into bare
+`pi` subprocesses (only `pi-web-access` + `pi-mcp-adapter` loaded), so mapping
+it to a model supplied by a host-session-only extension fails fast with
+`Model … not found` — map it only to models the stock `pi` CLI can see.
 
 ## Phase-green trust (claimed-vs-actual cross-check)
 
