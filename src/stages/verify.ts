@@ -811,6 +811,10 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	// GAP B/C: successful exit requires review approval AND a green build gate;
 	// otherwise identical-signature OR non-decreasing-count triggers stagnation.
 	const approvedAndBuildGreen = reviewApproved(s) && buildGreen(s);
+	// Capture BEFORE detectStagnation (which pushes the current round into the
+	// histories): `roundsCompleted` must count FULL body rounds that already
+	// ran, so the dead-state break below can never fire at cold start.
+	const roundsCompleted = sigHist.length;
 	const stagnant = detectStagnation(sig, findings.length, sigHist, countHist);
 	(s as Record<string, unknown>).__reviewSignatures = sigHist;
 	(s as Record<string, unknown>).__reviewCounts = countHist;
@@ -826,7 +830,21 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 		severity: f.severity ?? null,
 		title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}`,
 	}));
-	if (findings.length === 0 && buildGreen(s)) {
+	// Liveness (R-5 companion): post-triage findings can be EMPTY because R-5
+	// demoted every finding to the ledger (unverifiable locations). With no
+	// build-error driver either, two dead-state shapes must break for the human
+	// boundary instead of spinning forever (stagnation needs a NON-EMPTY
+	// signature, so it can never fire on empty findings):
+	//   (a) build gate GREEN — original R-1 shortcut (cold start included: a
+	//       green gate can persist from Stage 9; only review approval is
+	//       missing, which no implementer round can produce);
+	//   (b) build gate ABSENT (buildGateStep precondition-skipped — nothing in
+	//       the loop body can ever change state) — only after one full round
+	//       proved the reviewers produce nothing actionable (roundsCompleted),
+	//       because at cold start `s.review` is simply the pre-loop state.
+	const noBuildDriver = buildErrors(s).length === 0;
+	const deadState = buildGreen(s) || (s.buildGate === undefined && roundsCompleted > 0);
+	if (findings.length === 0 && noBuildDriver && deadState) {
 		(s as Record<string, unknown>).__stagnated = {
 			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
@@ -1079,6 +1097,20 @@ export const verificationConvergenceNode: Node = {
 			if (!reviewApproved(state) || !buildGreen(state)) {
 				recordAttemptEnd(state, record, false);
 				ctx.log(`Stage 10: review/build outcome attempt ${attempt}: review=${String(record.reviewVerdict || "unknown")} build=${record.buildPass === true ? "pass" : "fail"} findings=${record.reviewFindings} buildErrors=${record.buildErrors}`);
+				// Liveness (R-5 companion): all findings demoted to the ledger +
+				// no build errors + gate absent/green → nothing in this loop can
+				// change state (fixer has no work, stagnation needs non-empty
+				// items). Stop for the human boundary instead of spinning forever.
+				if (!reviewApproved(state) && record.reviewFindings === 0 && record.buildErrors === 0 && (state.buildGate === undefined || buildGreen(state))) {
+					const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
+					(state as Record<string, unknown>).__stagnated = {
+						rounds: attempts.length,
+						verdict: (state.review as { verdict?: string } | undefined)?.verdict,
+						findings: deferred.slice(0, 6).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}` })),
+					};
+					ctx.log(`Stage 10: no actionable findings remain after triage (${deferred.length} deferred) and no build driver — stopping for human decision (non-fatal; attempt ${attempt})`);
+					return { status: "ok" };
+				}
 				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
 				if (!ctx.budget.check()) {
 					record.terminal = true;

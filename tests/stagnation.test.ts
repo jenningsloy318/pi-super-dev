@@ -137,11 +137,14 @@ describe("reviewLoopUntil (stagnation)", () => {
 		expect(await reviewLoopUntil(s2, fakeCtx())).toBe(false);
 	});
 
-	it("never treats an empty-finding round as stagnant", async () => {
+	it("never treats an empty-finding round as STAGNANT — but a repeated dead state (empty findings, no build driver, gate absent) breaks for the human boundary (liveness)", async () => {
 		const s1 = stateWith({ verdict: "Changes Requested", findings: [] });
 		await reviewLoopUntil(s1, fakeCtx());
 		const s2 = stateWith({ verdict: "Changes Requested", findings: [] }, (s1 as unknown as Record<string, unknown>).__reviewSignatures as string[]);
-		expect(await reviewLoopUntil(s2, fakeCtx())).toBe(false);
+		// R-5 companion liveness: after one full round with nothing actionable and
+		// no build driver, the loop can never change state — breaking (true) is the
+		// dead-state exit to HITL, distinct from signature stagnation.
+		expect(await reviewLoopUntil(s2, fakeCtx())).toBe(true);
 	});
 });
 
@@ -175,8 +178,9 @@ describe("R-1 no-actionable shortcut (reviewLoopUntil)", () => {
 		expect(await reviewLoopUntil(s, fakeCtx())).toBe(false);
 	});
 
-	it("keeps the legacy empty-finding behavior when buildGate is unset", async () => {
+	it("cold start (no completed round yet) does NOT fire the dead-state break even with empty findings", async () => {
 		const s = stateWith({ verdict: "Changes Requested", findings: [] });
+		// sigHist empty → roundsCompleted 0 → the loop must run its first body.
 		expect(await reviewLoopUntil(s, fakeCtx())).toBe(false);
 	});
 });

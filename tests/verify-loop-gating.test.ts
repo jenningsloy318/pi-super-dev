@@ -12,10 +12,10 @@
  * GAP D: review loops are budget-bounded when no approval or stagnation signal exists.
  */
 import { describe, it, expect } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { EventEmitter } from "node:events";
 import {
 	reviewLoopUntil,
@@ -36,6 +36,17 @@ const logCtx = (): StageContext =>
 /** Distinct review findings; `tag` guarantees a fresh file signature per round. */
 const mkFindings = (n: number, tag: string) =>
 	Array.from({ length: n }, (_, i) => ({ id: `${tag}-${i}`, severity: "high", title: "T", detail: "d", file: `${tag}-${i}.ts` }));
+
+/** R-5 fixture discipline: findings that must stay ACTIONABLE cite files that
+ *  EXIST in the fixture worktree (R-5 demotes findings citing missing files to
+ *  the deferred ledger). Materialize the cited paths before driving the node. */
+function ensureCitedFiles(cwd: string, ...paths: string[]): void {
+	for (const rel of paths) {
+		const abs = join(cwd, rel);
+		mkdirSync(dirname(abs), { recursive: true });
+		if (!existsSync(abs)) writeFileSync(abs, `// fixture for ${rel}\n`);
+	}
+}
 
 /** Full ctx for driving the review / integration NODES. Counts agent calls
  *  per role and returns a never-approved merged verdict so the loops iterate. */
@@ -229,6 +240,7 @@ describe("GAP D — budget-bounded review loop", () => {
 			setup: tmpWorktree(),
 			review: { verdict: "Changes Requested", findings: [{ id: "F-0", severity: "high", title: "T0", file: "a.ts" }] },
 		} as unknown as PipelineState;
+		ensureCitedFiles(state.setup!.worktreePath, "a.ts");
 
 		await expect(reviewStageNode.run(state, ctx)).resolves.toBeDefined();
 
@@ -244,6 +256,7 @@ describe("verificationConvergenceNode", () => {
 		let fixCalls = 0;
 		let apiCalls = 0;
 		const state = stateWithApi();
+		ensureCitedFiles(state.setup!.worktreePath, "src/a.ts");
 		const ctx = convergenceCtx(async (call: AgentCall) => {
 			if (call.agent === "code-reviewer") {
 				codeReviewCalls += 1;
@@ -360,6 +373,7 @@ describe("verificationConvergenceNode", () => {
 		let fixCalls = 0;
 		let apiCalls = 0;
 		const state = stateWithApi();
+		ensureCitedFiles(state.setup!.worktreePath, "src/a.ts");
 		const ctx = convergenceCtx(async (call: AgentCall) => {
 			if (call.agent === "code-reviewer") {
 				codeReviewCalls += 1;
@@ -402,6 +416,7 @@ describe("verificationConvergenceNode", () => {
 		let codeReviewCalls = 0;
 		let fixCalls = 0;
 		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
+		ensureCitedFiles(state.setup!.worktreePath, ...Array.from({ length: 8 }, (_, i) => `first-${i}.ts`), ...Array.from({ length: 9 }, (_, i) => `second-${i}.ts`));
 		const ctx = convergenceCtx(async (call: AgentCall) => {
 			if (call.agent === "code-reviewer") {
 				codeReviewCalls += 1;
@@ -438,6 +453,7 @@ describe("verificationConvergenceNode", () => {
 		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
 		const cwd = state.setup!.worktreePath;
 		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		ensureCitedFiles(cwd, "auth-service/src/middleware/admin.ts");
 		const ctx = convergenceCtx(async (call: AgentCall) => {
 			if (call.agent === "code-reviewer") {
 				codeReviewCalls += 1;
@@ -472,6 +488,7 @@ describe("verificationConvergenceNode", () => {
 		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
 		const cwd = state.setup!.worktreePath;
 		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		ensureCitedFiles(cwd, "auth-service/src/api/v1/auth/auth.ts");
 		const ctx = convergenceCtx(async (call: AgentCall) => {
 			if (call.agent === "code-reviewer") {
 				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
@@ -509,6 +526,7 @@ describe("verificationConvergenceNode", () => {
 		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
 		const cwd = state.setup!.worktreePath;
 		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		ensureCitedFiles(cwd, "auth-service/src/__tests__/session-expiration-regression.test.ts", "auth-service/src/api/v1/auth/auth.ts");
 		const ctx = convergenceCtx(async (call: AgentCall) => {
 			if (call.agent === "code-reviewer") {
 				codeReviewCalls += 1;
@@ -550,6 +568,7 @@ describe("verificationConvergenceNode", () => {
 		const state = { setup: tmpWorktree(), implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true } } as unknown as PipelineState;
 		const cwd = state.setup!.worktreePath;
 		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		ensureCitedFiles(cwd, "src/A.ts", "src/B.ts", "src/C.ts");
 		const reviewSets = [
 			["A", "B", "C"],
 			["B", "C"],
