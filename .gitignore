@@ -15,3 +15,8 @@ coverage/
 .firecrawl/
 .playwright-mcp/
 docs/reference/
+
+# deep-dive reference material: local clones of external repos (not committed)
+docs/references/deepseek-harness/
+docs/references/deepseek-harness-orange-book/
+docs/references/cordiverse-paper/
