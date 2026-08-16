@@ -13,7 +13,7 @@
 import { EventEmitter } from "node:events";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
@@ -28,6 +28,8 @@ import { getConfig } from "./render/super-dev-dir.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
+import { appendRunEvent, runStartedEvent, type RunEventInput } from "./runlog.ts";
+import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
 import { isNonRetryableAgentError } from "./agent-errors.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
 import type {
@@ -487,6 +489,34 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		}
 	});
 
+	// P1.2 (dsh-09 v3 Phase P): the durable run-event ledger. ONE subscription
+	// captures every stage transition — including sub-step tasks (codeReview,
+	// reviewFix, buildGate…) that never get their own audit.jsonl row. Events
+	// buffer in order until state.setup.specDirectory exists (the ledger lives in
+	// the spec dir, which setup itself creates): run.started + setup.started flush
+	// the moment setup's terminal event arrives. Kind "phase" rows are
+	// dashboard-only noise (same rule as the tracker above); "step" rows (TDD RED,
+	// RED review…) are real transitions and are recorded with their kind.
+	const runId = randomUUID();
+	(state as Record<string, unknown>).__runId = runId;
+	const pendingLedgerEvents: RunEventInput[] = [runStartedEvent(runId, task, SUPER_DEV_EXTENSION_VERSION)];
+	const ledgerEvent = (evt: RunEventInput) => {
+		const dir = state.setup?.specDirectory;
+		if (!dir) { pendingLedgerEvents.push(evt); return; }
+		for (const pending of pendingLedgerEvents.splice(0)) appendRunEvent(dir, pending);
+		appendRunEvent(dir, evt);
+	};
+	ctx.events.on("stage", (info: unknown) => {
+		const stage = info as StageProgressEvent;
+		if (!stage?.id || stage.kind === "phase") return;
+		const base = { runId, stage: stage.id, data: { ...(stage.kind ? { kind: stage.kind } : {}) } } as const;
+		if (stage.status === "running") { ledgerEvent({ ...base, type: "stage.started", data: { ...base.data } }); return; }
+		if (stage.status === "ok" || stage.status === "partial") { ledgerEvent({ ...base, type: "stage.completed", data: { ...base.data, partial: stage.status === "partial" } }); return; }
+		if (stage.status === "skipped") { ledgerEvent({ ...base, type: "stage.skipped", data: { ...base.data } }); return; }
+		if (stage.status === "failed") { ledgerEvent({ ...base, type: "stage.failed", data: { ...base.data, error: stage.error } }); return; }
+		if (stage.status === "cancelled") { ledgerEvent({ ...base, type: "stage.cancelled", data: { ...base.data } }); return; }
+	});
+
 	let aborted = false;
 	let abortError: string | undefined;
 	try {
@@ -583,6 +613,10 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 			progress?.log(`Workflow "${workflow.id}" complete`);
 		}
 	}
+
+	// P1.2: the run's terminal event — flushes any still-pending buffered events
+	// first (a run that never produced a spec dir writes nothing anywhere).
+	ledgerEvent({ runId, type: "run.completed", data: { status, reason: abortError, specIdentifier: state.setup?.specIdentifier ?? "" } });
 
 	return {
 		workflowId: workflow.id,

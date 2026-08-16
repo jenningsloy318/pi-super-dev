@@ -28,6 +28,7 @@ export type RunEventType =
 	| "stage.completed"
 	| "stage.failed"
 	| "stage.skipped"
+	| "stage.cancelled"
 	| "agent.called"
 	| "gate.checked"
 	| "judge.called"
@@ -52,9 +53,10 @@ export interface RunEventDataHints {
 	"run.started": { task: string; version: string };
 	"run.completed": { status: string; reason?: string };
 	"stage.started": Record<string, never>;
-	"stage.completed": { durationMs?: number };
-	"stage.failed": { durationMs?: number; error?: string };
-	"stage.skipped": { reason?: string };
+	"stage.completed": { durationMs?: number; partial?: boolean; kind?: string };
+	"stage.failed": { durationMs?: number; error?: string; kind?: string };
+	"stage.skipped": { reason?: string; kind?: string };
+	"stage.cancelled": { kind?: string };
 	"agent.called": { agent: string; model?: string; backend?: string; durationMs?: number; control?: unknown; error?: string };
 	"gate.checked": { gate: string; pass: boolean; ran: string[]; errors?: string };
 	"judge.called": { scope: string; route?: string; status: string };
