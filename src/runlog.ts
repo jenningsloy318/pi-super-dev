@@ -245,3 +245,80 @@ export function reconstructStageOutcomes(events: RunEvent[]): StageOutcome[] {
 	}
 	return [...out.values()];
 }
+
+// ─── Event-consumer invariants registry (P1.7) ──────────────────────────────
+//
+// The contract every emitter (task wrapper, realAgent, gates, judge, replan)
+// must preserve — the assumptions fold consumers are entitled to rely on.
+// CI enforces these against real runWorkflow streams; the checker is exported
+// so postmortems (and the R6 acceptance check) can validate any production
+// events.jsonl:
+//
+//   INV-L1 seq is strictly increasing and contiguous from 1 (no gaps/dupes —
+//          a lost event would silently corrupt every downstream fold).
+//   INV-L2 time is non-decreasing (folds may bucket by time safely).
+//   INV-L3 every event carries seq, time, runId, and type.
+//   INV-L4 each runId's events form ONE contiguous block (runs are sequential;
+//          replan restarts append after the previous run.completed — never
+//          interleave).
+//   INV-L5 run.started is the first event of its runId; run.completed is the
+//          last (bracket integrity).
+//   INV-L6 every stage.started for stage X is followed by exactly one terminal
+//          event for X (completed/failed/skipped/cancelled) before any other
+//          lifecycle event for X (no zombie stages, no double terminals).
+
+export function checkRunLogInvariants(events: RunEvent[]): string[] {
+	const violations: string[] = [];
+	// INV-L1 / INV-L2 / INV-L3
+	for (let i = 0; i < events.length; i++) {
+		const e = events[i];
+		if (typeof e.seq !== "number" || typeof e.type !== "string" || !e.runId || !e.time) {
+			violations.push(`seq ${i + 1}: event missing seq/time/runId/type (INV-L3)`);
+			continue;
+		}
+		if (e.seq !== i + 1) violations.push(`position ${i + 1}: seq is ${e.seq}, expected ${i + 1} (INV-L1)`);
+		if (i > 0) {
+			const prev = events[i - 1];
+			if (prev.time && e.time < prev.time) violations.push(`seq ${e.seq}: time ${e.time} precedes ${prev.time} (INV-L2)`);
+		}
+	}
+	// INV-L4 / INV-L5
+	const blocks = new Map<string, { first: number; last: number }>();
+	for (let i = 0; i < events.length; i++) {
+		const b = blocks.get(events[i].runId) ?? { first: i, last: i };
+		if (i - b.last > 1) violations.push(`seq ${events[i].seq}: runId ${events[i].runId} resumed after a gap (interleaved runs, INV-L4)`);
+		b.last = i;
+		blocks.set(events[i].runId, b);
+	}
+	const lastBlockLast = Math.max(...[...blocks.values()].map((b) => b.last));
+	for (const [runId, b] of blocks) {
+		if (events[b.first].type !== "run.started") violations.push(`runId ${runId}: first event is ${events[b.first].type}, not run.started (INV-L5)`);
+		// A run missing its run.completed is a violation ONLY when another run
+		// follows it in the file (the run provably ended — the process survived
+		// to start the next run). The file's TRAILING block may be an interrupted
+		// run: a fact about the run, not a ledger defect.
+		if (b.last !== lastBlockLast && events[b.last].type !== "run.completed") {
+			violations.push(`runId ${runId}: last event is ${events[b.last].type}, not run.completed (INV-L5)`);
+		}
+	}
+	// INV-L6
+	const openStages = new Map<string, string>(); // stage -> opened at seq
+	for (const e of events) {
+		if (!e.stage) continue;
+		if (e.type === "stage.started") {
+			if (openStages.has(e.stage)) violations.push(`seq ${e.seq}: stage ${e.stage} started while already open (INV-L6)`);
+			openStages.set(e.stage, e.seq as unknown as string);
+		} else if (e.type === "stage.completed" || e.type === "stage.failed" || e.type === "stage.skipped" || e.type === "stage.cancelled") {
+			if (!openStages.has(e.stage)) violations.push(`seq ${e.seq}: terminal ${e.type} for ${e.stage} without stage.started (INV-L6)`);
+			openStages.delete(e.stage);
+		}
+	}
+	// An interrupted run (process killed) leaves stages open — that is a fact
+	// about the run, not a ledger violation; only report when run.completed
+	// exists (the run ended cleanly) yet a stage is still open.
+	const lastRun = events[events.length - 1];
+	if (lastRun?.type === "run.completed") { // clean end — no stage may remain open
+		for (const [stage, at] of openStages) violations.push(`stage ${stage} (opened seq ${at}) never reached a terminal event before run.completed (INV-L6)`);
+	}
+	return violations;
+}
