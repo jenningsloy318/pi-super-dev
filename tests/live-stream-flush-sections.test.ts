@@ -692,3 +692,59 @@ describe("sticky lifecycle anchors (agent/session/doc/rendered)", () => {
 		expect(body).not.toContain("s59-noise-0");
 	});
 });
+
+// ─── Sticky Stage 1 setup anchors (Setup/Worktree/Spec dir) ──
+// The user reported the created-worktree line scrolled away with Stage 1's
+// body, leaving no visible answer to "where does this run work?". These three
+// lines are now sticky anchors: real byte-level fixtures below are lifted
+// verbatim from production run 2026-08-16T08-41-11-882Z/run.log.
+describe("sticky setup anchors (Setup/Worktree/Spec dir)", () => {
+	const setupAnchors = [
+		"Setup: spec 03-staging-requirements | frontend | branch main",
+		"Worktree: ./.worktree/03-staging-requirements (created)",
+		"Spec dir: ./docs/specifications/03-staging-requirements/",
+	];
+
+	it("pins the setup identity lines of a completed Stage 1 section (chatter dropped)", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate, showTimestamps: false });
+		h.sink.stage({ id: "setup", label: "Stage 1 — Setup", status: "running" });
+		for (const line of setupAnchors) h.sink.log(line);
+		for (let i = 0; i < 20; i++) h.sink.log(`setup-noise-${i}`);
+		h.sink.stage({ id: "setup", label: "Stage 1 — Setup", status: "ok" });
+		h.sink.stage({ id: "impl", label: "Implementation", status: "running" });
+		h.sink.log("live-now");
+		h.flush();
+		const body = h0.body;
+		for (const line of setupAnchors) expect(body).toContain(line);
+		expect(body).not.toContain("setup-noise-0");
+	});
+
+	it("pins the in-place + resumed + git-init variants too", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate, showTimestamps: false });
+		h.sink.stage({ id: "setup", label: "Stage 1 — Setup", status: "running" });
+		h.sink.log("Setup: spec 01-x | mixed (Web UI) | branch main (resumed)");
+		h.sink.log("Worktree: ./.worktree/01-x (in-place); git init'd");
+		h.sink.log("Spec dir: .");
+		h.sink.stage({ id: "setup", label: "Stage 1 — Setup", status: "ok" });
+		h.sink.stage({ id: "impl", label: "Implementation", status: "running" });
+		h.flush();
+		const body = h0.body;
+		expect(body).toContain("Worktree: ./.worktree/01-x (in-place); git init'd");
+		expect(body).toContain("Setup: spec 01-x | mixed (Web UI) | branch main (resumed)");
+		expect(body).toContain("Spec dir: .");
+	});
+
+	it("does NOT pin a bare 'Worktree:' agent echo lacking the created/in-place marker", () => {
+		const h0 = bodyHolder();
+		const h = createLiveStream({ mode: "print", onUpdate: h0.onUpdate, showTimestamps: false });
+		h.sink.stage({ id: "setup", label: "Stage 1 — Setup", status: "running" });
+		h.sink.log("Worktree: /repo/some/echoed/context/line");
+		for (let i = 0; i < 20; i++) h.sink.log(`setup-noise-${i}`);
+		h.sink.stage({ id: "setup", label: "Stage 1 — Setup", status: "ok" });
+		h.sink.stage({ id: "impl", label: "Implementation", status: "running" });
+		h.flush();
+		expect(h0.body).not.toContain("Worktree: /repo/some/echoed/context/line");
+	});
+});

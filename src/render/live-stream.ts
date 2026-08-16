@@ -174,6 +174,13 @@ const isStickySectionLine = (line: Pick<SectionLine, "text">): boolean => {
 	return (
 		/^super-dev v\d+\.\d+\.\d+$/.test(text) ||
 		/^(?:Run started|Task|Launch cwd|Launch worktree|Launch branch|Run log): /.test(text) ||
+		// Stage 1 setup anchors — the run's own worktree/spec-dir identity must
+		// stay visible in the collapsed Stage 1 section (the user asked for the
+		// created-worktree line specifically: it answers "where does this run
+		// work?" long after Stage 1's body has scrolled away).
+		/^Setup: spec \S+ \| \S+(?: \(Web UI\))? \| branch \S+(?: \(resumed\))?$/.test(text) ||
+		/^Worktree: \S.*\((?:created|in-place)\)/.test(text) ||
+		/^Spec dir: \S.*$/.test(text) ||
 		/^(?:Stage|Phase) (?:start|end): /.test(text) ||
 		/^Implementation \S+ (?:RED gate FAIL|RED gate evidence|RED runner diagnostic|stopped before implementation|stopped after \d+ attempt|attempt \d+ FAIL|build-gate FAIL|deliverable-check FAIL)/.test(text) ||
 		// Lifecycle anchors — pin each stage's key events (which agent ran, for
