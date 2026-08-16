@@ -1,5 +1,7 @@
 # DSH-02 — The Cordis Framework and Its Paper: "A Programming Paradigm for Spatiotemporal Composability"
 
+Status: reference — dsh research series
+
 Sources analyzed (read in full):
 - Paper: `docs/references/cordiverse-paper/paper.pdf` (Shi, Zhang, Cui — PKU & DeepSeek-AI, draft 2026-08-13; 8 sections, ~80 pp.)
 - Primer: `docs/references/deepseek-harness/docs/cordis-primer.md`

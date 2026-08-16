@@ -1,5 +1,7 @@
 # dsh-00 — DeepSeek Harness Study Series: Index
 
+Status: reference — study-series index
+
 A deep-dive study of DeepSeek Harness (`dsh`), the Cordis plugin framework underneath
 it, its academic paper, and the independent Orange Book field report. Produced to
 extract transferable engineering lessons for pi-super-dev.

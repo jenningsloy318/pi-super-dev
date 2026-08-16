@@ -1,6 +1,6 @@
 # Root-Cause Analysis & Fix Plan — Unbounded Convergence Loop (OOM)
 
-> Status: **REVIEW VERIFIED & PLAN ADJUSTED — awaiting implementation approval.**
+> Status: **implemented (574e7968, v0.1.44 — MAX_CONVERGENCE_ROUNDS=8 FatalAbort in artifact-convergence.ts + spec-convergence.ts; stale tests fixed; liveness test added).**
 > Scope: `src/stages/artifact-convergence.ts`, `src/stages/spec-convergence.ts`,
 > `tests/artifact-convergence.test.ts`.
 > Pre-existing: reproduces on `main` with the RED-loop fix reverted. **Not** caused by

@@ -1,5 +1,7 @@
 # dsh-04 — Security: Sandbox Ladder, Approval Seam, Permissions, Credentials, and Defensive Engineering
 
+Status: reference — dsh research series
+
 Source repo (read-only): `docs/references/deepseek-harness` (github.com/deepseek-ai/deepseek-harness, MIT). All paths below relative to repo root. Companion reports: dsh-01 (architecture), dsh-02 (Cordis paper), dsh-03 (lifecycle), dsh-05 (ecosystem), dsh-06 (process), dsh-07 (Orange Book field data), dsh-08 (lessons for pi-super-dev).
 
 ---

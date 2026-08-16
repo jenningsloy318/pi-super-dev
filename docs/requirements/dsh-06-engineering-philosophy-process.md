@@ -1,5 +1,7 @@
 # dsh-06 — DeepSeek Harness: Engineering Philosophy & Process (Deep-Dive)
 
+Status: reference — dsh research series (source of the postmortem→rules convention)
+
 Repo under analysis (read-only local clone): `docs/references/deepseek-harness` (github.com/deepseek-ai/deepseek-harness, MIT, developer preview). All paths below are relative to that repo root.
 Measured locally: 219 packages in 54 `packages/<group>/` dirs; 52 `verify-*`/`gen-*` gate scripts under `scripts/`; 110 English docs under `docs/` (46 subsystem pages); 4 numbered postmortems; 688 English Agent-Note Markdown files (683 dated decision notes + subtree `AGENTS.md`/`README`) with 684 `.i18n.yaml` consistency records; 11 shipped skills under `.agents/skills/`.
 Companion reports: dsh-01 (architecture), dsh-02 (Cordis paper), dsh-03 (lifecycle), dsh-04 (security), dsh-05 (ecosystem), dsh-07 (Orange Book field data), dsh-08 (lessons for pi-super-dev).

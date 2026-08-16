@@ -1,5 +1,7 @@
 # dsh-05 — DeepSeek Harness: Extension Ecosystem, Tool Execution, and Distribution Model
 
+Status: reference — dsh research series
+
 Repo under analysis (read-only local clone): `docs/references/deepseek-harness`. All paths below are relative to that repo root. Companion reports: dsh-01 (architecture), dsh-02 (Cordis paper), dsh-03 (lifecycle/session), dsh-04 (security), dsh-06 (process), dsh-07 (Orange Book), dsh-08 (lessons for pi-super-dev).
 
 ---

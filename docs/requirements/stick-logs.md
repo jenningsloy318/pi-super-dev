@@ -1,3 +1,5 @@
+Status: reference — user note (sticky TUI shipped 0c035a21)
+
 from last commits, we add the stickness with following 
  ▌✓ Stage 2C — BDD Review      
    [2026-08-14T10:49:34.975+08:00] Stage start: Stage 2C — BDD Review at 2026-08-14T10:49:34.975+08:00

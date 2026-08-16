@@ -1,5 +1,7 @@
 # dsh-07 — The Orange Book Field Report: An Independent Non-Coder's First-24-Hours Teardown of DeepSeek Harness
 
+Status: reference — dsh research series
+
 Sources: `docs/references/deepseek-harness-orange-book/DeepSeek-Harness-Orange-Book-zh-v260814.pdf` (full text read via `/tmp/dsh-orange-book.txt`, 4,380 extracted lines; all §-references below are book chapters), cross-verified against the local repo clone `docs/references/deepseek-harness` (all repo paths below are relative to that root). Report language English; key Chinese terms kept in parentheses.
 Author of the analyzed book: 花叔 (HuaShu / @AlchainHust) — a non-coder whose App Store paid-chart-#1 app (小猫补光灯, "kitten fill-light") was written entirely by AI. Book version v260814, written within ~24 hours of dsh's open-sourcing (2026-08-13, MIT, 35.0k stars within ~15 hours of publication).
 

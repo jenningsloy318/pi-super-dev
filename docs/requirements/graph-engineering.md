@@ -1,3 +1,5 @@
+Status: reference — research note (input to dsh-09 R1)
+
 
 AI超元域
 @AISuperDomain

@@ -1,5 +1,7 @@
 # Repo-Wide Pipeline Blocker Audit — v0.1.58
 
+Status: implemented (866e9355, 195542ee, c431bdc5, 3088e3a2; B-6 lenient degrade decision recorded in-doc)
+
 **Date:** 2026-08-14
 **Audited version:** v0.1.58 (main, clean tree)
 **Method:** Three parallel fresh-context senior reviewers (angles: A orchestration/stage machinery, B build-runner/cross-language pipeline, C agent contracts/prompts/structured output), each instructed to first understand the design (AGENTS.md, prior root-cause docs, full source map) and then hunt only for defects with concrete failure scenarios. Every finding below was then **independently re-verified by the parent session** via direct code traces and live toolchain probes (cargo 1.95.0, go 1.26.3, pytest 8.x, typebox 1.1.38 runtime). No source files were changed for this audit.

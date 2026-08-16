@@ -1,5 +1,7 @@
 # dsh-03 — Agent Lifecycle, Session/Event-Sourcing, and Context Management (Deep-Dive)
 
+Status: reference — dsh research series
+
 Repo under analysis (read-only): `docs/references/deepseek-harness` (github.com/deepseek-ai/deepseek-harness, MIT, developer preview).
 All paths below are relative to that repo root. Every claim cites a concrete file; type-level claims cite the `type-equiv`/`cordis-catalog` blocks embedded in the subsystem docs, which the repo verifies against source via `pnpm run verify-type-equiv` / `verify-cordis-catalog` (docs/subsystems/core.md §"Repo-wide type patterns").
 

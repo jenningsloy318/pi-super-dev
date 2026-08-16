@@ -1,5 +1,7 @@
 # Learnings from pi's Parent-Orchestrated Review Loop
 
+Status: implemented (3088e3a2, fac1993f, bec0a868, 56da5ffc, 585f50da; R-6 deferred pending production data)
+
 **Date:** 2026-08-14
 **Sources studied:** `~/.pi/agent/npm/node_modules/pi-subagents/prompts/review-loop.md` (the orchestration contract), `pi-subagents/docs/agents.md` (agent model: context modes, acceptance, overrides), `pi-subagents/agents/reviewer.md` (the reviewer role definition), `pi-subagents/docs/workflows.md`.
 **Compared against:** our verify-stage review convergence (`src/stages/verify.ts` reviewStep/fixStepReview/stagnation), artifact-convergence nodes, escalation machinery, and the audit fixes just landed (A-2/C-5).

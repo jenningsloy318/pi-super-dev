@@ -1,3 +1,5 @@
+Status: reference — external article note (graph engineering)
+
 
 AI超元域
 @AISuperDomain

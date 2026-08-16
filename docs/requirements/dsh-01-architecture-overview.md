@@ -1,5 +1,7 @@
 # dsh-01 — DeepSeek Harness: Architecture Overview (Deep-Dive)
 
+Status: reference — dsh research series
+
 Source repo (local, read-only): `docs/references/deepseek-harness` (clone of github.com/deepseek-ai/deepseek-harness, MIT, developer preview).
 All paths below are relative to that repo root. Companion reports: dsh-02 (philosophy/decision record), dsh-03 (implementation patterns), dsh-04 (paper: Cordis formalism), dsh-05 (Orange Book field data), dsh-06 (trade-offs/lessons).
 

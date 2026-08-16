@@ -1,5 +1,7 @@
 # Super-dev Workflow Hardening Requirements
 
+Status: implemented (rolling hardening 2026-08-01..08-15; e.g. 49d13958, de133d19, 3106dc5d)
+
 ## Context
 
 Since 2026-08-01, repeated `super-dev` runs exposed a pattern of workflow-level failures that are larger than any one implementation bug. The failures span the implementation/TDD stage, deliverable gates, review convergence, integration/retry loops, and run-summary/escalation behavior.

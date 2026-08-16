@@ -1,5 +1,7 @@
 # Agent Team Runtime Requirements
 
+Status: reference — research note (input to dsh-09 R2/P2)
+
 ## Context
 
 `pi-super-dev` currently uses many specialist agents, but most work still flows through a central sequential workflow. The specialists are invoked as task executors; they do not yet operate as a durable agent team with explicit responsibility, handoff, current shared state, or accountable ownership.

@@ -1,5 +1,7 @@
 # Pi Extension API Research — Standalone Orchestration Engine
 
+Status: reference — research note
+
 > Research date: 2026-07-03
 > Scope: Full surface area of Pi Coding Agent extension API, subagent spawning mechanisms, and architecture for a self-contained orchestration engine in `@jenningsloy318/pi-super-dev`.
 

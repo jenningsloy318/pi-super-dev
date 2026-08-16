@@ -1,5 +1,7 @@
 # Requirements — Fix the stuck RED→review→implement loop (root-cause)
 
+Status: implemented (de133d19, v0.1.43)
+
 > **Status:** Analysis & plan (not yet implemented).
 > **Source of failure:** run `~/.super-dev/runs/2026-08-12T23-05-28-534Z/`
 > (and the earlier `2026-08-12T12-37-45-239Z/`).

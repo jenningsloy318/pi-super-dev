@@ -1,6 +1,6 @@
 # dsh-09 — Convergence Plan v3: sad-path team on a pipeline skeleton
 
-Status: PROPOSAL v3 — v2 (commit d7fab455) restructured after production run 2026-08-16T01-00-35-613Z triggered the plan's own replan-promotion criterion. Awaiting user approval.
+Status: implemented — v3 Phase F (7dd18363, 302ae9b2, 2dabe216, fbefca47), R1–R5 (4257e2ca, d45c96d9, e1e8cde8), P1 (d0f8cbed..c50fbd21); R6 acceptance re-run pending; P2/P3.1/P4 in progress.
 Version baseline: 0.1.74.
 Inputs: dsh-00..dsh-08, `agent-team-runtime.md`, `graph-engineering.md`, the loop-line docs (all implemented), a full code-level verification pass, postmortem evidence from run 2026-08-16T01-00-35-613Z (spec 03-staging, pi-omisis), and the architecture discussion it prompted.
 

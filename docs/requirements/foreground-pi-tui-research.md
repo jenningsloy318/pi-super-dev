@@ -1,5 +1,7 @@
 # Foreground Pi TUI Behavior
 
+Status: reference — TUI research note
+
 ## Decision
 
 `pi-super-dev` is foreground-only. The `super_dev` tool blocks until the
