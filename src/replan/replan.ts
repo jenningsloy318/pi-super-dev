@@ -32,6 +32,7 @@ import { isAbsolute, join } from "node:path";
 import { classifyReplanOwnerDeterministic, type ReplanOwnerDecision, type ReplanOwnerStage, REPLAN_OWNER_STAGES } from "./owners.ts";
 import { classifyReplanOwner } from "./lead.ts";
 import { downstreamOf } from "../graph/edges.ts";
+import { sendMessage, replyTo, pendingMessagesFor } from "../team/messages.ts";
 import { appendRunEvent } from "../runlog.ts";
 import type { PipelineState, StageContext } from "../types.ts";
 
@@ -162,6 +163,13 @@ export interface ReplanMarker {
 	invalidationSet: string[];
 }
 
+const classifyOwnerOf = (finding: Record<string, unknown>): string => {
+	// Cheap re-derivation for message bodies only — the AUTHORITATIVE owner is
+	// the persisted request's ownerStage (computed by the full R2 classifier).
+	const ownerStage = String(finding.ownerStage ?? "").toLowerCase();
+	return ownerStage || "spec";
+};
+
 function fingerprintFinding(f: Record<string, unknown>): string {
 	return `${String(f.file ?? "")}|${String(f.severity ?? "")}|${String(f.title ?? "")}`.toLowerCase().replace(/\s+/g, " ");
 }
@@ -283,6 +291,17 @@ export async function maybeTriggerReplan(state: PipelineState, ctx: StageContext
 			invalidationSet,
 		} satisfies ReplanMarker;
 		ctx.log(`Stage 10: REPLAN round ${file.rounds} — ${newRequests.length} finding(s) routed back to ${owners.join(", ")}; invalidated ${invalidationSet.length} stage(s) (${dropped} resume rows) — the run will restart and the owning stages will revise`);
+		// P3.1: the WHO-channel alongside the structured requests — each owning
+		// stage gets a durable message; the owning convergence loop replies when
+		// its reviewer verifies the revision (consumeReplanRequests).
+		for (const owner of owners) {
+			sendMessage(setup.specDirectory, {
+				senderRole: "verify",
+				receiverRole: owner,
+				subject: `replan round ${file.rounds}: revise ${owner} artifact (${newRequests.filter((r) => r.ownerStage === owner).length} finding(s))`,
+				body: routable.filter(({ finding }) => classifyOwnerOf(finding) === owner).map(({ finding }) => String(finding.title ?? "")).slice(0, 8).join("; "),
+			}, originatedRunId);
+		}
 		return true;
 	} catch (err) {
 		appendAudit(setup.specDirectory, { event: "error", error: err instanceof Error ? err.message : String(err) });
@@ -301,7 +320,9 @@ export function pendingReplanRequests(specDir: string | undefined, stage: string
 
 /** Flip this stage's pending requests to addressed (called on approval — the
  *  owning reviewer verified the revision; requests are NEVER marked on the
- *  writer's say-so alone, mirroring the convergence-ledger contract). */
+ *  writer's say-so alone, mirroring the convergence-ledger contract). Also
+ *  replies to the stage's pending P3.1 messages (the WHO-channel lifecycle
+ *  tracks the request lifecycle). */
 export function consumeReplanRequests(specDir: string | undefined, stage: string): number {
 	if (!specDir) return 0;
 	try {
@@ -315,7 +336,12 @@ export function consumeReplanRequests(specDir: string | undefined, stage: string
 				n++;
 			}
 		}
-		if (n > 0) writeJson(path, file);
+		if (n > 0) {
+			writeJson(path, file);
+			for (const pending of pendingMessagesFor(specDir, stage)) {
+				replyTo(specDir, pending.id, { senderRole: stage, subject: `revision verified by ${stage} review`, body: `${n} request(s) addressed` });
+			}
+		}
 		return n;
 	} catch {
 		return 0;

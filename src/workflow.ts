@@ -30,6 +30,7 @@ import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
 import { appendRunEvent, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
 import { validateTeamReadiness } from "./team/raci.ts";
+import { recordInstruction } from "./team/messages.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
 import { isNonRetryableAgentError } from "./agent-errors.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
@@ -334,6 +335,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// a note typed during agent N is picked up at the N+1 boundary.
 		const drained = options.userSteerProvider ? options.userSteerProvider() : [];
 		appendUserNotes(state.setup?.specDirectory, drained);
+		// P3.1: user instructions are ledger events too (the instruction channel
+		// of the message bus — folds see what the human injected and when).
+		for (const note of drained) recordInstruction(state.setup?.specDirectory, String(note), ledgerRunId(state));
 		const userNotes = userNotesForAgent(state.setup?.specDirectory);
 		const promptWithNotes = userNotes
 			? `${promptWithKnowledge}\n\n## User context (added during the run)\n${userNotes}`
