@@ -368,6 +368,57 @@ Super-dev stores user-level runtime data under `~/.super-dev/`:
 summary; headless-safe) or `"interactive"` (additionally prompt a 3-option
 select when stagnation fires in TUI/RPC mode).
 
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SUPER_DEV_MODEL` | — | global model override (per-role `agentModels` wins) |
+| `SUPER_DEV_BACKEND` | `session` | agent backend: `session` or `subprocess` |
+| `SUPER_DEV_THINKING` | — | per-agent thinking level for the session backend |
+| `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
+| `SUPER_DEV_MAX_CHALLENGE_REAUTHORS` | `2` | implementer-driven RED re-author cap |
+| `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
+| `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
+| `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
+| `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in setup |
+| `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
+| `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy |
+| `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |
+| `SUPER_DEV_CARGO_METADATA_TIMEOUT_MS` | `30000` | cargo metadata lookup timeout |
+| `SUPER_DEV_TRANSIENT_RETRY_MS` | — | transient agent-error retry envelope |
+| `SUPER_DEV_DEBUG` | — | debug logging |
+
+The four `*_MS`/`*_PACKAGES`/`*_BASE_REF` variables tune the Rust-aware build
+gate **without editing any stage call site**:
+
+```bash
+SUPER_DEV_BUILD_TIMEOUT_MS=900000 \
+SUPER_DEV_BUILD_TEST_PACKAGES="api,store" \
+SUPER_DEV_GATE_BASE_REF=develop \
+  pi super-dev fix "add OAuth2 login"
+```
+
+Package-set **precedence** (highest → lowest): explicit `opts` argument →
+`SUPER_DEV_BUILD_TEST_PACKAGES` (expanded into `-p <name>` flags on every cargo
+build/test/clippy invocation) → auto-detected touched crates →
+workspace-wide. The auto-detect path diffs against the base ref, maps every
+`crates/<dir>/…` path to its directory, and resolves each to the **real cargo
+package name** via a cached `cargo metadata --no-deps` lookup (prefixed-crate
+workspaces resolve correctly — `crates/data/` → `stockfan-data`). Crate names
+are bare package names, **not paths**. On any git/cargo error, empty diff, or
+non-`crates/<pkg>/` layout it returns `[]` and the gate falls back to
+workspace-wide behavior. The build gate is scope-aware beyond cargo, too: Rust
+workspaces with touched nested modules also run the owning module's local
+commands (`<module>: <command>` in the log), and pre-existing out-of-scope
+failures are ignorable (`gate.pass || gate.inScopePass`) — now subject to the
+merge-base baseline check above.
+
+Internals: timeout resolution in `resolveTimeoutMs()`, package scoping in
+`scopedCargoArgs()` family, directory→package resolution in
+`resolveCargoPackageNames()`, auto-detection in `detectTouchedCargoPackages()`,
+in-scope classification in `classifyOutOfScopeErrors()` (all under
+`src/build-runner/`). See the JSDoc on `DEFAULT_TIMEOUT_MS` for the full
+timeout fallback matrix.
+
 ### Cross-model review (`config.json` → `agentModels`)
 
 By default every specialist agent runs on the same model. To review code with a
@@ -421,57 +472,6 @@ provider extension active there works. `research-agent` is isolated into bare
 `pi` subprocesses (only `pi-web-access` + `pi-mcp-adapter` loaded), so mapping
 it to a model supplied by a host-session-only extension fails fast with
 `Model … not found` — map it only to models the stock `pi` CLI can see.
-
-## Environment variables
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `SUPER_DEV_MODEL` | — | global model override (per-role `agentModels` wins) |
-| `SUPER_DEV_BACKEND` | `session` | agent backend: `session` or `subprocess` |
-| `SUPER_DEV_THINKING` | — | per-agent thinking level for the session backend |
-| `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
-| `SUPER_DEV_MAX_CHALLENGE_REAUTHORS` | `2` | implementer-driven RED re-author cap |
-| `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
-| `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
-| `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
-| `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in setup |
-| `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
-| `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy |
-| `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |
-| `SUPER_DEV_CARGO_METADATA_TIMEOUT_MS` | `30000` | cargo metadata lookup timeout |
-| `SUPER_DEV_TRANSIENT_RETRY_MS` | — | transient agent-error retry envelope |
-| `SUPER_DEV_DEBUG` | — | debug logging |
-
-The four `*_MS`/`*_PACKAGES`/`*_BASE_REF` variables tune the Rust-aware build
-gate **without editing any stage call site**:
-
-```bash
-SUPER_DEV_BUILD_TIMEOUT_MS=900000 \
-SUPER_DEV_BUILD_TEST_PACKAGES="api,store" \
-SUPER_DEV_GATE_BASE_REF=develop \
-  pi super-dev fix "add OAuth2 login"
-```
-
-Package-set **precedence** (highest → lowest): explicit `opts` argument →
-`SUPER_DEV_BUILD_TEST_PACKAGES` → auto-detected touched crates →
-workspace-wide. The auto-detect path diffs against the base ref, maps every
-`crates/<dir>/…` path to its directory, and resolves each to the **real cargo
-package name** via a cached `cargo metadata --no-deps` lookup (prefixed-crate
-workspaces resolve correctly — `crates/data/` → `stockfan-data`). Crate names
-are bare package names, **not paths**. On any git/cargo error, empty diff, or
-non-`crates/<pkg>/` layout it returns `[]` and the gate falls back to
-workspace-wide behavior. The build gate is scope-aware beyond cargo, too: Rust
-workspaces with touched nested modules also run the owning module's local
-commands (`<module>: <command>` in the log), and pre-existing out-of-scope
-failures are ignorable (`gate.pass || gate.inScopePass`) — now subject to the
-merge-base baseline check above.
-
-Internals: timeout resolution in `resolveTimeoutMs()`, package scoping in
-`scopedCargoArgs()` family, directory→package resolution in
-`resolveCargoPackageNames()`, auto-detection in `detectTouchedCargoPackages()`,
-in-scope classification in `classifyOutOfScopeErrors()` (all under
-`src/build-runner/`). See the JSDoc on `DEFAULT_TIMEOUT_MS` for the full
-timeout fallback matrix.
 
 ## Testing
 

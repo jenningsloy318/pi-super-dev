@@ -19,6 +19,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
+import { toBool } from "./doc-validators.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
 import { extractControlKeys } from "./control.ts";
 import { knowledgeForAgent } from "./render/knowledge.ts";
@@ -530,7 +531,10 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		(state.preMergeBuild as { pass?: boolean }).pass === true &&
 		state.cleanup !== undefined &&
 		(state.cleanup as { blocked?: boolean }).blocked !== true;
-	const mergeNotConfirmed = mergeRequired && (state.merge as { merged?: boolean } | undefined)?.merged !== true;
+	// A-2 + boolean-drift (run 2026-08-15T13-45-02): the merge agent emitted
+	// `merged: "true"` (string); strict `!== true` misreported PARTIAL on a
+	// genuinely merged run. Tolerant read (toBool) mirrors mergeVerifyTask.
+	const mergeNotConfirmed = mergeRequired && !toBool((state.merge as { merged?: unknown } | undefined)?.merged);
 	// A-3 status honesty: a cleanup-blocked run skipped the merge — that is never
 	// a clean success, whatever else passed. Surface as partial with the reason.
 	const cleanupBlocked = (state.cleanup as { blocked?: boolean } | undefined)?.blocked === true;

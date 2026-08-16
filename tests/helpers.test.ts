@@ -307,3 +307,27 @@ describe("R-2 optional tests-review merge source", () => {
 		expect(r.value.verdict).toBe("Approved");
 	});
 });
+
+// ─── check-prototype-needed: boolean control drift (run 2026-08-15T13-45-02 postmortem) ──
+// The design render schema types hasNumericConstants as STRING, so the design
+// agent emits "true"/"yes"; the old consumer `=== true` could NEVER fire and the
+// prototype-needed gate was dead from this signal. Tolerant read via toBool.
+describe("check-prototype-needed — boolean drift tolerance", () => {
+	it('string "true" now triggers the prototype gate (was dead)', async () => {
+		const r = await runHelper({ name: "check-prototype-needed", sources: { design: { hasNumericConstants: "true", modules: [{ constants: ["MAX_RETRY=3"] }] } } });
+		expect(r.value.needed).toBe(true);
+		expect(r.value.constants).toEqual(["MAX_RETRY=3"]);
+	});
+	it('string "yes" and boolean true both trigger', async () => {
+		const yes = await runHelper({ name: "check-prototype-needed", sources: { design: { hasNumericConstants: "yes" } } });
+		expect(yes.value.needed).toBe(true);
+		const bool = await runHelper({ name: "check-prototype-needed", sources: { design: { hasNumericConstants: true } } });
+		expect(bool.value.needed).toBe(true);
+	});
+	it('string "false" / boolean false / absent stay not-needed', async () => {
+		for (const v of ["false", false, undefined]) {
+			const r = await runHelper({ name: "check-prototype-needed", sources: { design: { hasNumericConstants: v } } });
+			expect(r.value.needed).toBe(false);
+		}
+	});
+});

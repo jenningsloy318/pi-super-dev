@@ -8,6 +8,7 @@ import { writerTask, helperTask, isFatalAbort } from "../nodes.ts";
 import type { Stage, SetupControl } from "../types.ts";
 import * as P from "../prompts.ts";
 import { ClassificationData } from "../render/schemas.ts";
+import { toBool } from "../doc-validators.ts";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
 
@@ -161,8 +162,17 @@ export const mergeVerifyTask: Stage = {
 	id: "merge-verify",
 	label: "Stage 14B — Merge Verification",
 	async run(state, ctx) {
-		const merge = state.merge as { merged?: boolean; commitSha?: string; mergeCommand?: string; summary?: string } | undefined;
-		if (!merge || merge.merged !== true) return { status: "ok" }; // nothing claimed — mergeNotConfirmed already covers it
+		// A-2 + boolean-drift (run 2026-08-15T13-45-02): the merge agent emitted
+		// `merged: "true"` (STRING) — the strict `!== true` read silently SKIPPED
+		// verification entirely and the run misreported PARTIAL. LLM booleans are
+		// read tolerantly (toBool) and normalized observably; the trust direction
+		// never weakens — a truthy claim still has to be git-confirmed below.
+		const merge = state.merge as { merged?: unknown; commitSha?: string; mergeCommand?: string; summary?: string; verification?: string } | undefined;
+		if (!merge || !toBool(merge.merged)) return { status: "ok" }; // nothing claimed — mergeNotConfirmed already covers it
+		if (typeof merge.merged !== "boolean") {
+			ctx.log(`merge: self-report merged=${JSON.stringify(merge.merged)} (${typeof merge.merged}) — normalized to true; verifying against git`);
+			state.merge = { ...merge, merged: true };
+		}
 		const setup = state.setup;
 		if (!setup?.worktreePath || !setup.defaultBranch) {
 			state.merge = { ...merge, merged: false, verification: "FAILED: setup context missing — cannot confirm the merge" };

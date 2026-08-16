@@ -204,6 +204,17 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		const r = renderStage("apiTest", { title: "API Test", date: "2026-01-01", summary: "All pass.", pass: "true", cases: "9", failures: [] });
 		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Cases Tested/);
 	});
+	it("boolean control drift: a real BOOLEAN pass/hasNumericConstants no longer drops the doc (run 2026-08-15T13-45-02 postmortem / audit C-F3)", () => {
+		// Production shape: models emit real booleans where the schema used to
+		// demand strings — Value.Errors previously rejected the control and
+		// renderAndWrite silently returned null (report doc never written).
+		const api = renderStage("apiTest", { title: "API Test", date: "2026-01-01", summary: "All pass.", pass: true, cases: "9", failures: [] });
+		expect(api.errors).toEqual([]); expect(api.markdown).toMatch(/Cases Tested/);
+		const ui = renderStage("uiTest", { title: "UI Test", date: "2026-01-01", summary: "All pass.", pass: true, flows: "5", failures: [] });
+		expect(ui.errors).toEqual([]); expect(ui.markdown).toMatch(/Flows Tested/);
+		const design = renderStage("design", { title: "Design", date: "2026-01-01", summary: "Arch.", designer: "architecture-designer", modules: [{ name: "API", description: "REST" }], hasNumericConstants: true });
+		expect(design.errors).toEqual([]); expect(design.markdown).toContain("Has numeric constants requiring validation**: true");
+	});
 	it("ui-test → has flows tested + pass flag", () => {
 		const r = renderStage("uiTest", { title: "UI Test", date: "2026-01-01", summary: "All pass.", pass: "true", flows: "5", failures: [] });
 		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Flows Tested/);

@@ -21,6 +21,7 @@ import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } 
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../prompts.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { runJudge } from "./judge.ts";
+import { toBool } from "../doc-validators.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -462,7 +463,10 @@ export const reviewApproved = (s: PipelineState) => {
 	return v === "Approved" || v === "Approved with Comments";
 };
 
-const passTrue = (v: unknown): boolean => typeof v === "boolean" ? v : /^(true|yes|1|pass)$/i.test(String(v ?? "").trim());
+// Boolean control drift (run 2026-08-15T13-45-02 postmortem): one canonical
+// coercion for LLM-emitted booleans — doc-validators `toBool` (a strict
+// superset of the former local `passTrue`: also accepts "y").
+const passTrue = toBool;
 
 export type IntegrationOutcomeStatus =
 	| "passed"

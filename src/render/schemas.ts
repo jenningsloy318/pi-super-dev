@@ -197,7 +197,11 @@ export const DesignData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
 	designer: Type.String(),
 	modules: Type.Array(Type.Object({ name: Type.String(), description: Type.String() })),
-	hasNumericConstants: Type.String(),
+	// Boolean control drift (run 2026-08-15T13-45-02 postmortem): these fields
+	// are semantically boolean but historically typed String-only — a model
+	// emitting a real boolean failed Value.Errors and renderAndWrite silently
+	// DROPPED the whole report doc (audit C-F3). Union keeps both shapes valid.
+	hasNumericConstants: Type.Union([Type.String(), Type.Boolean()]),
 });
 export const PrototypeData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
@@ -212,12 +216,14 @@ export const DocumentationData = Type.Object({
 });
 export const ApiTestData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
-	pass: Type.String(), cases: Type.String(),
+	// Boolean drift: accept boolean OR string (see DesignData.hasNumericConstants).
+	pass: Type.Union([Type.String(), Type.Boolean()]), cases: Type.String(),
 	failures: Type.Array(Type.Object({ method: Type.String(), path: Type.String(), reason: Type.String() })),
 });
 export const UiTestData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
-	pass: Type.String(), flows: Type.String(),
+	// Boolean drift: accept boolean OR string (see DesignData.hasNumericConstants).
+	pass: Type.Union([Type.String(), Type.Boolean()]), flows: Type.String(),
 	failures: Type.Array(Type.Object({ flow: Type.String(), reason: Type.String() })),
 });
 

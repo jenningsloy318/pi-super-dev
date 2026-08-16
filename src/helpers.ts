@@ -64,7 +64,12 @@ function routeDesigner(s: Record<string, unknown>): HelperResult {
 function checkPrototypeNeeded(s: Record<string, unknown>): HelperResult {
 	const design = s["design"] as { hasNumericConstants?: boolean; modules?: Array<{ constants?: string[] }> } | undefined;
 	if (!design) return ok("No design source — prototype not needed", { needed: false, constants: [] });
-	const needed = design.hasNumericConstants === true;
+	// Boolean control drift (run 2026-08-15T13-45-02 postmortem): the design
+	// render schema declares hasNumericConstants as a STRING, so `=== true` could
+	// NEVER fire — the prototype-needed gate was dead from this signal. Tolerant
+	// read (toBool) accepts "true"/"yes"/"y"/"1"/"pass" and real booleans alike
+	// (the render schema is widened to Union(String, Boolean) in the same change).
+	const needed = toBool(design.hasNumericConstants);
 	const constants: string[] = [];
 	if (needed && Array.isArray(design.modules)) for (const m of design.modules) if (Array.isArray(m.constants)) constants.push(...m.constants);
 	return ok(needed ? `Prototype needed: ${constants.length} constant(s)` : "Prototype not needed", { needed, constants });

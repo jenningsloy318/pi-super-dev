@@ -105,3 +105,45 @@ describe("mergeVerifyTask (A-2 deterministic merge confirmation)", () => {
 		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
 	});
 });
+
+describe("mergeVerifyTask boolean control drift (run 2026-08-15T13-45-02 postmortem)", () => {
+	// Production evidence: the merge agent emitted `merged: "true"` (STRING);
+	// the old strict `merge.merged !== true` read skipped verification entirely
+	// (17ms, zero log lines) and the run misreported PARTIAL on a genuinely
+	// merged repo. The claim must be read tolerantly and verified like any other.
+	it("verifies (not skips) a string \"true\" claim — normalized observably, then git-confirmed", async () => {
+		const { main, wt } = repo();
+		try {
+			sh(main, "git merge --no-ff feature/x -m merged");
+			const { state, ctx, logs } = stateWith(main, wt, { merged: "true", commitSha: sh(main, "git rev-parse HEAD").trim(), summary: "done" });
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(logs.join("\n")).toContain('merged="true" (string) — normalized to true');
+			expect(state.merge?.merged).toBe(true); // normalized to a real boolean
+			expect(String(state.merge?.verification)).toContain("git-confirmed");
+			expect(logs.join("\n")).toContain("Merge verification PASSED");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
+
+	it("a string \"true\" claim git FAILS to confirm is still rewritten to merged:false (trust direction unchanged)", async () => {
+		const { main, wt } = repo();
+		try {
+			// no merge performed — the lie must be caught by verification, not skipped
+			const { state, ctx, logs } = stateWith(main, wt, { merged: "true", summary: "lying string" });
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(state.merge?.merged).toBe(false);
+			expect(String(state.merge?.verification)).toContain("NOT an ancestor");
+			expect(logs.join("\n")).toContain("Merge verification FAILED");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
+
+	it("a string \"false\" claim stays an unclaimed merge (no verification, no normalization)", async () => {
+		const { main, wt } = repo();
+		try {
+			const { state, ctx, logs } = stateWith(main, wt, { merged: "false", summary: "not merged" });
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(state.merge?.merged).toBe("false"); // untouched
+			expect(state.merge?.verification).toBeUndefined();
+			expect(logs.join("\n")).not.toContain("normalized");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
+});
