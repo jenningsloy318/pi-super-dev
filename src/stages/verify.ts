@@ -463,8 +463,47 @@ async function resolveIntegrationWriteBoundary(args: { ctx: StageContext; state:
 	}
 }
 
+/** Harness-owned bookkeeping files (by basename) that live in the spec
+ *  directory. The pipeline itself appends to these during every stage — the
+ *  events ledger, change tracker, resume cache, judge audit, knowledge base,
+ *  and implementation evidence — so their modification inside the integration
+ *  window is harness self-write, NEVER an integration-tester violation.
+ *  Deterministically exempt them BEFORE LLM classification: production run
+ *  2026-08-16T08-41-11-882Z showed the boundary classifier's text can
+ *  correctly reason "harness bookkeeping, permitted" while its structured
+ *  control still marks the file forbidden, killing an otherwise-green run at
+ *  the integration write boundary. */
+const HARNESS_BOOKKEEPING_FILES = new Set([
+	"events.jsonl",
+	"change-tracker.jsonl",
+	"implementation-evidence.jsonl",
+	".resume-cache.jsonl",
+	".judge.jsonl",
+	".knowledge.json",
+]);
+
+/** True when `path` is a harness bookkeeping file inside the run's spec
+ *  directory (the only place the harness writes them). A same-named file a
+ *  test agent writes elsewhere (e.g. src/events.jsonl) is NOT exempt. */
+function isHarnessBookkeepingFile(s: PipelineState, path: string): boolean {
+	const base = path.split("/").pop() ?? path;
+	if (!HARNESS_BOOKKEEPING_FILES.has(base)) return false;
+	const specDir = s.setup?.specDirectory?.replace(/^\.\//, "").replace(/\/+$/, "");
+	if (!specDir) return false;
+	if (path === base || path.startsWith(`${specDir}/`) || path.startsWith(`./${specDir}/`)) return true;
+	// specDirectory may be absolute (tests, some setups) while git-status paths
+	// are worktree-relative — fall back to matching the spec dir's final segment.
+	const specDirBase = specDir.split("/").pop() ?? "";
+	return specDirBase !== "" && path.endsWith(`/${specDirBase}/${base}`);
+}
+
 async function detectIntegrationWriteViolations(state: PipelineState, ctx: StageContext, before: Map<string, string | null>): Promise<string[]> {
-	const changed = changedSinceSnapshot(state, before);
+	const allChanged = changedSinceSnapshot(state, before);
+	if (allChanged.length === 0) return [];
+	const changed = allChanged.filter((p) => !isHarnessBookkeepingFile(state, p));
+	if (changed.length < allChanged.length) {
+		ctx.log(`Stage 10: integration write-boundary exempting harness bookkeeping: ${allChanged.filter((p) => changed.indexOf(p) === -1).join(", ")}`);
+	}
 	if (changed.length === 0) return [];
 	const boundary = await resolveIntegrationWriteBoundary({ ctx, state, changedFiles: changed });
 	ctx.log(`Stage 10: integration write-boundary allAllowed=${boundary.allAllowed} forbidden=${boundary.forbiddenFiles.join(", ") || "none"} ambiguous=${boundary.ambiguousFiles.join(", ") || "none"}`);

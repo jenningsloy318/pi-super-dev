@@ -652,4 +652,93 @@ describe("verificationConvergenceNode", () => {
 		expect(fixCalls).toBe(0);
 		expect(state.integration?.summary).toContain("src/prod.ts");
 	});
+
+	// Production run 2026-08-16T08-41-11-882Z: the harness itself appends to
+	// the spec-dir events ledger / change tracker during the integration window,
+	// and the boundary classifier's control marked events.jsonl forbidden even
+	// though its own text called it permitted bookkeeping — killing an
+	// otherwise-green run. Harness bookkeeping must be exempted
+	// DETERMINISTICALLY, before any LLM classification.
+	it("harness bookkeeping files (events.jsonl etc.) are exempt from the integration write boundary even when the classifier forbids them", async () => {
+		let classifierCalls = 0;
+		const state = stateWithApi();
+		const cwd = state.setup!.worktreePath;
+		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "api-tester") {
+				// Harness-shaped self-writes INSIDE the spec dir (specDirectory ===
+				// worktree root in this fixture): the ledger/tracker grow during the
+				// integration window exactly as in production.
+				writeFileSync(join(cwd, "events.jsonl"), `{"type":"agent.called","ts":"2026-08-16T10:58:06.000Z"}\n`);
+				writeFileSync(join(cwd, "change-tracker.jsonl"), `{"step":"integration","files":[]}\n`);
+				return { text: "", control: { title: "API", date: "2026-08-07", pass: true, cases: 1, failures: [], summary: "ok" } };
+			}
+			if (call.agent === "red-boundary-classifier") {
+				// Reproduce the production failure: classifier control FORBIDS the
+				// bookkeeping file despite its text (irrelevant here) saying allowed.
+				classifierCalls += 1;
+				return {
+					text: "",
+					control: {
+						classifications: [{ path: "events.jsonl", category: "production", confidence: 0.9, reason: "forbidden by control despite bookkeeping text" }],
+						forbiddenFiles: ["events.jsonl"],
+						ambiguousFiles: [],
+						allAllowed: false,
+					},
+				};
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		// The bookkeeping self-writes never reach the classifier (0 calls) and
+		// the run converges green — the production kill is unreproducible.
+		expect(classifierCalls).toBe(0);
+		expect(result.status).not.toBe("failed");
+		expect(state.integration?.summary ?? "").not.toContain("events.jsonl");
+	});
+
+	it("a same-named ledger file written OUTSIDE the spec dir is still flagged (no over-broad exemption)", async () => {
+		const state = stateWithApi();
+		const cwd = state.setup!.worktreePath;
+		execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+		const ctx = convergenceCtx(async (call: AgentCall) => {
+			if (call.agent === "code-reviewer") {
+				return { text: "", control: { title: "Review", date: "2026-08-07", verdict: "Approved", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "adversarial-reviewer") {
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "PASS", summary: "ok", findings: [] } };
+			}
+			if (call.agent === "api-tester") {
+				mkdirSync(join(cwd, "src"), { recursive: true });
+				writeFileSync(join(cwd, "src", "events.jsonl"), "{}\n");
+				return { text: "", control: { title: "API", date: "2026-08-07", pass: true, cases: 1, failures: [], summary: "ok" } };
+			}
+			if (call.agent === "red-boundary-classifier") {
+				return {
+					text: "",
+					control: {
+						classifications: [{ path: "src/events.jsonl", category: "production", confidence: 0.9, reason: "source-dir write by tester" }],
+						forbiddenFiles: ["src/events.jsonl"],
+						ambiguousFiles: [],
+						allAllowed: false,
+					},
+				};
+			}
+			return { text: "", control: {} };
+		});
+
+		const result = await verificationConvergenceNode.run(state, ctx);
+
+		expect(result.status).toBe("failed");
+		expect(String(result.error)).toContain("integration tester modified implementation files");
+		expect(state.integration?.summary).toContain("src/events.jsonl");
+	});
 });
