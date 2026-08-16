@@ -261,6 +261,22 @@ export function resolveAgentModel(
 	return globalModel;
 }
 
+/** P1.3: the run's ledger id, read at event time (runWorkflow sets __runId
+ *  right after makeContext; agents only ever spawn after setup, so it exists). */
+const ledgerRunId = (state: PipelineState): string => String((state as Record<string, unknown>).__runId ?? "unknown");
+
+/** P1.3: bounded control summary for agent.called events — key presence plus
+ *  the two universal scalar signals (verdict/pass). Full controls already live
+ *  in audit.jsonl + the resume cache; events.jsonl must stay cheap to fold. */
+function ledgerControlSummary(control: unknown): Record<string, unknown> | null {
+	if (!control || typeof control !== "object") return null;
+	const c = control as Record<string, unknown>;
+	const out: Record<string, unknown> = { keys: Object.keys(c) };
+	if (typeof c.verdict === "string") out.verdict = c.verdict;
+	if (typeof c.pass === "boolean") out.pass = c.pass;
+	return out;
+}
+
 function makeContext(state: PipelineState, task: string, options: RunOptions, log: (m: string) => void): StageContext {
 	const budget = makeBudget(options.maxAgents ?? DEFAULT_MAX_AGENTS);
 	const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
@@ -279,6 +295,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// so concurrent branches can't exceed maxAgents. (Stage bodies still peek
 		// `check()` to avoid constructing a prompt when obviously over budget.)
 		if (!budget.spent()) {
+			appendRunEvent(state.setup?.specDirectory, {
+				runId: ledgerRunId(state),
+				agent: call.agent,
+				stage: (call.id ?? "").replace(/^pipeline\./, ""),
+				type: "agent.called",
+				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: "budget exhausted (maxAgents reached)" },
+			});
 			return { text: "", control: null, error: "budget exhausted (maxAgents reached)" };
 		}
 		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
@@ -412,6 +435,15 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			enforceSourceBoundary();
 			const elapsed = Date.now() - started;
 			log(`agent ${label}: end elapsed=${elapsed}ms control=${result.control ? "yes" : "no"} model=${result.model ?? "unknown"}${result.error ? ` error=${result.error}` : ""}`);
+			// P1.3: every completed agent call lands in the event ledger (bounded
+			// control summary; the full control stays in audit.jsonl + resume cache).
+			appendRunEvent(state.setup?.specDirectory, {
+				runId: ledgerRunId(state),
+				agent: call.agent,
+				stage: stageKey || call.agent,
+				type: "agent.called",
+				data: { agent: call.agent, model: result.model ?? common.model ?? null, backend, durationMs: elapsed, control: ledgerControlSummary(result.control), error: result.error },
+			});
 			return result;
 		} catch (err) {
 			let finalErr = err;
@@ -422,6 +454,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			const elapsed = Date.now() - started;
 			const message = finalErr instanceof Error ? finalErr.message : String(finalErr);
 			log(`agent ${label}: threw elapsed=${elapsed}ms error=${message}`);
+			appendRunEvent(state.setup?.specDirectory, {
+				runId: ledgerRunId(state),
+				agent: call.agent,
+				stage: stageKey || call.agent,
+				type: "agent.called",
+				data: { agent: call.agent, model: common.model ?? null, backend, durationMs: elapsed, error: message },
+			});
 			throw finalErr;
 		}
 	}
