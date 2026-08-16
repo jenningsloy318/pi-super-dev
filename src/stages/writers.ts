@@ -199,6 +199,14 @@ export const mergeVerifyTask: Stage = {
 		if (featureHead && defHead && !ancestor) reasons.push(`feature head ${featureHead.slice(0, 12)} is NOT an ancestor of ${setup.defaultBranch} head ${defHead.slice(0, 12)} (merge never landed, or landed in the wrong direction)`);
 		const reportedSha = String(merge.commitSha ?? "").trim();
 		if (reportedSha && !gitOk(["rev-parse", "--verify", `${reportedSha}^{commit}`])) reasons.push(`reported commitSha ${reportedSha.slice(0, 12)} does not exist`);
+		// F-B: geometry alone is not enough — uncommitted TRACKED work in the
+		// worktree at merge time would be silently lost (run 2026-08-16T01-00-35:
+		// the review fix repaired F-01 but left `M tests/persistence.test.ts`
+		// uncommitted; nothing between reviewFix and merge commits it). Untracked
+		// files do NOT block (A-3 geometry: pipeline-copied .env files are untracked
+		// and git never carries them into a merge).
+		const dirty = gitOk(["status", "--porcelain=v1", "--untracked-files=no"]);
+		if (dirty) reasons.push(`worktree has ${dirty.split("\n").length} uncommitted tracked change(s) that would NOT ship with the merge (e.g. ${dirty.split("\n")[0].trim()})`);
 		if (reasons.length === 0) {
 			state.merge = { ...merge, merged: true, verification: `git-confirmed: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains ${featureBranch}` };
 			ctx.log(`Merge verification PASSED: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains feature head (${featureHead!.slice(0, 12)})`);

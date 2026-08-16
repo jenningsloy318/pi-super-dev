@@ -104,6 +104,37 @@ describe("mergeVerifyTask (A-2 deterministic merge confirmation)", () => {
 			expect(state.merge?.verification).toBeUndefined();
 		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
 	});
+
+	// ── F-B: uncommitted tracked work would not ship ──────────────────────────
+	// Production shape (run 2026-08-16T01-00-35-613Z): the review fix repaired
+	// F-01 but left `M tests/persistence.test.ts` uncommitted; geometry-only
+	// verification would have confirmed the merge while the fix silently
+	// failed to ship.
+	it("F-B: rejects a claimed merge when tracked work is uncommitted (would NOT ship)", async () => {
+		const { main, wt } = repo();
+		try {
+			sh(wt, "echo base > f.txt && git add f.txt && git commit -m 'add f'"); // tracked file on feature/x
+			sh(main, "git merge --no-ff feature/x -m merged"); // geometry is CORRECT
+			sh(wt, "echo modified >> f.txt"); // tracked modification, uncommitted
+			const { state, ctx, logs } = stateWith(main, wt, { merged: true, summary: "claims merged" });
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(state.merge?.merged).toBe(false);
+			expect(String(state.merge?.verification)).toContain("uncommitted tracked change");
+			expect(logs.join("\n")).toContain("Merge verification FAILED");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
+
+	it("F-B: untracked files do NOT block the merge (A-3 geometry — pipeline-copied .env stays behind)", async () => {
+		const { main, wt } = repo();
+		try {
+			sh(main, "git merge --no-ff feature/x -m merged");
+			sh(wt, "echo secret > .env"); // untracked — git never carries it into a merge
+			const { state, ctx, logs } = stateWith(main, wt, { merged: true, summary: "done" });
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(state.merge?.merged).toBe(true);
+			expect(logs.join("\n")).toContain("Merge verification PASSED");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
 });
 
 describe("mergeVerifyTask boolean control drift (run 2026-08-15T13-45-02 postmortem)", () => {

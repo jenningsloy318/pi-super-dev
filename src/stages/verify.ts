@@ -22,6 +22,7 @@ import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, 
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { runJudge } from "./judge.ts";
 import { toBool } from "../doc-validators.ts";
+import { commitWorktreeChanges } from "../helpers.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -409,7 +410,13 @@ function recordVerificationStagnation(s: PipelineState, ctx: StageContext, recor
 	return true;
 }
 
-async function runVerificationFix(kind: "review" | "integration", node: Node, state: PipelineState, ctx: StageContext): Promise<NodeResult> {
+/** Runs a verification fix step (review or integration) and records whether it
+ *  changed repository state. Exported for F-B tests. When the fix changed the
+ *  worktree, the change is committed DETERMINISTICALLY (no LLM): a verification
+ *  fix that stays uncommitted is silently lost at merge time — mergeVerifyTask's
+ *  dirty-worktree check backstops any commit failure by reporting the merge
+ *  unverified. */
+export async function runVerificationFix(kind: "review" | "integration", node: Node, state: PipelineState, ctx: StageContext, label?: string): Promise<NodeResult> {
 	const before = workingTreeSignature(state);
 	const r = await node.run(state, ctx);
 	if (r.status === "cancelled") return r;
@@ -417,6 +424,13 @@ async function runVerificationFix(kind: "review" | "integration", node: Node, st
 	const changed = before !== after;
 	(state as Record<string, unknown>).__lastVerificationFix = { kind, changed, before, after, at: localTimestamp() };
 	ctx.log(`Stage 10: ${kind} fix ${changed ? "changed repository state" : "made no repository-state change"} (before=${before} after=${after})`);
+	if (changed) {
+		const message = `fix(verify): address ${kind} findings${label ? ` (${label})` : ""}`;
+		const commit = commitWorktreeChanges(state.setup?.worktreePath, message);
+		if (commit.committed) ctx.log(`Stage 10: deterministically committed the ${kind} fix — "${commit.subject}"`);
+		else if (commit.error) ctx.log(`Stage 10: DETERMINISTIC COMMIT FAILED (${commit.error}) — merge verification will reject the dirty worktree`);
+		else ctx.log(`Stage 10: ${kind} fix change already committed (clean worktree)`);
+	}
 	return r;
 }
 
@@ -1184,7 +1198,7 @@ export const verificationConvergenceNode: Node = {
 					return { status: "failed", error: "verification convergence budget exhausted" };
 				}
 				record.fixKind = "review";
-				const fixResult = await runVerificationFix("review", fixStepReview, state, ctx);
+				const fixResult = await runVerificationFix("review", fixStepReview, state, ctx, `round ${attempt}`);
 				record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
 				if (fixResult.status === "cancelled") return fixResult;
 				continue;
@@ -1222,7 +1236,7 @@ export const verificationConvergenceNode: Node = {
 					return { status: "failed", error: testResult.error ?? "integration bringup/test block failed" };
 				}
 				record.fixKind = "integration";
-				const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx);
+				const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx, `round ${attempt}`);
 				record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
 				if (fixResult.status === "cancelled") return fixResult;
 				continue;
@@ -1266,7 +1280,7 @@ export const verificationConvergenceNode: Node = {
 			}
 
 			record.fixKind = "integration";
-			const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx);
+			const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx, `round ${attempt}`);
 			record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
 			if (fixResult.status === "cancelled") return fixResult;
 		}

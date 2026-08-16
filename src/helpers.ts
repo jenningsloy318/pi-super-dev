@@ -404,6 +404,37 @@ function gitCarriedFiles(cwd: string, defaultBranch?: string): string[] | null {
 	return [...files];
 }
 
+/** F-B: deterministic `git add -A && git commit` for pipeline-made fixes in
+ *  the worktree. The observed loss (run 2026-08-16T01-00-35-613Z): a review
+ *  fix round repaired F-01 but left `M tests/persistence.test.ts` uncommitted
+ *  — nothing between reviewFix and merge commits it, so the fix would have
+ *  been silently dropped at merge time. Untracked files are swept in (-A):
+ *  pipeline work product must ship. Falls back to an explicit pipeline
+ *  identity when the environment has no git user configured (bare CI
+ *  containers). NEVER throws. */
+export function commitWorktreeChanges(cwd: string | undefined, message: string): { committed: boolean; subject?: string; error?: string } {
+	if (!cwd) return { committed: false, error: "no worktree path" };
+	const run = (args: string[]): { status: number | null; stdout: string; stderr: string } => {
+		try {
+			const r = spawnSync("git", args, { cwd, encoding: "utf-8", timeout: 30_000 });
+			return { status: r.status, stdout: String(r.stdout ?? ""), stderr: String(r.stderr ?? "") };
+		} catch (err) {
+			return { status: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) };
+		}
+	};
+	const status = run(["status", "--porcelain=v1"]);
+	if (status.status !== 0) return { committed: false, error: `git status failed: ${status.stderr.trim().slice(0, 200) || "unknown"}` };
+	if (!status.stdout.trim()) return { committed: false };
+	const subject = message.split("\n")[0];
+	if (run(["add", "-A"]).status !== 0) return { committed: false, error: "git add -A failed" };
+	let commit = run(["commit", "-m", message]);
+	if (commit.status !== 0 && /tell me who you are|user\.(name|email)/i.test(commit.stderr)) {
+		commit = run(["-c", "user.name=super-dev (pipeline)", "-c", "user.email=super-dev@pipeline.invalid", "commit", "-m", message]);
+	}
+	if (commit.status !== 0) return { committed: false, error: `git commit failed: ${commit.stderr.trim().slice(0, 300)}` };
+	return { committed: true, subject };
+}
+
 async function cleanup(_s: Record<string, unknown>, context?: Record<string, unknown>): Promise<HelperResult> {
 	const cwd = context?.cwd as string | undefined;
 	const worktreeCreated = context?.worktreeCreated === true;
