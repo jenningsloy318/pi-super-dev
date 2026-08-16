@@ -133,8 +133,9 @@ describe("appendGateChecked (P1.4)", () => {
 			expect(e.data.pass).toBe(false);
 			expect(e.data.inScopePass).toBe(true);
 			expect(e.data.ran).toEqual(["npm run build", "npm test"]);
-			expect(String(e.data.errors[0]).length).toBeLessThanOrEqual(200); // truncated
-			expect(e.data.errors).toHaveLength(2);
+			const errors = e.data.errors as string[];
+			expect(errors[0].length).toBeLessThanOrEqual(200); // truncated
+			expect(errors).toHaveLength(2);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -144,8 +145,8 @@ describe("appendGateChecked (P1.4)", () => {
 			const state = { __runId: "r1", setup: { specDirectory: d } } as never;
 			appendGateChecked(state, "g", { pass: true, ran: Array.from({ length: 20 }, (_, i) => `cmd${i}`), errors: Array.from({ length: 20 }, (_, i) => `e${i}`) });
 			const [e] = readRunEvents(d);
-			expect(e.data.ran).toHaveLength(12);
-			expect(e.data.errors).toHaveLength(8);
+			expect((e.data.ran as string[])).toHaveLength(12);
+			expect((e.data.errors as string[])).toHaveLength(8);
 			expect("inScopePass" in e.data).toBe(false);
 			appendGateChecked({} as never, "g", { pass: true }); // no setup — no throw
 		} finally { rmSync(d, { recursive: true, force: true }); }

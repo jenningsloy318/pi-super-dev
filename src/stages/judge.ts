@@ -31,6 +31,7 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { buildJudgePrompt } from "../prompts.ts";
+import { appendRunEvent } from "../runlog.ts";
 import type { StageContext } from "../types.ts";
 
 export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environment", "continue", "escalate-now"] as const;
@@ -190,7 +191,7 @@ function appendAudit(req: JudgeRequest, entry: Record<string, unknown>): void {
 // ---------------------------------------------------------------------------
 // The entry point. NEVER throws; every failure mode degrades (INV-6).
 
-export async function runJudge(ctx: StageContext, req: JudgeRequest): Promise<JudgeOutcome> {
+async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<JudgeOutcome> {
 	if (process.env.SUPER_DEV_DISABLE_JUDGE === "1") {
 		return { status: "degraded", reason: "judge disabled (SUPER_DEV_DISABLE_JUDGE)" };
 	}
@@ -251,4 +252,32 @@ export async function runJudge(ctx: StageContext, req: JudgeRequest): Promise<Ju
 		appendAudit(req, { error: msg });
 		return { status: "degraded", reason: `judge threw: ${msg}` };
 	}
+}
+
+/**
+ * The exported entry point (P1.5): delegates to {@link runJudgeInner} and
+ * double-writes every judge call to the run-event ledger (INV-5's audit trail
+ * gains the fold-friendly stream view: scope, status, route/confidence for
+ * acted-on verdicts, the degradation reason otherwise). NEVER lets the ledger
+ * block or alter the judge outcome.
+ */
+export async function runJudge(ctx: StageContext, req: JudgeRequest): Promise<JudgeOutcome> {
+	const out = await runJudgeInner(ctx, req);
+	try {
+		const stageOfScope = req.scope.startsWith("stage9.") ? "implementation" : req.scope.startsWith("stage10.") ? "verify" : undefined;
+		appendRunEvent(req.specDirectory, {
+			runId: String((ctx.state as Record<string, unknown> | undefined)?.__runId ?? "unknown"),
+			...(stageOfScope ? { stage: stageOfScope } : {}),
+			agent: "judge",
+			type: "judge.called",
+			data: {
+				scope: req.scope,
+				status: out.status,
+				...(out.status === "routed" || out.status === "escalate"
+					? { route: out.verdict.route, confidence: out.verdict.confidence, diagnosis: out.verdict.diagnosis.slice(0, 300) }
+					: { reason: String(out.reason ?? "").slice(0, 200) }),
+			},
+		});
+	} catch { /* ledger must never block the judge */ }
+	return out;
 }

@@ -13,6 +13,7 @@ import {
 } from "../src/stages/judge.ts";
 import { buildJudgePrompt } from "../src/prompts.ts";
 import { extractControlKeys } from "../src/control.ts";
+import { readRunEvents } from "../src/runlog.ts";
 import type { StageContext, AgentResult } from "../src/types.ts";
 
 function makeCtx(agentImpl?: (call: { id: string; agent: string; prompt: string }) => Partial<AgentResult>) {
@@ -175,6 +176,26 @@ describe("judge unit", () => {
 		await runJudge(ctx, { scope: "test-audit", signature: "sig-a", worktreePath: wt, specDirectory: spec, context: "ctx", allowedRoutes: ["re-author-tests"] });
 		const line = readFileSync(join(spec, ".judge.jsonl"), "utf8").trim().split("\n").pop();
 		expect(JSON.parse(line as string).scope).toBe("test-audit");
+	});
+
+	it("P1.5: every judge call double-writes judge.called to the event ledger", async () => {
+		const spec = join(wt, "docs", "specifications", "01-ledger");
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({}) as Record<string, unknown> }));
+		// routed path (stage10 scope → stage attribution "verify")
+		await runJudge(ctx, { scope: "stage10.stagnation", signature: "sig-l1", worktreePath: wt, specDirectory: spec, context: "ctx", allowedRoutes: ["re-author-tests"] });
+		// degraded path (budget-starved: same signature again ×2 exhausts per-signature)
+		await runJudge(ctx, { scope: "stage10.stagnation", signature: "sig-l1", worktreePath: wt, specDirectory: spec, context: "ctx", allowedRoutes: ["re-author-tests"] });
+		await runJudge(ctx, { scope: "stage10.stagnation", signature: "sig-l1", worktreePath: wt, specDirectory: spec, context: "ctx", allowedRoutes: ["re-author-tests"] });
+		const events = readRunEvents(spec).filter((e) => e.type === "judge.called");
+		expect(events).toHaveLength(3);
+		const routed = events[0];
+		expect(routed.data.status).toBe("routed");
+		expect(routed.data.route).toBe("re-author-tests");
+		expect(routed.stage).toBe("verify");
+		expect(routed.agent).toBe("judge");
+		const degraded = events[2];
+		expect(degraded.data.status).toBe("degraded");
+		expect(String(degraded.data.reason)).toContain("budget");
 	});
 
 	it("prompt control line extracts exactly the judge key set", () => {
