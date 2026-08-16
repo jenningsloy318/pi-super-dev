@@ -539,8 +539,15 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// a clean success, whatever else passed. Surface as partial with the reason.
 	const cleanupBlocked = (state.cleanup as { blocked?: boolean } | undefined)?.blocked === true;
 
+	// R3 (dsh-09 v3): a replan boundary is a deliberate, first-class terminal
+	// outcome — routable upstream-owned findings were persisted and the extension
+	// will auto-resume; report it as such (never as failed/partial noise).
+	const replanMarker = (state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[] } | undefined;
+
 	let status: RunStatus;
-	if (aborted || phases === 0) {
+	if (replanMarker) {
+		status = "replan";
+	} else if (aborted || phases === 0) {
 		// `phases === 0` means the implementation stage produced no phases (gate
 		// aborted before impl, or an empty spec). NOTE (F-8): this couples runStatus
 		// to the super-dev implementation-stage shape — a future workflow with no
@@ -570,6 +577,8 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 					: "review/build/integration/merge or a stage did not fully pass"
 				: `implementation finished ${done}/${total} phase(s)${impl?.convergenceBlocked ? " (convergence blocked — no-progress)" : ""}`;
 			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.`);
+		} else if (status === "replan") {
+			progress?.log(`Workflow "${workflow.id}" complete — REPLAN round ${replanMarker?.rounds ?? "?"}: ${replanMarker?.owners?.join(", ") ?? "?"} will revise; auto-resuming`);
 		} else {
 			progress?.log(`Workflow "${workflow.id}" complete`);
 		}

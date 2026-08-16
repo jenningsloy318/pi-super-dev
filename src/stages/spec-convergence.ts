@@ -13,6 +13,7 @@ import {
 	recordReviewFindingsFromControl,
 	type ConvergenceOwnerStage,
 } from "../convergence-ledger.ts";
+import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
 import { MAX_CONVERGENCE_ROUNDS } from "./artifact-convergence.ts";
 
@@ -131,6 +132,26 @@ export const specConvergenceNode: Node = {
 			ctx.log(`spec convergence: round ${round} starting`);
 			delete state.specReview;
 
+			// R3 (dsh-09 v3): pending replan requests owned by spec inject as
+			// convergence-ledger findings at round 1 (same machinery as the artifact
+			// convergence nodes); approval below flips them to addressed.
+			if (round === 1) {
+				const pendingReplan = pendingReplanRequests(state.setup?.specDirectory, "spec");
+				if (pendingReplan.length > 0) {
+					recordConvergenceFindings(state, pendingReplan.map((r) => ({
+						id: `replan-${r.id}`,
+						title: r.title,
+						detail: r.requestedRevision,
+						severity: r.severity,
+						file: r.file,
+						status: "open",
+						blocking: true,
+					})), { detectedAtStage: "replan", ownerStage: "spec", sourceGate: "replan-request" });
+					setSpecFeedback(state, "replan-request", pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
+					ctx.log(`spec convergence: ${pendingReplan.length} replan request(s) injected at round 1`);
+				}
+			}
+
 			const specResult = await specTask.run(state, ctx);
 			if (specResult.status === "cancelled") return specResult;
 			if (specResult.status === "failed") {
@@ -169,9 +190,13 @@ export const specConvergenceNode: Node = {
 			if (review.pass) {
 				markConvergenceFindingsVerified(state, (finding) => {
 					const detected = normalizeConvergenceStage(finding.detectedAtStage, "implementation");
-					return detected === "spec" || detected === "specReview";
+					return detected === "spec" || detected === "specReview" || String(finding.detectedAtStage) === "replan";
 				});
 				clearSpecFeedback(state);
+				// R3: the spec reviewer's approval verifies the revision — flip the
+				// persisted requests to addressed only now.
+				const consumedReplan = consumeReplanRequests(state.setup?.specDirectory, "spec");
+				if (consumedReplan > 0) ctx.log(`spec convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
 				ctx.log(`spec convergence: ✓ trace + review approved (round ${round}${round > 1 ? ", after feedback" : ""})`);
 				return { status: "ok" as const, attempts: round };
 			}

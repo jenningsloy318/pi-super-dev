@@ -438,7 +438,11 @@ export interface RunOptions {
 }
 
 /** Honest, derived overall outcome of a run. */
-export type RunStatus = "success" | "partial" | "failed";
+/** "replan" (dsh-09 v3 R3): the run ended deliberately at a replan boundary —
+ *  routable upstream-owned findings were persisted to replan-requests.json and
+ *  the extension auto-resumes (R-mech-2 restart-based back edge). Not success,
+ *  not failure: a deliberate run boundary. */
+export type RunStatus = "success" | "partial" | "failed" | "replan";
 
 export interface RunSummary {
 	workflowId: string;

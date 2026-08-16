@@ -16,6 +16,7 @@ import {
 	recordReviewFindingsFromControl,
 	type ConvergenceOwnerStage,
 } from "../convergence-ledger.ts";
+import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 
@@ -296,6 +297,27 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				ctx.log(`${options.feedbackKey} convergence: round ${round} starting`);
 				if (options.review) delete (state as Record<string, unknown>)[options.review.reviewStateKey];
 
+				// R3 (dsh-09 v3): pending replan requests owned by this stage inject as
+				// convergence-ledger findings at round 1 — the EXISTING
+				// writer-revises-per-finding machinery performs the revision. Dedup by
+				// fingerprint keeps restarts idempotent.
+				if (round === 1) {
+					const pendingReplan = pendingReplanRequests(state.setup?.specDirectory, options.feedbackKey);
+					if (pendingReplan.length > 0) {
+						recordConvergenceFindings(state, pendingReplan.map((r) => ({
+							id: `replan-${r.id}`,
+							title: r.title,
+							detail: r.requestedRevision,
+							severity: r.severity,
+							file: r.file,
+							status: "open",
+							blocking: true,
+						})), { detectedAtStage: "replan", ownerStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), sourceGate: "replan-request" });
+						setArtifactFeedback(options, state, pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
+						ctx.log(`${options.feedbackKey} convergence: ${pendingReplan.length} replan request(s) injected at round 1`);
+					}
+				}
+
 				const stageResult = await stageTask.run(state, ctx);
 				if (stageResult.status === "cancelled") return stageResult;
 				if (stageResult.status === "failed") {
@@ -422,7 +444,12 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				}
 
 				clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
-				markConvergenceFindingsVerified(state, (finding) => (finding.ownerStage === normalizeConvergenceStage(options.feedbackKey, options.feedbackKey) && finding.detectedAtStage === options.feedbackKey) || (options.review ? finding.detectedAtStage === options.review.reviewStateKey : false));
+				markConvergenceFindingsVerified(state, (finding) => (finding.ownerStage === normalizeConvergenceStage(options.feedbackKey, options.feedbackKey) && (finding.detectedAtStage === options.feedbackKey || finding.detectedAtStage === "replan")) || (options.review ? finding.detectedAtStage === options.review.reviewStateKey : false));
+				// R3: approval by the owning reviewer VERIFIES the revision — only now
+				// may the persisted requests flip to addressed (never on the writer's
+				// say-so alone, mirroring the convergence-ledger contract).
+				const consumedReplan = consumeReplanRequests(state.setup?.specDirectory, options.feedbackKey);
+				if (consumedReplan > 0) ctx.log(`${options.feedbackKey} convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
 				ctx.log(`${options.feedbackKey} convergence: complete (round ${round}${round > 1 ? ", after feedback" : ""})`);
 				return { status: "ok" as const, attempts: round };
 			}

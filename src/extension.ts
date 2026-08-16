@@ -26,6 +26,8 @@ import { runReflectionAsync } from "./render/reflection.ts";
 import { writeEscalationReport } from "./render/escalation-report.ts";
 import { localTimestamp } from "./render/time.ts";
 import { runPipelineTask } from "./pipeline.ts";
+import { maxReplanRounds } from "./replan/replan.ts";
+import { appendRunEvent } from "./runlog.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
 import { superDevRunMetadataLine } from "./version.ts";
@@ -196,13 +198,20 @@ export function getActiveRun(): ActiveRun | null {
 	return activeRun;
 }
 
-/** Format a run summary honestly: success ✅ / partial ⚠️ / failed ❌. */
+/** OQ6 (dsh-09 v3): replan auto-resume defaults ON; SUPER_DEV_REPLAN_MANUAL=1
+ *  opts into confirm-first single runs. Lazy env read (defensive rule #5). */
+function autoResumeEnabled(): boolean {
+	return process.env.SUPER_DEV_REPLAN_MANUAL !== "1";
+}
+
+/** Format a run summary honestly: success ✅ / partial ⚠️ / failed ❌ / replan 🔁. */
 function formatSummary(s: RunSummary, cwd?: string): string[] {
-	const icon: Record<RunStatus, string> = { success: "✅", partial: "⚠️", failed: "❌" };
+	const icon: Record<RunStatus, string> = { success: "✅", partial: "⚠️", failed: "❌", replan: "🔁" };
 	const title: Record<RunStatus, string> = {
 		success: "super-dev pipeline complete",
 		partial: "super-dev pipeline completed with issues",
 		failed: "super-dev pipeline did NOT complete",
+		replan: "super-dev pipeline reached a replan boundary",
 	};
 	const impl = s.state.implementation as { summary?: string; totalPhases?: number; allGreen?: boolean } | undefined;
 	const review = s.state.review as { verdict?: string } | undefined;
@@ -227,6 +236,8 @@ function formatSummary(s: RunSummary, cwd?: string): string[] {
 		lines.push(`  Failed:   ${s.failedStages.map(fmt).join("\n            ")}`);
 	}
 	if (s.error) lines.push(`  Error:    ${s.error}`);
+	const replan = (s.state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[]; newRequests?: number; invalidationSet?: string[] } | undefined;
+	if (replan) lines.push(`  🔁 Replan round ${replan.rounds}: ${replan.newRequests ?? 0} finding(s) routed back to ${replan.owners?.join(", ") ?? "?"}; ${replan.invalidationSet?.length ?? 0} stage(s) invalidated — ${autoResumeEnabled() ? "auto-resuming" : "manual resume required (SUPER_DEV_REPLAN_MANUAL=1)"}.`);
 	const stagnant = (s.state as Record<string, unknown>).__stagnated as { rounds?: number; kind?: string } | undefined;
 	if (stagnant) {
 		lines.push(stagnant.kind === "blocked-on-decisions"
@@ -684,7 +695,7 @@ export default function activate(pi: ExtensionAPI): void {
 					inheritedModelObject = undefined;
 					inheritedThinking = undefined;
 				}
-				const summary = await runPipelineTask(task, {
+				const runOnce = (resumeSpecId: string | true | undefined) => runPipelineTask(task, {
 					cwd: process.cwd(),
 					skipWorktree: params.skipWorktree === true,
 					skipStages: params.skipStages as string[] | undefined,
@@ -692,19 +703,34 @@ export default function activate(pi: ExtensionAPI): void {
 					inheritedModelObject,
 					inheritedThinking,
 					maxAgents: typeof params.maxAgents === "number" ? params.maxAgents : undefined,
-					resume: typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined),
+					resume: resumeSpecId,
 				// Wire the mid-run input drain to the activeRun singleton. workflow.ts
 				// realAgent drains this ONCE per specialist spawn; empty while idle/after
 				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
-				userSteerProvider: () => getActiveRun()?.drainInstructions() ?? [],
+					userSteerProvider: () => getActiveRun()?.drainInstructions() ?? [],
 				// Phase 2 (spec-18 / AC-01): thread the inline escalate callback so the
 				// Phase 3 firing points can pause-ask-continue via ctx.ui. Additive —
 				// an undefined decision stays byte-identical to today (no firing point
 				// invokes it yet). Built beside userSteerProvider (same options seam).
-				escalate: makeEscalate(ctx),
-				progress: sink,
+					escalate: makeEscalate(ctx),
+					progress: sink,
 					signal: runSignal,
 				});
+
+				let summary = await runOnce(typeof params.resumeSpecId === "string" ? params.resumeSpecId : (params.resume === true ? true : undefined));
+				// R3 auto-resume (dsh-09 v3, OQ6 default ON): a replan boundary ends the
+				// run deliberately; re-invoke on the SAME spec (the resume path — the cache
+				// was already invalidated for the revised suffix by the trigger). The R5
+				// budget self-limits at the trigger site; this loop cap is the
+				// belt-and-braces bound. SUPER_DEV_REPLAN_MANUAL=1 keeps single runs.
+				let replanRestarts = 0;
+				while (summary.status === "replan" && autoResumeEnabled() && replanRestarts < maxReplanRounds() && !runSignal?.aborted) {
+					replanRestarts++;
+					const marker = (summary.state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[]; newRequests?: number } | undefined;
+					try { stream.sink.log(`🔁 REPLAN restart ${replanRestarts}/${maxReplanRounds()} — ${marker?.owners?.join(", ") ?? "?"} revises; resuming spec ${summary.specIdentifier}`); } catch { /* best-effort */ }
+					try { appendRunEvent(summary.specDirectory, { runId: summary.specIdentifier, type: "replan.resumed", data: { runId: summary.specIdentifier, requests: marker?.newRequests ?? 0 } }); } catch { /* best-effort */ }
+					summary = await runOnce(summary.specIdentifier);
+				}
 				// Refine the session name to the resolved spec identifier (pi-native),
 				// which is a stable, human-meaningful slug (e.g. `07-oauth-login`).
 				try { if (summary.specIdentifier) pi.setSessionName(`super-dev: ${summary.specIdentifier}`); } catch { /* best-effort */ }

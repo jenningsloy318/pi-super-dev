@@ -23,6 +23,7 @@ import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../bui
 import { runJudge } from "./judge.ts";
 import { toBool } from "../doc-validators.ts";
 import { commitWorktreeChanges } from "../helpers.ts";
+import { maybeTriggerReplan } from "../replan/replan.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -1185,6 +1186,13 @@ export const verificationConvergenceNode: Node = {
 				// items). Stop for the human boundary instead of spinning forever.
 				if (!reviewApproved(state) && record.reviewFindings === 0 && record.buildErrors === 0 && (state.buildGate === undefined || buildGreen(state))) {
 					const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
+					// R3 (dsh-09 v3): before falling to the human boundary, try routing the
+					// residue back to its OWNING stages — a bounded replan restart re-runs
+					// the owning convergence loops and everything downstream they
+					// invalidate. When nothing is routable or the budget is exhausted this
+					// returns false and today's honest blocked-on-decisions path runs.
+					const replanned = await maybeTriggerReplan(state, ctx, state.setup?.specIdentifier ?? "unknown");
+					if (replanned) return { status: "ok" };
 					(state as Record<string, unknown>).__stagnated = {
 						kind: "blocked-on-decisions",
 						rounds: attempts.length,
