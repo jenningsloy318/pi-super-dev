@@ -247,3 +247,22 @@ describe("render pipeline: specification (multi-doc)", () => {
 		expect(errors.length).toBeGreaterThan(0);
 	});
 });
+
+// ─── generatedAt timezone unification ────────────────────────────────────────
+// The user asked that report "Generated" stamps match run.log timestamps (local
+// time with numeric offset) instead of UTC ISO (`...Z`). Every rendered doc's
+// generatedAt must carry a local offset and must NOT be UTC Z-form.
+describe("generatedAt uses local time (matches run.log timestamp format)", () => {
+	it("requirements doc header shows local-offset generatedAt, never UTC Z", () => {
+		const result = renderStage("requirements", {
+			title: "TZ Feature", date: "2026-01-01", type: "feature", priority: "high",
+			executiveSummary: "Summary.",
+			acceptanceCriteria: [{ id: "AC-01", statement: "must work" }, { id: "AC-02", statement: "must be local-time consistent" }],
+			nonFunctional: ["Performance: under 100ms"],
+		});
+		expect(result.errors).toEqual([]);
+		const line = result.markdown.split("\n").find((l) => l.includes("**Generated**")) ?? "";
+		expect(line).toMatch(/\*\*Generated\*\*: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+		expect(line).not.toMatch(/Z$/);
+	});
+});

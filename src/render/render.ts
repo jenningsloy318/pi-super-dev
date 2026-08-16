@@ -13,6 +13,7 @@ import { STAGE_MODELS, type StageModel } from "./schemas.ts";
 import { Value } from "typebox/value";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { localTimestamp } from "./time.ts";
 import { fileURLToPath } from "node:url";
 import { specDoc, specDocs } from "../prompts.ts";
 import type { SetupControl } from "../types.ts";
@@ -55,11 +56,12 @@ export function validateData(schema: StageModel["schema"], data: unknown): strin
 
 /** Augment data with computed fields the template needs (e.g. totalScenarios for
  *  BDD). These are DETERMINISTIC — never trust the model to count correctly.
- *  Every doc also gets `generatedAt`: the exact render/write moment (ISO 8601,
- *  UTC, ms precision) — the agent's `date` is a self-reported calendar date;
- *  `generatedAt` is the pipeline-stamped creation time the user can rely on. */
+ *  Every doc also gets `generatedAt`: the exact render/write moment in LOCAL
+ *  time (ISO-like with numeric offset, matching run.log timestamps) — the
+ *  agent's `date` is a self-reported calendar date; `generatedAt` is the
+ *  pipeline-stamped creation time the user can rely on. */
 function augmentData(stageId: string, data: Record<string, unknown>): Record<string, unknown> {
-	const augmented: Record<string, unknown> = { ...data, generatedAt: new Date().toISOString() };
+	const augmented: Record<string, unknown> = { ...data, generatedAt: localTimestamp() };
 	if (stageId === "bdd") {
 		const features = (augmented.features as Array<{ scenarios: unknown[] }>) ?? [];
 		augmented.totalScenarios = features.reduce((sum, f) => sum + (f.scenarios?.length ?? 0), 0);

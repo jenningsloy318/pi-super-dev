@@ -571,7 +571,7 @@ function failedReviewControl(kind: "codeReview" | "adversarialReview" | "testsRe
 	const title = kind === "codeReview" ? "Code review did not complete" : kind === "testsReview" ? "Tests review did not complete" : "Adversarial review did not complete";
 	return {
 		title,
-		date: new Date().toISOString().slice(0, 10),
+		date: localTimestamp().slice(0, 10),
 		verdict: "Changes Requested",
 		summary: reason,
 		findings: [{ id: `${kind}-agent-failed`, severity: "high", title, detail: reason }],
