@@ -180,6 +180,51 @@ describe("handleStagnation — delegates report-writing to writeEscalationReport
 		}
 	});
 
+	it("F-C: a blocked-on-decisions record renders the honest report — never claims recurrence, never says fix the implementation", async () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-esc-blocked-"));
+		try {
+			const summary = {
+				specDirectory: d,
+				state: {
+					__stagnated: {
+						kind: "blocked-on-decisions",
+						rounds: 2,
+						verdict: "Changes Requested",
+						findings: [{ file: null, severity: "medium", title: "[deferred: needs human verification] Default dispatcher behavior unverified" }],
+					},
+				},
+			} as unknown as RunSummary;
+			const choice = await handleStagnation(summary, { hasUI: false });
+			expect(choice).toBeUndefined();
+			const stag = readFileSync(join(d, "stagnation-report.md"), "utf8");
+			expect(stag).toContain("Blocked on decisions (deferred findings — no code fixer can act)");
+			expect(stag).not.toMatch(/same findings recurred/i); // the stagnation template's misdiagnosis
+			expect(stag).not.toMatch(/fix the implementation/i);
+			expect(stag).toContain("needs human verification"); // the deferred item is listed
+			const esc = readFileSync(join(d, "escalation-report.md"), "utf8");
+			expect(esc).toContain("no code fixer may act");
+			expect(esc).not.toMatch(/same findings recur/i);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("F-C: a legacy (kind-less) stagnation record keeps the recurrence template", async () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-esc-legacy-"));
+		try {
+			const summary = {
+				specDirectory: d,
+				state: { __stagnated: { rounds: 3, verdict: "Changes Requested", findings: [{ file: "a.ts", severity: "high", title: "x" }] } },
+			} as unknown as RunSummary;
+			await handleStagnation(summary, { hasUI: false });
+			const stag = readFileSync(join(d, "stagnation-report.md"), "utf8");
+			expect(stag).toContain("## Recurring findings");
+			expect(stag).toMatch(/recurred/i);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	it("never throws when the spec dir is unwritable (delegated writer guards)", async () => {
 		const summary = {
 			specDirectory: "/nonexistent/sd-path/cannot/be/written/escalation-report.md",

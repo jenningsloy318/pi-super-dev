@@ -227,8 +227,12 @@ function formatSummary(s: RunSummary, cwd?: string): string[] {
 		lines.push(`  Failed:   ${s.failedStages.map(fmt).join("\n            ")}`);
 	}
 	if (s.error) lines.push(`  Error:    ${s.error}`);
-	const stagnant = (s.state as Record<string, unknown>).__stagnated as { rounds?: number } | undefined;
-	if (stagnant) lines.push(`  ⚠ Verify-loop stagnant after ${stagnant.rounds} round(s) — see escalation-report.md in the spec dir. The workflow reached review/verify but could not converge; inspect recurring findings or provide guidance before rerun.`);
+	const stagnant = (s.state as Record<string, unknown>).__stagnated as { rounds?: number; kind?: string } | undefined;
+	if (stagnant) {
+		lines.push(stagnant.kind === "blocked-on-decisions"
+			? `  ⚠ Verify-loop blocked on decisions after ${stagnant.rounds} round(s) — every remaining finding is deferred (no code fixer can act); awaiting a human decision. See escalation-report.md in the spec dir.`
+			: `  ⚠ Verify-loop stagnant after ${stagnant.rounds} round(s) — see escalation-report.md in the spec dir. The workflow reached review/verify but could not converge; inspect recurring findings or provide guidance before rerun.`);
+	}
 	return lines;
 }
 
@@ -272,6 +276,15 @@ function launchMetadataLines(task: string, cwd: string, runLogPath: string): str
  *  dismissed). For Tier-2 all options just finish the run — "revise spec" only
  *  surfaces the recommendation; auto-replay is deferred (Tier-3). */
 interface StagnationRecord {
+	/** F-C: WHY the loop broke. "stagnation" (default, legacy) = identical
+	 *  findings recurred across consecutive rounds — the fixer tried and failed.
+	 *  "blocked-on-decisions" = no actionable findings remain (all deferred:
+	 *  advisory / needs-human / cross-stage) — nothing recurred; a human
+	 *  decision or upstream revision is the only way forward. The report and
+	 *  prompt must never tell the human to "fix the implementation" for this
+	 *  kind — that is precisely the misdiagnosis run 2026-08-16T01-00-35
+	 *  produced by reusing the stagnation template. */
+	kind?: "stagnation" | "blocked-on-decisions";
 	rounds?: number;
 	verdict?: string;
 	findings?: Array<{ file?: string | null; severity?: string | null; title?: string | null }>;
@@ -292,14 +305,22 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 	// structured report format across this legacy path and the new inline
 	// `escalate` callback; uniformly never-throw). Additive + never-regressing.
 	const findingsRaw = st.findings ?? [];
-	const message = [
+	const blocked = st.kind === "blocked-on-decisions";
+	const message = blocked
+		? [
+			`The verify loop stopped after **${st.rounds}** round(s): the merged review verdict (**${st.verdict ?? "unknown"}**) is not approved, but every remaining finding is deferred — advisory, needs-human, or owned by an upstream stage.`,
+			"",
+			"Nothing recurred and no code fixer may act on these items. Awaiting a human decision: accept the deferred items as known limitations, resolve them manually, or revise the owning upstream artifact (spec/design) and rerun.",
+		].join("\n")
+		: [
 		`The verify-loop broke early after **${st.rounds}** review round(s): the same findings recurred across two consecutive iterations.`,
 		"",
 		`Merged review verdict at stagnation: **${st.verdict ?? "unknown"}**.`,
 		"",
 		"This means the workflow reached review/verify but repeated the same unresolved findings. Treat it as a workflow/review convergence blocker: inspect the recurring findings, fix the implementation or orchestration issue they identify, or provide explicit retry guidance before rerunning.",
 	].join("\n");
-	// Legacy human-facing diagnostic (byte-identical to pre-spec-18 output).
+	// Legacy human-facing diagnostic (byte-identical to pre-spec-18 output for
+	// the stagnation kind; honest kind-specific prose for the dead-state break).
 	try {
 		const findingLines = findingsRaw.map((f) => `- [${f.severity ?? "?"}] ${f.file ? "`" + f.file + "` " : ""}${f.title ?? ""}`);
 		writeFileSync(
@@ -309,7 +330,7 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 				"",
 				message,
 				"",
-				"## Recurring findings",
+				blocked ? "## Blocked on decisions (deferred findings — no code fixer can act)" : "## Recurring findings",
 				...(findingLines.length ? findingLines : ["_(no structured findings captured)_"]),
 			].join("\n"),
 		);
@@ -339,8 +360,8 @@ export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { e
 	try {
 		const choice = await ctx.ui?.select?.(
 			formatEscalationPrompt(
-				{ kind: "stagnation", stage: "verify", severity: "soft", message, findings: findingsRaw },
-				"Review loop stagnant — how to proceed?",
+				{ kind: blocked ? "blocked-on-decisions" : "stagnation", stage: "verify", severity: "soft", message, findings: findingsRaw },
+				blocked ? "Blocked on decisions — how to proceed?" : "Review loop stagnant — how to proceed?",
 			),
 			["Revise spec & re-run from design", "Accept findings as known limitations", "Abandon worktree"],
 			{ timeout: 120_000 },

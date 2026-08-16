@@ -902,6 +902,7 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 			s.buildGate ? `pass=${String((s.buildGate as { pass?: boolean }).pass)} errors=${buildErrors(s).length}` : "absent (precondition-skipped)",
 		]);
 		(s as Record<string, unknown>).__stagnated = {
+			kind: "blocked-on-decisions",
 			rounds: sigHist.length,
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
 			findings: [
@@ -987,9 +988,16 @@ async function escalateReviewStagnationIfStillBlocked(state: PipelineState, ctx:
 		const { runEscalation, applyRetryDecision } = await import("../escalation.ts");
 		const setup = (state as { setup?: { worktreePath?: string; specDirectory?: string } }).setup;
 		const findings = ((state as Record<string, unknown>).__stagnated as { findings?: Array<{ file?: unknown; severity?: unknown; title?: unknown }> } | undefined)?.findings ?? [];
+		// F-C: the failure kind decides the message. A dead-state break (all
+		// findings deferred — advisory / needs-human / cross-stage) is NOT a
+		// recurrence and must never tell the human to "fix the implementation":
+		// no code fixer is allowed to act on these items.
+		const stagKind = ((state as Record<string, unknown>).__stagnated as { kind?: string } | undefined)?.kind;
 		const failure: import("../types.ts").EscalationFailure = {
 			kind: "stagnation",
-			message: "Review loop stagnant after final re-review — the same findings recur and automatic fixes did not converge. Inspect recurring findings or provide explicit retry guidance.",
+			message: stagKind === "blocked-on-decisions"
+				? "Review stopped without actionable findings: every remaining finding is deferred (advisory / needs-human / cross-stage) — no code fixer may act on them. Awaiting human decision: accept the deferred items as known limitations, resolve them manually, or revise the owning upstream artifact and rerun."
+				: "Review loop stagnant after final re-review — the same findings recur and automatic fixes did not converge. Inspect recurring findings or provide explicit retry guidance.",
 			severity: "soft",
 			findings: findings.slice(0, 12).map((f) => ({ file: String(f.file ?? "") || null, severity: String(f.severity ?? "") || null, title: String(f.title ?? "") || null })),
 			worktreePath: setup?.worktreePath,
@@ -1178,6 +1186,7 @@ export const verificationConvergenceNode: Node = {
 				if (!reviewApproved(state) && record.reviewFindings === 0 && record.buildErrors === 0 && (state.buildGate === undefined || buildGreen(state))) {
 					const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
 					(state as Record<string, unknown>).__stagnated = {
+						kind: "blocked-on-decisions",
 						rounds: attempts.length,
 						verdict: (state.review as { verdict?: string } | undefined)?.verdict,
 						findings: deferred.slice(0, 6).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}` })),
