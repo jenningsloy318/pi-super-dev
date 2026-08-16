@@ -54,9 +54,12 @@ export function validateData(schema: StageModel["schema"], data: unknown): strin
 }
 
 /** Augment data with computed fields the template needs (e.g. totalScenarios for
- *  BDD). These are DETERMINISTIC — never trust the model to count correctly. */
+ *  BDD). These are DETERMINISTIC — never trust the model to count correctly.
+ *  Every doc also gets `generatedAt`: the exact render/write moment (ISO 8601,
+ *  UTC, ms precision) — the agent's `date` is a self-reported calendar date;
+ *  `generatedAt` is the pipeline-stamped creation time the user can rely on. */
 function augmentData(stageId: string, data: Record<string, unknown>): Record<string, unknown> {
-	const augmented = { ...data };
+	const augmented: Record<string, unknown> = { ...data, generatedAt: new Date().toISOString() };
 	if (stageId === "bdd") {
 		const features = (augmented.features as Array<{ scenarios: unknown[] }>) ?? [];
 		augmented.totalScenarios = features.reduce((sum, f) => sum + (f.scenarios?.length ?? 0), 0);
