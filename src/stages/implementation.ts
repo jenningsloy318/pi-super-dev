@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
+import { appendGateChecked } from "../runlog.ts";
 import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
@@ -984,6 +985,7 @@ export const implementationStage: Stage = {
 				resetDeliverableCheckCache();
 				announceActivity("Build gate", "resume verification");
 				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
+				appendGateChecked(state, "phase-green:resume-verify", gate, "implementation");
 				announceActivity("Deliverable check", "resume verification");
 				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
@@ -1291,6 +1293,7 @@ export const implementationStage: Stage = {
 						announceActivity("Already-satisfied verification", attemptDetail(attempt));
 						announceActivity("Build gate", attemptDetail(attempt));
 						const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
+						appendGateChecked(state, "phase-green:already-satisfied", gate, "implementation");
 						announceActivity("Deliverable check", attemptDetail(attempt));
 						const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
 						ctx.log(`Implementation ${phaseId} RED already-satisfied: build=${gate.pass || gate.inScopePass}, deliverables=${deliverableCheck.pass}`);
@@ -1480,6 +1483,7 @@ export const implementationStage: Stage = {
 				// is detectable (greenfield): ran is empty and pass is true.
 				announceActivity("Build gate", attemptDetail(attempt));
 				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
+				appendGateChecked(state, "phase-build", gate, "implementation");
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
 				// AR-02: emit the pi session/model correlation tag to the run trace.

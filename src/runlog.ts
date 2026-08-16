@@ -154,6 +154,31 @@ export function appendRunEvent(specDir: string | undefined, evt: RunEventInput):
 	}
 }
 
+// ─── Typed emitters for wiring points (P1.4+) ───────────────────────────────
+
+/** P1.4: gate.checked — a deterministic build/test gate outcome. Bounded
+ *  payload (ran commands capped at 12, errors at 8 × 200 chars) so a broken
+ *  toolchain's wall of text never bloats the ledger. NEVER throws. */
+export function appendGateChecked(
+	state: { setup?: { specDirectory?: string } } & Record<string, unknown>,
+	gate: string,
+	r: { pass: boolean; ran?: string[]; errors?: string[]; inScopePass?: boolean },
+	stage?: string,
+): void {
+	appendRunEvent(state.setup?.specDirectory, {
+		runId: String(state.__runId ?? "unknown"),
+		...(stage ? { stage } : {}),
+		type: "gate.checked",
+		data: {
+			gate,
+			pass: r.pass,
+			...(typeof r.inScopePass === "boolean" ? { inScopePass: r.inScopePass } : {}),
+			ran: (r.ran ?? []).slice(0, 12),
+			errors: (r.errors ?? []).slice(0, 8).map((e) => String(e).slice(0, 200)),
+		},
+	});
+}
+
 // ─── Read / fold ────────────────────────────────────────────────────────────
 
 /** Read all events; a torn LAST line is skipped (partial write from a killed

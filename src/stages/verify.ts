@@ -24,6 +24,7 @@ import { runJudge } from "./judge.ts";
 import { toBool } from "../doc-validators.ts";
 import { commitWorktreeChanges } from "../helpers.ts";
 import { maybeTriggerReplan } from "../replan/replan.ts";
+import { appendGateChecked } from "../runlog.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
@@ -748,6 +749,7 @@ const buildGateStep = task({
 	async run(s, ctx) {
 		if (!ctx.budget.check()) return undefined;
 		const r = runBuildGate(setupOf(s).worktreePath, { gate: (s.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setupOf(s).defaultBranch });
+		appendGateChecked(s, "build-gate", r, "buildGate");
 		if (!r.pass && r.ran.length) ctx.log(`build-gate FAIL (ran: ${r.ran.join(", ")}): ${r.errors.join("; ")}`);
 		// AR-02: emit the pi session/model correlation tag to the run trace.
 		const corr = buildGateCorrelationLine(r);

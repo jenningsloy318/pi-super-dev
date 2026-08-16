@@ -47,7 +47,7 @@ describe("agent.called ledger events (P1.3)", () => {
 			// The mock throws only for the "throw please" call — deterministic
 			// per-prompt dispatch (mockImplementationOnce ordering is global, not
 			// per-test-arrangement).
-			sessionMock.mockImplementation(async (call: { prompt?: string }) => {
+			sessionMock.mockImplementation(async (call: { agent: string; prompt?: string }) => {
 				if (String(call.prompt).includes("throw please")) throw new Error("backend exploded");
 				return { text: "done", control: { verdict: "Approved", findings: [], extra: { deep: true } }, model: "provider/model-x" };
 			});

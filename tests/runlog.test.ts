@@ -13,6 +13,7 @@ import {
 	readRunEvents,
 	foldEvents,
 	runStartedEvent,
+	appendGateChecked,
 	type RunEvent,
 } from "../src/runlog.ts";
 
@@ -109,6 +110,44 @@ describe("run-event ledger (P1.1)", () => {
 			const [e] = readRunEvents(d);
 			expect(e.type).toBe("replan.routed");
 			expect((e.data as { invalidationSet: string[] }).invalidationSet).toContain("verify");
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+});
+
+describe("appendGateChecked (P1.4)", () => {
+	it("records a bounded gate outcome with stage attribution", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-runlog-gate-"));
+		try {
+			const state = { __runId: "r1", setup: { specDirectory: d } } as never;
+			appendGateChecked(state, "phase-build", {
+				pass: false,
+				ran: ["npm run build", "npm test"],
+				errors: ["x".repeat(500), "second error"],
+				inScopePass: true,
+			}, "implementation");
+			const [e] = readRunEvents(d);
+			expect(e.type).toBe("gate.checked");
+			expect(e.stage).toBe("implementation");
+			expect(e.runId).toBe("r1");
+			expect(e.data.gate).toBe("phase-build");
+			expect(e.data.pass).toBe(false);
+			expect(e.data.inScopePass).toBe(true);
+			expect(e.data.ran).toEqual(["npm run build", "npm test"]);
+			expect(String(e.data.errors[0]).length).toBeLessThanOrEqual(200); // truncated
+			expect(e.data.errors).toHaveLength(2);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("caps ran at 12 and errors at 8; missing inScopePass stays absent; no specDir is a no-op", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-runlog-gate2-"));
+		try {
+			const state = { __runId: "r1", setup: { specDirectory: d } } as never;
+			appendGateChecked(state, "g", { pass: true, ran: Array.from({ length: 20 }, (_, i) => `cmd${i}`), errors: Array.from({ length: 20 }, (_, i) => `e${i}`) });
+			const [e] = readRunEvents(d);
+			expect(e.data.ran).toHaveLength(12);
+			expect(e.data.errors).toHaveLength(8);
+			expect("inScopePass" in e.data).toBe(false);
+			appendGateChecked({} as never, "g", { pass: true }); // no setup — no throw
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });
