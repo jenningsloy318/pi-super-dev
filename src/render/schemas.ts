@@ -205,7 +205,10 @@ export const DesignData = Type.Object({
 });
 export const PrototypeData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
-	verdict: Type.String(),
+	// Closed enum (postmortem 0001 case 3): the verdict reaches structured_output
+	// as tool parameters, so conforming models cannot drift to PROTOTYPE_COMPLETE
+	// et al. Boundary normalization in prototype.ts covers unconstrained paths.
+	verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail")]),
 	measurements: Type.Array(Type.String()),
 	adjustments: Type.Array(Type.String()),
 });
