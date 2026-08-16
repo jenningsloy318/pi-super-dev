@@ -833,3 +833,98 @@ ERROR tests/test_thing.py
 		}
 	});
 });
+
+// ─── Failure-statement-only greenfield extraction (run 2026-08-15T13-45-02-387Z postmortem) ──
+// Production evidence: RED try 1 of phase 1 imported the EXISTING
+// ../src/schemas.ts (spec 01) AND the missing ../src/persistence.ts; vitest's
+// printed source frame textually contains BOTH, and the old whole-output scan
+// required EVERY mentioned specifier to be absent — the existing sibling vetoed
+// the greenfield classification (broken), costing an 11-minute re-author. The
+// detector must key ONLY on the runner's failure statements.
+describe("runRedCheck — failure-statement greenfield extraction (sibling-import veto fix)", () => {
+	// EXACT production tail from the run log (paths trimmed to /wt/…).
+	const PROD_TAIL =
+		" FAIL tests/persistence.test.ts [ tests/persistence.test.ts ] " +
+		"Error: Cannot find module '../src/persistence.ts' imported from '/wt/.worktree/02-data-persistence/tests/persistence.test.ts' " +
+		"❯ tests/persistence.test.ts:77:1 75| import * as S from \"../src/schemas.ts\"; 76| import type { DimensionResult, Evidence } from \"../src/schemas.ts\"; " +
+		"77| import * as P from \"../src/persistence.ts\"; | ^ 78| 79| const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), \"..\")… " +
+		"Caused by: Error: Failed to load url ../src/persistence.ts (resolved id: ../src/persistence.ts) in /wt/.worktree/02-data-persistence/tests/persistence.test.ts. Does the file exist?";
+
+	it("PRODUCTION BYTES: an existing sibling import in the source frame no longer vetoes greenfield RED", () => {
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { test: "vitest run" } }));
+			mkdirSync(join(dir, "tests"), { recursive: true });
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "schemas.ts"), "export {};"); // spec-01 sibling EXISTS
+			// src/persistence.ts deliberately absent — the module under test.
+			writeFileSync(join(dir, "tests", "persistence.test.ts"), "// imports ../src/schemas.ts and ../src/persistence.ts");
+		});
+		try {
+			mockRunner(out(1, PROD_TAIL));
+			expect(runRedCheck(d, ["tests/persistence.test.ts"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("if the FAILURE STATEMENT names an EXISTING module, it stays broken (conservative guard intact)", () => {
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { test: "vitest run" } }));
+			mkdirSync(join(dir, "tests"), { recursive: true });
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "schemas.ts"), "export {};");
+			writeFileSync(join(dir, "tests", "t.test.ts"), "// t");
+		});
+		try {
+			// The runner says the EXISTING module failed to load — a real load
+			// failure (corrupt module, bad export), not greenfield.
+			mockRunner(out(1, "Error: Cannot find module '../src/schemas.ts' imported from '/d/tests/t.test.ts'"));
+			expect(runRedCheck(d, ["tests/t.test.ts"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("jest format: Cannot find module '<spec>' from '<importer>' is greenfield when the module is absent", () => {
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { test: "jest" } }));
+			mkdirSync(join(dir, "tests"), { recursive: true });
+			writeFileSync(join(dir, "tests", "t.test.js"), "// t");
+		});
+		try {
+			mockRunner(out(1, "FAIL tests/t.test.js\n  ● Test suite failed to run\n\n    Cannot find module '../src/persistence' from 'tests/t.test.js'\n\n      1 | import P from \"../src/persistence\""));
+			expect(runRedCheck(d, ["tests/t.test.js"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("node ESM absolute-path form: absent resolved path is greenfield", () => {
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node --test" } }));
+			mkdirSync(join(dir, "tests"), { recursive: true });
+			writeFileSync(join(dir, "tests", "t.test.mjs"), "// t");
+		});
+		try {
+			const abs = join(d, "src", "persistence.ts");
+			mockRunner(out(1, `Error [ERR_MODULE_NOT_FOUND]: Cannot find module '${abs}' imported from ${join(d, "tests", "t.test.mjs")}`));
+			expect(runRedCheck(d, ["tests/t.test.mjs"])).toBe("red");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("a BARE specifier failure (dependency miss) stays broken, not greenfield", () => {
+		const d = tmpProj((dir) => {
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { test: "vitest run" } }));
+			mkdirSync(join(dir, "tests"), { recursive: true });
+			writeFileSync(join(dir, "tests", "t.test.ts"), "// t");
+		});
+		try {
+			mockRunner(out(1, "Error: Cannot find module 'left-pad-deluxe' imported from '/d/tests/t.test.ts'"));
+			expect(runRedCheck(d, ["tests/t.test.ts"])).toBe("broken");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+});

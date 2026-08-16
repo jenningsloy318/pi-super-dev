@@ -841,28 +841,56 @@ function emitRedPlans(opts: RedCheckOptions | undefined, plans: RedExecutionPlan
 // on disk (greenfield RED detection). Mirrors Node/TS resolver basics.
 const RED_SOURCE_EXTS = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 
-/** Extract candidate RELATIVE module specifiers (`./…` or `../…`) mentioned in
- *  runner output. Bare specifiers (`express`, `node:fs`) and absolute paths are
- *  ignored — they are external/package resolution concerns, not the module
- *  under test. Pure + never throws. */
-function extractRelativeSpecifiers(out: string): string[] {
-	const re = /(?:^|[^\w./])(\.{1,2}\/[^\s'")\]]+)/g;
-	const specs = new Set<string>();
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(out))) {
-		const clean = m[1].replace(/[:;,.)+]+$/, "");
-		if (clean) specs.add(clean);
-	}
-	return [...specs];
+/** SUPERSEDED by extractFailedSpecifiers (run 2026-08-15T13-45-02 postmortem):
+ *  whole-output scanning vetted specifiers that appear in vitest/jest SOURCE
+ *  FRAMES too. Removed — extractFailedSpecifiers is the live path. */
+
+/** A module-resolution FAILURE named by the runner itself: which specifier
+ *  failed, and (when the format carries it) which file imported it. Only these
+ *  statements answer the greenfield question — source frames and surrounding
+ *  text mention specifiers that did NOT fail (run 2026-08-15T13-45-02
+ *  postmortem: the printed test source contained a legit import of an EXISTING
+ *  sibling module, which the old whole-output scan vetoed, classifying a valid
+ *  greenfield RED as broken and costing an 11-minute re-author). Formats,
+ *  probed against real toolchains (vitest 3.2.6, jest, node ESM, rollup):
+ *   - Cannot find module '<spec>' imported from '<importer>'   (vitest/vite)
+ *   - Cannot find module '<spec>' from '<importer>'            (jest)
+ *   - Cannot find module '<spec>' imported from <importer>     (node ESM, unquoted)
+ *   - Could not resolve '<spec>' from '<importer>'             (rollup)
+ *   - Failed to load url <spec> (resolved id: …) in <importer> (vite-node)
+ *  Pure + never throws. */
+export interface FailedSpecifier {
+	/** The specifier the runner could not resolve (verbatim, quotes stripped). */
+	spec: string;
+	/** Absolute path of the importing file when the format carries one. */
+	importer?: string;
 }
 
-/** Does a relative specifier resolve to an EXISTING source file under `cwd` or
- *  the directory of any RED target? (A test in `src/persistence.test.ts` that
- *  imports `./persistence` resolves the module under `src/`.) Pure + never
- *  throws (existsSync is wrapped). */
-function relativeModuleExists(cwd: string, spec: string, targets: string[]): boolean {
+function extractFailedSpecifiers(out: string): FailedSpecifier[] {
+	const found = new Map<string, FailedSpecifier>();
+	const add = (spec?: string, importer?: string): void => {
+		if (!spec) return;
+		const clean = spec.replace(/[:;,]+$/, "");
+		if (clean) found.set(`${clean}\u0000${importer ?? ""}`, { spec: clean, importer });
+	};
+	let m: RegExpExecArray | null;
+	// quoted spec + quoted importer (vitest / jest / rollup)
+	const reQuoted = /(?:Cannot find module|Could not resolve)\s+'([^']+)'\s+(?:imported )?from\s+'([^']+)'/g;
+	while ((m = reQuoted.exec(out))) add(m[1], m[2]);
+	// quoted spec + UNquoted importer (node ESM: imported from /abs/path.js)
+	const reNode = /Cannot find module\s+'([^']+)'\s+imported from\s+(\S+)/g;
+	while ((m = reNode.exec(out))) add(m[1], m[2].replace(/[.)\]]+$/, ""));
+	// unquoted vite-node url + importer
+	const reUrl = /Failed to load url\s+(\S+?)\s+\(resolved id:[^)]*\)\s+in\s+(\S+?)(?:\.|$)/gm;
+	while ((m = reUrl.exec(out))) add(m[1], m[2]);
+	return [...found.values()];
+}
+
+/** Does a relative specifier resolve to an EXISTING source file under any of
+ *  `dirs` (importer dir first when known, then cwd + RED-target dirs)? Pure +
+ *  never throws (existsSync is wrapped). */
+function specifierResolves(dirs: string[], spec: string): boolean {
 	try {
-		const dirs = [cwd, ...targets.map((t) => join(cwd, dirname(t)))];
 		for (const dir of dirs) {
 			const base = resolve(dir, spec);
 			for (const ext of RED_SOURCE_EXTS) {
@@ -884,19 +912,42 @@ function relativeModuleExists(cwd: string, spec: string, targets: string[]): boo
  *  Conservative by design:
  *  - SyntaxError / `No test files found` / `Cannot find package` → NOT
  *    greenfield (those are genuinely broken).
- *  - No RELATIVE specifier present → NOT greenfield (a bare package miss stays
- *    broken).
- *  - With `cwd`: greenfield only when EVERY extracted relative specifier
- *    resolves to an ABSENT file. An existing module that fails to load is a
- *    real load failure → broken (never mis-read as greenfield). Pure + never
- *    throws. */
+ *  - Only specifiers named in runner FAILURE STATEMENTS are considered (never
+ *    source frames / surrounding text — see extractFailedSpecifiers).
+ *  - Any failure naming a BARE specifier (no `./`/`../`, not absolute) → NOT
+ *    greenfield: a dependency-resolution problem stays broken.
+ *  - Greenfield only when EVERY relative specifier named in failure statements
+ *    resolves to an ABSENT file (importer dir first when the format carries
+ *    one, then cwd + RED-target dirs). An existing module that fails to load
+ *    is a real load failure → broken (never mis-read as greenfield).
+ *  - Absolute-path failures (node ESM form) are checked with direct
+ *    existsSync. Pure + never throws. */
 function isGreenfieldModuleMissing(out: string, cwd?: string, targets: string[] = []): boolean {
 	if (/SyntaxError|No test files found|Cannot find package/i.test(out)) return false;
 	if (!/Failed to load url|ERR_MODULE_NOT_FOUND|Cannot find module|Could not resolve|does not exist|not found/i.test(out)) return false;
-	const specs = extractRelativeSpecifiers(out);
-	if (specs.length === 0) return false;
-	if (!cwd) return true;
-	return specs.every((spec) => !relativeModuleExists(cwd, spec, targets));
+	const fails = extractFailedSpecifiers(out);
+	if (fails.length === 0) return false;
+	const fallbackDirs = cwd ? [cwd, ...targets.map((t) => join(cwd, dirname(t)))] : [];
+	let sawMissingSignal = false;
+	for (const f of fails) {
+		const rel = f.spec.startsWith("./") || f.spec.startsWith("../");
+		const abs = f.spec.startsWith("/");
+		if (!rel && !abs) return false; // bare specifier failure → dependency problem
+		if (abs) {
+			// absolute form (node ESM): the resolved path IS the answer — present
+			// means a real load failure, absent means the module under test is new.
+			try {
+				if (existsSync(f.spec)) return false;
+			} catch { /* stays a candidate */ }
+			sawMissingSignal = true;
+			continue;
+		}
+		sawMissingSignal = true;
+		const dirs = f.importer ? [dirname(f.importer), ...fallbackDirs] : fallbackDirs;
+		if (dirs.length === 0) return true; // no cwd at all — text-only fallback (legacy behavior)
+		if (specifierResolves(dirs, f.spec)) return false;
+	}
+	return sawMissingSignal;
 }
 
 /** Python module existence check for the greenfield detector: a dotted
