@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWorkflow } from "../src/workflow.ts";
 import { sequence, task } from "../src/nodes.ts";
-import { readRunEvents, RUN_LOG_VERSION } from "../src/runlog.ts";
+import { readRunEvents, reconstructStageOutcomes, RUN_LOG_VERSION } from "../src/runlog.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "../src/version.ts";
 import type { PipelineState, Stage, StageContext, Workflow } from "../src/types.ts";
 
@@ -110,5 +110,37 @@ describe("runWorkflow ledger wiring (P1.2)", () => {
 		// No assertions on disk: the invariant is simply that nothing throws and no
 		// file was created anywhere observable (buffered events are dropped).
 		expect(existsSync(join(process.cwd(), "events.jsonl"))).toBe(false);
+	});
+});
+
+describe("P1.6: replay proof — fold(events) reconstructs the stage outcomes", () => {
+	it("a run's event stream fully determines every stage's terminal outcome (ok / failed / skipped)", async () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-p16-"));
+		try {
+			const boom: Stage = { id: "boom", label: "Boom", run: async () => { throw new Error("kaboom"); } };
+			const wf: Workflow = {
+				id: "t",
+				root: sequence([
+					task(fakeSetupStage(d)),
+					task({ id: "classify", label: "Classify", run: async () => ({ taskType: "bug" }) as never }),
+					task({ id: "research", label: "Research", run: async () => ({}) as never }),
+					task(boom),
+				]),
+			} as unknown as Workflow;
+			const summary = await runWorkflow(wf, "t", { skipStages: ["research"] });
+			const events = readRunEvents(d);
+			const outcomes = reconstructStageOutcomes(events);
+			const byStage = Object.fromEntries(outcomes.map((o) => [o.stage, o]));
+			expect(byStage.setup.status).toBe("completed");
+			expect(byStage.classify.status).toBe("completed");
+			expect(byStage.research.status).toBe("skipped");
+			expect(byStage.boom.status).toBe("failed");
+			expect(byStage.boom.error).toContain("kaboom");
+			// cross-check against the summary the pipeline itself computed
+			const failedIds = summary.failedStages.map((f) => f.label);
+			expect(failedIds.some((l) => l.includes("Boom"))).toBe(true);
+			// determinism: same events fold to the same outcomes
+			expect(reconstructStageOutcomes(events)).toEqual(outcomes);
+		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });

@@ -217,3 +217,31 @@ export function foldEvents<T>(events: RunEvent[], init: T, step: (acc: T, evt: R
 		}
 	}, init);
 }
+
+// ─── Reference fold consumer (P1.6: the replay proof) ───────────────────────
+
+export interface StageOutcome {
+	stage: string;
+	status: "completed" | "failed" | "skipped" | "cancelled";
+	error?: string;
+	partial?: boolean;
+}
+
+/**
+ * Reconstruct the terminal outcome of every stage from the event stream —
+ * the canonical demonstration that the ledger is a complete decision log:
+ * fold(events) reproduces the stage results without any other source
+ * (last-terminal-wins per stage id; sub-step ids are stages too). This is the
+ * reference consumer postmortems and the R6 acceptance check fold with.
+ */
+export function reconstructStageOutcomes(events: RunEvent[]): StageOutcome[] {
+	const out = new Map<string, StageOutcome>();
+	for (const e of events) {
+		if (!e.stage) continue;
+		if (e.type === "stage.completed") out.set(e.stage, { stage: e.stage, status: "completed", ...(e.data.partial === true ? { partial: true } : {}) });
+		else if (e.type === "stage.failed") out.set(e.stage, { stage: e.stage, status: "failed", ...(typeof e.data.error === "string" ? { error: e.data.error } : {}) });
+		else if (e.type === "stage.skipped") out.set(e.stage, { stage: e.stage, status: "skipped" });
+		else if (e.type === "stage.cancelled") out.set(e.stage, { stage: e.stage, status: "cancelled" });
+	}
+	return [...out.values()];
+}
