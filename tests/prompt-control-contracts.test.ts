@@ -36,6 +36,7 @@ import {
 	buildAdversarialPrompt,
 	buildTestsReviewPrompt,
 	buildJudgePrompt,
+	buildReplanOwnerPrompt,
 	buildFixPrompt,
 	buildUiTestPrompt,
 	buildApiTestPrompt,
@@ -155,6 +156,10 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildTestsReviewPrompt (R-2 tests/validation angle)", () => {
 		expectKeys(buildTestsReviewPrompt(s, null, "task", null, null), ["title", "date", "verdict", "summary", "findings"]);
+	});
+
+	it("buildReplanOwnerPrompt (R2 replan-lead owner classification)", () => {
+		expectKeys(buildReplanOwnerPrompt({ id: "AR-1", title: "t", detail: "d", file: "src/a.ts" }, "ctx"), ["owner", "confidence", "reason", "evidence"]);
 	});
 
 	it("buildJudgePrompt (LLM judge routing layer)", () => {

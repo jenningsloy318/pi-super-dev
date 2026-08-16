@@ -462,6 +462,47 @@ export function buildTestsReviewPrompt(s: SetupControl, c: Classification | null
 export function buildJudgePrompt(scope: string, context: string, allowedRoutes: readonly string[]): string {
 	return ["## Role", "You are the diagnostic judge for a deterministic TDD pipeline. A loop has stopped making progress and deterministic code cannot classify the failure. Diagnose WHY and route the next move. You never acquit anything — every gate verdict stands.", "", "## Wiring point", scope, "", "## Routes you may choose from (closed set)", ...allowedRoutes.map((r) => `- ${r}`), "- escalate-now (always available: a human must decide)", "", "## Failure context", context, "", "## Instructions", "1. Diagnose the single most likely category of failure from the context (and the worktree files it references — you have read access).", "2. Choose exactly one route from the offered set that your diagnosis implies.", "3. For every route except continue, provide 1-5 evidence items {file, quote}; quote must be 8-200 characters copied VERBATIM from that file or from the captured output in the context. Fabricated quotes discard the verdict.", "4. Be honest: if uncertain, confidence below 0.6 and escalate-now. Do NOT route continue unless you can say why THIS retry differs from the retries that already failed.", "", "## Data to return", "Return: diagnosis (string, at most 600 chars — the category of failure and why), route (one of the offered routes), confidence (number 0..1), evidence (array of {file, quote}; use [] only for route=continue)", "", "Output <control> JSON with: diagnosis, route, confidence, evidence."].join("\n");
 }
+export function buildReplanOwnerPrompt(finding: Record<string, unknown>, context?: string): string {
+	const t = (v: unknown): string => {
+		if (v == null) return "";
+		if (typeof v === "object") return JSON.stringify(v);
+		return String(v).replace(/\s+/g, " ").trim();
+	};
+	const lines = [
+		"- id: " + (t(finding.id) || "(none)"),
+		"- severity: " + (t(finding.severity) || "medium"),
+		"- title: " + t(finding.title),
+		"- detail: " + t(finding.detail),
+		"- file: " + (t(finding.file) || "(none)"),
+		"- ownerStage (reviewer's guess): " + (t(finding.ownerStage) || "(none)"),
+		"- recommendation: " + (t(finding.recommendation) || "(none)"),
+	];
+	const ev = Array.isArray(finding.evidence) ? finding.evidence.map(t).filter(Boolean) : [];
+	if (ev.length) lines.push("- evidence lines:", ...ev.map((e) => "  - " + e));
+	return [
+		"## Role",
+		"You are the replan lead: a downstream review found a defect the code fixer may NOT legitimately fix (it lives in an upstream artifact). Decide WHICH owning stage must revise its artifact — or route it to a human.",
+		"",
+		"## Closed owner set (choose exactly one)",
+		...["requirements", "bdd", "research", "design", "spec", "human"].map((o) => `- ${o}`),
+		"",
+		"## The finding (deterministic rules could not route it)",
+		...lines,
+		...(context ? ["", "## Context", context] : []),
+		"",
+		"## Instructions",
+		"1. Ask: if which artifact's sentence were rewritten, would this finding dissolve? That artifact's stage is the owner. Prefer the shallowest owner that fully resolves it.",
+		"2. Location is not ownership: a finding citing src/ code can be a spec gap (no protocol to implement).",
+		"3. Route human when the decision needs product/user judgment no artifact revision can encode, or when the finding is actually implementation-domain (misrouted to you).",
+		"4. Provide 1-3 evidence items {file, quote}; quote must be 8-200 characters copied VERBATIM from the finding text above. Fabricated quotes discard the verdict.",
+		"5. confidence >= 0.6 is required for an owner route; below that, route human.",
+		"",
+		"## Data to return",
+		"Return: owner (one of the closed set), confidence (number 0..1), reason (at most 400 chars), evidence (array of {file, quote}).",
+		"",
+		"Output <control> JSON with: owner, confidence, reason, evidence.",
+	].join("\n");
+}
 export function buildFixPrompt(s: SetupControl, c: Classification | null, findings: unknown[], testFailures?: unknown[]): string {
 	const clean = (value: unknown): string => {
 		if (value == null) return "";
