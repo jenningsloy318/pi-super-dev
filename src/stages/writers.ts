@@ -9,6 +9,7 @@ import type { Stage, SetupControl } from "../types.ts";
 import * as P from "../prompts.ts";
 import { ClassificationData } from "../render/schemas.ts";
 import { toBool } from "../doc-validators.ts";
+import { isHarnessBookkeepingPath } from "../helpers.ts";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
 
@@ -204,9 +205,24 @@ export const mergeVerifyTask: Stage = {
 		// the review fix repaired F-01 but left `M tests/persistence.test.ts`
 		// uncommitted; nothing between reviewFix and merge commits it). Untracked
 		// files do NOT block (A-3 geometry: pipeline-copied .env files are untracked
-		// and git never carries them into a merge).
-		const dirty = gitOk(["status", "--porcelain=v1", "--untracked-files=no"]);
-		if (dirty) reasons.push(`worktree has ${dirty.split("\n").length} uncommitted tracked change(s) that would NOT ship with the merge (e.g. ${dirty.split("\n")[0].trim()})`);
+		// and git never carries them into a merge). Harness bookkeeping ledgers
+		// (events/change-tracker/.resume-cache/…) ARE tracked but the harness itself
+		// appends to them after the merge agent's final commit — deterministically,
+		// every run (2026-08-16T11-19-05: merge-verify flagged its own 3 ledgers and
+		// downgraded a clean merge to PARTIAL) — so they are exempt; a dirty REAL
+		// source file still blocks exactly as before.
+		const dirtyRaw = gitOk(["status", "--porcelain=v1", "--untracked-files=no"]);
+		const dirtyPaths = dirtyRaw ? dirtyRaw.split("\n").filter(Boolean).map((line) => {
+			let p = line.slice(3).trim();
+			const arrow = p.indexOf(" -> ");
+			if (arrow >= 0) p = p.slice(arrow + 4); // rename: the post-rename path is what ships
+			if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+			return p;
+		}) : [];
+		const exempt = dirtyPaths.filter((p) => isHarnessBookkeepingPath(setup.specDirectory, p));
+		const dirty = dirtyPaths.filter((p) => !isHarnessBookkeepingPath(setup.specDirectory, p));
+		if (exempt.length > 0) ctx.log(`merge-verify: exempting ${exempt.length} harness bookkeeping file(s) the pipeline itself appended to after the merge commit: ${exempt.join(", ")}`);
+		if (dirty.length > 0) reasons.push(`worktree has ${dirty.length} uncommitted tracked change(s) that would NOT ship with the merge (e.g. ${dirty[0]})`);
 		if (reasons.length === 0) {
 			state.merge = { ...merge, merged: true, verification: `git-confirmed: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains ${featureBranch}` };
 			ctx.log(`Merge verification PASSED: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains feature head (${featureHead!.slice(0, 12)})`);

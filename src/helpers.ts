@@ -435,6 +435,45 @@ export function commitWorktreeChanges(cwd: string | undefined, message: string):
 	return { committed: true, subject };
 }
 
+/** Harness-owned bookkeeping files (by basename) that live in the run's spec
+ *  directory. The pipeline itself appends to these during every stage — the
+ *  events ledger, change tracker, resume cache, judge audit, knowledge base,
+ *  and implementation evidence — so ANY of these files being dirty inside a
+ *  verification window is harness self-write, never agent work and never a
+ *  lost repair. Shared by the integration write boundary (verify.ts) and the
+ *  merge-verify dirty-tree check (writers.ts).
+ *
+ *  History: production run 2026-08-16T08-41-11 showed the boundary
+ *  classifier's text can correctly reason "harness bookkeeping, permitted"
+ *  while its structured control still marks the file forbidden; and run
+ *  2026-08-16T11-19-05 showed merge verification flagging its OWN bookkeeping
+ *  as "uncommitted changes that would not ship" because the harness appends
+ *  to these ledgers after the merge agent's final commit — deterministically,
+ *  every run. Both checks exempt these files up front. */
+export const HARNESS_BOOKKEEPING_FILES = new Set([
+	"events.jsonl",
+	"change-tracker.jsonl",
+	"implementation-evidence.jsonl",
+	".resume-cache.jsonl",
+	".judge.jsonl",
+	".knowledge.json",
+]);
+
+/** True when `path` is a harness bookkeeping file inside the run's spec
+ *  directory (the only place the harness writes them). A same-named file an
+ *  agent writes elsewhere (e.g. src/events.jsonl) is NOT exempt. */
+export function isHarnessBookkeepingPath(specDirectory: string | undefined, path: string): boolean {
+	const base = path.split("/").pop() ?? path;
+	if (!HARNESS_BOOKKEEPING_FILES.has(base)) return false;
+	const specDir = specDirectory?.replace(/^\.\//, "").replace(/\/+$/, "");
+	if (!specDir) return false;
+	if (path === base || path.startsWith(`${specDir}/`) || path.startsWith(`./${specDir}/`)) return true;
+	// specDirectory may be absolute (tests, some setups) while git-status paths
+	// are worktree-relative — fall back to matching the spec dir's final segment.
+	const specDirBase = specDir.split("/").pop() ?? "";
+	return specDirBase !== "" && path.endsWith(`/${specDirBase}/${base}`);
+}
+
 async function cleanup(_s: Record<string, unknown>, context?: Record<string, unknown>): Promise<HelperResult> {
 	const cwd = context?.cwd as string | undefined;
 	const worktreeCreated = context?.worktreeCreated === true;

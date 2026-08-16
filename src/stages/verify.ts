@@ -22,7 +22,7 @@ import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, 
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { runJudge } from "./judge.ts";
 import { toBool } from "../doc-validators.ts";
-import { commitWorktreeChanges } from "../helpers.ts";
+import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../helpers.ts";
 import { maybeTriggerReplan } from "../replan/replan.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
@@ -463,38 +463,10 @@ async function resolveIntegrationWriteBoundary(args: { ctx: StageContext; state:
 	}
 }
 
-/** Harness-owned bookkeeping files (by basename) that live in the spec
- *  directory. The pipeline itself appends to these during every stage — the
- *  events ledger, change tracker, resume cache, judge audit, knowledge base,
- *  and implementation evidence — so their modification inside the integration
- *  window is harness self-write, NEVER an integration-tester violation.
- *  Deterministically exempt them BEFORE LLM classification: production run
- *  2026-08-16T08-41-11-882Z showed the boundary classifier's text can
- *  correctly reason "harness bookkeeping, permitted" while its structured
- *  control still marks the file forbidden, killing an otherwise-green run at
- *  the integration write boundary. */
-const HARNESS_BOOKKEEPING_FILES = new Set([
-	"events.jsonl",
-	"change-tracker.jsonl",
-	"implementation-evidence.jsonl",
-	".resume-cache.jsonl",
-	".judge.jsonl",
-	".knowledge.json",
-]);
-
 /** True when `path` is a harness bookkeeping file inside the run's spec
- *  directory (the only place the harness writes them). A same-named file a
- *  test agent writes elsewhere (e.g. src/events.jsonl) is NOT exempt. */
+ *  directory (see helpers.ts isHarnessBookkeepingPath). */
 function isHarnessBookkeepingFile(s: PipelineState, path: string): boolean {
-	const base = path.split("/").pop() ?? path;
-	if (!HARNESS_BOOKKEEPING_FILES.has(base)) return false;
-	const specDir = s.setup?.specDirectory?.replace(/^\.\//, "").replace(/\/+$/, "");
-	if (!specDir) return false;
-	if (path === base || path.startsWith(`${specDir}/`) || path.startsWith(`./${specDir}/`)) return true;
-	// specDirectory may be absolute (tests, some setups) while git-status paths
-	// are worktree-relative — fall back to matching the spec dir's final segment.
-	const specDirBase = specDir.split("/").pop() ?? "";
-	return specDirBase !== "" && path.endsWith(`/${specDirBase}/${base}`);
+	return isHarnessBookkeepingPath(s.setup?.specDirectory, path);
 }
 
 async function detectIntegrationWriteViolations(state: PipelineState, ctx: StageContext, before: Map<string, string | null>): Promise<string[]> {

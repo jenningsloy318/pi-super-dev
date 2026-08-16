@@ -35,10 +35,10 @@ function repo(): { main: string; wt: string } {
 	return { main, wt };
 }
 
-function stateWith(main: string, wt: string, merge: Record<string, unknown>): { state: PipelineState; ctx: StageContext; logs: string[] } {
+function stateWith(main: string, wt: string, merge: Record<string, unknown>, specDirectory?: string): { state: PipelineState; ctx: StageContext; logs: string[] } {
 	const logs: string[] = [];
 	const state = {
-		setup: { worktreePath: wt, specDirectory: wt, defaultBranch: "main", language: "backend", isWebUi: false, specIdentifier: "t", worktreeCreated: true, initializedRepo: false },
+		setup: { worktreePath: wt, specDirectory: specDirectory ?? wt, defaultBranch: "main", language: "backend", isWebUi: false, specIdentifier: "t", worktreeCreated: true, initializedRepo: false },
 		merge,
 	} as unknown as PipelineState;
 	const ctx = {
@@ -175,6 +175,62 @@ describe("mergeVerifyTask boolean control drift (run 2026-08-15T13-45-02 postmor
 			expect(state.merge?.merged).toBe("false"); // untouched
 			expect(state.merge?.verification).toBeUndefined();
 			expect(logs.join("\n")).not.toContain("normalized");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
+
+	// ── v0.1.97: harness bookkeeping appended after the merge commit ────────
+	// Production shape (run 2026-08-16T11-19-05-572Z): the merge agent
+	// committed all leftovers, then the harness itself appended to the spec
+	// dir's ledgers (.resume-cache/events/change-tracker) while capturing the
+	// agent's structured output — merge-verify then flagged its OWN ledgers as
+	// "uncommitted changes that would not ship" and downgraded a clean merge
+	// to PARTIAL. Deterministically, every run. These files are exempt.
+	it("v0.1.97: harness bookkeeping files dirty after the merge commit do NOT block", async () => {
+		const { main, wt } = repo();
+		try {
+			const spec = "docs/specifications/t-spec";
+			// ledgers committed on the feature branch (the merge agent's `git add -A`)
+			sh(wt, `mkdir -p ${spec} && echo x > ${spec}/.resume-cache.jsonl && echo x > ${spec}/events.jsonl && echo x > ${spec}/change-tracker.jsonl && git add -A && git commit -m ledgers`);
+			sh(main, "git merge --no-ff feature/x -m merged"); // geometry is CORRECT
+			// harness appends AFTER the merge commit — the exact production race
+			sh(wt, `echo more >> ${spec}/.resume-cache.jsonl && echo more >> ${spec}/events.jsonl && echo more >> ${spec}/change-tracker.jsonl`);
+			const { state, ctx, logs } = stateWith(main, wt, { merged: true, summary: "claims merged" }, spec);
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(state.merge?.merged).toBe(true);
+			expect(String(state.merge?.verification)).toContain("git-confirmed");
+			expect(logs.join("\n")).toContain("exempting 3 harness bookkeeping");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
+
+	it("v0.1.97: a REAL dirty file still blocks even when ledgers are also dirty (mix)", async () => {
+		const { main, wt } = repo();
+		try {
+			const spec = "docs/specifications/t-spec";
+			sh(wt, `mkdir -p ${spec} && echo x > ${spec}/.resume-cache.jsonl && git add -A && git commit -m ledgers`);
+			sh(wt, "echo base > f.txt && git add f.txt && git commit -m f");
+			sh(main, "git merge --no-ff feature/x -m merged");
+			sh(wt, `echo more >> ${spec}/.resume-cache.jsonl`); // exempt
+			sh(wt, "echo modified >> f.txt"); // REAL uncommitted repair
+			const { state, ctx } = stateWith(main, wt, { merged: true, summary: "claims merged" }, spec);
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(state.merge?.merged).toBe(false);
+			const v = String(state.merge?.verification);
+			expect(v).toContain("1 uncommitted tracked change");
+			expect(v).toContain("f.txt");
+			expect(v).not.toContain(".resume-cache.jsonl");
+		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
+	});
+
+	it("v0.1.97: a ledger-NAMED file outside the spec dir still blocks (guard against over-exemption)", async () => {
+		const { main, wt } = repo();
+		try {
+			sh(wt, "mkdir -p src && echo x > src/events.jsonl && git add -A && git commit -m fake-ledger");
+			sh(main, "git merge --no-ff feature/x -m merged");
+			sh(wt, "echo more >> src/events.jsonl"); // agent-written, NOT harness bookkeeping
+			const { state, ctx } = stateWith(main, wt, { merged: true, summary: "claims merged" }, "docs/specifications/t-spec");
+			await (mergeVerifyTask as Stage).run(state, ctx);
+			expect(state.merge?.merged).toBe(false);
+			expect(String(state.merge?.verification)).toContain("uncommitted tracked change");
 		} finally { rmSync(wt, { recursive: true, force: true }); sh(main, "git worktree prune"); rmSync(main, { recursive: true, force: true }); }
 	});
 });
