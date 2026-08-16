@@ -1,174 +1,141 @@
-# dsh-09 — Convergence Plan v2: verified, atomic, testable
+# dsh-09 — Convergence Plan v3: sad-path team on a pipeline skeleton
 
-Status: PROPOSAL v2 — rewritten after code-level verification pass. Awaiting user approval.
+Status: PROPOSAL v3 — v2 (commit d7fab455) restructured after production run 2026-08-16T01-00-35-613Z triggered the plan's own replan-promotion criterion. Awaiting user approval.
 Version baseline: 0.1.74.
-Supersedes: the first draft of this file (three of its claims were wrong — see §0).
-Inputs: dsh-00..dsh-08, `agent-team-runtime.md`, `graph-engineering.md`, the loop-line docs (all implemented), plus a full verification pass over `src/nodes.ts`, `src/stages/*.ts`, `src/workflow.ts`, `src/render/*.ts` and existing specs 22/23/24.
+Inputs: dsh-00..dsh-08, `agent-team-runtime.md`, `graph-engineering.md`, the loop-line docs (all implemented), a full code-level verification pass, postmortem evidence from run 2026-08-16T01-00-35-613Z (spec 03-staging, pi-omisis), and the architecture discussion it prompted.
 
 ---
 
-## 0. Corrections from the v1 draft (why v2 exists)
+## 0. Corrections from the v1 draft (kept from v2)
 
 The v1 draft was written from memory of the research docs. Code verification disproved three claims:
 
-1. **"BDD ∥ Research is dependency-free parallelism" — WRONG.** `buildResearchPrompt` (`src/prompts.ts:164-165`) reads `state.bdd` and instructs "Read the Requirements and BDD Scenarios docs above first, then derive the 2-4 research questions". Research deliberately consumes BDD. Parallelizing would degrade research-question derivation (BDD adds edge-case structure beyond the requirements ACs it is derived from). v2 demotes this to an optional experiment behind a config flag (§5).
-2. **"Add parallelism to the review fan-out" — ALREADY DONE.** `reviewStep = parallel([...])` (`src/stages/verify.ts:633`) already runs code-review + tests-review + adversarial-review concurrently, and api/ui tests likewise (`verify.ts:1082`). The pipeline is already parallel where it matters.
-3. **"Build the runtime-change-replan protocol" — 80% ALREADY EXISTS.** Spec 22 (`docs/specifications/22-runtime-instruction-replanning/`) is implemented: `runtimeInstructionFingerprint` (`src/stages/implementation.ts:644`) + start/end fingerprint comparison (`:847-856, :1843-1856`) invalidates already-green phase carry when instructions change mid-run. AND `.user-notes.json` is injected into EVERY subsequent agent prompt (`src/workflow.ts:311-313`), so not-yet-run stages already see new instructions. The only genuinely missing piece is *recording* instruction events for observability. v2 cuts D5 down to that.
+1. **"BDD ∥ Research is dependency-free parallelism" — WRONG.** `buildResearchPrompt` (`src/prompts.ts:164-165`) reads `state.bdd` and instructs "Read the Requirements and BDD Scenarios docs above first, then derive the 2-4 research questions". Research deliberately consumes BDD. Parallelizing would degrade research-question derivation. Demoted to deferred experiment E1.
+2. **"Add parallelism to the review fan-out" — ALREADY DONE.** `reviewStep = parallel([...])` (`src/stages/verify.ts:633`); api/ui tests likewise (`verify.ts:1082`).
+3. **"Build the runtime-change-replan protocol" — 80% ALREADY EXISTS** for runtime *instructions*. Spec 22 is implemented: `runtimeInstructionFingerprint` (`src/stages/implementation.ts:644`) + start/end comparison (`:847-856, :1843-1856`) invalidates green-phase carry when instructions change mid-run; `.user-notes.json` is injected into every subsequent agent prompt (`src/workflow.ts:311-313`).
 
-Additional verified facts the plan builds on:
+Verified facts the plan builds on:
 
-- `auditAppend` infrastructure exists (per-run `~/.super-dev/runs/<ts>/audit.jsonl`, best-effort, never throws — `src/render/super-dev-dir.ts:104-112`).
-- The **spec dir is already the durable-state home**: `.knowledge.json`, `.user-notes.json`, `change-tracker.jsonl`, `.judge.jsonl` all live there. A new `events.jsonl` fits the established pattern (`.judge.jsonl` at `src/stages/judge.ts:186` is the direct precedent).
-- `task()` (`src/nodes.ts:158-226`) already emits stage events + audit entries at stage granularity; `realAgent` (`src/workflow.ts:~295-340`) is the single agent-granularity choke point; `runBuildGate`/`runRedCheck` are centralized functions (edit once, not per call site).
-- 27 stage ids are statically enumerable from `src/stages/*.ts` — an invariants contract test needs no runtime magic.
-- `parallel()` has a duplicate-id guard and sibling-cancellation (`src/nodes.ts:310-352`) — safe for the optional experiment.
-- OTel GenAI semantic conventions exist (Development status: spans `create_agent`/`invoke_agent {name}`, attributes `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.agent.name`…). Our ledger is a durable run log, not telemetry — we keep a simple envelope but name fields so a future OTel bridge is a mechanical mapping.
+- `auditAppend` exists (per-run `~/.super-dev/runs/<ts>/audit.jsonl`, best-effort, never throws — `src/render/super-dev-dir.ts:104-112`).
+- The spec dir is the durable-state home (`.knowledge.json`, `.user-notes.json`, `change-tracker.jsonl`, `.judge.jsonl`, `implementation-evidence.jsonl`, convergence reports) — new files follow this pattern.
+- `task()` (`src/nodes.ts:158-226`) is the single stage-granularity choke point; `realAgent` (`src/workflow.ts`) the single agent-granularity one; `runBuildGate`/`runRedCheck` are centralized.
+- 27 stage ids are statically enumerable from `src/stages/*.ts`.
+- `parallel()` has a duplicate-id guard and sibling-cancellation (`src/nodes.ts:310-352`).
+- The convergence ledger (`src/convergence-ledger.ts`) already implements finding→owner-stage recording + `markConvergenceFindingsAddressedFromResponses` — the writer-revises-per-finding loop inside every artifact-convergence node is mature.
+- Resume is memoized replay over a deterministic stage graph (the strongest resume story available); green-phase carry skips still-green work on re-entry.
 
-## 1. What the converged research actually supports
+## 0.5 Trigger: production run 2026-08-16T01-00-35-613Z (why v3 promotes the replan edge)
 
-Four lines, one foundation each contributes to:
+Run: pi-omisis spec 03-staging (v0.1.74), 1h47m, ended **PARTIAL** at Stage 10. Verified evidence chain from run.log + audit.jsonl + rendered reports:
+
+1. Attempt 1: `review=Changes Requested build=fail` on finding F-01/AR-03-01 (real defect: spec-02's closed-set export pin not updated for spec-03's new export). Fix round repaired it (159→160 tests green) — **but the fix was left uncommitted in the worktree** (`M tests/persistence.test.ts`); no commit step exists after `reviewFix`, and the adversarial reviewer itself warned "must ship with the merge". mergeVerify checks branch geometry only, never worktree cleanliness.
+2. Attempt 2: codeReview **Approved** (2 verified findings), testsReview **Approved**, adversarial **CONTEST** (blocker verified fixed; residue = 4 medium/low design-level findings). The only needs-human finding (AR-03-02) tripped `reviewFindingBlocks`' needs-human⇒blocking rule → CONTEST pinned "Changes Requested". Meanwhile R-1 triage (correctly) deferred the same needs-human finding — the verdict layer demanded changes **no code fixer is allowed to make**.
+3. All 5 residual findings are **design/spec-level** (resume protocol undefined by spec, unbounded re-injection as a design tradeoff, ±0.10 tolerance hardcoding vs spec ambiguity) — none is an implementation bug. The pipeline has **no back edge** from verify to spec/design: dead-state break fired, verdict unapproved, findings empty → PARTIAL.
+4. The dead-state break **reused the stagnation report template**, producing a misdiagnosis ("the same findings recurred... fix the implementation" — pointing at the direction the pipeline itself refuses to fix).
+5. Earlier in the run, BDD round 1 lost 480s wholesale: the W-1 soft deadline fired at 384s, the agent said "I have enough context to compose the scenarios now", but 96s of grace was not enough to emit the 43-scenario control JSON (round 2 needed 138s for the same emission); hard timeout discarded everything. The wrap-up prompt asked it to "call structured_output now" but not to **emit partial content**, and 20% grace is empirically too short for large writer controls.
+
+Second production occurrence of the class (first: v0.1.52, implementation-stage discovery of a spec-level contradiction; this: verify-stage discovery of design-level defects). v2 deferred replan "until ledger telemetry shows a real miss" — this run **is** the miss. Per the plan's own criterion, the bounded cross-stage replan edge is promoted to a first-class phase.
+
+## 0.6 Recorded architecture decisions (user, 2026-08-16)
+
+- **D1 — Pipeline skeleton + sad-path team.** The happy path stays a deterministic pipeline (verifiable, resumable, auditable). Team behavior is added only on the sad path: when verify/implementation discovers upstream-owned defects, a bounded replan circuit routes them back to their owning stage. Full team-ification (lead dispatching the normal path) is explicitly rejected: judge quality is the system ceiling and judge-layer failures — not worker failures — caused both observed deadlocks; every LLM freedom in this repo's history eventually needed a deterministic cap; resume/audit rest on the deterministic skeleton. A controlled A/B (pipeline+replan vs full team on one spec) may be run later using the Phase-P1 ledger, data permitting.
+- **D2 — Strong model for the replan lead.** A new `replan-lead` agent role (distinct from `judge`): judge is cheap/frequent (2 per signature), replan-lead is rare (0-2 per run) but its routing decision determines the whole back edge. Mapped via the existing `agentModels` mechanism — user maps it to the strongest model. Zero new configuration code. Same evidence discipline as judge: byte-verified file quotes, confidence floor, non-conforming output degrades to HITL, never a guessed route.
+- **D3 — Dependency-graph FULL invalidation.** When an upstream artifact is revised via the replan edge, all stages reachable from the owning stage in the edges graph are invalidated (green-phase carry + replay cache). Wasteful-but-safe first; the ledger measures the actual rework-was-unchanged ratio; incremental invalidation is a data-gated later refinement.
+
+## 1. What the converged research supports (kept from v2, plus the trigger framing)
 
 | Line | Verified contribution | Plan element |
 |---|---|---|
-| dsh-03 (SessionEvent log) | One append-only ledger; consumers are folds; "model-visible means logged"; projections with watermarks | P1 ledger |
-| dsh-06 (process) | Decision-record lifecycle; postmortem → named rules; package-owned invariants + mechanical completeness gate | P0, P1.7 |
-| agent-team-runtime (IMACS/bMAS/CodexLoom) | WHO/HOW/ALGORITHM split; RACI; blackboard-as-events; messages with causality + closure pressure | P2, P3.1 |
-| graph-engineering | "Which dependencies are real vs habitual"; explicit edges; local failure isolation | P3.3 edges table |
-| Loop line (ours, implemented) | The verification spine (gates/judge/stagnation/triage) — the asset to keep unchanged and make event-emitting | P1.2-1.5 |
+| dsh-03 (SessionEvent log) | One append-only ledger; consumers are folds; deterministic replay beats in-place mutation | P1 ledger; R3 restart mechanism |
+| dsh-06 (process) | Postmortem → named rules; explain-or-assert invariants | P0, P1.7 |
+| agent-team-runtime | WHO/HOW/ALGORITHM split; RACI ownership; closure pressure | R2 owner map, P2, P3.1 |
+| graph-engineering | Explicit dependency edges; bounded feedback loops | R1 edges table (also the D3 invalidation graph) |
+| Loop line (ours) | The verification spine — keep unchanged, make event-emitting | P1.2-1.5 |
 
-Anti-scope (unchanged from dsh-08 §4, re-confirmed): no plugin substrate, no runtime HMR, no free-form agent chat, no adaptive routing (needs ledger telemetry first), no LangGraph-style reducers (sequential joins serialize appends), no stage-level context compaction (subprocess-per-stage already isolates context).
+Anti-scope (unchanged): no plugin substrate, no runtime HMR, no free-form agent chat, no LLM-dispatched happy path, no LangGraph-style graph executor for the main flow (R-mech-1 documents the future upgrade path), no stage-level context compaction.
 
 ## 2. The atomic plan
 
-Conventions for every commit: full typecheck (`npx tsc --noEmit`), affected suites + FULL suite with vitest's own exit code captured (no unguarded pipes — defensive rule #1), version bump in `src/version.ts` + `package.json` + `package-lock.json` + `tests/version.test.ts` in the same commit (AGENTS.md rule), one logical change per commit.
+Conventions (every commit): full typecheck; affected suites + FULL suite with vitest's own exit code (no unguarded pipes); version bump in `src/version.ts` + `package.json` + `package-lock.json` + `tests/version.test.ts` in the same commit; one logical change per commit.
 
-### P0 — Process foundations (docs + one tiny code commit; zero pipeline risk)
+### Phase F — immediate run-response fixes (independent of all other phases; days 1-2)
 
-**P0.1 Postmortem 0001 + defensive-patterns doc** — docs only.
-- Files: `docs/postmortem/0001-r5-validation-pipe.md` (the R-5 liveness ship: root cause, the two trigger commits 585f50da/a17f5e6c, fix rule), `docs/defensive-patterns.md` with the five verified rules: (1) validation exit codes come from the tool, never the pipe; (2) never strict-compare LLM-typed booleans — normalize at the boundary (toBool precedent); (3) a change that can empty a loop's termination driver ships with a liveness test of the emptied state; (4) whole-output regex extraction answers "mentioned", never "failed"; (5) env config is read lazily, never captured at module import (two incidents).
-- Test: new `tests/docs-contracts.test.ts` — asserts both files exist; defensive-patterns contains ≥5 numbered rules; postmortem has Root cause/Impact/Rule sections.
-- Version bump: yes (repo rule: any change to the extension's docs that tests assert on; keep consistent).
+Each is a direct answer to a verified defect in run 2026-08-16T01-00-35; none depends on the plan's other phases.
 
-**P0.2 Plan-doc status lifecycle** — docs only.
-- Add `Status:` line to every `docs/requirements/*.md` (proposed | approved | implemented (<commit>) | rejected (<reason>) | superseded-by (<doc>)); write the first two rejection notes (`docs/requirements/rejected-2026-08-16-escalate-retry-vs-direct-fatalabort.md`, `rejected-...-deferred-lists-in-reviewer-prompts.md`) from the recorded decisions.
-- Test: extend `tests/docs-contracts.test.ts` — every `docs/requirements/*.md` has a `Status:` line matching the enum.
+**F-A needs-human verdict/triage contradiction.** Today `reviewFindingBlocks` maps needs-human⇒blocking, so a CONTEST/"Changes Requested" verdict stays pinned by a finding that R-1 triage simultaneously defers to a human — an unactionable verdict that dead-ends. Fix: at verdict normalization (`normalizeReviewVerdict`, `src/helpers.ts`), a needs-human finding no longer pins "Changes Requested" through the blocking path; instead the merged verdict carries a distinct residue marker (e.g. `verdict` stays approvable-if-otherwise-clean, and `s.review.needsHumanFindings` records the items). Escalation/reporting for this residue says "awaiting human decision", never "fix the implementation". The fixer never receives them. Cross-stage/blocking/open-high findings keep today's pinning semantics untouched.
+- Tests: `tests/helpers.test.ts` extension (CONTEST + needs-human-only residue → "Approved with Comments"-class verdict with residue recorded; open-high still pins; blocking still pins); stagnation/verify-loop-gating fixtures asserting the new report kind.
 
-**P0.3 Loop vocabulary page** — docs only.
-- `docs/loop-vocabulary.md`: step / turn / attempt / round as used by THIS pipeline (RED try, impl attempt, convergence round, review round), the named loop exits (`__stagnated`, dead-state break, ROUND CAP, no-progress, budget-exhausted, oscillation) with the file:line each fires from, and the dsh turn/step/round mapping for cross-reference.
-- Test: docs-contracts asserts the page lists all 6 exit names (grep) — cheap drift guard.
+**F-B deterministic commit after reviewFix + clean-worktree merge verification.** (i) In `verificationConvergenceNode` after a review fix that changed state (`fixChanged`), deterministically `git add -A && git commit -m "fix(verify): address review findings (round N)"` in the worktree — no LLM, mirroring the verify-never-trust convention (the implementation stage's LLM commit agent stays as-is for phases). (ii) `mergeVerifyTask` additionally rejects `merged:true` when `git status --porcelain` is non-empty in the worktree at merge time (uncommitted changes would not ship) — rewrite to `merged:false` with reason, so the run reports partial, never a silently-lossy success.
+- Tests: `tests/merge-verify.test.ts` extension (dirty worktree → unverified; committed → verified, real tmp git repos); verify-loop test asserting the post-fix commit exists after a scripted fix round.
 
-**P0.4 Degraded-boot diagnostics** — one small code commit.
-- New pure function `summarizeDegradedBoot(cfg, env)` in `src/workflow.ts` (or a tiny new `src/boot-diagnostics.ts`): returns lines for each degraded subsystem — judge disabled (`SUPER_DEV_DISABLE_JUDGE`), baseline disabled (`SUPER_DEV_DISABLE_BASELINE_CHECK`), research forced to subprocess backend with its effective model, wrap-up unavailable, any agentModels entry pointing at a host-session-only provider for a subprocess-forced role (the v0.1.66 class, detectable statically from config + the WEB_RESEARCH_AGENTS list).
-- Wire: `extension.ts execute()` logs the lines after makeContext, before pipeline start.
-- Test: `tests/boot-diagnostics.test.ts` — env-flag combos → exact expected lines; empty case → no lines; never throws.
+**F-C honest dead-state report.** The dead-state break currently reuses the stagnation template. Fix: distinct report kind `blocked-on-decisions` (own section in stagnation-report.md / escalation-report.md and the HITL prompt): "review not approved; N findings remain, all deferred (advisory / needs-human / cross-stage); no code fixer can act; awaiting human decision or replan routing". Never claims recurrence; lists each deferred item with its deferral reason. (Superseded in practice once Phase R routes routable items — but the unroutable residue keeps this honest report.)
+- Tests: render/escalation-report test — dead-state shape renders the new kind; stagnation shape unchanged.
 
-### P1 — Event ledger (the foundation; every later phase consumes it)
+**F-E wrap-up emission + grace for large writer controls.** (i) Wrap-up prompt wording: "emit the structured output NOW with whatever you have — partial sections are acceptable; do NOT keep exploring; the next round will complete missing sections" (convergence retry feedback already names what's missing). (ii) Grace window for control-heavy writer roles (bdd/requirements/spec writers) extended from 20% to 30% of timeout (BDD r1 evidence: needed ~138s to emit after wrap-up, had 96s). Constants role-scoped, not global.
+- Tests: `tests/session-agent-soft-deadline.test.ts` extension — wrap-up prompt text contains the partial-emission instruction; grace constant per role-class; hard timeout still rules at 100%.
 
-**P1.1 Ledger core** — new module, no wiring yet.
-- `src/runlog.ts`: `RUN_LOG_VERSION = 1`; `interface RunEvent { seq, time, runId, stage?, agent?, type, data }`; `appendRunEvent(specDir, evt)` (reads last line for next seq — single-process appends, joins serialize; mkdir best-effort; never throws, mirrors auditAppend semantics); `readRunEvents(specDir)` (tolerant of a torn last line); `foldEvents` helper.
-- Event type registry (string-literal union + per-type payload interfaces): `run.started/completed`, `stage.started/completed/failed/skipped`, `agent.called` {agent, model, backend, durationMs, control, error?}, `gate.checked` {gate, pass, ran, errors≤2000ch}, `judge.called` {scope, route, status}, `escalation.raised/resolved` {stage, kind, message≤1000}, `message.sent/replied`, `instruction.received` {text≤2000}, `topic.snapshot`.
-- Test: `tests/runlog.test.ts` — append/read roundtrip; seq monotonic across multiple appends; torn-line tolerance (write half a JSON line, read skips it); empty/undefined specDir no-ops; RUN_LOG_VERSION in first event.
-- Note: naming kept simple and stable; a future OTel bridge maps `agent.called`→`invoke_agent`, `stage.*`→workflow spans mechanically.
+### Phase R — bounded cross-stage replan edge (the structural answer; days 3-9)
 
-**P1.2 Stage events** — wire `task()`.
-- `src/nodes.ts task()`: after the existing `auditAppend`, call `appendRunEvent(state.setup?.specDirectory, {type:'stage.started'...})` and `stage.completed/failed/skipped` with `{durationMs, error?}`. One edit site; audit.jsonl keeps working (dual-write during transition, per OQ1).
-- Test: extend `tests/nodes.test.ts` — run a task with `state.setup.specDirectory` set to a tmp dir; assert events.jsonl contains started+completed with correct stage id; skipped path emits skipped; no specDir → no file, no throw.
+The sad-path team circuit. Design principle: **restart-based back edge** (R-mech-2), not in-run edge mutation — deterministic replay over run boundaries reuses resume, green-carry, and the existing convergence revision loop; each replan is a clean, auditable run boundary.
 
-**P1.3 Agent events** — wire `realAgent`.
-- `src/workflow.ts realAgent` finally-block: append `agent.called` with agent role, resolved model, backend, durationMs, control object (as audit does today — structured, bounded by schema), error tail ≤500ch.
-- Test: extend `tests/workflow.test.ts` with a scripted agent; assert one `agent.called` event per call with correct role/model/backend; control null on failure still records.
+**R1 — dependency-edges table** (= v2 P3.3, unchanged, now also the D3 invalidation graph).
+- `src/graph/edges.ts`: static `EDGES: {from, to, rationale}[]` for the 27-stage skeleton from the verified prompt reads (bdd←requirements; research←requirements,bdd; debug←requirements,research; assessment←research,debug?; design←requirements,research,assessment; spec←requirements,bdd,research,assessment,design,prototype; implementation←spec; verify←implementation,spec; docs/cleanup/merge←verify).
+- Test: `tests/graph-edges.test.ts` — every non-setup stage has ≥1 inbound edge; acyclic (topo sort); three signature tripwires (grep `buildResearchPrompt` args etc. — adding a prompt dependency without updating the table fails CI); exported `downstreamOf(stageId)` reachability helper tested.
 
-**P1.4 Gate events** — wire the two centralized runners.
-- `runBuildGate` (`src/build-runner/gates.ts`): append `gate.checked` on every return path (pass/fail/ran-empty). One function, all five call sites inherit. Same for `runRedCheck`. specDirectory threading: gates know cwd only — thread via new optional opt (the B-6 defaultBranch precedent; call sites already have state.setup).
-- Test: extend `tests/red-oracle.test.ts` + `tests/baseline-verify.test.ts` — oracle runs produce gate.checked events; no-specDir (unit tests) stays silent.
+**R2 — owner classification (minimal WHO; v2 P2.1 subset absorbed here).**
+- `src/replan/owners.ts`: deterministic classifier first — (a) reviewer-provided `ownerStage` honored; (b) finding citing `docs/specifications/NN-*.md` routes to that artifact's stage; (c) file-path class (docs/specifications vs docs/requirements vs src vs tests) + keyword classes (contract/protocol/ambiguity/threshold-undefined → spec/design; unbounded/token-budget → design; behavior/regression → implementation). Residue → **`replan-lead`** (new agent role, D2 strong model, judge-style evidence discipline: byte-verified quotes, confidence ≥0.6, closed owner set, non-conforming → unroutable→HITL). Output per finding: `{ownerStage | "human" | "unroutable", routable, reason, evidence?}`.
+- Test: `tests/replan-owners.test.ts` — deterministic cases (each rule, pass and fail); lead-classifier mocked (routable / human / degraded); closed-set enforcement; never throws.
 
-**P1.5 Judge events** — dual-write.
-- `src/stages/judge.ts` where `.judge.jsonl` appends (`:186`): also `appendRunEvent` type `judge.called`. `.judge.jsonl` unchanged (compat).
-- Test: `tests/judge.test.ts` extension — runJudge with tmp spec dir produces both files; event data matches the jsonl entry.
+**R3 — revision-request persistence + REPLAN restart (R-mech-2).**
+- When the dead-state break (or F-A's needs-human residue at loop exit) contains ≥1 routable finding: write `replan-requests.json` to the spec dir (array of {finding, ownerStage, evidence, requestedRevision, originatedRunId}) + an invalidation set (R4); end the run with status `replan` (a first-class terminal status beside success/partial/failed — extension.ts run summary explains: "N finding(s) routed back to <stages>; auto-resuming"). If auto-resume is enabled (config, default ON — OQ6), the extension immediately re-invokes the pipeline on the same spec id (the existing resume path).
+- On the next run, each owning convergence node reads `replan-requests.json` at round 1 and injects its items as convergence-ledger findings with `detectedAtStage: replan` — the **existing** writer-revises-per-finding machinery (recordReviewFindingsFromControl → retry feedback → reviewer verifies resolution) does the revision; no new revision loop is built.
+- Requests are consumed (marked addressed in the file) only when the owning reviewer verifies the resolution — the ledger's existing `markConvergenceFindingsAddressedFromResponses` semantics.
+- Test: `tests/replan-restart.test.ts` — dead-state with a routable finding produces the file + replan status; a scripted next-run convergence node consumes its item as a ledger finding; addressed-marking only on reviewer verification; unroutable/human residue does NOT trigger restart (stays HITL with F-C's honest report).
 
-**P1.6 Replay proof** — the P1 acceptance test.
-- Test: `tests/runlog-replay.test.ts` — run the existing mini-pipeline harness (workflow.test.ts style, mocked agents, tmp spec dir) end-to-end; then (a) fold events → per-stage status map equals `ctx.results`; (b) seq strictly monotonic; (c) every agent call has exactly one agent.called; (d) re-running the fold is deterministic (pure function).
-- This single test pins the ledger's core promise: postmortems become `jq` queries; nothing needs resume-cache archaeology.
+**R4 — dependency-graph full invalidation (D3).**
+- Mechanism: per-artifact `revision` counter persisted in the spec dir (`artifact-revisions.json`: {requirements: 2, spec: 3, ...}); each replan-confirmed revision of an owning artifact bumps its counter. Green-phase carry and replay cache entries record the counter values they were computed against; on resume, any entry whose upstream counters differ is invalidated and re-runs. `downstreamOf(owner)` (R1) defines which counters each entry depends on. This generalizes spec-22's instruction fingerprint to upstream-artifact revisions, reusing its proven invalidation seam.
+- Test: `tests/replan-invalidation.test.ts` — bumping `spec` invalidates implementation green-carry + verify replay but NOT requirements/bdd artifacts; bumping `requirements` invalidates the full downstream chain; no bump → full carry preserved (the spec-22 no-change fast path stays byte-identical).
 
-**P1.7 Invariants registry** — the dsh-06 pattern, sized for us.
-- `src/invariants.ts`: `interface InvariantCheck { stageId, name, check: (events, state) => {ok, detail} }` + `NO_INVARIANT(stageId, reason)` marker + `registerInvariants()` called once at workflow start collecting checks from stage modules. Checks are pure folds over the ledger + final state — the incident list becomes checks: (1) merge.merged===true ⇒ a gate.checked(pass) or dedicated merge-verified event exists (the "true"-string class); (2) implementation allGreen ⇒ every phase's last gate.checked pass (dead-gate class); (3) run.completed ⇒ every started stage has a terminal event (the R-5 emptied-loop class); (4) escalation.raised ⇒ message present in run summary; (5) agent.called with error ⇒ next event is a retry/stagnation/escalation (no silent swallow).
-- Runner: workflow finally-block; failures → loud `❌ INVARIANT` log lines + run summary section (not throw — diagnostics; the mechanical contract test below is the enforcement).
-- Contract test: `tests/invariants-contract.test.ts` — grep stage ids from `src/stages/*.ts` (`id: "..."`), assert every id is either registered or has an explicit `NO_INVARIANT` with a non-empty reason. This is the dsh "explain-or-assert" discipline; a new stage cannot ship unwatched.
-- Tests: unit tests per check (feed synthetic event streams — pass and fail shapes).
+**R5 — back-edge budget + escalation beyond.**
+- `MAX_REPLAN_ROUNDS = 2` per spec (env `SUPER_DEV_MAX_REPLAN_ROUNDS`, lazy read — defensive rule #5), persisted in the spec dir with the requests file. A third routable occurrence of the same finding fingerprint → no restart; HITL with the honest F-C report + replan history (which rounds, which owners, what changed). Every replan decision appends to `.judge.jsonl`-style audit (`replan.jsonl` in spec dir; ledger events once P1 lands).
+- Test: budget exhaustion path (3rd occurrence → HITL, no restart); counter reset on new finding fingerprint; lazy env read overridable in tests.
 
-### P2 — Team layer (WHO; static validated config, no LLM)
+**R6 — acceptance: re-run spec 03-staging.** The machine-checkable exit criterion for Phase R: re-running the same task must route an AR-03-03-class finding (resume-protocol-undefined) to spec convergence, revise the spec, invalidate downstream per D3, re-implement, and converge — no dead-state PARTIAL, no human intervention. Plus full existing suite green (verification-spine semantics unchanged on the happy path).
 
-**P2.1 Team + RACI module.**
-- `src/team/types.ts` (Profile: identity/domain/scope/inputs/outputs/escalation), `src/team/default-team.ts` (6 owners: requirements, design, implementation, verification, docs, release — the deliverable-shaped set; the 11-role split deferred until a spec exercises it), `src/team/raci.ts` (deliverable→{R,A,C,I} map over the 8 rendered docs + implementation phases + merge; `validateTeam()` — exactly one A per deliverable, all owners exist in profiles, no orphan deliverables).
-- Test: `tests/team.test.ts` — happy path validates; duplicate-A fails; unknown owner fails; missing deliverable fails; profiles structurally complete (every field non-empty).
+### Phase P — the v2 plan, resequenced (weeks 2-3; content unchanged except noted)
 
-**P2.2 Setup integration + event.**
-- `setupStage`: call `validateTeam(defaultTeam)` — failure is fatal (fail-loud, dsh boot-audit pattern); log "Team OK: 6 owners"; append `team.configured` event (owner list + RACI digest).
-- Test: extend `tests/setup.test.ts` — valid team passes; sabotaged team (test injects duplicate-A) aborts the run; event present.
+- **P1 event ledger** (7 commits as in v2: core, task/realAgent/gates/judge wiring, replay proof, invariants registry+contract test). P1.1 (core) ideally lands before R3 so replan events are ledgered from day one — acceptable to land just after if sequencing demands; R3 audits to `replan.jsonl` meanwhile. New event types added to the P1.1 registry: `replan.requested/routed/resumed` {findings, owners, invalidationSet}, `artifact.revised` {artifact, revision}.
+- **P0 process foundations** (postmortem 0001 gains a second case study: this run's needs-human contradiction + uncommitted fix round; defensive-patterns rule 6: a verdict pin and a triage defer must never disagree about who can act; plan-doc Status lifecycle; loop vocabulary; degraded-boot diagnostics).
+- **P2 full team/RACI** (P2.1's deliverable→owner map now extends R2's minimal stage-owners; setup validation; topic projection).
+- **P3 messages + instructions** (P3.1 unchanged; P3.2 unchanged; P3.3 absorbed by R1).
+- **P4 generated docs** (unchanged; the stage table now renders from edges.ts which exists since R1).
 
-**P2.3 Topic projection.**
-- `src/runlog/projections.ts`: `deriveTopic(events)` → `{specId, lastBrief, openMessages[], needsYou[], owners}` — pure fold; `writeTopicSnapshot(specDir)` writes `topic.json` (human-readable cache; regenerable, never authoritative).
-- Test: `tests/topic-projection.test.ts` — synthetic streams (messages sent/replied, escalations) → correct open/closed partition; byte-identical rebuild from same events (the P1.6 determinism promise at projection level); snapshot file matches fold output.
+### Deferred experiments (unchanged: E1, E2, E3) + new
 
-### P3 — Messages + edges (HOW + graph data; honest scope after spec-22 discovery)
+- **E4 full-team A/B** (from D1): one spec, two runs — pipeline+R vs a lead-dispatched 3-role team — compared on gates-passed, residual findings, cost, loops, human interventions. Only with P1 ledger data; not before Phase P completes.
 
-**P3.1 Team messages with causality and closure pressure.**
-- Message = ledger event `message.sent` {id, senderRole, receiverRole, kind: request|reply|notify, requiresResponse, subject, body≤4000, artifactRefs, inReplyTo?} + `message.replied` referencing id. Append-only; delivery at the next checkpoint: `messagesForAgent(specDir, role)` renders unanswered messages addressed to a role into that agent's prompt (new block in `realAgent` prompt assembly, beside the existing user-notes injection — same checkpoint mechanics, `src/workflow.ts:303-313` precedent).
-- Closure pressure: `deriveTopic` marks `requiresResponse` messages unanswered after the receiver's stage completed → `message.overdue` surfaced in Needs-You/escalation prompt (the agent-team-runtime closure requirement, mechanically enforced).
-- First senders: escalations (judge no-progress, stagnation) message the accountable owner per RACI — replacing nothing, adding a durable, addressed record alongside the existing HITL prompt.
-- Test: `tests/messages.test.ts` — send/reply lifecycle; delivery lands in receiver prompt exactly once (scripted-agent workflow test); overdue detection after stage completion; reply closes it.
-
-**P3.2 Instruction events (the honest remnant of D5).**
-- At the drain point (`realAgent` → `appendUserNotes`), also append `instruction.received` {text≤2000, source}. Spec-22's fingerprint invalidation already handles correctness; upstream stages already see notes via prompt injection. Classification (none|hint|requirement|…) and upstream-stage invalidation are deferred until ledger telemetry shows a real miss — recorded as a rejection note with that reason (P0.2 mechanism), not silently dropped.
-- Test: workflow-user-steer.test.ts extension — typed instruction produces exactly one instruction.received event.
-
-**P3.3 Dependency-edges table (graph-engineering's concrete landing).**
-- `src/graph/edges.ts`: static `const EDGES: {from, to, rationale}[]` for the 27-stage skeleton, derived from the VERIFIED prompt reads (the §0 corrections table is its source of truth: bdd←requirements; research←requirements,bdd; debug←requirements,research; assessment←research,debug?; design←requirements,research,assessment; spec←requirements,bdd,research,assessment,design,prototype; …).
-- Test: `tests/graph-edges.test.ts` — (a) every non-setup stage has ≥1 inbound edge; (b) acyclic (topological sort succeeds); (c) spot-check three edges against actual prompt signatures (the test greps `buildResearchPrompt` args — a build-time tripwire if someone adds a dependency without updating the table, exactly the drift class the edges table exists to prevent).
-- Consumers now: docs render (README architecture section input, feeds P4.1) + topic projection context. Future consumer: any replan widening.
-
-### P4 — Generated docs (kills the README-rot class)
-
-**P4.1 Env registry + generated tables.**
-- `src/env-registry.ts`: single source `{name, default, description}` for the 15 SUPER_DEV_* vars (grep-verified against source; test cross-checks count).
-- `scripts/gen-arch-docs.ts`: emits README sections between `<!-- BEGIN GENERATED arch -->` markers — stage table (from stage exports + edges), env-var table (from registry), agent-role→backend→model-resolution table (from resolveAgentModel inputs). `tests/arch-docs.test.ts` runs the generator in-process and asserts README bytes between markers match regeneration (doc-sync gate, dsh-01 §7 pattern).
-- One manual step: first run inserts markers + regenerates; afterwards drift fails CI.
-
-### Deferred experiments (explicit, with decision criteria — not in the plan's critical path)
-
-- **E1 BDD ∥ Research** behind `SUPER_DEV_PARALLEL_BDD_RESEARCH=1`: prompt change (research derives questions from requirements ACs only when BDD absent: `bdd?.docPath ?? "not yet written — derive questions from requirements acceptance criteria"`), `parallel([bddConvergence, researchConvergence])`, join appends in branch order. Decision criteria: only if P1 ledger telemetry shows research+BDD wall-clock is a material fraction of runs AND a quality A/B (same spec, sequential vs parallel, compare design-review findings count) shows no regression. Cost if wrong: weaker research questions (edge-case coverage loss).
-- **E2 debug ∥ assessment** (bug path): both single-round writers, assessment's debug input is optional. Value ≈ minutes; only if E1 lands and the pattern proves out.
-- **E3 instruction classification** (LLM-based): deferred per P3.2; revisit when ledger shows instructions that fingerprint-invalidation mishandled (e.g. pure design clarifications needlessly re-running all phases).
-
-## 3. Testability summary (every phase has a machine gate)
+## 3. Testability summary
 
 | Phase | Machine gate |
 |---|---|
-| P0 | docs-contracts.test.ts (existence, structure, status lines, exit names) |
-| P1 | runlog.test.ts (core), nodes/workflow/red-oracle/judge extensions (wiring), runlog-replay.test.ts (end-to-end fold ≡ results), invariants-contract.test.ts (explain-or-assert coverage) |
-| P2 | team.test.ts, setup.test.ts (fail-loud), topic-projection.test.ts (deterministic rebuild) |
-| P3 | messages.test.ts (lifecycle+delivery+overdue), user-steer extension, graph-edges.test.ts (coverage+acyclicity+signature tripwires) |
-| P4 | arch-docs.test.ts (byte-verified regeneration), env cross-check |
+| F | helpers/merge-verify/escalation-report/soft-deadline suite extensions (per-fix, listed above) |
+| R | graph-edges, replan-owners, replan-restart, replan-invalidation tests + R6 acceptance re-run |
+| P1 | runlog core/wiring/replay-proof + invariants contract test |
+| P0/P2/P3/P4 | as in v2 (docs-contracts, team, messages, arch-docs) |
 
 ## 4. Sequencing & effort
 
-Order is dependency-ordered, not preference: P0 (1-2 days) → P1 (≈1 week, 7 commits) → P2 (2-3 days) → P3 (2-3 days) → P4 (2 days). Each commit independently green; each phase ends with a full-suite run + version bump + (from P1.2 on) its own events in the ledger — dogfooding from day one. Total ≈ 2.5-3 weeks part-time.
+F (days 1-2, 4 commits) → R1+R2 (days 3-4) → P1.1 ledger core (day 5, parallel) → R3-R6 (days 5-9) → P1 rest + P0 (week 2) → P2/P3.1/P4 (week 3). R6's acceptance re-run closes Phase R. Every commit independently green; the verification spine's decision semantics change only in F-A (verdict residue split — pinned by tests) and gain the R circuit at run boundaries (happy path byte-identical, guarded by the existing 2000+ suite).
 
-Interleaving rule: P0.4 and P4 are independent of P1; they can slot anywhere. P2/P3 strictly after P1.6 (they consume the ledger). No phase touches the verification spine's decision logic — it only gains event emission (P1.4-1.5) and an invariant watch layer (P1.7); gates/judge/stagnation semantics stay byte-identical (guarded by existing suites).
+## 5. Open questions
 
-## 5. Open questions (recommendations; decide before P1)
+- **OQ1-OQ4** (kept from v2: audit.jsonl dual-write; agent-text granularity; invariants loud-not-fatal; E1 default OFF).
+- **OQ5 replan budget value**: recommend 2 (consistent with MAX_CHALLENGE_REAUTHORS=2 and ESCALATION_RETRY_CAP=2); adjustable via env.
+- **OQ6 auto-resume default**: recommend ON (unattended operation is a primary use case; a replan restart is cheap and auditable), with `SUPER_DEV_REPLAN_MANUAL=1` opting into confirm-first. Alternative: default manual for the first two real replans, then flip to auto.
 
-- **OQ1 audit.jsonl fate**: recommend dual-write through P1, then keep audit.jsonl as a run-dir convenience projection (it already has a consumer: postmortem tooling) — never delete, never make it authoritative. Alternative (kill it at P1.6) saves writes but breaks existing habits for zero gain.
-- **OQ2 event granularity of agent text**: recommend control object + error tail only (audit parity), NOT full text (size; text already recoverable via resume-cache when needed). If postmortems keep needing full text, add `agent.called.detail` events later behind a size cap.
-- **OQ3 invariants failure semantics**: log + summary section (recommended — diagnostics first, matching dsh's runtime-invariants philosophy of attributable loud signals) vs fatal abort. Fatal is tempting for check (3) (unterminated stage) but would turn a telemetry gap into a run-killer; start loud-non-fatal, promote individual checks to fatal only after a month of clean telemetry.
-- **OQ4 E1 default**: recommend OFF (quality risk unknown); the flag exists so the experiment is one env var, not a code change.
+## 6. Success criteria
 
-## 6. Success criteria (each machine-checkable)
-
-1. `jq` over a production run's `events.jsonl` answers: who did what (agent.called per role), what each gate decided, why each escalation fired — no resume-cache archaeology (P1.6 test is the proxy).
-2. `topic.json` rebuilds byte-identically from events (P2.3 test).
-3. A message sent to a role appears in that role's next prompt exactly once; unanswered requiresResponse messages surface as overdue (P3.1 tests).
-4. Adding a new stage without an invariants entry or explicit reason fails CI (P1.7 contract test).
-5. Editing a prompt to add a stage dependency without updating edges.ts fails CI (P3.3 tripwire test).
-6. README stage/env/role tables cannot rot (P4 byte-verify).
-7. Zero behavioral change to gate/judge/loop decisions — pinned by the existing 2000+ test suite passing unmodified.
+1-7 from v2 unchanged, plus:
+8. A verify-stage finding owned by spec/design is routed back, the owning artifact is revised, downstream invalidated per D3, and the run converges — proven by R6's re-run of spec 03-staging with zero human intervention.
+9. needs-human residue never pins an unactionable "Changes Requested" verdict, and its reports say "awaiting human decision", never "fix the implementation" (F-A/F-C tests).
+10. No review fix ever ships uncommitted (F-B merge-verify dirty-worktree rejection).
