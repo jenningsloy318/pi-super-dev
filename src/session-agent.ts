@@ -232,6 +232,15 @@ export function missingKeys(
  *     `write` over many fragile exact-match `edit` calls on big files. Framing a
  *     code edit as "writing a document" was the root cause of the recurring
  *     zero-edit / edit-thrash phase failures. */
+/** F-E: control-heavy writer roles whose structured output can be large (BDD's
+ *  43-scenario arrays) get an earlier wrap-up — 70% of the wall clock instead
+ *  of 80% — so the grace window covers emission time, not just composition
+ *  start. Evidence: run 2026-08-16T01-00-35 BDD round 1 (480s timeout: 80%
+ *  soft deadline left 96s of grace; the control JSON needed ~138s and the hard
+ *  timeout discarded everything). Default stays 0.8 for every other role. */
+const EARLY_WRAP_UP_ROLES = new Set(["requirements-clarifier", "bdd-scenario-writer", "spec-writer"]);
+const wrapUpFractionFor = (agent: string | undefined): number => (agent && EARLY_WRAP_UP_ROLES.has(agent) ? 0.7 : 0.8);
+
 export function deliveryDisciplineFor(agent: string): string {
 	if (agent === "tdd-guide") {
 		return [
@@ -525,14 +534,22 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	// into a delivered — possibly partial — structured result. Only armed when a
 	// structured_output contract exists (keys); a no-keys call has no salvageable
 	// control and keeps the plain hard timeout.
+	// F-E: control-heavy writer roles whose structured output can be LARGE (the
+	// BDD writer's 43-scenario arrays) wrap up EARLIER — 70% of the wall clock —
+	// because emission itself takes material time. Evidence: run
+	// 2026-08-16T01-00-35 BDD round 1 — the 80% soft deadline fired at 384s, the
+	// agent acknowledged and started composing, but the control JSON needed
+	// ~138s while only 96s of grace remained; the hard timeout discarded
+	// everything. 70% of 480s = 336s soft → 144s grace ≥ the observed 138s.
 	let softDeadlineFired = false;
+	const wrapUpAt = Math.round(timeoutMs * wrapUpFractionFor(opts.agent));
 	const softTimer = keys.length
 		? setTimeout(() => {
 				if (capture.called) return;
 				softDeadlineFired = true;
-				opts.onProgress?.event(`session ${label}: soft deadline reached — aborting exploration for wrap-up`);
+				opts.onProgress?.event(`session ${label}: soft deadline reached (wrap-up at ${Math.round(wrapUpFractionFor(opts.agent) * 100)}% of timeout) — aborting exploration for wrap-up`);
 				try { void session.abort(); } catch { /* ignore */ }
-			}, Math.round(timeoutMs * 0.8))
+			}, wrapUpAt)
 		: undefined;
 	const timer = setTimeout(() => {
 		timedOut = true;
@@ -583,7 +600,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 					observed: "the session hit its soft deadline while still exploring",
 					expected: `structured_output called with all required keys: ${keys.join(", ")}`,
 					missing: keys,
-					nextAction: "DEADLINE REACHED — stop ALL exploration and tool use now. Using only the work and context already in this session, call structured_output immediately with every required key filled. An imperfect complete answer delivered now beats a perfect answer the hard timeout will discard.",
+					nextAction: "DEADLINE REACHED — stop ALL exploration and tool use now. Using only the work and context already in this session, call structured_output immediately with every required key filled. An imperfect complete answer delivered now beats a perfect answer the hard timeout will discard. If a required key's content is not fully drafted, emit it with whatever partial content you already have — partial sections are acceptable; the next round will complete what is missing.",
 				}
 				: {
 					stage: "agent-session",
