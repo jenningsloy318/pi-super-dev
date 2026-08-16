@@ -6,7 +6,7 @@
 
 import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
 import { spawnSync } from "node:child_process";
-import { reviewHasBlockingFinding, reviewHasFindings, reviewHasHighSeverityFinding, inferReviewFindingStatus, reviewFindingSeverity } from "./review-findings.ts";
+import { reviewHasBlockingVerdictFinding, reviewHasFindings, reviewHasHighSeverityFinding, reviewNeedsHumanFindings, inferReviewFindingStatus, reviewFindingSeverity } from "./review-findings.ts";
 import {
 	readSpecDoc,
 	specDocExists,
@@ -230,20 +230,25 @@ function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefin
 		// carries high/critical findings, keep it blocking for safety. Blocking is
 		// judged by the blocking flag OR the severity fallback (a high finding is
 		// blocking even when the reviewer followed the "blocking = must stop merge"
-		// narrow convention and left it false).
-		return { verdict: reviewHasBlockingFinding(review) || reviewHasHighSeverityFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
+		// narrow convention and left it false). F-A: needs-human findings use the
+		// verdict-layer blocking test — a medium non-blocking needs-human note is
+		// residue for the human, not a merge-blocker the fixer cannot act on.
+		return { verdict: reviewHasBlockingVerdictFinding(review) || reviewHasHighSeverityFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
 	}
 	if (raw === "REJECT") return { verdict: "Blocked", syntheticFindings: [] };
 	if (raw === "Approved" || raw === "Approved with Comments") {
-		return { verdict: reviewHasBlockingFinding(review) ? "Changes Requested" : raw, syntheticFindings: [] };
+		return { verdict: reviewHasBlockingVerdictFinding(review) ? "Changes Requested" : raw, syntheticFindings: [] };
 	}
 	if (raw === "Changes Requested") {
 		// Reviewers use "blocking" narrowly ("true only when it must stop merge"),
 		// so an explicit Changes Requested can arrive with a High finding flagged
 		// blocking:false. Downgrade to Approved with Comments ONLY when every
 		// finding is non-blocking AND none carries a high/critical-class severity
-		// (open findings only — verified/resolved highs no longer pin the verdict).
-		const downgrade = reviewHasFindings(review) && !reviewHasBlockingFinding(review) && !reviewHasHighSeverityFinding(review);
+		// (open findings only — verified/resolved highs no longer pin the verdict;
+		// F-A: needs-human notes without their own blocking/high signal no longer
+		// pin either — they ride in needsHumanFindings for the human, they do not
+		// demand changes from a fixer that is not allowed to make them).
+		const downgrade = reviewHasFindings(review) && !reviewHasBlockingVerdictFinding(review) && !reviewHasHighSeverityFinding(review);
 		return { verdict: downgrade ? "Approved with Comments" : "Changes Requested", syntheticFindings: [] };
 	}
 	if (raw === "Blocked") return { verdict: "Blocked", syntheticFindings: [] };
@@ -278,10 +283,14 @@ function mergeReviewVerdicts(s: Record<string, unknown>): HelperResult {
 	// cross-stage items move to the `deferredFindings` ledger (surfaced in the
 	// escalation evidence, never fed back into reviewer prompts).
 	const triaged = triageReviewFindings(findings);
+	// F-A: the needs-human residue is recorded explicitly — downstream reports
+	// say "awaiting human decision", never "fix the implementation"; the fixer
+	// never receives these (triage already defers every needs-human finding).
+	const needsHuman = reviewNeedsHumanFindings({ findings });
 	const dims = [...new Set([...((codeReview?.dimensionsCovered as unknown[]) ?? []), ...((adversarial?.dimensionsCovered as unknown[]) ?? [])] as string[])];
 	return ok(
-		`Merged verdict: ${verdict} (${triaged.fixNow.length} actionable, ${triaged.deferred.length} deferred, ${triaged.droppedVerified} verified/resolved)`,
-		{ verdict, findings: triaged.fixNow, deferredFindings: triaged.deferred, dimensionsCovered: dims },
+		`Merged verdict: ${verdict} (${triaged.fixNow.length} actionable, ${triaged.deferred.length} deferred, ${needsHuman.length} needs-human, ${triaged.droppedVerified} verified/resolved)`,
+		{ verdict, findings: triaged.fixNow, deferredFindings: triaged.deferred, needsHumanFindings: needsHuman, dimensionsCovered: dims },
 	);
 }
 

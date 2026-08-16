@@ -6,6 +6,42 @@
 import { describe, it, expect } from "vitest";
 import { runHelper } from "../src/helpers.ts";
 import { extractControl, findLastJsonObject } from "../src/control.ts";
+import { reviewFindingBlocks, reviewFindingBlocksVerdict, reviewHasBlockingFinding, reviewHasBlockingVerdictFinding } from "../src/review-findings.ts";
+
+describe("review-findings: verdict-layer blocking (F-A)", () => {
+	it("routing semantics unchanged — needs-human still blocks the fixer-facing scan", () => {
+		const f = { severity: "medium", status: "needs-human", blocking: false, title: "x" };
+		expect(reviewFindingBlocks(f)).toBe(true);
+		expect(reviewHasBlockingFinding({ findings: [f] })).toBe(true);
+	});
+	it("verdict semantics — a medium non-blocking needs-human finding does not pin", () => {
+		const f = { severity: "medium", status: "needs-human", blocking: false, title: "x" };
+		expect(reviewFindingBlocksVerdict(f)).toBe(false);
+		expect(reviewHasBlockingVerdictFinding({ findings: [f] })).toBe(false);
+	});
+	it("verdict semantics — needs-human pins via its own blocking flag", () => {
+		expect(reviewFindingBlocksVerdict({ severity: "medium", status: "needs-human", blocking: true })).toBe(true);
+		expect(reviewFindingBlocksVerdict({ severity: "medium", status: "needs-human", blocking: "yes" })).toBe(true);
+		expect(reviewFindingBlocksVerdict({ severity: "medium", status: "needs-human", blocking: false })).toBe(false);
+	});
+	it("verdict semantics — needs-human severity fallback applies only when the blocking flag is absent (flag wins, same as open)", () => {
+		// Explicit flag wins (existing reviewFindingBlocks invariant): the high
+		// pin for blocking:false findings is carried by reviewHasHighSeverityFinding
+		// at the verdict layer, not by the blocking scan.
+		expect(reviewFindingBlocksVerdict({ severity: "high", status: "needs-human", blocking: false })).toBe(false);
+		expect(reviewFindingBlocksVerdict({ severity: "critical", status: "needs-human" })).toBe(true);
+		expect(reviewFindingBlocksVerdict({ severity: "high", status: "needs-human" })).toBe(true);
+		expect(reviewFindingBlocksVerdict({ severity: "medium", status: "needs-human" })).toBe(false);
+	});
+	it("non-needs-human statuses delegate to reviewFindingBlocks unchanged (flag wins over severity)", () => {
+		expect(reviewFindingBlocksVerdict({ severity: "high", status: "open", blocking: false })).toBe(false);
+		expect(reviewFindingBlocksVerdict({ severity: "high", status: "open" })).toBe(true);
+		expect(reviewFindingBlocksVerdict({ severity: "medium", status: "open", blocking: true })).toBe(true);
+		expect(reviewFindingBlocksVerdict({ severity: "medium", status: "open", blocking: false })).toBe(false);
+		expect(reviewFindingBlocksVerdict({ severity: "high", status: "verified" })).toBe(false);
+		expect(reviewFindingBlocksVerdict({ severity: "high", status: "deferred" })).toBe(false);
+	});
+});
 
 describe("helpers: classify-task", () => {
 	it("classifies a fix as a bug", async () => {
@@ -182,6 +218,79 @@ describe("helpers: routing", () => {
 					verdict: "Changes Requested",
 					findings: [{ severity: "Medium", status: "needs-human", blocking: true, title: "Spec ambiguity", detail: "Requires human decision." }],
 				},
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
+
+	// ── F-A: needs-human is a WHO class, not a verdict pin ────────────────────
+	// Production regression: run 2026-08-16T01-00-35-613Z (spec 03-staging)
+	// attempt 2 — code/tests Approved, adversarial CONTEST with a single
+	// medium needs-human non-blocking finding (AR-03-02). The old
+	// needs-human⇒blocking promotion pinned "Changes Requested" while R-1
+	// triage deferred the same finding to the human — an unactionable verdict
+	// that dead-ended the verify loop into a PARTIAL.
+	it("merge-review-verdicts does NOT pin Changes Requested on a medium non-blocking needs-human finding (CONTEST residue)", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved", findings: [] },
+				"adversarial-review": {
+					verdict: "CONTEST",
+					findings: [{ id: "AR-03-02", severity: "medium", status: "needs-human", blocking: false, title: "Default dispatcher behavior unverified", detail: "Human should confirm intent." }],
+				},
+			},
+		});
+		expect(r.value.verdict).toBe("Approved with Comments");
+		expect(r.value.findings).toEqual([]);
+		const deferred = r.value.deferredFindings as Array<Record<string, unknown>>;
+		const needsHuman = r.value.needsHumanFindings as Array<Record<string, unknown>>;
+		expect(deferred).toHaveLength(1);
+		expect(deferred[0].deferralReason).toBe("needs human verification");
+		expect(needsHuman).toHaveLength(1);
+		expect(needsHuman[0].id).toBe("AR-03-02");
+	});
+
+	it("merge-review-verdicts does NOT flip an Approved verdict on a non-blocking needs-human finding", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved", findings: [{ severity: "low", status: "needs-human", title: "Prefer enum over string?" }] },
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Approved");
+		expect((r.value.needsHumanFindings as unknown[]).length).toBe(1);
+	});
+
+	it("merge-review-verdicts downgrades Changes Requested to Approved with Comments when the only pin was a non-blocking needs-human finding", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Changes Requested", findings: [{ severity: "medium", status: "needs-human", blocking: false, title: "Tolerance source ambiguity" }] },
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Approved with Comments");
+	});
+
+	it("merge-review-verdicts KEEPS Changes Requested when a needs-human finding is high severity (severity fallback still pins)", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "CONTEST", findings: [{ severity: "High", status: "needs-human", blocking: false, title: "Security posture needs a human call" }] },
+				"adversarial-review": { verdict: "PASS", findings: [] },
+			},
+		});
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
+
+	it("merge-review-verdicts: needs-human blocking text 'yes' still pins the verdict", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "CONTEST", findings: [{ severity: "medium", status: "needs-human", blocking: "yes", title: "Merge only after human confirms" }] },
 				"adversarial-review": { verdict: "PASS", findings: [] },
 			},
 		});

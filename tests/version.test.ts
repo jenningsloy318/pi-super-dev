@@ -10,10 +10,10 @@ import {
 
 describe("super-dev extension version metadata", () => {
 	it("sets the runtime-visible extension version to 0.1.46", () => {
-		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.1.74");
+		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.1.75");
 		expect(SUPER_DEV_VERSION_METADATA).toMatchObject({
 			name: "super-dev",
-			version: "0.1.74",
+			version: "0.1.75",
 		});
 		expect(superDevVersionLabel()).toBe("super-dev v0.1.74");
 	});
