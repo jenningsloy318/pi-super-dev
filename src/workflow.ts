@@ -28,7 +28,8 @@ import { getConfig } from "./render/super-dev-dir.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
-import { appendRunEvent, runStartedEvent, type RunEventInput } from "./runlog.ts";
+import { appendRunEvent, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
+import { validateTeamReadiness } from "./team/raci.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
 import { isNonRetryableAgentError } from "./agent-errors.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
@@ -556,6 +557,13 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		if (stage.status === "cancelled") { ledgerEvent({ ...base, type: "stage.cancelled", data: { ...base.data } }); return; }
 	});
 
+	// P2 (dsh-09 v3 Phase P): team-roster setup validation — the degraded-boot
+	// diagnostic that catches a renamed/deleted Responsible role BEFORE the run
+	// discovers it mid-flight (pure + deterministic; warnings only, never fatal).
+	for (const issue of validateTeamReadiness()) {
+		progress?.log(`team readiness: stage "${issue.stage}" responsible role "${issue.role}" has no agents/${issue.role}.md definition`);
+	}
+
 	let aborted = false;
 	let abortError: string | undefined;
 	try {
@@ -652,6 +660,22 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 			progress?.log(`Workflow "${workflow.id}" complete`);
 		}
 	}
+
+	// P2: the topic projection — a pre-digested owner-status view folded FROM
+	// the ledger itself (the shared-blackboard snapshot E4's A/B comparisons
+	// consume). Emitted BEFORE run.completed so the block still ends with its
+	// bracket event (INV-L5).
+	try {
+		const dir = state.setup?.specDirectory;
+		if (dir) {
+			const outcomes = reconstructStageOutcomes(readRunEvents(dir));
+			appendRunEvent(dir, {
+				runId,
+				type: "topic.snapshot",
+				data: { owners: Object.fromEntries(outcomes.map((o) => [o.stage, o.partial ? "partial" : o.status])), stageCount: outcomes.length },
+			});
+		}
+	} catch { /* the snapshot is a convenience; the events remain the source */ }
 
 	// P1.2: the run's terminal event — flushes any still-pending buffered events
 	// first (a run that never produced a spec dir writes nothing anywhere).

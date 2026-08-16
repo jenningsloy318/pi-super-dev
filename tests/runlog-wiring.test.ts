@@ -50,7 +50,9 @@ describe("runWorkflow ledger wiring (P1.2)", () => {
 			// setup.completed, classify.started, classify.completed, run.completed.
 			expect(types).toEqual([
 				"run.started", "stage.started", "stage.completed",
-				"stage.started", "stage.completed", "run.completed",
+				"stage.started", "stage.completed",
+				"topic.snapshot", // P2: owner-status projection before the bracket
+				"run.completed",
 			]);
 			expect(events[1].stage).toBe("setup");
 			expect(events[3].stage).toBe("classify");
