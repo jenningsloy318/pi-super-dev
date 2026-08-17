@@ -8,7 +8,7 @@ import { writerTask, helperTask, isFatalAbort } from "../nodes.ts";
 import type { Stage, SetupControl } from "../types.ts";
 import * as P from "../prompts.ts";
 import { ClassificationData } from "../render/schemas.ts";
-import { toBool } from "../doc-validators.ts";
+import { toBool, normalizePhases } from "../doc-validators.ts";
 import { isHarnessBookkeepingPath } from "../helpers.ts";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
@@ -65,6 +65,22 @@ export const assessmentWriter: Stage = writerTask({
 	buildPrompt: (state, ctx) => P.buildAssessmentPrompt(S(state), state.classify ?? null, ctx.task, state.research ?? null, state.debug ?? null),
 });
 
+/** F6 + code-review R2: repair coercible spec-control malformations (phases as
+ *  a string / {phases:[…]} wrapper / single object / numeric-key map) BEFORE
+ *  render, so the render schema validates, the docs REGENERATE (a failed render
+ *  silently keeps stale docs on disk), and control/docs/implementation all
+ *  agree on the same normalized array. */
+export function normalizeSpecControl(control: Record<string, unknown>): Record<string, unknown> {
+	const phases = control.phases;
+	if (phases !== undefined && !Array.isArray(phases)) {
+		const normalized = normalizePhases(phases);
+		if (normalized.length > 0) {
+			control = { ...control, phases: normalized };
+		}
+	}
+	return control;
+}
+
 export const specWriter: Stage = writerTask({
 	id: "spec",
 	label: "Stage 7 — Specification",
@@ -73,6 +89,7 @@ export const specWriter: Stage = writerTask({
 	requires: ["*-requirements.md", "*-bdd-scenarios.md"],
 	buildPrompt: (state, ctx) =>
 		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null),
+	normalizeControl: normalizeSpecControl,
 });
 
 /** Upstream Fagan-style reviewers (shift-left): each reviews the just-written

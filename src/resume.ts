@@ -149,6 +149,15 @@ export function createMemoizingAgent(
 	getScope: () => string[] = () => [],
 ): (call: AgentCall) => Promise<AgentResult> {
 	const occ = new Map<string, number>();
+	// NOTE (F3 design decision): the occurrence counter is deliberately NOT
+	// seeded from the cache. The old replay behavior is CORRECT for state
+	// rebuild — a resumed loop replays rounds 1..k as cache hits, deterministically
+	// reconstructing retry feedback + convergence-ledger state, and the k+1-th
+	// call mints #k+1 → cache miss → FRESH. The bug that killed resumes (runs
+	// 2026-08-17T02-47-14-024Z / 06-02-59-538Z) was the loop's round cap firing
+	// AFTER the replay but BEFORE round k+1 could run — fixed in the convergence
+	// loops via countStageRounds(), not here. Seeding here would skip the replay
+	// (state never rebuilt) and lose feedback continuity.
 	return async (call: AgentCall): Promise<AgentResult> => {
 		const id = call.id ?? "agent";
 		const scope = getScope().join("/") || "root";
@@ -166,4 +175,31 @@ export function createMemoizingAgent(
 		appendResumeResult(getSpecDir(), key, result);
 		return result;
 	};
+}
+
+/** F3: how many rounds (occurrences) of `callId` the PERSISTED cache already
+ *  records — across all scopes (max #N per exact `callId@scope`, then max).
+ *  Convergence loops use this to grant a resumed run a fresh round budget:
+ *  effectiveCap = min(prior + cap, 3 × cap). A converged stage replays its j
+ *  prior rounds and approves at round j ≤ cap (never needs the extension); a
+ *  stage that exhausted its cap replays k rounds and gets k+1.. fresh. */
+export function countStageRounds(specDir: string, callId: string): number {
+	const perScope = new Map<string, number>();
+	try {
+		const raw = readFileSync(resumeCachePath(specDir), "utf8");
+		for (const line of raw.split("\n")) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			try {
+				const entry = JSON.parse(trimmed) as { key?: string };
+			const m = entry?.key ? new RegExp(`^${callId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}@(\\S+)#(\\d+)$`).exec(entry.key) : null;
+				if (!m) continue;
+				const n = Number.parseInt(m[2] ?? "0", 10);
+				if (Number.isFinite(n) && n > (perScope.get(m[1] ?? "") ?? 0)) perScope.set(m[1] ?? "", n);
+			} catch { /* partial/corrupt line — skip */ }
+		}
+	} catch {
+		return 0; // no cache → fresh run
+	}
+	return perScope.size > 0 ? Math.max(...perScope.values()) : 0;
 }

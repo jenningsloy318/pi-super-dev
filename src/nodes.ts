@@ -700,6 +700,13 @@ export function writerTask(spec: {
 	fatal?: boolean;
 	/** Upstream artifact docs this writer needs (globs); checked by task() before run. */
 	requires?: string[];
+	/** OPTIONAL control normalizer applied BEFORE render (code-review R2): repair
+	 *  coercible control malformations (e.g. spec.phases as a string/wrapper map)
+	 *  so the render schema validates and the docs REGENERATE — otherwise the
+	 *  gate can pass a coercible control while the on-disk docs silently go
+	 *  stale (renderAndWrite returns null on schema failure and the old doc
+	 *  keeps passing the gates). */
+	normalizeControl?: (control: Record<string, unknown>) => Record<string, unknown>;
 }): Stage {
 	return {
 		id: spec.id,
@@ -727,7 +734,9 @@ export function writerTask(spec: {
 			}
 			// Render pipeline: if this stage has a render model, render + write the doc.
 			if (result.control) {
-				renderAndWrite(state.setup!, (m) => ctx.log(m), spec.id, result.control as Record<string, unknown>);
+				const control = spec.normalizeControl ? spec.normalizeControl(result.control as Record<string, unknown>) : (result.control as Record<string, unknown>);
+				renderAndWrite(state.setup!, (m) => ctx.log(m), spec.id, control);
+				return control;
 			}
 			return result.control ?? {};
 		},

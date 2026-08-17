@@ -188,13 +188,40 @@ function appendAudit(specDir: string, entry: Record<string, unknown>): void {
  * with status "replan" (extension auto-resumes). On any failure — or when
  * nothing is routable / the R5 budget is exhausted — returns false and the
  * caller falls through to today's honest HITL path (F-C). NEVER throws.
+ *
+ * F1 (RC3, runs 2026-08-17T08-56-53-706Z / 08-09-34-515Z): the general core is
+ * now `triggerReplanForFindings` — the CONVERGENCE loops (requirements/bdd/
+ * research/design/spec) call it directly with their upstream-owned blocking
+ * findings when HITL escalation yields no decision (headless) or at round-cap
+ * exhaustion. This is the missing route-back edge: a reviewer finding owned by
+ * an upstream artifact re-enters that stage's convergence loop instead of
+ * oscillating in the loop that cannot fix it.
  */
 export async function maybeTriggerReplan(state: PipelineState, ctx: StageContext, originatedRunId: string): Promise<boolean> {
+	const review = state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined;
+	const candidates = review?.deferredFindings ?? [];
+	if (candidates.length === 0) return false;
+	return triggerReplanForFindings(state, ctx, candidates, "verify", originatedRunId);
+}
+
+/** F1: the generalized replan trigger — route ANY finding set (verify residue,
+ * convergence-loop upstream blockers) back to its owning stages. Sets the
+ * `__replan` marker on success so workflow.ts derives terminal status "replan"
+ * (which precedes the aborted→failed branch) and the extension auto-resumes
+ * with the owner + downstreamOf(owner) resume-cache rows invalidated. */
+export async function triggerReplanForFindings(
+	state: PipelineState,
+	ctx: StageContext,
+	findings: Array<Record<string, unknown>>,
+	sourceStage: string,
+	originatedRunId: string,
+): Promise<boolean> {
 	const setup = state.setup;
 	if (!setup?.specDirectory) return false;
+	// Never double-fire within one run (the marker flips the terminal status).
+	if ((state as Record<string, unknown>).__replan) return false;
 	try {
-		const review = state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined;
-		const candidates = review?.deferredFindings ?? [];
+		const candidates = findings;
 		if (candidates.length === 0) return false;
 
 		// R2: classify each residue finding (deterministic first; lead fallback).
@@ -278,8 +305,8 @@ export async function maybeTriggerReplan(state: PipelineState, ctx: StageContext
 			invalidationSet,
 		};
 		appendAudit(setup.specDirectory, { event: "replan-requested", ...routedData, rounds: file.rounds, resumeRowsDropped: dropped });
-		appendRunEvent(setup.specDirectory, { runId: originatedRunId, stage: "verify", type: "replan.requested", data: { findings: routable.length, originatedRunId } });
-		appendRunEvent(setup.specDirectory, { runId: originatedRunId, stage: "verify", type: "replan.routed", data: routedData });
+		appendRunEvent(setup.specDirectory, { runId: originatedRunId, stage: sourceStage, type: "replan.requested", data: { findings: routable.length, originatedRunId } });
+		appendRunEvent(setup.specDirectory, { runId: originatedRunId, stage: sourceStage, type: "replan.routed", data: routedData });
 		for (const owner of owners) {
 			appendRunEvent(setup.specDirectory, { runId: originatedRunId, type: "artifact.revised", data: { artifact: owner, revision: revisions[owner] } });
 		}
@@ -290,13 +317,13 @@ export async function maybeTriggerReplan(state: PipelineState, ctx: StageContext
 			newRequests: newRequests.length,
 			invalidationSet,
 		} satisfies ReplanMarker;
-		ctx.log(`Stage 10: REPLAN round ${file.rounds} — ${newRequests.length} finding(s) routed back to ${owners.join(", ")}; invalidated ${invalidationSet.length} stage(s) (${dropped} resume rows) — the run will restart and the owning stages will revise`);
+		ctx.log(`REPLAN round ${file.rounds} (${sourceStage}) — ${newRequests.length} finding(s) routed back to ${owners.join(", ")}; invalidated ${invalidationSet.length} stage(s) (${dropped} resume rows) — the run will restart and the owning stages will revise`);
 		// P3.1: the WHO-channel alongside the structured requests — each owning
 		// stage gets a durable message; the owning convergence loop replies when
 		// its reviewer verifies the revision (consumeReplanRequests).
 		for (const owner of owners) {
 			sendMessage(setup.specDirectory, {
-				senderRole: "verify",
+				senderRole: sourceStage,
 				receiverRole: owner,
 				subject: `replan round ${file.rounds}: revise ${owner} artifact (${newRequests.filter((r) => r.ownerStage === owner).length} finding(s))`,
 				body: routable.filter(({ finding }) => classifyOwnerOf(finding) === owner).map(({ finding }) => String(finding.title ?? "")).slice(0, 8).join("; "),

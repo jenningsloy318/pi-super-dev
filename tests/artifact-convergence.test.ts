@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode } from "../src/stages/artifact-convergence.ts";
+import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, effectiveRoundCap, MAX_CONVERGENCE_ROUNDS, PROGRESS_EXTENSION_ROUNDS } from "../src/stages/artifact-convergence.ts";
 import { runHelper } from "../src/helpers.ts";
 import { renderRetryFeedbackBlock, type RetryFeedbackInput } from "../src/retry-feedback.ts";
 import type { AgentCall, AgentResult, Budget, ControlObj, HelperCall, PipelineState, SetupControl, StageContext } from "../src/types.ts";
@@ -163,5 +163,24 @@ describe("artifact convergence nodes", () => {
 		expect(result.attempts).toBe(6);
 		expect(renderRetryFeedbackBlock(seen[5])).toContain("Which protocol version applies");
 		expect(renderRetryFeedbackBlock(seen[5])).not.toContain("/5");
+	});
+});
+
+// ── F2/F3 (adversarial TESTS-MISSING): the round-budget math the convergence
+// loops use — resume grants fresh rounds (prior + cap) clamped at 3× the base
+// cap, so replay-only resumes fail fast instead of ping-ponging forever.
+describe("round-budget math (F2/F3)", () => {
+	it("fresh run: effectiveCap = cap", () => {
+		expect(effectiveRoundCap(MAX_CONVERGENCE_ROUNDS, 0)).toBe(MAX_CONVERGENCE_ROUNDS);
+	});
+	it("resume grants fresh rounds: prior + cap", () => {
+		expect(effectiveRoundCap(8, 8)).toBe(16);
+	});
+	it("clamps at 3× the base cap — a replay-happy spec cannot extend forever", () => {
+		expect(effectiveRoundCap(8, 40)).toBe(24);
+	});
+	it("progress extension block is exported and bounded", () => {
+		expect(PROGRESS_EXTENSION_ROUNDS).toBeGreaterThan(0);
+		expect(PROGRESS_EXTENSION_ROUNDS).toBeLessThanOrEqual(4);
 	});
 });

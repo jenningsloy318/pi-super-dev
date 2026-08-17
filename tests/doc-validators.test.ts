@@ -29,6 +29,7 @@ import {
 	toNumber,
 	toBool,
 	isApprovedVerdict,
+	stripNonNormativeSections,
 } from "../src/doc-validators.ts";
 import type { SetupControl } from "../src/types.ts";
 
@@ -492,19 +493,96 @@ describe("normalizePhases (crash guard for Stage 9)", () => {
 	});
 });
 
-describe("gate-spec-trace requires spec.phases array even with a good doc", () => {
-	it("fails when phases is a string (the Stage 9 crash case), despite a valid specification.md", async () => {
+describe("gate-spec-trace phases handling (F6 tolerant coercion)", () => {
+	it("coerces a phases STRING (the Stage 9 crash case) instead of failing — normalizePhases parses it and the gate notes the tolerant read", async () => {
 		const { runHelper } = await import("../src/helpers.ts");
 		const specDir = `${dir}/docs/specifications/05-x/`;
 		mkdirSync(specDir, { recursive: true });
-		// a substantive spec doc (passes content checks)
+		writeFileSync(`${specDir}01-requirements.md`, requirementsDoc(["AC-01"]));
+		writeFileSync(`${specDir}02-bdd-scenarios.md`, bddDoc([{ id: "001", ac: "AC-01" }]));
+		writeFileSync(`${specDir}04-specification.md`, specDoc(["SCENARIO-001"], ["AC-01"]));
+		writeFileSync(`${specDir}05-implementation-plan.md`, "## Phase 1: Implementation\nDo it.");
+		writeFileSync(`${specDir}06-task-list.md`, "- [ ] **Implementation**: build it");
+		const setup = mkSetup(specDir);
+		const r = await runHelper({ name: "gate-spec-trace", sources: { "write-spec": { specificationPath: `${specDir}04-specification.md`, phaseCount: 3, acceptanceCriteriaRefs: ["AC-01"], scenarioRefs: ["SCENARIO-001"], phases: "Implementation", tasks: [{ phase: "Implementation", description: "build it", scenarioRefs: ["SCENARIO-001"] }] }, setup } });
+		// F6 (run 2026-08-17T06-39-58-800Z: 5 rounds lost to this exact shape;
+		// adversarial F6-HINT-DEAD-CODE revision): a coercible phases value PASSES
+		// the trace gate OUTRIGHT — zero rounds lost, full green. The
+		// implementation stage normalizes the same way on read, so downstream is
+		// safe. (phases here is a STRING naming one phase — the Stage 9 crash shape.)
+		expect(r.value.pass).toBe(true);
+		expect(r.value.errors).toEqual([]);
+	});
+	it("still FAILS when phases cannot be coerced at all (null/garbage)", async () => {
+		const { runHelper } = await import("../src/helpers.ts");
+		const specDir = `${dir}/docs/specifications/05-y/`;
+		mkdirSync(specDir, { recursive: true });
 		writeFileSync(`${specDir}04-specification.md`, ("# Spec\nReferences SCENARIO-001.\n## Testing Strategy\nunit tests.\n" + "x".repeat(500)));
 		writeFileSync(`${specDir}05-implementation-plan.md`, "plan");
 		writeFileSync(`${specDir}06-task-list.md`, "tasks");
 		const setup = mkSetup(specDir);
-		// but the CONTROL's phases is a string (what crashed Stage 9)
-		const r = await runHelper({ name: "gate-spec-trace", sources: { "write-spec": { specificationPath: `${specDir}04-specification.md`, phaseCount: 3, phases: "Phase 1\nPhase 2" }, setup } });
+		const r = await runHelper({ name: "gate-spec-trace", sources: { "write-spec": { specificationPath: `${specDir}04-specification.md`, phaseCount: 3, phases: { garbage: true } }, setup } });
 		expect(r.value.pass).toBe(false);
 		expect((r.value.errors as string[]).some((e) => /spec\.phases must be a non-empty array/.test(e))).toBe(true);
+	});
+});
+
+// ── F5 (RC5 + code-review R5): identifier extraction must read NORMATIVE
+// content only, with a closed-set heading match and fence transparency.
+describe("stripNonNormativeSections (F5/R5)", () => {
+	it("strips Prior Review Responses prose explaining removed out-of-range ids", () => {
+		const doc = "## Architecture\nCovers AC-01.\n\n## Prior Review Responses\nCF-spec-1: removed AC-24, AC-27, AC-29 as out of range.\n\n## Testing Strategy\nCovers SCENARIO-001.\n";
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).toContain("Covers AC-01.");
+		expect(stripped).toContain("Covers SCENARIO-001.");
+		expect(stripped).not.toContain("AC-24");
+	});
+	it("accepts decorated headings but does NOT strip lookalike normative sections", () => {
+		const doc = "## Convergence Criteria\nSCENARIO-005 must hold.\n\n## Prior Review Responses (Round 3)\nremoved AC-99\n\n## Evidence Notes — Phase 2\nAC-88 was purged\n\n## Evidence Notes for Phase 2\nAC-77 kept (trailing WORDS are not decoration — closed-set rule keeps this normative)\n";
+		const stripped = stripNonNormativeSections(doc);
+		// normative lookalike survives
+		expect(stripped).toContain("SCENARIO-005 must hold.");
+		// parenthetical/dash decorations of the closed set still strip
+		expect(stripped).not.toContain("AC-99");
+		expect(stripped).not.toContain("AC-88");
+		// trailing prose words do NOT match the closed set — safer direction
+		// (over-stripping normative content would hide real coverage)
+		expect(stripped).toContain("AC-77 kept");
+	});
+	it("keeps deeper headings inside a stripped section skipped, closes at the same level", () => {
+		const doc = "## Evidence Notes\n### Details\nAC-77 hidden here\n\n## Next Section\nAC-01 visible.\n";
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).not.toContain("AC-77");
+		expect(stripped).toContain("AC-01 visible.");
+	});
+	it("treats fenced code blocks as prose — a '## ' line inside fences never toggles sections", () => {
+		const doc = "## Evidence Notes\n```md\n## Not a real heading\n```\nAC-66 still hidden in the section\n\n## Real Next\nAC-02 visible.\n";
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).not.toContain("AC-66");
+		expect(stripped).toContain("AC-02 visible.");
+	});
+});
+
+// ── F6 + code-review R2: coercible spec controls are normalized BEFORE render
+// so docs regenerate and control/docs/implementation agree.
+describe("normalizeSpecControl (F6/R2)", () => {
+	it("coerces a phases string to the normalized array", async () => {
+		const { normalizeSpecControl } = await import("../src/stages/writers.ts");
+		const out = normalizeSpecControl({ phases: "Phase One\nPhase Two" });
+		expect(Array.isArray(out.phases)).toBe(true);
+		expect((out.phases as Array<{ name: string }>).map((p) => p.name)).toEqual(["Phase One", "Phase Two"]);
+	});
+	it("unwraps {phases:[…]} and numeric-key maps", async () => {
+		const { normalizeSpecControl } = await import("../src/stages/writers.ts");
+		const wrapped = normalizeSpecControl({ phases: { phases: [{ name: "A" }] } });
+		expect((wrapped.phases as Array<{ name: string }>)[0]?.name).toBe("A");
+		const mapped = normalizeSpecControl({ phases: { "1": { name: "B" }, "2": { name: "C" } } });
+		expect((mapped.phases as Array<{ name: string }>).map((p) => p.name)).toEqual(["B", "C"]);
+	});
+	it("leaves already-valid arrays and uncoercible values untouched", async () => {
+		const { normalizeSpecControl } = await import("../src/stages/writers.ts");
+		const ok = [{ name: "A", description: "d" }];
+		expect(normalizeSpecControl({ phases: ok }).phases).toBe(ok);
+		expect(normalizeSpecControl({ phases: { garbage: true } }).phases).toEqual({ garbage: true });
 	});
 });

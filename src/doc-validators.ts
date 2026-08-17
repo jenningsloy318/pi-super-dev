@@ -76,6 +76,53 @@ export function extractScenarioIds(content: string): string[] {
 	return uniqueSortedIds([...content.matchAll(/\bSCENARIO-(\d+)\b/gi)].map((m) => normalizedId("SCENARIO", m[1] ?? "0")));
 }
 
+/** Headings of NON-NORMATIVE rendered sections — response/evidence/convergence
+ *  prose where a writer legitimately DISCUSSES out-of-range identifiers while
+ *  explaining their removal. The deterministic trace gate must not read them:
+ *  run 2026-08-17T04-20-16-328Z failed 8 rounds straight on `AC-24, AC-27,
+ *  AC-29` tokens that existed only inside "## Prior Review Responses" notes
+ *  explaining they had been deleted (and the retry feedback re-quoted them,
+ *  so the writer re-emitted them — a self-referential trap).
+ *  Adversarial F5-HEADING-FRAGILITY hardening: PREFIX match (no $ anchor) so
+ *  LLM-decorated variants ("## Prior Review Responses (Round 3)", "##
+ *  Evidence Notes for Phase 2") still strip; the section closes only at a
+ *  same-or-HIGHER heading level (### details inside ## Evidence Notes stay
+ *  skipped; # H1 terminates) — tracked per-section, not by a flat reset. */
+const NON_NORMATIVE_SECTION_RE = /^(#{2,3})\s+(prior\s+(?:review\s+)?(?:finding\s+)?responses?|review\s+responses?|convergence(?:\s+ledger)?|evidence\s+notes?)(?:\s*[(:\u2014\u2013-].*)?$/i;
+
+/** Remove non-normative sections (heading through the next same-or-higher-level
+ *  heading, or EOF) so identifier extraction sees only normative content.
+ *  Code-review R5 hardening: (a) the heading title must END at the closed-set
+ *  phrase (only a trailing parenthetical/dash decoration is allowed) so a
+ *  normative "## Convergence Criteria" section is NOT stripped; (b) fenced code
+ *  blocks are transparent to heading detection — a "## " line inside ``` fences
+ *  never opens/closes a section. */
+export function stripNonNormativeSections(content: string): string {
+	const lines = content.split(/\r?\n/);
+	const kept: string[] = [];
+	let skipLevel: number | null = null; // the opening heading's level while skipping
+	let inFence = false; // inside a ``` code block (headings there are prose)
+	for (const line of lines) {
+		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+		if (!inFence) {
+			const heading = /^(#{1,6})\s+/.exec(line);
+			if (heading) {
+				const level = heading[1]?.length ?? 0;
+				if (skipLevel !== null) {
+					if (level <= skipLevel) skipLevel = null; // same-or-higher closes the section
+					else continue; // deeper heading inside the skipped section
+				}
+				if (skipLevel === null && NON_NORMATIVE_SECTION_RE.test(line)) {
+					skipLevel = level;
+					continue; // drop the heading itself
+				}
+			}
+		}
+		if (skipLevel === null) kept.push(line);
+	}
+	return kept.join("\n");
+}
+
 function extractScenarioIdsFromValue(value: unknown): string[] {
 	const raw = Array.isArray(value) ? value : [value];
 	const ids: string[] = [];
@@ -133,8 +180,15 @@ export function bddTraceabilityErrors(requirementsContent: string, bddContent: s
 
 /** Spec must cover every requirements AC, every BDD scenario, and map tasks to declared phases. */
 export function specTraceabilityErrors(bddContent: string, specContent: string, spec: ControlObj | undefined, requirementsContent?: string): string[] {
-	const bddScenarioIds = extractScenarioIds(bddContent);
-	const specDocScenarioIds = extractScenarioIds(specContent);
+	// F5 (RC5): extract identifiers from NORMATIVE content only. Response/
+	// evidence prose may legitimately mention out-of-range ids while explaining
+	// their removal — that must not trip the dangling-id check (nor may the
+	// retry feedback's re-quoting of those tokens trap the writer into
+	// re-emitting them). See stripNonNormativeSections for the incident.
+	const bddNormative = stripNonNormativeSections(bddContent);
+	const specNormative = stripNonNormativeSections(specContent);
+	const bddScenarioIds = extractScenarioIds(bddNormative);
+	const specDocScenarioIds = extractScenarioIds(specNormative);
 	const specControlScenarioIds = extractScenarioRefsFromControl(spec);
 	const combinedSpecIds = uniqueSortedIds([...specDocScenarioIds, ...specControlScenarioIds]);
 	const mappedScenarioIds = extractMappedScenarioRefsFromControl(spec);
@@ -152,8 +206,8 @@ export function specTraceabilityErrors(bddContent: string, specContent: string, 
 	if (mappedDangling.length > 0) errors.push(`spec phases/tasks reference scenarios not found in BDD doc: ${mappedDangling.join(", ")}`);
 
 	if (requirementsContent) {
-		const requirementIds = extractAcceptanceCriteriaIds(requirementsContent);
-		const specDocAcIds = extractAcceptanceCriteriaIds(specContent);
+		const requirementIds = extractAcceptanceCriteriaIds(stripNonNormativeSections(requirementsContent));
+		const specDocAcIds = extractAcceptanceCriteriaIds(specNormative);
 		const specControlAcIds = extractAcceptanceCriteriaRefsFromControl(spec);
 		const combinedSpecAcIds = uniqueSortedIds([...specDocAcIds, ...specControlAcIds]);
 		if (requirementIds.length === 0) errors.push("requirements doc has no AC-NN identifiers for spec traceability");
@@ -366,6 +420,24 @@ export function normalizePhases(raw: unknown): NormalizedPhase[] {
 			!!p && typeof p === "object" && typeof (p as { name?: unknown }).name === "string" && (p as { name: string }).name.trim() !== "",
 		);
 	}
+	// F6 (RC6, run 2026-08-17T06-39-58-800Z — 5 consecutive rounds of "spec.phases
+	// must be a non-empty array"): tolerate the common LLM malformations BEFORE
+	// failing the trace gate, so one structural slip costs one round, not five.
+	if (raw && typeof raw === "object") {
+		const obj = raw as Record<string, unknown>;
+		// (a) wrapper: the model returned { phases: [...] } instead of the array.
+		if (Array.isArray(obj.phases)) return normalizePhases(obj.phases);
+		// (b) single phase object instead of a 1-element array.
+		if (typeof obj.name === "string" && obj.name.trim()) return [{ name: obj.name.trim(), description: typeof obj.description === "string" ? obj.description : "" }];
+		// (c) numeric-key map (JSON round-trips that dropped the array).
+		const keys = Object.keys(obj).filter((k) => /^\d+$/.test(k)).sort((a, b) => Number(a) - Number(b));
+		if (keys.length > 0) {
+			const mapped = keys.map((k) => obj[k]).filter((p): p is NormalizedPhase =>
+				!!p && typeof p === "object" && typeof (p as { name?: unknown }).name === "string" && (p as { name: string }).name.trim() !== "",
+			);
+			if (mapped.length > 0) return mapped;
+		}
+	}
 	if (typeof raw === "string" && raw.trim()) {
 		return raw
 			.split(/\r?\n|,|;|•/)
@@ -376,13 +448,24 @@ export function normalizePhases(raw: unknown): NormalizedPhase[] {
 	return [];
 }
 
-/** Tolerant approved-verdict test. Accepts Approved / Approved with Comments /
- *  Approved with minor changes / PASS / Accepted (any case); rejects Changes
- *  Requested / Rejected / CONTEST / Blocked / FAIL. */
+/** Tolerant approved-verdict test. Accepts the approve FAMILY — Approved /
+ *  Approved with Comments / Approved with minor changes / "APPROVED WITH
+ *  REVISIONS" (suggestion-only pass, per the reviewer contract) / PASS /
+ *  Accepted (any case); rejects explicit rejections — Changes Requested /
+ *  "REVISIONS NEEDED" / Rejected / CONTEST / Blocked / FAIL / Declined.
+ *  Aligned with artifact-convergence's `reviewVerdictApproves` (one contract:
+ *  an affirmative approval is a pass unless it is an explicit rejection;
+ *  blocking findings are AND-ed at the call sites, never the wording).
+ *  Run 2026-08-17T00-52-39-124Z: "APPROVED WITH REVISIONS" + zero blocking
+ *  findings was rejected here and the run FATALed at the round cap. */
 export function isApprovedVerdict(verdict: unknown): boolean {
 	const v = String(verdict ?? "").trim().toLowerCase();
-	if (/(changes?\s+requested|reject|contest|blocked|fail|revision|declined)/i.test(v)) return false;
-	return /\b(approved|pass|accept)/i.test(v);
+	if (!v) return false;
+	// Explicit rejections always lose, even when phrased around "revisions".
+	if (/(changes?\s+requested|revisions?\s+needed|reject|contest|blocked|fail|declined)/i.test(v)) return false;
+	// Approve family: "approved …" of any qualifier (comments/revisions/minor …).
+	if (/\bapproved\b/i.test(v)) return true;
+	return /\b(pass|accept)/i.test(v);
 }
 
 // ─── per-stage content checks (ported from definitions.mjs) ──────────────────

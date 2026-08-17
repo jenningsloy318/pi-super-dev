@@ -5,6 +5,8 @@ import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-err
 import { reviewHasBlockingFinding } from "../review-findings.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import { runJudge } from "./judge.ts";
+import { countStageRounds } from "../resume.ts";
+import { triggerReplanForFindings } from "../replan/replan.ts";
 import {
 	blockingConvergenceFindings,
 	convergenceRetryFeedback,
@@ -239,6 +241,23 @@ function reviewVerdictApproves(verdict: unknown): boolean {
 	return /\b(approved|pass|accept)/i.test(v);
 }
 
+/** F2 (RC1, run 2026-08-17T02-16-49-478Z): one bounded extension when the loop
+ *  is still making STRICT progress at the cap. Research grounding — Refine-n-Judge
+ *  (arXiv 2508.01543) and verification-loop practice: a hard cap alone kills
+ *  loops that resolve prior findings every round but keep meeting one NEW
+ *  reviewer finding; strict-progress detection (open-blocking count strictly
+ *  decreasing) separates those from true stalls. */
+export const PROGRESS_EXTENSION_ROUNDS = 4;
+/** F3: hard cumulative ceiling — replayed + fresh rounds across resumes. Each
+ *  resume grants maxRounds fresh rounds (durable-execution continuation), but
+ *  the total is bounded at 3× the base cap so a deterministic false-positive
+ *  gate cannot ping-pong forever (replan/HITL owns the terminal state by then). */
+const MAX_TOTAL_ROUND_MULTIPLE = 3;
+
+export function effectiveRoundCap(maxRounds: number, priorRounds: number): number {
+	return Math.min(priorRounds + maxRounds, maxRounds * MAX_TOTAL_ROUND_MULTIPLE);
+}
+
 export function artifactConvergenceNode(options: ArtifactConvergenceOptions): Node {
 	const stageTask = task(options.stage);
 	const reviewTask = options.review ? task(options.review.stage) : null;
@@ -246,18 +265,38 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 		kind: `${options.feedbackKey}-convergence`,
 		async run(state: PipelineState, ctx: StageContext) {
 			const maxRounds = options.maxRounds ?? MAX_CONVERGENCE_ROUNDS;
+			// F3 (RC2): a resumed run REPLAYS this loop's prior rounds as cache hits
+			// (rebuilding retry feedback + ledger state) and must then get FRESH
+			// rounds — the old static cap fired right after the replay and re-killed
+			// the run before any fresh call (runs 02-47 / 06-02). countStageRounds
+			// reads the persisted occurrence count; fresh runs see 0.
+			const priorRounds = state.setup?.specDirectory ? countStageRounds(state.setup.specDirectory, `pipeline.${options.stage.id}`) : 0;
+			let effectiveCap = effectiveRoundCap(maxRounds, priorRounds);
+			if (effectiveCap > maxRounds) ctx.log(`${options.feedbackKey} convergence: resuming after ${priorRounds} recorded round(s) — round budget extended to ${effectiveCap} (replayed rounds do not consume the fresh budget)`);
 			let round = 0;
 			let lastErrors: string[] = [];
 			let priorBlockingSignature = "";
 			let convergenceJudgeTried = false;
+			// F2: strict-progress tracking — the count of this stage's OWN open
+			// blocking findings across consecutive rounds, plus the one-shot
+			// extension flag.
+			let prevOwnOpen = Number.POSITIVE_INFINITY;
+			let lastOwnOpen = Number.POSITIVE_INFINITY;
+			let progressExtensionUsed = false;
+			const ownStage = normalizeConvergenceStage(options.feedbackKey, options.feedbackKey);
 			while (ctx.budget.check()) {
 				round++;
 				if (ctx.signal?.aborted) return { status: "cancelled" as const };
-				// J10-c (judge routing layer): one round before the cap, ONE verified
-				// diagnosis so the fatal message explains WHY convergence failed — the
-				// judge can only abort early (escalate-now) with its diagnosis attached,
-				// never extend the cap or touch the writer loop.
-				if (round === maxRounds - 1 && !convergenceJudgeTried) {
+			// J10-c (judge routing layer): one round before the cap, ONE verified
+			// diagnosis so the fatal message explains WHY convergence failed — the
+			// judge can only abort early (escalate-now) with its diagnosis attached,
+			// never extend the cap or touch the writer loop.
+			// F3 (code-review R4): anchor on the EFFECTIVE cap, not the base cap — a
+			// resumed run replays cached rounds 1..k; a judge call cached at base
+			// round maxRounds-1 would replay its fatal verdict BEFORE the fresh
+			// round budget (effectiveCap) is ever reached. effectiveCap === maxRounds
+			// on a fresh run, so behavior there is unchanged.
+			if (round === effectiveCap - 1 && !convergenceJudgeTried) {
 					convergenceJudgeTried = true;
 					try {
 						const out = await runJudge(ctx, {
@@ -282,17 +321,37 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						/* INV-6: judge infra failure never blocks the loop */
 					}
 				}
-				if (round > maxRounds) {
-					// Unconditional liveness floor. The stall path below routes ACTIONABLE
-					// stagnation (a recurring blocking finding) to HITL escalation; this cap
-					// is the safety net for NON-actionable non-convergence (e.g. a stochastic
-					// reviewer that never approves). It FatalAborts exactly like the global-
-					// budget-exhaustion path below — deliberately NOT escalating, so it does
-					// NOT consume the shared `stagnation:<feedbackKey>` escalation budget
-					// (ESCALATION_RETRY_CAP) that the stall path relies on.
-					const msg = `${options.feedbackKey} convergence did not converge within ${maxRounds} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
-					ctx.log(`${options.feedbackKey} convergence: ROUND CAP (${maxRounds}) EXHAUSTED (FATAL — aborting run) — ${msg}`);
-					throw new FatalAbort(msg);
+				if (round > effectiveCap) {
+					// F2 (RC1): strict progress at the cap — the loop resolved more of
+					// its own blockers than it gained last round. Grant ONE bounded
+					// extension instead of killing productive work (run 02-16 resolved
+					// findings every round and still hit the cap's FatalAbort).
+					if (!progressExtensionUsed && prevOwnOpen !== Number.POSITIVE_INFINITY && lastOwnOpen < prevOwnOpen && lastOwnOpen > 0) {
+						progressExtensionUsed = true;
+						effectiveCap += PROGRESS_EXTENSION_ROUNDS;
+						ctx.log(`${options.feedbackKey} convergence: cap extended to ${effectiveCap} — strict progress (own open blocking ${prevOwnOpen === Number.POSITIVE_INFINITY ? "?" : prevOwnOpen} → ${lastOwnOpen})`);
+					} else {
+						// F1 (RC3): before the fatal, route upstream-owned blockers back
+						// to their owning stages via the replan circuit (bounded restart;
+						// the extension auto-resumes). Headless runs previously fell here
+						// with no HITL surface and died (run 08-56: BDD-019
+						// owner=requirements spun rounds 5-8, then FATAL).
+						const upstreamAtCap = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, ownStage));
+						if (upstreamAtCap.length > 0 && await triggerReplanForFindings(state, ctx, upstreamAtCap as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
+							ctx.log(`${options.feedbackKey} convergence: ${upstreamAtCap.length} upstream-owned blocking finding(s) routed back via REPLAN at round cap — the run will restart and the owning stage(s) will revise`);
+							throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN at round cap — ${upstreamAtCap.length} upstream-owned blocking finding(s) routed back to their owning stage(s); restarting to revise`);
+						}
+						// Unconditional liveness floor. The stall path below routes ACTIONABLE
+						// stagnation (a recurring blocking finding) to HITL escalation; this cap
+						// is the safety net for NON-actionable non-convergence (e.g. a stochastic
+						// reviewer that never approves). It FatalAborts exactly like the global-
+						// budget-exhaustion path below — deliberately NOT escalating, so it does
+						// NOT consume the shared `stagnation:<feedbackKey>` escalation budget
+						// (ESCALATION_RETRY_CAP) that the stall path relies on.
+						const msg = `${options.feedbackKey} convergence did not converge within ${effectiveCap} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
+						ctx.log(`${options.feedbackKey} convergence: ROUND CAP (${effectiveCap}) EXHAUSTED (FATAL — aborting run) — ${msg}`);
+						throw new FatalAbort(msg);
+					}
 				}
 				ctx.log(`${options.feedbackKey} convergence: round ${round} starting`);
 				if (options.review) delete (state as Record<string, unknown>)[options.review.reviewStateKey];
@@ -325,6 +384,11 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-agent`);
 					setArtifactFeedback(options, state, lastErrors);
 					ctx.log(`${options.feedbackKey} convergence: agent failed round ${round} — ${lastErrors.join("; ")}`);
+					// F2 (adversarial F2-STALE-PROGRESS): a round that ended without a
+					// review produces no fresh blocking-count reading — invalidate the
+					// progress signal so the cap extension cannot fire on stale data.
+					prevOwnOpen = Number.POSITIVE_INFINITY;
+					lastOwnOpen = Number.POSITIVE_INFINITY;
 					if (isNonRetryableAgentError(stageResult.error)) throw new FatalAbort(nonRetryableAgentSummary(stageResult.error));
 					continue;
 				}
@@ -345,6 +409,9 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-empty`);
 					setArtifactFeedback(options, state, lastErrors);
 					ctx.log(`${options.feedbackKey} convergence: ✗ no artifact produced round ${round} — retrying`);
+					// F2 (code-review R1): no artifact = no review = no fresh reading.
+					prevOwnOpen = Number.POSITIVE_INFINITY;
+					lastOwnOpen = Number.POSITIVE_INFINITY;
 					continue;
 				}
 
@@ -363,6 +430,9 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-validation`);
 					setArtifactFeedback(options, state, lastErrors);
 					ctx.log(`${options.feedbackKey} convergence: continuing after round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
+					// F2 (adversarial F2-STALE-PROGRESS): same invalidation — see above.
+					prevOwnOpen = Number.POSITIVE_INFINITY;
+					lastOwnOpen = Number.POSITIVE_INFINITY;
 					continue;
 				}
 				ctx.log(`${options.feedbackKey} convergence: deterministic validation passed round ${round}`);
@@ -379,6 +449,9 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						lastErrors = [`${review.reviewStateKey} review failed: ${reviewResult.error ?? "unknown error"}`];
 						setReviewFeedback(options, state, `${options.feedbackKey} review`, lastErrors);
 						ctx.log(`${options.feedbackKey} convergence: ✗ review failed round ${round} — ${lastErrors.join("; ")}`);
+						// F2 (code-review R1): review AGENT failure = no fresh reading.
+						prevOwnOpen = Number.POSITIVE_INFINITY;
+						lastOwnOpen = Number.POSITIVE_INFINITY;
 						if (isNonRetryableAgentError(reviewResult.error)) throw new FatalAbort(nonRetryableAgentSummary(reviewResult.error));
 						continue;
 					}
@@ -391,13 +464,16 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					if (!approved) {
 						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
 						lastErrors = compactReviewFindings(reviewControl);
+						// F2: track this stage's OWN open-blocking count for the
+						// strict-progress extension at the cap.
+						prevOwnOpen = lastOwnOpen;
+						lastOwnOpen = blockingConvergenceFindings(state).filter((f) => f.ownerStage === ownStage).length;
 						// HITL escalation triggers (bounded by ESCALATION_RETRY_CAP per stage):
 						//  (a) a blocking finding owned by a STRICTLY UPSTREAM stage — the
 						//      current writer structurally cannot fix it (e.g. a scope/routing
 						//      mismatch owned by `classify`), so escalate IMMEDIATELY rather than
 						//      forcing the writer to oscillate for rounds; OR
 						//  (b) a STALL — the same blocking signature recurred across rounds.
-						const ownStage = normalizeConvergenceStage(options.feedbackKey, options.feedbackKey);
 						const upstreamOwned = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, ownStage));
 						const signature = blockingSignature(state, review.ownerStage);
 						const stalled = signature.length > 0 && signature === priorBlockingSignature;
@@ -416,11 +492,13 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 								specDirectory: state.setup?.specDirectory,
 								findings: blockingConvergenceFindings(state).filter((f) => f.ownerStage === review.ownerStage || ownerPrecedes(f.ownerStage, ownStage)).slice(0, 6).map((f) => ({ severity: f.severity, title: f.title })),
 							};
+							let decisionApplied = false;
 							if (escalate && escalationBudgetRemaining(state, failure) > 0) {
 								ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length > 0 ? "UPSTREAM-OWNED blocker" : "STALL"} detected — escalating to user (HITL)`);
 							ctx.log(`  blocker: ${failure.message}`);
 								const decision = await runEscalation(state, failure, escalate);
 								if (decision) {
+									decisionApplied = true;
 									applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });
 									if (decision.choice === "accept-limitation") {
 										clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
@@ -433,6 +511,18 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 									// retry-with-guidance / revise-manually: fall through to another round
 									// (guidance was persisted to .user-notes.json for the next attempt).
 									priorBlockingSignature = ""; // guidance changes the inputs; reset stall tracking
+								}
+							}
+							// F1 (RC3): headless / dismissed / budget-exhausted escalation
+							// returned NO decision — the old code silently continued and the
+							// writer oscillated until the round cap killed the run (runs
+							// 08-56 / 08-09). Route the upstream-owned blockers back via the
+							// replan circuit instead: the run ends "replan", auto-resumes,
+							// the OWNING stage revises, and the downstream suffix re-runs.
+							if (!decisionApplied && upstreamOwned.length > 0) {
+								if (await triggerReplanForFindings(state, ctx, upstreamOwned as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
+									ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length} upstream-owned blocker(s) routed back via REPLAN (no human decision surface) — restarting to revise the owning stage(s)`);
+									throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN — ${upstreamOwned.length} upstream-owned blocker(s) routed back to their owning stage(s); restarting to revise`);
 								}
 							}
 						}

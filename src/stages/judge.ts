@@ -228,6 +228,25 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 		}
 		const evidenceFailures = verifyJudgeEvidence(verdict, req.worktreePath, req.outputTails ?? []);
 		if (evidenceFailures.length > 0) {
+			// F4 (RC4, runs 2026-08-17T08-56-53-706Z ×2): an escalate-now verdict
+			// with missing/unverifiable evidence must DEGRADE TO ESCALATE, never
+		// discard. The diagnosis is the product ("owned by requirements — this
+			// loop has no authority"); evidence quotes only guard fabrication on
+			// keep-going routes. Discarding silenced the one component that had
+			// root-caused the systemic failure. Fabricated `continue` evidence
+			// still discards below-the-line as before.
+			// Adversarial F4-JUDGE-INTEGRITY refinement: only the MISSING-evidence
+			// class degrades (empty evidence list → "requires at least 1"). FABRICATED
+			// evidence (a quote that fails verification, malformed/empty file claim)
+			// still DISCARDS even on escalate-now — an unverified diagnosis must not
+			// abort the run one round early; the judge prompt's "fabricated quotes
+			// discard the verdict" clause stays true for every route.
+			const missingOnly = verdict.evidence.length === 0 && evidenceFailures.every((f) => f.includes("requires at least 1 evidence item"));
+			if (verdict.route === "escalate-now" && missingOnly) {
+				appendAudit(req, { verdict, escalated: true, evidenceFailures, reason: "escalate-now with NO evidence — degrading to escalate (diagnosis preserved)" });
+				ctx.log(`judge ${req.scope}: unverified escalate accepted — no evidence attached (${evidenceFailures.join("; ")}) but route is escalate-now; escalating with diagnosis`);
+				return { status: "escalate", verdict };
+			}
 			appendAudit(req, { verdict, discarded: true, evidenceFailures });
 			ctx.log(`judge ${req.scope}: verdict DISCARDED — evidence verification failed: ${evidenceFailures.join("; ")}`);
 			return { status: "discarded", reason: `evidence verification failed: ${evidenceFailures.join("; ")}` };

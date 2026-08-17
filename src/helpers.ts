@@ -13,6 +13,7 @@ import {
 	toNumber,
 	toBool,
 	isApprovedVerdict,
+	normalizePhases,
 	requirementsContentErrors,
 	bddContentErrors,
 	bddTraceabilityErrors,
@@ -152,10 +153,18 @@ function gateSpecTrace(s: Record<string, unknown>): HelperResult {
 		// The implementation stage reads spec.phases from the CONTROL object, so it
 		// MUST be a usable array — validate this ALWAYS, not only on the metadata
 		// fallback path. (A good doc content but malformed phases control crashed
-		// Stage 9 with "phases.entries is not a function".)
-		if (!Array.isArray(spec.phases) || spec.phases.length === 0) errors.push("spec.phases must be a non-empty array of {name, description} objects (the implementation stage iterates it)");
+		// Stage 9 with "phases.entries is not a function".) F6 (adversarial
+		// F6-HINT-DEAD-CODE revision): COERCIBLE malformations (string/wrapper/
+		// single-object/numeric-map — the actual run-06-39 shapes) must PASS here
+		// with no error: normalizePhases reconstructs the array, and the
+		// implementation stage normalizes the same way on read, so a coercible
+		// shape costs ZERO rounds. Only an UNCOERCIBLE value (normalizePhases
+		// returns []) fails — and that keeps the canonical error string the
+		// spec-convergence structural-repair detector matches on.
+		const normalizedPhases = normalizePhases(spec.phases);
+		if (normalizedPhases.length === 0) errors.push("spec.phases must be a non-empty array of {name, description} objects (the implementation stage iterates it)");
 		else {
-			const unnamed = (spec.phases as Array<{ name?: string }>).filter((p) => !p?.name);
+			const unnamed = normalizedPhases.filter((p) => !p?.name);
 			if (unnamed.length > 0) errors.push(`${unnamed.length} phase(s) missing a name`);
 		}
 		if ((toNumber(spec.phaseCount) ?? 0) < 1) errors.push("Phase count must be at least 1");
@@ -238,6 +247,14 @@ function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefin
 	if (raw === "REJECT") return { verdict: "Blocked", syntheticFindings: [] };
 	if (raw === "Approved" || raw === "Approved with Comments") {
 		return { verdict: reviewHasBlockingVerdictFinding(review) ? "Changes Requested" : raw, syntheticFindings: [] };
+	}
+	// Approve-family variants ("APPROVED WITH REVISIONS", "Approved with minor
+	// changes", …) are suggestion-only passes per the reviewer contract — fold
+	// them into "Approved with Comments" (blocking findings still downgrade
+	// below) instead of failing the merge as an invalid verdict. Mirrors
+	// isApprovedVerdict / reviewVerdictApproves (run 2026-08-17T00-52-39-124Z).
+	if (isApprovedVerdict(raw)) {
+		return { verdict: reviewHasBlockingVerdictFinding(review) ? "Changes Requested" : "Approved with Comments", syntheticFindings: [] };
 	}
 	if (raw === "Changes Requested") {
 		// Reviewers use "blocking" narrowly ("true only when it must stop merge"),

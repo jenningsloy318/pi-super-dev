@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { specConvergenceNode } from "../src/stages/spec-convergence.ts";
 import { runHelper } from "../src/helpers.ts";
 import { getConvergenceLedger } from "../src/convergence-ledger.ts";
+import { readFileSync, existsSync } from "node:fs";
+import { isFatalAbort } from "../src/nodes.ts";
 import { renderRetryFeedbackBlock, type RetryFeedbackInput } from "../src/retry-feedback.ts";
 import type { AgentCall, AgentResult, Budget, ControlObj, HelperCall, PipelineState, SetupControl, StageContext } from "../src/types.ts";
 
@@ -264,5 +266,62 @@ describe("specConvergenceNode", () => {
 		expect(finding?.ownerStage).toBe("bdd");
 		expect(finding?.invalidatesStages).toContain("spec");
 		expect(finding?.invalidatesStages).toContain("implementation");
+	});
+
+	// ── F7 (adversarial F7-GATE-BYPASS): an approve-family verdict carrying a
+	// blocking finding must NOT converge the spec — the gate tests only the
+	// verdict wording; the loop ANDs !reviewHasBlockingFinding.
+	it("does NOT approve on 'APPROVED WITH REVISIONS' when a blocking finding rides along", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const blocking = [{ id: "SR-HIGH-1", severity: "high", title: "Un-grounded route", detail: "The spec names a route that does not exist.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Name a real route.", evidence: ["router has no such route"] }];
+
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				[specControl(["SCENARIO-001", "SCENARIO-002"]), specControl(["SCENARIO-001", "SCENARIO-002"])],
+				[reviewControl("APPROVED WITH REVISIONS", blocking), reviewControl("Approved")],
+				seen,
+			),
+		);
+
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(2);
+		const renderedFeedback = renderRetryFeedbackBlock(seen[1]);
+		expect(renderedFeedback).toContain("SR-HIGH-1");
+		expect(getConvergenceLedger(state).findings.find((f) => f.id === "SR-HIGH-1")?.status).toBe("verified");
+	});
+
+	// ── F1 (RC3): the same upstream-owned blocking finding across 2 consecutive
+	// review rounds routes back via the replan circuit instead of spinning to the
+	// round cap (run 2026-08-17T05-48/06-02 died exactly this way).
+	it("routes an unchanged upstream-owned blocker back via REPLAN after 2 identical review rounds", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const upstreamFinding = [{ id: "REQ-CONTRA-1", severity: "high", title: "Requirements contradict failed-only semantics", detail: "AC-11 and AC-19 disagree on status=SUCCESS rows.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Resolve the precedence in requirements.", evidence: ["AC-11 vs AC-19"] }];
+
+		await expect(specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				[specControl(["SCENARIO-001", "SCENARIO-002"]), specControl(["SCENARIO-001", "SCENARIO-002"])],
+				[reviewControl("Changes Requested", upstreamFinding), reviewControl("Changes Requested", upstreamFinding)],
+				seen,
+			),
+		)).rejects.toSatisfy((err: unknown) => isFatalAbort(err) && /REPLAN/.test((err as Error).message));
+
+		// The replan circuit persisted the routed request for the OWNING stage and
+		// set the terminal marker that flips the run status to "replan".
+		const requestsPath = `${s.specDirectory}replan-requests.json`;
+		expect(existsSync(requestsPath)).toBe(true);
+		const requests = JSON.parse(readFileSync(requestsPath, "utf8")) as { rounds: number; requests: Array<{ ownerStage: string; status: string }> };
+		expect(requests.rounds).toBe(1);
+		expect(requests.requests.some((r) => r.ownerStage === "requirements" && r.status === "pending")).toBe(true);
+		expect(((state as Record<string, unknown>).__replan as { owners?: string[] } | undefined)?.owners).toContain("requirements");
 	});
 });

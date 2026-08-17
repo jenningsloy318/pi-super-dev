@@ -18,6 +18,7 @@ import {
 	specDirFor,
 	createMemoizingAgent,
 	resumeCachePath,
+	countStageRounds,
 } from "../src/resume.ts";
 import type { AgentCall, AgentResult } from "../src/types.ts";
 
@@ -170,5 +171,38 @@ describe("createMemoizingAgent", () => {
 		expect(r2.control).toEqual({ iter: 2 }); // fresh run (seq=2)
 		// the real agent ran exactly once (the miss)
 		expect(seen.length).toBe(1);
+	});
+});
+
+// ── F3 (RC2): the persisted round count a resumed convergence loop reads to
+// grant itself FRESH rounds after its replay (effectiveCap = min(prior + cap,
+// 3×cap)). Exact-prefix matching: pipeline.specReview@... must NOT count toward
+// pipeline.spec.
+describe("countStageRounds (F3 resume round budget)", () => {
+	it("counts the max persisted occurrence for the exact call id", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-count-rounds-"));
+		try {
+			const cache = `${d}/.resume-cache.jsonl`;
+			writeFileSync(cache, [
+				JSON.stringify({ key: "pipeline.spec@root#1", result: { text: "r1" } }),
+				JSON.stringify({ key: "pipeline.spec@root#2", result: { text: "r2" } }),
+				JSON.stringify({ key: "pipeline.spec@root#8", result: { text: "r8" } }),
+				JSON.stringify({ key: "pipeline.specReview@root#1", result: { text: "review" } }),
+				JSON.stringify({ key: "pipeline.specification@root#3", result: { text: "other" } }),
+			].join("\n") + "\n");
+			expect(countStageRounds(d, "pipeline.spec")).toBe(8);
+			expect(countStageRounds(d, "pipeline.specReview")).toBe(1);
+			expect(countStageRounds(d, "pipeline.bdd")).toBe(0);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+	it("returns 0 when no cache exists (fresh run)", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-count-rounds-2-"));
+		try {
+			expect(countStageRounds(d, "pipeline.spec")).toBe(0);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
 	});
 });

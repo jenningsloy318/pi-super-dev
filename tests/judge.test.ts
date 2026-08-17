@@ -110,6 +110,24 @@ describe("judge unit", () => {
 		expect(out.status).toBe("discarded");
 	});
 
+	// ── F4 (RC4 + adversarial F4-JUDGE-INTEGRITY): escalate-now with NO evidence
+	// degrades to escalate (the diagnosis is the product — run
+	// 2026-08-17T08-56-53-706Z discarded the one component that had root-caused
+	// the loop); escalate-now with a FABRICATED quote still discards.
+	it("runJudge escalates (not discards) an escalate-now verdict with NO evidence", async () => {
+		const { ctx, logs } = makeCtx(() => ({ control: baseVerdict({ route: "escalate-now", evidence: [] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "test", signature: "sig-f4a", worktreePath: wt, context: "ctx", allowedRoutes: ["escalate-now"] });
+		expect(out.status).toBe("escalate");
+		if (out.status === "escalate") expect(out.verdict.route).toBe("escalate-now");
+		expect(logs.join(" ")).toContain("unverified escalate accepted");
+	});
+
+	it("runJudge still DISCARDS an escalate-now verdict with a fabricated quote", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "escalate-now", evidence: [{ file: "src/a.test.ts", quote: "a fabricated quote that appears nowhere in the file at all" }] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "test", signature: "sig-f4b", worktreePath: wt, context: "ctx", allowedRoutes: ["escalate-now"] });
+		expect(out.status).toBe("discarded");
+	});
+
 	it("runJudge maps an unknown closed-set route to discarded", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "approve-everything" }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "test", signature: "sig-3", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests"] });
