@@ -372,6 +372,10 @@ function lastAssistantText(messages: Array<{ role?: string; content?: Array<{ ty
  *  cheap. Returns "" on any failure/timeout so the caller can fall back to the
  *  deterministic slugifyTask. */
 export async function summarizeSlug(task: string, cwd: string, opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<string> {
+	// SD-04 (NFR-6): pre-aborted signal — the post-creation listener would never
+	// fire; skip the session entirely and let the caller use the deterministic
+	// fallback slug.
+	if (opts.signal?.aborted) return "";
 	const timeoutMs = opts.timeoutMs ?? 20_000;
 	const capture: Capture = { called: false, value: undefined };
 	const agentDir = getAgentDir();
@@ -417,6 +421,9 @@ export async function summarizeSlug(task: string, cwd: string, opts: { signal?: 
 	const timer = setTimeout(() => { try { void session.abort(); } catch { /* ignore */ } }, timeoutMs);
 	const onAbort = () => void session.abort();
 	opts.signal?.addEventListener("abort", onAbort, { once: true });
+	// SD-04 (NFR-6): close the registration window (abort landed during the
+	// awaited session creation above) — the listener would never fire.
+	if (opts.signal?.aborted) onAbort();
 	try {
 		await session.prompt(`Summarize this software task into a concise 2-5 word kebab-case slug (lowercase, words joined by single hyphens, no articles or filler words like "implement/add/feature"). Task:\n"""${task}"""\nCall structured_output with {slug}.`);
 	} catch { /* timeout/abort → fallback */ }
@@ -435,6 +442,12 @@ export async function summarizeSlug(task: string, cwd: string, opts: { signal?: 
  *  Set SUPER_DEV_DEBUG=1 to dump the full per-agent message trace to a temp
  *  file (sessions are otherwise in-memory and unobservable). */
 export async function runAgentViaSession(opts: SessionAgentOptions): Promise<SpawnResult> {
+	// SD-04 (NFR-6): a listener registered on an already-aborted signal never
+	// fires — the session would run orphaned to its own hard timeout. Bail
+	// BEFORE any session/resource work so a dead run spins up nothing.
+	if (opts.signal?.aborted) {
+		return { text: "", control: null, error: "aborted" };
+	}
 	const systemPrompt = loadAgentPrompt(opts.agent);
 	const keys = opts.controlKeys ?? [];
 	const capture: Capture = { called: false, value: undefined };
@@ -557,6 +570,10 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		try { void session.abort(); } catch { /* ignore */ }
 	}, timeoutMs);
 	opts.signal?.addEventListener("abort", onAbort, { once: true });
+	// SD-04 (NFR-6): an abort that landed during the awaited session-creation
+	// window never fires a listener registered after the fact — check
+	// synchronously so the freshly created session is terminated immediately.
+	if (opts.signal?.aborted) onAbort();
 
 	const finalOutputLine = keys.length
 		? `When the task is complete, call the \`structured_output\` tool exactly once with an object containing ALL of these keys: ${keys.join(", ")}. Do not omit any. Do not emit a prose final answer after that.`

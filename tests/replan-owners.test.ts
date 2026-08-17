@@ -8,7 +8,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { classifyReplanOwnerDeterministic, REPLAN_OWNER_STAGES } from "../src/replan/owners.ts";
 import { classifyReplanOwner, parseLeadControl, verifyLeadEvidence, findingTextBlob } from "../src/replan/lead.ts";
+import type { ReplanRequest } from "../src/replan/replan.ts";
 import type { StageContext } from "../src/types.ts";
+
+// ── D4 (AC-20 / T3.5) type pins: `ReplanRequest.ownerStage` is WIDENED to
+// `ReplanOwnerStage | "human"` (deferred findings persist as human-owned rows)
+// while `REPLAN_OWNER_STAGES` — the routing closed set — is UNTOUCHED ("human"
+// is not a routable consumer).
+describe("D4 type pins — ReplanRequest.ownerStage widened, routing set closed", () => {
+	it('a ReplanRequest may carry ownerStage: "human" (compile-time + runtime shape)', () => {
+		const row: ReplanRequest = {
+			id: "H-1", title: "deferred finding", detail: "", severity: "high",
+			ownerStage: "human",
+			classificationSource: "keyword", classificationReason: "fixer domain",
+			requestedRevision: "Human decision required: deferred finding",
+			fingerprint: "fp", status: "pending", createdAt: "2026-08-17T00:00:00.000Z",
+		};
+		expect(row.ownerStage).toBe("human");
+		expect(row.status).toBe("pending");
+	});
+
+	it('REPLAN_OWNER_STAGES stays the closed five-stage routing set (never gains "human")', () => {
+		expect([...REPLAN_OWNER_STAGES]).toEqual(["requirements", "bdd", "research", "design", "spec"]);
+		expect((REPLAN_OWNER_STAGES as readonly string[]).includes("human")).toBe(false);
+	});
+});
 
 describe("R2 layer 1 — deterministic owner classification", () => {
 	// Rule 1: reviewer ownerStage is authoritative.

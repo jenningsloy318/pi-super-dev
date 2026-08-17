@@ -32,8 +32,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execSync } from "node:child_process";
 
 import {
 	ChangeTracker,
@@ -204,5 +206,81 @@ describe("AC-11 tracking types are exported (strict-mode surface intact)", () =>
 		expect(_b.filesCreated).toEqual([]);
 		expect(_c.claimedNotChanged).toEqual([]);
 		expect(_d).toBe("stage");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (F) SCENARIO-034 / AC-15 (spec-28) — non-ASCII tracked-path claims verify
+// clean under `core.quotepath=false`. REAL git fixture: with git's default
+// quotepath=true, `diff --name-status` and `status --porcelain` emit non-ASCII
+// paths as quoted octal escapes (`"src/\346\226\207...ts"`), so a raw
+// `src/图表.ts` claim can never match → a spurious claimed-miss. The tracker
+// must force `-c core.quotepath=false` so both sides speak raw paths.
+// ---------------------------------------------------------------------------
+
+const sh = (cwd: string, cmd: string): string => {
+	try { return execSync(cmd, { cwd, encoding: "utf8" }); } catch { return ""; }
+};
+
+/** A real repo with one base commit (no non-ASCII paths yet). The repo's
+ *  local config EXPLICITLY sets `core.quotepath=true` — git's default — so the
+ *  fixture does not inherit the host's global config (a developer machine with
+ *  a global `core.quotepath=false` would otherwise mask the bug: git would emit
+ *  raw paths even without the tracker forcing it). The tracker's command-line
+ *  `-c core.quotepath=false` outranks the repo-local setting. */
+function realGitRepo(prefix: string): string {
+	const root = mkdtempSync(join(tmpdir(), prefix));
+	sh(root, "git init -b main");
+	sh(root, "git config user.email t@t && git config user.name t");
+	sh(root, "git config core.quotepath true");
+	writeFileSync(join(root, "base.txt"), "base\n");
+	sh(root, "git add base.txt && git commit -m base");
+	return root;
+}
+
+describe("AC-15 like-for-like non-ASCII path parity (SCENARIO-034, real git)", () => {
+	it("a committed `src/图表.ts` created+claimed mid-bracket verifies clean (claimedNotChanged empty, verdict ok)", () => {
+		const root = realGitRepo("sd-nonascii-");
+		try {
+			const specDir = join(root, "tmp-spec");
+			const t = new ChangeTracker(specDir, root);
+			t.begin("phase", "phase-01");
+			// The implementer creates AND commits the non-ASCII file inside the bracket.
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "图表.ts"), "export const 图 = 1;\n");
+			sh(root, "git add src/图表.ts && git commit -m add-nonascii");
+			const rec = t.end("phase", "phase-01", {
+				filesCreated: ["src/图表.ts"],
+				filesModified: [],
+				filesDeleted: [],
+			});
+			// Raw non-ASCII output parsed as-is — not a quoted octal-escape blob.
+			expect(rec!.gitActual!.created).toContain("src/图表.ts");
+			expect(rec!.crossCheck!.claimedNotChanged).toEqual([]);
+			expect(rec!.verdict).toBe("ok");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("an UNCOMMITTED `src/图表.ts` porcelain claim also verifies clean (status --porcelain path parity)", () => {
+		const root = realGitRepo("sd-nonascii-uncommitted-");
+		try {
+			const specDir = join(root, "tmp-spec");
+			const t = new ChangeTracker(specDir, root);
+			t.begin("phase", "phase-01");
+			mkdirSync(join(root, "src"), { recursive: true });
+			writeFileSync(join(root, "src", "图表.ts"), "export const 图 = 1;\n");
+			const rec = t.end("phase", "phase-01", {
+				filesCreated: ["src/图表.ts"],
+				filesModified: [],
+				filesDeleted: [],
+			});
+			expect(rec!.gitActual!.created).toContain("src/图表.ts");
+			expect(rec!.crossCheck!.claimedNotChanged).toEqual([]);
+			expect(rec!.verdict).toBe("ok");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

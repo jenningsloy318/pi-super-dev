@@ -8,7 +8,7 @@
  * full session path needs a real model (covered by verify-bdd.ts).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { missingKeys, deliveryDisciplineFor, sessionToolAccess } from "../src/session-agent.ts";
 
 describe("deliveryDisciplineFor", () => {
@@ -90,5 +90,82 @@ describe("structured_output capture merges (B2)", () => {
 		// Corrective turn returns ONLY the missing key — merge must keep docPath.
 		exec({ scenarioCount: 5 });
 		expect(value).toEqual({ docPath: "/x/01-requirements.md", summary: "s", scenarioCount: 5 });
+	});
+});
+
+// ─── T7.1 / SD-04 (NFR-6 pinning): session-backend abort-listener guard ─────
+//
+// runAgentViaSession registers `opts.signal?.addEventListener("abort", onAbort)`
+// only AFTER the awaited session creation. Per WHATWG/Node semantics a listener
+// attached to an ALREADY-aborted signal never fires — the session would run to
+// its own hard timeout. The pinning tests mock the pi SDK (no real session, no
+// model) and assert the synchronous `signal?.aborted` checks fire instead.
+const sessionHarness = vi.hoisted(() => ({
+	createCalls: 0,
+	/** When set, FakeResourceLoader.reload() aborts it (simulating an abort
+	 *  landing DURING the awaited session-creation window). */
+	abortOnReload: null as AbortController | null,
+	lastSession: null as { abortCalls: number; promptCalls: number } | null,
+}));
+
+vi.mock("@earendil-works/pi-coding-agent", () => {
+	class FakeSession {
+		abortCalls = 0;
+		promptCalls = 0;
+		messages: unknown[] = [];
+		async prompt() { this.promptCalls++; }
+		async abort() { this.abortCalls++; }
+		dispose() {}
+	}
+	class FakeResourceLoader {
+		async reload() { if (sessionHarness.abortOnReload) sessionHarness.abortOnReload.abort(); }
+	}
+	return {
+		createAgentSession: async () => {
+			sessionHarness.createCalls++;
+			const s = new FakeSession();
+			sessionHarness.lastSession = s;
+			return { session: s };
+		},
+		createCodingTools: () => [],
+		defineTool: (t: unknown) => t,
+		getAgentDir: () => "/tmp/fake-agent-dir",
+		DefaultResourceLoader: FakeResourceLoader,
+		ModelRuntime: { create: async () => ({ getModel: () => null }) },
+		SessionManager: { inMemory: () => ({}) },
+		SettingsManager: { create: () => ({}) },
+	};
+});
+
+describe("SD-04: runAgentViaSession guards abort-listener registration with synchronous aborted checks", () => {
+	const base = { agent: "implementer", prompt: "x", cwd: "/tmp" };
+
+	it("a signal aborted BEFORE the call returns error=aborted without creating any session", async () => {
+		const { runAgentViaSession } = await import("../src/session-agent.ts");
+		sessionHarness.createCalls = 0;
+		sessionHarness.abortOnReload = null;
+		const controller = new AbortController();
+		controller.abort(); // pre-aborted: the listener registered post-creation would never fire
+		const result = await runAgentViaSession({ ...base, signal: controller.signal, controlKeys: ["verdict"] });
+		expect(result.error).toBe("aborted");
+		expect(result.control).toBeNull();
+		// the guard fires BEFORE session creation: no session is spun up into a dead run
+		expect(sessionHarness.createCalls).toBe(0);
+	});
+
+	it("an abort landing DURING session creation terminates the session at registration (the after-check fires)", async () => {
+		const { runAgentViaSession } = await import("../src/session-agent.ts");
+		sessionHarness.createCalls = 0;
+		sessionHarness.abortOnReload = null;
+		const controller = new AbortController();
+		sessionHarness.abortOnReload = controller; // reload() aborts mid-creation window
+		try {
+			await runAgentViaSession({ ...base, signal: controller.signal, controlKeys: ["verdict"] });
+			// The synchronous post-registration check must have invoked onAbort —
+			// the session is terminated immediately instead of running orphaned.
+			expect(sessionHarness.lastSession?.abortCalls ?? 0).toBeGreaterThanOrEqual(1);
+		} finally {
+			sessionHarness.abortOnReload = null;
+		}
 	});
 });

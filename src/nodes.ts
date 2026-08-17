@@ -18,7 +18,6 @@
  *   gate        (domain quality gates)  validate output, re-run until valid
  *   map         (WCP12-14 Multi-Instance) fan-out over a collection
  *   wait        (ASL Wait)              delay
- *   waitForEvent (WCP16 Deferred Choice) external signal sync (human-in-loop)
  *   tryCatch    (ASL Catch)             error boundary
  *   noop        (ASL Pass)              no-op
  *
@@ -90,15 +89,14 @@ async function runConcurrent<T>(fns: Array<() => Promise<T>>, concurrency = Infi
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
 	new Promise((resolve) => {
 		if (signal?.aborted) return resolve();
-		const t = setTimeout(resolve, ms);
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(t);
-				resolve();
-			},
-			{ once: true },
-		);
+		const onAbort = () => { clearTimeout(t); finish(); };
+		// A-05 (NFR-6): remove the once-listener on NORMAL resolution too — the
+		// ONE shared run AbortSignal otherwise accumulates a retained closure per
+		// sleep across a retry-heavy run (MaxListenersExceededWarning noise).
+		// ({ once: true } only cleans up when the signal actually FIRES.)
+		const finish = () => { signal?.removeEventListener("abort", onAbort); resolve(); };
+		const t = setTimeout(finish, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 
 const OK: NodeResult = { status: "ok" };
@@ -542,7 +540,20 @@ export function gate(opts: GateOptions, node: Node): Node {
 						const decision = await runEscalation(state, failure, escalate);
 						if (decision) {
 							applyRetryDecision(state, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });
-							if (decision.choice === "accept-limitation") return { status: "ok" as const, attempts: max };
+							if (decision.choice === "accept-limitation") {
+							// SD-05 (NFR-6): a human-accepted limitation on a FATAL gate is
+							// never a silent gate pass — record the marker so the run-status
+							// derivation can only yield `partial`, never `success` (the
+							// foundational artifact still never validated; the acceptance is
+							// visible in state and the run summary, not just the report).
+							const accepted = (state as Record<string, unknown>).__acceptedLimitations as Record<string, unknown> | undefined;
+							(state as Record<string, unknown>).__acceptedLimitations = {
+								...(accepted ?? {}),
+								[opts.feedbackKey ?? "gate"]: { stage: opts.feedbackKey ?? "gate", message: msg },
+							};
+							ctx.log(`gate${label}: fatal blocker accepted as a limitation — the run will report partial (${msg})`);
+							return { status: "ok" as const, attempts: max };
+						}
 							if (decision.choice === "retry-with-guidance") { escalationRetry = true; continue; }
 						}
 					} catch { /* never-throw: degrade to FatalAbort */ }
@@ -602,7 +613,7 @@ export function map(opts: MapOptions, body: Node): Node {
 	};
 }
 
-// ─── wait / waitForEvent ────────────────────────────────────────────────────
+// ─── wait ────────────────────────────────────────────────────────────────
 
 /** Delay (ASL Wait). Signal-aware. */
 export function wait(ms: number): Node {
@@ -612,36 +623,6 @@ export function wait(ms: number): Node {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
 			await sleep(ms, ctx.signal);
 			return ctx.signal?.aborted ? { status: "cancelled" } : OK;
-		},
-	};
-}
-
-export interface WaitForEventOptions {
-	timeout?: number;
-}
-
-/** Block until an event is emitted on `ctx.events` (WCP16 Deferred Choice). */
-export function waitForEvent(name: string, opts: WaitForEventOptions = {}): Node {
-	return {
-		kind: "waitForEvent",
-		async run(_state, ctx) {
-			if (ctx.signal?.aborted) return { status: "cancelled" };
-			return new Promise<NodeResult>((resolve) => {
-				let done = false;
-				const finish = (r: NodeResult) => {
-					if (done) return;
-					done = true;
-					ctx.events.removeListener(name, onEvent);
-					clearTimeout(timer);
-					resolve(r);
-				};
-				const onEvent = () => finish(OK);
-				ctx.events.once(name, onEvent);
-				const timer = opts.timeout
-					? setTimeout(() => finish(failed(`timeout waiting for event "${name}"`)), opts.timeout)
-					: undefined;
-				ctx.signal?.addEventListener("abort", () => finish(cancelled()), { once: true });
-			});
 		},
 	};
 }
@@ -714,7 +695,15 @@ export function writerTask(spec: {
 		fatal: spec.fatal,
 		requires: spec.requires,
 		async run(state, ctx) {
-			if (!ctx.budget.check()) return undefined;
+			if (!ctx.budget.check()) {
+				// A-04 (NFR-6): returning undefined here let task() record status
+				// "ok" with NO artifact (a parallel sibling spent the last slot
+				// between task()'s check and this body-level re-check — the stage
+				// appeared green in results/dashboard/audit while producing
+				// nothing). Fail loud: the honest-reporting contract requires a
+				// failed stage row, never a silent ok.
+				throw new Error(`${spec.id}: budget exhausted before writer agent call (maxAgents reached)`);
+			}
 			const model = STAGE_MODELS[spec.id];
 			// Stick a stream log at stage START naming which AGENT is working. The
 			// exact doc filename it will write is logged by renderAndWrite (`doc → …`,

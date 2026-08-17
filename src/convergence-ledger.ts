@@ -1,5 +1,5 @@
 import { localTimestamp } from "./render/time.ts";
-import { inferReviewFindingStatus, reviewFindingBlocks } from "./review-findings.ts";
+import { inferReviewFindingStatus, reviewFindingBlocks, reviewFindingFingerprint, reviewFindingHighSeverity } from "./review-findings.ts";
 import type { RetryFeedback } from "./retry-feedback.ts";
 import type { ControlObj, PipelineState } from "./types.ts";
 
@@ -177,12 +177,6 @@ function normalizeBlocking(value: unknown, severity: string): boolean {
 	return /critical|blocker|fatal|high|error|fail|reject/i.test(severity);
 }
 
-function stableHash(input: string): string {
-	let hash = 5381;
-	for (let i = 0; i < input.length; i++) hash = ((hash << 5) + hash) ^ input.charCodeAt(i);
-	return (hash >>> 0).toString(36).padStart(7, "0");
-}
-
 function downstreamFrom(stage: ConvergenceOwnerStage): ConvergenceOwnerStage[] {
 	if (stage === "environment") return [...ORDER];
 	const start = STAGE_ORDER.get(stage);
@@ -213,6 +207,14 @@ export function getConvergenceLedger(state: PipelineState): ConvergenceLedger {
 	return ledger(state);
 }
 
+/** True only for downgrade reasons produced by the DETERMINISTIC convergence
+ *  duty layer (enforceReviewerConvergenceDuty's exact "convergence-duty ("
+ *  prefix). LLM-shaped reasons (a forged reviewer field) do not qualify —
+ *  provenance gating per adversarial F-01 on the spec-28 review. */
+export function isDutyDowngradeReason(reason: unknown): boolean {
+	return typeof reason === "string" && reason.startsWith("convergence-duty (");
+}
+
 function normalizeFinding(input: ConvergenceFindingInput, defaults: { detectedAtStage: string; ownerStage: ConvergenceOwnerStage; sourceGate?: string }): ConvergenceFinding {
 	const ownerStage = normalizeConvergenceStage(input.ownerStage, defaults.ownerStage);
 	const detectedAtStage = compact(input.detectedAtStage, defaults.detectedAtStage) || defaults.detectedAtStage;
@@ -227,9 +229,9 @@ function normalizeFinding(input: ConvergenceFindingInput, defaults: { detectedAt
 	// (adversarial G1-NEEDSHUMAN-REPROMOTION): without this the normalize path
 	// re-promotes a downgraded late needs-human note to blocking, partially
 	// defeating the enforcement on mixed reject rounds.
-	const downgraded = typeof input.downgradeReason === "string" && input.downgradeReason.length > 0;
+	const downgraded = isDutyDowngradeReason(input.downgradeReason);
 	const blocking = downgraded ? false : ["addressed", "verified", "deferred"].includes(status) ? false : status === "needs-human" ? true : typeof input.blocking === "boolean" ? input.blocking : reviewFindingBlocks(input as Record<string, unknown>) || normalizeBlocking(input.blocking, severity);
-	const fingerprint = stableHash([ownerStage, sourceGate ?? "", title, detail].join("\n").toLowerCase());
+	const fingerprint = reviewFindingFingerprint(ownerStage, sourceGate, title, detail);
 	const rawId = compact(input.id);
 	const id = rawId || `CF-${ownerStage}-${fingerprint}`;
 	const now = localTimestamp();
@@ -281,8 +283,22 @@ export function recordConvergenceFindings(
 		if (existing) {
 			existing.detectedAtStage = normalized.detectedAtStage;
 			existing.ownerStage = normalized.ownerStage;
-			existing.severity = normalized.severity;
-			existing.blocking = normalized.blocking;
+			// M22(b) (SCENARIO-069): a duplicate merge must never WEAKEN a blocker —
+			// keep the max severity class (an incoming high-class severity upgrades;
+			// a high-class existing severity is never downgraded) and blocking = true
+			// if either side blocks. No last-write-wins clearing of an unresolved
+			// blocker. EXCEPTION (deviation noted in the phase report): an incoming
+			// record carrying a duty-enforced downgradeReason is the deterministic
+			// duty layer's authoritative advisory classification — it MUST clear the
+			// blocking flag (mirrors normalizeFinding's G1-NEEDSHUMAN-REPROMOTION
+			// authority), or a downgraded re-record could never de-fang the row and
+			// the pinned late needs-human convergence would regress.
+			if (reviewFindingHighSeverity({ severity: normalized.severity }) && !reviewFindingHighSeverity({ severity: existing.severity })) existing.severity = normalized.severity;
+			// Adversarial F-01 (spec-28 review): the merge exception is gated on the
+			// DUTY-LAYER provenance format — only the deterministic enforcement
+			// produces "convergence-duty (" reasons. An LLM-shaped/forged
+			// downgradeReason cannot de-fang a live blocking ledger row.
+			existing.blocking = isDutyDowngradeReason(normalized.downgradeReason) ? false : existing.blocking || normalized.blocking;
 			existing.status = normalized.status === "verified" ? "verified" : normalized.status === "deferred" ? "deferred" : normalized.status === "needs-human" ? "needs-human" : "open";
 			existing.title = normalized.title;
 			existing.detail = normalized.detail;

@@ -1,7 +1,86 @@
 import { describe, expect, it } from "vitest";
-import { blockingConvergenceFindings, getConvergenceLedger, markConvergenceFindingsAddressedFromResponses, markConvergenceFindingsVerified, recordReviewFindingsFromControl } from "../src/convergence-ledger.ts";
-import { enforceReviewerConvergenceDuty, reviewFindingBlocksVerdict, reviewFindingHighSeverity } from "../src/review-findings.ts";
+import { blockingConvergenceFindings, getConvergenceLedger, markConvergenceFindingsAddressedFromResponses, markConvergenceFindingsVerified, recordConvergenceFindings, recordReviewFindingsFromControl } from "../src/convergence-ledger.ts";
+import { enforceReviewerConvergenceDuty, inferReviewFindingStatus, reviewFindingBlocks, reviewFindingBlocksVerdict, reviewFindingFingerprint, reviewFindingHighSeverity } from "../src/review-findings.ts";
 import type { PipelineState } from "../src/types.ts";
+
+describe("AC-34 (SCENARIO-068/069): duty restatement shield + ledger merge strength", () => {
+	const ledgerBlockingIds = (state: PipelineState) => new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id));
+	const ledgerBlockingFingerprints = (state: PipelineState) => new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.fingerprint));
+
+	it("reviewFindingFingerprint is exported and byte-identical to the ledger's stored fingerprint (djb2 over ownerStage\\nsourceGate\\ntitle\\ndetail)", () => {
+		const state = {} as PipelineState;
+		recordConvergenceFindings(state, {
+			id: "CF-1", ownerStage: "implementation", sourceGate: "gate-x", title: "T", detail: "D",
+			severity: "high", blocking: true, status: "open",
+		}, { detectedAtStage: "verification", ownerStage: "implementation", sourceGate: "gate-x" });
+		const stored = getConvergenceLedger(state).findings[0]!.fingerprint;
+		expect(stored).toBe(reviewFindingFingerprint("implementation", "gate-x", "T", "D"));
+		// input normalization: undefined sourceGate hashes as "" (ledger semantics)
+		expect(reviewFindingFingerprint("spec", undefined, "T", "D")).toBe(reviewFindingFingerprint("spec", "", "T", "D"));
+	});
+
+	it("SCENARIO-068: a verbatim restatement of a blocking ledger finding is skipped from downgrade (fingerprint shield)", () => {
+		const state = {} as PipelineState;
+		recordConvergenceFindings(state, {
+			id: "CF-1", ownerStage: "implementation", sourceGate: "gate-x", title: "T", detail: "D",
+			severity: "high", blocking: true, status: "open",
+		}, { detectedAtStage: "verification", ownerStage: "implementation", sourceGate: "gate-x" });
+		const review = { verdict: "Changes Requested", findings: [{ id: "NEW-1", ownerStage: "implementation", sourceGate: "gate-x", title: "T", detail: "D", severity: "medium", blocking: true, status: "open" }] };
+		const downgraded = enforceReviewerConvergenceDuty(review, 3, {
+			stage: "spec",
+			knownFindingIds: ledgerBlockingIds(state),
+			knownBlockingFingerprints: ledgerBlockingFingerprints(state),
+			reviewSourceGate: "gate-x",
+		});
+		expect(downgraded).toBe(0);
+		expect(review.findings![0]).toMatchObject({ blocking: true });
+	});
+
+	it("SCENARIO-068/B7: a re-flag whose OWN id is a known blocking ledger id is also shielded", () => {
+		const review = { verdict: "Changes Requested", findings: [{ id: "KNOWN-1", severity: "medium", title: "T", detail: "D", blocking: true, status: "open" }] };
+		const downgraded = enforceReviewerConvergenceDuty(review, 4, { stage: "spec", knownFindingIds: new Set(["KNOWN-1"]) });
+		expect(downgraded).toBe(0);
+		expect(review.findings![0]).toMatchObject({ blocking: true });
+	});
+
+	it("a NON-matching fingerprint (different title) is still downgraded — the shield is not a blanket pass", () => {
+		const state = {} as PipelineState;
+		recordConvergenceFindings(state, {
+			id: "CF-1", ownerStage: "implementation", sourceGate: "gate-x", title: "T", detail: "D",
+			severity: "high", blocking: true, status: "open",
+		}, { detectedAtStage: "verification", ownerStage: "implementation", sourceGate: "gate-x" });
+		const review = { verdict: "Changes Requested", findings: [{ id: "NEW-2", ownerStage: "implementation", sourceGate: "gate-x", title: "DIFFERENT", detail: "D", severity: "medium", blocking: true, status: "open" }] };
+		const downgraded = enforceReviewerConvergenceDuty(review, 3, {
+			stage: "spec",
+			knownFindingIds: ledgerBlockingIds(state),
+			knownBlockingFingerprints: ledgerBlockingFingerprints(state),
+			reviewSourceGate: "gate-x",
+		});
+		expect(downgraded).toBe(1);
+		expect(review.findings![0]).toMatchObject({ blocking: false });
+	});
+
+	it("SCENARIO-069: a duplicate merge preserves the high severity class and blocking (no last-write-wins clearing)", () => {
+		const state = {} as PipelineState;
+		recordConvergenceFindings(state, { ownerStage: "spec", sourceGate: "g", title: "T", detail: "D", severity: "high", blocking: true, status: "open" }, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "g" });
+		// re-record the SAME finding as an incoming medium advisory — the merge must not weaken the blocker
+		recordConvergenceFindings(state, { ownerStage: "spec", sourceGate: "g", title: "T", detail: "D", severity: "medium", blocking: false, status: "open" }, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "g" });
+		const merged = getConvergenceLedger(state).findings;
+		expect(merged).toHaveLength(1);
+		expect(merged[0]!.severity).toBe("high");
+		expect(merged[0]!.blocking).toBe(true);
+	});
+
+	it("SCENARIO-069: an incoming high-class severity UPGRADES a medium existing record", () => {
+		const state = {} as PipelineState;
+		recordConvergenceFindings(state, { ownerStage: "spec", sourceGate: "g", title: "T", detail: "D", severity: "medium", blocking: false, status: "open" }, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "g" });
+		recordConvergenceFindings(state, { ownerStage: "spec", sourceGate: "g", title: "T", detail: "D", severity: "critical", blocking: true, status: "open" }, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "g" });
+		const merged = getConvergenceLedger(state).findings;
+		expect(merged).toHaveLength(1);
+		expect(merged[0]!.severity).toBe("critical");
+		expect(merged[0]!.blocking).toBe(true);
+	});
+});
 
 describe("convergence ledger review finding taxonomy", () => {
 	it("records verified and explicitly non-blocking review findings without making them blockers", () => {
@@ -101,6 +180,43 @@ describe("convergence ledger review finding taxonomy", () => {
 	});
 });
 
+describe("AC-35 (SCENARIO-070/071): explicit signals outrank prose inference in reviewFindingBlocks", () => {
+	// M23: the prose scan inside inferReviewFindingStatus runs ONLY when the
+	// finding carries neither an explicit status field, nor blocking === true,
+	// nor a high-class severity — a "Deferred: …" title can no longer de-fang a
+	// critical blocking finding.
+	it("SCENARIO-070: explicit blocking flag + critical severity outrank a 'Deferred:' title", () => {
+		expect(reviewFindingBlocks({ severity: "critical", blocking: true, title: "Deferred: purge job lacks a dry-run guard" })).toBe(true);
+	});
+	it("AC-35 flip (spec-28 review F-1): a high-class severity IS an explicit signal — prose titles can no longer de-fang it (NFR-1 sanctioned)", () => {
+		// explicit status still wins for real verified notes:
+		expect(reviewFindingBlocks({ severity: "high", status: "verified", title: "Prior finding verified: auth-route secrets no longer logged" })).toBe(false);
+		// but high/critical severity WITHOUT an explicit status blocks — the
+		// "verified in the title" prose no longer suppresses it:
+		expect(reviewFindingBlocks({ severity: "high", title: "Prior finding verified: auth-route secrets no longer logged", detail: "Verified response: has been addressed." })).toBe(true);
+		expect(reviewFindingBlocks({ severity: "critical", title: "Deferred: purge job lacks a dry-run guard" })).toBe(true);
+	});
+	it("M23 attack shapes: an explicit blocking flag suppresses BOTH deferred- and verified-class prose", () => {
+		expect(reviewFindingBlocks({ severity: "critical", blocking: true, title: "Deferred: purge job lacks a dry-run guard" })).toBe(true);
+		expect(reviewFindingBlocks({ severity: "critical", blocking: true, title: "Advisory: purge job lacks a dry-run guard" })).toBe(true);
+		expect(reviewFindingBlocks({ severity: "critical", blocking: true, title: "Cache write has been addressed" })).toBe(true);
+	});
+	it("SCENARIO-070: an explicit status field still wins over prose in either direction", () => {
+		// explicit status=deferred de-fangs even a critical finding (reviewer's own call)
+		expect(reviewFindingBlocks({ severity: "critical", status: "deferred", blocking: true, title: "Deferred: purge job lacks a dry-run guard" })).toBe(false);
+		// explicit status=open keeps it blocking regardless of title prose
+		expect(reviewFindingBlocks({ severity: "medium", status: "open", blocking: true, title: "Deferred: wording polish" })).toBe(true);
+	});
+	it("SCENARIO-071: prose inference still applies when no explicit signals exist", () => {
+		const f = { severity: "low", title: "Deferred: wording polish in footer" };
+		expect(inferReviewFindingStatus(f)).toBe("deferred");
+		expect(reviewFindingBlocks(f)).toBe(false);
+	});
+	it("SCENARIO-070: the fix is inherited by reviewFindingBlocksVerdict (non-needs-human statuses delegate)", () => {
+		expect(reviewFindingBlocksVerdict({ severity: "critical", blocking: true, title: "Deferred: purge job lacks a dry-run guard" })).toBe(true);
+	});
+});
+
 describe("enforceReviewerConvergenceDuty (G1)", () => {
 	const medium = (id: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
 		id, severity: "medium", title: `Finding ${id}`, detail: "detail", blocking: true, status: "open", ...extra,
@@ -159,6 +275,20 @@ describe("enforceReviewerConvergenceDuty (G1)", () => {
 		for (const severity of ["major", "P1", "S0", "sev1", "errors", "failure", "rejected", "must fix", "Critical", "HIGH"]) {
 			expect(reviewFindingHighSeverity({ severity }), severity).toBe(true);
 		}
+	});
+
+	// ── adv-B/B8 (T1.2b): unanchored word-boundary alternation — a high-class
+	// token ANYWHERE in the severity string classifies high (compound severities
+	// like 'medium-high', 'very high', 'correctness-critical'); the trailing \b
+	// still excludes prefix false positives ('majorly cosmetic', 'P10').
+	it("adv-B/B8: compound severities carrying a high-class token classify high", () => {
+		for (const severity of ["medium-high", "very high", "correctness-critical", "security high"]) {
+			expect(reviewFindingHighSeverity({ severity }), severity).toBe(true);
+		}
+	});
+	it("adv-B/B8: boundary pins stay green — 'majorly cosmetic' and 'P10' are NOT high", () => {
+		expect(reviewFindingHighSeverity({ severity: "majorly cosmetic" })).toBe(false);
+		expect(reviewFindingHighSeverity({ severity: "P10" })).toBe(false);
 	});
 
 	it("R2: a re-flag of a DUTY-DOWNGRADED advisory is NOT shielded (no resurrection)", () => {

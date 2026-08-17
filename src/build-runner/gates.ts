@@ -1122,8 +1122,20 @@ function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?
 		if (isPythonGreenfieldCollectionFailure(out, ctx?.cwd)) return "red";
 		// BROKEN — pytest could not even collect.
 		if (/ERROR collecting/i.test(out)) return "broken";
+		// M12/ISS-02 (spec-28 AC-22, SCENARIO-047): usage/CLI errors (exit 4)
+		// and no-tests-collected (exit 5) are infrastructure failures, never a
+		// RED sample. `ERROR: file or directory not found` and `ERROR: usage` are
+		// pytest's exit-4 usage-error banners; `no tests ran` / `collected 0
+		// items` are the exit-5 empty-collection shape (markers only — the
+		// boolean `ok` already encodes exit≠0; no signature change, D3).
+		if (/ERROR: (file or directory not found|usage)/i.test(out)) return "broken";
+		if (/no tests ran/i.test(out) || /collected\s+0\s+items?/i.test(out)) return "broken";
 		if (ok) return "green";
-		if (/\bfailed\b/i.test(out) || /\berror\b/i.test(out)) return "red";
+		// RED requires a test-FAILURE marker (SCENARIO-048): exit≠0 alone or the
+		// bare word "error" is ambiguous → unknown, retried — never blessed RED.
+		// Markers: pytest's `FAILED <nodeid>` summary line, an AssertionError,
+		// a traceback `E   <error>` line, or an `N failed` count summary.
+		if (/^FAILED\b/m.test(out) || /AssertionError/i.test(out) || /^E\s{2,}/m.test(out) || /\d+\s+failed/i.test(out)) return "red";
 		return "unknown";
 	}
 	if (language === "go") {
@@ -1156,8 +1168,10 @@ function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?
 	if (/failed to load|ERR_MODULE_NOT_FOUND|Cannot find module/i.test(out)) return "broken";
 	if (ok) return "green";
 	// RED — a failing-test marker appeared after a successful collection.
+	// R7 (spec-28): the bare `❯` glyph is deliberately NOT in this list — it
+	// frames PASSING runs' source snippets too (untrustworthy); the remaining
+	// markers cover every real failing-test shape (vitest/jest/node:test).
 	if (
-		/❯/.test(out) ||
 		/^✖\s+/m.test(out) ||
 		/^FAIL\s+/m.test(out) ||
 		/failing tests/i.test(out) ||

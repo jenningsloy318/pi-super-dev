@@ -107,8 +107,10 @@ vi.mock("../src/render/dashboard.ts", () => ({
 
 vi.mock("../src/render/super-dev-dir.ts", () => ({
 	ensureSuperDevDirs: vi.fn(() => {}),
-	startRun: vi.fn(() => {}),
-	// Empty path → the `if (logPath)` writeFileSync is skipped (no disk touch).
+	startRun: vi.fn(() => "runs/test-run"),
+	// AC-29 (Phase 6): the run dir is captured once and resolved through the
+	// path-for helpers; empty path → the `if (logPath)` writeFileSync is skipped.
+	runLogPathFor: vi.fn(() => ""),
 	getRunLogPath: vi.fn(() => ""),
 	getConfig: vi.fn(() => ({})),
 }));

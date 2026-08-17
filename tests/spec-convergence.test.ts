@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { specConvergenceNode } from "../src/stages/spec-convergence.ts";
+import { REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";
 import { runHelper } from "../src/helpers.ts";
 import { getConvergenceLedger } from "../src/convergence-ledger.ts";
 import { readFileSync, existsSync } from "node:fs";
@@ -62,7 +63,9 @@ function specControl(refs: string[], mappedRefs = refs, acRefs = ["AC-01", "AC-0
 		testingStrategy: "Unit tests and integration tests cover each mapped scenario. " + "testing ".repeat(20),
 		acceptanceCriteriaRefs: acRefs,
 		scenarioRefs: refs,
-		phases: [{ name: "Implementation", description: "Implement and test the behavior.", scenarioRefs: mappedRefs }],
+		// AC-11 audit: the deliverable guard is wired into gate-spec-trace, so a
+		// scenario-mapped phase needs a test deliverable for this gate-clean fixture.
+		phases: [{ name: "Implementation", description: "Implement and test the behavior.", scenarioRefs: mappedRefs, deliverables: { requireScenarios: mappedRefs } }],
 		tasks: [{ phase: "Implementation", description: "Implement behavior for mapped scenarios.", scenarioRefs: mappedRefs }],
 	};
 }
@@ -467,5 +470,185 @@ describe("specConvergenceNode", () => {
 		expect(requests.rounds).toBe(1);
 		expect(requests.requests.some((r) => r.ownerStage === "requirements" && r.status === "pending")).toBe(true);
 		expect(((state as Record<string, unknown>).__replan as { owners?: string[] } | undefined)?.owners).toContain("requirements");
+	});
+
+	// ── AC-34 (SCENARIO-068): a round-3 verbatim restatement of a blocking
+	// ledger finding recorded by an earlier review round is NOT duty-downgraded —
+	// the convergence fingerprint shield keeps it blocking, so the loop rejects
+	// round 3 and only a genuine later approval (round 4) converges it.
+	it("AC-34: a verbatim restatement of a live blocking review finding stays blocking at round 3 (fingerprint shield)", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const restated = (id: string): Record<string, unknown> => ({
+			id, severity: "medium", title: "Same traceability gap", detail: "The exact same gap restated verbatim.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Fix.", evidence: ["review evidence"],
+		});
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				Array.from({ length: 4 }, () => specControl(["SCENARIO-001", "SCENARIO-002"])),
+				[
+					reviewControl("Changes Requested", [restated("GAP-SAME")]),
+					reviewControl("Changes Requested", [restated("GAP-SAME")]),
+					reviewControl("Changes Requested", [restated("GAP-SAME")]),
+					reviewControl("Approved"),
+				],
+				seen,
+			),
+		);
+		// Round 3 is the reviewer's 3rd pass: the duty layer would downgrade this
+		// NEW medium blocker — but it is a verbatim restatement of the blocking
+		// finding rounds 1-2 recorded into the ledger (fingerprint match), so it
+		// stays blocking, the review rejects, and convergence needs round 4.
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(4);
+		expect(getConvergenceLedger(state).findings.some((f) => f.id === "GAP-SAME")).toBe(true);
+	});
+
+	// ── B8 (fix-in-pass, SCENARIO-068): after enforceReviewerConvergenceDuty
+	// mutates the review control, the owning stage re-renders the review doc
+	// (per-slug reuse, idempotent) so the artifact matches enforced
+	// classifications — a downgraded finding no longer renders as blocking.
+	it("B8: the spec-review doc is re-rendered after duty enforcement (downgraded finding no longer rendered as Blocking)", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const mediumNew = (id: string): Record<string, unknown> => ({
+			id, severity: "medium", title: `Polish ${id}`, detail: "Advisory-level nit.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Optional.", evidence: ["review evidence"],
+		});
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				Array.from({ length: 3 }, () => specControl(["SCENARIO-001", "SCENARIO-002"])),
+				[
+					reviewControl("Changes Requested", [mediumNew("P-1")]),
+					reviewControl("Changes Requested", [mediumNew("P-2")]),
+					reviewControl("Changes Requested", [mediumNew("P-3")]),
+				],
+				seen,
+			),
+		);
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(3); // round-3 duty downgrade converges the loop
+			const reviewDoc = readFileSync(join(s.specDirectory, "06-spec-review.md"), "utf8");
+		expect(reviewDoc).toContain("Polish P-3");
+		// enforced classification: P-3 was downgraded to advisory — the re-rendered
+		// artifact must not carry the stale "**Blocking**: true" line.
+		expect(reviewDoc).not.toMatch(/\*\*Blocking\*\*: true/);
+	});
+
+	// ── AC-18 (SCENARIO-039/040, M8): replan consumption is gated on GENUINE
+	// approval at the spec-convergence site too — a duty-override approval
+	// (review.pass false, only downgraded NEW medium findings) converges the loop
+	// but leaves the pending spec request untouched; a genuine approval consumes.
+	it("AC-18: spec duty-override approval does NOT consume the pending replan request; genuine approval does", async () => {
+		const run = async (reviews: ControlObj[], genuine: boolean): Promise<{ status: string; attempts?: number | undefined }> => {
+			const s = setup(dir);
+			seedDocs(s);
+			mkdirSync(s.specDirectory, { recursive: true });
+			writeFileSync(join(s.specDirectory, REPLAN_REQUESTS_FILE), JSON.stringify({
+				version: 1, rounds: 1,
+				requests: [{
+					id: "SR-01", title: "Phases contradict", detail: "Phase 1 vs Phase 2", severity: "high",
+					ownerStage: "spec", classificationSource: "file-class", classificationReason: "r",
+					requestedRevision: "Revise the specification to resolve the contradiction.",
+					fingerprint: "fp-spec-1", status: "pending", createdAt: "t",
+				}],
+			}));
+			const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+			const seen: RetryFeedbackInput[][] = [];
+			const result = await specConvergenceNode.run(
+				state,
+				ctx(
+					state,
+					Array.from({ length: 4 }, () => specControl(["SCENARIO-001", "SCENARIO-002"])),
+					reviews,
+					seen,
+				),
+			);
+			const requests = JSON.parse(readFileSync(join(s.specDirectory, REPLAN_REQUESTS_FILE), "utf8")) as { requests: Array<{ status: string; addressedAt?: string }> };
+			// SCENARIO-039 shape: round-3 "Changes Requested" with only a downgraded NEW
+			// medium finding — the request stays pending.
+			if (!genuine) {
+				expect(requests.requests[0]!.status).toBe("pending");
+				expect(requests.requests[0]!.addressedAt).toBeUndefined();
+				const replanFinding = getConvergenceLedger(state).findings.find((f) => f.id === "replan-SR-01");
+				expect(replanFinding).toBeDefined();
+				expect(replanFinding?.status).not.toBe("verified");
+			} else {
+				// SCENARIO-040 shape: genuine reviewer approval consumes the request.
+				expect(requests.requests[0]!.status).toBe("addressed");
+				expect(requests.requests[0]!.addressedAt).toBeTruthy();
+			}
+			return result;
+		};
+		// duty-override shape: rounds 1-3 rejected with distinct NEW medium findings;
+		// round 3 converges via the downgrade override (review.pass stays false).
+		const mediumNew = (id: string): Record<string, unknown> => ({
+			id, severity: "medium", title: `Polish ${id}`, detail: "Advisory-level nit.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Optional.", evidence: ["review evidence"],
+		});
+		const overrideRun = await run([
+			reviewControl("Changes Requested", [mediumNew("Q-1")]),
+			reviewControl("Changes Requested", [mediumNew("Q-2")]),
+			reviewControl("Changes Requested", [mediumNew("Q-3")]),
+		], false);
+		expect(overrideRun.status).toBe("ok");
+		expect(overrideRun.attempts).toBe(3);
+		// genuine-approval counterpart: a real Approved verdict consumes the request.
+		const genuineRun = await run([reviewControl("Approved")], true);
+		expect(genuineRun.status).toBe("ok");
+		expect(genuineRun.attempts).toBe(1);
+	});
+});
+
+// ─── Phase 6 / T6.4 (AC-17): shared round-cap clamp + fresh-round arming ─────
+
+import { extendedRoundCap, MAX_TOTAL_ROUND_MULTIPLE } from "../src/stages/artifact-convergence.ts";
+
+/** Seed `.resume-cache.jsonl` with recorded occurrences per callId. */
+function seedSpecStageRounds(specDir: string, seeds: Array<[callId: string, rounds: number]>): void {
+	const rows = seeds.flatMap(([callId, rounds]) =>
+		Array.from({ length: rounds }, (_, i) =>
+			JSON.stringify({ key: `${callId}@root#${i + 1}`, result: { text: "", control: null } })));
+	writeFileSync(join(specDir, ".resume-cache.jsonl"), rows.join("\n") + "\n");
+}
+
+describe("AC-17 (SCENARIO-037/038): spec convergence shares the clamped round accounting", () => {
+	it("the shared extension helper re-clamps to the 3× ceiling (arithmetic parity)", () => {
+		expect(MAX_TOTAL_ROUND_MULTIPLE).toBe(3);
+		expect(extendedRoundCap(10, 8)).toBe(14);
+		expect(extendedRoundCap(22, 8)).toBe(24);
+	});
+
+	it("with priorRounds=24 (effectiveCap=24) the fatal waits for one FRESH round post-replay", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		seedSpecStageRounds(s.specDirectory, [["pipeline.spec", 24], ["pipeline.specReview", 24]]);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		let specCalls = 0;
+		// The trace gate fails every round (a dangling scenario ref) — the loop
+		// can only terminate at the round cap.
+		const dangling = specControl(["SCENARIO-999"], [], ["AC-01", "AC-02"]);
+		const scripted: StageContext = {
+			...ctx(state, [dangling], [reviewControl("Approved")], []),
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "spec-writer") { specCalls++; return { text: "", control: dangling }; }
+				return { text: "", control: reviewControl("Approved") };
+			},
+		};
+		let caught: unknown;
+		try {
+			await specConvergenceNode.run(state, scripted);
+		} catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		const message = String((caught as Error).message);
+		expect(message).toContain("within 24 round(s)");
+		// Rounds 1–24 replay, round 25 is the first FRESH writer round, the fatal
+		// is round 26's entry check — the loop never dies mid-replay.
+		expect(specCalls).toBe(25);
 	});
 });

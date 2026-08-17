@@ -21,34 +21,44 @@ import {
 	getSuperDevDir,
 	getConfig,
 	auditAppend,
+	auditPathFor,
+	reflectionPathFor,
 } from "./super-dev-dir.ts";
 import { existsSync } from "node:fs";
 import { cleanupOldRuns, updateStats } from "./cleanup.ts";
 
-/** Spawn the reflection agent asynchronously (fire-and-forget). Non-blocking. */
-export function runReflectionAsync(): void {
+/** Spawn the reflection agent asynchronously (fire-and-forget). Non-blocking.
+ *  AC-29 (SCENARIO-060): the originating run's dir is threaded through — every
+ *  path this module touches is resolved from it AT ENTRY, never re-read from
+ *  the module global after an await (a run B starting mid-flight cannot
+ *  redirect run A's reflection writes). */
+export function runReflectionAsync(runDir: string | undefined): void {
 	const config = getConfig();
 	if (!config.reflectionEnabled) return;
 
-	const auditPath = getAuditPath();
+	const auditPath = runDir ? auditPathFor(runDir) : getAuditPath();
 	if (!auditPath || !existsSync(auditPath)) return;
 
 	// Fire-and-forget — never blocks the user's result.
-	void runReflection().catch((err) => { auditAppend({ stage: "reflection", error: String(err instanceof Error ? err.message : err) });
+	void runReflection(runDir).catch((err) => { auditAppend({ stage: "reflection", error: String(err instanceof Error ? err.message : err) }, runDir);
 		// Silent failure — reflection is best-effort.
 	});
 }
 
-/** Run the reflection agent synchronously (for testing). */
-export async function runReflection(): Promise<void> {
-	const auditPath = getAuditPath();
+/** Run the reflection agent synchronously (for testing). AC-29: `runDir` is
+ *  the ORIGINATING run dir captured at run start (falls back to the module
+ *  global for legacy callers). */
+export async function runReflection(runDir?: string): Promise<void> {
+	// Paths are captured at ENTRY — no getAuditPath()/getReflectionPath() read
+	// after the agent await below can observe a newer run's dir.
+	const auditPath = runDir ? auditPathFor(runDir) : getAuditPath();
 	const learnedPath = getLearnedPath();
 	const archivePath = getLearnedArchivePath();
 	const indexPath = getLearnedIndexPath();
-	const reflectionPath = getReflectionPath();
+	const reflectionPath = runDir ? reflectionPathFor(runDir) : getReflectionPath();
+	const superDevDir = getSuperDevDir();
 
 	if (!existsSync(auditPath)) return;
-
 	const systemPrompt = loadAgentPrompt("reflection");
 	const task = [
 		"## Files",
@@ -67,7 +77,7 @@ export async function runReflection(): Promise<void> {
 	await runAgentViaSession({
 		agent: "reflection",
 		prompt: task,
-		cwd: getSuperDevDir(),
+		cwd: superDevDir,
 		timeoutMs: 180_000,
 		controlKeys: [],
 		onProgress: {

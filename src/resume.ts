@@ -39,14 +39,29 @@ export function specDirFor(cwd: string, specIdentifier: string): string {
 
 // ─── cache I/O (append-only, last-wins, partial-tail-safe) ──────────────────
 
-/** Append one completed agent-call result to the cache log (crash-safe). */
+/** Append one completed agent-call result to the cache log (crash-safe).
+ *  R8 (AC-21 fix-in-pass): torn-line repair — when the file is non-empty and
+ *  its last byte is NOT a newline (a killed process left a half-written row),
+ *  write "\n" FIRST so the fresh row cannot glue onto the fragment (which
+ *  would lose BOTH). The torn entry is lost by design; the next good entry is
+ *  saved. Mirrors the runlog's tailProbe healing. */
 export function appendResumeResult(specDir: string, key: string, result: AgentResult): void {
 	try {
-		appendFileSync(resumeCachePath(specDir), JSON.stringify({ key, result }) + "\n");
+		const path = resumeCachePath(specDir);
+		try {
+			const st = statSync(path);
+			if (st.size > 0) {
+				const buf = readFileSync(path);
+				if (buf.length > 0 && buf[buf.length - 1] !== 0x0a) appendFileSync(path, "\n");
+			}
+		} catch { /* absent/empty — nothing to repair */ }
+		appendFileSync(path, JSON.stringify({ key, result }) + "\n");
 	} catch { /* best-effort; resume is opportunistic */ }
 }
 
-/** Load the cache as a Map (last value wins per key; a partial trailing line is ignored). */
+/** Load the cache as a Map (last value wins per key; a partial trailing line is ignored).
+ *  R8: one `console.warn("[resume] skipping unparseable cache line")` per
+ *  skipped corrupt line — silent data loss is undiagnosable. */
 export function loadResumeCache(specDir: string): Map<string, AgentResult> {
 	const map = new Map<string, AgentResult>();
 	let raw: string;
@@ -63,6 +78,7 @@ export function loadResumeCache(specDir: string): Map<string, AgentResult> {
 			if (entry?.key && entry?.result) map.set(entry.key, entry.result);
 		} catch {
 			/* partial/corrupt line — skip (last-wins keeps prior good entries) */
+			console.warn("[resume] skipping unparseable cache line");
 		}
 	}
 	return map;

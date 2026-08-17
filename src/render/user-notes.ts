@@ -30,6 +30,25 @@ interface UserNotesFile {
 
 const EMPTY: UserNotesFile = { notes: [] };
 
+/** AC-33 (SCENARIO-067): the persisted size of ONE user note — 16 KiB. Exported
+ *  so the cap is pinnable in tests. */
+export const MAX_USER_NOTE_BYTES = 16_384;
+const USER_NOTE_HEAD_BYTES = 8_192;
+const USER_NOTE_TAIL_BYTES = 8_192;
+
+/** M21: head+tail cap applied at persist/drain time so userNotesForAgent can
+ *  never inject more than the capped form. Byte-exact: first 8192 bytes +
+ *  marker (N = dropped byte count) + last 8192 bytes. Text at or under the
+ *  cap is returned byte-identical. */
+export function capUserNoteBytes(text: string): string {
+	const buf = Buffer.from(text, "utf8");
+	if (buf.length <= MAX_USER_NOTE_BYTES) return text;
+	const head = buf.subarray(0, USER_NOTE_HEAD_BYTES).toString("utf8");
+	const tail = buf.subarray(buf.length - USER_NOTE_TAIL_BYTES).toString("utf8");
+	const dropped = buf.length - USER_NOTE_HEAD_BYTES - USER_NOTE_TAIL_BYTES;
+	return `${head}\n…[truncated ${dropped} bytes]…\n${tail}`;
+}
+
 /** Path to `.user-notes.json` in a spec directory. */
 export function userNotesPath(specDir: string): string {
 	return join(specDir, ".user-notes.json");
@@ -78,9 +97,13 @@ function persistImage(specDir: string, noteId: string, image: RuntimeInstruction
 		if (image.path) {
 			// Always COPY path-backed attachments into the spec dir so prompts never
 			// contain absolute/temp/traversal paths and resume stays durable.
-			const src = isAbsolute(image.path) ? image.path : resolve(specDir, image.path);
+			// D-4: spec-root containment applies to ABSOLUTE paths too — only files
+			// already inside the spec dir may be copied in; anything outside (an
+			// arbitrary host path, a /etc/… target, a symlink-adjacent traversal) is
+			// rejected with the existing could-not-persist notice.
+			const src = isAbsolute(image.path) ? resolve(image.path) : resolve(specDir, image.path);
 			const specRoot = resolve(specDir);
-			if (!isAbsolute(image.path) && src !== specRoot && !src.startsWith(specRoot + sep)) return null;
+			if (src !== specRoot && !src.startsWith(specRoot + sep)) return null;
 			if (!existsSync(src)) return null;
 			const { rel, abs } = outputImagePath(specDir, noteId, index, extname(src) || extForMedia(image.mediaType));
 			copyFileSync(src, abs);
@@ -133,7 +156,10 @@ export function appendUserNotes(specDir: string | undefined, instructions: Array
 		const instruction: RuntimeInstruction = typeof item === "string"
 			? { id: `legacy-${Date.now().toString(36)}-${notes.notes.length + 1}`, createdAt: new Date().toISOString(), text: item }
 			: item;
-		const text = String(instruction.text ?? "").trim();
+		// AC-33 (SCENARIO-067): the note text is finalized here — apply the
+		// head+tail byte cap at PERSIST time so every later consumer (agent prompt
+		// injection, resume) can only ever see the bounded form.
+		const text = capUserNoteBytes(String(instruction.text ?? "").trim());
 		const images = instruction.images ?? [];
 		if (!text && images.length === 0) continue;
 		const persisted = images.map((image, index) => persistImage(specDir, instruction.id, image, index));

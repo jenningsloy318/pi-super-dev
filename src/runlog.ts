@@ -13,11 +13,17 @@
  * (gen_ai.operation.name / gen_ai.agent.name).
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 export const RUN_LOG_VERSION = 1;
 export const RUN_LOG_FILENAME = "events.jsonl";
+
+/** D-5 (NFR-6): uniform payload bound — the serialized event may never exceed
+ *  this many bytes. The bound lives at the single append choke point, so it
+ *  covers EVERY RunEventInput emitter by construction (gate.checked's own
+ *  tighter bounds stay as-is; only unbounded shapes ever hit this). */
+export const MAX_RUN_EVENT_BYTES = 64 * 1024;
 
 // ─── Event type registry ────────────────────────────────────────────────────
 
@@ -129,7 +135,34 @@ function tailProbe(path: string): { lastSeq: number; endsClean: boolean } {
  * BOTH would be lost. NEVER throws; a failed append (unwritable dir) is a
  * silent no-op exactly like auditAppend: the ledger must never kill the run
  * it is observing.
+ *
+ * D-5 (NFR-6): lastSeq is cached in memory PER SPEC DIR — the O(file) tail
+ * probe runs only on the FIRST append after process start; every subsequent
+ * append resolves seq from memory (an O(n²) re-read per event was quadratic
+ * over retry-heavy runs). Cleanliness of the file's last byte is still checked
+ * in O(1) on every append so a torn line written by a killed PRIOR append is
+ * healed exactly as before.
  */
+const seqCache = new Map<string, number>();
+
+/** O(1) cleanliness check: does the file's last byte end a line? (A killed
+ *  append leaves no trailing \n — the next append must heal the boundary.) */
+function fileEndsClean(path: string): boolean {
+	let fd: number | undefined;
+	try {
+		fd = openSync(path, "r");
+		const len = fstatSync(fd).size;
+		if (len === 0) return true;
+		const buf = Buffer.alloc(1);
+		readSync(fd, buf, 0, 1, len - 1);
+		return buf[0] === 0x0a;
+	} catch {
+		return true;
+	} finally {
+		if (fd !== undefined) { try { closeSync(fd); } catch { /* best-effort */ } }
+	}
+}
+
 export function appendRunEvent(specDir: string | undefined, evt: RunEventInput): number | null {
 	if (!specDir) return null;
 	try {
@@ -137,7 +170,10 @@ export function appendRunEvent(specDir: string | undefined, evt: RunEventInput):
 		if (!existsSync(path)) {
 			mkdirSync(isAbsolute(specDir) ? specDir : ".", { recursive: true });
 		}
-		const { lastSeq, endsClean } = tailProbe(path);
+		const cachedSeq = seqCache.get(path);
+		const { lastSeq, endsClean } = cachedSeq !== undefined
+			? { lastSeq: cachedSeq, endsClean: fileEndsClean(path) }
+			: tailProbe(path);
 		const full: RunEvent = {
 			seq: lastSeq + 1,
 			time: new Date().toISOString(),
@@ -147,9 +183,21 @@ export function appendRunEvent(specDir: string | undefined, evt: RunEventInput):
 			type: evt.type,
 			data: evt.data ?? {},
 		};
-		appendFileSync(path, (endsClean ? "" : "\n") + JSON.stringify(full) + "\n");
+		let line = JSON.stringify(full);
+		if (line.length > MAX_RUN_EVENT_BYTES) {
+			// D-5 (NFR-6): uniform payload bound — keep the fold-critical envelope
+			// (seq/time/runId/stage/agent/type) and swap the oversized data for a
+			// bounded marker so the line stays valid, parseable JSON.
+			line = JSON.stringify({ ...full, data: { dataTruncated: true, originalBytes: line.length } });
+			if (line.length > MAX_RUN_EVENT_BYTES) line = line.slice(0, MAX_RUN_EVENT_BYTES); // pathological envelope — never write an unbounded line
+		}
+		appendFileSync(path, (endsClean ? "" : "\n") + line + "\n");
+		seqCache.set(path, full.seq);
 		return full.seq;
 	} catch {
+		// A failed append may have torn the file — drop the cached seq so the
+		// NEXT append re-probes from disk instead of trusting stale memory.
+		try { if (specDir) seqCache.delete(eventsPath(specDir)); } catch { /* never throws */ }
 		return null;
 	}
 }

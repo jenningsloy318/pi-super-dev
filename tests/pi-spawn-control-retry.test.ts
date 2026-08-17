@@ -23,16 +23,20 @@ const harness = vi.hoisted(() => {
 vi.mock("node:child_process", () => ({
 	spawn: vi.fn((command: string, args: string[], opts: { cwd?: string } = {}) => {
 		harness.state.calls.push({ command, args, cwd: opts.cwd });
+		// Phase 6 / AC-12: runPi now calls setEncoding("utf8") on both child
+		// streams — the fake child carries real PassThrough streams (same shape
+		// as a spawned pipe) instead of bare EventEmitters.
+		const { PassThrough } = require("node:stream") as typeof import("node:stream");
 		const child = new EventEmitter() as EventEmitter & {
-			stdout: EventEmitter;
-			stderr: EventEmitter;
+			stdout: import("node:stream").PassThrough;
+			stderr: import("node:stream").PassThrough;
 			kill: ReturnType<typeof vi.fn>;
 		};
-		child.stdout = new EventEmitter();
-		child.stderr = new EventEmitter();
+		child.stdout = new PassThrough();
+		child.stderr = new PassThrough();
 		child.kill = vi.fn();
 		queueMicrotask(() => {
-			child.stdout.emit("data", Buffer.from(harness.state.outputs.shift() ?? ""));
+			child.stdout.write(Buffer.from(harness.state.outputs.shift() ?? ""));
 			child.emit("close", 0);
 		});
 		return child;

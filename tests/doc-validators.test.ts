@@ -5,7 +5,7 @@
  * 26-scenario doc failed the gate because the control object was misshapen.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -176,7 +176,9 @@ describe("traceability validators", () => {
 		const goodControl = {
 			acceptanceCriteriaRefs: ["AC-01", "AC-02"],
 			scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
-			phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
+			// AC-11 audit: a scenario-mapped phase now needs a test deliverable
+			// for this gate-clean fixture.
+			phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"], deliverables: { requireScenarios: ["SCENARIO-001", "SCENARIO-002"] } }],
 			tasks: [{ phase: "Implementation", description: "build it", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
 		};
 		expect(specTraceabilityErrors(bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]), specDoc(["SCENARIO-001", "SCENARIO-002"]), goodControl, requirementsDoc(["AC-01", "AC-02"]))).toEqual([]);
@@ -190,6 +192,31 @@ describe("traceability validators", () => {
 		expect(bad.some((e) => e.includes("SCENARIO-099"))).toBe(true);
 		expect(bad.some((e) => e.includes("AC-02"))).toBe(true);
 		expect(bad.some((e) => e.includes("unknown phase"))).toBe(true);
+	});
+	// ── AC-11 (SCENARIO-025): the deliverable guard is wired into the gate ──
+	it("AC-11 (SCENARIO-025): specTraceabilityErrors flags a scenario-mapped phase without a test deliverable", () => {
+		const specControl = {
+			acceptanceCriteriaRefs: ["AC-01", "AC-02"],
+			scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
+			phases: [{ name: "Phase 1" }],
+			tasks: [{ phase: "Phase 1", description: "build it", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
+		};
+		const errors = specTraceabilityErrors(
+			bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]),
+			specDoc(["SCENARIO-001", "SCENARIO-002"]),
+			specControl,
+			requirementsDoc(["AC-01", "AC-02"]),
+		);
+		expect(errors.some((e) => e.includes("phase \"Phase 1\" maps 2 BDD scenario(s) but declares no test deliverable"))).toBe(true);
+		// the guard is appended AFTER the phase-independence errors — an
+		// independently-fine phase with deliverables declared stays clean
+		const withDeliverables = { ...specControl, phases: [{ name: "Phase 1", deliverables: { requireScenarios: ["SCENARIO-001", "SCENARIO-002"] } }] };
+		expect(specTraceabilityErrors(
+			bddDoc([{ id: "001", ac: "AC-01" }, { id: "002", ac: "AC-02" }]),
+			specDoc(["SCENARIO-001", "SCENARIO-002"]),
+			withDeliverables,
+			requirementsDoc(["AC-01", "AC-02"]),
+		)).toEqual([]);
 	});
 });
 
@@ -299,6 +326,17 @@ describe("coercion", () => {
 		expect(isApprovedVerdict("Changes Requested")).toBe(false);
 		expect(isApprovedVerdict("Rejected")).toBe(false);
 		expect(isApprovedVerdict("CONTEST")).toBe(false);
+	});
+	// ── AC-28 (SCENARIO-057/058): negated approvals never classify as approvals ──
+	it("AC-28 (SCENARIO-057): isApprovedVerdict rejects negated approval verdicts (guard before the approve-family match)", () => {
+		for (const v of ["not approved", "does not pass", "not passing", "approved: no", "NOT APPROVED", "Does Not Pass"]) {
+			expect(isApprovedVerdict(v), v).toBe(false);
+		}
+	});
+	it("AC-28 (SCENARIO-058): isApprovedVerdict keeps the approve family approving", () => {
+		for (const v of ["Approved", "Approved with Comments", "APPROVED WITH REVISIONS"]) {
+			expect(isApprovedVerdict(v), v).toBe(true);
+		}
 	});
 });
 
@@ -414,7 +452,8 @@ describe("gates validate real doc content", () => {
 					specificationPath: `${specDir}04-specification.md`,
 					phaseCount: 1,
 					acceptanceCriteriaRefs: ["AC-01", "AC-02"],
-					phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
+					// AC-11 audit: scenario-mapped phases need a test deliverable to stay green.
+					phases: [{ name: "Implementation", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"], deliverables: { requireScenarios: ["SCENARIO-001", "SCENARIO-002"] } }],
 					tasks: [{ phase: "Implementation", description: "build it", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] }],
 					scenarioRefs: ["SCENARIO-001", "SCENARIO-002"],
 				},
@@ -467,6 +506,52 @@ describe("readSpecDoc", () => {
 		// Nothing matches
 		expect(readSpecDoc(specDir, undefined, "*-nope.md")).toBeNull();
 	});
+	// ── AC-16 (SCENARIO-035/036): control-supplied paths resolve against the
+	// spec dir — never the process CWD — and anything outside it is ignored ──
+	it("AC-16 (SCENARIO-035): a docPath OUTSIDE the spec dir is ignored (one warn) and the globbed doc is returned", () => {
+		const specDir = `${dir}/spec/`;
+		mkdirSync(specDir);
+		writeFileSync(`${specDir}24-specification.md`, "GLOBBED-CONTENT-035");
+		writeFileSync(`${dir}/outside-spec.md`, "OUTSIDE-CONTENT-035"); // exists, but outside specDir
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const doc = readSpecDoc(specDir, { docPath: `${dir}/outside-spec.md` }, "*-specification.md");
+			expect(doc?.path).toBe(`${specDir}24-specification.md`);
+			expect(doc?.content).toBe("GLOBBED-CONTENT-035");
+			const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("[doc-validators] readSpecDoc: ignoring"));
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toContain("outside-spec.md");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+	it("AC-16 (SCENARIO-036): a RELATIVE docPath resolves against specDir, never the process CWD", () => {
+		const specDir = `${dir}/spec/`;
+		const cwd = `${dir}/fake-cwd/`;
+		mkdirSync(`${specDir}notes/`, { recursive: true });
+		mkdirSync(`${cwd}notes/`, { recursive: true });
+		writeFileSync(`${specDir}notes/spec.md`, "SPEC-DIR-CONTENT-036");
+		writeFileSync(`${cwd}notes/spec.md`, "CWD-CONTENT-036");
+		const oldCwd = process.cwd();
+		process.chdir(cwd);
+		try {
+			const doc = readSpecDoc(specDir, { docPath: "notes/spec.md" }, "*-specification.md");
+			expect(doc?.content).toBe("SPEC-DIR-CONTENT-036");
+			expect(doc?.path.endsWith(join("spec", "notes", "spec.md"))).toBe(true);
+		} finally {
+			process.chdir(oldCwd);
+		}
+	});
+	it("AC-16: an empty specDir never reads control paths (degenerate callers fall to null)", () => {
+		writeFileSync(`${dir}/outside-spec.md`, "OUTSIDE-CONTENT");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(readSpecDoc("", { docPath: `${dir}/outside-spec.md` }, "*.md")).toBeNull();
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
 });
 
 describe("normalizePhases (crash guard for Stage 9)", () => {
@@ -482,7 +567,21 @@ describe("normalizePhases (crash guard for Stage 9)", () => {
 		expect(normalizePhases("Phase 1: setup\nPhase 2: impl\nPhase 3: tests")).toEqual([
 			{ name: "Phase 1: setup" }, { name: "Phase 2: impl" }, { name: "Phase 3: tests" },
 		]);
-		expect(normalizePhases("a, b; c")).toEqual([{ name: "a" }, { name: "b" }, { name: "c" }]);
+		// AC-19 (SCENARIO-042): the comma left the split set — only newlines /
+		// semicolons / bullets separate phases, so "a, b; c" is TWO phases
+		// ("a, b" on one side of the semicolon, "c" on the other).
+		expect(normalizePhases("a, b; c")).toEqual([{ name: "a, b" }, { name: "c" }]);
+	});
+	// ── AC-19 (SCENARIO-041/042): coercion fidelity — fields survive ──
+	it("AC-19 (SCENARIO-041): a single phase OBJECT round-trips every field (scenarioRefs + deliverables survive)", () => {
+		expect(normalizePhases({ name: " Phase 1 ", description: "d", scenarioRefs: ["SCENARIO-001"], deliverables: { requireTests: true } })).toEqual([
+			{ name: "Phase 1", description: "d", scenarioRefs: ["SCENARIO-001"], deliverables: { requireTests: true } },
+		]);
+	});
+	it("AC-19 (SCENARIO-042): a comma-separated phase string yields ONE phase (comma is not a separator)", () => {
+		const out = normalizePhases("Phase A, Phase B");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.name).toBe("Phase A, Phase B");
 	});
 	it("returns [] for null/undefined/number/object (never throws)", () => {
 		expect(normalizePhases(undefined)).toEqual([]);
@@ -494,7 +593,7 @@ describe("normalizePhases (crash guard for Stage 9)", () => {
 });
 
 describe("gate-spec-trace phases handling (F6 tolerant coercion)", () => {
-	it("coerces a phases STRING (the Stage 9 crash case) instead of failing — normalizePhases parses it and the gate notes the tolerant read", async () => {
+	it("coerces a phases STRING (the Stage 9 crash case) — no structural error, only the AC-11 deliverable contract fires (D9 fixture flip citing AC-11)", async () => {
 		const { runHelper } = await import("../src/helpers.ts");
 		const specDir = `${dir}/docs/specifications/05-x/`;
 		mkdirSync(specDir, { recursive: true });
@@ -506,10 +605,32 @@ describe("gate-spec-trace phases handling (F6 tolerant coercion)", () => {
 		const setup = mkSetup(specDir);
 		const r = await runHelper({ name: "gate-spec-trace", sources: { "write-spec": { specificationPath: `${specDir}04-specification.md`, phaseCount: 3, acceptanceCriteriaRefs: ["AC-01"], scenarioRefs: ["SCENARIO-001"], phases: "Implementation", tasks: [{ phase: "Implementation", description: "build it", scenarioRefs: ["SCENARIO-001"] }] }, setup } });
 		// F6 (run 2026-08-17T06-39-58-800Z: 5 rounds lost to this exact shape;
-		// adversarial F6-HINT-DEAD-CODE revision): a coercible phases value PASSES
-		// the trace gate OUTRIGHT — zero rounds lost, full green. The
-		// implementation stage normalizes the same way on read, so downstream is
-		// safe. (phases here is a STRING naming one phase — the Stage 9 crash shape.)
+		// adversarial F6-HINT-DEAD-CODE revision): a coercible phases value never
+		// produces the STRUCTURAL failure — normalizePhases reconstructs the array
+		// and the implementation stage normalizes the same way on read, so no
+		// "spec.phases must be a non-empty array" error is emitted. (phases here is
+		// a STRING naming one phase — the Stage 9 crash shape.)
+		// AC-11 (SCENARIO-025) flip: a string-coerced phase cannot carry
+		// deliverables, so the ONE remaining error is the deliverable contract —
+		// the writer repairs it by emitting proper phase objects next round.
+		expect((r.value.errors as string[]).some((e) => /spec\.phases must be a non-empty array/.test(e))).toBe(false);
+		expect((r.value.errors as string[]).some((e) => e.includes('phase "Implementation" maps 1 BDD scenario(s) but declares no test deliverable'))).toBe(true);
+		expect(r.value.pass).toBe(false);
+	});
+	it("a coercible single-OBJECT phase WITH deliverables passes the trace gate outright (F6 intent after AC-11)", async () => {
+		const { runHelper } = await import("../src/helpers.ts");
+		const specDir = `${dir}/docs/specifications/05-x2/`;
+		mkdirSync(specDir, { recursive: true });
+		writeFileSync(`${specDir}01-requirements.md`, requirementsDoc(["AC-01"]));
+		writeFileSync(`${specDir}02-bdd-scenarios.md`, bddDoc([{ id: "001", ac: "AC-01" }]));
+		writeFileSync(`${specDir}04-specification.md`, specDoc(["SCENARIO-001"], ["AC-01"]));
+		writeFileSync(`${specDir}05-implementation-plan.md`, "## Phase 1: Implementation\nDo it.");
+		writeFileSync(`${specDir}06-task-list.md`, "- [ ] **Implementation**: build it");
+		const setup = mkSetup(specDir);
+		const r = await runHelper({ name: "gate-spec-trace", sources: { "write-spec": { specificationPath: `${specDir}04-specification.md`, phaseCount: 3, acceptanceCriteriaRefs: ["AC-01"], scenarioRefs: ["SCENARIO-001"], phases: { name: "Implementation", description: "build it", deliverables: { requireScenarios: ["SCENARIO-001"] } }, tasks: [{ phase: "Implementation", description: "build it", scenarioRefs: ["SCENARIO-001"] }] }, setup } });
+		// The single-object branch (b) spreads the original object, so the
+		// deliverables survive coercion (AC-19) and the phase passes the AC-11
+		// guard — a coercible value still costs ZERO rounds.
 		expect(r.value.pass).toBe(true);
 		expect(r.value.errors).toEqual([]);
 	});
@@ -537,17 +658,30 @@ describe("stripNonNormativeSections (F5/R5)", () => {
 		expect(stripped).toContain("Covers SCENARIO-001.");
 		expect(stripped).not.toContain("AC-24");
 	});
+	// M14 pin flip (OQ-2, SCENARIO-053): the heading vocabulary widened to
+	// H1–H4 + WORD-LED qualifiers from a fixed set ("for Phase 2", "Round 3", …)
+	// — "## Evidence Notes for Phase 2" is now non-normative and strips; the
+	// lookalike "## Convergence Criteria" still never strips (the over-strip
+	// guard: "Criteria" is not in the qualifier vocabulary).
 	it("accepts decorated headings but does NOT strip lookalike normative sections", () => {
-		const doc = "## Convergence Criteria\nSCENARIO-005 must hold.\n\n## Prior Review Responses (Round 3)\nremoved AC-99\n\n## Evidence Notes — Phase 2\nAC-88 was purged\n\n## Evidence Notes for Phase 2\nAC-77 kept (trailing WORDS are not decoration — closed-set rule keeps this normative)\n";
+		const doc = "## Convergence Criteria\nSCENARIO-005 must hold.\n\n## Prior Review Responses (Round 3)\nremoved AC-99\n\n## Evidence Notes — Phase 2\nAC-88 was purged\n\n## Evidence Notes for Phase 2\nAC-77 also stripped (word-led qualifier \"for\" is in the M14 vocabulary)\n";
 		const stripped = stripNonNormativeSections(doc);
 		// normative lookalike survives
 		expect(stripped).toContain("SCENARIO-005 must hold.");
 		// parenthetical/dash decorations of the closed set still strip
 		expect(stripped).not.toContain("AC-99");
 		expect(stripped).not.toContain("AC-88");
-		// trailing prose words do NOT match the closed set — safer direction
-		// (over-stripping normative content would hide real coverage)
-		expect(stripped).toContain("AC-77 kept");
+		// M14 (SCENARIO-052): word-led qualifiers from the fixed vocabulary now
+		// strip too — the old \"trailing prose words\" pin flipped per OQ-2.
+		expect(stripped).not.toContain("AC-77");
+	});
+	it("SCENARIO-053: \"## Convergence Criteria\" never strips (over-strip guard pin)", () => {
+		const doc = "## Convergence Criteria\n- AC-01 must hold.\n- SCENARIO-005 verified.\n\n## Evidence Notes\nAC-88 purged here\n";
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).toContain("## Convergence Criteria");
+		expect(stripped).toContain("AC-01 must hold.");
+		expect(stripped).toContain("SCENARIO-005 verified.");
+		expect(stripped).not.toContain("AC-88");
 	});
 	it("keeps deeper headings inside a stripped section skipped, closes at the same level", () => {
 		const doc = "## Evidence Notes\n### Details\nAC-77 hidden here\n\n## Next Section\nAC-01 visible.\n";
@@ -560,6 +694,106 @@ describe("stripNonNormativeSections (F5/R5)", () => {
 		const stripped = stripNonNormativeSections(doc);
 		expect(stripped).not.toContain("AC-66");
 		expect(stripped).toContain("AC-02 visible.");
+	});
+	// ── AC-13 (SCENARIO-028/029/030): CommonMark fence pairing — a closing
+	// fence must use the SAME character at ≥ the opening length ──
+	it("AC-13 (SCENARIO-028): a ~~~ outer fence survives an inner ``` fence (char mismatch never closes)", () => {
+		const doc = [
+			"## Evidence Notes",
+			"~~~",
+			"```js",
+			"## Fake Close Attempt",
+			"INNER-TOKEN-028 and LEAK-TOKEN-028 sit inside the ~~~ fence",
+			"```",
+			"~~~",
+			"",
+			"## Next Section",
+			"AC-01 visible.",
+		].join("\n");
+		const stripped = stripNonNormativeSections(doc);
+		// The inner ``` (wrong char) must NOT close the outer ~~~ fence — so the
+		// fake-close heading + payload stay fenced/skipped and never leak.
+		expect(stripped).not.toContain("Fake Close Attempt");
+		expect(stripped).not.toContain("LEAK-TOKEN-028");
+		expect(stripped).not.toContain("INNER-TOKEN-028");
+		expect(stripped).toContain("## Next Section");
+		expect(stripped).toContain("AC-01 visible.");
+	});
+	it("AC-13 (SCENARIO-029): a ```` outer fence beats an inner ``` fence (shorter same-char run never closes)", () => {
+		const doc = [
+			"## Prior Review Responses",
+			"````",
+			"```md",
+			"## Fake Close Attempt",
+			"INNER-TOKEN-029: a shorter ``` run must not close the 4-fence",
+			"```",
+			"still inside the 4-backtick fence (LEAK-TOKEN-029)",
+			"````",
+			"",
+			"## Next Section",
+			"AC-01 visible.",
+		].join("\n");
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).not.toContain("Fake Close Attempt");
+		expect(stripped).not.toContain("INNER-TOKEN-029");
+		expect(stripped).not.toContain("LEAK-TOKEN-029");
+		expect(stripped).toContain("## Next Section");
+		expect(stripped).toContain("AC-01 visible.");
+	});
+	it("AC-13 (SCENARIO-030): an unclosed ``` before a response heading implicitly closes at the non-normative heading and still strips — no fenced payload leaks", () => {
+		const doc = [
+			"## Evidence Notes",
+			"```",
+			"FENCED-TOKEN-030 lives in the never-closed fence",
+			"## Prior Review Responses",
+			"AC-99 removed as out of range",
+			"",
+			"## Next Section",
+			"AC-01 visible.",
+		].join("\n");
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).not.toContain("FENCED-TOKEN-030");
+		expect(stripped).not.toContain("AC-99");
+		expect(stripped).toContain("## Next Section");
+		expect(stripped).toContain("AC-01 visible.");
+	});
+	// ── AC-25 (SCENARIO-052): heading vocabulary widens to H1–H4 ──
+	it("AC-25 (SCENARIO-052): decorated non-normative headings at levels 1–4 all strip (word-led qualifiers accepted)", () => {
+		const doc = [
+			"# Evidence Notes",
+			"AC-H1-052 hidden",
+			"# Normative Keeper",
+			"AC-00 visible.",
+			"## Evidence Notes for Phase 2",
+			"AC-H2Q-052 hidden",
+			"### Prior Review Responses",
+			"AC-H3-052 hidden",
+			"#### Prior Review Responses Round 3",
+			"AC-H4-052 hidden",
+			"## Final Section",
+			"AC-01 visible here.",
+		].join("\n");
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).not.toContain("AC-H1-052");
+		expect(stripped).not.toContain("AC-H2Q-052");
+		expect(stripped).not.toContain("AC-H3-052");
+		expect(stripped).not.toContain("AC-H4-052");
+		expect(stripped).toContain("AC-00 visible.");
+		expect(stripped).toContain("AC-01 visible here.");
+	});
+	it("AC-13: fenced content inside a KEPT section is preserved verbatim", () => {
+		const doc = [
+			"## Real Section",
+			"```js",
+			"KEPT-FENCED-TOKEN stays",
+			"```",
+			"",
+			"## Evidence Notes",
+			"AC-88 purged",
+		].join("\n");
+		const stripped = stripNonNormativeSections(doc);
+		expect(stripped).toContain("KEPT-FENCED-TOKEN stays");
+		expect(stripped).not.toContain("AC-88");
 	});
 });
 

@@ -82,7 +82,9 @@ vi.mock("../src/render/dashboard.ts", () => ({
 
 vi.mock("../src/render/super-dev-dir.ts", () => ({
 	ensureSuperDevDirs: vi.fn(() => {}),
-	startRun: vi.fn(() => {}),
+	startRun: vi.fn(() => "runs/test-run"),
+	// AC-29 (Phase 6): run-dir path-for helper threaded from the captured dir.
+	runLogPathFor: vi.fn(() => ""),
 	getRunLogPath: vi.fn(() => ""),
 	getConfig: vi.fn(() => ({})),
 }));

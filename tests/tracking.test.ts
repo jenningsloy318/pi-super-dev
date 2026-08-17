@@ -508,6 +508,70 @@ describe("ChangeTracker — getRecord returns the last end-record", () => {
 // dedupePreservingOrder export contract (Phase 1 reuse deliverable).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// AC-15 / D-1 (spec-28) — like-for-like path comparison. The claim and the git
+// output must meet on the same ground: Windows single-backslash separators in
+// a claim normalize to git's forward slashes, and non-ASCII git output must be
+// RAW (core.quotepath=false) so it matches a raw non-ASCII claim byte-for-byte.
+// ---------------------------------------------------------------------------
+
+describe("normalizeTrackerPath — single-literal-backslash rule (SCENARIO-033 / AC-15)", () => {
+	it("normalizes a single-backslash Windows claim path to POSIX separators so it matches git", () => {
+		git({ head: "base", diff: "A\tsrc/team/types.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "phase-01");
+		// `src\team\types.ts` — SINGLE literal backslashes (the LLM artifact shape).
+		const rec = t.end("phase", "phase-01", {
+			filesCreated: ["src\\team\\types.ts"],
+			filesModified: [],
+			filesDeleted: [],
+		});
+		expect(rec!.crossCheck).not.toBeNull();
+		expect(rec!.crossCheck!.claimedNotChanged).toEqual([]);
+		expect(rec!.verdict).toBe("ok");
+	});
+
+	it("still normalizes double-backslash inputs (superset — existing artifacts keep matching)", () => {
+		git({ head: "base", diff: "A\tsrc/win/mod.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "phase-01");
+		const rec = t.end("phase", "phase-01", {
+			filesCreated: ["src\\\\win\\\\mod.ts"],
+			filesModified: [],
+			filesDeleted: [],
+		});
+		expect(rec!.crossCheck!.claimedNotChanged).toEqual([]);
+		expect(rec!.verdict).toBe("ok");
+	});
+
+	it("a single-backslash claim against a DIFFERENT git path still lands in claimedNotChanged (no over-match)", () => {
+		git({ head: "base", diff: "A\tsrc/other.ts" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("phase", "phase-01");
+		const rec = t.end("phase", "phase-01", {
+			filesCreated: ["src\\team\\types.ts"],
+			filesModified: [],
+			filesDeleted: [],
+		});
+		expect(rec!.crossCheck!.claimedNotChanged).toEqual(["src\\team\\types.ts"]);
+		expect(rec!.verdict).toBe("claimed-miss");
+	});
+});
+
+describe("gitSpawn — forces core.quotepath=false for like-for-like non-ASCII paths (SCENARIO-034 / AC-15)", () => {
+	it("prefixes every git invocation with `-c core.quotepath=false -C <worktree>`", () => {
+		git({ head: "base", diff: "A\tsrc/a.ts", porcelain: "" });
+		const t = new ChangeTracker(specDir, WORKTREE);
+		t.begin("stage", "s1");
+		t.end("stage", "s1");
+		expect(spawn.mock.calls.length).toBeGreaterThan(0);
+		for (const call of spawn.mock.calls) {
+			const args = call[1] as string[];
+			expect(args.slice(0, 4), `argv=${JSON.stringify(args)}`).toEqual(["-c", "core.quotepath=false", "-C", WORKTREE]);
+		}
+	});
+});
+
 describe("dedupePreservingOrder is exported from build-runner.ts (Phase 1 reuse)", () => {
 	it("is an exported function preserving first-seen order", () => {
 		expect(typeof dedupePreservingOrder).toBe("function");

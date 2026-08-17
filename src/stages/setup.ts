@@ -26,7 +26,7 @@ export const setupStage: Stage = {
 				slug = await summarizeSlug(ctx.task, cwd, { signal: ctx.signal });
 			} catch { /* fallback below */ }
 		}
-		const setup = runSetup(ctx.task, { cwd: ctx.options.cwd, skipWorktree: ctx.options.skipWorktree, slug, resumeSpecIdentifier: resumeId });
+		const setup = runSetup(ctx.task, { cwd: ctx.options.cwd, skipWorktree: ctx.options.skipWorktree, slug, resumeSpecIdentifier: resumeId, log: (m) => ctx.log(m) });
 		if (setup.reusedTrack) {
 			let anchorPreview = "";
 			try {

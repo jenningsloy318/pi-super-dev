@@ -10,11 +10,12 @@
  * (spec → specification / implementation-plan / task-list) must each keep their
  * own stable path across re-runs.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, readdirSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderAndWrite, reserveStageDocs } from "../src/render/render.ts";
+import { readSpecDoc } from "../src/doc-validators.ts";
 import type { SetupControl } from "../src/types.ts";
 
 let dir: string;
@@ -163,5 +164,26 @@ describe("renderAndWrite doc-path idempotency (retry re-uses the same NN-<slug>.
 		expect(plan).toContain("deliverables.requireTests");
 		expect(plan).toContain("parses supa csv");
 		expect(plan).toContain("ParseSupaCSV");
+	});
+});
+
+// ── AC-16 (SCENARIO-035, D7 audit): control docPaths resolve against the spec
+// dir — a path outside it is ignored in favor of the spec-dir glob ──
+describe("readSpecDoc spec-dir containment (AC-16)", () => {
+	it("an existing docPath outside the spec dir is ignored — the globbed doc inside the spec dir is returned, with exactly one warn", () => {
+		const specDir = join(dir, "spec");
+		mkdirSync(specDir, { recursive: true });
+		writeFileSync(join(specDir, "02-bdd-scenarios.md"), "INSIDE-CONTENT");
+		writeFileSync(join(dir, "02-bdd-scenarios.md"), "OUTSIDE-CONTENT");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const doc = readSpecDoc(specDir, { docPath: join(dir, "02-bdd-scenarios.md") }, "*-bdd-scenarios.md");
+			expect(doc?.content).toBe("INSIDE-CONTENT");
+			expect(doc?.path.startsWith(specDir)).toBe(true);
+			const ignoring = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("[doc-validators] readSpecDoc: ignoring"));
+			expect(ignoring).toHaveLength(1);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });

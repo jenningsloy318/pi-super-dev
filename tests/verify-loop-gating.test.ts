@@ -498,7 +498,7 @@ describe("verificationConvergenceNode", () => {
 				if (adversarialCalls === 1) {
 					return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "REJECT", summary: "raw URL leak", findings: [{ id: "skeptic-auth-url-secret-logging", severity: "high", title: "Auth route logging can disclose URL-carried secrets", detail: "Raw auth URL is logged before route handling.", file: "auth-service/src/api/v1/auth/auth.ts" }] } };
 				}
-				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "CONTEST", summary: "prior issue fixed", findings: [{ id: "skeptic-auth-url-secret-logging", severity: "high", title: "Prior finding verified: auth-route URL-carried secrets are no longer logged", detail: "Verified response to prior rejection: the raw auth URL logging issue has been addressed.", file: "auth-service/src/api/v1/auth/auth.ts" }] } };
+				return { text: "", control: { title: "Adv", date: "2026-08-07", verdict: "CONTEST", summary: "prior issue fixed", findings: [{ id: "skeptic-auth-url-secret-logging", severity: "high", status: "verified", title: "Prior finding verified: auth-route URL-carried secrets are no longer logged", detail: "Verified response to prior rejection: the raw auth URL logging issue has been addressed.", file: "auth-service/src/api/v1/auth/auth.ts" }] } };
 			}
 			if (call.agent === "implementer") {
 				fixCalls += 1;

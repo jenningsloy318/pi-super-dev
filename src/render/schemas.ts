@@ -17,7 +17,12 @@ const Priority = Type.String({ description: "priority: high, medium, low, critic
 export const BddScenario = Type.Object({
 	id: Type.String({ description: "zero-padded, e.g. '001'" }),
 	title: Type.String(),
-	acRef: Type.String({ description: "e.g. 'AC-02'" }),
+	// AC-27 (SCENARIO-055/056): gate-parseable AC id — the deterministic gates'
+	// extractor reads /\bAC-\d+\b/, so a render-time pattern forces the writer
+	// to emit ids the gates can actually trace (2+ digits, zero-padded).
+	// (typebox@1.x has no Type.Pattern builder; the `pattern` option emits the
+	// same JSON-schema constraint and Value.Errors enforces it.)
+	acRef: Type.String({ pattern: "^AC-\\d{2,}$", description: "gate-parseable AC id, e.g. 'AC-01'" }),
 	priority: Priority,
 	given: Type.String(),
 	when: Type.String(),
@@ -48,7 +53,8 @@ export type BddData = Static<typeof BddData>;
 // ─── Requirements ────────────────────────────────────────────────────────────
 
 export const AcceptanceCriterion = Type.Object({
-	id: Type.String({ description: "e.g. 'AC-01'" }),
+	// AC-27 (SCENARIO-055/056): gate-parseable AC id (see BddScenario.acRef).
+	id: Type.String({ pattern: "^AC-\\d{2,}$", description: "gate-parseable AC id, e.g. 'AC-01'" }),
 	statement: Type.String(),
 });
 

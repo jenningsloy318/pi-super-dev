@@ -7,6 +7,9 @@
  * next same-role attempt.
  */
 
+import { fenceUntrusted } from "./fence.ts";
+
+
 export interface RetryFeedback {
 	stage: string;
 	phase?: string;
@@ -53,10 +56,13 @@ export function renderRetryFeedbackItem(item: RetryFeedbackInput): string {
 export function renderRetryFeedbackBlock(items: RetryFeedbackInput[], heading = "Previous attempt rejected — fix these"): string {
 	const filtered = items.filter((item) => typeof item === "string" ? item.trim().length > 0 : true);
 	if (filtered.length === 0) return "";
+	// AC-31 (SCENARIO-063): the item bodies carry LLM-authored observed/missing
+	// text — fence the rendered list (the heading and the harness instruction
+	// line stay outside).
 	return [
 		`## ${heading}`,
 		"The harness rejected the prior attempt using external evidence. Address every item before calling structured_output.",
-		filtered.map(renderRetryFeedbackItem).join("\n"),
+		fenceUntrusted(filtered.map(renderRetryFeedbackItem).join("\n"), "prior-attempt feedback"),
 	].join("\n");
 }
 

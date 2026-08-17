@@ -21,12 +21,14 @@ import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { ensureSuperDevDirs, startRun, getRunLogPath, getConfig } from "./render/super-dev-dir.ts";
+import { ensureSuperDevDirs, startRun, runLogPathFor, getConfig } from "./render/super-dev-dir.ts";
 import { runReflectionAsync } from "./render/reflection.ts";
+import { updateStats, cleanupOldRuns } from "./render/cleanup.ts";
 import { writeEscalationReport } from "./render/escalation-report.ts";
 import { localTimestamp } from "./render/time.ts";
 import { runPipelineTask } from "./pipeline.ts";
-import { maxReplanRounds } from "./replan/replan.ts";
+import { maxReplanRounds, pendingHumanReplanRequests } from "./replan/replan.ts";
+import { releaseHeldRunLock } from "./setup.ts";
 import { appendRunEvent } from "./runlog.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
@@ -100,6 +102,12 @@ export interface ActiveRun {
 }
 
 let activeRun: ActiveRun | null = null;
+
+/** AC-29 (SCENARIO-059): exactly one super_dev run may be in flight at a time.
+ *  Set at doRun() entry, cleared in its finally. A second execute() while a
+ *  run is active is REFUSED — the active singleton and the module-global run
+ *  dir are never clobbered by a concurrent invocation. */
+let inFlight = false;
 
 /** Bound on queued mid-run inputs so a single specialist spawn cannot be
  *  token-bombed via a huge guidance prepend. Older entries are dropped first
@@ -658,15 +666,25 @@ export default function activate(pi: ExtensionAPI): void {
 				},
 			};
 			const doRun = async (runSignal: AbortSignal | undefined): Promise<ToolRunResult> => {
+				// AC-29 (SCENARIO-059): serialize runs — a second execute() while a run
+				// is in flight is refused OUTRIGHT (before the try, so the finally below
+				// never runs for a refused call and cannot null the ACTIVE run's
+				// singleton / run dir); it must never interleave a second pipeline.
+				if (inFlight) {
+					return { content: [{ type: "text", text: "a super-dev run is already active — wait for it to finish (or abort it) before starting another" }], isError: true, details: {} };
+				}
 			try {
+				inFlight = true;
 				// Set the run-state singleton on execute() entry via the exported setter
-				// (single write path). Guard overlapping runs: a non-null singleton here
-				// means a prior run never cleared its finally (reentrancy) — discard it.
-				if (activeRun != null) setActiveRun(null);
+				// (single write path). The inFlight guard above makes a stale singleton
+				// unreachable — runs never overlap, so the old reentrancy discard is gone.
 				setActiveRun(createActiveRun(ctx, stream));
 				ensureSuperDevDirs();
-				startRun();
-				liveRunLogPath = getRunLogPath();
+				// AC-29: the run dir is captured ONCE — every later write (live log,
+				// reflection, audit) resolves from THIS dir even if a later run starts
+				// while this run's async work is still in flight.
+				const runDir = startRun();
+				liveRunLogPath = runLogPathFor(runDir);
 				stream.sink.log(superDevRunMetadataLine());
 				for (const line of launchMetadataLines(task, process.cwd(), liveRunLogPath)) stream.sink.log(line);
 				persistLiveLog(true);
@@ -728,6 +746,12 @@ export default function activate(pi: ExtensionAPI): void {
 					replanRestarts++;
 					const marker = (summary.state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[]; newRequests?: number } | undefined;
 					try { stream.sink.log(`🔁 REPLAN restart ${replanRestarts}/${maxReplanRounds()} — ${marker?.owners?.join(", ") ?? "?"} revises; resuming spec ${summary.specIdentifier}`); } catch { /* best-effort */ }
+				// AC-20 (SCENARIO-044): the human-owned deferred rows ride along —
+				// surface them on resume so the user sees what awaits their decision.
+				try {
+					const humanPending = pendingHumanReplanRequests(summary.specDirectory);
+					if (humanPending.length > 0) stream.sink.log(`⏸ ${humanPending.length} deferred finding(s) awaiting human decision: ${humanPending.map((r) => r.title).join("; ")}`);
+				} catch { /* best-effort */ }
 					try { appendRunEvent(summary.specDirectory, { runId: summary.specIdentifier, type: "replan.resumed", data: { runId: summary.specIdentifier, requests: marker?.newRequests ?? 0 } }); } catch { /* best-effort */ }
 					summary = await runOnce(summary.specIdentifier);
 				}
@@ -737,15 +761,18 @@ export default function activate(pi: ExtensionAPI): void {
 				const summaryLines = formatSummary(summary, process.cwd());
 				finalizeLive(); // flush any pending live text into the transcript
 				// Preserve the FULL run log to disk (the live display is a rolling tail).
+				// AC-29: written under the run dir captured at start — never a newer run's.
 				let logPath = "";
 				try {
-					logPath = getRunLogPath();
+					logPath = runLogPathFor(runDir);
 					persistLiveLog(true);
 					writeFileSync(logPath, stream.diskLogText() + "\n");
 				} catch { /* best-effort; the live tail is the primary surface */ }
 				const escalationChoice = await handleStagnation(summary, ctx);
-				// Async reflection ("dreaming") — non-blocking, best-effort.
-				runReflectionAsync();
+				// Async reflection ("dreaming") — non-blocking, best-effort. AC-29: the
+				// ORIGINATING run dir is threaded so a late reflection never lands under
+				// a newer run's directory.
+				runReflectionAsync(runDir);
 				// Stages for the result's stage-progress section, from the live tracker.
 				const stages = dashboardOrder.map((id) => ({ id, ...(dashboardStages.get(id) ?? { label: id, status: "·" }) }));
 				// `content` is the text fallback (print/json/headless); in TUI, renderResult
@@ -763,9 +790,19 @@ export default function activate(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				throw new Error(`❌ super-dev pipeline failed: ${message}`);
 			} finally {
+				// AC-29: release the serialization guard FIRST so the next run may
+				// start as soon as this one is done.
+				inFlight = false;
+				// D-8: aggregate stats + run retention fire even without reflection
+				// (best-effort — never let bookkeeping break a finished run).
+				try { updateStats(); } catch { /* best-effort */ }
+				try { cleanupOldRuns(); } catch { /* best-effort */ }
 				// Discard the run-state singleton via the exported setter (single write
 				// path) so no queued run input leaks across runs.
 				setActiveRun(null);
+				// AC-30: belt-and-braces release of the spec-dir run lock (pipeline.ts
+				// owns the primary release; this covers direct callers).
+				try { releaseHeldRunLock(); } catch { /* best-effort */ }
 				// spec-11 AC-05 / SCENARIO-010: clear the per-run ChangeTracker singleton
 				// in the SAME finally that nulls activeRun, so no tracker (and its
 				// in-memory baselines/end-records) leaks across runs. The setup stage

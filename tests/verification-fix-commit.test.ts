@@ -30,17 +30,40 @@ function gitRepo(withIdentity = true): string {
 	return dir;
 }
 
+/** main checkout on `main` (one commit) + linked worktree on `feature/x` — the
+ *  super-dev geometry (D6): in the MAIN checkout `--git-dir` equals
+ *  `--git-common-dir`; in a linked worktree they differ. */
+function repoWithWorktree(withIdentity = true): { main: string; wt: string } {
+	const main = mkdtempSync(join(tmpdir(), "sd-fb-geo-"));
+	sh(main, "git init -b main");
+	if (withIdentity) sh(main, "git config user.email t@t && git config user.name t");
+	writeFileSync(join(main, "a.txt"), "base\n");
+	sh(main, "git add -A && git commit -m base");
+	sh(main, "git checkout -b feature/x && git commit --allow-empty -m feature && git checkout main");
+	const wt = join(tmpdir(), "sd-fb-wt-" + Math.random().toString(36).slice(2));
+	sh(main, `git worktree add ${wt} feature/x`);
+	return { main, wt };
+}
+
+const cleanupWorktree = (main: string, wt: string): void => {
+	rmSync(wt, { recursive: true, force: true });
+	sh(main, "git worktree prune");
+	rmSync(main, { recursive: true, force: true });
+};
+
 describe("commitWorktreeChanges (F-B deterministic commit)", () => {
+	// D6 (AC-10): these fixtures run in a real LINKED WORKTREE — the production
+	// geometry for `git add -A` staging (the main checkout is refused).
 	it("commits a tracked modification with the given subject", () => {
-		const dir = gitRepo();
+		const { main, wt } = repoWithWorktree();
 		try {
-			writeFileSync(join(dir, "a.txt"), "modified\n");
-			const r = commitWorktreeChanges(dir, "fix(verify): address review findings (round 1)");
+			writeFileSync(join(wt, "a.txt"), "modified\n");
+			const r = commitWorktreeChanges(wt, "fix(verify): address review findings (round 1)");
 			expect(r.committed).toBe(true);
 			expect(r.subject).toBe("fix(verify): address review findings (round 1)");
-			expect(sh(dir, "git status --porcelain").trim()).toBe("");
-			expect(sh(dir, "git log -1 --pretty=%s").trim()).toBe("fix(verify): address review findings (round 1)");
-		} finally { rmSync(dir, { recursive: true, force: true }); }
+			expect(sh(wt, "git status --porcelain").trim()).toBe("");
+			expect(sh(wt, "git log -1 --pretty=%s").trim()).toBe("fix(verify): address review findings (round 1)");
+		} finally { cleanupWorktree(main, wt); }
 	});
 
 	it("is a no-op (no error) on a clean worktree", () => {
@@ -54,13 +77,13 @@ describe("commitWorktreeChanges (F-B deterministic commit)", () => {
 	});
 
 	it("sweeps untracked files in (-A): pipeline work product must ship", () => {
-		const dir = gitRepo();
+		const { main, wt } = repoWithWorktree();
 		try {
-			writeFileSync(join(dir, "src-new.ts"), "export {};\n");
-			const r = commitWorktreeChanges(dir, "sweep");
+			writeFileSync(join(wt, "src-new.ts"), "export {};\n");
+			const r = commitWorktreeChanges(wt, "sweep");
 			expect(r.committed).toBe(true);
-			expect(sh(dir, "git ls-files").trim()).toContain("src-new.ts");
-		} finally { rmSync(dir, { recursive: true, force: true }); }
+			expect(sh(wt, "git ls-files").trim()).toContain("src-new.ts");
+		} finally { cleanupWorktree(main, wt); }
 	});
 
 	it("falls back to an explicit pipeline identity when no git user is configured", () => {
@@ -71,15 +94,15 @@ describe("commitWorktreeChanges (F-B deterministic commit)", () => {
 		const prevSystem = process.env.GIT_CONFIG_SYSTEM;
 		process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 		process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-		const dir = gitRepo(false); // no local identity
+		const { main, wt } = repoWithWorktree(false); // no local identity
 		try {
-			sh(dir, "git config user.useConfigOnly true");
-			writeFileSync(join(dir, "a.txt"), "modified\n");
-			const r = commitWorktreeChanges(dir, "identity fallback");
+			sh(wt, "git config user.useConfigOnly true");
+			writeFileSync(join(wt, "a.txt"), "modified\n");
+			const r = commitWorktreeChanges(wt, "identity fallback");
 			expect(r.committed).toBe(true);
-			expect(sh(dir, "git log -1 --pretty=%an").trim()).toBe("super-dev (pipeline)");
+			expect(sh(wt, "git log -1 --pretty=%an").trim()).toBe("super-dev (pipeline)");
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			cleanupWorktree(main, wt);
 			if (prevGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = prevGlobal;
 			if (prevSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM; else process.env.GIT_CONFIG_SYSTEM = prevSystem;
 		}
@@ -95,6 +118,47 @@ describe("commitWorktreeChanges (F-B deterministic commit)", () => {
 	});
 });
 
+// ── H7 (AC-10): `git add -A` in the MAIN checkout would stage the user's own
+// unrelated work — commitWorktreeChanges refuses unless the caller explicitly
+// opts in (skipWorktree runs). SCENARIO-022/023/024.
+describe("commitWorktreeChanges main-checkout refusal (AC-10)", () => {
+	it("SCENARIO-022: refuses to stage in the main checkout without the opt-in — index untouched", () => {
+		const dir = gitRepo();
+		try {
+			writeFileSync(join(dir, "a.txt"), "modified\n"); // dirty, uncommitted
+			const r = commitWorktreeChanges(dir, "should refuse");
+			expect(r.committed).toBe(false);
+			expect(r.error).toBe("refusing to commit in the main checkout");
+			// no `git add` ran: the index is untouched and the modification is
+			// still UNstaged (" M", never staged "M ")
+			expect(sh(dir, "git diff --cached --name-only").trim()).toBe("");
+			expect(sh(dir, "git status --porcelain")).toBe(" M a.txt\n");
+			expect(sh(dir, "git rev-list --count HEAD").trim()).toBe("1");
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	it("SCENARIO-023: a dirty LINKED worktree commits exactly as before the guard", () => {
+		const { main, wt } = repoWithWorktree();
+		try {
+			writeFileSync(join(wt, "a.txt"), "modified\n");
+			const r = commitWorktreeChanges(wt, "fix in worktree");
+			expect(r.committed).toBe(true);
+			expect(r.subject).toBe("fix in worktree");
+			expect(sh(wt, "git status --porcelain").trim()).toBe("");
+		} finally { cleanupWorktree(main, wt); }
+	});
+
+	it("SCENARIO-024: the explicit opt-in (set only by skipWorktree runs) allows a main-checkout commit", () => {
+		const dir = gitRepo();
+		try {
+			writeFileSync(join(dir, "a.txt"), "modified\n");
+			const r = commitWorktreeChanges(dir, "opted in", { allowMainCheckout: true });
+			expect(r.committed).toBe(true);
+			expect(sh(dir, "git log -1 --pretty=%s").trim()).toBe("opted in");
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+});
+
 describe("runVerificationFix deterministic commit (F-B integration)", () => {
 	const fakeCtx = (): { ctx: StageContext; logs: string[] } => {
 		const logs: string[] = [];
@@ -105,34 +169,36 @@ describe("runVerificationFix deterministic commit (F-B integration)", () => {
 	};
 
 	it("commits the repository change a fix step made, with kind + round label", async () => {
-		const dir = gitRepo();
+		const { main, wt } = repoWithWorktree();
 		try {
-			const state = { setup: { worktreePath: dir, specDirectory: dir } } as unknown as PipelineState;
+			// real production geometry: the setup control points at the linked
+			// worktree (worktreeCreated true — the AC-10 opt-in is NOT granted)
+			const state = { setup: { worktreePath: wt, specDirectory: wt, worktreeCreated: true } } as unknown as PipelineState;
 			const node: Node = {
 				kind: "fakeFix",
-				run: async () => { writeFileSync(join(dir, "a.txt"), "fixed by the implementer\n"); return { status: "ok" } satisfies NodeResult; },
+				run: async () => { writeFileSync(join(wt, "a.txt"), "fixed by the implementer\n"); return { status: "ok" } satisfies NodeResult; },
 			};
 			const { ctx, logs } = fakeCtx();
 			const r = await runVerificationFix("review", node, state, ctx, "round 1");
 			expect(r.status).toBe("ok");
 			const last = (state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean };
 			expect(last.changed).toBe(true);
-			expect(sh(dir, "git status --porcelain").trim()).toBe(""); // committed, not left dirty
-			expect(sh(dir, "git log -1 --pretty=%s").trim()).toBe("fix(verify): address review findings (round 1)");
+			expect(sh(wt, "git status --porcelain").trim()).toBe(""); // committed, not left dirty
+			expect(sh(wt, "git log -1 --pretty=%s").trim()).toBe("fix(verify): address review findings (round 1)");
 			expect(logs.join("\n")).toContain("deterministically committed the review fix");
-		} finally { rmSync(dir, { recursive: true, force: true }); }
+		} finally { cleanupWorktree(main, wt); }
 	});
 
 	it("does not create commits when the fix step changed nothing", async () => {
-		const dir = gitRepo();
+		const { main, wt } = repoWithWorktree();
 		try {
-			const state = { setup: { worktreePath: dir, specDirectory: dir } } as unknown as PipelineState;
+			const state = { setup: { worktreePath: wt, specDirectory: wt, worktreeCreated: true } } as unknown as PipelineState;
 			const node: Node = { kind: "fakeNoop", run: async () => ({ status: "ok" } satisfies NodeResult) };
 			const { ctx, logs } = fakeCtx();
 			await runVerificationFix("integration", node, state, ctx, "round 2");
-			expect(sh(dir, "git rev-list --count HEAD").trim()).toBe("1");
+			expect(sh(wt, "git rev-list --count HEAD").trim()).toBe("2");
 			expect(logs.join("\n")).toContain("made no repository-state change");
-		} finally { rmSync(dir, { recursive: true, force: true }); }
+		} finally { cleanupWorktree(main, wt); }
 	});
 });
 

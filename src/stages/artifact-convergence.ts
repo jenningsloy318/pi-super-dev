@@ -2,7 +2,8 @@ import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
-import { enforceReviewerConvergenceDuty, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
+import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
+import { renderAndWrite } from "../render/render.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import { runJudge } from "./judge.ts";
 import { countStageRounds } from "../resume.ts";
@@ -234,10 +235,16 @@ function getEscalate(ctx: StageContext): Escalate | undefined {
  *  ONLY pass — approved when the verdict affirmatively approves and is not an
  *  explicit rejection. "REVISIONS NEEDED" / "Changes Requested" / "Rejected"
  *  stay rejected. AND-ed with `!reviewHasBlockingFinding` at the call site so a
- *  blocking finding still blocks regardless of verdict wording. */
-function reviewVerdictApproves(verdict: unknown): boolean {
+ *  blocking finding still blocks regardless of verdict wording.
+ *  Exported for the AC-28 verdict tables (tests/artifact-convergence.test.ts). */
+export function reviewVerdictApproves(verdict: unknown): boolean {
 	const v = String(verdict ?? "").trim().toLowerCase();
 	if (!v) return false;
+	// M17 (SCENARIO-057): negated approvals ("not approved", "does not pass",
+	// "approved: no", …) never approve — the guard fires BEFORE the approve-family
+	// match, so the \b(approved|pass|accept)\b heuristic cannot match the word
+	// inside the negation.
+	if (NEGATED_APPROVAL_RE.test(v)) return false;
 	if (/(changes?\s+requested|revisions?\s+needed|reject|contest|blocked|fail|declined)/i.test(v)) return false;
 	return /\b(approved|pass|accept)/i.test(v);
 }
@@ -253,10 +260,17 @@ export const PROGRESS_EXTENSION_ROUNDS = 4;
  *  resume grants maxRounds fresh rounds (durable-execution continuation), but
  *  the total is bounded at 3× the base cap so a deterministic false-positive
  *  gate cannot ping-pong forever (replan/HITL owns the terminal state by then). */
-const MAX_TOTAL_ROUND_MULTIPLE = 3;
+export const MAX_TOTAL_ROUND_MULTIPLE = 3;
 
 export function effectiveRoundCap(maxRounds: number, priorRounds: number): number {
 	return Math.min(priorRounds + maxRounds, maxRounds * MAX_TOTAL_ROUND_MULTIPLE);
+}
+
+/** AC-17 (SCENARIO-037): the one-shot strict-progress extension, re-clamped to
+ *  the 3× cumulative ceiling — effectiveCap can NEVER exceed maxRounds × 3
+ *  (from 10 it yields 14; from 22 or 24 it yields 24; never 28). */
+export function extendedRoundCap(effectiveCap: number, maxRounds: number): number {
+	return Math.min(effectiveCap + PROGRESS_EXTENSION_ROUNDS, maxRounds * MAX_TOTAL_ROUND_MULTIPLE);
 }
 
 export function artifactConvergenceNode(options: ArtifactConvergenceOptions): Node {
@@ -274,6 +288,12 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 			const priorRounds = state.setup?.specDirectory ? countStageRounds(state.setup.specDirectory, `pipeline.${options.stage.id}`) : 0;
 			let effectiveCap = effectiveRoundCap(maxRounds, priorRounds);
 			if (effectiveCap > maxRounds) ctx.log(`${options.feedbackKey} convergence: resuming after ${priorRounds} recorded round(s) — round budget extended to ${effectiveCap} (replayed rounds do not consume the fresh budget)`);
+			// AC-17 (SCENARIO-038): the recorded REVIEW rounds of THIS loop — strict
+			// progress may only arm on a FRESH (cache-miss) review reading; a replayed
+			// reading carries no fresh information and must never earn the extension.
+			const priorReviewRounds = options.review && state.setup?.specDirectory
+				? countStageRounds(state.setup.specDirectory, `pipeline.${options.review.stage.id}`)
+				: 0;
 			let round = 0;
 			let lastErrors: string[] = [];
 			let priorBlockingSignature = "";
@@ -319,22 +339,38 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 							allowedRoutes: ["escalate-now"],
 						});
 						if ((out.status === "routed" || out.status === "escalate") && out.verdict.route === "escalate-now") {
-							ctx.log(`${options.feedbackKey} convergence: JUDGE ESCALATE — ${out.verdict.diagnosis}`);
-							throw new FatalAbort(`${options.feedbackKey} convergence did not converge within ${maxRounds} round(s): ${out.verdict.diagnosis}`);
+							// B4 (D10): an escalate-now verdict may only abort the run when it
+							// carries at least one NON-EMPTY evidence quote — an evidence-less
+							// diagnosis (the judge's degrade-to-escalate path) is advisory, not
+							// fatal; log it and fall through to the normal cap path.
+							const hasEvidence = out.verdict.evidence.some((e) => String((e as { quote?: string }).quote ?? "").trim().length > 0);
+							if (hasEvidence) {
+								ctx.log(`${options.feedbackKey} convergence: JUDGE ESCALATE — ${out.verdict.diagnosis}`);
+								// D10: the fatal reports the EFFECTIVE cap (replayed rounds
+								// included), never the base maxRounds.
+								throw new FatalAbort(`${options.feedbackKey} convergence did not converge within ${effectiveCap} round(s): ${out.verdict.diagnosis}`);
+							}
+							ctx.log(`${options.feedbackKey} convergence: judge escalate-now verdict carried no verbatim evidence — falling through to the round-cap path`);
 						}
 					} catch (err) {
 						if (err instanceof FatalAbort) throw err;
 						/* INV-6: judge infra failure never blocks the loop */
 					}
 				}
-				if (round > effectiveCap) {
+				// AC-17 (SCENARIO-038): the cap gate also requires a FRESH round —
+				// replayed rounds (round ≤ priorRounds) never fatal/extend/replan, so at
+				// priorRounds ≥ 3×cap exactly ONE fresh writer round (priorRounds + 1)
+				// executes before the fatal at priorRounds + 2 (fresh-run behavior is
+				// unchanged: priorRounds = 0 ⇒ the gate is round > 1).
+				if (round > effectiveCap && round > priorRounds + 1) {
 					// F2 (RC1): strict progress at the cap — the loop resolved more of
 					// its own blockers than it gained last round. Grant ONE bounded
 					// extension instead of killing productive work (run 02-16 resolved
 					// findings every round and still hit the cap's FatalAbort).
 					if (!progressExtensionUsed && prevOwnOpen !== Number.POSITIVE_INFINITY && lastOwnOpen < prevOwnOpen && lastOwnOpen > 0) {
 						progressExtensionUsed = true;
-						effectiveCap += PROGRESS_EXTENSION_ROUNDS;
+						// AC-17 (SCENARIO-037): the extension is re-clamped to the 3× ceiling.
+						effectiveCap = extendedRoundCap(effectiveCap, maxRounds);
 						ctx.log(`${options.feedbackKey} convergence: cap extended to ${effectiveCap} — strict progress (own open blocking ${prevOwnOpen === Number.POSITIVE_INFINITY ? "?" : prevOwnOpen} → ${lastOwnOpen})`);
 					} else {
 						// F1 (RC3): before the fatal, route upstream-owned blockers back
@@ -361,6 +397,11 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				}
 				ctx.log(`${options.feedbackKey} convergence: round ${round} starting`);
 				if (options.review) delete (state as Record<string, unknown>)[options.review.reviewStateKey];
+				// M8 (SCENARIO-039/040): true when THIS round's convergence is a genuine
+				// reviewer approval. Defaults to true for review-less loops (research):
+				// with no reviewer verdict, the deterministic gate's pass IS the approval
+				// and replan consumption keeps its existing behavior.
+				let genuineApproval = !options.review;
 
 				// R3 (dsh-09 v3): pending replan requests owned by this stage inject as
 				// convergence-ledger findings at round 1 — the EXISTING
@@ -473,21 +514,54 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					// decided, so a reviewer that ignores the contract can no
 					// longer keep the loop open until the cap kills the run.
 					reviewRound++;
-					const downgraded = enforceReviewerConvergenceDuty(reviewControl, reviewRound, { stage: options.feedbackKey, knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)) });
-					if (downgraded > 0) ctx.log(`${options.feedbackKey} convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
+					// AC-17 (SCENARIO-038): a reading past the recorded review rounds is
+					// FRESH; a cache-replayed reading carries no fresh information and
+					// must never arm the strict-progress extension.
+					const freshReviewReading = reviewRound > priorReviewRounds;
+					const downgraded = enforceReviewerConvergenceDuty(reviewControl, reviewRound, {
+						stage: options.feedbackKey,
+						knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)),
+						// M22 (SCENARIO-068): verbatim restatements of live blocking ledger
+						// findings are shielded from the downgrade by convergence fingerprint.
+						knownBlockingFingerprints: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.fingerprint)),
+						reviewSourceGate: `${options.feedbackKey}-review`,
+					});
+					if (downgraded > 0) {
+						ctx.log(`${options.feedbackKey} convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
+						// B8 (fix-in-pass, SCENARIO-068): the enforcement MUTATED the review
+						// control in place — re-render the review doc (per-slug reuse via
+						// renderAndWrite, idempotent) so the on-disk artifact matches the
+						// enforced classifications instead of the stale agent-authored ones.
+						// Best-effort: a schema-invalid control renders nothing (null) and a
+						// failed write must never kill the convergence loop.
+						try {
+							if (state.setup) renderAndWrite(state.setup, (m) => ctx.log(m), options.review.stage.id, reviewControl as Record<string, unknown>);
+						} catch { /* best-effort re-render */ }
+					}
 					// F-A verdict pinning (adversarial G1-NEEDSHUMAN-NOOP): the
 					// approval gate uses the VERDICT-layer blocking scan — a
 					// needs-human finding pins the verdict only through its own
 					// blocking flag / high severity, so the duty downgrade of a
 					// late non-high needs-human note actually unblocks approval.
-					const approved = (reviewVerdictApproves(reviewControl?.verdict) || downgraded > 0) && !reviewHasBlockingVerdictFinding(reviewControl);
+					// M8 (SCENARIO-039/040): a duty override may converge the loop, but it is
+					// NOT a reviewer approval — replan consumption and the replan verified-flip
+					// below are gated on the GENUINE verdict signal alone.
+					genuineApproval = reviewVerdictApproves(reviewControl?.verdict);
+					const approved = (genuineApproval || downgraded > 0) && !reviewHasBlockingVerdictFinding(reviewControl);
 					if (!approved) {
 						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
 						lastErrors = compactReviewFindings(reviewControl);
 						// F2: track this stage's OWN open-blocking count for the
-						// strict-progress extension at the cap.
-						prevOwnOpen = lastOwnOpen;
-						lastOwnOpen = blockingConvergenceFindings(state).filter((f) => f.ownerStage === ownStage).length;
+						// strict-progress extension at the cap — FRESH readings only.
+						if (freshReviewReading) {
+							prevOwnOpen = lastOwnOpen;
+							lastOwnOpen = blockingConvergenceFindings(state).filter((f) => f.ownerStage === ownStage).length;
+						} else {
+							// M7/adv-B/B5: a cache-replayed reading carries no fresh
+							// information — the extension can never be granted on it.
+							prevOwnOpen = Number.POSITIVE_INFINITY;
+							lastOwnOpen = Number.POSITIVE_INFINITY;
+						}
 						// HITL escalation triggers (bounded by ESCALATION_RETRY_CAP per stage):
 						//  (a) a blocking finding owned by a STRICTLY UPSTREAM stage — the
 						//      current writer structurally cannot fix it (e.g. a scope/routing
@@ -560,12 +634,18 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				}
 
 				clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
-				markConvergenceFindingsVerified(state, (finding) => !finding.downgradeReason && ((finding.ownerStage === normalizeConvergenceStage(options.feedbackKey, options.feedbackKey) && (finding.detectedAtStage === options.feedbackKey || finding.detectedAtStage === "replan")) || (options.review ? finding.detectedAtStage === options.review.reviewStateKey : false)));
-				// R3: approval by the owning reviewer VERIFIES the revision — only now
-				// may the persisted requests flip to addressed (never on the writer's
-				// say-so alone, mirroring the convergence-ledger contract).
-				const consumedReplan = consumeReplanRequests(state.setup?.specDirectory, options.feedbackKey);
-				if (consumedReplan > 0) ctx.log(`${options.feedbackKey} convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
+				markConvergenceFindingsVerified(state, (finding) => !finding.downgradeReason && (
+					(finding.ownerStage === ownStage && finding.detectedAtStage === options.feedbackKey) ||
+					(options.review ? finding.detectedAtStage === options.review.reviewStateKey : false) ||
+					(genuineApproval && finding.ownerStage === ownStage && finding.detectedAtStage === "replan")
+				));
+				if (genuineApproval) {
+					// R3 (SCENARIO-040): approval by the owning reviewer VERIFIES the revision —
+					// only now may the persisted requests flip to addressed (never on the
+					// writer's say-so alone, and never on a duty override — SCENARIO-039).
+					const consumedReplan = consumeReplanRequests(state.setup?.specDirectory, options.feedbackKey);
+					if (consumedReplan > 0) ctx.log(`${options.feedbackKey} convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
+				}
 				ctx.log(`${options.feedbackKey} convergence: complete (round ${round}${round > 1 ? ", after feedback" : ""})`);
 				return { status: "ok" as const, attempts: round };
 			}

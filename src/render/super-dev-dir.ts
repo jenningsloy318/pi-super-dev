@@ -90,6 +90,14 @@ export function startRun(): string {
 }
 
 export function getRunDir(): string | null { return currentRunDir; }
+
+/** AC-29 (SCENARIO-060): path-for helpers — resolve a run's file paths from a
+ *  run dir CAPTURED ONCE at run start, so a run B starting while run A's async
+ *  reflection is still in flight can never redirect A's writes. */
+export function runLogPathFor(runDir: string): string { return join(runDir, "run.log"); }
+export function auditPathFor(runDir: string): string { return join(runDir, "audit.jsonl"); }
+export function reflectionPathFor(runDir: string): string { return join(runDir, "reflection.md"); }
+
 export function getRunLogPath(): string { return join(currentRunDir ?? SUPER_DEV_DIR, "run.log"); }
 export function getAuditPath(): string { return join(currentRunDir ?? SUPER_DEV_DIR, "audit.jsonl"); }
 export function getReflectionPath(): string { return join(currentRunDir ?? SUPER_DEV_DIR, "reflection.md"); }
@@ -109,10 +117,15 @@ export interface AuditEntry {
 	backend?: string;
 }
 
-/** Append a structured audit entry to the current run's audit.jsonl. */
-export function auditAppend(entry: AuditEntry): void {
-	if (!currentRunDir) return; // no active run (e.g., in tests)
+/** Append a structured audit entry to the current run's audit.jsonl.
+ *  AC-29 (SCENARIO-060): an explicit `runDir` (captured once at run start)
+ *  takes precedence over the module-global current run dir, so late async
+ *  work (e.g. reflection) always lands under its ORIGINATING run. Best-effort.
+ *  D-8: the file is created 0600 (audit trails may quote task/secrets text). */
+export function auditAppend(entry: AuditEntry, runDir?: string): void {
+	const dir = runDir ?? currentRunDir;
+	if (!dir) return; // no active run (e.g., in tests)
 	try {
-		appendFileSync(getAuditPath(), JSON.stringify({ ...entry, ts: new Date().toISOString() }) + "\n");
+		appendFileSync(auditPathFor(dir), JSON.stringify({ ...entry, ts: new Date().toISOString() }) + "\n", { mode: 0o600 });
 	} catch { /* best-effort — never break the pipeline */ }
 }

@@ -108,6 +108,7 @@ interface CapturedCalls {
 	impl: AgentCall[];
 	orch: AgentCall[];
 	judge: AgentCall[];
+	coverage: AgentCall[];
 	helper: number;
 	logs: string[];
 }
@@ -127,6 +128,9 @@ function mkCtx(opts: {
 	reviewContradictions?: Array<Array<{ tests: string; lines?: string; proof: string }>>;
 	/** Scripted implementer responses (Fix 3/5): per-attempt text + control. */
 	implResults?: Array<{ text: string; control: ControlObj | null }>;
+	/** Scripted tdd-coverage-classifier controls, consumed in order per call
+	 *  (default: trivially all-covered so accepted RED proceeds). */
+	coverageControls?: ControlObj[];
 	/** Escalate callback (captures the EscalationFailure) for no-progress tests. */
 	escalate?: RunOptions["escalate"];
 	/** Scripted judge controls (J9-a/J9-b), consumed in order per judge call. */
@@ -137,12 +141,14 @@ function mkCtx(opts: {
 		impl: [],
 		orch: [],
 		judge: [],
+		coverage: [],
 		helper: 0,
 		logs: [],
 	};
 	const judgeQ = [...(opts.judgeResults ?? [])];
 	const reviewQ = [...(opts.reviewVerdicts ?? [])];
 	const contradictionQ = [...(opts.reviewContradictions ?? [])];
+	const coverageQ = [...(opts.coverageControls ?? [{ allCovered: true, coveredScenarios: [], missingScenarios: [], summary: "all expected scenarios covered" }])];
 	const ctx: StageContext = {
 		task: "",
 		options: { escalate: opts.escalate } as RunOptions,
@@ -166,6 +172,11 @@ function mkCtx(opts: {
 				calls.judge.push(call);
 				const scripted = judgeQ.shift();
 				return { text: "", control: scripted ?? null };
+			}
+			if (call.agent === "tdd-coverage-classifier") {
+				calls.coverage.push(call);
+				const scripted = coverageQ.length > 0 ? coverageQ.shift()! : {};
+				return { text: "", control: scripted };
 			}
 			if (call.agent === "code-reviewer") {
 				calls.orch.push(call);
@@ -777,5 +788,81 @@ describe("judge routing layer (J9-a RED no-progress + J9-b implementer no-progre
 		expect(calls.judge).toHaveLength(1);
 		expect(failures).toHaveLength(1);
 		expect(failures[0].message).not.toContain("JUDGE DIAGNOSIS");
+	}, 20_000);
+});
+
+// ─── AC-06 (spec-28, SCENARIO-013/014): RED scenario-coverage expectations
+// read `tasks[].scenarioRefs` as the mapped subset. A multi-phase spec mapped
+// ONLY via tasks must give each phase its task subset — never the full
+// spec.scenarioRefs set (which demands every phase test every scenario).
+// Asserted via the coverage verifier's prompt + missing-list/retry-hint
+// content, the same observable surface the tdd-guide retry consumes.
+
+describe("AC-06 — expectedScenariosForPhase reads task.scenarioRefs (SCENARIO-013/014)", () => {
+	const mkTaskMappedState = (): PipelineState => ({
+		setup: { worktreePath: "/tmp/sd-red-loop", specDirectory: "/tmp/sd", defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "p3", worktreeCreated: false, initializedRepo: false },
+		classify: { taskType: "bug", uiScope: "none", language: "frontend", isWebUi: false },
+		spec: {
+			scenarioRefs: ["SCENARIO-001", "SCENARIO-002", "SCENARIO-003", "SCENARIO-004", "SCENARIO-005"],
+			phases: [{ name: "Phase 1" }, { name: "Phase 2" }],
+			tasks: [
+				{ phase: "Phase 1", description: "auth", scenarioRefs: ["SCENARIO-001", "SCENARIO-002"] },
+				{ phase: "Phase 2", description: "billing", scenarioRefs: ["SCENARIO-003"] },
+			],
+		},
+	} as unknown as PipelineState);
+
+	it("SCENARIO-013: each phase's expected set is the task subset, never the full five-scenario spec set", async () => {
+		redSeq("red");
+		const ALL_FIVE = ["SCENARIO-001", "SCENARIO-002", "SCENARIO-003", "SCENARIO-004", "SCENARIO-005"];
+		const { ctx, calls } = mkCtx({
+			coverageControls: [
+				// phase 1, try 1: nothing covered yet → coverage FAIL → retry hint
+				{ allCovered: false, coveredScenarios: [], missingScenarios: [], summary: "no scenario-mapped tests found" },
+				// phase 1, try 2 + phase 2, try 1: the verifier reports the union of
+				// scenario-mapped tests (the diff filters it to each phase's expected
+				// set, so this control is pass-shaped under BOTH the task-subset and
+				// the full-spec expectation — the assertions below pin WHICH set the
+				// stage demanded in the prompt/hint).
+				{ allCovered: true, coveredScenarios: ALL_FIVE, missingScenarios: [], summary: "covered" },
+				{ allCovered: true, coveredScenarios: ALL_FIVE, missingScenarios: [], summary: "covered" },
+			],
+		});
+
+		const res = (await (implementationStage as Stage).run(mkTaskMappedState(), ctx)) as ControlObj;
+
+		expect(res.allGreen).toBe(true);
+		expect(calls.coverage).toHaveLength(3); // P1×2 (fail→retry), P2×1
+		// The coverage verifier prompt carries the TASK SUBSET per phase…
+		expect(calls.coverage[0]!.prompt).toContain("Expected scenarios: SCENARIO-001, SCENARIO-002");
+		expect(calls.coverage[0]!.prompt).not.toContain("SCENARIO-003");
+		expect(calls.coverage[2]!.prompt).toContain("Expected scenarios: SCENARIO-003");
+		expect(calls.coverage[2]!.prompt).not.toContain("SCENARIO-001");
+		// …and the retry hint demands exactly the task subset (missing-list +
+		// expected-set content), not the full spec set.
+		expect(calls.tdd[1]!.prompt).toMatch(/coverage for every expected BDD scenario: SCENARIO-001, SCENARIO-002/);
+		expect(calls.tdd[1]!.prompt).not.toMatch(/SCENARIO-005/);
+		expect(calls.tdd).toHaveLength(3); // P1 RED + P1 retry + P2 RED
+	}, 20_000);
+
+	it("SCENARIO-014: the full spec scenarioRefs set is used only when phase- AND task-level refs are both empty", async () => {
+		redSeq("red");
+		const state = {
+			setup: { worktreePath: "/tmp/sd-red-loop", specDirectory: "/tmp/sd", defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "p3", worktreeCreated: false, initializedRepo: false },
+			classify: { taskType: "bug", uiScope: "none", language: "frontend", isWebUi: false },
+			spec: {
+				scenarioRefs: ["SCENARIO-011", "SCENARIO-012", "SCENARIO-013"],
+				phases: [{ name: "Phase 1" }],
+				tasks: [{ phase: "Phase 1", description: "a task with no scenario refs of its own" }],
+			},
+		} as unknown as PipelineState;
+		const { ctx, calls } = mkCtx({
+			coverageControls: [{ allCovered: true, coveredScenarios: ["SCENARIO-011", "SCENARIO-012", "SCENARIO-013"], missingScenarios: [], summary: "covered" }],
+		});
+
+		const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+		expect(res.allGreen).toBe(true);
+		expect(calls.coverage[0]!.prompt).toContain("Expected scenarios: SCENARIO-011, SCENARIO-012, SCENARIO-013");
 	}, 20_000);
 });

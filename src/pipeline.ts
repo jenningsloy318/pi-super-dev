@@ -11,6 +11,7 @@
 import { runWorkflow } from "./workflow.ts";
 import { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
 import { loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
+import { releaseHeldRunLock } from "./setup.ts";
 import type { RunOptions, RunSummary } from "./types.ts";
 
 export async function runPipelineTask(task: string, optionsIn: RunOptions = {}): Promise<RunSummary> {
@@ -30,7 +31,14 @@ export async function runPipelineTask(task: string, optionsIn: RunOptions = {}):
 	// Always capture (empty cache = write-only) so any run is resumable-by-default.
 	if (!options.resumeCache) options.resumeCache = new Map();
 
-	const summary = await runWorkflow(SUPER_DEV_WORKFLOW, task, options);
+	let summary: RunSummary;
+	try {
+		summary = await runWorkflow(SUPER_DEV_WORKFLOW, task, options);
+	} finally {
+		// AC-30: release the spec-dir run lock on every exit path (the setup
+		// stage acquired it inside runSetup).
+		releaseHeldRunLock();
+	}
 
 	// A fully-successful run is complete: clear its cache + mark `.complete`.
 	if (summary.status === "success") {

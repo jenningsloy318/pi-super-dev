@@ -5,11 +5,14 @@
  * agent ends on a trailing tool-call turn or is killed mid-stream.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter, getEventListeners } from "node:events";
+import { PassThrough } from "node:stream";
 import { extractFinalAssistant, buildSpawnArgs, buildSubprocessTaskPrompt, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveExtensionEntries, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
+import * as piSpawnModule from "../src/pi-spawn.ts";
 
 const line = (obj: unknown) => JSON.stringify(obj);
 /** Minimal inherited-model object for tests (only provider+id are read by buildSpawnArgs). */
@@ -357,5 +360,278 @@ describe("renderEvent (live progress extraction)", () => {
 	it("returns null for irrelevant events", () => {
 		expect(renderEvent(ev({ type: "message_update", message: { content: [{ type: "thinking" }] } }), noTurn)).toBeNull();
 		expect(renderEvent(ev({ type: "tool_execution_end" }), noTurn)).toBeNull();
+	});
+});
+
+// ─── Phase 6 / T6.1 + T6.2 (AC-12, AC-23): runPi streaming + kill ladder ────
+//
+// `runPi` is the raw spawn/parse/terminate primitive underneath spawnAgent. The
+// harness keeps `node:child_process.spawn` REAL by default (pass-through) so the
+// existing pure-function tests are untouched; the fake-child tests flip the
+// harness to scripted `PassThrough` children (real stream decoders, no process).
+
+interface ScriptedChild extends EventEmitter {
+	stdout: PassThrough;
+	stderr: PassThrough;
+	killCalls: string[];
+	kill(signal?: string | number): boolean;
+}
+
+const spawnHarness = vi.hoisted(() => {
+	const state: {
+		mode: "real" | "fake";
+		last: unknown;
+		makeChild: () => ScriptedChild;
+	} = {
+		// default "real" keeps every existing test (and the real-child tests
+		// below) on the genuine spawn; fake mode scripts PassThrough children.
+		mode: "real",
+		last: null,
+		makeChild: () => {
+			throw new Error("spawn harness not initialized");
+		},
+	};
+	return state;
+});
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	const { EventEmitter } = await import("node:events");
+	const { PassThrough } = await import("node:stream");
+	const makeChild = (): ScriptedChild => {
+		// The concrete stream type matters: runPi must call setEncoding on the
+		// child's streams (AC-12), which a bare EventEmitter cannot support.
+		const child = new EventEmitter() as ScriptedChild;
+		child.stdout = new PassThrough();
+		child.stderr = new PassThrough();
+		child.killCalls = [];
+		child.kill = (signal?: string | number) => {
+			child.killCalls.push(String(signal));
+			return true;
+		};
+		return child;
+	};
+	spawnHarness.makeChild = makeChild;
+	return {
+		...actual,
+		spawn: ((command: string, args: readonly string[], options: object) => {
+			if (spawnHarness.mode === "fake") {
+				const child = makeChild();
+				spawnHarness.last = child;
+				return child as unknown as import("node:child_process").ChildProcess;
+			}
+			return actual.spawn(command, [...args], options as never);
+		}) as unknown as typeof actual.spawn,
+	};
+});
+
+const messageEndLine = (text: string): string =>
+	`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } })}\n`;
+
+async function withTempCwd<T>(fn: (cwd: string) => Promise<T>): Promise<T> {
+	const dir = mkdtempSync(join(tmpdir(), "sd-runpi-"));
+	try {
+		return await fn(dir);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+describe("AC-12 (SCENARIO-026): runPi reassembles a UTF-8 sequence split across data chunks byte-exactly", () => {
+	beforeEach(() => { spawnHarness.mode = "fake"; });
+	afterEach(() => { spawnHarness.mode = "real"; });
+
+	it("no U+FFFD: a message_end line whose emoji is split mid-codepoint across two data chunks parses intact (scripted child)", async () => {
+		await withTempCwd(async (cwd) => {
+			const bytes = Buffer.from(messageEndLine("ship it 🚀 now"), "utf8");
+			const emoji = Buffer.from("🚀", "utf8");
+			// Split AFTER the first byte of the 4-byte sequence (F0 9F | 98 80).
+			const splitAt = bytes.indexOf(emoji) + 1;
+			expect(splitAt).toBeGreaterThan(0);
+			const promise = piSpawnModule.runPi(["fake"], cwd, undefined, "utf8-split", 10_000);
+			const child = spawnHarness.last as ScriptedChild;
+			child.stdout.write(bytes.subarray(0, splitAt));
+			child.stdout.write(bytes.subarray(splitAt));
+			child.stdout.end();
+			child.emit("close", 0);
+			const result = await promise;
+			expect(result.text).toBe("ship it 🚀 now");
+			expect(result.text).not.toContain("\uFFFD");
+		});
+	});
+
+	it("same reassembly against a REAL node child writing the split bytes through a real pipe", async () => {
+		spawnHarness.mode = "real";
+		await withTempCwd(async (cwd) => {
+			const script = [
+				`const line = Buffer.from(${JSON.stringify(messageEndLine("ship it 🚀 now"))}, "utf8");`,
+				`const emoji = Buffer.from(${JSON.stringify("🚀")}, "utf8");`,
+				"const splitAt = line.indexOf(emoji) + 1;",
+				"process.stdout.write(line.subarray(0, splitAt));",
+				"setTimeout(() => process.stdout.write(line.subarray(splitAt)), 150);",
+			].join("\n");
+			const result = await piSpawnModule.runPi([process.execPath, "-e", script], cwd, undefined, "utf8-real", 10_000);
+			expect(result.text).toBe("ship it 🚀 now");
+			expect(result.text).not.toContain("\uFFFD");
+		});
+	}, 15_000);
+});
+
+describe("AC-12 (SCENARIO-027): a newline-less final NDJSON line is still parsed", () => {
+	beforeEach(() => { spawnHarness.mode = "fake"; });
+	afterEach(() => { spawnHarness.mode = "real"; });
+
+	it("a final message_end with no trailing newline is processed, not dropped", async () => {
+		await withTempCwd(async (cwd) => {
+			const line = messageEndLine("final answer without newline").trimEnd(); // no \n
+			const promise = piSpawnModule.runPi(["fake"], cwd, undefined, "final-line", 10_000);
+			const child = spawnHarness.last as ScriptedChild;
+			child.stdout.write(Buffer.from(line, "utf8"));
+			child.stdout.end();
+			child.emit("close", 0);
+			const result = await promise;
+			expect(result.text).toBe("final answer without newline");
+		});
+	});
+
+	it("the residual parse runs BEFORE the produced-no-output rejection (real node child)", async () => {
+		spawnHarness.mode = "real";
+		await withTempCwd(async (cwd) => {
+			const script = `process.stdout.write(${JSON.stringify(messageEndLine("tail no newline").trimEnd())});`;
+			const result = await piSpawnModule.runPi([process.execPath, "-e", script], cwd, undefined, "final-line-real", 10_000);
+			expect(result.text).toBe("tail no newline");
+		});
+	}, 15_000);
+});
+
+describe("AC-23 (SCENARIO-049): SIGTERM → SIGKILL ladder + bounded settle", () => {
+	beforeEach(() => { spawnHarness.mode = "fake"; });
+	afterEach(() => { vi.useRealTimers(); spawnHarness.mode = "real"; });
+
+	it("exports the watchdog constants (10s SIGTERM grace, 5s settle bound)", () => {
+		expect(piSpawnModule.SIGTERM_GRACE_MS).toBe(10_000);
+		expect(piSpawnModule.SETTLE_GRACE_MS).toBe(5_000);
+	});
+
+	it("timeout variant: SIGTERM → SIGTERM_GRACE_MS → SIGKILL → SETTLE_GRACE_MS → backstop reject 'killed after SIGTERM+SIGKILL'", async () => {
+		vi.useFakeTimers();
+		await withTempCwd(async (cwd) => {
+			let caught: Error | undefined;
+			const guarded = piSpawnModule.runPi(["fake"], cwd, undefined, "ladder-timeout", 1_000)
+				.catch((err: Error) => { caught = err; return undefined as never; });
+			const child = spawnHarness.last as ScriptedChild;
+			await vi.advanceTimersByTimeAsync(1_000); // run timeout fires → SIGTERM
+			expect(child.killCalls).toEqual(["SIGTERM"]);
+			await vi.advanceTimersByTimeAsync(10_000); // grace elapses → escalate
+			expect(child.killCalls).toEqual(["SIGTERM", "SIGKILL"]);
+			await vi.advanceTimersByTimeAsync(5_000); // settle bound → backstop
+			await guarded;
+			expect(caught).toBeInstanceOf(Error);
+			expect(caught?.message).toContain("killed after SIGTERM+SIGKILL");
+			expect(caught?.message).toContain("no exit within 5000ms");
+		});
+	});
+
+	it("abort variant: the same ladder runs on the AbortSignal path and cleanup removes the abort listener", async () => {
+		vi.useFakeTimers();
+		await withTempCwd(async (cwd) => {
+			const controller = new AbortController();
+			const baseline = getEventListeners(controller.signal, "abort").length;
+			let caught: Error | undefined;
+			const guarded = piSpawnModule.runPi(["fake"], cwd, controller.signal, "ladder-abort", 60_000)
+				.catch((err: Error) => { caught = err; return undefined as never; });
+			const child = spawnHarness.last as ScriptedChild;
+			controller.abort();
+			expect(child.killCalls).toEqual(["SIGTERM"]);
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(child.killCalls).toEqual(["SIGTERM", "SIGKILL"]);
+			await vi.advanceTimersByTimeAsync(5_000);
+			await guarded;
+			expect(caught?.message).toContain("killed after SIGTERM+SIGKILL");
+			// cleanup ran: the abort listener was removed (no leak), the settle
+			// timer is cleared, and the promise settled (no hang).
+			expect(getEventListeners(controller.signal, "abort").length).toBe(baseline);
+		});
+	});
+
+	it("a real SIGTERM-ignoring child is actually killed by the ladder and the promise settles within the bound (node -e fixture)", async () => {
+		spawnHarness.mode = "real";
+		await withTempCwd(async (cwd) => {
+			// A real child that ignores SIGTERM (registered handler) and can only be
+			// stopped by the ladder's SIGKILL. Its 13s self-exit is a leak guard for
+			// the RED run (it leaves a marker so we can tell self-exit from SIGKILL);
+			// the GREEN ladder SIGKILLs it at ~timeout + SIGTERM_GRACE_MS = 10.4s —
+			// strictly before the self-exit — so the marker never appears.
+			const marker = join(cwd, "selfexit.txt");
+			const script = [
+				`process.stdout.write(${JSON.stringify(messageEndLine("partial output before kill"))});`,
+				"process.on('SIGTERM', () => {});",
+				`setTimeout(() => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "self"); process.exit(0); }, 13000);`,
+				"setInterval(() => {}, 1000);",
+			].join("\n");
+			const started = Date.now();
+			const result = await piSpawnModule.runPi([process.execPath, "-e", script], cwd, undefined, "ladder-real", 400);
+			const elapsed = Date.now() - started;
+			expect(result.text).toBe("partial output before kill");
+			expect(result.error).toContain("timed out");
+			// The SIGTERM grace actually elapsed before the SIGKILL escalation…
+			expect(elapsed).toBeGreaterThanOrEqual(10_000);
+			// …and the child was KILLED by the ladder, not by its own 13s timer.
+			expect(existsSync(marker)).toBe(false);
+			// …and the promise settled well within SIGTERM + SIGKILL + settle bounds.
+			expect(elapsed).toBeLessThan(10_000 + 5_000 + 5_000);
+		});
+	}, 30_000);
+});
+
+// ─── T7.1 / SD-04 (NFR-6 pinning): abort-listener registration guard ───────
+//
+// A listener attached to an AbortSignal AFTER it aborted NEVER fires (WHATWG /
+// Node EventTarget semantics). Without a synchronous `signal?.aborted` check
+// around the registration, a signal that aborts between the caller's last
+// check and runPi's spawn leaves the child running to its own hard timeout
+// (up to 1200s for code-writing agents) before the run unwinds.
+describe("SD-04: runPi guards abort-listener registration with synchronous aborted checks", () => {
+	beforeEach(() => { spawnHarness.mode = "fake"; });
+	afterEach(() => { spawnHarness.mode = "real"; });
+
+	it("a signal aborted BEFORE runPi never spawns a child — resolves error=aborted immediately", async () => {
+		await withTempCwd(async (cwd) => {
+			spawnHarness.last = null;
+			const controller = new AbortController();
+			controller.abort(); // pre-aborted: the listener below would never fire
+			const p = piSpawnModule.runPi(["fake"], cwd, controller.signal, "pre-aborted", 60_000);
+			const raced = await Promise.race([
+				p.then((r) => r, () => "rejected" as const),
+				new Promise((resolve) => setTimeout(() => resolve("TIMED_OUT" as const), 2_000)),
+			]);
+			// cleanup: deterministically settle the dangling RED-path child so no
+			// timers/streams survive the failing assertion.
+			const child = spawnHarness.last as ScriptedChild | null;
+			if (child) { child.stdout.end(); child.emit("close", 0); }
+			await p.catch(() => undefined);
+			expect(raced).toEqual({ text: "", control: null, error: "aborted" });
+			// the guard fires BEFORE spawn: no child is spawned into a dead run
+			expect(spawnHarness.last).toBeNull();
+		});
+	});
+
+	it("a signal aborted BEFORE runPi leaves no abort listener behind (no leak, no kill ladder armed)", async () => {
+		await withTempCwd(async (cwd) => {
+			spawnHarness.last = null;
+			const controller = new AbortController();
+			const baseline = getEventListeners(controller.signal, "abort").length;
+			controller.abort();
+			const p = piSpawnModule.runPi(["fake"], cwd, controller.signal, "pre-aborted-leak", 60_000);
+			const raced = await Promise.race([
+				p.then((r) => r, () => "rejected" as const),
+				new Promise((resolve) => setTimeout(() => resolve("TIMED_OUT" as const), 2_000)),
+			]);
+			const child = spawnHarness.last as ScriptedChild | null;
+			if (child) { child.stdout.end(); child.emit("close", 0); }
+			await p.catch(() => undefined);
+			expect(raced).toEqual({ text: "", control: null, error: "aborted" });
+			expect(getEventListeners(controller.signal, "abort").length).toBe(baseline);
+		});
 	});
 });

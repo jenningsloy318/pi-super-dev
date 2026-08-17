@@ -6,6 +6,11 @@
 
 import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
 import { spawnSync } from "node:child_process";
+// H6 (AC-07): the cleanup env blocklist derives from the copier's own
+// predicate. No import cycle: setup.ts does not import helpers.ts
+// (setup's imports — resume/render/types — never reach helpers).
+import { isEnvFile } from "./setup.ts";
+import { resolve } from "node:path";
 import { reviewHasBlockingVerdictFinding, reviewHasFindings, reviewHasHighSeverityFinding, reviewNeedsHumanFindings, inferReviewFindingStatus, reviewFindingSeverity } from "./review-findings.ts";
 import {
 	readSpecDoc,
@@ -231,7 +236,15 @@ function normalizeReviewVerdict(sourceName: string, review: ControlObj | undefin
 	if (!review || Object.keys(review).length === 0) return fail(`Missing or empty ${sourceName} review output`);
 	const raw = String(review.verdict ?? "").trim();
 	if (!raw) return fail(`Missing verdict in ${sourceName} review output`);
-	if (raw === "PASS") return { verdict: "Approved", syntheticFindings: [] };
+	if (raw === "PASS") {
+		// H1/adv-C:F1 (SCENARIO-001..003): an adversarial PASS is an approve-family
+		// verdict — the same blocking-findings guard as "Approved" applies. A PASS
+		// carrying a blocking finding OR an open high/critical-class severity is
+		// downgraded to Changes Requested; a PASS with only advisory findings stays
+		// Approved. (Both predicates are already imported; the CONTEST/REJECT paths
+		// are unchanged.)
+		return { verdict: reviewHasBlockingVerdictFinding(review) || reviewHasHighSeverityFinding(review) ? "Changes Requested" : "Approved", syntheticFindings: [] };
+	}
 	if (raw === "CONTEST") {
 		// The adversarial reviewer contract says CONTEST is for medium/low quality
 		// concerns that need an author response, while REJECT is the production/data
@@ -381,7 +394,28 @@ export function triageReviewFindings(findings: unknown[]): ReviewFindingTriage {
 // ─── cleanup ────────────────────────────────────────────────────────────────
 
 const BUILD_DIRS = new Set(["node_modules", "target", "dist", "build", "__pycache__", ".next", ".nuxt", ".output", "coverage", ".turbo"]);
-const SENSITIVE_RE = [/\.env$/, /\.env\.local$/, /\.env\.production$/, /\.pem$/, /\.key$/, /id_rsa/, /id_ed25519/, /\.p12$/, /credentials\.json$/, /service[-_]account.*\.json$/];
+
+/** H6 (AC-07): the env-variant shape the copier copies (dotenv/Vite
+ *  convention) — `.env` or `.env.<anything>` as a BASENAME. */
+export const ENV_VARIANT_BASENAME_RE = /^\.env(\..+)?$/;
+
+/** H6 (AC-07): any basename the copier would copy (minus example/template/
+ *  sample) blocks cleanup — the blocklist is derived from the copy-set via
+ *  the copier's own `isEnvFile` predicate, never a divergent regex list. */
+export function blocksCleanupEnvBasename(base: string): boolean {
+	return ENV_VARIANT_BASENAME_RE.test(base) && isEnvFile(base);
+}
+
+// H6 (AC-07): the env entries moved OUT of this list — env variants are
+// matched by `blocksCleanupEnvBasename` (derived from the copier), so every
+// `.env.development`/`.env.staging`/`.env.prod`/`.env.ci` the copier copies
+// blocks, while `.env.example` never does. The remaining entries are the
+// non-env secret shapes.
+// Adversarial F-02 (spec-28 review): the suffix rule `/\.env$/` is retained
+// standalone — the OLD scan matched ANY basename ending in '.env' (prod.env,
+// settings.env), and the blocksCleanupEnvBasename derivation (leading-dot
+// variants only) silently narrowed it. Both rules now apply.
+const SENSITIVE_RE = [/\.pem$/, /\.key$/, /id_rsa/, /id_ed25519/, /\.p12$/, /credentials\.json$/, /service[-_]account.*\.json$/, /\.env$/];
 const LANG_MARKERS: Record<string, string[]> = {
 	rust: ["Cargo.toml", "Cargo.lock"], go: ["go.mod", "go.sum"], frontend: ["package.json", "tsconfig.json"], python: ["pyproject.toml", "setup.py", "requirements.txt"],
 };
@@ -429,8 +463,16 @@ function gitCarriedFiles(cwd: string, defaultBranch?: string): string[] | null {
  *  been silently dropped at merge time. Untracked files are swept in (-A):
  *  pipeline work product must ship. Falls back to an explicit pipeline
  *  identity when the environment has no git user configured (bare CI
- *  containers). NEVER throws. */
-export function commitWorktreeChanges(cwd: string | undefined, message: string): { committed: boolean; subject?: string; error?: string } {
+ *  containers). NEVER throws.
+ *
+ *  H7 (AC-10): `git add -A` in the MAIN checkout would stage the user's own
+ *  unrelated work — refuse unless the caller explicitly opted in (only
+ *  skipWorktree runs, where running in cwd is deliberate). */
+export function commitWorktreeChanges(
+	cwd: string | undefined,
+	message: string,
+	opts: { allowMainCheckout?: boolean } = {},
+): { committed: boolean; subject?: string; error?: string } {
 	if (!cwd) return { committed: false, error: "no worktree path" };
 	const run = (args: string[]): { status: number | null; stdout: string; stderr: string } => {
 		try {
@@ -443,6 +485,16 @@ export function commitWorktreeChanges(cwd: string | undefined, message: string):
 	const status = run(["status", "--porcelain=v1"]);
 	if (status.status !== 0) return { committed: false, error: `git status failed: ${status.stderr.trim().slice(0, 200) || "unknown"}` };
 	if (!status.stdout.trim()) return { committed: false };
+	if (!opts.allowMainCheckout) {
+		// main checkout ⟺ --git-dir and --git-common-dir resolve to the same
+		// place (git may emit them relative to cwd — resolve normalizes)
+		const gitDir = run(["rev-parse", "--git-dir"]);
+		const commonDir = run(["rev-parse", "--git-common-dir"]);
+		if (gitDir.status === 0 && commonDir.status === 0 &&
+			resolve(cwd, gitDir.stdout.trim()) === resolve(cwd, commonDir.stdout.trim())) {
+			return { committed: false, error: "refusing to commit in the main checkout" };
+		}
+	}
 	const subject = message.split("\n")[0];
 	if (run(["add", "-A"]).status !== 0) return { committed: false, error: "git add -A failed" };
 	let commit = run(["commit", "-m", message]);
@@ -475,6 +527,7 @@ export const HARNESS_BOOKKEEPING_FILES = new Set([
 	".resume-cache.jsonl",
 	".judge.jsonl",
 	".knowledge.json",
+	".run-lock", // AC-30: the spec-dir run lock — harness self-write, never agent work
 ]);
 
 /** True when `path` is a harness bookkeeping file inside the run's spec
@@ -554,10 +607,19 @@ async function cleanup(_s: Record<string, unknown>, context?: Record<string, unk
 	if (carried !== null) {
 		for (const rel of carried) {
 			const base = rel.split("/").pop() ?? rel;
+			// H6 (AC-07): env-variant basenames are matched by the copier-derived
+			// predicate (a committed `.env.development` blocks — SCENARIO-015);
+			// `.env.example`/template/sample never do (SCENARIO-016).
+			if (blocksCleanupEnvBasename(base)) { sensitiveDataFindings.push(`Sensitive file in merge set: ${rel}`); continue; }
 			for (const re of SENSITIVE_RE) if (re.test(base)) { sensitiveDataFindings.push(`Sensitive file in merge set: ${rel}`); break; }
 		}
 	} else {
-		try { for (const e of await readdir(cwd)) for (const re of SENSITIVE_RE) if (re.test(e)) { sensitiveDataFindings.push(`Sensitive file detected: ${e}`); break; } } catch { /* unreadable */ }
+		try {
+			for (const e of await readdir(cwd)) {
+				if (blocksCleanupEnvBasename(e)) { sensitiveDataFindings.push(`Sensitive file detected: ${e}`); continue; }
+				for (const re of SENSITIVE_RE) if (re.test(e)) { sensitiveDataFindings.push(`Sensitive file detected: ${e}`); break; }
+			}
+		} catch { /* unreadable */ }
 	}
 	const blocked = sensitiveDataFindings.length > 0;
 	const mode = worktreeCreated ? "worktree cleaned" : "in-place — detection only (no removal)";

@@ -35,7 +35,7 @@ vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn() }));
 vi.mock("../src/render/user-notes.ts", () => ({ userNotesForAgent: vi.fn(() => userNotes) }));
 
 import { implementationStage } from "../src/stages/implementation.ts";
-import type { PipelineState, StageContext, RunOptions, AgentResult, HelperResult } from "../src/types.ts";
+import type { PipelineState, StageContext, RunOptions, AgentResult, AgentCall, ControlObj, HelperResult } from "../src/types.ts";
 
 const mkState = (): PipelineState => ({
 	setup: { worktreePath: "/tmp/sd-conv", specDirectory: "/tmp/sd", defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "d", worktreeCreated: false, initializedRepo: false },
@@ -44,8 +44,17 @@ const mkState = (): PipelineState => ({
 } as unknown as PipelineState);
 
 /** Captures which phases' implementer was spawned, per run. */
-const mkCtx = (runLabel: string) => {
+const mkCtx = (runLabel: string, opts: {
+	/** Scripted implementer controls, CYCLED in order (A,B,A,B,… for
+	 *  oscillation fixtures; last entry repeats when the queue drains). */
+	implResults?: Array<{ text?: string; control: ControlObj | null }>;
+	/** Budget check override (bounds the attempt loop for old-code RED runs). */
+	budgetCheck?: () => boolean;
+} = {}) => {
 	const implPhases: string[] = [];
+	const implCalls: AgentCall[] = [];
+	const logs: string[] = [];
+	const implQueue = [...(opts.implResults ?? [])];
 	const ctx: StageContext = {
 		task: "conv", options: {} as RunOptions, state: {} as PipelineState,
 		async helper(): Promise<HelperResult> { return { value: { languageInstructions: "" }, digest: "" }; },
@@ -53,14 +62,18 @@ const mkCtx = (runLabel: string) => {
 			if (call.agent === "implementer") {
 				const m = /pipeline\.implementation\.(phase-\d+)\.impl/.exec(call.id);
 				if (m) implPhases.push(m[1]);
+				implCalls.push(call);
+				const scripted = implQueue.length > 1 ? implQueue.shift()! : (implQueue[0] ?? null);
+				if (scripted) return { text: scripted.text ?? "", control: scripted.control ?? {} };
+				return { text: "ok", control: {} };
 			}
 			return { text: "ok", control: {} };
 		},
 		parallel: async (cs: Array<() => Promise<AgentResult>>) => Promise.all(cs.map((c) => c())),
-		budget: { check: () => true, spent: () => true, count: 0 },
-		log: () => {}, phase: () => {}, events: { on: () => () => {}, emit: () => {} } as never, results: [],
+		budget: { check: opts.budgetCheck ?? (() => true), spent: () => true, count: 0 },
+		log: (message: string) => { logs.push(message); }, phase: () => {}, events: { on: () => () => {}, emit: () => {} } as never, results: [],
 	};
-	return { ctx, implPhases, runLabel };
+	return { ctx, implPhases, implCalls, logs, runLabel };
 };
 
 describe("§D convergence loop — per-phase green-state carry", () => {
@@ -151,4 +164,93 @@ describe("§D convergence loop — per-phase green-state carry", () => {
 		expect(r2.implPhases).toContain("phase-02");
 		expect(out2.allGreen).toBe(true);
 	});
+});
+
+// ---------------------------------------------------------------------------
+// H3 (spec-28, AC-03 → SCENARIO-006/007): GREEN-loop NON-CONSECUTIVE signature
+// recurrence. `repeatedNoProgress` must match ANY earlier history entry (the
+// mirror of the RED loop's `redProgressHistory.includes(signature)` at the RC-3
+// bound of tests/implementation-red-loop.test.ts:441 — ≤ 6 attempts), not only
+// the immediately-preceding one. A↔B oscillation used to slip the consecutive
+// check forever (each attempt differs from the last) until budget death.
+// ---------------------------------------------------------------------------
+
+describe("H3 — GREEN-loop A↔B recurrence detection (AC-03, SCENARIO-006/007)", () => {
+	beforeEach(() => { gateQ = []; userNotes = ""; });
+
+	const singlePhaseState = (): PipelineState => ({
+		setup: { worktreePath: "/tmp/sd-conv", specDirectory: "/tmp/sd", defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "d", worktreeCreated: false, initializedRepo: false },
+		classify: { taskType: "feature", uiScope: "none", language: "frontend", isWebUi: false },
+		spec: { phases: [{ name: "Phase 1" }] },
+	} as unknown as PipelineState);
+
+	/** Alternating gate failures: signature A = gate-error set A + footprint A,
+	 *  signature B = gate-error set B + footprint B. Both channels alternate so
+	 *  each attempt's (failure, footprint) pair reproduces EXACTLY every other
+	 *  attempt — the A→B→A→B oscillation shape. */
+	const FAIL_A = { pass: false, inScopePass: false, errors: ["gate A: TS2322 type error in src/module-a.ts"], outOfScopeErrors: [] as string[], ran: ["npm test"] };
+	const FAIL_B = { pass: false, inScopePass: false, errors: ["gate B: missing export handleB in src/module-b.ts"], outOfScopeErrors: [] as string[], ran: ["npm test"] };
+	const IMPL_A = { control: { filesModified: ["src/module-a.ts"] } };
+	const IMPL_B = { control: { filesModified: ["src/module-b.ts"] } };
+
+	it("SCENARIO-006: A→B→A→B signature oscillation trips no-progress within the mirror bound (≤6 attempts) — never budget death", async () => {
+		// 24 alternating pairs queued: old (consecutive-only) code runs to budget
+		// death here; the recurrence detector must stop it at the 3rd attempt.
+		gateQ = Array.from({ length: 24 }, (_, i) => (i % 2 === 0 ? FAIL_A : FAIL_B));
+		let budgetCalls = 0;
+		const budgetCheck = () => ++budgetCalls < 200; // generous: budget is NOT the trip mechanism
+		const { ctx, implCalls, logs } = mkCtx("osc", {
+			implResults: [IMPL_A, IMPL_B, IMPL_A, IMPL_B, IMPL_A, IMPL_B],
+			budgetCheck,
+		});
+
+		const out = await implementationStage.run(singlePhaseState(), ctx) as { allGreen: boolean };
+
+		expect(out.allGreen).toBe(false);
+		// The existing no-progress branch fires (judge routing / HITL escalation).
+		expect(logs.some((l) => /stopped after repeated no-progress failure on attempt/.test(l))).toBe(true);
+		// Mirror bound of tests/implementation-red-loop.test.ts:441 — a few tries,
+		// not dozens.
+		expect(implCalls.length).toBeLessThanOrEqual(6);
+		expect(implCalls.length).toBeGreaterThanOrEqual(3); // needs ≥3 to observe a recurrence
+		// NEVER budget death as the trip mechanism.
+		expect(logs.some((l) => /budget exhausted/.test(l))).toBe(false);
+	}, 20_000);
+
+	it("SCENARIO-007: strictly fresh signatures (A,B,C,D,…) never trip no-progress — the loop continues on its normal budget", async () => {
+		const distinctFails = [1, 2, 3, 4, 5, 6].map((n) => ({
+			pass: false, inScopePass: false,
+			errors: [`distinct gate failure #${n}: error kind ${n}`],
+			outOfScopeErrors: [] as string[], ran: ["npm test"],
+		}));
+		const distinctImpls = distinctFails.map((_, i) => ({ control: { filesModified: [`src/fresh-${i + 1}.ts`] } }));
+		// Six distinct FAILED attempts, then a PASS: with a healthy detector every
+		// distinct signature gets its attempt (6 fails), the 7th goes green, and
+		// the no-progress branch NEVER fires. Unbounded budget — the loop is not
+		// budget-tripped here.
+		gateQ = [...distinctFails, PASS];
+		const { ctx, implCalls, logs } = mkCtx("fresh", {
+			implResults: [...distinctImpls, { control: { filesModified: ["src/final.ts"] } }],
+			budgetCheck: () => true,
+		});
+
+		const out = await implementationStage.run(singlePhaseState(), ctx) as { allGreen: boolean };
+
+		expect(out.allGreen).toBe(true); // the fresh run converged on its own
+		expect(implCalls).toHaveLength(7); // every distinct signature got its attempt, then green
+		expect(logs.some((l) => /stopped after repeated no-progress failure on attempt/.test(l))).toBe(false);
+		expect(logs.some((l) => /budget exhausted/.test(l))).toBe(false);
+	}, 20_000);
+
+	it("SCENARIO-006 (empty history): the FIRST attempt is never no-progress — identical repeats fire at attempt 2", async () => {
+		gateQ = [FAIL_A, FAIL_A, FAIL_A];
+		const { ctx, implCalls, logs } = mkCtx("repeat", {
+			implResults: [IMPL_A, IMPL_A, IMPL_A],
+			budgetCheck: () => true,
+		});
+		await implementationStage.run(singlePhaseState(), ctx);
+		// The pre-existing consecutive-identical behavior is unchanged.
+		expect(implCalls).toHaveLength(2);
+		expect(logs.some((l) => /stopped after repeated no-progress failure on attempt 2/.test(l))).toBe(true);
+	}, 20_000);
 });

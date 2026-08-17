@@ -152,3 +152,85 @@ describe("appendGateChecked (P1.4)", () => {
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });
+
+// ─── T7.9 / D-5 (NFR-6 pinning): ledger durability ─────────────────────
+//
+// appendRunEvent re-read the ENTIRE events.jsonl on every append to find
+// lastSeq (O(n²) cumulative over a retry-heavy run), and only gate.checked
+// bounded its payload — every other emitter could write an unbounded line.
+describe("D-5: lastSeq is cached in memory per spec dir (tailProbe only on first append)", () => {
+	it("a second append in the same process does NOT re-probe the file — seq comes from the cache", () => {
+		const d = tmpSpecDir();
+		try {
+			expect(appendRunEvent(d, { runId: "r", type: "stage.started", data: {} })).toBe(1);
+			// Simulate an EXTERNAL writer appending 4 more valid lines (a probe would
+		// now find lastSeq 5; the in-memory cache must keep this process's own
+		// sequence — single-process appends are the ledger's stated convention).
+			const path = join(d, "events.jsonl");
+		const extra = [2, 3, 4, 5].map((seq) => JSON.stringify({ seq, time: `t${seq}`, runId: "other", type: "stage.completed", data: {} })).join("\n");
+			writeFileSync(path, readFileSync(path, "utf8") + extra + "\n");
+			// RED today: the append re-probes → seq 6; with the cache → seq 2.
+			const seq = appendRunEvent(d, { runId: "r", type: "stage.completed", data: {} });
+			expect(seq).toBe(2);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("the cached append still heals a torn (newline-less) last line", () => {
+		const d = tmpSpecDir();
+		try {
+			appendRunEvent(d, { runId: "r", type: "stage.started", data: {} });
+			appendRunEvent(d, { runId: "r", type: "stage.completed", data: {} });
+			// torn write lands AFTER the cache is primed (killed mid-append)
+			const path = join(d, "events.jsonl");
+			writeFileSync(path, readFileSync(path, "utf8") + '{"seq":3,"time":"t');
+			const seq = appendRunEvent(d, { runId: "r", type: "stage.failed", data: {} });
+			expect(seq).toBe(3);
+			expect(readRunEvents(d)).toHaveLength(3); // the fresh line did not glue onto the fragment
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("the first append after process start still probes (a pre-existing file continues its seq)", () => {
+		const d = tmpSpecDir();
+		try {
+			// seed a file as if written by a PREVIOUS process
+			writeFileSync(join(d, "events.jsonl"), [
+				JSON.stringify({ seq: 1, time: "t1", runId: "a", type: "run.started", data: {} }),
+				JSON.stringify({ seq: 2, time: "t2", runId: "a", type: "run.completed", data: {} }),
+			].join("\n") + "\n");
+			// this test file's process never appended to d → the FIRST append probes
+			expect(appendRunEvent(d, { runId: "b", type: "run.started", data: {} })).toBe(3);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+});
+
+describe("D-5: uniform payload bound on every RunEventInput emitter", () => {
+	it("an oversized data payload is replaced by a bounded truncation marker — the line stays valid JSON under the cap", () => {
+		const d = tmpSpecDir();
+		try {
+			const blob = "x".repeat(300_000);
+			const seq = appendRunEvent(d, { runId: "r", stage: "implementation", type: "agent.called", data: { agent: "implementer", control: { phases: blob } } });
+			expect(seq).toBe(1);
+			// RED today: the full 300KB blob is persisted verbatim.
+			const events = readRunEvents(d);
+			expect(events).toHaveLength(1);
+			expect(events[0].data.dataTruncated).toBe(true);
+			expect(typeof events[0].data.originalBytes).toBe("number");
+			// the envelope survives for folds (seq/type/runId/stage intact)
+			expect(events[0].type).toBe("agent.called");
+			expect(events[0].stage).toBe("implementation");
+			// the on-disk line is bounded
+			const line = readFileSync(join(d, "events.jsonl"), "utf8").trim();
+			expect(line.length).toBeLessThanOrEqual(70_000);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("normally-sized payloads are byte-identical (no marker, no truncation)", () => {
+		const d = tmpSpecDir();
+		try {
+			appendRunEvent(d, { runId: "r", type: "stage.completed", data: { durationMs: 1234, partial: false } });
+			const [e] = readRunEvents(d);
+			expect(e.data).toEqual({ durationMs: 1234, partial: false });
+			expect("dataTruncated" in e.data).toBe(false);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+});

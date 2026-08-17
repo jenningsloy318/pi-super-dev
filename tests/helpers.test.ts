@@ -46,6 +46,58 @@ describe("review-findings: verdict-layer blocking (F-A)", () => {
 	});
 });
 
+describe("AC-01 (SCENARIO-001): adversarial PASS verdict with a blocking high finding is downgraded to Changes Requested", () => {
+	it("PASS + blocking high finding ⇒ the adversarial review normalizes to Changes Requested and the merge is Changes Requested", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved", findings: [] },
+				"adversarial-review": {
+					verdict: "PASS",
+					findings: [{ id: "adv-1", severity: "high", status: "open", blocking: true, title: "Auth bypass in merge path", detail: "Token check skipped when header missing" }],
+				},
+			},
+		});
+		// normalizeReviewVerdict("adversarial-review", review) must yield
+		// { verdict: "Changes Requested", syntheticFindings: [] } — the strictest
+		// candidate then pins the merged verdict.
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
+});
+
+describe("AC-01 (SCENARIO-002): adversarial PASS verdict with only advisory findings stays Approved", () => {
+	it("PASS + low non-blocking advisory finding ⇒ no downgrade", async () => {
+		const r = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved", findings: [] },
+				"adversarial-review": {
+					verdict: "PASS",
+					findings: [{ id: "adv-2", severity: "low", status: "open", blocking: false, title: "Typo in README", detail: "…" }],
+				},
+			},
+		});
+		// neither reviewHasBlockingVerdictFinding nor reviewHasHighSeverityFinding
+		// is true ⇒ { verdict: "Approved", syntheticFindings: [] }
+		expect(r.value.verdict).toBe("Approved");
+	});
+});
+
+describe("AC-01 (SCENARIO-003): PASS with a high-severity non-blocking finding downgrades exactly like the approve family", () => {
+	it("PASS + open High non-blocking finding ⇒ the severity fallback fires (Changes Requested)", async () => {
+		const findings = [{ id: "adv-3", severity: "high", status: "open", blocking: false, title: "Race in cache writer", detail: "…" }];
+		const r = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved", findings: [] }, "adversarial-review": { verdict: "PASS", findings } } });
+		expect(r.value.verdict).toBe("Changes Requested");
+	});
+	it("PASS parity with the approve family on the blocking finding (the identical review with verdict 'Approved' already merges to Changes Requested)", async () => {
+		const findings = [{ id: "adv-3", severity: "high", status: "open", blocking: true, title: "Auth bypass in merge path", detail: "Token check skipped when header missing" }];
+		const pass = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved", findings: [] }, "adversarial-review": { verdict: "PASS", findings } } });
+		const approved = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved", findings: [] }, "adversarial-review": { verdict: "Approved", findings } } });
+		expect(pass.value.verdict).toBe("Changes Requested");
+		expect(approved.value.verdict).toBe("Changes Requested");
+	});
+});
+
 describe("helpers: classify-task", () => {
 	it("classifies a fix as a bug", async () => {
 		const r = await runHelper({ name: "classify-task", sources: { setup: { language: "rust", isWebUi: false } }, options: { runtimeTask: "fix the login crash" } });
@@ -80,9 +132,12 @@ describe("helpers: gates", () => {
 			writeFileSync(docPath, ["# Spec Review", "## Dimensions",
 				"Completeness: pass.", "Consistency: pass.", "Feasibility: pass.", "Testability: pass.",
 				"Traceability: pass.", "Grounding: pass.", "Complexity: pass.", "Ambiguity: pass."].join("\n"));
-			const ok = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Approved with Comments", docPath } } });
+			// D7 (AC-16) audit: readSpecDoc only reads control paths INSIDE the spec
+			// dir — give the gate the doc's parent as its spec dir.
+			const setup = { specDirectory: `${dir}/` };
+			const ok = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Approved with Comments", docPath }, setup } });
 			expect(ok.value.pass).toBe(true);
-			const bad = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Changes Requested", docPath } } });
+			const bad = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Changes Requested", docPath }, setup } });
 			expect(bad.value.pass).toBe(false);
 			// missing doc → explicit shape error (blocks downgrade-approvals)
 			const docless = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Approved with Comments" } } });
@@ -125,7 +180,7 @@ describe("helpers: routing", () => {
 		const reject = await runHelper({ name: "merge-review-verdicts", sources: { "code-review": { verdict: "Approved" }, "adversarial-review": { verdict: "REJECT" } } });
 		expect(reject.value.verdict).toBe("Blocked");
 	});
-	it("merge-review-verdicts does not let a verified prior high-severity note block CONTEST", async () => {
+	it("merge-review-verdicts: AC-35 flip — a high-severity note verified only by TITLE prose now pins the verdict (explicit status required to de-fang)", async () => {
 		const r = await runHelper({
 			name: "merge-review-verdicts",
 			sources: {
@@ -141,7 +196,28 @@ describe("helpers: routing", () => {
 				},
 			},
 		});
-		expect(r.value.verdict).toBe("Approved with Comments");
+		// spec-28 review F-1 / AC-35: high-class severity is an explicit signal —
+		// the "verified" prose in title/detail no longer suppresses it without an
+		// explicit status field. The merge pins the stricter verdict (in the
+		// helper's own vocabulary: Changes Requested).
+		expect(r.value.verdict).toBe("Changes Requested");
+		// with an EXPLICIT verified status the note still de-fangs (unchanged):
+		const r2 = await runHelper({
+			name: "merge-review-verdicts",
+			sources: {
+				"code-review": { verdict: "Approved" },
+				"adversarial-review": {
+					verdict: "CONTEST",
+					findings: [{
+						id: "skeptic-auth-url-secret-logging",
+						severity: "high",
+						status: "verified",
+						title: "Prior finding verified: auth-route URL-carried secrets are no longer logged",
+					}],
+				},
+			},
+		});
+		expect(r2.value.verdict).toBe("Approved with Comments"); // findings exist → Comments
 	});
 	it("merge-review-verdicts downgrades Changes Requested when every finding is non-blocking", async () => {
 		const r = await runHelper({

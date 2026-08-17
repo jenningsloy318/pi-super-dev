@@ -4,7 +4,7 @@
  * createMemoizingAgent wrapper (incl. the loop-iteration seq disambiguation).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,6 +178,54 @@ describe("createMemoizingAgent", () => {
 // grant itself FRESH rounds after its replay (effectiveCap = min(prior + cap,
 // 3×cap)). Exact-prefix matching: pipeline.specReview@... must NOT count toward
 // pipeline.spec.
+// ── R8 (AC-21 fix-in-pass): torn-line repair + per-corrupt-line warning.
+describe("R8 — torn-line repair + corrupt-line warning", () => {
+	it("appendResumeResult repairs a torn (newline-less) trailing line: the good row survives as its own line", () => {
+		const d = tmpDir();
+		try {
+			// simulate a crash mid-write: a half line with NO trailing newline
+			writeFileSync(resumeCachePath(d), '{"key":"pipeline.x@root#1","result":{', "utf8");
+			appendResumeResult(d, "pipeline.y@root#1", result({ ok: 1 }));
+			const map = loadResumeCache(d);
+			expect(map.has("pipeline.x@root#1")).toBe(false); // the torn entry is lost by design (one-shot repair)
+			expect(map.get("pipeline.y@root#1")?.control).toEqual({ ok: 1 }); // the next good entry is saved
+			const lines = readFileSync(resumeCachePath(d), "utf8").split("\n").filter(Boolean);
+			expect(lines).toHaveLength(2); // the torn fragment is its own (dead) line; the good row is intact
+			expect(lines[1]).toContain("pipeline.y@root#1");
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("appendResumeResult is unchanged when the file is empty or ends with a newline", () => {
+		const d = tmpDir();
+		try {
+			appendResumeResult(d, "a#1", result({ x: 1 }));
+			appendResumeResult(d, "a#2", result({ x: 2 }));
+			const lines = readFileSync(resumeCachePath(d), "utf8").split("\n").filter(Boolean);
+			expect(lines).toHaveLength(2);
+			expect(loadResumeCache(d).size).toBe(2);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("loadResumeCache warns exactly once per skipped corrupt line", () => {
+		const d = tmpDir();
+		try {
+			writeFileSync(resumeCachePath(d), [
+				"not-json-at-all",
+				JSON.stringify({ key: "good@root#1", result: { text: "", control: {}, model: "t" } }),
+				'{"broken":',
+			].join("\n") + "\n");
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				const map = loadResumeCache(d);
+				expect(map.size).toBe(1); // only the good row loads
+				expect(warn.mock.calls.filter((c) => String(c[0]).includes("[resume] skipping unparseable cache line"))).toHaveLength(2);
+			} finally {
+				warn.mockRestore();
+			}
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+});
+
 describe("countStageRounds (F3 resume round budget)", () => {
 	it("counts the max persisted occurrence for the exact call id", () => {
 		const d = mkdtempSync(join(tmpdir(), "sd-count-rounds-"));

@@ -62,7 +62,7 @@ describe("self-contained engine structure", () => {
 describe("node algebra exports", () => {
 	it("exports all control-flow nodes", () => {
 		const src = readFileSync(join(ROOT, "src", "nodes.ts"), "utf8");
-		for (const name of ["task", "sequence", "branch", "choose", "parallel", "loop", "retry", "gate", "map", "wait", "waitForEvent", "tryCatch", "noop"]) {
+		for (const name of ["task", "sequence", "branch", "choose", "parallel", "loop", "retry", "gate", "map", "wait", "tryCatch", "noop"]) {
 			expect(src).toContain(`export function ${name}`);
 		}
 	});

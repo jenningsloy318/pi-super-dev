@@ -35,7 +35,7 @@ stop commands are no longer supported.
 
 ## Extension version metadata
 
-The extension metadata is currently `super-dev v0.1.25`. The TUI dashboard,
+The extension metadata is currently `super-dev v0.2.1`. The TUI dashboard,
 run log, `src/version.ts`, `package.json`, and `package-lock.json` use the same
 npm-valid semver value.
 

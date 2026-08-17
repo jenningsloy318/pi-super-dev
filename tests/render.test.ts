@@ -4,10 +4,15 @@
  *  2. Schema validation: TypeBox catches missing/invalid data.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { render } from "../src/render/template-engine.ts";
-import { validateData, renderStage } from "../src/render/render.ts";
+import { validateData, renderStage, renderAndWrite } from "../src/render/render.ts";
+import { extractAcceptanceCriteriaIds } from "../src/doc-validators.ts";
 import { BddData as BddSchema, RequirementsData as ReqSchema } from "../src/render/schemas.ts";
+import type { SetupControl } from "../src/types.ts";
 
 // ─── 1. Template engine ─────────────────────────────────────────────────────
 
@@ -65,6 +70,57 @@ describe("schema validation (TypeBox Value.Errors)", () => {
 	});
 });
 
+// ── AC-27 (SCENARIO-055/056): AC ids must match ^AC-\d{2,}$ at RENDER time ──
+describe("schema validation: AC-id patterns (AC-27)", () => {
+	let dir: string;
+	beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "sd-render-acid-")); });
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+	const mkSetup = (): SetupControl => ({
+		worktreePath: dir,
+		specDirectory: `${dir}/`,
+		defaultBranch: "main",
+		language: "backend",
+		isWebUi: false,
+		specIdentifier: "acid",
+		worktreeCreated: false,
+		initializedRepo: false,
+	} as SetupControl);
+	const requirementsControl = (ids: string[]) => ({
+		title: "T", date: "2026-08-17", type: "feature", priority: "high",
+		executiveSummary: "e", acceptanceCriteria: ids.map((id) => ({ id, statement: `must satisfy ${id}` })),
+		nonFunctional: ["nf"],
+	});
+
+	it("SCENARIO-055: ids [\"1\",\"2\"] FAIL validation and no requirements doc is written", () => {
+		const errors = validateData(ReqSchema, requirementsControl(["1", "2"]));
+		expect(errors.length).toBeGreaterThan(0);
+		// the pattern constraint is what fired (path renders as $ in this typebox)
+		expect(errors.some((e) => e.includes("must match pattern") && e.includes("AC-"))).toBe(true);
+		const out = renderStage("requirements", requirementsControl(["1", "2"]));
+		expect(out.errors.length).toBeGreaterThan(0);
+		expect(out.markdown).toBe("");
+		const written = renderAndWrite(mkSetup(), () => {}, "requirements", requirementsControl(["1", "2"]));
+		expect(written).toBeNull();
+		expect(readdirSync(dir).filter((f) => f.endsWith(".md"))).toEqual([]);
+	});
+	it("SCENARIO-055: a BddScenario.acRef without the AC-NN shape also fails", () => {
+		const bad = {
+			title: "Test", date: "2026-01-01", source: "./01-requirements.md",
+			features: [{ name: "F1", scenarios: [{ id: "001", title: "T", acRef: "01", priority: "high", given: "g", when: "w", then: "t" }] }],
+		};
+		expect(validateData(BddSchema, bad).length).toBeGreaterThan(0);
+	});
+	it("SCENARIO-056: ids [\"AC-01\",\"AC-02\"] pass and render tokens extractAcceptanceCriteriaIds parses", () => {
+		const control = requirementsControl(["AC-01", "AC-02"]);
+		expect(validateData(ReqSchema, control)).toEqual([]);
+		const out = renderStage("requirements", control);
+		expect(out.errors).toEqual([]);
+		const parsed = extractAcceptanceCriteriaIds(out.markdown);
+		expect(parsed).toContain("AC-01");
+		expect(parsed).toContain("AC-02");
+	});
+});
+
 // ─── 4. Requirements render pipeline ─────────────────────────────────────────
 
 describe("render pipeline: requirements", () => {
@@ -82,6 +138,48 @@ describe("render pipeline: requirements", () => {
 		expect(result.markdown).toMatch(/Executive Summary/);
 		expect(result.markdown).toMatch(/Non-Functional/);
 		expect(result.markdown).toMatch(/Performance/);
+	});
+});
+
+	// ─── 4b. BDD coverage summary is COMPUTED or omitted (AC-14) ─────────────
+describe("render pipeline: bdd coverage summary (AC-14)", () => {
+	const scenario = (id: string, acRef: string) => ({ id, title: `behavior ${id}`, acRef, priority: "high", given: "g", when: "w", then: "t" });
+
+	it("SCENARIO-031: 20 scenarios and NO traceability ⇒ the entire Coverage Summary block is omitted", () => {
+		const result = renderStage("bdd", {
+			title: "No Trace", date: "2026-01-01", source: "./01-requirements.md",
+			features: [{ name: "F", scenarios: Array.from({ length: 20 }, (_, i) => scenario(String(i + 1).padStart(3, "0"), "AC-01")) }],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).not.toContain("Coverage Summary");
+		expect(result.markdown).not.toContain("Uncovered:");
+		expect(result.markdown).not.toContain("Covered by Scenarios:");
+		expect(result.markdown).toContain("Total Scenarios**: 20"); // header count stays
+	});
+
+	it("SCENARIO-032: partial traceability renders the COMPUTED covered/uncovered counts (distinct AC ids, redundant refs deduped)", () => {
+		const result = renderStage("bdd", {
+			title: "Partial Trace", date: "2026-01-01", source: "./01-requirements.md",
+			features: [{ name: "F", scenarios: [scenario("001", "AC-01"), scenario("002", "AC-02"), scenario("003", "AC-03")] }],
+			traceability: [
+				{ acId: "AC-01", description: "first", scenarios: ["SCENARIO-001", "SCENARIO-002"] }, // AC-01 redundantly re-referenced
+				{ acId: "AC-01", description: "first (dup)", scenarios: ["SCENARIO-001"] },
+				{ acId: "AC-02", description: "second", scenarios: ["SCENARIO-002"] },
+				{ acId: "AC-03", description: "third", scenarios: ["SCENARIO-003"] },
+				{ acId: "AC-04", description: "fourth", scenarios: [] },
+				{ acId: "AC-05", description: "fifth", scenarios: [] },
+			],
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.markdown).toContain("## Coverage Summary");
+		expect(result.markdown).toContain("Total Acceptance Criteria**: 5");
+		// the bolded bullet renders as "**Covered by Scenarios**: 3" — match the
+		// observable count robust to the markdown emphasis markers.
+		expect(result.markdown).toMatch(/Covered by Scenarios\*{0,2}: 3/);
+		expect(result.markdown).toMatch(/Uncovered\*{0,2}: 2/);
+		expect(result.markdown).toContain("(AC-04, AC-05)");
+		expect(result.markdown).toContain("Total Scenarios**: 3");
+		expect(result.markdown).not.toMatch(/Uncovered\*{0,2}: 0/);
 	});
 });
 

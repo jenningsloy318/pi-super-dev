@@ -438,6 +438,64 @@ describe("runRedCheck — npm / vitest / jest classification", () => {
 		}
 	});
 
+	// ─── R7 (spec-28) — the bare `❯` glyph is NOT a trustworthy red marker (it
+	// also frames PASSING runs in vitest output); the remaining markers (`^✖`,
+	// `^FAIL`, `failing tests`, `AssertionError`, `Tests: N failed`) cover every
+	// real failing-test shape, including output WITHOUT any `❯`.
+	describe("R7 — npm red classification without the ❯ glyph", () => {
+		it("jest `FAIL <path>` + `Tests: N failed` (no ❯) still classifies red", () => {
+			const d = tmpProj((dir) =>
+				writeFileSync(
+					join(dir, "package.json"),
+					JSON.stringify({ name: "x", scripts: { test: "jest" }, devDependencies: { jest: "29" } }),
+				),
+			);
+			try {
+				mockRunner(out(1, "FAIL src/fail.test.js\nTests: 2 failed, 3 passed"));
+				expect(runRedCheck(d, ["src/fail.test.js"])).toBe("red");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("node:test `✖ <name>` + `failing tests:` summary (no ❯) still classifies red", () => {
+			const d = tmpProj((dir) =>
+				writeFileSync(
+					join(dir, "package.json"),
+					JSON.stringify({ name: "x", scripts: { test: "node --test" } }),
+				),
+			);
+			try {
+				mockRunner(out(1, "✖ red behavior (2ms)\n# failing tests:\nAssertionError [ERR_ASSERTION]: expected values to be strictly equal"));
+				expect(runRedCheck(d, ["src/fail.test.mjs"])).toBe("red");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("a bare `Tests  N failed` summary with NO other marker (no ❯) still classifies red", () => {
+			const d = vitestProj();
+			try {
+				mockRunner(out(1, "Test Files  (1)\n     Tests  1 failed | 2 passed (3)"));
+				expect(runRedCheck(d, ["src/fail.test.ts"])).toBe("red");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("an output whose ONLY marker is the `❯` glyph classifies unknown (glyph-only red is gone)", () => {
+			const d = vitestProj();
+			try {
+				// A source-frame `❯` line with no failing-test marker — exactly the
+			// passing-run frame shape. The glyph alone must not bless a RED.
+				mockRunner(out(1, " ❯ src/passing-shape.test.ts:4:5"));
+				expect(runRedCheck(d, ["src/passing-shape.test.ts"])).toBe("unknown");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+	});
+
 	it("classifies ambiguous nonzero npm output (no recognized marker) as unknown", () => {
 		const d = vitestProj();
 		try {
@@ -552,11 +610,14 @@ describe("runRedCheck — pytest classification", () => {
 		}
 	});
 
-	it("classifies an `error` summary + exit≠0 as red", () => {
+	it("SCENARIO-048 (spec-28 pin flip): a BARE `error` summary with no test-failure marker classifies unknown — never red", () => {
+		// The bare `\berror\b` → red path is GONE (AC-22): the word "error" alone
+		// is ambiguous (usage noise, plugin chatter) — it must not bless a RED.
+		// Unknown keeps the RED loop retrying instead of trusting the sample.
 		const d = pytestProj();
 		try {
 			mockRunner(out(1, "===== 1 error in 0.02s ====="));
-			expect(runRedCheck(d, ["tests/test_err.py"])).toBe("red");
+			expect(runRedCheck(d, ["tests/test_err.py"])).toBe("unknown");
 		} finally {
 			rmSync(d, { recursive: true, force: true });
 		}
@@ -570,6 +631,75 @@ describe("runRedCheck — pytest classification", () => {
 		} finally {
 			rmSync(d, { recursive: true, force: true });
 		}
+	});
+
+	// ─── AC-22 / ISS-02 (spec-28, SCENARIO-047/048) — pytest usage/collection
+	// errors are INFRASTRUCTURE failures (`broken`), never a RED sample; RED
+	// requires a trustworthy test-FAILURE marker. Probed against pytest 8.3.5:
+	// exit 4 = usage/CLI error (incl. `ERROR: file or directory not found`),
+	// exit 5 = no tests collected (`no tests ran` / `collected 0 items`).
+	describe("AC-22 — pytest usage/collection errors are broken, never red", () => {
+		it("SCENARIO-047: `ERROR: file or directory not found` (exit 4) classifies broken — never red", () => {
+			const d = pytestProj();
+			try {
+				mockRunner(out(4, "ERROR: file or directory not found: tests/test_x.py"));
+				const s = runRedCheck(d, ["tests/test_x.py"]);
+			expect(s).toBe("broken");
+			expect(s).not.toBe("red");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("SCENARIO-047: `ERROR: usage` (exit 4) classifies broken", () => {
+			const d = pytestProj();
+			try {
+				mockRunner(out(4, "ERROR: usage: pytest [options] [file_or_dir] [file_or_dir] [...]"));
+				expect(runRedCheck(d, ["tests/test_x.py"])).toBe("broken");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("SCENARIO-047: `no tests ran` (exit 5) classifies broken — not red, not unknown", () => {
+			const d = pytestProj();
+			try {
+				mockRunner(out(5, "collected 0 items\n\n========= no tests ran in 0.01s ========="));
+				expect(runRedCheck(d, ["tests/test_x.py"])).toBe("broken");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("`collected 0 items` in a longer summary also classifies broken", () => {
+			const d = pytestProj();
+			try {
+				mockRunner(out(5, "============================= test session starts =============================\nplatform linux\ncollected 0 items\n\n======================== no tests ran in 0.01s ========================"));
+				expect(runRedCheck(d, ["tests/test_x.py"])).toBe("broken");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("SCENARIO-048: a FAILED-test marker still classifies red", () => {
+			const d = pytestProj();
+			try {
+				mockRunner(out(1, "FAILED tests/test_x.py::test_a - assert 1 == 2\n===== 1 failed in 0.02s ====="));
+				expect(runRedCheck(d, ["tests/test_x.py"])).toBe("red");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
+
+		it("SCENARIO-048: a genuine pytest error traceback (`E   <error>` line) still classifies red", () => {
+			const d = pytestProj();
+			try {
+				mockRunner(out(1, "tests/test_x.py:5: in test_a\nE   RuntimeError: boom at runtime\n===== 1 error in 0.02s ====="));
+				expect(runRedCheck(d, ["tests/test_x.py"])).toBe("red");
+			} finally {
+				rmSync(d, { recursive: true, force: true });
+			}
+		});
 	});
 });
 

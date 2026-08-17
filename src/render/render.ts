@@ -63,10 +63,18 @@ export function validateData(schema: StageModel["schema"], data: unknown): strin
 function augmentData(stageId: string, data: Record<string, unknown>): Record<string, unknown> {
 	const augmented: Record<string, unknown> = { ...data, generatedAt: localTimestamp() };
 	if (stageId === "bdd") {
-		const features = (augmented.features as Array<{ scenarios: unknown[] }>) ?? [];
-		augmented.totalScenarios = features.reduce((sum, f) => sum + (f.scenarios?.length ?? 0), 0);
-		const traceability = augmented.traceability as Array<unknown> | undefined;
-		augmented.totalACs = traceability?.length ?? 0;
+		const features = (augmented.features as Array<{ scenarios?: unknown }>) ?? [];
+		// AC-14 (SCENARIO-031/032): coverage numbers are COMPUTED from the actual
+		// scenario acRefs against the distinct traceability AC set — never the
+		// model's self-report. totalACs dedupes (a redundant AC-01 row counts once).
+		const scenarios = features.flatMap((f) => (Array.isArray(f.scenarios) ? f.scenarios : [])) as Array<Record<string, unknown>>;
+		augmented.totalScenarios = scenarios.length;
+		const traceability = augmented.traceability as Array<{ acId?: unknown } | undefined> | undefined;
+		const acSet = [...new Set((traceability ?? []).map((t) => String(t?.acId ?? "").trim()).filter(Boolean))];
+		augmented.totalACs = acSet.length;
+		const scenarioAcRefs = new Set(scenarios.map((s) => String(s?.acRef ?? "").trim()).filter(Boolean));
+		augmented.coveredAcCount = acSet.filter((id) => scenarioAcRefs.has(id)).length;
+		augmented.uncoveredAcIds = acSet.filter((id) => !scenarioAcRefs.has(id));
 	}
 	return augmented;
 }

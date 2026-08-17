@@ -5,9 +5,10 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { getEventListeners } from "node:events";
 import { SUPER_DEV_WORKFLOW } from "../src/stages/index.ts";
-import { runWorkflow } from "../src/workflow.ts";
-import { gate, task, sequence } from "../src/nodes.ts";
+import { runWorkflow, sleepMs } from "../src/workflow.ts";
+import { gate, task, sequence, FatalAbort } from "../src/nodes.ts";
 import type { Node, NodeResult, PipelineState, Stage } from "../src/types.ts";
 
 describe("SUPER_DEV_WORKFLOW composition", () => {
@@ -182,5 +183,119 @@ describe("runWorkflow honest status", () => {
 		const s = await runWorkflow(wf(root), "t");
 		expect(s.status).toBe("partial");
 		expect(s.failedStages).toEqual([{ label: "Budgeted Stage", error: "budget exhausted" }]);
+	});
+});
+
+// ─── T7.6 / A-05 (NFR-6 pinning): workflow sleepMs removes its abort listener ──
+describe("A-05: sleepMs (workflow.ts) removes its abort listener on normal resolution", () => {
+	it("a resolved sleepMs leaves the signal's abort-listener count unchanged", async () => {
+		const controller = new AbortController();
+		const baseline = getEventListeners(controller.signal, "abort").length;
+		await sleepMs(5, controller.signal);
+		// RED today: the once-listener survives the timer resolution (+1 leak)
+		expect(getEventListeners(controller.signal, "abort").length).toBe(baseline);
+	});
+
+	it("a retry-heavy cadence on ONE shared run signal never accumulates listeners", async () => {
+		const controller = new AbortController();
+		const baseline = getEventListeners(controller.signal, "abort").length;
+		for (let i = 0; i < 12; i++) await sleepMs(1, controller.signal);
+		expect(getEventListeners(controller.signal, "abort").length).toBe(baseline);
+	});
+
+	it("an abort while sleeping resolves immediately (abort path preserved, listener gone)", async () => {
+		const controller = new AbortController();
+		const p = sleepMs(5_000, controller.signal);
+		controller.abort();
+		await p; // must not hang for 5s
+		expect(getEventListeners(controller.signal, "abort").length).toBe(0);
+	});
+});
+
+// ─── T7.2 / SD-05 (NFR-6 pinning): accepted fatal-gate limitations are never success ──
+//
+// A fatal gate whose escalation the user resolves with `accept-limitation`
+// returns {status:"ok"} from the gate — but the underlying artifact NEVER
+// validated. Without a recorded marker + status derivation, failedStages stays
+// empty and a green-looking run derives "success" with a foundational
+// artifact that never passed its gate.
+describe("SD-05: accept-limitation on a fatal gate yields partial, never success", () => {
+	const mockStage = (id: string, fn: (s: PipelineState) => unknown): Stage =>
+		({ id, label: id, async run(s) { return fn(s); } });
+
+	it("records state.__acceptedLimitations[feedbackKey] when the escalation accepts the limitation", async () => {
+		const writer = task(mockStage("requirements", () => 1));
+		const fatalGate = gate(
+			{ validate: () => ({ pass: false, errors: ["no requirements doc produced"] }), feedbackKey: "requirements", attempts: 1, fatal: true },
+			writer,
+		);
+		const root = sequence([fatalGate, seed({})]);
+		const s = await runWorkflow(wf(root), "t", { escalate: async () => ({ choice: "accept-limitation" }) });
+		// the acceptance stands — the gate returned ok and the run was not aborted
+		expect(s.error).toBeUndefined();
+		const marker = (s.state as Record<string, unknown>).__acceptedLimitations as Record<string, unknown> | undefined;
+		expect(marker).toBeDefined();
+		expect(marker?.["requirements"]).toBeDefined();
+	});
+
+	it("runWorkflow derives 'partial' (never 'success') for an accepted fatal-gate limitation", async () => {
+		const writer = task(mockStage("requirements", () => 1));
+		const fatalGate = gate(
+			{ validate: () => ({ pass: false, errors: ["no requirements doc produced"] }), feedbackKey: "requirements", attempts: 1, fatal: true },
+			writer,
+		);
+		const root = sequence([fatalGate, seed({ implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" } })]);
+		const s = await runWorkflow({ id: "t", root }, "t", { escalate: async () => ({ choice: "accept-limitation" }) });
+		expect(s.status).toBe("partial"); // RED today: "success"
+		expect((s.state as Record<string, unknown>).__acceptedLimitations).toBeDefined();
+	});
+});
+
+// ─── T7.4 / A-03 (NFR-6 pinning): __replan never masks a subsequent abort ─────
+//
+// The replan marker used to win the status derivation unconditionally: once
+// state.__replan was set, ANY later throw/cancellation was reclassified as
+// "replan" (auto-resumed by the extension) with the real error demoted to
+// summary.error. "replan" is only honest when the run was NOT aborted, or
+// when the abort IS the replan FatalAbort itself.
+describe("A-03: run-status derivation — replan only when not aborted", () => {
+	const marker = { rounds: 1, owners: ["requirements"] };
+	const impl = { implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" } };
+
+	it("marker set + a NON-replan crash afterwards → status 'failed', never 'replan'", async () => {
+		const root: Node = {
+			kind: "replan-then-crash",
+			async run(state) {
+				Object.assign(state, { __replan: marker, ...impl });
+				throw new Error("unexpected crash after the replan trigger");
+			},
+		};
+		const s = await runWorkflow(wf(root), "t");
+		expect(s.status).toBe("failed"); // RED today: "replan"
+		expect(s.error).toBe("unexpected crash after the replan trigger");
+	});
+
+	it("marker set + the REPLAN FatalAbort itself → status stays 'replan' (auto-resume intact)", async () => {
+		const root: Node = {
+			kind: "replan-fatal",
+			async run(state) {
+				Object.assign(state, { __replan: marker, ...impl });
+				throw new FatalAbort("requirements convergence: REPLAN at round cap — 2 upstream-owned blocking finding(s) routed back to their owning stage(s); restarting to revise");
+			},
+		};
+		const s = await runWorkflow(wf(root), "t");
+		expect(s.status).toBe("replan");
+	});
+
+	it("marker set + no abort → status 'replan' (the deliberate terminal outcome)", async () => {
+		const root: Node = {
+			kind: "replan-ok",
+			async run(state) {
+				Object.assign(state, { __replan: marker, ...impl });
+				return { status: "ok" };
+			},
+		};
+		const s = await runWorkflow(wf(root), "t");
+		expect(s.status).toBe("replan");
 	});
 });

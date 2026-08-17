@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Node, NodeResult, PipelineState, ServiceHandle, ServiceMap, Stage, StageContext } from "../types.ts";
 import { checkBashCommand } from "../safety.ts";
+import { SIGTERM_GRACE_MS } from "../pi-spawn.ts";
 
 /** How to start one service. `portEnv` is the env-var name that receives the
  *  chosen free port (e.g. "PORT"); `readyUrl` is polled (defaults to the base). */
@@ -52,14 +53,21 @@ export function pickFreePort(): Promise<number> {
 	});
 }
 
-/** Poll `url` until it responds 2xx or `timeoutMs` elapses. Returns readiness. */
-export async function waitForReady(url: string, timeoutMs = 20_000): Promise<boolean> {
+/** Poll `url` until it responds 2xx or `timeoutMs` elapses. Returns readiness.
+ *  AC-24 (SCENARIO-051): abortable — the signal is checked at the TOP of every
+ *  loop iteration and threaded into `fetch`, so an aborted poll breaks within
+ *  ≤ one 250 ms sleep (never waits out the full timeout). */
+export async function waitForReady(url: string, timeoutMs = 20_000, signal?: AbortSignal): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
+		if (signal?.aborted) return false;
 		try {
-			const res = await fetch(url);
+			const res = await fetch(url, { signal });
 			if (res.ok) return true;
 		} catch {
+			// AbortError (or any failure after an abort) — stop immediately; a
+			// genuine connection refusal falls through to the bounded sleep.
+			if (signal?.aborted) return false;
 			/* not up yet */
 		}
 		await new Promise((r) => setTimeout(r, 250));
@@ -94,7 +102,7 @@ export function loadDotEnv(cwd: string): Record<string, string> {
  *  port across a try/fallback ladder. On timeout the handle is returned with
  *  `ready:false` (the pid is still recorded so teardown can clean it up). Never
  *  throws — bringup records not-ready services and `withServiceDeps` skips. */
-export async function startService(spec: StartSpec, opts: { port?: number } = {}): Promise<ServiceHandle> {
+export async function startService(spec: StartSpec, opts: { port?: number; signal?: AbortSignal } = {}): Promise<ServiceHandle> {
 	const port = opts.port ?? (await pickFreePort());
 	// The service command is MODEL-DISCOVERED (assessment output) and runs via
 	// shell:true with the full env + .env — it never passes through the agent bash
@@ -121,23 +129,47 @@ export async function startService(spec: StartSpec, opts: { port?: number } = {}
 	child.unref();
 	const baseUrl = `http://127.0.0.1:${port}`;
 	const readyUrl = spec.readyUrl ?? `${baseUrl}${spec.readyPath ?? "/"}`;
-	const ready = await waitForReady(readyUrl, spec.readinessTimeoutMs ?? 20_000);
+	const ready = await waitForReady(readyUrl, spec.readinessTimeoutMs ?? 20_000, opts.signal);
 	return { role: spec.role, baseUrl, pid: child.pid ?? -1, port, cmd: spec.cmd, external: false, ready };
 }
 
 /** Kill a service. Detached spawns get their whole process group signaled
  *  (so a shell-spawned node server dies with its shell). External/reused
- *  services and invalid pids are left alone. Best-effort, never throws. */
+ *  services and invalid pids are left alone. Best-effort, never throws.
+ *  AC-24 (SCENARIO-050): a service that TRAPPED SIGTERM (registered listener,
+ *  never exits) is group-SIGKILLed after the SIGTERM grace — SIGKILL cannot be
+ *  caught, so the port is always released. */
 export function stopService(h: ServiceHandle): void {
 	if (h.external || h.pid < 0) return;
+	let signaled = false;
 	for (const target of [-h.pid, h.pid]) {
 		try {
 			process.kill(target, "SIGTERM");
-			return;
+			signaled = true;
+			break;
 		} catch {
 			/* try the next form */
 		}
 	}
+	if (!signaled) return;
+	const pid = h.pid;
+	// Bounded escalation watchdog (unref'd so it never holds the event loop).
+	const watchdog = setTimeout(() => {
+		try {
+			process.kill(-pid, 0); // group still alive → escalate
+		} catch {
+			return; // already gone — nothing to do
+		}
+		for (const target of [-pid, pid]) {
+			try {
+				process.kill(target, "SIGKILL");
+			return;
+			} catch {
+				/* try the next form */
+			}
+		}
+	}, SIGTERM_GRACE_MS);
+	watchdog.unref?.();
 }
 
 /** Heuristic detection of how to start the api/ui services for a project.
@@ -204,12 +236,17 @@ function candidatesFor(role: "api" | "ui", override: { api?: unknown; ui?: unkno
 }
 
 /** Try each candidate on the SAME port until one readiness-passes; kill the
- *  failures. Returns the ready handle, or null if none came up. */
-async function tryStartService(role: "api" | "ui", candidates: StartSpec[], port: number, log: (m: string) => void, perAttemptMs = 12_000): Promise<ServiceHandle | null> {
+ *  failures. Returns the ready handle, or null if none came up.
+ *  AC-24 (SCENARIO-051): the run's AbortSignal is threaded into every
+ *  readiness poll AND checked BETWEEN candidates — an aborted run returns null
+ *  without spawning the next candidate. */
+async function tryStartService(role: "api" | "ui", candidates: StartSpec[], port: number, log: (m: string) => void, perAttemptMs = 12_000, signal?: AbortSignal): Promise<ServiceHandle | null> {
 	for (const spec of candidates) {
-		const h = await startService({ ...spec, readinessTimeoutMs: perAttemptMs }, { port });
+		if (signal?.aborted) return null; // never start the next candidate
+		const h = await startService({ ...spec, readinessTimeoutMs: perAttemptMs }, { port, signal });
 		if (h.ready) return h;
 		stopService(h);
+		if (signal?.aborted) return null;
 		log(`bringup ${role}: "${spec.cmd}" did not become ready; trying next candidate…`);
 	}
 	return null;
@@ -236,7 +273,7 @@ export const bringupTask: Stage = {
 		for (const role of roles) {
 			const port = await pickFreePort();
 			const candidates = candidatesFor(role, override, detected, cwd);
-			const h = await tryStartService(role, candidates, port, (m) => ctx.log(m));
+			const h = await tryStartService(role, candidates, port, (m) => ctx.log(m), 12_000, ctx.signal);
 			if (h) services[role] = h;
 			else ctx.log(`bringup ${role}: could not start any candidate (tried ${candidates.map((c) => `"${c.cmd}"`).join(", ")})`);
 		}

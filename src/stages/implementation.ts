@@ -99,8 +99,14 @@ function changeFootprint(record: ChangeRecord | null, changes: StructuredChanges
 }
 
 function repeatedNoProgress(history: ProgressSignature[], next: ProgressSignature): boolean {
-	const previous = history[history.length - 1];
-	return !!previous && previous.failure === next.failure && previous.footprint === next.footprint;
+	// H3 (spec-28, AC-03 → SCENARIO-006/007): ANY earlier matching entry is
+	// non-progress — A→B→A→B oscillation slipped the old consecutive-only
+	// (`history[last]`) check forever because every attempt differed from the
+	// immediately-preceding one. Mirrors the RED loop's
+	// `redProgressHistory.includes(signature)` (RC-3). Empty history ⇒ false —
+	// the first attempt is never no-progress, and strictly fresh signatures
+	// (A,B,C,D,…) never trip (escalation paths untouched).
+	return history.some((h) => h.failure === next.failure && h.footprint === next.footprint);
 }
 
 function redEvidenceSignature(e: RedEvidence): string {
@@ -175,12 +181,23 @@ function phaseTaskDescriptions(specControl: ControlObj | null | undefined, phase
 function expectedScenariosForPhase(phase: unknown, specControl: ControlObj | null | undefined, bddControl: ControlObj | null | undefined): string[] {
 	const p = (phase && typeof phase === "object") ? phase as Record<string, unknown> : {};
 	const phaseName = String(p.name ?? "");
+	// AC-06 (spec-28, SCENARIO-013/014): task-level `scenarioRefs` for the
+	// phase's own tasks are a first-class explicit source, merged BEFORE the
+	// fallbacks — a multi-phase spec mapped only via `tasks[].scenarioRefs`
+	// gives each phase its TASK SUBSET, never the full spec set (which would
+	// demand every phase test every scenario). Mirrors `phaseScenarioRefsFor`
+	// in prompts.ts. The full spec.scenarioRefs fallback fires ONLY when both
+	// the phase-level AND task-level refs are empty (ordering unchanged).
+	const taskScenarioRefs = (Array.isArray(specControl?.tasks) ? specControl.tasks as Array<Record<string, unknown>> : [])
+		.filter((task) => typeof task.phase === "string" && task.phase.trim() === phaseName)
+		.flatMap((task) => scenarioIdsFromUnknown(task.scenarioRefs));
 	const explicit = uniqueScenarioIds([
 		...scenarioIdsFromUnknown(p.scenarioRefs),
 		...scenarioIdsFromUnknown(p.scenarios),
 		...scenarioIdsFromUnknown(p.name),
 		...scenarioIdsFromUnknown(p.description),
 		...scenarioIdsFromUnknown(phaseTaskDescriptions(specControl, phaseName)),
+		...taskScenarioRefs,
 	]);
 	if (explicit.length) return explicit;
 	const specRefs = extractScenarioRefsFromControl(specControl ?? undefined);

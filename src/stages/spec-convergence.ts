@@ -2,6 +2,7 @@ import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
 import { enforceReviewerConvergenceDuty, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
+import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import {
 	blockingConvergenceFindings,
@@ -17,7 +18,7 @@ import {
 } from "../convergence-ledger.ts";
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
-import { MAX_CONVERGENCE_ROUNDS, PROGRESS_EXTENSION_ROUNDS } from "./artifact-convergence.ts";
+import { MAX_CONVERGENCE_ROUNDS, effectiveRoundCap, extendedRoundCap } from "./artifact-convergence.ts";
 import { countStageRounds } from "../resume.ts";
 import { triggerReplanForFindings } from "../replan/replan.ts";
 
@@ -128,8 +129,13 @@ export const specConvergenceNode: Node = {
 		// before the user's new guidance could reach the writer (runs 05-46 /
 		// 06-02). Hard cumulative ceiling 3× the base cap.
 		const priorRounds = state.setup?.specDirectory ? countStageRounds(state.setup.specDirectory, "pipeline.spec") : 0;
-		let effectiveCap = Math.min(priorRounds + maxRounds, maxRounds * 3);
+		// AC-17 (SCENARIO-037): shared clamped arithmetic — the ceiling wins over
+		// priorRounds growth (equals, never exceeds, 3 × maxRounds).
+		let effectiveCap = effectiveRoundCap(maxRounds, priorRounds);
 		if (effectiveCap > maxRounds) ctx.log(`spec convergence: resuming after ${priorRounds} recorded round(s) — round budget extended to ${effectiveCap}`);
+		// AC-17 (SCENARIO-038): the recorded REVIEW rounds — strict progress may
+		// only arm on a FRESH (cache-miss) review reading.
+		const priorReviewRounds = state.setup?.specDirectory ? countStageRounds(state.setup.specDirectory, "pipeline.specReview") : 0;
 		// F2 (RC1): strict-progress tracking for the one-shot cap extension.
 		let prevOwnOpen = Number.POSITIVE_INFINITY;
 		let lastOwnOpen = Number.POSITIVE_INFINITY;
@@ -148,11 +154,15 @@ export const specConvergenceNode: Node = {
 		while (ctx.budget.check()) {
 			round++;
 			if (ctx.signal?.aborted) return { status: "cancelled" as const };
-			if (round > effectiveCap) {
+			// AC-17 (SCENARIO-038): the cap gate also requires a FRESH round —
+			// replayed rounds (round ≤ priorRounds) never fatal/extend/replan; at
+			// priorRounds ≥ 3×cap exactly ONE fresh writer round executes first.
+			if (round > effectiveCap && round > priorRounds + 1) {
 				// F2: strict progress at the cap — one bounded extension.
 				if (!progressExtensionUsed && prevOwnOpen !== Number.POSITIVE_INFINITY && lastOwnOpen < prevOwnOpen && lastOwnOpen > 0) {
 					progressExtensionUsed = true;
-					effectiveCap += PROGRESS_EXTENSION_ROUNDS;
+					// AC-17 (SCENARIO-037): re-clamped to the 3× ceiling — never 3×cap + 4.
+					effectiveCap = extendedRoundCap(effectiveCap, maxRounds);
 					ctx.log(`spec convergence: cap extended to ${effectiveCap} — strict progress (own open blocking ${prevOwnOpen === Number.POSITIVE_INFINITY ? "?" : prevOwnOpen} → ${lastOwnOpen})`);
 				} else {
 					// F1: before the fatal, route upstream-owned blockers back.
@@ -266,14 +276,39 @@ export const specConvergenceNode: Node = {
 			// contract alone could not stop fresh medium blockers from keeping
 			// the loop open until the cap killed the run).
 			reviewRound++;
-			const downgraded = enforceReviewerConvergenceDuty(specReviewControl, reviewRound, { stage: "spec", knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)) });
-			if (downgraded > 0) ctx.log(`spec convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
+			// AC-17 (SCENARIO-038): FRESH review readings only — a replayed reading
+			// never arms the strict-progress extension.
+			const freshReviewReading = reviewRound > priorReviewRounds;
+			const downgraded = enforceReviewerConvergenceDuty(specReviewControl, reviewRound, {
+				stage: "spec",
+				knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)),
+				// M22 (SCENARIO-068): verbatim restatements of live blocking ledger
+				// findings are shielded from the downgrade by convergence fingerprint
+				// (the review findings recorded under the "spec-review" source gate).
+				knownBlockingFingerprints: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.fingerprint)),
+				reviewSourceGate: "spec-review",
+			});
+			if (downgraded > 0) {
+				ctx.log(`spec convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
+				// B8 (fix-in-pass, SCENARIO-068): the enforcement MUTATED the spec-review
+				// control in place — re-render the review doc (per-slug reuse via
+				// renderAndWrite, idempotent) so the on-disk artifact matches the
+				// enforced classifications. Best-effort: a schema-invalid control renders
+				// nothing (null) and a failed write must never kill the loop.
+				try {
+					if (state.setup && specReviewControl) renderAndWrite(state.setup, (m) => ctx.log(m), "specReview", specReviewControl as Record<string, unknown>);
+				} catch { /* best-effort re-render */ }
+			}
 			// G1 (code-review G1-GATE-OVERRIDE): a downgrade-approval may
 			// override ONLY the verdict-wording failure — review-DOC shape
 			// errors (missing dimensions/doc) are real gate failures that must
 			// still reject. And per F-A verdict pinning, needs-human findings
 			// pin approval only via their own blocking flag / high severity.
 			const shapeErrors = (review.errors ?? []).filter((e) => !e.startsWith("Verdict is"));
+			// M8 (SCENARIO-039/040): the gate's own verdict pass is the GENUINE
+			// approval signal — a duty override may converge the loop, but replan
+			// consumption and the replan verified-flip below gate on review.pass alone.
+			const genuineApproval = review.pass;
 			const approved = (review.pass || (downgraded > 0 && shapeErrors.length === 0)) && !reviewHasBlockingVerdictFinding(specReviewControl);
 			if (review.pass && !approved) ctx.log("spec convergence: review verdict approved but blocking finding(s) are present — treating as rejection");
 			if (approved) {
@@ -286,13 +321,16 @@ export const specConvergenceNode: Node = {
 				markConvergenceFindingsVerified(state, (finding) => {
 					if (finding.downgradeReason) return false; // duty-enforced advisories stay visible in the ledger
 					const detected = normalizeConvergenceStage(finding.detectedAtStage, "implementation");
-					return detected === "spec" || detected === "specReview" || String(finding.detectedAtStage) === "replan";
+					return detected === "spec" || detected === "specReview" || (genuineApproval && String(finding.detectedAtStage) === "replan");
 				});
 				clearSpecFeedback(state);
-				// R3: the spec reviewer's approval verifies the revision — flip the
-				// persisted requests to addressed only now.
-				const consumedReplan = consumeReplanRequests(state.setup?.specDirectory, "spec");
-				if (consumedReplan > 0) ctx.log(`spec convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
+				if (genuineApproval) {
+					// R3 (SCENARIO-040): the spec reviewer's GENUINE approval verifies the
+					// revision — flip the persisted requests to addressed only now (never on
+					// a duty override — SCENARIO-039).
+					const consumedReplan = consumeReplanRequests(state.setup?.specDirectory, "spec");
+					if (consumedReplan > 0) ctx.log(`spec convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
+				}
 				ctx.log(`spec convergence: ✓ trace + review approved (round ${round}${round > 1 ? ", after feedback" : ""})`);
 				return { status: "ok" as const, attempts: round };
 			}
@@ -301,9 +339,15 @@ export const specConvergenceNode: Node = {
 			lastErrors = [...review.errors, ...compactReviewFindings(state.specReview as ControlObj | undefined)];
 			const upstream = upstreamBlockingSummary(state);
 			if (upstream.length) lastErrors.push(`upstream-owned blocking findings remain: ${upstream.join("; ")}`);
-			// F2: track own open blocking count for the strict-progress extension.
-			prevOwnOpen = lastOwnOpen;
-			lastOwnOpen = blockingConvergenceFindings(state).filter((f) => f.ownerStage === "spec").length;
+			// F2: track own open blocking count for the strict-progress extension —
+			// FRESH readings only (AC-17: replayed readings carry no fresh signal).
+			if (freshReviewReading) {
+				prevOwnOpen = lastOwnOpen;
+				lastOwnOpen = blockingConvergenceFindings(state).filter((f) => f.ownerStage === "spec").length;
+			} else {
+				prevOwnOpen = Number.POSITIVE_INFINITY;
+				lastOwnOpen = Number.POSITIVE_INFINITY;
+			}
 			// F1 (RC3): identical upstream-owned signature twice in a row — the
 			// spec writer has had its chance; route back to the owning stages via
 			// the replan circuit (bounded restart, auto-resume) instead of

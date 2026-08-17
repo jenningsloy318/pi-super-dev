@@ -28,8 +28,8 @@
  * Kill switch: SUPER_DEV_DISABLE_JUDGE=1 makes runJudge degrade instantly.
  */
 
-import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
-import { join, isAbsolute } from "node:path";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { join, isAbsolute, sep } from "node:path";
 import { buildJudgePrompt } from "../prompts.ts";
 import { appendRunEvent } from "../runlog.ts";
 import type { StageContext } from "../types.ts";
@@ -122,11 +122,15 @@ function boundedRead(path: string): string {
 }
 
 /**
- * Verify each evidence item: file resolves under the worktree (or is absolute
- * and exists), and the quote byte-occurs in that file OR in one of the supplied
- * captured outputs. Returns per-item failures; empty array = fully verified.
- * The WORKTREE is the only relative base — never the process cwd (a host-repo
- * same-named path must not false-verify a fabricated location).
+ * Verify each evidence item: RELATIVE file paths resolve — and are CONTAINED —
+ * under the worktree (realpath both sides, so `..` traversal and symlink
+ * indirection cannot cite host files; B5), absolute paths are allowed by
+ * design (documented allowance — the judge runs source-read-only on the host
+ * and may cite host-visible build output), and the quote byte-occurs in that
+ * file OR in one of the supplied captured outputs. Returns per-item failures;
+ * empty array = fully verified. The WORKTREE is the only relative base —
+ * never the process cwd (a host-repo same-named path must not false-verify a
+ * fabricated location).
  */
 export function verifyJudgeEvidence(verdict: JudgeVerdict, worktreePath: string, outputTails: string[]): string[] {
 	const failures: string[] = [];
@@ -136,6 +140,17 @@ export function verifyJudgeEvidence(verdict: JudgeVerdict, worktreePath: string,
 	if (verdict.evidence.length > MAX_EVIDENCE_ITEMS) {
 		failures.push(`evidence has ${verdict.evidence.length} items (max ${MAX_EVIDENCE_ITEMS})`);
 	}
+	// B4 (NFR-6): an evidence array whose items are ALL empty/whitespace is
+	// MALFORMED (fabricated shape), not MISSING — it discards on every route
+	// (including escalate-now), never taking the missing-evidence degrade.
+	// "the judge attached nothing" ([]) and "the judge attached garbage"
+	// (all-blank items) are different failure classes.
+	const allEmpty = verdict.evidence.length > 0 && verdict.evidence.every((ev) => !String(ev.file ?? "").trim() && !String(ev.quote ?? "").trim());
+	if (allEmpty) failures.push("evidence is malformed: every item is empty/whitespace");
+	// B5: realpath the worktree ONCE per call (both containment comparisons use
+	// it); falls back to the given path when realpath is unavailable.
+	let worktreeReal: string | undefined;
+	try { worktreeReal = realpathSync(worktreePath); } catch { worktreeReal = undefined; }
 	for (const [i, ev] of verdict.evidence.entries()) {
 		const file = String(ev.file ?? "").trim();
 		const quote = String(ev.quote ?? "");
@@ -146,6 +161,19 @@ export function verifyJudgeEvidence(verdict: JudgeVerdict, worktreePath: string,
 		}
 		const resolved = isAbsolute(file) ? file : join(worktreePath, file.replace(/^\.\//, ""));
 		if (!existsSync(resolved)) { failures.push(`evidence[${i}]: file not found: ${file}`); continue; }
+		if (!isAbsolute(file)) {
+			// B5 (NFR-6): contain RELATIVE evidence under the worktree — the docstring
+		// contract was false for `join(worktreePath, "../../etc/passwd")`, which
+		// resolves outside and would verify against a host file. realpath both
+		// sides so symlink indirection cannot bypass the boundary either.
+			let real: string;
+			try { real = realpathSync(resolved); } catch { real = resolved; }
+			const root = worktreeReal ?? worktreePath;
+			if (real !== root && !real.startsWith(root + sep)) {
+				failures.push(`evidence[${i}]: file resolves outside the worktree: ${file}`);
+				continue;
+			}
+		}
 		if (!boundedRead(resolved).includes(quote)) {
 			const inTails = outputTails.some((t) => t.includes(quote));
 			if (!inTails) failures.push(`evidence[${i}]: quote not found in ${file} or captured outputs`);
@@ -166,13 +194,17 @@ function parseJudgeControl(control: Record<string, unknown> | null): JudgeVerdic
 	const confidenceNum = Number(control.confidence);
 	const confidence = Number.isFinite(confidenceNum) ? Math.min(1, Math.max(0, confidenceNum)) : 0;
 	const evidenceRaw = Array.isArray(control.evidence) ? control.evidence : [];
+	// B4 (NFR-6): empty/whitespace evidence items are NOT filtered away — an
+	// all-empty array must reach verifyJudgeEvidence so it classifies as
+	// MALFORMED (discard on every route) instead of collapsing to the
+	// missing-evidence degrade. Partially-empty arrays keep their per-item
+	// "empty file" failures, same as before.
 	const evidence: JudgeEvidence[] = evidenceRaw
 		.slice(0, MAX_EVIDENCE_ITEMS)
 		.map((e) => {
 			const o = (e ?? {}) as Record<string, unknown>;
 			return { file: String(o.file ?? ""), quote: String(o.quote ?? "") };
-		})
-		.filter((e) => e.file || e.quote);
+		});
 	return { diagnosis: diagnosisRaw.slice(0, DIAGNOSIS_MAX_CHARS), route: routeRaw, confidence, evidence };
 }
 
@@ -260,6 +292,15 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 			appendAudit(req, { verdict, escalated: true, reason: `confidence ${verdict.confidence} < ${MIN_CONFIDENCE}` });
 			ctx.log(`judge ${req.scope}: confidence ${verdict.confidence} < ${MIN_CONFIDENCE} — escalating instead`);
 			return { status: "escalate", verdict: { ...verdict, route: "escalate-now" } };
+		}
+		// B3 (NFR-6): the keep-going route is exempt from INV-2's ≥1-verified-item
+		// rule (its impact is bounded — it preserves the loop's deterministic
+		// machinery), but the exemption must be EXPLICIT in the audit trail, never
+		// silent: an evidence-less continue routes with a documented reason.
+		if (verdict.route === "continue" && verdict.evidence.length === 0) {
+			appendAudit(req, { verdict, routed: true, reason: "continue routed with zero evidence — INV-2 exemption documented: the keep-going route preserves the loop's deterministic machinery; nothing was machine-verified" });
+			ctx.log(`judge ${req.scope}: route=continue confidence=${verdict.confidence} routed with ZERO evidence (INV-2 exemption — documented in .judge.jsonl) — ${verdict.diagnosis}`);
+			return { status: "routed", verdict };
 		}
 		appendAudit(req, { verdict, routed: true });
 		ctx.log(`judge ${req.scope}: route=${verdict.route} confidence=${verdict.confidence} — ${verdict.diagnosis}`);

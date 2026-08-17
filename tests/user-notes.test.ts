@@ -95,3 +95,75 @@ describe("user-notes store", () => {
 		expect(out).toContain("could not be persisted");
 	});
 });
+
+// ─── Phase 6 / T6.6 (AC-33): byte-capped user notes + image containment ─────
+
+import { MAX_USER_NOTE_BYTES, capUserNoteBytes } from "../src/render/user-notes.ts";
+
+describe("AC-33 (SCENARIO-067): an oversized note persists as the capped head+tail form", () => {
+	it("MAX_USER_NOTE_BYTES is exported as 16_384", () => {
+		expect(MAX_USER_NOTE_BYTES).toBe(16_384);
+	});
+
+	it("capUserNoteBytes leaves short text byte-identical and caps long text head+tail", () => {
+		const short = "handle X";
+		expect(capUserNoteBytes(short)).toBe(short);
+		// Exactly at the cap: unchanged.
+		const atCap = "x".repeat(16_384);
+		expect(capUserNoteBytes(atCap)).toBe(atCap);
+		// Over the cap: first 8192 bytes + marker + last 8192 bytes.
+		const oneMb = "a".repeat(1_048_576);
+		const capped = capUserNoteBytes(oneMb);
+		const dropped = 1_048_576 - 8_192 - 8_192;
+		expect(capped).toBe(`a`.repeat(8_192) + `\n…[truncated ${dropped} bytes]…\n` + `a`.repeat(8_192));
+	});
+
+	it("appendUserNotes persists the CAPPED form and userNotesForAgent injects only that form", () => {
+		const oneMb = "b".repeat(1_048_576);
+		appendUserNotes(dir, [{ id: "big-note", createdAt: "2026-01-01T00:00:00.000Z", text: oneMb }]);
+		const stored = JSON.parse(readFileSync(userNotesPath(dir), "utf8")) as { notes: Array<{ text: string }> };
+		const storedText = stored.notes[0]!.text;
+		const dropped = 1_048_576 - 8_192 - 8_192;
+		expect(storedText.startsWith("b".repeat(8_192))).toBe(true);
+		expect(storedText.endsWith("b".repeat(8_192))).toBe(true);
+		expect(storedText).toContain(`…[truncated ${dropped} bytes]…`);
+		expect(Buffer.byteLength(storedText, "utf8")).toBeLessThanOrEqual(16_384 + 64);
+		// The prompt block contains ONLY the capped form — never the full 1 MB.
+		const injected = userNotesForAgent(dir);
+		expect(injected).toContain(`…[truncated ${dropped} bytes]…`);
+		expect(injected.length).toBeLessThan(16_384 + 512);
+	});
+
+	it("short notes stay byte-identical through persist + inject", () => {
+		const text = "keep me verbatim — éàü 🚀";
+		appendUserNotes(dir, [{ id: "small-note", createdAt: "2026-01-01T00:00:00.000Z", text }]);
+		const injected = userNotesForAgent(dir);
+		expect(injected).toContain(text);
+	});
+});
+
+describe("AC-33 (+D-4): absolute-path image attachments are contained to the spec dir", () => {
+	it("an ABSOLUTE path outside the spec dir is rejected (attachment not persisted)", () => {
+		const outside = mkdtempSync(join(tmpdir(), "user-notes-outside-"));
+		try {
+			const outsidePng = join(outside, "evil.png");
+			writeFileSync(outsidePng, "image-bytes");
+			appendUserNotes(dir, [{ id: "abs-out", createdAt: "2026-01-01T00:00:00.000Z", text: "see image", images: [{ path: outsidePng, mediaType: "image/png" }] }]);
+			const stored = JSON.parse(readFileSync(userNotesPath(dir), "utf8")) as { notes: Array<{ text: string; attachments: unknown[] }> };
+			expect(stored.notes[0]!.attachments).toEqual([]);
+			expect(stored.notes[0]!.text).toContain("could not be persisted");
+			expect(userNotesForAgent(dir)).not.toContain(outsidePng);
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("an ABSOLUTE path INSIDE the spec dir is still copied into user-input", () => {
+		const insidePng = join(dir, "shot.png");
+		writeFileSync(insidePng, "image-bytes");
+		appendUserNotes(dir, [{ id: "abs-in", createdAt: "2026-01-01T00:00:00.000Z", text: "see image", images: [{ path: insidePng, mediaType: "image/png" }] }]);
+		const out = userNotesForAgent(dir);
+		expect(out).toContain("user-input/abs-in-image-1.png");
+		expect(existsSync(join(dir, "user-input", "abs-in-image-1.png"))).toBe(true);
+	});
+});

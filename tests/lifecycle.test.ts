@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,8 @@ import {
 	detectServices,
 	withServiceDeps,
 } from "../src/stages/lifecycle.ts";
+import { SIGTERM_GRACE_MS } from "../src/pi-spawn.ts";
+import { createServer } from "node:net";
 import type { Node, PipelineState, ServiceHandle } from "../src/types.ts";
 
 /** A minimal node HTTP server script that listens on $PORT and responds "ok". */
@@ -190,4 +192,114 @@ describe("loadDotEnv", () => {
 		// missing file → empty object
 		expect(loadDotEnv(mkdtempSync(join(tmpdir(), "sd-env2-")))).toEqual({});
 	});
+});
+
+// ─── Phase 6 / T6.3 (AC-24): service teardown SIGKILL + abortable readiness ──
+
+/** A server that TRAPS SIGTERM (registered handler, never exits on it) — the
+ *  SCENARIO-050 fixture. It self-exits at 25s as a leak guard for a failing
+ *  run; the group-SIGKILL teardown (10s grace) must win long before that. */
+const SIGTERM_TRAPPING_SERVER = String.raw`
+import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
+process.on("SIGTERM", () => { /* trap: registered handler, no exit */ });
+const srv = createServer((req, res) => res.end("ok"));
+srv.listen(process.env.PORT, () => console.log("up"));
+setInterval(() => {}, 1000);
+setTimeout(() => { writeFileSync(process.env.SELF_EXIT_MARKER ?? "/tmp/sd-selfexit", "self"); process.exit(0); }, 25000);
+`;
+
+describe("AC-24 (SCENARIO-050): a SIGTERM-trapping service is group-SIGKILLed and the port is released", () => {
+	it("stopService escalates to group SIGKILL after the grace, then ESRCH + the port is bindable", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-life-sigkill-"));
+		writeFileSync(join(dir, "trap-server.mjs"), SIGTERM_TRAPPING_SERVER);
+		const marker = join(dir, "selfexit.txt");
+		const h = await startService({
+			role: "api",
+			cmd: `node ${join(dir, "trap-server.mjs")}`,
+			cwd: dir,
+			portEnv: "PORT",
+			readinessTimeoutMs: 8000,
+			// thread the leak-guard marker path through the service env
+			env: { SELF_EXIT_MARKER: marker },
+		});
+		expect(h.ready).toBe(true);
+		const pid = h.pid;
+		expect(pid).toBeGreaterThan(0);
+
+		stopService(h);
+		// The SIGTERM was trapped — the process must still be alive immediately.
+		expect(() => process.kill(pid, 0)).not.toThrow();
+		// …but after the SIGTERM grace the teardown must have group-SIGKILLed it.
+		await new Promise((r) => setTimeout(r, SIGTERM_GRACE_MS + 1_500));
+		expect(() => process.kill(pid, 0)).toThrow(/ESRCH|No such process/);
+		// It was killed by the ladder, not its own 25s self-exit guard.
+		expect(existsSync(marker)).toBe(false);
+		// And the released port is bindable again by a fresh listener.
+		await expect(new Promise<void>((resolve, reject) => {
+			const srv = createServer();
+			srv.once("error", reject);
+			srv.listen(h.port, "127.0.0.1", () => { srv.close(() => resolve()); });
+		})).resolves.toBeUndefined();
+		rmSync(dir, { recursive: true, force: true });
+	}, 20_000);
+});
+
+describe("AC-24 (SCENARIO-051): aborted readiness polling stops within one iteration", () => {
+	it("a pre-aborted signal returns false immediately (no timeoutMs wait)", async () => {
+		const started = Date.now();
+		const ok = await waitForReady("http://127.0.0.1:1/", 5_000, AbortSignal.abort());
+		expect(ok).toBe(false);
+		expect(Date.now() - started).toBeLessThan(1_500);
+	}, 8_000);
+
+	it("a mid-poll abort breaks the loop within ≤ one 250ms sleep", async () => {
+		const controller = new AbortController();
+		const started = Date.now();
+		const poll = waitForReady("http://127.0.0.1:1/", 8_000, controller.signal);
+		setTimeout(() => controller.abort(), 120);
+		const ok = await poll;
+		expect(ok).toBe(false);
+		expect(Date.now() - started).toBeLessThan(2_000);
+	}, 10_000);
+});
+
+describe("AC-24 (SCENARIO-051): tryStartService stops between candidates when the run aborts", () => {
+	it("bringupTask never starts the NEXT candidate after the signal aborts (marker proves it never ran)", async () => {
+		const { bringupTask } = await import("../src/stages/lifecycle.ts");
+		const dir = mkdtempSync(join(tmpdir(), "sd-bringup-abort-"));
+		// candidate 2: a WORKING server that proves it ran by touching a marker.
+		const marker = join(dir, "candidate2-started");
+		writeFileSync(join(dir, "server.mjs"), [
+			'import { createServer } from "node:http";',
+			'import { writeFileSync } from "node:fs";',
+			`writeFileSync(${JSON.stringify(marker)}, "started");`,
+			'const srv = createServer((req, res) => res.end("ok"));',
+			'srv.listen(process.env.PORT, () => console.log("up"));',
+		].join("\n"));
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ scripts: { start: `node ${join(dir, "server.mjs")}` }, dependencies: { express: "1" } }),
+		);
+		const controller = new AbortController();
+		controller.abort(); // pre-aborted run: every remaining candidate is moot
+		const logs: string[] = [];
+		const ctx = {
+			log: (m: string) => logs.push(m),
+			signal: controller.signal,
+		} as unknown as Parameters<typeof bringupTask.run>[1];
+		const state = {
+			setup: { worktreePath: dir },
+			// assessment "discovers" a command that never becomes ready (candidate 1)
+			assessment: { services: { api: { cmd: "node -e 'setInterval(() => {}, 4000)'", portEnv: "PORT", readyPath: "/" } } },
+			classify: { uiScope: "none" },
+		} as unknown as PipelineState;
+		const started = Date.now();
+		const res = (await bringupTask.run(state, ctx)) as { services: Record<string, unknown> };
+		// No api service came up AND the working fallback candidate never started.
+		expect(res.services.api).toBeUndefined();
+		expect(existsSync(marker)).toBe(false);
+		expect(Date.now() - started).toBeLessThan(5_000);
+		rmSync(dir, { recursive: true, force: true });
+	}, 25_000);
 });

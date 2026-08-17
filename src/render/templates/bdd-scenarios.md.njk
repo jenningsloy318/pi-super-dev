@@ -33,10 +33,17 @@
 - **{{ t.acId }}**: {{ t.description }} → {{ t.scenarios | join(", ") }}
 {% endfor %}
 {% endif %}
+{% if traceability and traceability.length > 0 %}
+---
 
 ## Coverage Summary
 
 - **Total Acceptance Criteria**: {{ totalACs }}
-- **Covered by Scenarios**: {{ totalACs }}
-- **Uncovered**: 0
+- **Covered by Scenarios**: {{ coveredAcCount }}
+{% if uncoveredAcIds.length > 0 %}
+- **Uncovered**: {{ uncoveredAcIds.length }} ({{ uncoveredAcIds | join(", ") }})
+{% else %}
+- **Uncovered**: {{ uncoveredAcIds.length }}
+{% endif %}
 - **Total Scenarios**: {{ totalScenarios }}
+{% endif %}

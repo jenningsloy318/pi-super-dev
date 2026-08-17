@@ -428,7 +428,10 @@ export async function runVerificationFix(kind: "review" | "integration", node: N
 	ctx.log(`Stage 10: ${kind} fix ${changed ? "changed repository state" : "made no repository-state change"} (before=${before} after=${after})`);
 	if (changed) {
 		const message = `fix(verify): address ${kind} findings${label ? ` (${label})` : ""}`;
-		const commit = commitWorktreeChanges(state.setup?.worktreePath, message);
+		// H7 (AC-10): `git add -A` is only allowed in an isolated worktree; with
+		// AC-09's fail-closed worktree-add, worktreeCreated === false ⟺ an
+		// explicit skipWorktree run (in-place is deliberate) — the only opt-in.
+		const commit = commitWorktreeChanges(state.setup?.worktreePath, message, { allowMainCheckout: state.setup?.worktreeCreated !== true });
 		if (commit.committed) ctx.log(`Stage 10: deterministically committed the ${kind} fix — "${commit.subject}"`);
 		else if (commit.error) ctx.log(`Stage 10: DETERMINISTIC COMMIT FAILED (${commit.error}) — merge verification will reject the dirty worktree`);
 		else ctx.log(`Stage 10: ${kind} fix change already committed (clean worktree)`);
@@ -885,7 +888,10 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	// terminal re-review → HITL escalation instead of burning implementer
 	// rounds on an empty work list.
 	const deferredFindings = ((s.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
-	const deferredVisibility = deferredFindings.slice(0, 6).map((f) => ({
+	// D5 (AC-20): NO visibility cap — the complete deferred ledger rides in
+	// __stagnated so HITL sees every awaiting decision (the [deferred: …]
+	// title prefix is kept).
+	const deferredVisibility = deferredFindings.map((f) => ({
 		file: f.file ?? null,
 		severity: f.severity ?? null,
 		title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}`,
@@ -911,7 +917,7 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 			"## Review verdict",
 			String((s.review as { verdict?: string } | undefined)?.verdict ?? "unknown"),
 			"## Deferred ledger (no code fixer can act on these)",
-			...deferredFindings.slice(0, 8).map((f) => `- [${String(f.deferralReason ?? "advisory")}] ${String(f.severity ?? "")} ${String(f.title ?? "")} (${String(f.file ?? "no file")})`),
+			...deferredFindings.map((f) => `- [${String(f.deferralReason ?? "advisory")}] ${String(f.severity ?? "")} ${String(f.title ?? "")} (${String(f.file ?? "no file")})`),
 			"## Build gate",
 			s.buildGate ? `pass=${String((s.buildGate as { pass?: boolean }).pass)} errors=${buildErrors(s).length}` : "absent (precondition-skipped)",
 		]);
@@ -937,9 +943,9 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 		// stall — recurring findings alone say what, never why.
 		const judged = await judgeStage10Diagnosis(s, ctx, "stage10.stagnation", [
 			"## Recurring findings (identical signature across consecutive rounds)",
-			...findings.slice(0, 12).map((f) => `- ${String(f.severity ?? "")} ${String(f.title ?? "")} (${String(f.file ?? "no file")}) status=${String(f.status ?? "open")}`),
+			...findings.map((f) => `- ${String(f.severity ?? "")} ${String(f.title ?? "")} (${String(f.file ?? "no file")}) status=${String(f.status ?? "open")}`),
 			"## Deferred ledger",
-			...deferredFindings.slice(0, 8).map((f) => `- [${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}`),
+			...deferredFindings.map((f) => `- [${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}`),
 			"## Review verdict",
 			String((s.review as { verdict?: string } | undefined)?.verdict ?? "unknown"),
 		]);
@@ -948,7 +954,7 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 			verdict: (s.review as { verdict?: string } | undefined)?.verdict,
 			findings: [
 				...(judged ? [{ file: null, severity: null, title: `judge diagnosis: ${judged.diagnosis.slice(0, 200)}` }] : []),
-				...findings.slice(0, 12).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })),
+				...findings.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: f.title ?? null })),
 				...deferredVisibility,
 			],
 		};
@@ -1210,7 +1216,8 @@ export const verificationConvergenceNode: Node = {
 						kind: "blocked-on-decisions",
 						rounds: attempts.length,
 						verdict: (state.review as { verdict?: string } | undefined)?.verdict,
-						findings: deferred.slice(0, 6).map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}` })),
+						// D5 (AC-20): the COMPLETE deferred list — no slice(0, 6) cap.
+						findings: deferred.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}` })),
 					};
 					ctx.log(`Stage 10: no actionable findings remain after triage (${deferred.length} deferred) and no build driver — stopping for human decision (non-fatal; attempt ${attempt})`);
 					return { status: "ok" };

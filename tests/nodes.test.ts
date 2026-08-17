@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { EventEmitter } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import {
 	task, sequence, branch, choose, parallel, loop, retry, gate, map, wait, tryCatch, noop,
 } from "../src/nodes.ts";
@@ -401,6 +401,119 @@ describe("wait / noop / tryCatch", () => {
 		const r = await tc.run(state, mkCtx());
 		expect(r.status).toBe("ok");
 		expect(state.handled).toBe("recovered");
+	});
+});
+
+// ─── T7.3 / SD-07 (NFR-6): the dead waitForEvent node is gone ─────────────
+//
+// waitForEvent had ZERO call sites in src/ and leaked its abort listener on
+// the happy path (only the named event listener was cleaned in finish()). The
+// atomic delete removes the node, its options interface, and every reference —
+// this grep-clean pin keeps it deleted.
+// ─── T7.5 / A-04 (NFR-6 pinning): writerTask budget-exhaustion sentinel ────
+//
+// task() checks ctx.budget.check() before the stage body, and writerTask's
+// body RE-CHECKS it (a parallel sibling can spend the last slot between the
+// two). Returning undefined let task() record status "ok" with NO artifact —
+// the stage appeared green in results/dashboard/audit while producing nothing.
+// The body must fail loud instead (honest reporting: failed, never silent ok).
+// ─── T7.6 / A-05 (NFR-6 pinning): sleep() removes its abort listener on resolve ──
+//
+// Both sleep implementations registered `signal.addEventListener("abort", …,
+// { once: true })` and never removed it when the TIMER resolved normally — a
+// retry-heavy run (429 backoff × budget slots) accumulated hundreds of retained
+// closures on the ONE shared run signal (MaxListenersExceededWarning noise).
+describe("A-05: sleep() removes its abort listener on normal resolution", () => {
+	it("wait() leaves the run signal's abort-listener count unchanged after a normal sleep", async () => {
+		const controller = new AbortController();
+		const baseline = getEventListeners(controller.signal, "abort").length;
+		const ctx = mkCtx();
+		(ctx as StageContext & { signal?: AbortSignal }).signal = controller.signal;
+		const r = await wait(5).run({}, ctx);
+		expect(r.status).toBe("ok");
+		// RED today: the once-listener survives the timer resolution (+1 leak)
+		expect(getEventListeners(controller.signal, "abort").length).toBe(baseline);
+	});
+
+	it("repeated waits on ONE signal never accumulate listeners", async () => {
+		const controller = new AbortController();
+		const baseline = getEventListeners(controller.signal, "abort").length;
+		const ctx = mkCtx();
+		(ctx as StageContext & { signal?: AbortSignal }).signal = controller.signal;
+		for (let i = 0; i < 12; i++) await wait(1).run({}, ctx);
+		expect(getEventListeners(controller.signal, "abort").length).toBe(baseline);
+	});
+
+	it("an aborted signal still resolves the sleep immediately (abort path preserved)", async () => {
+		const controller = new AbortController();
+		const ctx = mkCtx();
+		(ctx as StageContext & { signal?: AbortSignal }).signal = controller.signal;
+		const p = wait(5_000).run({}, ctx);
+		controller.abort(); // fires while the sleep is pending
+		const r = await p;
+		expect(r.status).toBe("cancelled");
+		expect(getEventListeners(controller.signal, "abort").length).toBe(0);
+	});
+});
+
+describe("A-04: writerTask on budget exhaustion records failed, never silent ok", () => {
+	it("a writer stage whose body-level budget check fails throws — task() records status 'failed'", async () => {
+		const { writerTask } = await import("../src/nodes.ts");
+		const stage = writerTask({
+			id: "requirements",
+			label: "Stage 2 — Requirements",
+			agent: "requirements-clarifier",
+			buildPrompt: () => "write the requirements",
+		});
+		const ctx = mkCtx();
+		// A-04's exact race: task()'s pre-check PASSES, then a parallel sibling
+		// spends the last slot before writerTask's body-level re-check.
+		let checks = 0;
+		ctx.budget.check = () => ++checks === 1;
+		const state: PipelineState = {};
+		const r = await task(stage).run(state, ctx);
+		expect(r.status).toBe("failed"); // RED today: "ok" (undefined recorded as ok)
+		expect(r.error).toMatch(/budget exhausted/);
+		expect(state.requirements).toBeUndefined(); // no artifact was fabricated
+		expect(ctx.results[ctx.results.length - 1]?.status).toBe("failed");
+	});
+
+	it("the sentinel names the stage so the audit row is actionable", async () => {
+		const { writerTask } = await import("../src/nodes.ts");
+		const stage = writerTask({
+			id: "bdd",
+			label: "Stage 3 — BDD",
+			agent: "bdd-scenario-writer",
+			buildPrompt: () => "write the scenarios",
+		});
+		const ctx = mkCtx();
+		let checks = 0;
+		ctx.budget.check = () => ++checks === 1;
+		const r = await task(stage).run({}, ctx);
+		expect(r.status).toBe("failed");
+		expect(r.error).toContain("bdd");
+	});
+});
+
+describe("SD-07: waitForEvent is deleted (dead code, abort-listener leak)", () => {
+	it("src/nodes.ts no longer declares or mentions waitForEvent / WaitForEventOptions", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const src = readFileSync(join(import.meta.dirname, "..", "src", "nodes.ts"), "utf8");
+		expect(src).not.toContain("waitForEvent");
+		expect(src).not.toContain("WaitForEventOptions");
+	});
+
+	it("no import site anywhere in src/ references waitForEvent", async () => {
+		const { readFileSync, readdirSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+			const p = join(dir, e.name);
+			return e.isDirectory() ? walk(p) : p.endsWith(".ts") ? [p] : [];
+		});
+		const hits = walk(join(import.meta.dirname, "..", "src"))
+			.filter((p) => readFileSync(p, "utf8").includes("waitForEvent"));
+		expect(hits).toEqual([]);
 	});
 });
 

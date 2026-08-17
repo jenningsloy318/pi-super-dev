@@ -128,6 +128,65 @@ describe("judge unit", () => {
 		expect(out.status).toBe("discarded");
 	});
 
+	// ─── T7.7 (NFR-6 pinning): the judge fix-in-pass quartet ─────────────────
+	//
+	// B3 — a `continue` verdict with ZERO evidence still routes (bounded impact:
+	// it preserves the loop's deterministic machinery), but the exemption from
+	// INV-2's machine-verification rule must be EXPLICIT in the audit trail, not
+	// silent.
+	it("B3: an evidence-less continue verdict routes with an explicit zero-evidence audit line", async () => {
+		const spec = join(wt, "docs", "specifications", "01-b3");
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "continue", confidence: 0.9, evidence: [] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "test-b3", signature: "sig-b3", worktreePath: wt, specDirectory: spec, context: "ctx", allowedRoutes: ["continue"] });
+		expect(out.status).toBe("routed");
+		const line = readFileSync(join(spec, ".judge.jsonl"), "utf8").trim().split("\n").pop();
+		const entry = JSON.parse(line as string) as { routed?: boolean; reason?: string };
+		expect(entry.routed).toBe(true);
+		// RED today: the routed audit entry carries no reason at all — the INV-2
+		// exemption is invisible in the audit trail.
+		expect(String(entry.reason ?? "")).toContain("zero evidence");
+	});
+
+	// B4 — a judge that attaches GARBAGE evidence (every item empty/whitespace)
+	// fabricated its evidence; that is MALFORMED, not MISSING — it discards on
+	// EVERY route (including escalate-now), never degrades via the
+	// missing-evidence path. "attached nothing" ≠ "attached garbage".
+	it("B4: an all-empty evidence array classifies as malformed and DISCARDS even on escalate-now", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "escalate-now", evidence: [{ file: "", quote: "" }] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "test", signature: "sig-b4", worktreePath: wt, context: "ctx", allowedRoutes: ["escalate-now"] });
+		// RED today: parseJudgeControl filters the empty item away, so the verdict
+		// looks evidence-LESS and takes the escalate degrade.
+		expect(out.status).toBe("discarded");
+		if (out.status === "discarded") expect(out.reason).toContain("malformed");
+	});
+
+	it("B4 (unit): verifyJudgeEvidence flags an all-empty-whitespace evidence array as malformed", () => {
+		const v = baseVerdict({ evidence: [{ file: "  ", quote: "" }, { file: "", quote: "   " }] }) as unknown as JudgeVerdict;
+		const failures = verifyJudgeEvidence(v, wt, []).join(" ");
+		expect(failures).toContain("malformed");
+	});
+
+	// B5 — RELATIVE evidence paths are contained under the worktree: the
+	// documented contract ("file resolves under the worktree") must hold for
+	// `..` traversal too, not just for names that happen to exist. ABSOLUTE
+	// paths stay allowed by design (documented allowance).
+	it("B5: a relative evidence path escaping the worktree via .. is rejected even when the file exists and the quote matches", () => {
+		const outer = mkdtempSync(join(tmpdir(), "judge-b5-"));
+		try {
+			const wt2 = join(outer, "wt");
+			mkdirSync(join(wt2, "src"), { recursive: true });
+			writeFileSync(join(wt2, "src", "foo.ts"), "export const foo = 1;\n");
+			writeFileSync(join(outer, "secret.txt"), "HOST SECRET CONTENT\n");
+			// escapes via ..: exists AND the quote byte-occurs — only the
+		// containment check can catch it (RED today: this verifies).
+			const escaping = baseVerdict({ evidence: [{ file: "../secret.txt", quote: "HOST SECRET CONTENT" }] }) as unknown as JudgeVerdict;
+			expect(verifyJudgeEvidence(escaping, wt2, []).join(" ")).toContain("outside the worktree");
+			// a contained relative path passes
+			const contained = baseVerdict({ evidence: [{ file: "src/foo.ts", quote: "export const foo = 1;" }] }) as unknown as JudgeVerdict;
+			expect(verifyJudgeEvidence(contained, wt2, [])).toEqual([]);
+		} finally { rmSync(outer, { recursive: true, force: true }); }
+	});
+
 	it("runJudge maps an unknown closed-set route to discarded", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "approve-everything" }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "test", signature: "sig-3", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests"] });

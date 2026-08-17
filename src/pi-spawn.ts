@@ -252,6 +252,16 @@ const DEFAULT_SPAWN_TIMEOUT_MS = 480_000;
  *  them mid-exploration before any edit is written. Give them ~20 min. */
 const CODE_WRITING_TIMEOUT_MS = 1_200_000;
 
+/** AC-23 (SCENARIO-049): SIGTERM → SIGKILL watchdog. A child that registered a
+ *  SIGTERM handler and never exits (or whose grandchildren hold the stdio
+ *  pipes) must not hold the run hostage — after this grace the ladder escalates
+ *  to an uncatchable SIGKILL. */
+export const SIGTERM_GRACE_MS = 10_000;
+/** AC-23 (SCENARIO-049): post-SIGKILL settle bound. Even after SIGKILL, pipe-
+ *  holding grandchildren can keep `close` from firing; the backstop rejects
+ *  within this bound so the caller always regains control. */
+export const SETTLE_GRACE_MS = 5_000;
+
 /** The default wall-clock cap for an agent, by role. Overridable per-call via
  *  AgentCall.timeoutMs (threaded through `common` in workflow.ts). */
 export function defaultAgentTimeoutMs(agent: string): number {
@@ -450,14 +460,32 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 	return args;
 }
 
-function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: AgentProgress): Promise<SpawnResult> {
+/** Run one `pi` subprocess and capture its final assistant text. Exported for
+ *  direct unit testing of the NDJSON streaming/termination contract (the
+ *  subprocess backend's single primitive). */
+export function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: AgentProgress): Promise<SpawnResult> {
 	return new Promise((resolve, reject) => {
+		// SD-04 (NFR-6): a listener registered on an ALREADY-aborted signal never
+		// fires (WHATWG/Node EventTarget semantics) — the child would run to its
+		// own hard timeout (up to 1200s for code-writing agents). Check
+		// synchronously BEFORE spawn so no child is ever spawned into a dead run.
+		if (signal?.aborted) {
+			resolve({ text: "", control: null, error: "aborted" });
+			return;
+		}
 		const child = spawn(args[0], args.slice(1), {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: { ...process.env },
 			windowsHide: true,
 		});
+		// AC-12 (SCENARIO-026): decode the byte stream EXACTLY ONCE at the stream
+		// layer — the string decoder buffers incomplete multi-byte UTF-8 sequences
+		// across chunk boundaries, so a sequence split mid-codepoint (F0 9F | 98 80)
+		// reassembles byte-exactly instead of producing U+FFFD replacement chars
+		// the way a per-Buffer `.toString("utf8")` did.
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
 		// Bounded capture ONLY: the spawned agent's stdout is a stream of NDJSON
 		// deltas where each message_update re-emits the FULL accumulated partial —
 		// gigabytes for a verbose/long agent (the design stage crashed pi with
@@ -473,52 +501,85 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		let currentText = ""; // live streaming text of the current agent text block
 		const STDERR_CAP = 16 * 1024;
 		const LINE_CAP = 16 * 1024 * 1024;
+		/** AC-12 (SCENARIO-027): one NDJSON line's handling, shared by the chunk
+		 *  splitter and the close handler's residual (newline-less) final line. */
+		const processLine = (raw: string): void => {
+			const trimmed = raw.trim();
+			if (!trimmed) return;
+			let ev: PiJsonEvent;
+			try { ev = JSON.parse(trimmed) as PiJsonEvent; } catch { return; }
+			// capture the final assistant text (for <control> extraction)
+			const a = assistantFromMessageEnd(ev);
+			if (a) {
+				if (a.text) { lastAssistantText = a.text; if (a.model) lastModel = a.model; }
+				// a finished message finalizes any in-progress live text
+				if (onProgress && currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
+				return;
+			}
+			if (!onProgress) return;
+			const se = renderEvent(ev, () => ++turns);
+			if (!se) return;
+			if (se.kind === "text") {
+				// live typing: update the mutable live line
+				currentText = se.text;
+				onProgress.text(stripControl(currentText));
+			} else {
+				// a permanent event finalizes any in-progress text first
+				if (currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
+				if (se.kind === "tool") onProgress.event(`→ ${se.summary}`);
+			}
+		};
 		const cleanup = () => {
 			signal?.removeEventListener("abort", onAbort);
 			clearTimeout(timer);
+			clearTimeout(killWatchdog);
+			clearTimeout(settleTimer);
+		};
+		// AC-23 (SCENARIO-049): ONE termination ladder shared by the abort and the
+		// timeout paths (idempotent via killArmed): SIGTERM → SIGTERM_GRACE_MS →
+		// SIGKILL → SETTLE_GRACE_MS → backstop reject. Promise settle-once
+		// semantics make the backstop reject safe after a normal close, and the
+		// close handler's cleanup() clears both watchdogs so a child that exited
+		// (gracefully or on SIGKILL) is never signaled again.
+		let killArmed = false;
+		let killWatchdog: ReturnType<typeof setTimeout> | undefined;
+		let settleTimer: ReturnType<typeof setTimeout> | undefined;
+		const terminateChild = () => {
+			if (killArmed) return;
+			killArmed = true;
+			try { child.kill("SIGTERM"); } catch { /* ignore */ }
+			killWatchdog = setTimeout(() => {
+				try { child.kill("SIGKILL"); } catch { /* ignore */ }
+				settleTimer = setTimeout(() => {
+				cleanup();
+				reject(new Error(`super-dev [${label}]: killed after SIGTERM+SIGKILL (no exit within ${SETTLE_GRACE_MS}ms)`));
+				}, SETTLE_GRACE_MS);
+			}, SIGTERM_GRACE_MS);
 		};
 		const onAbort = () => {
 			aborted = true;
 			onProgress?.event(`subprocess ${label}: aborted by parent signal; terminating child pi`);
-			try { child.kill("SIGTERM"); } catch { /* ignore */ }
+			terminateChild();
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
+		// SD-04 (NFR-6): close the registration window — if the signal aborted
+		// between the pre-spawn check and this registration (future refactors may
+		// await in between), terminate NOW instead of relying on a never-firing
+		// listener.
+		if (signal?.aborted) onAbort();
 		const timer = setTimeout(() => {
 			timedOut = true;
 			onProgress?.event(`subprocess ${label}: timeout after ${timeoutMs}ms; terminating child pi`);
-			try { child.kill("SIGTERM"); } catch { /* ignore */ }
+			terminateChild();
 		}, timeoutMs);
 
-		child.stdout.on("data", (c: Buffer) => {
-			lineBuf += c.toString("utf8");
+		child.stdout.on("data", (c: string) => {
+			lineBuf += c;
 			let nl: number;
 			while ((nl = lineBuf.indexOf("\n")) >= 0) {
 				const raw = lineBuf.slice(0, nl);
 				lineBuf = lineBuf.slice(nl + 1);
-				const trimmed = raw.trim();
-				if (!trimmed) continue;
-				let ev: PiJsonEvent;
-				try { ev = JSON.parse(trimmed) as PiJsonEvent; } catch { continue; }
-				// capture the final assistant text (for <control> extraction)
-				const a = assistantFromMessageEnd(ev);
-				if (a) {
-					if (a.text) { lastAssistantText = a.text; if (a.model) lastModel = a.model; }
-					// a finished message finalizes any in-progress live text
-					if (onProgress && currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
-					continue;
-				}
-				if (!onProgress) continue;
-				const se = renderEvent(ev, () => ++turns);
-				if (!se) continue;
-				if (se.kind === "text") {
-					// live typing: update the mutable live line
-					currentText = se.text;
-					onProgress.text(stripControl(currentText));
-				} else {
-					// a permanent event finalizes any in-progress text first
-					if (currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
-					if (se.kind === "tool") onProgress.event(`→ ${se.summary}`);
-				}
+				processLine(raw);
 			}
 			// Stay bounded on a runaway line, but keep the TAIL rather than dropping the
 			// whole buffer: a >LINE_CAP line (e.g. a huge message_end) would otherwise
@@ -526,8 +587,8 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 			// stale earlier output. Keeping the tail lets the next newline still close a line.
 			if (lineBuf.length > LINE_CAP) lineBuf = lineBuf.slice(-LINE_CAP);
 		});
-		child.stderr.on("data", (c: Buffer) => {
-			stderrBuf += c.toString("utf8");
+		child.stderr.on("data", (c: string) => {
+			stderrBuf += c;
 			if (stderrBuf.length > STDERR_CAP) stderrBuf = stderrBuf.slice(stderrBuf.length - STDERR_CAP);
 		});
 		child.on("error", (err) => {
@@ -537,6 +598,10 @@ function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, lab
 		});
 		child.on("close", (code) => {
 			cleanup();
+			// AC-12 (SCENARIO-027): a newline-less final NDJSON line is still a line —
+			// parse the residual buffer BEFORE treating output as absent so a final
+			// `message_end` emitted without a trailing \n is processed, not dropped.
+			if (lineBuf.trim()) processLine(lineBuf.trim());
 			const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
 			onProgress?.event(`subprocess ${label}: close exit=${code ?? "signal"} timedOut=${timedOut ? "yes" : "no"}${tail ? ` stderrTail=${tail}` : ""}`);
 			if (aborted) { resolve({ text: "", control: null, error: "aborted" }); return; }

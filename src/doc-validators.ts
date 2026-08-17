@@ -15,9 +15,10 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type { ControlObj } from "./types.ts";
 import type { PhaseDeliverables } from "./render/schemas.ts";
+import { NEGATED_APPROVAL_RE } from "./review-findings.ts";
 
 export interface DocRef {
 	path: string;
@@ -76,6 +77,10 @@ export function extractScenarioIds(content: string): string[] {
 	return uniqueSortedIds([...content.matchAll(/\bSCENARIO-(\d+)\b/gi)].map((m) => normalizedId("SCENARIO", m[1] ?? "0")));
 }
 
+/** A CommonMark fence opener: up to 3 leading spaces, then ≥3 backticks or
+ *  tildes (info strings may follow on the opening line). */
+const FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
+
 /** Headings of NON-NORMATIVE rendered sections — response/evidence/convergence
  *  prose where a writer legitimately DISCUSSES out-of-range identifiers while
  *  explaining their removal. The deterministic trace gate must not read them:
@@ -83,28 +88,49 @@ export function extractScenarioIds(content: string): string[] {
  *  AC-29` tokens that existed only inside "## Prior Review Responses" notes
  *  explaining they had been deleted (and the retry feedback re-quoted them,
  *  so the writer re-emitted them — a self-referential trap).
- *  Adversarial F5-HEADING-FRAGILITY hardening: PREFIX match (no $ anchor) so
- *  LLM-decorated variants ("## Prior Review Responses (Round 3)", "##
- *  Evidence Notes for Phase 2") still strip; the section closes only at a
- *  same-or-HIGHER heading level (### details inside ## Evidence Notes stay
- *  skipped; # H1 terminates) — tracked per-section, not by a flat reset. */
-const NON_NORMATIVE_SECTION_RE = /^(#{2,3})\s+(prior\s+(?:review\s+)?(?:finding\s+)?responses?|review\s+responses?|convergence(?:\s+ledger)?|evidence\s+notes?)(?:\s*[(:\u2014\u2013-].*)?$/i;
+ *  M14 (SCENARIO-052/053, OQ-2): CLOSED-SET non-normative headings at levels
+ *  1–4 (`#{1,4}`), with an optional WORD-LED qualifier from a fixed vocabulary
+ *  ("for Phase 2", "Round 3", "from Stage 9", …) or the historical
+ *  parenthetical/dash decoration. "## Convergence Criteria" still never
+ *  matches ("Criteria" is not a qualifier — the over-strip guard); the section
+ *  closes only at a same-or-HIGHER heading level, tracked per-section. */
+export const NON_NORMATIVE_SECTION_RE = /^(#{1,4})\s+(prior\s+(?:review\s+)?(?:finding\s+)?responses?|review\s+responses?|convergence(?:\s+ledger)?|evidence\s+notes?)(?:\s*(?:[(:\u2014\u2013-].*)|\s+(?:for|from|in|round|phase|part|section|appendix|addendum|notes?|entries?)\b.*)?$/i;
 
 /** Remove non-normative sections (heading through the next same-or-higher-level
  *  heading, or EOF) so identifier extraction sees only normative content.
- *  Code-review R5 hardening: (a) the heading title must END at the closed-set
- *  phrase (only a trailing parenthetical/dash decoration is allowed) so a
- *  normative "## Convergence Criteria" section is NOT stripped; (b) fenced code
- *  blocks are transparent to heading detection — a "## " line inside ``` fences
- *  never opens/closes a section. */
+ *  Fences follow CommonMark PAIRING (AC-13): a fence opens at a run of ≥3
+ *  backticks or tildes (up to 3 leading spaces; info strings allowed on the
+ *  opening line) and closes only on a line whose leading run uses the SAME
+ *  character at ≥ the opening length — an inner ``` run never closes a
+ *  ````-fence, and a ``` run never closes a ~~~-fence. While inside a fence,
+ *  heading lines are prose (never open/close sections), and a non-normative
+ *  heading IMPLICITLY closes an unclosed fence (M3 fail-safe: a broken fence
+ *  can never swallow the strip logic — SCENARIO-030). Fenced content inside
+ *  KEPT sections is preserved verbatim. */
 export function stripNonNormativeSections(content: string): string {
 	const lines = content.split(/\r?\n/);
 	const kept: string[] = [];
 	let skipLevel: number | null = null; // the opening heading's level while skipping
-	let inFence = false; // inside a ``` code block (headings there are prose)
+	let fence: { char: string; len: number } | null = null; // open fence: opening char + opening run length
 	for (const line of lines) {
-		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
-		if (!inFence) {
+		if (fence === null) {
+			// (1) not in a fence: a fence-opening run opens one.
+			const open = FENCE_OPEN_RE.exec(line);
+			if (open?.[1]) fence = { char: open[1][0]!, len: open[1].length };
+		} else {
+			// (2) in a fence: only a SAME-character run of length ≥ the opening
+			// length closes it (CommonMark pairing — a char/length mismatch never closes).
+			const runRe = fence.char === "`" ? /^[ \t]{0,3}(`+)/ : /^[ \t]{0,3}(~+)/;
+			const close = runRe.exec(line);
+			if (close?.[1] && close[1].length >= fence.len) {
+				fence = null;
+			} else if (NON_NORMATIVE_SECTION_RE.test(line)) {
+				// (3) still in a fence: a non-normative heading IMPLICITLY closes it —
+				// an unclosed fence can never swallow the strip logic (M3 fail-safe).
+				fence = null;
+			}
+		}
+		if (fence === null) {
 			const heading = /^(#{1,6})\s+/.exec(line);
 			if (heading) {
 				const level = heading[1]?.length ?? 0;
@@ -164,10 +190,13 @@ function missingIds(required: string[], actual: string[]): string[] {
 	return required.filter((id) => !actualSet.has(id));
 }
 
-/** BDD must cover every requirements AC and must not cite nonexistent ACs. */
+/** BDD must cover every requirements AC and must not cite nonexistent ACs.
+ *  AC-26 (SCENARIO-054): both inputs are read NORMATIVE-only (stripped) —
+ *  parity with specTraceabilityErrors — so an out-of-range AC id quoted inside
+ *  a non-normative Evidence Notes section is not a dangling-reference error. */
 export function bddTraceabilityErrors(requirementsContent: string, bddContent: string): string[] {
-	const requirementIds = extractAcceptanceCriteriaIds(requirementsContent);
-	const bddIds = extractAcceptanceCriteriaIds(bddContent);
+	const requirementIds = extractAcceptanceCriteriaIds(stripNonNormativeSections(requirementsContent));
+	const bddIds = extractAcceptanceCriteriaIds(stripNonNormativeSections(bddContent));
 	const errors: string[] = [];
 	if (requirementIds.length === 0) errors.push("requirements doc has no AC-NN identifiers for BDD traceability");
 	if (bddIds.length === 0) errors.push("BDD doc has no AC-NN references for requirements traceability");
@@ -228,6 +257,7 @@ export function specTraceabilityErrors(bddContent: string, specContent: string, 
 		else if (!phaseNames.has(phase)) errors.push(`spec.tasks[${index}].phase references unknown phase "${phase}"`);
 	});
 	errors.push(...phaseIndependenceErrors(phases, tasks));
+	errors.push(...phaseTestDeliverableErrors(phases, tasks)); // M1/AC-11: scenario-mapped phases must declare a test deliverable
 	return errors;
 }
 
@@ -351,24 +381,34 @@ export function specGroundingErrors(worktreePath: string, specContent: string): 
  * Locate & read a stage's doc. Prefer an explicitly-declared path in the control
  * object (docPath / specificationPath / …); fall back to a glob of the spec
  * directory so the gate still works when the agent omits or misreports the path.
- * Returns null if no doc can be found.
+ * AC-16 (SCENARIO-035/036): control-supplied paths resolve against the SPEC
+ * ROOT — never the process CWD — and anything outside it is ignored (exactly
+ * one `[doc-validators] readSpecDoc: ignoring` warn per ignored key), falling
+ * through to the glob. Returns null if no doc can be found.
  */
 export function readSpecDoc(specDir: string, control: ControlObj | undefined, glob: string, pathKeys: string[] = ["docPath"]): DocRef | null {
+	const specRoot = specDir ? resolve(specDir) : null;
 	for (const k of pathKeys) {
 		const p = control?.[k];
-		if (typeof p === "string" && p && existsSync(p)) {
-			return { path: p, content: readFileSync(p, "utf8") };
+		if (typeof p !== "string" || !p.trim() || !specRoot) continue;
+		const resolved = resolve(specRoot, p);
+		if (resolved === specRoot || resolved.startsWith(specRoot + sep)) {
+			if (existsSync(resolved)) return { path: resolved, content: readFileSync(resolved, "utf8") };
+			continue; // contained but absent — fall through to the glob
 		}
+		// M6: control-supplied paths resolve against the spec dir, never the
+		// process CWD; anything outside it is ignored (exactly one log line).
+		console.warn(`[doc-validators] readSpecDoc: ignoring ${k} "${p}" — resolves outside the spec directory (${resolved}); falling back to the spec-dir glob`);
 	}
 	if (specDir) {
 		try {
 			const re = globToRegExp(glob);
 			for (const entry of readdirSync(specDir)) {
 				if (re.test(entry)) {
-					const p = join(specDir, entry);
-					if (existsSync(p)) return { path: p, content: readFileSync(p, "utf8") };
-				}
+				const p = join(specDir, entry);
+				if (existsSync(p)) return { path: p, content: readFileSync(p, "utf8") };
 			}
+		}
 		} catch { /* spec dir unreadable — fall through */ }
 	}
 	return null;
@@ -428,7 +468,10 @@ export function normalizePhases(raw: unknown): NormalizedPhase[] {
 		// (a) wrapper: the model returned { phases: [...] } instead of the array.
 		if (Array.isArray(obj.phases)) return normalizePhases(obj.phases);
 		// (b) single phase object instead of a 1-element array.
-		if (typeof obj.name === "string" && obj.name.trim()) return [{ name: obj.name.trim(), description: typeof obj.description === "string" ? obj.description : "" }];
+		// AC-19 (SCENARIO-041): SPREAD the original object so every field
+		// (scenarioRefs, deliverables, …) survives the coercion — the
+		// implementation stage and the trace gates read those fields.
+		if (typeof obj.name === "string" && obj.name.trim()) return [{ ...obj, name: obj.name.trim(), description: typeof obj.description === "string" ? obj.description : "" } as NormalizedPhase];
 		// (c) numeric-key map (JSON round-trips that dropped the array).
 		const keys = Object.keys(obj).filter((k) => /^\d+$/.test(k)).sort((a, b) => Number(a) - Number(b));
 		if (keys.length > 0) {
@@ -440,7 +483,10 @@ export function normalizePhases(raw: unknown): NormalizedPhase[] {
 	}
 	if (typeof raw === "string" && raw.trim()) {
 		return raw
-			.split(/\r?\n|,|;|•/)
+			// AC-19 (SCENARIO-042): the comma left the split set — a phase name
+			// may legitimately contain one ("Phase A, Phase B" is ONE phase);
+			// only newlines / semicolons / bullets separate phases.
+			.split(/\r?\n|;|•/)
 			.map((x) => x.trim().replace(/^[-*\d.)\s]+/, "").trim())
 			.filter((x) => x.length > 0)
 			.map((name) => ({ name }));
@@ -461,6 +507,11 @@ export function normalizePhases(raw: unknown): NormalizedPhase[] {
 export function isApprovedVerdict(verdict: unknown): boolean {
 	const v = String(verdict ?? "").trim().toLowerCase();
 	if (!v) return false;
+	// M17 (SCENARIO-057): negated approvals ("not approved", "does not pass",
+	// "approved: no", …) never approve — the shared guard fires BEFORE the
+	// approve-family match (mirrors reviewVerdictApproves in
+	// artifact-convergence.ts; review-findings imports nothing, so no cycle).
+	if (NEGATED_APPROVAL_RE.test(v)) return false;
 	// Explicit rejections always lose, even when phrased around "revisions".
 	if (/(changes?\s+requested|revisions?\s+needed|reject|contest|blocked|fail|declined)/i.test(v)) return false;
 	// Approve family: "approved …" of any qualifier (comments/revisions/minor …).

@@ -38,7 +38,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { dedupePreservingOrder, resolveTimeoutMs } from "./build-runner.ts";
@@ -69,10 +69,20 @@ export interface GitActual {
  *    git does NOT show changed → the false-green killer (gated, AC-08).
  *  - `changedNotClaimed`: files git shows changed that the agent did NOT report
  *    → advisory-only under-reporting (logged, never gated, SCENARIO-014).
+ *  - `ignoredVerified`: claimed files git cannot see BECAUSE the repo's ignore
+ *    rules hide them, but whose EXISTENCE on disk was verified via
+ *    `git check-ignore` → advisory-only (AC-32 / SCENARIO-065, spec-28). A
+ *    gitignored-but-present deliverable is a real artifact the agent produced;
+ *    failing the gate on it was a false-red. The advisory is additive to the
+ *    appended JSONL records; it NEVER affects the gate verdict (only
+ *    `claimedNotChanged` does). Optional so legacy serialized records (written
+ *    before the field existed) and hand-built fixtures still typecheck.
  */
 export interface CrossCheck {
 	claimedNotChanged: string[];
 	changedNotClaimed: string[];
+	/** Advisory-only (AC-32): existence-verified gitignored claims. */
+	ignoredVerified?: string[];
 }
 
 /**
@@ -114,7 +124,7 @@ interface Baseline {
  * `claimedNotChanged` → a spurious false-red changeGate FAIL.
  *
  * This pure (no FS, no worktreePath) normalizer collapses those artifacts so
- * `./src/x.ts`, `src//x.ts`, `src\\x.ts`, and `/src/x.ts` all match git's
+ * `./src/x.ts`, `src//x.ts`, `src\x.ts`, and `/src/x.ts` all match git's
  * `src/x.ts`. It is INTENTIONALLY case-preserving (case sensitivity is
  * filesystem-dependent; lowercasing would over-match on case-sensitive FSes
  * and silently change behavior for the existing clean-path tests). Output
@@ -124,8 +134,13 @@ interface Baseline {
 function normalizeTrackerPath(p: string): string {
 	let s = (p ?? "").trim();
 	if (s === "") return s;
-	// Windows-style separators → POSIX.
-	s = s.replace(/\\\\/gu, "/");
+	// Windows-style separators → POSIX. SINGLE literal backslash (AC-15 / D-1,
+	// spec-28 SCENARIO-033): the two-literal-backslash `\\\\` form only matched
+	// doubled separators and left the common `src\team\types.ts` artifact
+	// unnormalized — a false claimed-miss. A single-backslash replace is the
+	// superset (double backslashes still collapse) and aligns with
+	// tests/test-artifacts.ts `normalizePath`.
+	s = s.replace(/\\/gu, "/");
 	// Collapse repeated separators.
 	s = s.replace(/\/+/gu, "/");
 	// Strip a leading worktree-root slash → repo-relative.
@@ -137,7 +152,7 @@ function normalizeTrackerPath(p: string): string {
 	return s;
 }
 
-const INTERNAL_RUNTIME_CLAIM_BASENAMES = new Set([".resume-cache.jsonl"]);
+const INTERNAL_RUNTIME_CLAIM_BASENAMES = new Set([".resume-cache.jsonl", ".run-lock"]);
 
 /**
  * Some claims name super-dev's own transient runtime artifacts rather than repo
@@ -383,9 +398,16 @@ export class ChangeTracker {
 	 * {@link resolveTimeoutMs} envelope. Throws on ANY git failure
 	 * (spawn error, non-zero exit, non-string stdout) so the caller's
 	 * try/catch maps it to a `gitUnavailable` record.
+	 *
+	 * AC-15 (spec-28 SCENARIO-034): `-c core.quotepath=false` is FORCED ahead of
+	 * the repo path so `diff --name-status` / `status --porcelain` emit non-ASCII
+	 * paths RAW (like `src/图表.ts`) instead of git's default quoted octal escapes
+	 * (like `"src/\346\226\207…"`). The claim side carries raw paths, so both
+	 * sides of the cross-check compare like-for-like; the command-line `-c`
+	 * outranks any repo-local/global `core.quotepath` setting.
 	 */
 	private gitSpawn(argv: string[]): string {
-		const r = spawnSync("git", ["-C", this.worktreePath, ...argv], {
+		const r = spawnSync("git", ["-c", "core.quotepath=false", "-C", this.worktreePath, ...argv], {
 			encoding: "utf8",
 			timeout: resolveTimeoutMs(),
 		});
@@ -490,6 +512,13 @@ export class ChangeTracker {
 	 *      gitActual.(created ∪ modified)  — gated (false-green killer).
 	 *  - `changedNotClaimed` = gitActual.(created ∪ modified ∪ deleted) \
 	 *      claimed.(all three)  — advisory only.
+	 * AC-32 / SCENARIO-065 (spec-28): a claim git cannot see because the repo's
+	 * ignore rules hide it is downgraded to the `ignoredVerified` ADVISORY — but
+	 * ONLY when the file verifiably EXISTS on disk (`existsSync` + `git
+	 * check-ignore` exit 0). `check-ignore` alone proves nothing: an ignored
+	 * path that was never written stays a claimed-miss (conservative — never
+	 * bless an unverifiable claim). Tracked-but-unchanged claims never match the
+	 * ignore rule, so SCENARIO-066's claimed-miss behavior is untouched.
 	 */
 	private computeCrossCheck(claimed: StructuredChanges, git: GitActual): CrossCheck {
 		const claimedCreatedOrModified = dedupePreservingOrder([
@@ -507,14 +536,45 @@ export class ChangeTracker {
 		const claimedAllN = new Set<string>(
 			[...claimed.filesCreated, ...claimed.filesModified, ...claimed.filesDeleted].map(normalizeTrackerPath),
 		);
-		const claimedNotChanged = claimedCreatedOrModified.filter((p) => {
+		const claimedNotChanged: string[] = [];
+		const ignoredVerified: string[] = [];
+		for (const p of claimedCreatedOrModified) {
+			// super-dev's own transient runtime artifacts are exempt by basename.
+			if (isInternalRuntimeClaim(p)) continue;
 			const normalized = normalizeTrackerPath(p);
-			return !isInternalRuntimeClaim(p) && !gitCreatedOrModifiedN.has(normalized);
-		});
+			// A claim git actually shows changed is satisfied — never advisory.
+			if (gitCreatedOrModifiedN.has(normalized)) continue;
+			// AC-32: gitignored-but-PRESENT claims downgrade to the advisory (the
+			// existence check runs against the normalized repo-relative path).
+			if (existsSync(join(this.worktreePath, normalized)) && this.checkIgnored(normalized)) {
+				ignoredVerified.push(p);
+				continue;
+			}
+			claimedNotChanged.push(p);
+		}
 		const changedNotClaimed = gitAllChanged.filter(
 			(p) => !claimedAllN.has(normalizeTrackerPath(p)),
 		);
-		return { claimedNotChanged, changedNotClaimed };
+		return { claimedNotChanged, changedNotClaimed, ignoredVerified };
+	}
+
+	/**
+	 * AC-32 (spec-28 SCENARIO-065): does git's ignore machinery hide `path` in
+	 * this worktree? `git check-ignore -- <path>` exits 0 when a rule matches.
+	 * Failures are conservative: exit 1 (not ignored), 128, spawn error, or a
+	 * thrown exception all read as "not ignored" so the caller keeps the claim
+	 * in `claimedNotChanged` (never bless a claim on infrastructure doubt).
+	 */
+	private checkIgnored(path: string): boolean {
+		try {
+			const r = spawnSync("git", ["-c", "core.quotepath=false", "-C", this.worktreePath, "check-ignore", "--", path], {
+				encoding: "utf8",
+				timeout: resolveTimeoutMs(),
+			});
+			return r.status === 0;
+		} catch {
+			return false;
+		}
 	}
 
 	/** Append one record as a JSON line to `<specDir>/change-tracker.jsonl`. */

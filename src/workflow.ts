@@ -7,7 +7,10 @@
  *   ctx.helper()   — run a deterministic pure helper (helpers.ts)
  *   ctx.parallel() — run agent calls with a concurrency cap
  *   ctx.budget()   — cap total agent spawns
- *   ctx.events     — EventEmitter for waitForEvent (human-in-loop / signals)
+ *   ctx.events     — EventEmitter for stage/phase progress events
+ *                  (human-in-loop aborts live on ctx.signal, the run's
+ *                  AbortSignal; the dead WCP16 event-wait node was deleted
+ *                  in spec 28 T7.3 / SD-07)
  */
 
 import { EventEmitter } from "node:events";
@@ -199,12 +202,18 @@ function makeBudget(maxAgents: number): Budget {
  *  of a fragile sequential counter. Module-level so one run shares one stack. */
 const scopeAls = new AsyncLocalStorage<string[]>();
 
-/** Signal-aware sleep (local — workflow.ts doesn't import nodes' sleep). */
-function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+/** Signal-aware sleep (local — workflow.ts doesn't import nodes' sleep).
+ *  Exported (additive) for the A-05 listener-count pinning test. */
+export function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
 		if (signal?.aborted) return resolve();
-		const t = setTimeout(resolve, ms);
-		signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+		const onAbort = () => { clearTimeout(t); finish(); };
+		// A-05 (NFR-6): remove the once-listener on NORMAL resolution too — the
+		// transient-retry backoff cadence otherwise accumulates retained closures
+		// on the ONE shared run AbortSignal (MaxListenersExceededWarning noise).
+		const finish = () => { signal?.removeEventListener("abort", onAbort); resolve(); };
+		const t = setTimeout(finish, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -624,9 +633,19 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// outcome — routable upstream-owned findings were persisted and the extension
 	// will auto-resume; report it as such (never as failed/partial noise).
 	const replanMarker = (state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[] } | undefined;
+	// SD-05 (NFR-6): a fatal gate whose limitation a human ACCEPTED never counts
+	// as a clean success — the gate never validated its artifact.
+	const acceptedLimitations = (state as Record<string, unknown>).__acceptedLimitations as Record<string, unknown> | undefined;
+	// A-03 (NFR-6): the replan marker must never MASK a subsequent abort — any
+	// later throw/cancellation is reclassified as failed with its real error,
+	// unless the abort IS the replan FatalAbort itself (the marker's own
+	// terminal throw, whose message the convergence loop emits atomically with
+	// the marker). Otherwise a crash between marker-set and run end would be
+	// silently converted into an auto-resumed "replan".
+	const replanAbort = aborted && abortError !== undefined && abortError.includes("REPLAN at round cap");
 
 	let status: RunStatus;
-	if (replanMarker) {
+	if (replanMarker && (!aborted || replanAbort)) {
 		status = "replan";
 	} else if (aborted || phases === 0) {
 		// `phases === 0` means the implementation stage produced no phases (gate
@@ -636,7 +655,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		// rather than being reported as failed. Fine while super-dev is the only
 		// consumer and every run is expected to implement.
 		status = "failed";
-	} else if (green && reviewRan && approved && !hardGateFailed && !mergeNotConfirmed && !cleanupBlocked && failedStages.length === 0) {
+	} else if (green && reviewRan && approved && !hardGateFailed && !mergeNotConfirmed && !cleanupBlocked && !acceptedLimitations && failedStages.length === 0) {
 		status = "success";
 	} else {
 		status = "partial";
@@ -655,7 +674,9 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 			const reason = green
 				? cleanupBlocked
 					? "cleanup blocked the merge — sensitive file(s) detected in the merge set (see state.cleanup.sensitiveDataFindings)"
-					: "review/build/integration/merge or a stage did not fully pass"
+					: acceptedLimitations
+						? `a fatal-gate limitation was accepted without validation (see state.__acceptedLimitations: ${Object.keys(acceptedLimitations).join(", ")})`
+						: "review/build/integration/merge or a stage did not fully pass"
 				: `implementation finished ${done}/${total} phase(s)${impl?.convergenceBlocked ? " (convergence blocked — no-progress)" : ""}`;
 			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.`);
 		} else if (status === "replan") {

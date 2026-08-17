@@ -154,7 +154,7 @@ Role timeouts: 480 s default, 1200 s for code-writing roles (`implementer`,
 | `retry({attempts, backoff?})`     | Re-run a node on failure (AWS Step Functions "Retry" semantics)    |
 | `gate({validate, attempts})`      | Write → validate → re-write (quality-gate loop for LLM outputs)    |
 | `map({over, as, concurrency?})`   | Fan out a body over a collection                                   |
-| `wait(ms)` / `waitForEvent(name)` | Time or event synchronization                                      |
+| `wait(ms)`                        | Time synchronization                                               |
 | `tryCatch(body, {catch, finally})`| Error boundary (catches thrown fatal-task errors)                  |
 | `noop()`                          | Identity                                                           |
 
@@ -263,7 +263,8 @@ said plainly. Post-merge, a finding citing a `file` that does not exist in the
 worktree is demoted to the ledger (R-5) — the fixer never hunts fabricated
 paths. Verdict normalization keeps a **Changes Requested** verdict pinned when
 open high-severity findings exist (no silent downgrade to "Approved with
-Comments").
+Comments") — and the adversarial reviewer's literal `PASS` verdict passes
+through the same guard, never a silent approval past a blocking finding.
 
 **Out-of-scope regression baseline (Stage 9/10 gates).** Pre-existing failures
 in *untouched* test files would historically be excused wholesale. Now, when
@@ -328,7 +329,7 @@ deadlock boundaries **without** weakening any guarantee:
 | Stage 2B/2C/3/6B/7 convergence | budget + 8-round cap + stall escalation (≤2 retries per `kind:stage`) |
 | Stage 9 RED retries | `SUPER_DEV_MAX_RED_RETRIES` (default 6) + no-progress + oscillation detection |
 | Stage 9 challenge re-authors | default 2 (`SUPER_DEV_MAX_CHALLENGE_REAUTHORS`) |
-| Stage 9/10 per-attempt fix loops | budget + identical-signature no-progress (2 attempts) |
+| Stage 9/10 per-attempt fix loops | budget + recurring-signature no-progress (any earlier attempt) |
 | Stage 10 review loop | approval (verdict AND build green) + stagnation (identical non-empty findings signature) + **dead-state breaks**: no actionable findings with a green gate (or absent gate after one full round) breaks for HITL |
 | Global agent budget | `maxAgents` (default per run options) |
 
