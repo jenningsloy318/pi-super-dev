@@ -2,7 +2,7 @@ import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
-import { reviewHasBlockingFinding } from "../review-findings.ts";
+import { enforceReviewerConvergenceDuty, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import { runJudge } from "./judge.ts";
 import { countStageRounds } from "../resume.ts";
@@ -17,6 +17,7 @@ import {
 	recordConvergenceFindings,
 	recordReviewFindingsFromControl,
 	type ConvergenceOwnerStage,
+	getConvergenceLedger,
 } from "../convergence-ledger.ts";
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
@@ -284,6 +285,11 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 			let lastOwnOpen = Number.POSITIVE_INFINITY;
 			let progressExtensionUsed = false;
 			const ownStage = normalizeConvergenceStage(options.feedbackKey, options.feedbackKey);
+			// G1 (adversarial G1-ROUND-COUNTER-CONFLATION): the duty threshold
+			// counts REVIEW passes, not loop iterations — validation-failure
+			// rounds run no reviewer and must not consume the reviewer's free
+			// early passes.
+			let reviewRound = 0;
 			while (ctx.budget.check()) {
 				round++;
 				if (ctx.signal?.aborted) return { status: "cancelled" as const };
@@ -460,7 +466,21 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					// (a finding it confirms resolved is marked, so it stops blocking).
 					const resolved = markConvergenceFindingsAddressedFromResponses(state, reviewControl?.priorFindingResolutions, "reviewer");
 					if (resolved > 0) ctx.log(`${options.feedbackKey} convergence: reviewer resolved ${resolved} prior finding(s)`);
-					const approved = reviewVerdictApproves(reviewControl?.verdict) && !reviewHasBlockingFinding(reviewControl);
+					// G1 (run 08-56 moving-target spiral): the convergence-duty
+					// contract is enforced DETERMINISTICALLY, not by prompt
+					// compliance — from REVIEWER_DUTY_ROUND on, NEW non-High
+					// blocking findings become advisory before approval is
+					// decided, so a reviewer that ignores the contract can no
+					// longer keep the loop open until the cap kills the run.
+					reviewRound++;
+					const downgraded = enforceReviewerConvergenceDuty(reviewControl, reviewRound, { stage: options.feedbackKey, knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)) });
+					if (downgraded > 0) ctx.log(`${options.feedbackKey} convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
+					// F-A verdict pinning (adversarial G1-NEEDSHUMAN-NOOP): the
+					// approval gate uses the VERDICT-layer blocking scan — a
+					// needs-human finding pins the verdict only through its own
+					// blocking flag / high severity, so the duty downgrade of a
+					// late non-high needs-human note actually unblocks approval.
+					const approved = (reviewVerdictApproves(reviewControl?.verdict) || downgraded > 0) && !reviewHasBlockingVerdictFinding(reviewControl);
 					if (!approved) {
 						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
 						lastErrors = compactReviewFindings(reviewControl);
@@ -530,11 +550,17 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						ctx.log(`${options.feedbackKey} convergence: ✗ review rejected round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
 						continue;
 					}
+					// G1: a downgrade-approval still records the advisory findings
+					// (audit trail) before the verified flip discards them.
+					if (downgraded > 0) {
+						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
+						ctx.log(`${options.feedbackKey} convergence: ${downgraded} downgraded finding(s) recorded as advisory on approval`);
+					}
 					ctx.log(`${options.feedbackKey} convergence: ✓ review approved round ${round}`);
 				}
 
 				clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
-				markConvergenceFindingsVerified(state, (finding) => (finding.ownerStage === normalizeConvergenceStage(options.feedbackKey, options.feedbackKey) && (finding.detectedAtStage === options.feedbackKey || finding.detectedAtStage === "replan")) || (options.review ? finding.detectedAtStage === options.review.reviewStateKey : false));
+				markConvergenceFindingsVerified(state, (finding) => !finding.downgradeReason && ((finding.ownerStage === normalizeConvergenceStage(options.feedbackKey, options.feedbackKey) && (finding.detectedAtStage === options.feedbackKey || finding.detectedAtStage === "replan")) || (options.review ? finding.detectedAtStage === options.review.reviewStateKey : false)));
 				// R3: approval by the owning reviewer VERIFIES the revision — only now
 				// may the persisted requests flip to addressed (never on the writer's
 				// say-so alone, mirroring the convergence-ledger contract).

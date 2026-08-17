@@ -194,6 +194,7 @@ function gateSpecReview(s: Record<string, unknown>): HelperResult {
 	else {
 		const doc = readSpecDoc(setupSpecDir(s), review, "*-spec-review*.md");
 		if (doc) errors.push(...specReviewContentErrors(doc.content));
+		else errors.push("Spec review doc missing — no *-spec-review*.md rendered in the spec dir");
 		if (!isApprovedVerdict(review.verdict)) errors.push(`Verdict is "${review.verdict ?? ""}" — changes requested`);
 	}
 	return fail("gate-spec-review", errors);

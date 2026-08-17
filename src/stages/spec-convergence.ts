@@ -1,7 +1,7 @@
 import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
-import { reviewHasBlockingFinding } from "../review-findings.ts";
+import { enforceReviewerConvergenceDuty, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import {
 	blockingConvergenceFindings,
@@ -13,6 +13,7 @@ import {
 	recordConvergenceFindings,
 	recordReviewFindingsFromControl,
 	type ConvergenceOwnerStage,
+	getConvergenceLedger,
 } from "../convergence-ledger.ts";
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
@@ -141,6 +142,9 @@ export const specConvergenceNode: Node = {
 		// F6 (RC6): consecutive IDENTICAL structural trace errors → repair hint.
 		let lastTraceError: string | null = null;
 		let sameTraceErrorCount = 0;
+		// G1 (adversarial G1-ROUND-COUNTER-CONFLATION): the duty threshold
+		// counts REVIEW passes, not loop iterations.
+		let reviewRound = 0;
 		while (ctx.budget.check()) {
 			round++;
 			if (ctx.signal?.aborted) return { status: "cancelled" as const };
@@ -256,10 +260,31 @@ export const specConvergenceNode: Node = {
 			// are recorded only on the reject path below). Mirror
 			// artifact-convergence: verdict approval AND no blocking finding.
 			const specReviewControl = state.specReview as ControlObj | undefined;
-			const approved = review.pass && !reviewHasBlockingFinding(specReviewControl);
+			// G1 (run 08-56 moving-target spiral): deterministic convergence-duty
+			// enforcement — from REVIEWER_DUTY_ROUND on, NEW non-High blocking
+			// findings become advisory before approval is decided (the prompt
+			// contract alone could not stop fresh medium blockers from keeping
+			// the loop open until the cap killed the run).
+			reviewRound++;
+			const downgraded = enforceReviewerConvergenceDuty(specReviewControl, reviewRound, { stage: "spec", knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)) });
+			if (downgraded > 0) ctx.log(`spec convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
+			// G1 (code-review G1-GATE-OVERRIDE): a downgrade-approval may
+			// override ONLY the verdict-wording failure — review-DOC shape
+			// errors (missing dimensions/doc) are real gate failures that must
+			// still reject. And per F-A verdict pinning, needs-human findings
+			// pin approval only via their own blocking flag / high severity.
+			const shapeErrors = (review.errors ?? []).filter((e) => !e.startsWith("Verdict is"));
+			const approved = (review.pass || (downgraded > 0 && shapeErrors.length === 0)) && !reviewHasBlockingVerdictFinding(specReviewControl);
 			if (review.pass && !approved) ctx.log("spec convergence: review verdict approved but blocking finding(s) are present — treating as rejection");
 			if (approved) {
+				// G1: a downgrade-approval still records the advisory findings
+				// (audit trail) before the verified flip discards them.
+				if (downgraded > 0) {
+					recordReviewFindingsFromControl(state, specReviewControl, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "spec-review" });
+					ctx.log(`spec convergence: ${downgraded} downgraded finding(s) recorded as advisory on approval`);
+				}
 				markConvergenceFindingsVerified(state, (finding) => {
+					if (finding.downgradeReason) return false; // duty-enforced advisories stay visible in the ledger
 					const detected = normalizeConvergenceStage(finding.detectedAtStage, "implementation");
 					return detected === "spec" || detected === "specReview" || String(finding.detectedAtStage) === "replan";
 				});

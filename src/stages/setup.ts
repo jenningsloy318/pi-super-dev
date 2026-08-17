@@ -6,6 +6,8 @@
 
 import type { Stage } from "../types.ts";
 import { runSetup } from "../setup.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { abbreviatePath } from "../pi-spawn.ts";
 import { summarizeSlug } from "../session-agent.ts";
 import { ChangeTracker, setActiveTracker } from "../tracking.ts";
@@ -25,6 +27,13 @@ export const setupStage: Stage = {
 			} catch { /* fallback below */ }
 		}
 		const setup = runSetup(ctx.task, { cwd: ctx.options.cwd, skipWorktree: ctx.options.skipWorktree, slug, resumeSpecIdentifier: resumeId });
+		if (setup.reusedTrack) {
+			let anchorPreview = "";
+			try {
+				anchorPreview = readFileSync(join(setup.specDirectory, ".task"), "utf8").slice(0, 100).replace(/\s+/g, " ");
+			} catch { /* anchor absent — containment-only match */ }
+			ctx.log(`Setup: reusing spec track ${setup.specIdentifier} (task similarity match${anchorPreview ? `; anchor: "${anchorPreview}…"` : ""}) — prior docs, knowledge and user notes preserved; convergence ledger restarts; resume cache retained on disk (use --resume to replay); set SUPER_DEV_NO_SPEC_REUSE=1 to force a fresh track`);
+		}
 		// A-3 observability (logging-only): make it visible WHY an untracked .env
 		// in the worktree does not block the merge — setup itself copied it for
 		// integration-test credentials; the sensitive scan is git-carried-only.

@@ -148,6 +148,150 @@ describe("specConvergenceNode", () => {
 		expect(((state as Record<string, unknown>).__feedback as Record<string, string[]> | undefined)?.spec).toBeUndefined();
 	});
 
+	it("G1: downgrades NEW non-High blockers from round 3 and converges on a downgrade-approval", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const mediumNew = (id: string): Record<string, unknown> => ({
+			id, severity: "medium", title: `Polish ${id}`, detail: "Advisory-level nit.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Optional.", evidence: ["review evidence"],
+		});
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				Array.from({ length: 3 }, () => specControl(["SCENARIO-001", "SCENARIO-002"])),
+				[
+					reviewControl("Changes Requested", [mediumNew("POLISH-1")]),
+					reviewControl("Changes Requested", [mediumNew("POLISH-2")]),
+					reviewControl("Changes Requested", [mediumNew("POLISH-3")]),
+				],
+				seen,
+			),
+		);
+
+		// Rounds 1-2: NEW medium blockers are legitimate — rejected with feedback.
+		// Round 3: same shape, but the convergence duty downgrades them to
+		// advisory and the loop MUST converge instead of burning to the cap.
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(3);
+		const ledger = getConvergenceLedger(state);
+		const recorded = ledger.findings.find((f) => f.id === "POLISH-3");
+		expect(recorded).toBeDefined();
+		expect(recorded?.blocking).toBe(false);
+		// duty-enforced advisories stay distinguishable from reviewer-verified
+		// resolutions (audit trail): not flipped to verified, reason persisted
+		expect(recorded?.status).not.toBe("verified");
+		expect(String(recorded?.downgradeReason ?? "")).toContain("convergence-duty");
+	});
+
+	it("G1/R-GATE: a downgrade-approval does NOT override review-doc shape errors", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const mediumNew = (id: string): Record<string, unknown> => ({
+			id, severity: "medium", title: `Polish ${id}`, detail: "Advisory-level nit.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Optional.", evidence: ["review evidence"],
+		});
+		const partialDims = (verdict: string, findings: Array<Record<string, unknown>>): ControlObj => ({
+			...reviewControl(verdict, findings),
+			// only 7 of 8 required dimensions → the review DOC fails the shape
+			// gate regardless of verdict wording
+			dimensions: dims.slice(0, 7).map((name) => ({ name, status: "fail", notes: `${name} reviewed.` })),
+		});
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				Array.from({ length: 4 }, () => specControl(["SCENARIO-001", "SCENARIO-002"])),
+				[
+					partialDims("Changes Requested", [mediumNew("S-1")]),
+					partialDims("Changes Requested", [mediumNew("S-2")]),
+					partialDims("Changes Requested", [mediumNew("S-3")]),
+					reviewControl("Approved"),
+				],
+				seen,
+			),
+		);
+		// the shape failure rejects even with downgraded findings — the override
+		// applies ONLY to verdict wording, never to gate errors
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(4);
+		// revert canary (adversarial R2-TESTS-NON-DISCRIMINATING): the shape
+		// error, not the verdict, kept round 2 open — its feedback names the
+		// missing dimension
+		expect(renderRetryFeedbackBlock(seen[2])).toMatch(/dimension|spec review/i);
+	});
+
+	it("G1: validation-failure rounds do not consume the reviewer's free early passes", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const mediumNew = (id: string): Record<string, unknown> => ({
+			id, severity: "medium", title: `Gap ${id}`, detail: "Coverage gap.", ownerStage: "spec", blocking: true, status: "open", recommendation: "Fix.", evidence: ["review evidence"],
+		});
+		const dangling = (refs: string[]): ControlObj => specControl(refs, refs);
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				[
+					dangling(["SCENARIO-999"]), // round 1: trace gate fails — no review runs
+					dangling(["SCENARIO-998"]), // round 2: trace gate fails — no review runs
+					specControl(["SCENARIO-001", "SCENARIO-002"]),
+					specControl(["SCENARIO-001", "SCENARIO-002"]),
+				],
+				[
+					// loop round 3 is the reviewer's FIRST pass (reviewRound=1):
+					// NEW medium blockers stay blocking — no downgrade yet
+					reviewControl("Changes Requested", [mediumNew("GAP-1")]),
+					reviewControl("Approved"),
+				],
+				seen,
+			),
+		);
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(4);
+		// the first review pass (loop round 3) legitimately rejected with its
+		// finding intact — seen[3] is the feedback state before the round-4
+		// writer, i.e. the round-3 REVIEW feedback
+		expect(renderRetryFeedbackBlock(seen[3])).toContain("Gap GAP-1");
+	});
+
+	it("G1: a late non-high needs-human note converges instead of killing the loop", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const needsHuman = (id: string): Record<string, unknown> => ({
+			id, severity: "medium", title: "Product decision needed", detail: "AC wording requires a human decision.", ownerStage: "spec", blocking: true, status: "needs-human", recommendation: "Ask the user.", evidence: ["review evidence"],
+		});
+		const result = await specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				Array.from({ length: 3 }, () => specControl(["SCENARIO-001", "SCENARIO-002"])),
+				[
+					reviewControl("Changes Requested", [needsHuman("NH-1")]),
+					reviewControl("Changes Requested", [needsHuman("NH-2")]),
+					reviewControl("Changes Requested", [needsHuman("NH-3")]),
+				],
+				seen,
+			),
+		);
+		// round 3 (review pass 3): the needs-human note is downgraded to
+		// advisory and — via the F-A verdict-pinning gate — no longer pins the
+		// verdict; the loop converges instead of spinning to the round cap
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(3);
+		// NH-1/2/3 share title+detail → one merged ledger row (fingerprint key)
+		const recorded = getConvergenceLedger(state).findings.find((f) => f.title === "Product decision needed");
+		expect(recorded).toBeDefined();
+		expect(recorded?.blocking).toBe(false);
+		expect(String(recorded?.downgradeReason ?? "")).toContain("convergence-duty");
+	});
+
 	it("continues spec/review convergence beyond the shared workflow attempt count", async () => {
 		const s = setup(dir);
 		seedDocs(s);

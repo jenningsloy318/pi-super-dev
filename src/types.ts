@@ -179,6 +179,9 @@ export interface SetupControl {
 	 *  worktree (integration-test credentials). Logging-only — these files are
 	 *  untracked, never merged, and excluded from the sensitive-data scan. */
 	copiedEnvFiles?: string[];
+	/** G2: true when setup re-entered an existing resumable track (task
+	 * similarity match) instead of allocating a fresh spec id. */
+	reusedTrack?: boolean;
 }
 
 export interface Classification {

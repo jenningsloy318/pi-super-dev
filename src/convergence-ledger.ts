@@ -39,6 +39,11 @@ export interface ConvergenceFinding {
 	invalidatesStages: ConvergenceOwnerStage[];
 	sourceGate?: string;
 	priorFindingId?: string;
+	/** Present when the deterministic convergence-duty layer downgraded a
+	 *  late-round NEW non-High blocking finding to advisory — persisted so the
+	 *  ledger distinguishes a duty-enforced advisory from a reviewer-authored
+	 *  one (code-review G1-DOWNGRADE-AUDIT-LOSS). */
+	downgradeReason?: string;
 	firstSeenAt: string;
 	lastSeenAt: string;
 	seenCount: number;
@@ -55,6 +60,7 @@ export interface ConvergenceFindingInput {
 	title?: unknown;
 	detail?: unknown;
 	evidence?: unknown;
+	downgradeReason?: unknown;
 	recommendation?: unknown;
 	invalidatesStages?: unknown;
 	sourceGate?: unknown;
@@ -217,7 +223,12 @@ function normalizeFinding(input: ConvergenceFindingInput, defaults: { detectedAt
 	const sourceGate = compact(input.sourceGate, defaults.sourceGate ?? "") || undefined;
 	const inferredStatus = inferReviewFindingStatus(input as Record<string, unknown>, "open");
 	const status = normalizeStatus(input.status, inferredStatus === "verified" || inferredStatus === "deferred" || inferredStatus === "needs-human" ? inferredStatus : "open");
-	const blocking = ["addressed", "verified", "deferred"].includes(status) ? false : status === "needs-human" ? true : typeof input.blocking === "boolean" ? input.blocking : reviewFindingBlocks(input as Record<string, unknown>) || normalizeBlocking(input.blocking, severity);
+	// A duty-enforced downgrade is authoritative even for needs-human findings
+	// (adversarial G1-NEEDSHUMAN-REPROMOTION): without this the normalize path
+	// re-promotes a downgraded late needs-human note to blocking, partially
+	// defeating the enforcement on mixed reject rounds.
+	const downgraded = typeof input.downgradeReason === "string" && input.downgradeReason.length > 0;
+	const blocking = downgraded ? false : ["addressed", "verified", "deferred"].includes(status) ? false : status === "needs-human" ? true : typeof input.blocking === "boolean" ? input.blocking : reviewFindingBlocks(input as Record<string, unknown>) || normalizeBlocking(input.blocking, severity);
 	const fingerprint = stableHash([ownerStage, sourceGate ?? "", title, detail].join("\n").toLowerCase());
 	const rawId = compact(input.id);
 	const id = rawId || `CF-${ownerStage}-${fingerprint}`;
@@ -237,6 +248,7 @@ function normalizeFinding(input: ConvergenceFindingInput, defaults: { detectedAt
 		invalidatesStages: normalizeInvalidates(input.invalidatesStages, ownerStage),
 		sourceGate,
 		priorFindingId: compact(input.priorFindingId) || undefined,
+		downgradeReason: compact(input.downgradeReason) || undefined,
 		firstSeenAt: now,
 		lastSeenAt: now,
 		seenCount: 1,
@@ -279,6 +291,8 @@ export function recordConvergenceFindings(
 			existing.invalidatesStages = mergeUnique(existing.invalidatesStages, normalized.invalidatesStages) as ConvergenceOwnerStage[];
 			existing.sourceGate = normalized.sourceGate ?? existing.sourceGate;
 			existing.priorFindingId = normalized.priorFindingId ?? existing.priorFindingId;
+			if (normalized.downgradeReason) existing.downgradeReason = normalized.downgradeReason;
+			else if (normalized.blocking) existing.downgradeReason = undefined; // re-flagged blocking clears the stale downgrade
 			existing.lastSeenAt = localTimestamp();
 			existing.seenCount += 1;
 			written.push(existing);
@@ -393,6 +407,7 @@ export function recordReviewFindingsFromControl(
 			evidence: finding.evidence,
 			recommendation: finding.recommendation,
 			priorFindingId: finding.priorFindingId,
+			downgradeReason: finding.downgradeReason,
 			sourceGate: defaults.sourceGate,
 		})),
 		{ detectedAtStage: defaults.detectedAtStage, ownerStage: defaults.ownerStage ?? "spec", sourceGate: defaults.sourceGate },

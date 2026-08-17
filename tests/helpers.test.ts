@@ -4,6 +4,9 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runHelper } from "../src/helpers.ts";
 import { extractControl, findLastJsonObject } from "../src/control.ts";
 import { reviewFindingBlocks, reviewFindingBlocksVerdict, reviewHasBlockingFinding, reviewHasBlockingVerdictFinding } from "../src/review-findings.ts";
@@ -69,10 +72,23 @@ describe("helpers: gates", () => {
 		expect(r.value.pass).toBe(false);
 	});
 	it("gate-spec-review passes only on Approved variants", async () => {
-		const ok = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Approved with Comments" } } });
-		expect(ok.value.pass).toBe(true);
-		const bad = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Changes Requested" } } });
-		expect(bad.value.pass).toBe(false);
+		// N3: the rendered review doc is REQUIRED (a missing doc is a shape
+		// error) — provide one via docPath.
+		const dir = mkdtempSync(join(tmpdir(), "sd-gate-review-"));
+		try {
+			const docPath = join(dir, "03-spec-review.md");
+			writeFileSync(docPath, ["# Spec Review", "## Dimensions",
+				"Completeness: pass.", "Consistency: pass.", "Feasibility: pass.", "Testability: pass.",
+				"Traceability: pass.", "Grounding: pass.", "Complexity: pass.", "Ambiguity: pass."].join("\n"));
+			const ok = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Approved with Comments", docPath } } });
+			expect(ok.value.pass).toBe(true);
+			const bad = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Changes Requested", docPath } } });
+			expect(bad.value.pass).toBe(false);
+			// missing doc → explicit shape error (blocks downgrade-approvals)
+			const docless = await runHelper({ name: "gate-spec-review", sources: { "review-spec": { verdict: "Approved with Comments" } } });
+			expect(docless.value.pass).toBe(false);
+			expect((docless.value.errors as string[]).some((e) => e.includes("review doc missing"))).toBe(true);
+		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 });
 

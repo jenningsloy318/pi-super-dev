@@ -5,7 +5,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { isResumable } from "./resume.ts";
 import { clearKnowledge } from "./render/knowledge.ts";
 import { clearUserNotes } from "./render/user-notes.ts";
 import { dirname, join, relative, resolve } from "node:path";
@@ -139,6 +140,111 @@ function nextSpecNumber(cwd: string): number {
 	return max + 1;
 }
 
+// ─── G2: spec-track reuse on task similarity ────────────────────────────────
+// Slightly different task texts allocated DIFFERENT tracks for the same
+// workstream (254-step-e2e-dashboard / 254-step-e2e-test-dashboard /
+// 254-e2e-dashboard were all observed), each fresh track regenerating
+// requirements nondeterministically and abandoning all prior convergence
+// progress. Before allocating a new track, deterministically match the task
+// against existing INCOMPLETE tracks (no LLM) and re-enter the same one.
+
+/** Anchor-task file persisted inside a spec dir at first allocation. Never
+ *  overwritten — the anchor keeps the track's identity stable across re-runs. */
+export const SPEC_TASK_ANCHOR = ".task";
+
+/** Stopword-stripped lowercase token set of a task text (shared vocabulary
+ *  with slugifyTask so slug tokens and task tokens line up). */
+export function taskTokens(task: string): Set<string> {
+	return new Set(task.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 2 && !STOPWORDS.has(w)));
+}
+
+/** Jaccard similarity of two task texts' token sets (near-identical re-runs). */
+export function taskSimilarity(a: string, b: string): number {
+	const ta = taskTokens(a);
+	const tb = taskTokens(b);
+	if (ta.size === 0 || tb.size === 0) return 0;
+	let inter = 0;
+	for (const t of ta) if (tb.has(t)) inter++;
+	return inter / (ta.size + tb.size - inter);
+}
+
+/** Share of a track slug's distinctive tokens present in the task text
+ *  (re-phrased re-run of the same feature: `step-e2e-dashboard` tokens
+ *  appear inside a task that never mentions the original wording). */
+export function slugTokenContainment(slug: string, task: string): number {
+	const slugTokens = slug.toLowerCase().split("-").filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+	if (slugTokens.length === 0) return 0;
+	const tokens = taskTokens(task);
+	let hit = 0;
+	for (const t of slugTokens) if (tokens.has(t)) hit++;
+	return hit / slugTokens.length;
+}
+
+/** Reuse score threshold: containment >= 0.75 with >= 3 slug tokens, exact
+ *  match for 2-token slugs, or Jaccard >= 0.6 for near-identical anchors. */
+function reusableScore(slug: string, anchorTask: string | undefined, task: string): number {
+	const slugTokens = slug.toLowerCase().split("-").filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+	const containment = slugTokenContainment(slug, task);
+	if (slugTokens.length >= 3 && containment >= 0.75) return Math.max(containment, 0.75);
+	if (slugTokens.length === 2 && containment === 1) return 1;
+	if (anchorTask && taskSimilarity(anchorTask, task) >= 0.6) return taskSimilarity(anchorTask, task);
+	return 0;
+}
+
+/** Env kill-switch for spec-track reuse. */
+export function specReuseEnabled(): boolean {
+	return process.env.SUPER_DEV_NO_SPEC_REUSE !== "1";
+}
+
+/** Find an existing INCOMPLETE spec track whose task matches the new task
+ *  (same workstream, re-phrased). Completed tracks (.complete marker) are
+ *  skipped — asking again after completion is a new iteration, not a re-run.
+ *  Returns the spec identifier (e.g. `254-step-e2e-dashboard`) or null. */
+export function findReusableSpec(cwd: string, task: string, opts: { worktree?: boolean } = {}): string | null {
+	const useWorktree = opts.worktree !== false; // default: the pipeline layout
+	const candidates: Array<{ id: string; dir: string; score: number; mtime: number }> = [];
+	const consider = (specDir: string, id: string) => {
+		// Reuse is a CONTINUATION of a dead run (adversarial
+		// G2-COLLISION-ABSORPTION / code-review G2-FALSE-POSITIVE-REUSE): only
+		// tracks with recorded progress (non-empty resume cache, no .complete
+		// marker — i.e. isResumable) are eligible. A track that never got past
+		// setup has nothing to preserve; a finished track asked-for-again is a
+		// new iteration, not a re-run.
+		if (!isResumable(specDir)) return;
+		let anchor: string | undefined;
+		try {
+			anchor = readFileSync(join(specDir, SPEC_TASK_ANCHOR), "utf8");
+		} catch { /* no anchor — containment-only scoring */ }
+		const slug = id.replace(/^\d+-/, "");
+		const score = reusableScore(slug, anchor, task);
+		if (score <= 0) return;
+		let mtime = 0;
+		try {
+			mtime = statSync(join(specDir, SPEC_TASK_ANCHOR)).mtimeMs;
+		} catch { /* fallback mtime 0 — score still discriminates */ }
+		candidates.push({ id, dir: specDir, score, mtime });
+	};
+	// Layout-aware (code-review N1-CROSS-LAYOUT-REUSE): a track recorded
+	// in-place (skipWorktree run) that is "reused" by a worktree-mode run (or
+	// vice versa) points specDirectory at an EMPTY sibling dir — the docs and
+	// cache stay in the other layout and nothing is preserved. Only tracks
+	// whose recorded layout matches how THIS run addresses the spec dir are
+	// eligible.
+	const wtRoot = join(cwd, ".worktree");
+	if (useWorktree && existsSync(wtRoot)) {
+		for (const id of readdirSync(wtRoot)) consider(join(wtRoot, id, "docs", "specifications", id), id);
+	}
+	const specsRoot = join(cwd, "docs", "specifications");
+	if (!useWorktree && existsSync(specsRoot)) {
+		for (const id of readdirSync(specsRoot)) consider(join(specsRoot, id), id);
+	}
+	if (candidates.length === 0) return null;
+	// Deterministic across machines: score, then recency, then lexicographic id
+	// (adversarial G2-TIEBREAK-NONDETERMINISM — readdir order is not stable).
+	candidates.sort((a, b) => b.score - a.score || b.mtime - a.mtime || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+	return candidates[0].id;
+}
+
 /** Extract an explicitly referenced existing spec directory from the task text.
  * Users often ask: `implement @docs/specifications/24-foo/` and expect the
  * whole workflow to keep that track as source-of-truth. Without this, setup
@@ -227,6 +333,7 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	let specIdentifier: string;
 	let worktreePath = cwd;
 	let worktreeCreated = false;
+	let reusedTrack = false;
 	const taskSpecIdentifier = referencedSpecIdentifier(task, cwd);
 	if (options.resumeSpecIdentifier) {
 		// Resume: reuse the existing spec id + worktree (do NOT allocate new).
@@ -246,9 +353,30 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 			worktreePath = wt.worktreePath;
 			worktreeCreated = wt.worktreeCreated;
 		}
-	} else {
+	} else if (!specReuseEnabled()) {
+		// Kill-switch: the caller has expressed intent for a FRESH track.
 		const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
 		specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
+		if (!options.skipWorktree) {
+			const wt = createOrReuseWorktree(cwd, specIdentifier, defaultBranch);
+			worktreePath = wt.worktreePath;
+			worktreeCreated = wt.worktreeCreated;
+		}
+	} else {
+		// G2 (spec-track fragmentation): try to re-enter an existing INCOMPLETE
+		// track with recorded progress whose task matches (re-phrased re-run of
+		// the same workstream) BEFORE allocating a sibling. The `options.slug`
+		// passed by the pipeline stage is an LLM-SUMMARIZED LABEL, never
+		// explicit fresh-track intent (code-review G2-PROD-DEAD-PATH /
+		// adversarial G2-DEAD-IN-PRODUCTION) — it only names a FRESH track.
+		const reusable = findReusableSpec(cwd, task, { worktree: !options.skipWorktree });
+		if (reusable) {
+			specIdentifier = reusable;
+			reusedTrack = true;
+		} else {
+			const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
+			specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
+		}
 		if (!options.skipWorktree) {
 			const wt = createOrReuseWorktree(cwd, specIdentifier, defaultBranch);
 			worktreePath = wt.worktreePath;
@@ -266,13 +394,26 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 
 	const specDirectory = join(worktreePath, "docs", "specifications", specIdentifier) + "/";
 	mkdirSync(specDirectory, { recursive: true });
+	// G2: persist the anchor task at first allocation of a track (never
+	// overwritten) so later re-phrased runs can deterministically find and
+	// re-enter this track instead of fragmenting into siblings.
+	const anchorPath = join(specDirectory, SPEC_TASK_ANCHOR);
+	if (!existsSync(anchorPath)) {
+		try {
+			writeFileSync(anchorPath, task, "utf8");
+		} catch { /* best-effort — reuse falls back to slug containment */ }
+	}
 	// Fresh run: clear accumulated knowledge. Resume: PRESERVE it (the memoizing
 	// replay overwrites keyed entries as stages re-run, so no duplication; and the
 	// resumed call's knowledge-injection needs prior-stage data intact).
-	if (!options.resumeSpecIdentifier) {
+	if (!options.resumeSpecIdentifier && !reusedTrack) {
+		// A REUSED track is a continuation like resume: its knowledge and
+		// user-notes carry the prior run's context (and user-authored guidance)
+		// — wiping them would silently destroy human notes (adversarial
+		// G2-COLLISION-ABSORPTION).
 		clearKnowledge(specDirectory);
 		clearUserNotes(specDirectory);
 	}
 
-	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo, copiedEnvFiles };
+	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo, copiedEnvFiles, reusedTrack };
 }
