@@ -318,7 +318,10 @@ export function buildTddPrompt(s: SetupControl, c: Classification | null, phase:
 		deliverableLines.push("", "## Required Deliverables (deterministic gate — must match EXACTLY)");
 		if (requiredScenarios.length) {
 			deliverableLines.push(
-				"The phase is only GREEN when EACH of these BDD scenario tags appears VERBATIM in your test file contents (in a test title, a comment, or a tag constant — any convention: vitest/jest `it(...)`/`test(...)`, pytest `def test_*`, Go `func TestXxx(t *testing.T)`, Rust `#[test] fn`). The tag is a STABLE id — reword the human sentence freely, but keep the tag:",
+				// RC9 (run 15-07): comments are STRIPPED before the deterministic
+				// contains-match — "a comment" was a false contract; Go test names
+				// cannot contain '-' so tags there are usually comments.
+				"The phase is only GREEN when EACH of these BDD scenario tags appears VERBATIM in your test file contents in MATCHED CODE — a test title or a string-literal tag constant (any convention: vitest/jest `it(...)`/`test(...)`, pytest `def test_*`, Go `func TestXxx(t *testing.T)` titles or string-typed consts, Rust `#[test] fn` names). Comments do NOT count — the gate strips comments before matching, and Go test names cannot contain '-':",
 				fenceUntrusted(requiredScenarios.map((t) => `- ${t}`).join("\n"), "required scenario tags"),
 			);
 		}
@@ -351,6 +354,10 @@ export function buildTddPrompt(s: SetupControl, c: Classification | null, phase:
 		langInstructions ? `## Language-Specific Instructions\n${langInstructions}\n` : "",
 		"## Instructions",
 		"Write failing tests FIRST for this implementation phase.",
+		// RC11: match the test level to the task's stated observable — a
+		// declaration-level task gets a declaration-binding test; do not invent a
+		// deeper observable the task never states.
+		"TEST LEVEL = TASK LEVEL: each task row states its observable. When a task's observable is declaration/source-level (e.g. 'must declare type X', 'must implement TableName()'), bind the test to exactly that declared observable. When it is behavior-level (persist and read back a row, return a status code), write a behavior test. Never demand or author a different observable than the task states — the RED review enforces the same precedence.",
 		"Before writing tests, build a Scenario Coverage Matrix from the BDD scenarios and the spec scenarioRefs. Cover every SCENARIO-NNN relevant to this phase; if the spec does not map scenarios to phases, cover every scenarioRef in the baseline above.",
 		requiredTests.length || requiredScenarios.length ? "You MUST also satisfy every item under Required Deliverables above — author each named test using that exact name string, and embed each required SCENARIO-NNN tag verbatim in a test. These are the deterministic acceptance gate — the phase cannot go green while any is absent, and the later implementer is FORBIDDEN from adding them (editing these RED tests during implementation is rejected). Author them now." : "",
 		"Do not mark the RED phase complete while any relevant BDD scenario lacks a test. Missing scenario coverage is an invalid RED sample; add or revise tests until the coverage matrix is complete.",
@@ -422,7 +429,15 @@ export function buildRedReviewPrompt(
 		"## Instructions",
 		"Read the test files above. There is NO implementation yet — this is the RED phase. Judge ONLY test QUALITY, not whether they pass.",
 		"For each mapped scenario, decide whether its test asserts the scenario's OBSERVABLE behavior with a concrete expected value (status code, returned value, emitted effect, error).",
-		"A test is WEAK if any of: it has no meaningful assertion; it asserts a tautology (e.g. expect(true).toBe(true)); it asserts a hard-coded stub/constant rather than computed behavior; it only checks an implementation detail (an internal call/shape) instead of the scenario's contract; or a trivial/wrong implementation would satisfy it.",
+		// RC11 (run 10-39): the phase's task rows and deliverables define the
+		// observable. When a task's stated observable is declaration/source-level
+		// (e.g. 'must declare type X' / 'must implement TableName()'), a test that
+		// asserts THAT declared observable is behavior-binding — the reviewer must
+		// NOT demand a different observable the task never states (that made the
+		// loop unsatisfiable: declaration tests rejected as weak, behavior tests
+		// broke compilation).
+		"TASK-CONTRACT PRECEDENCE: the phase's task rows and deliverables (read the specification) define each scenario's observable. When a task's observable is explicitly declaration/source-level, a test binding exactly that declared observable counts as behavior-binding. Do not demand a deeper observable (runtime persistence, integration effects) that the task never states. Report a contradiction only when the stated contract itself is jointly unsatisfiable.",
+		"A test is WEAK if any of: it has no meaningful assertion; it asserts a tautology (e.g. expect(true).toBe(true)); it asserts a hard-coded stub/constant rather than computed behavior; it only checks an implementation detail (an internal call/shape) that the task did NOT state as the observable (per TASK-CONTRACT PRECEDENCE above, a declaration-level task makes that declaration the contract); or a trivial/wrong implementation would satisfy it.",
 		"Return verdict=\"strong\" ONLY when EVERY mapped scenario has at least one behavior-binding assertion. Otherwise verdict=\"weak\" and name the specific weak tests/scenarios and the missing assertion in summary.",
 		"JOINT SATISFIABILITY (mandatory second dimension): verify at least ONE conforming implementation could pass ALL these tests SIMULTANEOUSLY. Cross-check scenarios that share fixtures, sample data, or assert on the same behavior for internal contradictions (e.g. one scenario requires byte-identical output across validators while another mandates different error tokens for the same inputs; one requires a value both X and not-X). If NO conforming implementation can pass all tests, report each contradiction in `contradictions` with the exact test names/lines and a concise impossibility proof, and ALSO set verdict=\"weak\". When the suite is jointly satisfiable, emit contradictions as an empty array [] — never omit the key.",
 		"You are read-only: do NOT edit any file.",

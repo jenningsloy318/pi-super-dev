@@ -8,7 +8,7 @@
  * replaces the old QA self-report — no more vacuous pass on "agent said green".
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
@@ -27,7 +27,7 @@ import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeli
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 
-type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
+type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
 
 interface RedEvidence {
 	phaseId: string;
@@ -222,6 +222,53 @@ function implementationRetrySection(heading: string, feedback: Omit<RetryFeedbac
 	return renderRetryFeedbackBlock([{ stage: "implementation", ...feedback }], heading);
 }
 
+function toStringArr(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+/** RC12c: compute the worktree's currently-dirty (non-bookkeeping) files that
+ *  are NOT in the phase's SPEC-DECLARED scope (requireFiles + requireContains
+ *  files) and NOT among this phase's RED test files (they are legitimately
+ *  dirty during GREEN — reviewer F-2). The implementer's OWN claimed files
+ *  are deliberately NOT scope (reviewer F-3: self-claims are the thing being
+ *  audited — claiming a file must not hide it). Pure git read; returns [] on
+ *  any failure — observability only, never blocks the phase. */
+function trackerOutofScopeEdits(tracker: ReturnType<typeof getActiveTracker>, worktreePath: string, declaredScope: Set<string>, redTestFiles: string[]): string[] {
+	if (!tracker) return [];
+	try {
+		const r = spawnSync("git", ["-c", "core.quotepath=false", "-C", worktreePath, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8", timeout: 15_000 });
+		if (r.error || typeof r.status !== "number" || r.status !== 0) return [];
+		// C-quoted paths (non-ASCII/quote chars): strip quotes and unescape
+		// backslash-backslash / backslash-quote (best-effort), then normalize.
+		const normalize = (p: string) => {
+			const t = p.trim();
+			if (t.startsWith('"') && t.endsWith('"')) {
+				return t.slice(1, -1).replace(/\\\\/g, "\\").replace(/\\"/g, '"').replace(/\\/g, "/");
+			}
+			return t.replace(/\\/g, "/").replace(/^\.\//, "");
+		};
+		const excluded = new Set([...declaredScope, ...redTestFiles]);
+		const out: string[] = [];
+		for (const line of String(r.stdout ?? "").split("\n")) {
+			if (!line.trim()) continue;
+			const code = line.slice(0, 2);
+			// Rename entries (R) carry "old -> new" — the NEW path is the live one.
+			const body = line.slice(3);
+			const raw = code.includes("R") && body.includes(" -> ") ? body.split(" -> ").pop()! : body;
+			const path = normalize(raw);
+			if (!path) continue;
+			if (excluded.has(path) || excluded.has(path.replace(/\/+$/, ""))) continue;
+			if (isInternalRuntimeClaim(path)) continue;
+			if (path.startsWith("docs/specifications/")) continue;
+			if (path.includes(".worktree/") || path === ".run-lock") continue;
+			out.push(path);
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
 function restorePaths(cwd: string, paths: string[]): void {
 	for (const path of paths) {
 		try { execFileSync("git", ["checkout", "--", path], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
@@ -244,6 +291,10 @@ function appendImplementationEvidence(specDir: string | undefined, evidence: Red
 	} catch { /* evidence is best-effort */ }
 }
 
+/** classifyRedEvidence's oracle-green reason literal (reviewer F-8: keep the
+ *  two coupled sites reading ONE constant instead of duplicated strings). */
+const CANONICAL_GREEN_WEAK_REASON = "RED tests passed before implementation";
+
 function classifyRedEvidence(args: { phaseId: string; attempt: number; redStatus: RedStatus; testFiles: string[]; changedFiles: string[]; boundary: RedBoundaryResult; redRetries: number; alreadySatisfied: boolean; diagnostics?: RedCheckDiagnostic[] }): RedEvidence {
 	const { phaseId, attempt, redStatus, testFiles, changedFiles, boundary, redRetries, alreadySatisfied } = args;
 	const forbiddenFiles = boundary.forbiddenFiles;
@@ -253,7 +304,7 @@ function classifyRedEvidence(args: { phaseId: string; attempt: number; redStatus
 	if (redStatus === "red") return { ...base, status: "red-behavior-failure" };
 	if (redStatus === "broken") return { ...base, status: "broken-test", reason: "RED tests did not compile/collect" };
 	if (redStatus === "green" && alreadySatisfied) return { ...base, status: "green-already-satisfied", reason: "Deliverables were already satisfied before implementation" };
-	if (redStatus === "green") return { ...base, status: "green-weak-test", reason: "RED tests passed before implementation" };
+	if (redStatus === "green") return { ...base, status: "green-weak-test", reason: CANONICAL_GREEN_WEAK_REASON };
 	return { ...base, status: testFiles.length ? "unknown-unclassified" : "unknown-no-runner", reason: testFiles.length ? "RED status could not be classified from runner output" : "No RED test targets or runner were available" };
 }
 
@@ -274,7 +325,14 @@ function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	if (e.status === "polluted-red") return [`red-polluted: RED phase changed production file(s): ${e.forbiddenFiles.join(", ")}`];
 	const detail = firstRedDiagnosticDetail(e);
 	if (e.status === "coverage-incomplete") return [`red-coverage-incomplete: missing BDD scenario coverage: ${(e.missingScenarios ?? []).join(", ") || "unknown"}${e.reason ? `; ${e.reason}` : ""}`];
-	if (e.status === "green-weak-test") return [`red-not-confirmed: tests passed before implementation (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
+	if (e.status === "green-weak-test") {
+		// RC8 (run 10-39): the fixed template lied for every non-oracle weak case
+		// (hollow tests, review rejections) — prefer the recorded reason. The
+		// canonical oracle-green reason stays verbatim for back-compat.
+		const reason = e.reason && e.reason !== CANONICAL_GREEN_WEAK_REASON ? e.reason : "tests passed before implementation";
+		return [`red-not-confirmed: ${reason} (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
+	}
+	if (e.status === "review-weak") return [`red-review-rejected: ${e.reason ?? "an independent reviewer did not confirm the RED tests as STRONG"} (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
 	if (e.status === "broken-test") return [`red-broken: tests did not compile/collect (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
 	return [];
 }
@@ -1189,11 +1247,11 @@ export const implementationStage: Stage = {
 								if (contradictionList.length > 0) {
 									summary = `joint-satisfiability contradiction(s): ${contradictionList.map((c) => c.tests).join("; ")}`;
 									ctx.log(`Implementation ${phaseId} RED review: CONTRADICTIONS (${verdict || "no verdict"}) — ${summary}`);
-									redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review found jointly unsatisfiable tests: ${summary}` };
+									redEvidence = { ...redEvidence, status: "review-weak", reason: `RED review found jointly unsatisfiable tests: ${summary}` };
 									retryHint = `An independent reviewer PROVED these RED tests are jointly unsatisfiable — NO conforming implementation can pass them all. Rewrite or remove the contradicting tests: ${contradictionList.map((c) => `${c.tests}${c.lines ? ` (${c.lines})` : ""}: ${c.proof}`).join(" | ")}. Resolve the contradiction in favor of the specification's observable behavior and re-run.`;
 								} else {
 									ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (${verdict || review.error || "no verdict"}) — ${summary}`);
-									redEvidence = { ...redEvidence, status: "green-weak-test", reason: `RED review not strong: ${summary}` };
+									redEvidence = { ...redEvidence, status: "review-weak", reason: `RED review not strong: ${summary}` };
 									retryHint = `An independent reviewer did not confirm your RED tests as STRONG: ${summary}. Strengthen the assertions so each binds the scenario's OBSERVABLE behavior (concrete expected values/outputs/status codes), not implementation details or tautologies, then re-run.`;
 								}
 							} else {
@@ -1288,7 +1346,9 @@ export const implementationStage: Stage = {
 								}
 								break;
 							}
-							if (redEvidence.status === "green-weak-test" || redEvidence.status === "polluted-red") {
+							// RC8: review-weak evidence must ALSO restore the rejected RED
+							// files before re-authoring (previously rode green-weak-test).
+							if (redEvidence.status === "green-weak-test" || redEvidence.status === "review-weak" || redEvidence.status === "polluted-red") {
 								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
 							}
 							retries++;
@@ -1503,6 +1563,36 @@ export const implementationStage: Stage = {
 				appendGateChecked(state, "phase-build", gate, "implementation");
 				attemptErrors = gate.errors;
 				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
+				// RC12c (runs 10-39/15-07): the implementer edited files OUTSIDE the
+				// phase's declared scope (auth-service type shims to dodge an unrelated
+				// build failure) — record a low non-blocking finding so the drift is
+				// visible in the ledger instead of silently persisting in the worktree.
+				const rc12Deliverables = (phase.deliverables ?? {}) as { requireFiles?: unknown; requireContains?: unknown };
+				const declaredScope = new Set<string>([
+					...toStringArr(rc12Deliverables.requireFiles),
+					...(Array.isArray(rc12Deliverables.requireContains)
+						? (rc12Deliverables.requireContains as Array<{ file?: unknown }>).map((e) => (e && typeof e.file === "string") ? e.file : "").filter(Boolean)
+						: []),
+				]);
+				const outOfScope = [...declaredScope].length
+					? trackerOutofScopeEdits(tracker, setup.worktreePath, declaredScope, testFiles)
+					: [];
+				if (outOfScope.length > 0) {
+					ctx.log(`Implementation ${phaseId} out-of-scope edits (non-blocking, recorded): ${outOfScope.join(", ")}`);
+					try {
+						recordConvergenceFindings(state, {
+							detectedAtStage: "implementation",
+							ownerStage: "implementation",
+							severity: "low",
+							blocking: false,
+							title: `Phase ${phaseId} edited files outside its declared scope`,
+							detail: `The implementer modified ${outOfScope.slice(0, 5).join(", ")} which are not among this phase's declared deliverables. Often a workaround for an unrelated environmental failure (missing dependencies in a fresh worktree) — check the bootstrap log before accepting these edits.`,
+							evidence: outOfScope.slice(0, 8),
+							sourceGate: "phase-build",
+							recommendation: "Review the out-of-scope edits; if they work around an environmental failure, revert them and fix the environment (dependency bootstrap) instead.",
+						}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "phase-build" });
+					} catch { /* never block the phase on ledger bookkeeping */ }
+				}
 				// AR-02: emit the pi session/model correlation tag to the run trace.
 				const corr = buildGateCorrelationLine(gate);
 				if (corr) ctx.log(corr);

@@ -1026,7 +1026,25 @@ function isGoGreenfieldBuildFailure(out: string, cwd?: string): boolean {
 		const files = undefinedLines.map((m) => m[1]);
 		if (!files.every((f) => /_test\.go$/.test(f))) return false;
 		if (!cwd) return true;
-		return files.every((f) => goDirHasOnlyTestFiles(cwd, dirname(f)));
+		if (files.every((f) => goDirHasOnlyTestFiles(cwd, dirname(f)))) return true;
+		// RC10 (run 10-39): shape 3 — cross-module/same-package greenfield. The
+		// failing package dir is NOT test-only (an existing package with real
+		// sources, e.g. internal/database), but every `undefined: <ref>` symbol
+		// has NO top-level declaration in ANY non-test .go file of the module →
+		// the code under test does not exist yet → greenfield red. A typo'd
+		// reference to an EXISTING symbol still finds its declaration → stays
+		// broken (safe direction). Reviewer F-3/F-4: a QUALIFIED ref
+		// (`alias.Symbol`) counts only when the failing test files import that
+		// alias from a path INSIDE this module — an external/vendored package's
+		// missing symbol is an environment/broken problem, never greenfield.
+		const refs = new Set<string>();
+		for (const m of undefinedLines) {
+			const ref = m[2].replace(/^undefined:\s*/, "").trim();
+			if (!ref) return false;
+			refs.add(ref);
+		}
+		if (!goQualifiedRefsAreInternal(cwd, files, refs)) return false;
+		return goSymbolsDeclaredNowhere(cwd, [...refs]);
 	}
 	const missingPkg = [...out.matchAll(/no required module provides package (\S+?)[;\s]/g)].map((m) => m[1]);
 	if (missingPkg.length > 0) {
@@ -1036,6 +1054,113 @@ function isGoGreenfieldBuildFailure(out: string, cwd?: string): boolean {
 		return missingPkg.every((pkg) => pkg.startsWith(modulePath + "/") && !existsSync(join(cwd, pkg.slice(modulePath.length + 1))));
 	}
 	return false;
+}
+
+/** RC10 helper: every QUALIFIED ref (`alias.Symbol`) must be imported by one of
+ *  the failing `_test.go` files under an alias whose import PATH resolves
+ *  inside the module tree (module-path prefix or an existing directory). Bare
+ *  refs are trivially internal (same-package). External-package undefined
+ *  symbols (not imported from inside the module, or imported from outside)
+ *  return false → the failure stays `broken`, never greenfield. */
+function goQualifiedRefsAreInternal(cwd: string, files: string[], refs: Set<string>): boolean {
+	const qualified = [...refs].filter((r) => r.includes("."));
+	if (qualified.length === 0) return true;
+	// alias -> import path map, merged across the failing test files.
+	const aliases = new Map<string, string>();
+	const modulePath = readGoModuleName(cwd);
+	for (const f of files) {
+		let text = "";
+		try { text = readFileSync(resolve(cwd, f), "utf8"); } catch { return false; }
+		const addImport = (alias: string | undefined, path: string) => {
+			if (!path) return;
+			// No explicit alias: Go's package name = last path segment.
+			aliases.set(alias ?? path.slice(path.lastIndexOf("/") + 1), path);
+		};
+		for (const rawLine of text.split("\n")) {
+			const line = rawLine.trim();
+			// import ( block ) members
+			const member = /^(?:([A-Za-z_]\w*)\s+)?"([^"]+)"$/.exec(line);
+			if (member) { addImport(member[1], member[2]); continue; }
+			// single-line import
+			const single = /^import\s+(?:([A-Za-z_]\w*|\.[\w.]+)\s+)?"([^"]+)"$/.exec(line);
+			if (single) { addImport(single[1], single[2]); continue; }
+		}
+	}
+	for (const ref of qualified) {
+		const qualifier = ref.slice(0, ref.lastIndexOf("."));
+		const path = aliases.get(qualifier);
+		if (!path) return false; // qualifier not imported by any failing test file
+		const internal = (modulePath && (path === modulePath || path.startsWith(modulePath + "/")))
+			|| path.startsWith("./") || path.startsWith("../");
+		if (!internal) return false; // external package — environment, not greenfield
+	}
+	return true;
+}
+
+/** RC10 helper: collect every TOP-LEVEL declared name (type/func/var/const) in
+ *  the module's non-test .go files, reachable under cwd. Non-throwing; empty
+ *  on any read failure (the caller then treats nothing as declared). */
+function goDeclaredTopLevelNames(cwd: string): Set<string> {
+	const names = new Set<string>();
+	const declRe = /^\s*(?:type|func|var|const)\s+([A-Za-z_][\w]*)/gm;
+	try {
+		const walk = (dir: string): void => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				if (entry.name === "vendor" || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+				const full = join(dir, entry.name);
+				if (entry.isDirectory()) { walk(full); continue; }
+				if (!entry.name.endsWith(".go") || entry.name.endsWith("_test.go")) continue;
+				const text = readFileSync(full, "utf8");
+				for (const m of text.matchAll(declRe)) names.add(m[1]);
+			}
+		};
+		walk(cwd);
+	} catch {
+		// best-effort: whatever was collected stands
+	}
+	return names;
+}
+
+/** Levenshtein distance capped at `cap` (early exit when exceeded) — used only
+ *  for the go typo probe, never on hot paths. */
+function levenshteinWithin(a: string, b: string, cap: number): boolean {
+	if (Math.abs(a.length - b.length) > cap) return false;
+	const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i++) {
+		let prev = row[0];
+		row[0] = i;
+		let best = row[0];
+		for (let j = 1; j <= b.length; j++) {
+			const tmp = row[j];
+			row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+			prev = tmp;
+			if (row[j] < best) best = row[j];
+		}
+		if (best > cap) return false;
+	}
+	return row[b.length] <= cap;
+}
+
+/** RC10 discriminator: every `undefined: <ref>` symbol must be declared NOWHERE
+ *  for a greenfield verdict. A ref may be package-qualified (`models.X`) — the
+ *  DECLARATION lives as top-level `X` inside that package's files, so compare
+ *  the LAST segment against collected top-level names. A NEAR-miss (levenshtein
+ *  <= 2 against a declared name of length >= 5) is a test-file TYPO, not
+ *  greenfield — those stay `broken` (the implementer could never satisfy a
+ *  typo). Safe direction: any match/near-match => false (not greenfield). */
+function goSymbolsDeclaredNowhere(cwd: string, refs: string[]): boolean {
+	if (refs.length === 0) return false;
+	const declared = goDeclaredTopLevelNames(cwd);
+	if (declared.size === 0) return false; // unreadable tree: do not guess greenfield
+	for (const ref of refs) {
+		const last = ref.includes(".") ? ref.slice(ref.lastIndexOf(".") + 1) : ref;
+		if (!last) return false;
+		if (declared.has(last)) return false;
+		for (const name of declared) {
+			if (name.length >= 5 && last.length >= 5 && levenshteinWithin(last, name, 2)) return false;
+		}
+	}
+	return true;
 }
 
 /** Read the [package].name from Cargo.toml, normalized to the lib name
@@ -2148,7 +2273,14 @@ export function runDeliverableCheck(
 					continue;
 				}
 				if (!tolerantMatch(pattern, deliverableMatchText(file, rd.text))) {
-					missing.push(`missing pattern ${pattern} in ${file}`);
+					// RC9 (run 15-07): when the RAW text matches but the comment-stripped
+					// text does not, the honest, actionable error names the cause — Go test
+					// names cannot contain '-', so SCENARIO tags are often comments.
+					if (CODE_EXT.test(file) && tolerantMatch(pattern, rd.text)) {
+						missing.push(`missing pattern ${pattern} in ${file} (matched only inside comments — comments are stripped before matching; put the tag in a string literal, constant, or test title)`);
+					} else {
+						missing.push(`missing pattern ${pattern} in ${file}`);
+					}
 				}
 			}
 		}

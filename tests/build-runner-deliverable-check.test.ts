@@ -391,7 +391,11 @@ describe("runDeliverableCheck — requireContains (SCENARIO-003/006)", () => {
 				requireContains: [{ file: "route.ts", pattern: "createRootHandlers\\([\"']/x[\"'],\\s*[\"']API[\"']\\)" }],
 			});
 			expect(r.pass).toBe(false);
-			expect(r.missing).toContain("missing pattern createRootHandlers\\([\"']/x[\"'],\\s*[\"']API[\"']\\) in route.ts");
+			// RC9: the comment-only case now carries the honest suffix (cause + fix);
+			// pin the prefix + the new marker instead of the bare legacy string.
+			const msg = r.missing.find((m) => typeof m === "string" && m.startsWith("missing pattern createRootHandlers\\([\"']/x[\"'],\\s*[\"']API[\"']\\) in route.ts"));
+			expect(msg).toBeDefined();
+			expect(msg).toMatch(/matched only inside comments/);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

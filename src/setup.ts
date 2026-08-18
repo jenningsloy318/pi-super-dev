@@ -547,6 +547,11 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 		copiedEnvFiles = copyEnvFilesToWorktree(cwd, worktreePath);
 		excludeCopiedEnvFiles(worktreePath, copiedEnvFiles);
 	}
+	// RC12a (runs 10-39/15-07): a fresh worktree has NO node_modules — the build
+	// gate then fails on unrelated packages (auth-service TS2307 better-auth) and
+	// the implementer 'fixes' unrelated files to escape. Best-effort dependency
+	// bootstrap from the lockfile; NEVER blocks on failure (warning only).
+	bootstrapDependencies(cwd, worktreePath, worktreeCreated, options.log);
 	// Load .env (TEST_API_KEY etc.) from the worktree so spawned agents inherit it.
 	loadDotEnv(worktreePath);
 
@@ -587,4 +592,44 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	}
 
 	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo, copiedEnvFiles, reusedTrack };
+}
+
+/** RC12a: best-effort dependency bootstrap for a FRESH worktree of a JS/TS
+ *  monorepo. Runs the package manager's frozen install when a lockfile exists
+ *  and the worktree root has no node_modules. Kill-switch SUPER_DEV_NO_BOOTSTRAP=1;
+ *  timeout SUPER_DEV_BOOTSTRAP_TIMEOUT_MS (default 10min). Non-JS projects and
+ *  pre-installed worktrees no-op. Failures log a warning and never throw —
+ *  the pipeline keeps going exactly as before (observable, not blocking). */
+function bootstrapDependencies(cwd: string, worktreePath: string, worktreeCreated: boolean, log?: (m: string) => void): void {
+	if (process.env.SUPER_DEV_NO_BOOTSTRAP === "1") return;
+	if (!worktreeCreated || worktreePath === cwd) return;
+	const wt = (m: string) => { if (log) log(m); };
+	try {
+		if (existsSync(join(worktreePath, "node_modules"))) return;
+		const pm = existsSync(join(worktreePath, "pnpm-lock.yaml")) ? "pnpm"
+			: existsSync(join(worktreePath, "yarn.lock")) ? "yarn"
+			: existsSync(join(worktreePath, "bun.lockb")) || existsSync(join(worktreePath, "bun.lock")) ? "bun"
+			: existsSync(join(worktreePath, "package-lock.json")) ? "npm"
+			: null;
+		if (!pm) return;
+		if (!existsSync(join(worktreePath, "package.json"))) return;
+		const timeoutMs = Number.parseInt(process.env.SUPER_DEV_BOOTSTRAP_TIMEOUT_MS ?? "", 10) || 600_000;
+		// Reviewer F-5/F-6: `--immutable` is Yarn BERRY only — classic yarn (the
+		// common yarn.lock case) needs `--frozen-lockfile`. Distinguish by the
+		// Berry config marker `.yarnrc.yml`. maxBuffer 64MB: the default 1MB
+		// aborts large monorepo installs mid-stream.
+		const yarnBerry = existsSync(join(worktreePath, ".yarnrc.yml"));
+		const argv = pm === "pnpm" ? ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"]
+			: pm === "yarn" ? (yarnBerry ? ["yarn", "install", "--immutable"] : ["yarn", "install", "--frozen-lockfile"])
+			: pm === "bun" ? ["bun", "install", "--frozen-lockfile"]
+			: ["npm", "ci", "--prefer-offline"];
+		wt(`Setup bootstrapping dependencies in the fresh worktree (${argv.join(" ")}; timeout ${timeoutMs}ms)`);
+		const r = execFileSync(argv[0], argv.slice(1), { cwd: worktreePath, timeout: timeoutMs, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+		wt(`Setup dependency bootstrap finished${r ? ` (tail: ${String(r).trim().slice(-200)})` : ""}`);
+	} catch (err) {
+		// Never block: a failed bootstrap degrades to today's behavior, but the
+		// warning makes the later build-gate failure attributable.
+		const msg = err instanceof Error ? err.message : String(err);
+		wt(`Setup dependency bootstrap FAILED (continuing without it — later build-gate failures on missing dependencies are environmental, do NOT edit unrelated packages to work around them): ${msg.slice(0, 400)}`);
+	}
 }
