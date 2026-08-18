@@ -6,6 +6,10 @@
 
 import { execFileSync } from "node:child_process";
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+// PRC (Track 30 Phase 5): the shared dirt primitives — REUSED, never
+// duplicated (D-7: src/fault-classification.ts is the canonical exclusion/
+// quarantine source so setup and the Stage 9 loop cannot drift).
+import { collectDirtPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "./fault-classification.ts";
 import { isResumable } from "./resume.ts";
 import { clearKnowledge } from "./render/knowledge.ts";
 import { clearUserNotes } from "./render/user-notes.ts";
@@ -589,6 +593,59 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 		// G2-COLLISION-ABSORPTION).
 		clearKnowledge(specDirectory);
 		clearUserNotes(specDirectory);
+	}
+
+	// ── PRC reuse hygiene (Track 30 Phase 5 · SCENARIO-020..023 · AC-09/10/11):
+	// on RE-ENTRY ONLY — a reused track (referenced-spec or reuse-search match,
+	// `reusedTrack === true`) or an explicitly resumed one
+	// (`options.resumeSpecIdentifier`) — detect foreign uncommitted state left
+	// behind in the worktree (a dead run's or a human's edits) and quarantine it
+	// recoverably so it cannot poison this run's gates. Detection is scoped
+	// exactly (SCENARIO-021): fresh tracks skip it entirely, and the user's main
+	// checkout (skipWorktree ⇒ worktreePath === cwd) is NEVER quarantined.
+	// Insertion contract (spec 07 Phase 5): after acquireRunLock + stale-cache
+	// truncation + knowledge clearing, before the return; synchronous spawnSync
+	// only; options.log is the only sink; the return shape is unchanged.
+	if ((reusedTrack || options.resumeSpecIdentifier) && resolve(worktreePath) !== resolve(cwd)) {
+		// Canonical inventory (D-7): spec-dir prefix + harness bookkeeping +
+		// `.super-dev/` + copiedEnvFiles exclusions live once in the shared
+		// helper. NO extraExcluded here — the phase's declared scope is unknown
+		// at setup time (in-loop only).
+		const setupDirt = collectDirtPaths({ worktreePath, specDirectory, copiedEnvFiles });
+		if (!dirtyQuarantineEnabled()) {
+			// Kill-switch (SCENARIO-023 · AC-11): detection observes, mutation never
+			// runs — the worktree is left untouched with a prominent warning (the
+			// SUPER_DEV_NO_BOOTSTRAP / SUPER_DEV_NO_SPEC_REUSE log style).
+			if (setupDirt.length > 0) {
+				options.log?.(`Setup detected foreign uncommitted state on re-entered track ${specIdentifier} but SUPER_DEV_NO_DIRTY_QUARANTINE=1 is set — worktree untouched; paths: ${setupDirt.join(", ")}`);
+			}
+		} else if (setupDirt.length > 0) {
+			// SCENARIO-020 · AC-09: ONE recoverable quarantine — a scoped
+			// `git stash push -u` (the ONLY worktree mutation, SCENARIO-028) plus a
+			// PRD ledger record (SCENARIO-025 · AC-12). A mechanism failure
+			// degrades to a warning + plain proceed — never fatal (AC-13), mirroring
+			// the bootstrapDependencies degrade style.
+			const q = quarantineDirt({ worktreePath, paths: setupDirt, reason: `setup reuse hygiene track ${specIdentifier}`, log: options.log });
+			if (q.ok && q.stashRef) {
+				appendEnvironmentFault(specDirectory, { kind: "quarantine", paths: setupDirt, stashRef: q.stashRef, reason: `setup re-entry track ${specIdentifier}` }, options.log);
+				// SCENARIO-022 · AC-10: ONE prominent recovery line — the quarantined
+				// paths, the stash ref, the recovery command, and the kill-switch name.
+				options.log?.(`Setup quarantined foreign uncommitted state on re-entered track ${specIdentifier} — paths: ${setupDirt.join(", ")}; stash ref: ${q.stashRef}; recover with: git stash pop; kill-switch: SUPER_DEV_NO_DIRTY_QUARANTINE=1`);
+			} else {
+				const why = q.error ?? `stash ref could not be captured (skipped: ${q.skipped ?? "none"})`;
+				options.log?.(`Setup reuse-hygiene quarantine FAILED (continuing without it — foreign uncommitted state remains in the worktree; recover manually via git stash list, or disable with SUPER_DEV_NO_DIRTY_QUARANTINE=1) — class=environment; next=proceed: ${why.slice(0, 400)}`);
+			}
+		}
+		// ── T6.1 (SCENARIO-027 · AC-12): the prior-fault count, surfaced IFF the
+		// per-track ledger EXISTS. Runs on EVERY eligible re-entry regardless of
+		// dirt, AFTER the quarantine arm — a quarantining re-entry's line reflects
+		// the just-appended record. An ABSENT file emits NO line at all (never a
+		// ": 0" line — readEnvironmentFaultCount is null iff the file is absent);
+		// informational only (next=none), never a throw, never an actuation.
+		const priorFaults = readEnvironmentFaultCount(specDirectory);
+		if (priorFaults !== null) {
+			options.log?.(`Setup prior environmental faults on track ${specIdentifier}: ${priorFaults} (ledger: .environment-faults.jsonl — class=environment; next=none, informational)`);
+		}
 	}
 
 	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo, copiedEnvFiles, reusedTrack };

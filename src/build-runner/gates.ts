@@ -498,6 +498,17 @@ function parseOutOfScopeCrateSubjects(blocks: string[]): string[] {
 }
 
 /**
+ * Prefix of the synthetic error block `resolveInScopePassWithBaseline` appends
+ * to `errors` when the baseline verdict is "regression" (B-6). Hoisted into an
+ * exported constant (Track 30 T1.2/AC-01) so the fault classifier
+ * (src/fault-classification.ts) and the gate read ONE literal — never two.
+ * The interpolation below keeps the appended block byte-identical to the
+ * historical inline literal: `${BASELINE_VERIFY_ERROR_PREFIX} ${evidence}`.
+ * scenarioRefs: [SCENARIO-001] · acceptanceCriteriaRefs: [AC-01]
+ */
+export const BASELINE_VERIFY_ERROR_PREFIX = "[baseline-verify] regression — the failing out-of-scope subject(s) PASS at the merge-base baseline, so the failure is NEW on this branch:";
+
+/**
  * B-6 decision core — exported for hermetic testing. When the gate is about to
  * grant the lenient all-out-of-scope pass, the failing subjects are verified
  * against the merge-base baseline (see ./baseline.ts). "regression" strips the
@@ -543,7 +554,7 @@ export function resolveInScopePassWithBaseline(args: {
 		if (outcome.status === "regression") {
 			return {
 				inScopePass: false,
-			errors: [...args.errors, `[baseline-verify] regression — the failing out-of-scope subject(s) PASS at the merge-base baseline, so the failure is NEW on this branch: ${outcome.evidence}`],
+			errors: [...args.errors, `${BASELINE_VERIFY_ERROR_PREFIX} ${outcome.evidence}`],
 				baselineCheck: outcome,
 			};
 		}

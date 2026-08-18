@@ -9,6 +9,7 @@ import {
 	type BaselineRunner,
 } from "../src/build-runner/baseline.ts";
 import { resolveInScopePassWithBaseline } from "../src/build-runner/gates.ts";
+import * as gatesNs from "../src/build-runner/gates.ts";
 
 /** Real throwaway git repo helper (B-6 fixtures). */
 function mkGitRepo(): string {
@@ -158,6 +159,29 @@ describe("B-6 fallbacks and cache", () => {
 		expect(r2.status).toBe(r1.status);
 	});
 
+	// Track 30 T3.2 memo pin (D-1a — SCENARIO-006 · AC-03): the in-loop
+	// post-quarantine gate re-run calls clearBaselineCache() immediately before
+	// the single re-run so it cannot inherit a verdict memoized against the
+	// pre-quarantine worktree. This pins the mechanism itself: after
+	// clearBaselineCache() an identical call is a cache MISS (the injectable
+	// verifier is re-invoked) where a second call without clearing hits the memo.
+	it("clearBaselineCache() forces a cache miss on the next identical call (Track 30 D-1a pin)", () => {
+		const repo = mkGitRepo();
+		writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.0.0", scripts: { test: "vitest run" } }));
+		commitAll(repo, "init");
+		cleanups.push(repo);
+		let calls = 0;
+		const runner: BaselineRunner = () => { calls++; return { status: 0, stdout: "", stderr: "" }; };
+		const input = { cwd: repo, defaultBranch: "main", language: "backend" as const, subjects: ["a.test.ts"], runner };
+		verifyUntouchedFailuresAgainstBaseline(input); // runner 1×, memo populated
+		expect(calls).toBe(1);
+		verifyUntouchedFailuresAgainstBaseline(input); // memo hit — runner still 1×
+		expect(calls).toBe(1);
+		clearBaselineCache();
+		verifyUntouchedFailuresAgainstBaseline(input); // MISS — runner re-invoked (2×)
+		expect(calls).toBe(2);
+	});
+
 	it("SUPER_DEV_DISABLE_BASELINE_CHECK=1 ⇒ unknown without spawning", () => {
 		const repo = mkGitRepo();
 		writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", version: "0.0.0", scripts: { test: "vitest run" } }));
@@ -271,6 +295,24 @@ describe("B-6 gate wiring (resolveInScopePassWithBaseline)", () => {
 		expect(r.errors).toHaveLength(2);
 		expect(r.errors[1]).toContain("[baseline-verify] regression");
 		expect(r.baselineCheck?.status).toBe("regression");
+	});
+
+	it("regression appends the single-sourced exported BASELINE_VERIFY_ERROR_PREFIX (byte-identical hoist, T1.2/AC-01)", () => {
+		// Namespace read so this file's PRE-EXISTING cases stay green on the
+		// pre-fix tree while this new case is RED (export absent → undefined).
+		const prefix = (gatesNs as { BASELINE_VERIFY_ERROR_PREFIX?: string }).BASELINE_VERIFY_ERROR_PREFIX;
+		expect(typeof prefix).toBe("string");
+		const evidence = "passes at baseline abc";
+		const r = resolveInScopePassWithBaseline({
+			...base, pass: false, defaultBranch: "main",
+			baselineVerify: () => ({ status: "regression", evidence }),
+		});
+		// (a) the appended error starts with the exported prefix — classifier and
+		// gate read ONE constant, never two literals (D-11).
+		expect(r.errors[1]!.startsWith(prefix!)).toBe(true);
+		expect(r.errors[1]).toBe(`${prefix} ${evidence}`);
+		// (b) backward-compat guard: byte-for-byte the pre-hoist inline literal.
+		expect(r.errors[1]).toBe("[baseline-verify] regression — the failing out-of-scope subject(s) PASS at the merge-base baseline, so the failure is NEW on this branch: passes at baseline abc");
 	});
 
 	it("unknown degrades to the historical lenient pass", () => {

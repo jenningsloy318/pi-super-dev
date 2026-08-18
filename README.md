@@ -276,6 +276,24 @@ error block. Cached per (repo, merge-base); never throws;
 `SUPER_DEV_DISABLE_BASELINE_CHECK=1` escapes. Ambiguous outcomes degrade to
 the historical lenient pass.
 
+**Fault-classified actuation + reused-worktree hygiene (Stage 9/Stage 1).** On
+every build-gate failure a deterministic classifier (pure TypeScript, no LLM,
+`src/fault-classification.ts`) runs before actuator selection: out-of-scope-only
+failures + a regression verdict + green own-scope evidence ⇒
+`environmental-blocker`, which never re-spawns the implementer. Foreign
+uncommitted state (git actual outside the implementer's claimed files ∪ declared
+scope ∪ harness bookkeeping) is quarantined via a scoped `git stash push -u`
+(recoverable with `git stash pop`, recorded as one JSON line in
+`<specDir>/.environment-faults.jsonl`), the gate re-runs exactly once with the
+baseline memo cleared, and a still-blocked phase routes to the judge
+(`fix-environment`) at first occurrence. The same quarantine runs at setup on
+re-entered (reused/resumed) tracks so prior runs' dirt cannot poison this run's
+gates; fresh tracks and the main checkout are never touched. Kill switch
+`SUPER_DEV_NO_DIRTY_QUARANTINE=1`. Failure-signature comparison also strips
+volatile noise (timestamps, UUIDs, durations, `(cached)` markers) before the
+800-char cap, so identical failures trip the no-progress detector instead of
+hashing differently every attempt.
+
 **Convergence round caps.** All artifact-convergence loops (requirements, BDD,
 research, design) and the spec loop run under `MAX_CONVERGENCE_ROUNDS = 8` —
 a liveness floor that FatalAborts exactly like budget exhaustion, one round
@@ -381,6 +399,7 @@ select when stagnation fires in TUI/RPC mode).
 | `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
 | `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in setup |
+| `SUPER_DEV_NO_DIRTY_QUARANTINE` | — | `1` = kill switch, disable automatic foreign-dirt quarantine (setup reuse + Stage 9 env-blocker) |
 | `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
 | `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy |
 | `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |

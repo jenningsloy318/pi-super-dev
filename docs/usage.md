@@ -56,6 +56,8 @@ Super-dev stores both configuration and run artifacts under `~/.super-dev/`:
 ## What happens
 
 1. **Setup** creates a git worktree (unless `skipWorktree`) and a spec dir.
+   Re-entering a reused/resumed track quarantines foreign uncommitted state
+   recoverably (stash-based; kill-switch `SUPER_DEV_NO_DIRTY_QUARANTINE=1`).
 2. **Classify** decides task type (feature / bug / refactor) and UI scope.
 3. **Requirements → BDD → Research** run inside quality-gate loops bounded by
    run budget/cancellation and stop only when deterministic validators pass or
@@ -69,7 +71,9 @@ Super-dev stores both configuration and run artifacts under `~/.super-dev/`:
    approved or a blocker needs user guidance.
 7. **Implementation** — per-phase TDD loop: tests → implement → QA → build
    gate, commit on green; repeated no-progress failures stop before blind
-   retries.
+   retries. Out-of-scope-only build failures with a regression verdict and green
+   own-scope evidence are classified environmental — quarantine plus one gate
+   re-run, then judge routing — instead of implementer retries.
 8. **Code review** — parallel `code-reviewer` + `adversarial-reviewer`; results
    merged into a single verdict; review/build/integration fixes restart at fresh
    review and stop on verified convergence or recurring blockers.
