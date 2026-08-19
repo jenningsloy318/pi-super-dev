@@ -11,14 +11,18 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
+import { RpcDriver } from "./rpc-driver.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { safetyPreamble } from "./safety.ts";
-import type { AgentAccessMode, AgentProgress, SpawnResult } from "./types.ts";
+import { SO_CAPTURE_ENV, SO_SCHEMA_ENV } from "./subprocess-structured-output.ts";
+import type { AgentAccessMode, AgentProgress, ControlObj, SpawnResult } from "./types.ts";
 
 /** Agents that drive a browser for UI testing. They receive the `browser_execute`
  *  tool by explicitly loading pi-browser-cdp-extension via `-e` while ambient
@@ -268,6 +272,105 @@ export function defaultAgentTimeoutMs(agent: string): number {
 	return isCodeWritingAgent(agent) ? CODE_WRITING_TIMEOUT_MS : DEFAULT_SPAWN_TIMEOUT_MS;
 }
 
+// ─── v0.2.10: subprocess-backend spawn resilience ──────────────────────────
+
+/** W4: skills are a CAPABILITY, not ambient noise — the session backend always
+ *  inherits host skills, so the subprocess backend keeps parity by default.
+ *  `SUPER_DEV_NO_SKILLS=1` restores the pre-v0.2.10 `--no-skills` isolation
+ *  for debugging/CI. */
+export function skillsEnabled(env: { SUPER_DEV_NO_SKILLS?: string } = process.env): boolean {
+	return env.SUPER_DEV_NO_SKILLS !== "1";
+}
+
+/** W1: the RPC same-session backend is the default; `SUPER_DEV_NO_RPC_SPAWN=1`
+ *  falls back to today's `--mode json -p` one-shot behavior. */
+export function rpcSpawnEnabled(env: { SUPER_DEV_NO_RPC_SPAWN?: string } = process.env): boolean {
+	return env.SUPER_DEV_NO_RPC_SPAWN !== "1";
+}
+
+/** W2: task texts longer than this ride a 0600 `@file` in the json fallback
+ *  path instead of argv (pi-subagents' TASK_ARG_LIMIT value; long natural-
+ *  language argv is a documented EDR pre-exec-scan kill class and bloats every
+ *  spawn log line — we observed a 28444-char task in argv). The RPC path needs
+ *  no threshold: the task always rides the stdin prompt event. */
+export const TASK_ARG_LIMIT = 8_000;
+
+/** W3: the control schema handed to the child's structured_output tool —
+ *  the same permissive key-declaration contract the session backend's
+ *  controlSchema emits (every key DECLARED, values unconstrained, nothing
+ *  required): the model sees the keys as its contract, tool validation never
+ *  rejects a partial object, and completeness stays with the parent-side
+ *  missingControlKeys check. */
+export function controlSchemaJson(keys: string[]): Record<string, unknown> {
+	const properties: Record<string, unknown> = {};
+	for (const key of keys) properties[key] = {};
+	return { type: "object", properties, additionalProperties: true };
+}
+
+/** W3: absolute path of the repo's child-side runtime extension, resolved from
+ *  THIS module's location so it works both from the repo checkout and from the
+ *  installed extension layout. Null when the sibling file is missing (the
+ *  caller then stays on the plain <control> text contract). */
+export function structuredOutputExtensionPath(): string | null {
+	try {
+		const here = fileURLToPath(import.meta.url);
+		const candidate = join(dirname(here), "subprocess-structured-output.ts");
+		return safeIsFile(candidate) ? candidate : null;
+	} catch {
+		return null;
+	}
+}
+
+/** W3: read the structured_output tool's capture file. Null when absent,
+ *  unreadable, or not a JSON object — the caller then falls back to the
+ *  <control> text contract. Never throws. */
+export function readToolCapture(capturePath: string | null | undefined): ControlObj | null {
+	if (!capturePath) return null;
+	try {
+		const parsed = JSON.parse(readFileSync(capturePath, "utf-8")) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		return parsed as ControlObj;
+	} catch {
+		return null;
+	}
+}
+
+/** Resolve a turn's control with tool-capture preference over text extraction. */
+function resolveTurnControl(text: string, capturePath: string | null | undefined): ControlObj | null {
+	return readToolCapture(capturePath) ?? extractControl(text);
+}
+
+/** Log which control-delivery channel produced the result (auditability):
+ *  tool capture (with size + sha256 prefix), the legacy <control> text
+ *  fallback, or neither. */
+function logControlSource(result: SpawnResult, capturePath: string | null | undefined, label: string, onProgress?: AgentProgress): void {
+	if (!capturePath) return;
+	try {
+		const raw = readFileSync(capturePath, "utf-8");
+		const digest = createHash("sha256").update(raw).digest("hex").slice(0, 16);
+		onProgress?.event(`subprocess ${label}: structured_output captured (${raw.length} bytes sha256:${digest})`);
+	} catch {
+		if (result.control) onProgress?.event(`subprocess ${label}: structured_output via <control> text fallback (no tool capture)`);
+		else onProgress?.event(`subprocess ${label}: structured_output absent (no tool capture, no <control> text)`);
+	}
+}
+
+/** W1: the in-session corrective follow_up message. Unlike the json-mode
+ *  corrective RESPAWN (which must replay the original prompt + previous output
+ *  because the fresh process has no memory), the RPC follow_up lands in the
+ *  SAME session — the message is short, names the real cause, and forbids
+ *  redoing work that is already on disk/in context. */
+export function buildRpcCorrectiveMessage(missing: string[], keys: string[]): string {
+	return [
+		"CORRECTIVE TURN — your previous turn ended WITHOUT the required control object.",
+		missing.length > 0 ? `Missing required keys: ${missing.join(", ")}.` : "No control object was delivered.",
+		"Your final action must be a `structured_output` tool call carrying the COMPLETE control object.",
+		`Required top-level keys: ${keys.join(", ")}.`,
+		"If the tool is unavailable, emit ONE final message containing exactly a `<control>{...}</control>` JSON block with every required key.",
+		"Do NOT redo work you already completed this session — use what you have already read and produced.",
+	].join("\n");
+}
+
 export interface SpawnAgentOptions {
 	agent: string;
 	prompt: string;
@@ -301,13 +404,67 @@ export interface SpawnAgentOptions {
 	allowEmptyArraysFor?: string[];
 	/** Live progress from the spawned agent (tool calls + streaming text). */
 	onProgress?: AgentProgress;
+	/** v0.2.10 W1: execution mode for the subprocess backend. "rpc" keeps the
+	 *  child alive and drives turns over stdin (same-session corrective
+	 *  follow_up); "json" is the legacy one-shot `--mode json -p`. Defaults to
+	 *  rpcSpawnEnabled() at the spawnAgent level; exposed for argv unit tests. */
+	spawnMode?: "json" | "rpc";
+	/** v0.2.10 W2: when set (json fallback path only), the task rides this
+	 *  0600 file via `@<path>` instead of argv. Set by spawnAgent when the task
+	 *  exceeds TASK_ARG_LIMIT; exposed for argv unit tests. */
+	taskFile?: string;
+}
+
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
+
+/** Walk up from an entry file to the pi-coding-agent package root (the first
+ *  package.json whose name matches). Mirrors pi-subagents'
+ *  findPiPackageRootFromEntry — the only trustworthy way to know argv[1] IS
+ *  the pi CLI rather than some other node host's script. */
+export function findPiPackageRootFromEntry(entry: string): string | undefined {
+	try {
+		let dir = dirname(entry);
+		for (;;) {
+			const pkgPath = join(dir, "package.json");
+			if (safeIsFile(pkgPath)) {
+				try {
+					const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { name?: unknown };
+					if (pkg.name === PI_PACKAGE_NAME) return dir;
+				} catch { /* keep walking */ }
+			}
+			const parent = dirname(dir);
+			if (parent === dir) return undefined;
+			dir = parent;
+		}
+	} catch {
+		return undefined;
+	}
 }
 
 function resolvePiBinary(): { command: string; args: string[] } {
 	const argv1 = process.argv[1] ?? "";
-	if (argv1 && /\.(?:mjs|cjs|js)$/i.test(argv1)) {
+	// The argv[1] heuristic is valid ONLY when that entry lives inside the
+	// pi-coding-agent package. Under any other node host (vitest, SDK runners)
+	// argv[1] is the HOST's script, and exec'ing it turns every spawn into
+	// `node <host-script> --mode rpc ...` — observed live as instant exit 1.
+	if (argv1 && /\.(?:mjs|cjs|js)$/i.test(argv1) && findPiPackageRootFromEntry(argv1)) {
 		return { command: process.execPath, args: [argv1] };
 	}
+	// Next: the installed pi package's own bin, when resolvable from here.
+	try {
+		// NOTE (adv review F-1): this import.meta.resolve rung throws in plain
+		// Node (package.json is not in pi's exports map) and under vitest SSR — it
+		// only ever resolves under pi's own loader. Best-effort by design; the
+		// validated argv[1] and PATH rungs are the load-bearing ones.
+		const pkgJsonPath = fileURLToPath(import.meta.resolve(`${PI_PACKAGE_NAME}/package.json`));
+		const root = dirname(pkgJsonPath);
+		const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as { bin?: string | Record<string, string> };
+		const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.pi;
+		if (bin) {
+			const entry = join(root, bin);
+			if (safeIsFile(entry)) return { command: process.execPath, args: [entry] };
+		}
+	} catch { /* not resolvable from this module — fall through to PATH */ }
 	return { command: "pi", args: [] };
 }
 
@@ -389,20 +546,92 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 		const roleExtensions = extensionsForAgent(opts.agent);
 		const timeoutMs = opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent);
 		const label = opts.id ?? opts.agent;
-		const args = buildSpawnArgs(opts, promptPath, roleExtensions);
-		opts.onProgress?.event(`subprocess ${label}: spawn timeout=${timeoutMs}ms cwd=${opts.cwd} roleExtensions=${roleExtensions.length ? roleExtensions.join(", ") : "(none)"} argv=${summarizeSpawnArgs(args)}`);
-		const first = await runPi(args, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
+
+		// v0.2.10 W3: arm the structured-output tool contract whenever control
+		// keys are declared and the runtime extension resolves. The tool capture
+		// (preferred) or the legacy <control> text (fallback) both satisfy the
+		// same missingControlKeys completeness gate, so nothing downstream
+		// changes. Without controlKeys (or when the sibling file is missing) the
+		// text contract alone applies — byte-identical to pre-v0.2.10 behavior.
+		const soExtension = requiredKeys.length > 0 ? structuredOutputExtensionPath() : null;
+		let capturePath: string | null = null;
+		let soEnv: Record<string, string> | undefined;
+		if (requiredKeys.length > 0 && soExtension) {
+			const schemaPath = join(tempDir, "control-schema.json");
+			capturePath = join(tempDir, "control-output.json");
+			writeFileSync(schemaPath, JSON.stringify(controlSchemaJson(requiredKeys)), { mode: 0o600 });
+			try { unlinkSync(capturePath); } catch { /* absent is the normal fresh state */ }
+			soEnv = { [SO_SCHEMA_ENV]: schemaPath, [SO_CAPTURE_ENV]: capturePath };
+		}
+		const extraExtensions = soExtension && requiredKeys.length > 0 ? [soExtension, ...roleExtensions] : roleExtensions;
+		const extSummary = extraExtensions.length ? extraExtensions.join(", ") : "(none)";
+		/** Merge the tool capture over the text extraction + log the channel. */
+		const applyCapture = (result: SpawnResult): SpawnResult => {
+			const captured = readToolCapture(capturePath);
+			const merged = captured ? { ...result, control: captured } : result;
+			logControlSource(merged, capturePath, label, opts.onProgress);
+			return merged;
+		};
+
+		// v0.2.10 W1: RPC same-session backend (default). The task rides the stdin
+		// prompt event (never argv), and the corrective retry is an in-session
+		// follow_up instead of an amnesiac fresh-process respawn.
+		if (rpcSpawnEnabled()) {
+			const args = buildSpawnArgs({ ...opts, spawnMode: "rpc" }, promptPath, extraExtensions);
+			opts.onProgress?.event(`subprocess ${label}: spawn (rpc same-session) timeout=${timeoutMs}ms cwd=${opts.cwd} roleExtensions=${extSummary} argv=${summarizeSpawnArgs(args)}`);
+			const result = await runPiRpc({
+				args,
+				cwd: opts.cwd,
+				signal: opts.signal,
+				label,
+				timeoutMs,
+				onProgress: opts.onProgress,
+				env: soEnv,
+				task: `Task: ${buildSubprocessTaskPrompt(opts.prompt, opts.controlKeys)}`,
+				capturePath,
+				correctiveFor: (first) => {
+					const err = controlError(first.control, requiredKeys, opts.allowEmptyArraysFor);
+					if (!err || first.error) return null;
+					const missing = missingControlKeys(first.control, requiredKeys, { allowEmptyArraysFor: [...DEFAULT_EMPTY_ARRAY_OK, ...(opts.allowEmptyArraysFor ?? [])] });
+					return buildRpcCorrectiveMessage(missing, requiredKeys);
+				},
+			});
+			// review F-2: the DEFAULT rpc path must log the control-delivery channel
+			// too (spec W3 + CHANGELOG promise the audit line on every path).
+			logControlSource(result, capturePath, label, opts.onProgress);
+			return withControlError(result, requiredKeys, opts.allowEmptyArraysFor);
+		}
+
+		// json one-shot fallback (SUPER_DEV_NO_RPC_SPAWN=1) — pre-v0.2.10 shape,
+		// plus W2 @file delivery and the W3 capture merge.
+		const taskText = buildSubprocessTaskPrompt(opts.prompt, opts.controlKeys);
+		let spawnOpts = opts;
+		if (taskText.length > TASK_ARG_LIMIT) {
+			const taskFile = join(tempDir, "task.md");
+			writeFileSync(taskFile, `Task: ${taskText}`, { mode: 0o600 });
+			spawnOpts = { ...opts, taskFile };
+		}
+		const args = buildSpawnArgs(spawnOpts, promptPath, extraExtensions);
+		opts.onProgress?.event(`subprocess ${label}: spawn timeout=${timeoutMs}ms cwd=${opts.cwd} roleExtensions=${extSummary} argv=${summarizeSpawnArgs(args)}`);
+		const first = applyCapture(await runPi(args, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress, soEnv));
 		const firstError = controlError(first.control, requiredKeys, opts.allowEmptyArraysFor);
 		if (!firstError || first.error || opts.signal?.aborted) return withControlError(first, requiredKeys, opts.allowEmptyArraysFor);
 
 		opts.onProgress?.event(`↻ ${label}: corrective subprocess retry (${firstError})`);
+		// review F-1: reset capture presence before the corrective respawn — a
+		// PARTIAL capture from the first run must not mask the retry's text-channel
+		// recovery (applyCapture prefers any readable capture, and the corrective
+		// prompt explicitly directs the text channel).
+		if (capturePath) {
+			try { unlinkSync(capturePath); } catch { /* absent is the normal fresh state */ }
+		}
 		const retryOpts: SpawnAgentOptions = {
 			...opts,
 			prompt: buildSubprocessCorrectivePrompt(opts.prompt, first, requiredKeys, opts.allowEmptyArraysFor),
 		};
-		const retryArgs = buildSpawnArgs(retryOpts, promptPath, roleExtensions);
+		const retryArgs = buildSpawnArgs(retryOpts, promptPath, extraExtensions);
 		opts.onProgress?.event(`subprocess ${label}: corrective retry argv=${summarizeSpawnArgs(retryArgs)}`);
-		const retry = await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress);
+		const retry = applyCapture(await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress, soEnv));
 		return withControlError(retry, requiredKeys, opts.allowEmptyArraysFor);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
@@ -431,11 +660,20 @@ function summarizeSpawnArgs(args: string[]): string {
  */
 export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extraExtensions: string[] = []): string[] {
 	const { command, args: prefix } = resolvePiBinary();
+	const mode = opts.spawnMode === "rpc" ? "rpc" : "json";
 	const args = [
 		command, // ← the executable ("pi" on PATH, or `node` re-invoking the host entry)
 		...prefix,
-		"--mode", "json", "-p", "--no-session", "--no-skills", "--no-extensions", "--no-context-files", "--no-prompt-templates",
+		"--mode", mode,
 	];
+	// `-p` is the one-shot print flag; the rpc mode drives turns over stdin
+	// events instead, so it takes NO positional task at all.
+	if (mode === "json") args.push("-p");
+	args.push("--no-session");
+	// v0.2.10 W4: skills stay loadable by default (capability parity with the
+	// session backend); SUPER_DEV_NO_SKILLS=1 restores the old isolation flag.
+	if (!skillsEnabled()) args.push("--no-skills");
+	args.push("--no-extensions", "--no-context-files", "--no-prompt-templates");
 	// `--no-extensions` disables ambient discovery; explicit `-e` role extensions
 	// still load, per pi CLI semantics.
 	for (const ext of extraExtensions) args.push("-e", ext);
@@ -456,14 +694,19 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
 	// Phase 1 (Feature 1): widened thinking precedence per-call → SUPER_DEV_THINKING
 	// → inheritedThinking → role default (SCENARIO-005/006).
 	args.push("--thinking", resolveThinking(opts.agent, opts.thinking, opts.inheritedThinking));
-	args.push(`Task: ${buildSubprocessTaskPrompt(opts.prompt, opts.controlKeys)}`);
+	if (mode === "rpc") return args; // task rides the stdin prompt event (runPiRpc)
+	// v0.2.10 W2: long tasks ride a 0600 @file (spawnAgent decides); short
+	// tasks keep argv delivery (audit-visible, no extra file).
+	if (opts.taskFile) args.push(`@${opts.taskFile}`);
+	else args.push(`Task: ${buildSubprocessTaskPrompt(opts.prompt, opts.controlKeys)}`);
 	return args;
 }
 
 /** Run one `pi` subprocess and capture its final assistant text. Exported for
  *  direct unit testing of the NDJSON streaming/termination contract (the
- *  subprocess backend's single primitive). */
-export function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: AgentProgress): Promise<SpawnResult> {
+ *  subprocess backend's single primitive). `extraEnv` carries the
+ *  structured-output contract vars to the child (W3). */
+export function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: AgentProgress, extraEnv?: Record<string, string | undefined>): Promise<SpawnResult> {
 	return new Promise((resolve, reject) => {
 		// SD-04 (NFR-6): a listener registered on an ALREADY-aborted signal never
 		// fires (WHATWG/Node EventTarget semantics) — the child would run to its
@@ -476,7 +719,7 @@ export function runPi(args: string[], cwd: string, signal: AbortSignal | undefin
 		const child = spawn(args[0], args.slice(1), {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
-			env: { ...process.env },
+			env: { ...process.env, ...extraEnv },
 			windowsHide: true,
 		});
 		// AC-12 (SCENARIO-026): decode the byte stream EXACTLY ONCE at the stream
@@ -613,6 +856,207 @@ export function runPi(args: string[], cwd: string, signal: AbortSignal | undefin
 			}
 			const reason = timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `produced no output (exit ${code})`;
 			reject(new Error(`super-dev [${label}]: agent ${reason}.${tail ? ` stderr: ${tail}` : ""}`));
+		});
+	});
+}
+
+export interface RpcRunOptions {
+	/** Full argv INCLUDING the executable (buildSpawnArgs with spawnMode "rpc"). */
+	args: string[];
+	cwd: string;
+	signal?: AbortSignal;
+	label: string;
+	/** TOTAL wall-clock budget spanning the prompt turn AND the corrective
+	 *  follow_up turn (same semantics as the json-mode timeout). */
+	timeoutMs: number;
+	onProgress?: AgentProgress;
+	/** Extra env for the child (the structured-output contract vars). */
+	env?: Record<string, string | undefined>;
+	/** First-turn task message (already includes the control-keys contract). */
+	task: string;
+	/** structured_output capture path (W3); null disables tool-capture merging. */
+	capturePath?: string | null;
+	/** Decide whether a corrective follow_up is needed once the first turn's
+	 *  control is resolved; returns the in-session message to send, or null to
+	 *  stop after the first turn. */
+	correctiveFor: (result: SpawnResult) => string | null;
+}
+
+/** v0.2.10 W1: run one `pi --mode rpc` child and drive its turns over stdin.
+ * The child stays ALIVE across turns, so the corrective follow_up lands in the
+ * SAME in-memory session (verified: a turn-2 prompt recalled a turn-1 secret
+ * verbatim) — the agent finishes from its own completed context instead of
+ * re-entering the narration loop a fresh process re-enters. The overall
+ * timeout spans both turns; abort sends the rpc abort event then the same
+ * SIGTERM→SIGKILL ladder as runPi. */
+export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
+	return new Promise<SpawnResult>((resolve, reject) => {
+		// SD-04 parity: never spawn a child into an already-aborted run.
+		if (options.signal?.aborted) {
+			resolve({ text: "", control: null, error: "aborted" });
+			return;
+		}
+		const { label, timeoutMs, onProgress } = options;
+		const child = spawn(options.args[0], options.args.slice(1), {
+			cwd: options.cwd,
+			stdio: ["pipe", "pipe", "pipe"],
+			env: options.env ? { ...process.env, ...options.env } : { ...process.env },
+			windowsHide: true,
+		});
+		// EPIPE when the child dies mid-write must not crash the parent.
+		child.stdin?.on("error", () => {});
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		let turns = 0;
+		let liveText = "";
+		let rawEventCount = 0; // review F-6: zero-event quick-exit = host pi may lack rpc mode
+		const driver = new RpcDriver({
+			write: (line) => {
+				try { child.stdin?.write(`${line}\n`); } catch { /* handled via turn error */ }
+			},
+			onRawEvent: (event) => {
+				rawEventCount++;
+				if (!onProgress) return;
+				const se = renderEvent(event as PiJsonEvent, () => ++turns);
+				if (!se) return;
+				if (se.kind === "text") {
+					liveText = se.text;
+					onProgress.text(stripControl(liveText));
+				} else if (se.kind === "tool") {
+					if (liveText.trim()) { onProgress.event(stripControl(liveText).trim()); liveText = ""; }
+					onProgress.event(`→ ${se.summary}`);
+				}
+			},
+		});
+		let lineBuf = "";
+		let stderrBuf = "";
+		let aborted = false;
+		let settledMain = false;
+		let killArmed = false;
+		let killWatchdog: ReturnType<typeof setTimeout> | undefined;
+		let settleTimer: ReturnType<typeof setTimeout> | undefined;
+		const STDERR_CAP = 16 * 1024;
+		const LINE_CAP = 16 * 1024 * 1024;
+		const startedAt = Date.now();
+		const cleanup = () => {
+			options.signal?.removeEventListener("abort", onAbort);
+			clearTimeout(killWatchdog);
+			clearTimeout(settleTimer);
+		};
+		const terminateChild = () => {
+			if (killArmed) return;
+			killArmed = true;
+			try { child.kill("SIGTERM"); } catch { /* ignore */ }
+			killWatchdog = setTimeout(() => {
+				try { child.kill("SIGKILL"); } catch { /* ignore */ }
+				settleTimer = setTimeout(() => {
+					cleanup();
+					reject(new Error(`super-dev [${label}]: killed after SIGTERM+SIGKILL (no exit within ${SETTLE_GRACE_MS}ms)`));
+				}, SETTLE_GRACE_MS);
+			}, SIGTERM_GRACE_MS);
+		};
+		const finishMain = (result: SpawnResult): void => {
+			if (settledMain) return;
+			settledMain = true;
+			terminateChild(); // we own the child's lifetime; it never self-exits
+			resolve(result);
+		};
+		const onAbort = () => {
+			aborted = true;
+			onProgress?.event(`subprocess ${label}: aborted by parent signal; terminating child pi`);
+			try { child.stdin?.write(`${JSON.stringify({ type: "abort" })}\n`); } catch { /* ignore */ }
+			driver.dispose("aborted");
+			finishMain({ text: "", control: null, error: "aborted" });
+		};
+		options.signal?.addEventListener("abort", onAbort, { once: true });
+		if (options.signal?.aborted) onAbort(); // close the registration window
+
+		void (async () => {
+			const turn1 = await driver.send("prompt", options.task, timeoutMs);
+			if (aborted || settledMain) return;
+			const control1 = resolveTurnControl(turn1.text, options.capturePath);
+			const first: SpawnResult = { text: turn1.text, control: control1, model: turn1.model, error: turn1.error };
+			const corrective = first.error ? null : options.correctiveFor(first);
+			const remainingMs = timeoutMs - (Date.now() - startedAt);
+			// One corrective turn max (session-backend parity), and only when the
+			// remaining budget plausibly covers a real turn.
+			if (corrective && remainingMs > 15_000) {
+				onProgress?.event(`↻ ${label}: corrective rpc follow_up (same session, remaining ${Math.round(remainingMs / 1000)}s)`);
+				// review F-1: reset capture presence before the corrective turn — a
+				// PARTIAL capture from turn 1 (the child tool cannot reject it; the
+				// schema declares keys without requiring any) must not mask turn 2's
+				// fresh tool or text-channel delivery in resolveTurnControl.
+				if (options.capturePath) {
+					try { unlinkSync(options.capturePath); } catch { /* absent is the normal fresh state */ }
+				}
+				// Verified live: a `follow_up` event after agent_settled is ACKED
+				// (response success + queue_update) but the turn NEVER RUNS — 286s
+				// of silence in the E2E probe. A second `prompt` event on the SAME
+				// process DOES start the next in-memory turn (probe3: turn-2 recalled
+				// the turn-1 secret verbatim), so the corrective rides a prompt
+				// event. Same session, same memory — only the event type differs.
+				const turn2 = await driver.send("prompt", corrective, remainingMs);
+				if (aborted || settledMain) return;
+				const control2 = resolveTurnControl(turn2.text, options.capturePath);
+				finishMain({
+					text: turn2.text || first.text,
+					control: control2 ?? control1,
+					model: turn2.model ?? first.model,
+					error: turn2.error,
+				});
+				return;
+			}
+			finishMain(first);
+		})().catch((error) => {
+			const text = driver.currentText;
+			finishMain({
+				text,
+				control: resolveTurnControl(text, options.capturePath),
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+
+		child.stdout.on("data", (chunk: string) => {
+			lineBuf += chunk;
+			let nl: number;
+			while ((nl = lineBuf.indexOf("\n")) >= 0) {
+				const raw = lineBuf.slice(0, nl);
+				lineBuf = lineBuf.slice(nl + 1);
+				driver.ingest(raw);
+			}
+			if (lineBuf.length > LINE_CAP) lineBuf = lineBuf.slice(-LINE_CAP);
+		});
+		child.stderr.on("data", (chunk: string) => {
+			stderrBuf += chunk;
+			if (stderrBuf.length > STDERR_CAP) stderrBuf = stderrBuf.slice(stderrBuf.length - STDERR_CAP);
+		});
+		child.on("error", (err) => {
+			driver.dispose("spawn failed"); // review F-7: cancel the pending turn timer — the promise already rejects
+			cleanup();
+			const pathPreview = (process.env.PATH ?? "").split(":").slice(0, 8).join(":");
+			reject(new Error(`super-dev [${label}]: failed to spawn pi: ${err.message}; cwd=${options.cwd}; PATH=${pathPreview || "(empty)"}`));
+		});
+		child.on("close", (code) => {
+			cleanup();
+			if (lineBuf.trim()) driver.ingest(lineBuf.trim());
+			const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
+			onProgress?.event(`subprocess ${label}: close exit=${code ?? "signal"}${tail ? ` stderrTail=${tail}` : ""}`);
+			// review F-6: an immediate non-zero exit with ZERO rpc events is the
+			// signature of a host pi that lacks --mode rpc support (peer floor
+			// pi@0.82.1) — surface the escape hatch instead of a bare failure.
+			if (code !== 0 && rawEventCount === 0 && Date.now() - startedAt < 3000) {
+				onProgress?.event(`subprocess ${label}: hint: host pi exited with no rpc events — it may not support --mode rpc (peer floor pi@0.82.1); set SUPER_DEV_NO_RPC_SPAWN=1 for the json fallback`);
+			}
+			if (!settledMain) {
+				driver.dispose("process exited");
+				const text = driver.currentText;
+				settledMain = true; // the ladder reject below must not double-settle
+				resolve({
+					text,
+					control: resolveTurnControl(text, options.capturePath),
+					error: `process exited before turn completion (exit ${code ?? "signal"})`,
+				});
+			}
 		});
 	});
 }

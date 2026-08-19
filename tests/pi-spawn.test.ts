@@ -81,13 +81,13 @@ describe("buildSpawnArgs", () => {
 		expect(args[0].length).toBeGreaterThan(0);
 	});
 
-	it("includes the required pi flags after the executable", () => {
+	it("includes the required pi flags after the executable (skills stay loadable by default — v0.2.10 W4)", () => {
 		const args = buildSpawnArgs(base, "/tmp/agent.md");
 		expect(args).toContain("--mode");
 		expect(args[args.indexOf("--mode") + 1]).toBe("json");
 		expect(args).toContain("-p");
 		expect(args).toContain("--no-session");
-		expect(args).toContain("--no-skills");
+		expect(args).not.toContain("--no-skills"); // capability parity with the session backend
 		expect(args).toContain("--no-extensions");
 		expect(args).toContain("--no-context-files");
 		expect(args).toContain("--no-prompt-templates");

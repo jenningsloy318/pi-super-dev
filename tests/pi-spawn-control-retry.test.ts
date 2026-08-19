@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { writeFileSync } from "node:fs";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 const msg = (text: string) => `${JSON.stringify({
 	type: "message_end",
@@ -9,20 +10,27 @@ const msg = (text: string) => `${JSON.stringify({
 const harness = vi.hoisted(() => {
 	const state = {
 		outputs: [] as string[],
-		calls: [] as Array<{ command: string; args: string[]; cwd?: string }>,
+		/** Optional hook invoked with the FIRST spawn's env before its output
+		 * plays — used to simulate the child tool writing a capture file. */
+		firstSpawnHook: null as null | ((env: Record<string, string | undefined>) => void),
+		calls: [] as Array<{ command: string; args: string[]; cwd?: string; env?: Record<string, string | undefined> }>,
 	};
 	return {
 		state,
 		reset(outputs: string[]) {
 			state.outputs = [...outputs];
 			state.calls = [];
+			state.firstSpawnHook = null;
 		},
 	};
 });
 
 vi.mock("node:child_process", () => ({
-	spawn: vi.fn((command: string, args: string[], opts: { cwd?: string } = {}) => {
-		harness.state.calls.push({ command, args, cwd: opts.cwd });
+	spawn: vi.fn((command: string, args: string[], opts: { cwd?: string; env?: Record<string, string | undefined> } = {}) => {
+		harness.state.calls.push({ command, args, cwd: opts.cwd, env: opts.env as Record<string, string | undefined> | undefined });
+		if (harness.state.calls.length === 1 && harness.state.firstSpawnHook && opts.env) {
+			harness.state.firstSpawnHook(opts.env as Record<string, string | undefined>);
+		}
 		// Phase 6 / AC-12: runPi now calls setEncoding("utf8") on both child
 		// streams — the fake child carries real PassThrough streams (same shape
 		// as a spawned pipe) instead of bare EventEmitters.
@@ -47,6 +55,18 @@ vi.mock("../src/agents.ts", () => ({ loadAgentPrompt: vi.fn(() => "LOCAL AGENT P
 vi.mock("../src/safety.ts", () => ({ safetyPreamble: vi.fn(() => "SAFETY") }));
 
 import { spawnAgent } from "../src/pi-spawn.ts";
+
+// The whole file pins the JSON one-shot fallback path (the corrective
+// RESPAWN semantics). The v0.2.10 RPC default is covered separately in
+// tests/pi-spawn-v0210.test.ts — the fake child here has no stdin and never
+// acks rpc turns, so force the fallback for every test in this file.
+beforeEach(() => {
+	vi.stubEnv("SUPER_DEV_NO_RPC_SPAWN", "1");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 describe("spawnAgent subprocess control repair", () => {
 	beforeEach(() => {
@@ -129,5 +149,46 @@ describe("spawnAgent optionality: optional-by-contract empty arrays (Fix 1d)", (
 		expect(result.error).toBeUndefined();
 		expect(result.control).toMatchObject({ testDefects: [{ testFile: "a.test.ts", lines: "5", reason: "r" }] });
 		expect(harness.state.calls.length).toBe(2);
+	});
+});
+
+describe("spawnAgent json-path stale-capture regression (v0.2.10 review F-1)", () => {
+	beforeEach(() => {
+		vi.stubEnv("SUPER_DEV_NO_RPC_SPAWN", "1");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it("a PARTIAL first-run capture does not mask the corrective retry's text-channel recovery", async () => {
+		harness.reset([
+			msg("I read the sources and wrote the doc body, but no control block."),
+			msg('Done.\n<control>{"docPath":"docs/01-requirements.md","summary":"recovered"}</control>'),
+		]);
+		// The FIRST fake child run simulates the tool having captured a PARTIAL
+		// object (docPath only): the child tool cannot reject it (keys are
+		// declared permissively, nothing required), so the capture file exists
+		// when run 1 ends with text lacking any control block.
+		harness.state.firstSpawnHook = (env) => {
+			const capture = env.SUPER_DEV_SO_CAPTURE;
+			if (capture) writeFileSync(capture, JSON.stringify({ docPath: "docs/01-requirements.md" }), { mode: 0o600 });
+		};
+
+		const result = await spawnAgent({
+			agent: "requirements-clarifier",
+			id: "pipeline.requirements",
+			prompt: "write requirements",
+			cwd: "/tmp/project",
+			controlKeys: ["docPath", "summary"],
+			timeoutMs: 5000,
+		});
+
+		// Pre-fix (stale capture): applyCapture overwrote the retry's good text
+		// control with the partial {docPath} -> missing summary -> deterministic
+		// failure of exactly the recovery the corrective retry exists for.
+		expect(result.control).toEqual({ docPath: "docs/01-requirements.md", summary: "recovered" });
+		expect(result.error).toBeUndefined();
+		// two spawns = the corrective respawn actually ran
+		expect(harness.state.calls).toHaveLength(2);
 	});
 });
