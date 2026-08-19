@@ -3,6 +3,8 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { existsSync as _existsSync, readFileSync as _readFileSync, readdirSync as _readdirSync } from "node:fs";
+import { join as _join } from "node:path";
 import { dedupePreservingOrder, CRATE_SEGMENT_RE } from "./detect.ts";
 
 /**
@@ -546,4 +548,114 @@ export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string): stri
 		// NEVER throw — degrade to in-scope on any failure.
 		return [];
 	}
+}
+
+// ── v0.2.9 G6: general-language baseline subject resolution ──────────────────
+// The env-blocker baseline check must verify each out-of-scope failure with the
+// runner of the SUBJECT's language, not the run's primary language (run
+// 2026-08-19T08-32-47-962Z: a Go `snow` package failure was verified with
+// `pnpm run test`, mis-tagging a pre-existing failure as a new regression). All
+// helpers are pure/never-throw and return [] / null on any ambiguity (safe
+// direction: unknown → today's lenient behavior, never a false regression).
+
+export type BaselineSubjectLanguage = "rust" | "go" | "python" | "node";
+
+/** Detect the language of a single failure error block from unambiguous markers.
+ *  Returns null when no marker matches (caller falls back to the run language). */
+export function detectFailureBlockLanguage(block: string): BaselineSubjectLanguage | null {
+	const s = typeof block === "string" ? block : String(block ?? "");
+	if (!s) return null;
+	// Order matters: the file-extension-specific families (node/python) are
+	// checked BEFORE Go, because a jest `FAIL <path>.test.ts` line also contains a
+	// `/` and must NOT be mistaken for a Go package FAIL line.
+	// Python: pytest node ids / FAILED lines on .py files.
+	if (/\S+\.py::/m.test(s) || /FAILED\s+\S+\.py/m.test(s) || /\bconftest\.py\b/.test(s)) return "python";
+	// Node: vitest/jest failing test file paths.
+	if (/\.(?:test|spec)\.[jt]sx?\b/.test(s) || /\b(?:vitest|jest)\b/.test(s)) return "node";
+	// Rust: cargo crate source-path markers, compiler codes, or rerun hints.
+	if (/(?:^|\s)crates\/[\w.-]+\//m.test(s) || /\berror\[E\d{2,4}\]/.test(s) || /\bcargo test\b/.test(s)) return "rust";
+	// Go: package FAIL/ok lines (TAB-separated, or a `<n.n>s`/`(cached)` duration
+	// suffix), a `.go:line:` diagnostic, or an explicit `go test`/`[build failed]`.
+	if (/^FAIL\t\S+/m.test(s) || /^FAIL\s+\S+\/\S+\s+(?:\d+\.\d+s|\(cached\)|\[build failed\]|\[setup failed\])/m.test(s) || /^ok\s+\S+\/\S+/m.test(s) || /^\S+\.go:\d+:/m.test(s) || /\bgo test\b/.test(s)) return "go";
+	return null;
+}
+
+/** Extract failing Go PACKAGE import paths from `go test` output blocks
+ *  (`FAIL\t<import/path>\t...` and `FAIL\t<import/path> [build failed]`). */
+export function parseFailingGoPackages(blocks: string[]): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const raw of blocks) {
+		const s = typeof raw === "string" ? raw : String(raw ?? "");
+		const re = /^FAIL\s+(\S+\/\S+?)(?:\s|\t|$)/gm;
+		let m: RegExpExecArray | null;
+		while ((m = re.exec(s)) !== null) {
+			const pkg = (m[1] ?? "").replace(/[[\],]+$/, "").trim();
+			if (pkg && !seen.has(pkg)) { seen.add(pkg); out.push(pkg); }
+		}
+	}
+	return out;
+}
+
+/** Locate the Go module (go.mod) in `cwd` whose `module` path is a prefix of the
+ *  failing package import paths. Returns the module's repo-relative subdir
+ *  ("" = repo root) and the package dirs RELATIVE to that module (for
+ *  `go test ./<dir>`). Bounded scan (never recurses into vendor/node_modules/
+ *  hidden dirs); [] / null on any failure. */
+export function resolveGoModuleForPackages(cwd: string, importPaths: string[]): { moduleSubdir: string; packageDirs: string[] } | null {
+	try {
+		if (importPaths.length === 0) return null;
+		// Find candidate go.mod files (bounded BFS, depth ≤ 4).
+		const mods: Array<{ dir: string; modulePath: string }> = [];
+		const walk = (rel: string, depth: number) => {
+			if (depth > 4 || mods.length > 200) return;
+			const abs = rel ? _join(cwd, rel) : cwd;
+			let entries: string[] = [];
+			try { entries = _readdirSync(abs); } catch { return; }
+			if (entries.includes("go.mod")) {
+				try {
+					const txt = _readFileSync(_join(abs, "go.mod"), "utf8");
+					const mm = /^module\s+(\S+)/m.exec(txt);
+					if (mm?.[1]) mods.push({ dir: rel, modulePath: mm[1].trim() });
+				} catch { /* skip */ }
+			}
+			for (const e of entries) {
+				if (e.startsWith(".") || e === "node_modules" || e === "vendor" || e === "target") continue;
+				try { if (_existsSync(_join(abs, e, ""))) walk(rel ? `${rel}/${e}` : e, depth + 1); } catch { /* skip */ }
+			}
+		};
+		walk("", 0);
+		if (mods.length === 0) return null;
+		// Longest module-path prefix wins (nested modules).
+		mods.sort((a, b) => b.modulePath.length - a.modulePath.length);
+		for (const mod of mods) {
+			const dirs = new Set<string>();
+			for (const p of importPaths) {
+				if (p === mod.modulePath) dirs.add(".");
+				else if (p.startsWith(mod.modulePath + "/")) dirs.add(p.slice(mod.modulePath.length + 1));
+			}
+			if (dirs.size > 0) return { moduleSubdir: mod.dir, packageDirs: [...dirs].sort() };
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+/** Extract failing Python test FILE paths from pytest output blocks
+ *  (`FAILED path/to/test_x.py::TestC::test_m`, `path/to/test_x.py:12: ...`,
+ *  or a bare `path/to/test_x.py` node id). Returns repo-relative `.py` paths. */
+export function parseFailingPythonTestFiles(block: string): string[] {
+	const s = typeof block === "string" ? block : String(block ?? "");
+	const out: string[] = [];
+	const seen = new Set<string>();
+	const add = (raw: string) => {
+		const p = (raw ?? "").trim();
+		if (p && p.endsWith(".py") && !seen.has(p)) { seen.add(p); out.push(p); }
+	};
+	// `FAILED <path>.py::...` and `<path>.py::...` node ids, plus `<path>.py:line:`.
+	const re = /(?:FAILED\s+)?([^\s:]+\.py)(?:::|:\d+:|\s|$)/gm;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(s)) !== null) add(m[1] ?? "");
+	return out;
 }

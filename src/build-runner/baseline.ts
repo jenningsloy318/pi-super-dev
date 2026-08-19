@@ -65,6 +65,9 @@ export interface BaselineVerifyInput {
 	 * Repo-relative, forward slashes, no leading "./".
 	 */
 	subjects: string[];
+	/** v0.2.9 G6: repo-relative subdir of the subject's module (nested go.mod/
+	 *  Cargo.toml); the baseline command runs here. ""/undefined = repo root. */
+	moduleSubdir?: string;
 	signal?: AbortSignal;
 	/** Per-run timeout for the baseline command (default 300s). */
 	timeoutMs?: number;
@@ -310,11 +313,18 @@ export function verifyUntouchedFailuresAgainstBaseline(input: BaselineVerifyInpu
 			if (!added) {
 				result = unknown(`git worktree add for baseline ${shortSha(mergeBase)} failed`);
 			} else {
-				const plan = buildBaselinePlan(tmp, input.cwd, input.language, input.pm, subjects);
+				// v0.2.9 G6: run the baseline command in the SUBJECT's module dir (a
+				// nested go.mod/Cargo.toml lives in a subdir, e.g. backend-service/).
+				// moduleSubdir "" ⇒ repo root (today's behavior). go.mod/module reads
+				// and the plan spawn both use this dir so a nested Go module verifies
+				// correctly instead of failing "go.mod unreadable".
+				const runCwd = input.moduleSubdir ? join(tmp, input.moduleSubdir) : tmp;
+				const featCwd = input.moduleSubdir ? join(input.cwd, input.moduleSubdir) : input.cwd;
+				const plan = buildBaselinePlan(runCwd, featCwd, input.language, input.pm, subjects);
 				if (!plan) {
 					result = unknown(`cannot construct a baseline command for language "${input.language}"`);
 				} else {
-					const res = runner(tmp, plan.argv, { timeoutMs });
+					const res = runner(runCwd, plan.argv, { timeoutMs });
 					const out = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
 					if (res.timedOut || res.status === null) {
 						result = unknown(`${plan.label} at baseline ${shortSha(mergeBase)} did not produce an exit status (timeout/spawn failure)`);
@@ -334,7 +344,7 @@ export function verifyUntouchedFailuresAgainstBaseline(input: BaselineVerifyInpu
 						if (input.language === "go") {
 							// go reports PACKAGE paths while subjects are FILES — run the
 							// comparison in package space (subject file → module/<dir>).
-							const module = readGoModuleNameLocal(tmp);
+							const module = readGoModuleNameLocal(runCwd);
 							if (!module) {
 								result = { status: "unknown", evidence: `${plan.label}: baseline go.mod module unreadable` };
 							} else {

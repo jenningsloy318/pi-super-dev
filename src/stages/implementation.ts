@@ -1207,6 +1207,12 @@ export const implementationStage: Stage = {
 						emitStep(`TDD RED (${redTryDetail})`, tdd.error ? "failed" : "ok", tddStepSeq);
 						const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
 						testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
+						// v0.2.9 G5: stream what tdd-guide DID (test files + its own summary),
+						// so the run log shows the RED work each try, not just the oracle verdict.
+						{
+							const tddSummary = String((tdd.control as { summary?: unknown } | null)?.summary ?? "").replace(/\s+/g, " ").trim();
+							ctx.log(`Implementation ${phaseId} tdd-guide (try ${retries + 1})${tdd.error ? ` error=${tdd.error}` : ""}: test files=${testFiles.join(", ") || "(none)"}${tddSummary ? ` — ${tddSummary.slice(0, 400)}` : ""}`);
+						}
 						announceActivity("RED oracle", redTryDetail);
 						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics));
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
@@ -1671,6 +1677,13 @@ export const implementationStage: Stage = {
 				};
 				for (const f of [...projectStructured.filesCreated, ...projectStructured.filesModified]) {
 					if (!filesModified.includes(f)) filesModified.push(f);
+				}
+				// v0.2.9 G5: stream what the implementer DID (claimed changes + summary +
+				// tests-pass count), so the run log shows each attempt's work, not just gates.
+				{
+					const implSummary = String((impl.control as { summary?: unknown } | null)?.summary ?? "").replace(/\s+/g, " ").trim();
+					const tp = (impl.control as { testsPassCount?: unknown } | null)?.testsPassCount;
+					ctx.log(`Implementation ${phaseId} implementer (attempt ${attempt})${impl.error ? ` error=${impl.error}` : ""}: created=[${projectStructured.filesCreated.join(", ") || "none"}] modified=[${projectStructured.filesModified.join(", ") || "none"}] deleted=[${projectStructured.filesDeleted.join(", ") || "none"}]${tp != null ? ` testsPass=${String(tp)}` : ""}${implSummary ? ` — ${implSummary.slice(0, 400)}` : ""}`);
 				}
 				// HARD test oracle: actually run build/test/typecheck instead of trusting
 				// a QA agent's self-report (vacuous-pass risk). Non-fatal when nothing

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
-import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors, parseFailingNpmTestFiles } from "./scope.ts";
+import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors, parseFailingNpmTestFiles, parseFailingPythonTestFiles, detectFailureBlockLanguage, parseFailingGoPackages, resolveGoModuleForPackages } from "./scope.ts";
 import { verifyUntouchedFailuresAgainstBaseline, type BaselineCheckResult, type BaselineVerifyInput } from "./baseline.ts";
 
 export interface RedCheckPlan {
@@ -537,28 +537,75 @@ export function resolveInScopePassWithBaseline(args: {
 		return { inScopePass: historical, errors: args.errors };
 	}
 	try {
-		const subjects =
-			args.language === "rust"
-				? parseOutOfScopeCrateSubjects(args.outOfScopeErrors)
-				: [...new Set(args.outOfScopeErrors.flatMap((b) => parseFailingNpmTestFiles(typeof b === "string" ? b : String(b ?? ""))))];
-		if (subjects.length === 0) return { inScopePass: historical, errors: args.errors };
+		// v0.2.9 G6: group the out-of-scope failure blocks BY THE SUBJECT'S OWN
+		// language (detected from the block), not the run's primary language, and
+		// verify each group with the matching runner + module dir. Run
+		// 2026-08-19T08-32-47-962Z: a nested Go module's `snow` failure on a
+		// node-primary track was verified with `pnpm run test` (passes at baseline)
+		// → mis-tagged regression. A block whose language cannot be detected falls
+		// back to the run's primary language (today's behavior).
 		const verify = args.baselineVerify ?? verifyUntouchedFailuresAgainstBaseline;
-		const outcome = verify({
-			cwd: args.cwd,
-			defaultBranch: args.defaultBranch,
-			language: args.language,
-			pm: args.pm,
-			subjects,
-			signal: args.signal,
-		});
-		if (outcome.status === "regression") {
+		const byLang = new Map<string, string[]>();
+		for (const block of args.outOfScopeErrors) {
+			const b = typeof block === "string" ? block : String(block ?? "");
+			const detected = detectFailureBlockLanguage(b);
+			// Only the compiled/distinct families OVERRIDE the run's primary language;
+			// a node-detected block (or an undetected one) verifies with the run's own
+			// language (frontend/backend/node) so buildBaselinePlan builds the right JS
+			// runner — never the bare literal "node" (which it cannot plan).
+			const key = detected === "go" || detected === "rust" || detected === "python" ? detected : args.language;
+			(byLang.get(key) ?? byLang.set(key, []).get(key)!).push(b);
+		}
+		let anyVerified = false;
+		let lastOutcome: BaselineCheckResult | undefined;
+		const regressionEvidence: string[] = [];
+		for (const [lang, blocks] of byLang) {
+			let subjects: string[];
+			let moduleSubdir: string | undefined;
+			if (lang === "rust") {
+				subjects = parseOutOfScopeCrateSubjects(blocks);
+			} else if (lang === "go") {
+				const pkgs = parseFailingGoPackages(blocks);
+				const mod = pkgs.length ? resolveGoModuleForPackages(args.cwd, pkgs) : null;
+				if (mod) {
+					moduleSubdir = mod.moduleSubdir;
+					// buildBaselinePlan(go) maps `.go` file subjects → their dir; synthesize
+					// a module-relative marker per package dir so it resolves to
+					// `go test ./<dir>` inside the module.
+					subjects = mod.packageDirs.map((d) => (d === "." ? "pkg.go" : `${d}/pkg.go`));
+				} else {
+					subjects = [];
+				}
+			} else if (lang === "python") {
+				subjects = [...new Set(blocks.flatMap((b) => parseFailingPythonTestFiles(b)))];
+			} else {
+				subjects = [...new Set(blocks.flatMap((b) => parseFailingNpmTestFiles(b)))];
+			}
+			if (subjects.length === 0) continue;
+			anyVerified = true;
+			const outcome = verify({
+				cwd: args.cwd,
+				defaultBranch: args.defaultBranch,
+				language: lang,
+				pm: args.pm,
+				subjects,
+				...(moduleSubdir ? { moduleSubdir } : {}),
+				signal: args.signal,
+			});
+			lastOutcome = outcome;
+			if (outcome.status === "regression") regressionEvidence.push(outcome.evidence);
+		}
+		if (!anyVerified) return { inScopePass: historical, errors: args.errors };
+		// A regression in ANY language group strips the lenient pass (the phase must
+		// address a failure that is genuinely new on this branch).
+		if (regressionEvidence.length > 0) {
 			return {
 				inScopePass: false,
-			errors: [...args.errors, `${BASELINE_VERIFY_ERROR_PREFIX} ${outcome.evidence}`],
-				baselineCheck: outcome,
+				errors: [...args.errors, ...regressionEvidence.map((e) => `${BASELINE_VERIFY_ERROR_PREFIX} ${e}`)],
+				baselineCheck: { status: "regression", evidence: regressionEvidence.join(" | ") },
 			};
 		}
-		return { inScopePass: historical, errors: args.errors, baselineCheck: outcome };
+		return { inScopePass: historical, errors: args.errors, baselineCheck: lastOutcome };
 	} catch {
 		return { inScopePass: historical, errors: args.errors };
 	}
