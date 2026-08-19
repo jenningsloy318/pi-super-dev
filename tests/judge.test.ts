@@ -128,6 +128,65 @@ describe("judge unit", () => {
 		expect(out.status).toBe("discarded");
 	});
 
+	// ── J5 (run 2026-08-19T02-01-12-840Z): the RED no-progress recovery routes
+	// re-author-tests / fix-environment are DIAGNOSIS-DRIVEN — the harness re-runs
+	// bounded deterministic authoring/environment work with the diagnosis and
+	// never acquits a gate (INV-1) — so a MISSING-evidence verdict on them must
+	// ROUTE (with a documented INV-2 exemption), not discard into the no-progress
+	// deadlock that killed that run at 0/7 phases. FABRICATED / MALFORMED evidence
+	// still discards; challenge-test (can drop an accepted RED) is NOT exempt.
+
+	// SCENARIO-001
+	it("J5: re-author-tests with NO evidence ROUTES (does not discard) with a documented exemption", async () => {
+		const spec = join(wt, "docs", "specifications", "31-j5-reauthor");
+		const { ctx, logs } = makeCtx(() => ({ control: baseVerdict({ route: "re-author-tests", evidence: [] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-j5a", worktreePath: wt, specDirectory: spec, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment"] });
+		expect(out.status).toBe("routed");
+		if (out.status === "routed") expect(out.verdict.route).toBe("re-author-tests");
+		const line = readFileSync(join(spec, ".judge.jsonl"), "utf8").trim().split("\n").pop();
+		const entry = JSON.parse(line as string) as { routed?: boolean; reason?: string };
+		expect(entry.routed).toBe(true);
+		expect(String(entry.reason ?? "")).toContain("NO evidence");
+	});
+
+	// SCENARIO-002
+	it("J5: fix-environment with NO evidence ROUTES (does not discard)", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "fix-environment", evidence: [] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-j5b", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment"] });
+		expect(out.status).toBe("routed");
+		if (out.status === "routed") expect(out.verdict.route).toBe("fix-environment");
+	});
+
+	// SCENARIO-003
+	it("J5: re-author-tests with a FABRICATED quote still DISCARDS (fabrication guard unchanged)", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "re-author-tests", evidence: [{ file: "src/a.test.ts", quote: "this quote is fabricated and appears nowhere in the file" }] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-j5c", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment"] });
+		expect(out.status).toBe("discarded");
+	});
+
+	// SCENARIO-004
+	it("J5: re-author-tests with MALFORMED (all-empty) evidence still DISCARDS", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "re-author-tests", evidence: [{ file: "", quote: "" }] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-j5d", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment"] });
+		expect(out.status).toBe("discarded");
+		if (out.status === "discarded") expect(out.reason).toContain("malformed");
+	});
+
+	// SCENARIO-005
+	it("J5: challenge-test with NO evidence still DISCARDS (not exempt)", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "challenge-test", evidence: [] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.green-challenge.phase-01", signature: "sig-j5e", worktreePath: wt, context: "ctx", allowedRoutes: ["challenge-test", "re-author-tests"] });
+		expect(out.status).toBe("discarded");
+	});
+
+	// SCENARIO-006
+	it("J5: a below-confidence exempt route still ESCALATES (confidence gate applied after evidence)", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "re-author-tests", confidence: 0.3, evidence: [] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-j5f", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment"] });
+		expect(out.status).toBe("escalate");
+		if (out.status === "escalate") expect(out.verdict.route).toBe("escalate-now");
+	});
+
 	// ─── T7.7 (NFR-6 pinning): the judge fix-in-pass quartet ─────────────────
 	//
 	// B3 — a `continue` verdict with ZERO evidence still routes (bounded impact:

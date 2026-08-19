@@ -37,6 +37,17 @@ import type { StageContext } from "../types.ts";
 export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environment", "continue", "escalate-now"] as const;
 export type JudgeRoute = (typeof JUDGE_ROUTES)[number];
 
+/**
+ * J5 (run 2026-08-19T02-01-12-840Z): routes whose ACTUATION re-runs bounded
+ * deterministic work (re-author the RED, repair the environment) and never
+ * acquits a gate (INV-1), bounded by the per-signature judge budget (INV-3).
+ * For these the diagnosis is the actionable product, so a MISSING-evidence
+ * verdict routes with a documented INV-2 exemption instead of discarding into a
+ * no-progress deadlock. FABRICATED / MALFORMED evidence still discards, and
+ * challenge-test is intentionally excluded (it can drop an accepted RED gate).
+ */
+const DIAGNOSIS_DRIVEN_MISSING_OK: ReadonlySet<JudgeRoute> = new Set(["re-author-tests", "fix-environment"]);
+
 export const JUDGE_CONTROL_KEYS = ["diagnosis", "route", "confidence", "evidence"] as const;
 
 /** Min judge confidence for a non-default route (below → escalate-now). */
@@ -328,9 +339,25 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 				ctx.log(`judge ${req.scope}: unverified escalate accepted — no evidence attached (${evidenceFailures.join("; ")}) but route is escalate-now; escalating with diagnosis`);
 				return { status: "escalate", verdict };
 			}
-			appendAudit(req, { verdict, discarded: true, evidenceFailures });
-			ctx.log(`judge ${req.scope}: verdict DISCARDED — evidence verification failed: ${evidenceFailures.join("; ")}`);
-			return { status: "discarded", reason: `evidence verification failed: ${evidenceFailures.join("; ")}` };
+			// J5 (run 2026-08-19T02-01-12-840Z): the RED no-progress recovery routes
+			// re-author-tests / fix-environment are DIAGNOSIS-DRIVEN — the harness
+			// re-runs bounded deterministic authoring/environment work with the
+			// diagnosis and NEVER acquits a gate (INV-1); the re-route is bounded by
+			// the per-signature budget (INV-3). So a MISSING-evidence verdict on
+			// these routes must ROUTE (with a documented INV-2 exemption), not discard
+			// into the no-progress deadlock that killed run 2026-08-19T02-01-12-840Z
+			// at 0/7 phases. This is the empty-list class ONLY — FABRICATED evidence
+			// (quote fails verification) and MALFORMED evidence (all items
+			// empty/whitespace, the B4 class) still DISCARD below. challenge-test is
+			// deliberately NOT exempt: it can drop an already-accepted RED gate.
+			if (!(missingOnly && DIAGNOSIS_DRIVEN_MISSING_OK.has(verdict.route))) {
+				appendAudit(req, { verdict, discarded: true, evidenceFailures });
+				ctx.log(`judge ${req.scope}: verdict DISCARDED — evidence verification failed: ${evidenceFailures.join("; ")}`);
+				return { status: "discarded", reason: `evidence verification failed: ${evidenceFailures.join("; ")}` };
+			}
+			// missing-evidence exempt: fall through to the allowed/confidence gates
+			// (a not-offered or below-confidence route still escalates), then to the
+			// documented zero-evidence routing below.
 		}
 		if (!allowed.includes(verdict.route)) {
 			appendAudit(req, { verdict, escalated: true, reason: `route "${verdict.route}" not offered at this wiring point` });
@@ -349,6 +376,16 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 		if (verdict.route === "continue" && verdict.evidence.length === 0) {
 			appendAudit(req, { verdict, routed: true, reason: "continue routed with zero evidence — INV-2 exemption documented: the keep-going route preserves the loop's deterministic machinery; nothing was machine-verified" });
 			ctx.log(`judge ${req.scope}: route=continue confidence=${verdict.confidence} routed with ZERO evidence (INV-2 exemption — documented in .judge.jsonl) — ${verdict.diagnosis}`);
+			return { status: "routed", verdict };
+		}
+		// J5: a diagnosis-driven recovery route that survived the allowed/confidence
+		// gates with NO evidence routes with an EXPLICIT audit line — the INV-2
+		// missing-evidence exemption must never be silent (parity with the continue
+		// exemption above). Only reachable for re-author-tests / fix-environment with
+		// an empty evidence list; every other missing case already discarded.
+		if (verdict.evidence.length === 0 && DIAGNOSIS_DRIVEN_MISSING_OK.has(verdict.route)) {
+			appendAudit(req, { verdict, routed: true, reason: `${verdict.route} routed with NO evidence — INV-2 exemption documented: diagnosis-driven route re-runs bounded deterministic work (never acquits a gate); nothing was machine-verified` });
+			ctx.log(`judge ${req.scope}: route=${verdict.route} confidence=${verdict.confidence} routed with ZERO evidence (INV-2 exemption — documented in .judge.jsonl) — ${verdict.diagnosis}`);
 			return { status: "routed", verdict };
 		}
 		appendAudit(req, { verdict, routed: true });
