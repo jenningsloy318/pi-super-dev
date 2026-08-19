@@ -49,8 +49,22 @@ const maxCallsPerRun = (): number => {
 	const n = Number.parseInt(process.env.SUPER_DEV_MAX_JUDGE_CALLS ?? "", 10);
 	return Number.isFinite(n) && n > 0 ? n : 12;
 };
-/** Wall-clock cap for one judge call: diagnosis must be fast, never block a loop. */
-const JUDGE_TIMEOUT_MS = 120_000;
+/** Wall-clock cap for one judge attempt: diagnosis must be fast, never block a
+ *  loop. Lazy env override SUPER_DEV_JUDGE_TIMEOUT_MS; default 240s — LLM judge
+ *  latency is heavy-tailed (observed ~71s typical vs >120s tail on run
+ *  2026-08-19T03-16-50-261Z; OpenAI/Anthropic SDKs default 600s per request),
+ *  and the old 120s wall killed grounded diagnoses mid-exploration. */
+const judgeTimeoutMs = (): number => {
+	const n = Number.parseInt(process.env.SUPER_DEV_JUDGE_TIMEOUT_MS ?? "", 10);
+	return Number.isFinite(n) && n > 0 ? n : 240_000;
+};
+
+/** Timeout classification shared by every backend surface (review F-1, both
+ *  reviewers): session-agent resolves "timed out after Ns"; pi-spawn resolves
+ *  "timed out after Nms (used partial output)" for partial output but REJECTS
+ *  with "agent timed out after Ns" when a timeout yields no assistant text —
+ *  an unanchored match is the only predicate covering all three. */
+const isTimeoutMessage = (s?: string): boolean => Boolean(s && /timed out after|timeout after/i.test(s));
 const DIAGNOSIS_MAX_CHARS = 600;
 const QUOTE_MIN = 8;
 const QUOTE_MAX = 200;
@@ -240,17 +254,52 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 	runCalls++;
 	ctx.log(`judge ${req.scope}: call ${used + 1}/${MAX_CALLS_PER_SIGNATURE} (run ${runCalls}/${maxCallsPerRun()})`);
 	try {
-		const result = await ctx.agent({
+		const judgeAgentCall = () => ctx.agent({
 			id: `pipeline.judge.${req.scope.replace(/[^A-Za-z0-9.-]+/g, "-")}`,
 			agent: "judge",
 			prompt: buildJudgePrompt(req.scope, req.context, allowed),
 			accessMode: "source-read-only",
 			controlKeys: [...JUDGE_CONTROL_KEYS],
 			allowEmptyArraysFor: ["evidence"],
-			timeoutMs: JUDGE_TIMEOUT_MS,
+			timeoutMs: judgeTimeoutMs(),
 		});
+		// A backend timeout may RESOLVE with {error} (session; pi-spawn partial
+		// output) or THROW (pi-spawn with no assistant text) — absorb both so the
+		// retry decision below sees one shape.
+		const tryCall = async (): Promise<{ ok: true; result: Awaited<ReturnType<typeof judgeAgentCall>> } | { ok: false; thrown: string }> => {
+			try {
+				return { ok: true, result: await judgeAgentCall() };
+			} catch (err) {
+				return { ok: false, thrown: err instanceof Error ? err.message : String(err) };
+			}
+		};
+		let judgeAttempts = 1;
+		let outcome = await tryCall();
+		// J2 (run 2026-08-19T03-16-50-261Z): a timeout produced NO verdict — the
+		// per-signature budget guards verdict storms, so a timed-out attempt must
+		// still get its remaining attempt (Temporal-faithful: MaximumAttempts counts
+		// timed-out attempts; timeouts are retryable, deterministic spawn failures
+		// are not). The retry consumes the second signature slot and one run-budget
+		// slot; the timed-out attempt is audited first (INV-5: every call logged),
+		// and a second timeout degrades below with the attempt count audited.
+		const timedOut = outcome.ok
+			? Boolean(outcome.result.error && !outcome.result.control && isTimeoutMessage(outcome.result.error))
+			: isTimeoutMessage(outcome.thrown);
+		if (timedOut && used + 1 < MAX_CALLS_PER_SIGNATURE && runCalls < maxCallsPerRun()) {
+			appendAudit(req, { error: outcome.ok ? String(outcome.result.error) : outcome.thrown, attempt: 1, retried: true });
+			signatureCalls.set(sigKey, used + 2);
+			runCalls++;
+			judgeAttempts = 2;
+			ctx.log(`judge ${req.scope}: timeout on attempt 1 — retrying (attempt 2/${MAX_CALLS_PER_SIGNATURE}; run ${runCalls}/${maxCallsPerRun()})`);
+			outcome = await tryCall();
+		}
+		if (!outcome.ok) {
+			appendAudit(req, { error: outcome.thrown, ...(judgeAttempts > 1 ? { attempts: judgeAttempts } : {}) });
+			return { status: "degraded", reason: `judge agent failed: ${outcome.thrown}` };
+		}
+		const result = outcome.result;
 		if (result.error && !result.control) {
-			appendAudit(req, { error: result.error });
+			appendAudit(req, { error: result.error, ...(judgeAttempts > 1 ? { attempts: judgeAttempts } : {}) });
 			return { status: "degraded", reason: `judge agent failed: ${result.error}` };
 		}
 		const verdict = parseJudgeControl(result.control);

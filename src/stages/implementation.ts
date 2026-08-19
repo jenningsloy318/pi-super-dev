@@ -2128,6 +2128,15 @@ export const implementationStage: Stage = {
 					// later phases), give the user a chance to inject guidance and continue.
 					// Bounded by ESCALATION_RETRY_CAP; never throws; a dismissal/headless
 					// run falls straight through to the pre-existing no-progress break.
+					// J3 (run 2026-08-19T03-16-50-261Z): the deterministic test-defect
+					// signature — the phase's RED targets NEVER went green across the
+					// repeated no-progress attempts (tdd-targets-still-red) — identical
+					// failure+footprint signature across attempts, no net progress. "A test that fails consistently is not flaky —
+					// it is broken": surface the hypothesis and the legal next actions at
+					// the human boundary (escalation message/findings) and in the terminal
+					// stop log. Advisory only — never auto-triggers a re-author (the judge
+					// stays the actuator for that verdict).
+					const stillRedSuspect = failureReasons.some((r) => r.includes("tdd-targets-still-red"));
 					const escalate = (ctx as { options?: { escalate?: import("../types.ts").Escalate } }).options?.escalate;
 					if (escalate) {
 						try {
@@ -2149,11 +2158,15 @@ export const implementationStage: Stage = {
 							const failure: import("../types.ts").EscalationFailure = {
 								kind: "stagnation",
 								stage: "implementation",
-								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""}${implJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (verified evidence):\n${implJudgeDiagnosis}` : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
+								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""}${implJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (verified evidence):\n${implJudgeDiagnosis}` : ""}${stillRedSuspect && implDefects.length === 0 ? "\n\nDETERMINISTIC TEST-SUSPECT SIGNAL: the phase's RED targets never went green across these repeated no-progress attempts (tdd-targets-still-red). The RED test itself may be unsatisfiable (defective). Legal next actions: re-author the RED with this failure evidence (retry-with-guidance), fix the environment, or accept the limitation." : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
 								severity: "soft",
 								findings: [
 									...(implJudgeDiagnosis ? [{ file: null, severity: null, title: `judge diagnosis: ${implJudgeDiagnosis.split("\n")[0].slice(0, 200)}` }] : []),
-									...implDefects.map((d) => ({ file: d.testFile, severity: null, title: `unsatisfiable: ${d.reason}` })),
+									...(implDefects.map((d) => ({ file: d.testFile, severity: null, title: `unsatisfiable: ${d.reason}` }))),
+								// J3: the deterministic still-red signal rides even when the
+								// implementer reported nothing — classification must be explicit,
+								// never silent.
+								...(stillRedSuspect ? [{ file: null, severity: null, title: "test-suspect (deterministic): RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence, fix the environment, or accept the limitation" }] : []),
 									// The diagnosis finding leads the failure reasons so it survives the
 									// 12-entry slice — it is the highest-value evidence for the decision.
 									...(implDiagnosisTail ? [{ file: null, severity: null, title: `implementer diagnosis: ${implDiagnosisTail.split("\n")[0].slice(0, 200)}` }] : []),
@@ -2184,7 +2197,7 @@ export const implementationStage: Stage = {
 						} catch { /* never-throw: fall through to the terminal break */ }
 					}
 					terminalStopReason = "no-progress";
-					ctx.log(`Implementation ${phaseId} stopped after repeated no-progress failure on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}`);
+					ctx.log(`Implementation ${phaseId} stopped after repeated no-progress failure on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}${stillRedSuspect ? " [test-suspect: RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence or accept the limitation]" : ""}`);
 					break;
 				}
 			}

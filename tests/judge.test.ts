@@ -275,6 +275,105 @@ describe("judge unit", () => {
 		expect(String(degraded.data.reason)).toContain("budget");
 	});
 
+	// ─── J1/J2 (v0.2.4): timeout budget + retry-on-timeout ─────────────────────
+
+	it("J1: judge timeout defaults to 240s and honors SUPER_DEV_JUDGE_TIMEOUT_MS", async () => {
+		const { ctx, calls } = makeCtx(() => ({ control: baseVerdict({}) as Record<string, unknown> }));
+		await runJudge(ctx, { scope: "t-j1", signature: "sig-j1", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect((calls[0] as { timeoutMs?: number }).timeoutMs).toBe(240_000);
+		process.env.SUPER_DEV_JUDGE_TIMEOUT_MS = "65000";
+		try {
+			const r2 = makeCtx(() => ({ control: baseVerdict({}) as Record<string, unknown> }));
+			await runJudge(r2.ctx, { scope: "t-j1b", signature: "sig-j1b", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+			expect((r2.calls[0] as { timeoutMs?: number }).timeoutMs).toBe(65_000);
+		} finally {
+			delete process.env.SUPER_DEV_JUDGE_TIMEOUT_MS;
+		}
+	});
+
+	it("J2: a timeout with no control retries once within the per-signature budget and routes the second attempt's verdict", async () => {
+		let n = 0;
+		const { ctx, calls, logs } = makeCtx(() => {
+			n++;
+			if (n === 1) return { control: null, error: "timed out after 240s" };
+			return { control: baseVerdict({}) as Record<string, unknown> };
+		});
+		const out = await runJudge(ctx, { scope: "t-j2a", signature: "sig-j2a", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect(out.status).toBe("routed");
+		expect(calls.length).toBe(2);
+		expect(logs.some((l) => l.includes("timeout on attempt 1") && l.includes("retrying"))).toBe(true);
+	});
+
+	it("J2: a second timeout degrades after exactly 2 attempts (Temporal-faithful attempt counting)", async () => {
+		const { ctx, calls } = makeCtx(() => ({ control: null, error: "timed out after 240s" }));
+		const out = await runJudge(ctx, { scope: "t-j2b", signature: "sig-j2b", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect(out.status).toBe("degraded");
+		if (out.status === "degraded") expect(out.reason).toContain("timed out");
+		expect(calls.length).toBe(2);
+		// Attempt accounting: a later call for the SAME signature is per-signature
+		// exhausted — the timeout retry consumed both slots.
+		const again = await runJudge(ctx, { scope: "t-j2b", signature: "sig-j2b", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect(again.status).toBe("degraded");
+		if (again.status === "degraded") expect(again.reason).toContain("per-signature");
+	});
+
+	it("J2 CONTROL: a non-timeout infra error never retries (deterministic failures fail fast)", async () => {
+		const { ctx, calls, logs } = makeCtx(() => ({ control: null, error: 'Model "x" not found' }));
+		const out = await runJudge(ctx, { scope: "t-j2c", signature: "sig-j2c", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect(out.status).toBe("degraded");
+		expect(calls.length).toBe(1);
+		expect(logs.some((l) => l.includes("retrying"))).toBe(false);
+	});
+
+	it("J2 CONTROL: the timeout retry respects the run budget", async () => {
+		process.env.SUPER_DEV_MAX_JUDGE_CALLS = "1";
+		resetJudgeBudgets();
+		try {
+			const { ctx, calls } = makeCtx(() => ({ control: null, error: "timed out after 240s" }));
+			const out = await runJudge(ctx, { scope: "t-j2d", signature: "sig-j2d", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+			expect(out.status).toBe("degraded");
+			expect(calls.length).toBe(1);
+		} finally {
+			delete process.env.SUPER_DEV_MAX_JUDGE_CALLS;
+		}
+	});
+
+	it("J2 (review F-1): a THROWN timeout (pi-spawn no-output shape) retries once and routes the second attempt's verdict", async () => {
+		let n = 0;
+		const { ctx, calls, logs } = makeCtx(() => {
+			n++;
+			if (n === 1) throw new Error("super-dev [pipeline.judge.t]: agent timed out after 240s. stderr: (empty)");
+			return { control: baseVerdict({}) as Record<string, unknown> };
+		});
+		const out = await runJudge(ctx, { scope: "t-j2e", signature: "sig-j2e", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect(out.status).toBe("routed");
+		expect(calls.length).toBe(2);
+		expect(logs.some((l) => l.includes("timeout on attempt 1") && l.includes("retrying"))).toBe(true);
+	});
+
+	it("J2 (review F-1): a thrown NON-timeout error degrades without retry", async () => {
+		const { ctx, calls } = makeCtx(() => { throw new Error("spawn pi ENOENT"); });
+		const out = await runJudge(ctx, { scope: "t-j2f", signature: "sig-j2f", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect(out.status).toBe("degraded");
+		if (out.status === "degraded") expect(out.reason).toContain("judge agent failed");
+		expect(calls.length).toBe(1); // one attempt, no retry
+	});
+
+	it("J2 (review F-2): timeout→retry→success audits BOTH the timed-out attempt and the verdict", async () => {
+		const spec = join(wt, "docs", "specifications", "01-j2audit");
+		let n = 0;
+		const { ctx } = makeCtx(() => {
+			n++;
+			if (n === 1) return { control: null, error: "timed out after 240s" };
+			return { control: baseVerdict({}) as Record<string, unknown> };
+		});
+		const out = await runJudge(ctx, { scope: "t-j2g", signature: "sig-j2g", worktreePath: wt, specDirectory: spec, context: "c", allowedRoutes: ["re-author-tests"] });
+		expect(out.status).toBe("routed");
+		const lines = readFileSync(join(spec, ".judge.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		expect(lines.some((l) => l.error && l.attempt === 1 && l.retried === true)).toBe(true);
+		expect(lines.some((l) => l.verdict && l.routed)).toBe(true);
+	});
+
 	it("prompt control line extracts exactly the judge key set", () => {
 		const prompt = buildJudgePrompt("scope-1", "context block", ["re-author-tests", "escalate-now"]);
 		expect(extractControlKeys(prompt)).toEqual([...JUDGE_CONTROL_KEYS]);
