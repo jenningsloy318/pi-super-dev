@@ -1343,6 +1343,52 @@ describe("v0.2.6 G3 — judge arbitration: route=implementer-retry overrides the
 		expect(calls.logs.some((l) => /convergence blocked \(no automatic re-entry\)/.test(l))).toBe(false);
 	}, 20_000);
 
+	// SCENARIO-001 (v0.2.7 dedup): on the implementer-retry override path the
+	// ownDirt feedback was appended to failureReasons BOTH directly and nested
+	// inside envJudgeOverrideFeedback — duplicating every undeclared-edit line in
+	// the retry prompt. RED pre-fix: the line appears twice.
+	it("v0.2.7 FIX (RED pre-fix): implementer-retry override names each undeclared out-of-scope edit EXACTLY ONCE (no duplicate ownDirt feedback)", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1"; // kill-switch → skip quarantine → judge
+		gateSeq([envBlockerGate()]);
+		redThenGreen();
+		const made = mkCtx({
+			maxImplAttempts: 3,
+			judgeControl: {
+				diagnosis: "NOT environmental — a product defect the implementer must resolve",
+				route: "implementer-retry",
+				confidence: 0.85,
+				evidence: [{ file: "internal/services/snow/enrichment.go", quote: "func Enrich() int" }],
+			},
+		});
+		const origAgent = made.ctx.agent.bind(made.ctx);
+		made.ctx.agent = async (call: AgentCall): Promise<AgentResult> => {
+			if (call.agent === "implementer") {
+				made.calls.impl.push(call);
+				// Undeclared out-of-scope edit this phase (ownDirt — never in the
+				// run-start snapshot) plus the declared claim that exists on disk.
+				writeRepoFile(repo, "src/persistence.ts", "export type WriterId = \"03\" | \"07\";\n");
+				return { text: "", control: { filesCreated: ["src/new.ts"] } };
+			}
+			return origAgent(call);
+		};
+		try {
+			await (implementationStage as Stage).run(mkRealGitState(repo), made.ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
+		// The override routed and the implementer was re-spawned.
+		expect(made.calls.logs.some((l) => /judge route=implementer-retry/.test(l))).toBe(true);
+		expect(made.calls.impl.length).toBeGreaterThanOrEqual(2);
+		const retryPrompt = made.calls.impl[1]!.prompt;
+		// The override diagnosis reaches the implementer…
+		expect(retryPrompt).toContain("judge override — the deterministic classifier said environment");
+		// …and the undeclared out-of-scope edit is named EXACTLY ONCE (RED pre-fix: twice).
+		const occurrences = retryPrompt.split("out-of-scope edit (this run): src/persistence.ts").length - 1;
+		expect(occurrences).toBe(1);
+	}, 20_000);
+
 	it("G3 GUARD: implementer-retry is a JUDGE_ROUTES member and missing-evidence-exempt (diagnosis-driven, INV-2 parity with re-author-tests/fix-environment) — a zero-evidence implementer-retry verdict still ROUTES at the env-blocker boundary", async () => {
 		const { wt: repo } = mkEnvBlockerWorktree();
 		repos.push(repo);

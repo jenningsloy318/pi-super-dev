@@ -1150,11 +1150,13 @@ export const implementationStage: Stage = {
 			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; ctx.budget.check(); attempt++) {
 				attemptsRun = attempt;
-				// v0.2.6 G1 — capture the phase-start dirt snapshot ONCE, before the first
-				// tdd/implementer dispatch of the first attempt (RED test files written
-				// later are this-phase by construction and are excluded from the dirt
-				// inventory via testFiles anyway — the snapshot must predate ALL phase
-				// work to partition provenance honestly).
+				// v0.2.6 G1 — the phase reads the run-start dirt snapshot captured ONCE at
+				// stage entry (line ~953, persisted across §D iterations per sd26-CR-1);
+				// provenance is RUN-START, not per-phase, so this run's own work (any
+				// phase's undeclared edits) is never foreign. No capture happens here — the
+				// snapshot must predate ALL phase work to partition provenance honestly, and
+				// RED test files written later are excluded from the dirt inventory via
+				// testFiles anyway.
 				announceActivity("Route specialist", attemptDetail(attempt));
 				const specialist = await ctx.helper({ name: "route-specialist", sources: { "classify-task": state.classify }, options: { phase } });
 				const lang = (specialist.value.languageInstructions as string) ?? "";
@@ -2068,7 +2070,9 @@ export const implementationStage: Stage = {
 						if (gate2) postRegateProductErrors = gate2.errors;
 						envJudgeOverrideFeedback = [
 							`judge override — the deterministic classifier said environment, but the judge diagnosis says this is a product defect the implementer must address: ${judgeOut.verdict.diagnosis.slice(0, 600)}`,
-							...ownDirtFeedback,
+							// v0.2.7 dedup: ownDirtFeedback is ALWAYS appended to failureReasons
+							// directly below, so it must NOT be repeated here (it duplicated every
+							// undeclared-edit line in the retry prompt on this override path).
 						];
 						ctx.log(`Implementation ${phaseId} judge route=implementer-retry: classifier=environment OVERRIDDEN by judge diagnosis — class=product; next=<implementer-retry> (audited in .environment-faults.jsonl; diagnosis joined the retry feedback) — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
 					} else {
