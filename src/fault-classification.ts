@@ -52,6 +52,16 @@ export interface FaultClassificationInput {
 	baselineCheck?: { status: "preexisting" | "regression" | "unknown"; evidence: string };
 	/** Own-scope evidence booleans computed by the attempt loop's green branch. */
 	ownScope: { deliverablePass: boolean; changePass: boolean; symbolPass: boolean; tddClean: boolean };
+	/** v0.2.6 G1 — dirt PROVENANCE: count of inventory paths that were already
+	 * dirty at PHASE START (prior-run / foreign state). Row (2) requires > 0 to
+	 * claim `environmental-blocker`: on a tree clean at phase start, an
+	 * out-of-scope-only regression is by construction caused by THIS phase's own
+	 * edits (in-scope edits breaking a pre-existing test, or undeclared
+	 * out-of-scope edits) — a product defect, never an environment fault
+	 * (runs 2026-08-19T01-47-29-690Z and 2026-08-19T05-09-21-800Z). `undefined`
+	 * means "no provenance signal available" and is treated as 0 (unknown
+	 * provenance can never support a mutation — safe direction is product). */
+	foreignDirtCount?: number;
 }
 
 export interface FaultClassification {
@@ -79,11 +89,15 @@ export function isBaselineVerifySyntheticError(error: string): boolean {
  *      actuators `["implementer-retry"]` — today's retry semantics.
  *  (2) else, all errors out-of-scope-or-synthetic with
  *      `outOfScopeErrors.length > 0`: `baselineCheck.status === "regression"`
- *      AND all four own-scope booleans true ⇒ `environmental-blocker`,
+ *      AND all four own-scope booleans true AND `foreignDirtCount > 0`
+ *      (v0.2.6 G1 — dirt that predates the phase; without foreign dirt the
+ *      failure is this phase's own product regression) ⇒ `environmental-blocker`,
  *      actuators `["quarantine+re-gate", "judge"]` (D-3); otherwise (absent
- *      `baselineCheck`, `preexisting`/`unknown`, or own-scope red) ⇒
- *      `unclassified`, actuators `["implementer-retry"]` — never
- *      `environmental-blocker`.
+ *      `baselineCheck`, `preexisting`/`unknown`, own-scope red, or zero foreign
+ *      dirt) ⇒ `unclassified` when no out-of-scope premise supports a product
+ *      reading… and `product-defect` when the out-of-scope-only + regression
+ *      shape held but provenance was missing — actuators `["implementer-retry"]`
+ *      — never `environmental-blocker`.
  *  (3) empty `errors` ⇒ `unclassified`.
  *
  * scenarioRefs: [SCENARIO-001, SCENARIO-002, SCENARIO-003] ·
@@ -103,14 +117,22 @@ export function classifyGateFault(input: FaultClassificationInput): FaultClassif
 		return { faultClass: "product-defect", actuators: ["implementer-retry"] };
 	}
 	// Row (2): out-of-scope-only failures — environmental ONLY on an evidence-
-	// backed regression with fully green own-scope evidence.
+	// backed regression with fully green own-scope evidence AND foreign (pre-
+	// phase) dirt on the tree (v0.2.6 G1). Without foreign dirt this shape is a
+	// product regression CAUSED by this phase's own edits (an out-of-scope
+	// subject that passes at baseline cannot break on a clean-at-start tree
+	// any other way) — route it to the implementer with named out-of-scope
+	// edits rather than mutating the worktree.
 	const o = input.ownScope;
-	const environmental =
+	const shapeHeld =
 		input.outOfScopeErrors.length > 0 &&
 		input.baselineCheck?.status === "regression" &&
 		o.deliverablePass && o.changePass && o.symbolPass && o.tddClean;
-	if (environmental) {
+	if (shapeHeld && (input.foreignDirtCount ?? 0) > 0) {
 		return { faultClass: "environmental-blocker", actuators: ["quarantine+re-gate", "judge"] };
+	}
+	if (shapeHeld) {
+		return { faultClass: "product-defect", actuators: ["implementer-retry"] };
 	}
 	return { faultClass: "unclassified", actuators: ["implementer-retry"] };
 }
@@ -246,11 +268,18 @@ function normalizePorcelainPath(raw: string): string {
  * any spawn error / non-zero exit / exception ⇒ `[]`.
  * scenarioRefs: [SCENARIO-008, SCENARIO-009] · acceptanceCriteriaRefs: [AC-03]
  */
-export function collectDirtPaths(options: DirtInventoryOptions): string[] {
+/** v0.2.6 G1 — RAW porcelain path list (NO exclusions): every path git
+ * reports dirty/untracked, with rename-new-path semantics and
+ * `core.quotepath=false` identical to {@link collectDirtPaths}. Consumed by the
+ * attempt loop's phase-start snapshot so dirt PROVENANCE (present at phase
+ * start = foreign; absent = this phase's own edit) partitions against the
+ * exact same parsing the inventory uses — the two can never drift. `[]` on any
+ * git failure (never throws); an empty result on a live repo means clean tree. */
+export function listPorcelainPaths(worktreePath: string): string[] {
 	try {
-		const r = spawnSync("git", ["-c", "core.quotepath=false", "-C", options.worktreePath, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8", timeout: 15_000 });
+		const r = spawnSync("git", ["-c", "core.quotepath=false", "-C", worktreePath, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8", timeout: 15_000 });
 		if (r.error || typeof r.status !== "number" || r.status !== 0) return [];
-		const out = new Set<string>();
+		const out: string[] = [];
 		for (const line of String(r.stdout ?? "").split("\n")) {
 			if (!line.trim()) continue;
 			const code = line.slice(0, 2);
@@ -259,6 +288,19 @@ export function collectDirtPaths(options: DirtInventoryOptions): string[] {
 			const raw = code.includes("R") && body.includes(" -> ") ? body.split(" -> ").pop()! : body;
 			const path = normalizePorcelainPath(raw);
 			if (!path) continue;
+			out.push(path);
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+export function collectDirtPaths(options: DirtInventoryOptions): string[] {
+	try {
+		const raw = listPorcelainPaths(options.worktreePath);
+		const out = new Set<string>();
+		for (const path of raw) {
 			if (isExcludedFromQuarantine(path, options)) continue;
 			out.add(path);
 		}

@@ -57,7 +57,7 @@ describe("judge unit", () => {
 	});
 
 	it("closed route set is frozen", () => {
-		expect([...JUDGE_ROUTES]).toEqual(["re-author-tests", "challenge-test", "fix-environment", "continue", "escalate-now"]);
+		expect([...JUDGE_ROUTES]).toEqual(["re-author-tests", "challenge-test", "fix-environment", "implementer-retry", "continue", "escalate-now"]);
 	});
 
 	it("evidence verification passes a verbatim quote from the worktree", () => {

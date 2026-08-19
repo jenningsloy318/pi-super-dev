@@ -34,19 +34,21 @@ import { buildJudgePrompt } from "../prompts.ts";
 import { appendRunEvent } from "../runlog.ts";
 import type { StageContext } from "../types.ts";
 
-export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environment", "continue", "escalate-now"] as const;
+export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environment", "implementer-retry", "continue", "escalate-now"] as const;
 export type JudgeRoute = (typeof JUDGE_ROUTES)[number];
 
 /**
- * J5 (run 2026-08-19T02-01-12-840Z): routes whose ACTUATION re-runs bounded
- * deterministic work (re-author the RED, repair the environment) and never
- * acquits a gate (INV-1), bounded by the per-signature judge budget (INV-3).
- * For these the diagnosis is the actionable product, so a MISSING-evidence
- * verdict routes with a documented INV-2 exemption instead of discarding into a
- * no-progress deadlock. FABRICATED / MALFORMED evidence still discards, and
- * challenge-test is intentionally excluded (it can drop an accepted RED gate).
+ * J5 (run 2026-08-19T02-01-12-840Z) + v0.2.6 G3 (run 2026-08-19T05-09-21-800Z):
+ * routes whose ACTUATION re-runs bounded deterministic work (re-author the RED,
+ * repair the environment, retry the implementer with the diagnosis in feedback)
+ * and never acquits a gate (INV-1), bounded by the per-signature judge budget
+ * (INV-3). For these the diagnosis is the actionable product, so a
+ * MISSING-evidence verdict routes with a documented INV-2 exemption instead of
+ * discarding into a no-progress deadlock. FABRICATED / MALFORMED evidence still
+ * discards, and challenge-test is intentionally excluded (it can drop an
+ * accepted RED gate).
  */
-const DIAGNOSIS_DRIVEN_MISSING_OK: ReadonlySet<JudgeRoute> = new Set(["re-author-tests", "fix-environment"]);
+const DIAGNOSIS_DRIVEN_MISSING_OK: ReadonlySet<JudgeRoute> = new Set(["re-author-tests", "fix-environment", "implementer-retry"]);
 
 export const JUDGE_CONTROL_KEYS = ["diagnosis", "route", "confidence", "evidence"] as const;
 

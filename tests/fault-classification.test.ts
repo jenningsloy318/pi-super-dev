@@ -81,27 +81,74 @@ const OOS_BLOCK = "FAIL\tgithub.com/macotestdashboard/backend-service/internal/s
 const BASELINE_EVIDENCE = "pnpm run test (whole suite) PASSES at baseline 45b865ef — the failure is new on this branch";
 
 describe("classifyGateFault — deterministic classification floor (SCENARIO-001/002/003, AC-01)", () => {
-	it("golden env-blocker row: out-of-scope block + synthetic block, baseline=regression, own-scope green ⇒ environmental-blocker with [quarantine+re-gate, judge] (SCENARIO-001)", () => {
+	it("golden env-blocker row: out-of-scope block + synthetic block, baseline=regression, own-scope green, FOREIGN DIRT PRESENT ⇒ environmental-blocker with [quarantine+re-gate, judge] (SCENARIO-001 + v0.2.6 G1)", () => {
 		const r = classifyGateFault({
 			errors: [OOS_BLOCK, syntheticBlock(BASELINE_EVIDENCE)],
 			outOfScopeErrors: [OOS_BLOCK],
 			baselineCheck: { status: "regression", evidence: BASELINE_EVIDENCE },
 			ownScope: { ...OWN_SCOPE_GREEN },
+			foreignDirtCount: 1,
 		});
 		expect(r.faultClass).toBe("environmental-blocker");
 		expect(r.actuators).toEqual(["quarantine+re-gate", "judge"]);
 	});
 
-	it("synthetic block is excluded from the failure tally — not counted as a product failure (SCENARIO-001)", () => {
-		// Only the synthetic block + the out-of-scope member; the synthetic entry
-		// must NOT flip the row to product-defect.
+	it("v0.2.6 G1 — the SAME environmental shape with ZERO foreign dirt ⇒ product-defect (runs 01-47 / 05-09: a clean-at-phase-start tree cannot have an environment fault; the out-of-scope regression is this phase's own doing)", () => {
+		const r = classifyGateFault({
+			errors: [OOS_BLOCK, syntheticBlock(BASELINE_EVIDENCE)],
+			outOfScopeErrors: [OOS_BLOCK],
+			baselineCheck: { status: "regression", evidence: BASELINE_EVIDENCE },
+			ownScope: { ...OWN_SCOPE_GREEN },
+			foreignDirtCount: 0,
+		});
+		expect(r.faultClass).toBe("product-defect");
+		expect(r.actuators).toEqual(["implementer-retry"]);
+	});
+
+	it("v0.2.6 G1 — undefined foreignDirtCount (no provenance signal) is treated as ZERO: unknown provenance can never support an environment claim or a worktree mutation", () => {
 		const r = classifyGateFault({
 			errors: [OOS_BLOCK, syntheticBlock(BASELINE_EVIDENCE)],
 			outOfScopeErrors: [OOS_BLOCK],
 			baselineCheck: { status: "regression", evidence: BASELINE_EVIDENCE },
 			ownScope: { ...OWN_SCOPE_GREEN },
 		});
-		expect(r.faultClass).not.toBe("product-defect");
+		expect(r.faultClass).toBe("product-defect");
+		expect(r.actuators).toEqual(["implementer-retry"]);
+	});
+
+	it("v0.2.6 G1 — foreign dirt does NOT rescue a non-regression or own-scope-red shape: baseline=preexisting with foreign dirt stays unclassified", () => {
+		const r = classifyGateFault({
+			errors: [OOS_BLOCK, syntheticBlock(BASELINE_EVIDENCE)],
+			outOfScopeErrors: [OOS_BLOCK],
+			baselineCheck: { status: "preexisting", evidence: BASELINE_EVIDENCE },
+			ownScope: { ...OWN_SCOPE_GREEN },
+			foreignDirtCount: 3,
+		});
+		expect(r.faultClass).toBe("unclassified");
+	});
+
+	it("v0.2.6 G1 — foreign dirt does NOT rescue own-scope red evidence (deliverable failed): stays unclassified even with foreign dirt", () => {
+		const r = classifyGateFault({
+			errors: [OOS_BLOCK, syntheticBlock(BASELINE_EVIDENCE)],
+			outOfScopeErrors: [OOS_BLOCK],
+			baselineCheck: { status: "regression", evidence: BASELINE_EVIDENCE },
+			ownScope: { ...OWN_SCOPE_GREEN, deliverablePass: false },
+			foreignDirtCount: 3,
+		});
+		expect(r.faultClass).toBe("unclassified");
+	});
+
+	it("synthetic block is excluded from the failure tally — not counted as an in-scope product failure (SCENARIO-001)", () => {
+		// Only the synthetic block + the out-of-scope member, WITH foreign dirt;
+		// the synthetic entry must NOT flip the row away from environmental.
+		const r = classifyGateFault({
+			errors: [OOS_BLOCK, syntheticBlock(BASELINE_EVIDENCE)],
+			outOfScopeErrors: [OOS_BLOCK],
+			baselineCheck: { status: "regression", evidence: BASELINE_EVIDENCE },
+			ownScope: { ...OWN_SCOPE_GREEN },
+			foreignDirtCount: 1,
+		});
+		expect(r.faultClass).toBe("environmental-blocker");
 	});
 
 	it("genuine in-scope error ⇒ product-defect with [implementer-retry] (SCENARIO-002)", () => {

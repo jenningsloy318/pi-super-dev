@@ -462,11 +462,19 @@ describe("T3.2 — dirt inventory → scoped stash → ledger record → memo cl
 		repos.push(repo);
 		gateSeq([envBlockerGate()]); // repeats: the re-run is still blocked
 		redThenGreen();
-		const { ctx, calls } = realGitCtx();
+		// v0.2.6 G2: the still-failing re-run now re-classifies as PRODUCT (the
+		// foreign dirt is stashed, so any remaining failure is this phase's own
+		// doing) — the attempt falls through to failureReasons. Budget 1 keeps the
+		// observable counts at exactly one blocker interaction.
+		const { ctx, calls } = realGitCtx({ maxImplAttempts: 1 });
 		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
 
 		// EXACTLY ONE re-run for the blocker (SCENARIO-005): original + re-run.
 		expect(buildGate).toHaveBeenCalledTimes(2);
+		// v0.2.6 G2 pin: the still-failing re-run is re-classified product and the
+		// environmental judge is SKIPPED (run 05-09 rode the stale class in).
+		expect(calls.logs.some((l) => /post-quarantine re-run classified \S+ \(re-run still failing/.test(l) && /environmental judge skipped/.test(l))).toBe(true);
+		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
 		// A recoverable quarantine ran: exactly one stash entry (AC-03a).
 		expect(git(repo, "stash", "list").split("\n").filter(Boolean)).toHaveLength(1);
 		// SCENARIO-006 substrate: after quarantine the porcelain no longer lists
@@ -585,67 +593,73 @@ describe("T3.4 — AC-05 log lines name the fault class and the next action (SCE
 		expect(calls.logs).toContain("Implementation phase-01 environmental-blocker: out-of-scope-only failures, baseline=regression, own-scope evidence green — class=environment; next=<quarantine+re-gate>");
 	}, 20_000);
 
-	it("FIX: no-dirt → `next=<judge: fix-environment/escalate>` (plain mock harness)", async () => {
+	it("v0.2.6 G1 (was: no-dirt → judge): unknown/zero provenance on the plain non-git harness → PRODUCT — no environment claim, no quarantine, no judge; the implementer retries (the run-05-09 misfire class)", async () => {
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx();
+		const { ctx, calls } = mkCtx({ maxImplAttempts: 3 });
 		await (implementationStage as Stage).run(mkState(wt), ctx);
 
-		expect(calls.logs).toContain("Implementation phase-01 environmental-blocker: out-of-scope-only failures, baseline=regression, own-scope evidence green — class=environment; next=<judge: fix-environment/escalate>");
-		// The quarantine variant is NEVER emitted when the inventory is empty.
+		// NO environmental-blocker line at all — the classifier cannot claim an
+		// environment fault without PROVEN foreign dirt.
+		expect(calls.logs.some((l) => l.includes("class=environment"))).toBe(false);
 		expect(calls.logs.some((l) => l.includes("next=<quarantine+re-gate>"))).toBe(false);
+		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
+		// Product semantics: the implementer IS re-spawned.
+		expect(calls.impl.length).toBeGreaterThanOrEqual(2);
+		// The phase-start snapshot degradation is logged honestly.
+		// (The run-start snapshot is captured at stage entry; on this plain
+		// non-git harness it degrades to zero foreign dirt — the product pins
+		// above are the behavioral assertion.)
 	}, 20_000);
 
-	it("FIX: still-blocked after the single re-run → the SAME judge-next line (real-git, seed repeats)", async () => {
+	it("v0.2.6 G2 (was: still-blocked → judge line): the still-failing re-run re-classifies PRODUCT — quarantine line first, then the environmental-judge-SKIPPED line; no judge hand-off, implementer retries", async () => {
 		const { wt: repo } = mkEnvBlockerWorktree();
 		repos.push(repo);
 		gateSeq([envBlockerGate()]); // re-run still blocked
 		redThenGreen();
-		const { ctx, calls } = realGitCtx();
+		const { ctx, calls } = realGitCtx({ maxImplAttempts: 1 });
 		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
 
-		// Both literals, in classification order: quarantine+re-gate first (the
-		// arm we entered), then the judge-next terminal line (still blocked).
+		// Classification order: quarantine+re-gate first (the arm we entered)…
 		const quarantineLine = calls.logs.indexOf("Implementation phase-01 environmental-blocker: out-of-scope-only failures, baseline=regression, own-scope evidence green — class=environment; next=<quarantine+re-gate>");
-		const judgeLine = calls.logs.indexOf("Implementation phase-01 environmental-blocker: out-of-scope-only failures, baseline=regression, own-scope evidence green — class=environment; next=<judge: fix-environment/escalate>");
 		expect(quarantineLine).toBeGreaterThanOrEqual(0);
-		expect(judgeLine).toBeGreaterThan(quarantineLine);
-		// Phase 4 (D-5): the terminal stop is terminalStopReason "failed" + a
-		// DISTINCT stop log at the boundary — the generic loop-tail line carries NO
-		// environmental-blocker suffix anymore (re-pinned from the Phase 3 interim
-		// "(environmental blocker)" suffix when Phase 4 landed the judge hand-off).
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
-		expect(calls.logs).toContain("Implementation phase-01 stopped after 1 attempt(s)");
+		// …then the G2 product re-classification (the environmental judge is skipped).
+		const skippedLine = calls.logs.findIndex((l) => /post-quarantine re-run classified \S+ \(re-run still failing/.test(l) && /environmental judge skipped/.test(l));
+		expect(skippedLine).toBeGreaterThan(quarantineLine);
+		// No environmental judge hand-off, no terminal stop — product retry.
+		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
+		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(false);
+		expect(calls.impl).toHaveLength(1); // budget 1: the retry is loop-limited here
 	}, 20_000);
 });
 
 // ─── T3.1 — classification floor insertion + no-respawn guarantee ────────────
 
 describe("T3.1 — classification floor insertion + no-respawn guarantee (SCENARIO-004 · AC-01/AC-02)", () => {
-	it("FIX (RED pre-fix): the implementer dispatch count is IDENTICAL before and after blocker handling (adds zero)", async () => {
+	it("v0.2.6 G1 (was: no-respawn pin): the environmental SHAPE with zero provenance retries the implementer — the blocker boundary never fires, no quarantine, no judge (the 01-47/05-09 misfire class is product now)", async () => {
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx();
+		const { ctx, calls } = mkCtx({ maxImplAttempts: 3 });
 		await (implementationStage as Stage).run(mkState(wt), ctx);
 
-		// Attempt 1 dispatched the implementer once; the blocker boundary adds
-		// ZERO further spawns (AC-02: spawn count asserted equal across the run).
-		expect(calls.impl).toHaveLength(1);
-		// The terminal stop names the environmental blocker (judge routing is
-		// Phase 4; this phase logs the judge-next line and terminal-breaks).
-		expect(calls.logs.some((l) => /environmental-blocker/.test(l))).toBe(true);
+		// The environmental-blocker boundary never fires: no env class line, no
+		// quarantine, no env-blocker judge, no stash machinery.
+		expect(calls.logs.some((l) => /environmental-blocker/.test(l))).toBe(false);
+		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
+		// Product semantics: the implementer is re-spawned (retry).
+		expect(calls.impl.length).toBeGreaterThanOrEqual(2);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): no failureReasons-driven retry log for the blocker cause, and the missing-test/challenge edges are unreached", async () => {
+	it("v0.2.6 G1 companion: the product fall-through does NOT reach the missing-test/challenge edges, and the failureReasons retry log names the out-of-scope failure honestly", async () => {
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx();
+		const { ctx, calls } = mkCtx({ maxImplAttempts: 2 });
 		await (implementationStage as Stage).run(mkState(wt), ctx);
 
-		expect(calls.logs.some((l) => /Implementation phase-01 attempt \d+ FAIL:/.test(l))).toBe(false);
+		expect(calls.logs.some((l) => /Implementation phase-01 attempt 1 FAIL:/.test(l))).toBe(true);
 		expect(calls.logs.some((l) => /routing missing-test deliverable/.test(l))).toBe(false);
 		expect(calls.logs.some((l) => /implementer challenge/.test(l))).toBe(false);
-		expect(calls.logs.some((l) => /judge route=/.test(l))).toBe(false);
+		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
 	}, 20_000);
 
 	it("CONTROL (green pre-fix AND post-fix): a genuine in-scope failure keeps today's retry semantics (re-spawn)", async () => {
@@ -664,20 +678,27 @@ describe("T3.1 — classification floor insertion + no-respawn guarantee (SCENAR
 // ─── T4.1 — judge at first occurrence with both evidence packets + prior-fault line ───
 
 describe("T4.1 — single judge hand-off with both evidence packets + prior-fault line (SCENARIO-010/011 · AC-04)", () => {
-	it("FIX (RED pre-fix): no-dirt — ONE judge call at stage9.impl-env-blocker.<phaseId>, allowedRoutes exactly [fix-environment] (escalate-now implied), context carries the gate tail + baseline status/evidence + the (empty) dirt inventory; NO prior-fault line when the ledger is absent", async () => {
+	it("v0.2.6 (was: no-dirt entry; judge now requires foreign dirt — reached via the kill-switch entry) — ONE judge call at stage9.impl-env-blocker.<phaseId>, allowedRoutes [fix-environment, implementer-retry] (escalate-now implied), context carries the gate tail + baseline status/evidence + the OBSERVED dirt inventory; NO prior-fault line when the ledger is absent", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx();
-		await (implementationStage as Stage).run(mkState(wt), ctx);
+		const { ctx, calls } = realGitCtx();
+		try {
+			await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
 		// FIRST occurrence, single hand-off (SCENARIO-010).
 		expect(calls.judge).toHaveLength(1);
 		expect(calls.judge[0]!.id).toBe("pipeline.judge.stage9.impl-env-blocker.phase-01");
 		const prompt = calls.judge[0]!.prompt;
 		expect(prompt).toContain("stage9.impl-env-blocker.phase-01");
-		// D-6 (OQ-1): allowedRoutes EXACTLY ["fix-environment"] — escalate-now is
-		// auto-unioned by judge.ts (implied), nothing else is offered.
-		expect(offeredRoutes(prompt)).toEqual(["fix-environment", "escalate-now"]);
+		// v0.2.6 G3: allowedRoutes now [fix-environment, implementer-retry] —
+		// escalate-now auto-unioned by judge.ts.
+		expect(offeredRoutes(prompt)).toEqual(["fix-environment", "implementer-retry", "escalate-now"]);
 		// BOTH evidence packets (SCENARIO-010's And): the gate failure tail…
 		expect(prompt).toContain(`FAIL\t${SNOW_PACKAGE}\t14.439s`);
 		expect(prompt).toContain(SNOW_TEST);
@@ -685,9 +706,9 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 		expect(prompt).toContain("## Baseline verification");
 		expect(prompt).toContain("status=regression");
 		expect(prompt).toContain(`pnpm run test (whole suite) PASSES at baseline ${BASELINE_SHA}`);
-		// …plus the dirt inventory — `(empty)` when none.
+		// …plus the OBSERVED dirt inventory (foreign dirt present, kill-switch on).
 		expect(prompt).toContain("## Dirt inventory (foreign uncommitted state, canonical exclusions applied)");
-		expect(prompt).toContain("(empty)");
+		expect(prompt).toContain("internal/services/snow/enrichment.go");
 		// OQ-3/D-8: the prior-fault line is present IFF the ledger exists — absent
 		// file ⇒ no such line at all.
 		expect(prompt).not.toContain("Prior environmental faults");
@@ -695,45 +716,51 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): pre-seeded ledger (3 lines) ⇒ the one-line prior-fault count in the judge context (OQ-3/D-8)", async () => {
-		const specDir = join(wt, "docs", "specifications", "env-blk");
-		mkdirSync(specDir, { recursive: true });
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry): pre-seeded ledger (3 lines) ⇒ the one-line prior-fault count in the judge context (OQ-3/D-8)", async () => {
+		const { wt: repo, specDir } = mkEnvBlockerWorktree();
+		repos.push(repo);
 		writeFileSync(join(specDir, ".environment-faults.jsonl"), `${JSON.stringify({ kind: "quarantine", paths: [], stashRef: "x", reason: "r" })}\n`.repeat(3));
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx();
-		await (implementationStage as Stage).run(mkState(wt), ctx);
+		const { ctx, calls } = realGitCtx();
+		try {
+			await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
 		expect(calls.judge).toHaveLength(1);
 		expect(calls.judge[0]!.prompt).toContain("## Prior environmental faults on this track: 3 (from .environment-faults.jsonl)");
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): still-blocked after the single re-run (real-git dirt) — judge fires ONCE at the blocker scope with the post-quarantine ledger count, runBuildGate exactly 2× (budget stays at 1), implementer count unchanged", async () => {
-		const { wt: repo } = mkEnvBlockerWorktree();
+	it("v0.2.6 G2 (was: still-blocked → judge): the still-failing re-run never reaches the environmental judge — re-classified product at first sight, budget stays at exactly one re-run", async () => {
+		const { wt: repo, specDir } = mkEnvBlockerWorktree();
 		repos.push(repo);
 		gateSeq([envBlockerGate()]); // blocker → single re-run still blocked
 		redThenGreen();
-		const { ctx, calls } = realGitCtx();
+		const { ctx, calls } = realGitCtx({ maxImplAttempts: 1 });
 		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
 
-		expect(calls.judge).toHaveLength(1);
-		expect(calls.judge[0]!.prompt).toContain("stage9.impl-env-blocker.phase-01");
-		// The quarantine record landed BEFORE the judge context build (SCENARIO-011:
-		// the packets include the post-re-run tail and the quarantine record).
-		expect(calls.judge[0]!.prompt).toContain("## Prior environmental faults on this track: 1 (from .environment-faults.jsonl)");
-		expect(calls.judge[0]!.prompt).toContain("internal/services/snow/enrichment.go");
-		// The one-gate-re-run budget stays at EXACTLY 1 (OQ-1): original + re-run,
-		// never more — no second quarantine, no second re-run (SCENARIO-011).
+		// The environmental judge NEVER fires on the still-failing re-run.
+		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
+		expect(calls.logs.some((l) => /post-quarantine re-run classified \S+ \(re-run still failing/.test(l))).toBe(true);
+		// The one-gate-re-run budget stays at EXACTLY 1 (OQ-1).
 		expect(buildGate).toHaveBeenCalledTimes(2);
+		// The quarantine record (1 line) exists but no judge verdict record follows.
+		const ledger = readLedger(specDir);
+		expect(ledger).toHaveLength(1);
+		expect(ledger[0]!["kind"]).toBe("quarantine");
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): routed fix-environment (verdict evidence quoting an outputTails fragment so INV-2 passes) → soft HITL with BOTH packets + terminalStopReason failed + distinct stop log; applyRetryDecision NOT called — no rollback, guidance persisted (adv-F3), no re-spawn even on retry-with-guidance (D-5)", async () => {
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry + G4 grant): routed fix-environment (verdict evidence quoting an outputTails fragment so INV-2 passes) → soft HITL with BOTH packets + terminalStopReason failed + distinct stop log; applyRetryDecision NOT called — no rollback, guidance persisted (adv-F3) AND the FIRST retry-with-guidance grants a bounded re-entry (G4: convergence NOT blocked), no re-spawn this pass (D-5)", async () => {
 		const { wt: repo, specDir } = mkEnvBlockerWorktree();
 		repos.push(repo);
 		const headBefore = git(repo, "rev-parse", "HEAD");
-		gateSeq([envBlockerGate()]); // dirt quarantined → re-run still blocked → judge
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
+		gateSeq([envBlockerGate()]); // foreign dirt + kill-switch → judge directly
 		redThenGreen();
 		const { ctx, calls } = realGitCtx({
 			judgeControl: {
@@ -746,7 +773,11 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 			},
 			escalate: async () => ({ choice: "retry-with-guidance", guidance: "fix the environment then re-run" }),
 		});
+		try {
 		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
 		// The judge routed fix-environment (verified evidence ⇒ routed, not degraded).
 		expect(calls.judge).toHaveLength(1);
@@ -763,8 +794,9 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 		expect(titles.some((t) => t.includes("internal/services/snow/enrichment.go"))).toBe(true);
 		expect(titles.some((t) => t.includes(SNOW_TEST))).toBe(true);
 		expect(titles.some((t) => t.startsWith("judge diagnosis:"))).toBe(true);
-		// The phase terminates: terminalStopReason "failed" + the DISTINCT stop log.
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+		// The phase stops for THIS pass (terminalStopReason "failed") with the
+		// DISTINCT granted-re-entry stop log (v0.2.6 G4 — not the blocked variant).
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off .* guidance re-entry GRANTED: convergence not blocked/.test(l))).toBe(true);
 		expect(calls.logs).toContain("Implementation phase-01 stopped after 1 attempt(s)");
 		// D-5 (adv-F3 remediation): applyRetryDecision is STILL NOT called even
 		// though the user chose retry-with-guidance — no rollback (HEAD unchanged,
@@ -773,17 +805,21 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 		// convergence pass consumes it (bounded, injected into later agent prompts).
 		expect(git(repo, "rev-parse", "HEAD")).toBe(headBefore);
 		expect(git(repo, "reflog").split("\n").some((l) => /reset:/.test(l))).toBe(false);
-		expect(git(repo, "stash", "list").split("\n").filter(Boolean)).toHaveLength(1);
+		// Kill-switch: NOTHING was ever stashed (detection only).
+		expect(git(repo, "stash", "list").trim()).toBe("");
 		expect(existsSync(join(specDir, ".user-notes.json"))).toBe(true);
 		expect(calls.logs.some((l) => /retry-with-guidance: guidance persisted to track user-notes/.test(l))).toBe(true);
 		// …the decision itself is still LOGGED only, and the implementer is never
-		// re-spawned — the outer convergence loop owns re-entry.
+		// re-spawned THIS PASS — the outer convergence loop owns re-entry.
 		expect(calls.logs.some((l) => /escalation decision: retry-with-guidance/.test(l) && /logged only, NOT applied/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 		expect(calls.logs.some((l) => /retrying with user guidance/.test(l))).toBe(false);
-		// adv-F2: the terminal stop trips the convergence-level anti-windup so the
-		// outer loop cannot re-enter this phase until the global agent budget.
-		expect(calls.logs.some((l) => /convergence blocked \(no automatic re-entry\)/.test(l))).toBe(true);
+		// v0.2.6 G4: the FIRST retry-with-guidance GRANTS a bounded re-entry —
+		// convergence is NOT blocked (the guidance reaches the next pass; run
+		// 05-09 dead-lettered exactly this decision). terminalStopReason stays
+		// "failed" for THIS pass with the distinct granted-re-entry stop log.
+		expect(calls.logs.some((l) => /guidance re-entry GRANTED: convergence not blocked/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /convergence blocked \(no automatic re-entry\)/.test(l))).toBe(false);
 	}, 20_000);
 });
 
@@ -822,10 +858,13 @@ describe("adv-F5 — post-quarantine re-run with a FAILING fresh deliverable che
 // ─── T4.2 — unoffered/unverified route degrades to escalate; HITL carries both packets ───
 
 describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, every arm stops (SCENARIO-012 · AC-04)", () => {
-	it("FIX (RED pre-fix): unoffered route (re-author-tests) → degrades per existing judge behavior (escalate-now) → the SAME soft HITL surface with both packets + terminal stop; implementer count never increases", async () => {
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry): unoffered route (re-author-tests) → degrades per existing judge behavior (escalate-now) → the SAME soft HITL surface with both packets + terminal stop; implementer count never increases", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx({
+		const { ctx, calls } = realGitCtx({
 			judgeControl: {
 				diagnosis: "the RED tests are unsatisfiable",
 				route: "re-author-tests",
@@ -833,7 +872,11 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 				evidence: [{ file: "tests/red.test.ts", quote: "SCENARIO-004 env blocker" }],
 			},
 		});
-		await (implementationStage as Stage).run(mkState(wt), ctx);
+		try {
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
 		expect(calls.judge).toHaveLength(1);
 		// Existing judge degrade: the unoffered route escalates instead.
@@ -847,17 +890,20 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect((esc.findings ?? []).length).toBeLessThanOrEqual(12);
 		const titles = (esc.findings ?? []).map((f) => String(f.title ?? ""));
 		expect(titles.some((t) => t.includes("baseline verification: status=regression"))).toBe(true);
-		expect(titles.some((t) => t.includes("(empty)"))).toBe(true);
+		expect(titles.some((t) => t.includes("internal/services/snow/enrichment.go"))).toBe(true);
 		expect(titles.some((t) => t.includes(SNOW_TEST))).toBe(true);
 		// Terminal stop; NO implementer re-spawn on any arm (AC-04).
 		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): fabricated evidence (quote fails INV-2 verification) → discarded → the SAME soft HITL surface + terminal stop", async () => {
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry): fabricated evidence (quote fails INV-2 verification) → discarded → the SAME soft HITL surface + terminal stop", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx({
+		const { ctx, calls } = realGitCtx({
 			judgeControl: {
 				diagnosis: "fabricated diagnosis",
 				route: "fix-environment",
@@ -865,7 +911,11 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 				evidence: [{ file: "tests/red.test.ts", quote: "THIS QUOTE EXISTS NOWHERE 000000" }],
 			},
 		});
-		await (implementationStage as Stage).run(mkState(wt), ctx);
+		try {
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
 		expect(calls.logs.some((l) => /verdict DISCARDED — evidence verification failed/.test(l))).toBe(true);
 		expect(calls.escalations).toHaveLength(1);
@@ -874,21 +924,25 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect(esc.severity).toBe("soft");
 		const titles = (esc.findings ?? []).map((f) => String(f.title ?? ""));
 		expect(titles.some((t) => t.includes("baseline verification: status=regression"))).toBe(true);
-		expect(titles.some((t) => t.includes("(empty)"))).toBe(true);
+		expect(titles.some((t) => t.includes("internal/services/snow/enrichment.go"))).toBe(true);
 		expect(titles.some((t) => t.includes(SNOW_TEST))).toBe(true);
 		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): SUPER_DEV_DISABLE_JUDGE=1 → degraded (no judge agent call) → the SAME soft HITL surface with both packets + terminal stop", async () => {
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry): SUPER_DEV_DISABLE_JUDGE=1 → degraded (no judge agent call) → the SAME soft HITL surface with both packets + terminal stop", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		process.env.SUPER_DEV_DISABLE_JUDGE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx();
+		const { ctx, calls } = realGitCtx();
 		try {
-			await (implementationStage as Stage).run(mkState(wt), ctx);
+			await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
 		} finally {
 			delete process.env.SUPER_DEV_DISABLE_JUDGE;
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
 		}
 
 		// Degraded BEFORE any agent dispatch (INV-6).
@@ -900,17 +954,24 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect(esc.severity).toBe("soft");
 		const titles = (esc.findings ?? []).map((f) => String(f.title ?? ""));
 		expect(titles.some((t) => t.includes("baseline verification: status=regression"))).toBe(true);
-		expect(titles.some((t) => t.includes("(empty)"))).toBe(true);
+		expect(titles.some((t) => t.includes("internal/services/snow/enrichment.go"))).toBe(true);
 		expect(titles.some((t) => t.includes(SNOW_TEST))).toBe(true);
 		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): headless (no escalate callback) → BOTH packets LOGGED + terminal stop; no escalation object, no spawn", async () => {
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry): headless (no escalate callback) → BOTH packets LOGGED + terminal stop; no escalation object, no spawn", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx({ escalate: false });
-		await (implementationStage as Stage).run(mkState(wt), ctx);
+		const { ctx, calls } = realGitCtx({ escalate: false });
+		try {
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
 		expect(calls.escalations).toHaveLength(0);
 		const headless = calls.logs.find((l) => l.includes("headless"));
@@ -918,7 +979,7 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect(headless).toContain(SNOW_TEST);
 		expect(headless).toContain("status=regression");
 		expect(headless).toContain(`PASSES at baseline ${BASELINE_SHA}`);
-		expect(headless).toContain("(empty)");
+		expect(headless).toContain("internal/services/snow/enrichment.go");
 		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
@@ -957,7 +1018,7 @@ describe("T4.3 — kill-switch: detection warning then judge, structurally no st
 		expect(calls.judge).toHaveLength(1);
 		expect(calls.judge[0]!.prompt).toContain("stage9.impl-env-blocker.phase-01");
 		expect(calls.judge[0]!.prompt).toContain("internal/services/snow/enrichment.go");
-		expect(offeredRoutes(calls.judge[0]!.prompt)).toEqual(["fix-environment", "escalate-now"]);
+		expect(offeredRoutes(calls.judge[0]!.prompt)).toEqual(["fix-environment", "implementer-retry", "escalate-now"]);
 		// The quarantine arm is structurally unreachable: no re-gate line, no re-run.
 		expect(calls.logs.some((l) => l.includes("next=<quarantine+re-gate>"))).toBe(false);
 		expect(buildGate).toHaveBeenCalledTimes(1);
@@ -1013,10 +1074,11 @@ describe("T4.4 — quarantine git failure: warning + judge, never fatal (SCENARI
 // ─── T6.2 — judge-environmental verdict records ─────────────────────────────
 
 describe("T6.2 — judge-environmental verdict records (SCENARIO-026 · AC-12)", () => {
-	it("FIX (RED pre-fix): routed fix-environment (verified evidence) — the verdict record coexists with the T3.2 quarantine record as exactly two lines, exact key set, null paths/stashRef, non-empty reason", async () => {
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry — quarantine+judge can no longer coexist post-G2): routed fix-environment (verified evidence) — the verdict record is the ONLY line, exact key set, null paths/stashRef, non-empty reason", async () => {
 		const { wt: repo, specDir } = mkEnvBlockerWorktree();
 		repos.push(repo);
-		gateSeq([envBlockerGate()]); // dirt quarantined → re-run still blocked → judge
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
+		gateSeq([envBlockerGate()]); // foreign dirt + kill-switch → judge directly
 		redThenGreen();
 		const { ctx, calls } = realGitCtx({
 			judgeControl: {
@@ -1028,32 +1090,34 @@ describe("T6.2 — judge-environmental verdict records (SCENARIO-026 · AC-12)",
 				evidence: [{ file: "internal/services/snow/enrichment.go", quote: SNOW_TEST }],
 			},
 		});
+		try {
 		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
-		// The quarantine event line (SCENARIO-025, T3.2) and the verdict line
-		// (SCENARIO-026, T6.2) COEXIST as exactly two records.
+		// Kill-switch: no quarantine record — the verdict line is the ONLY record.
 		const ledger = readLedger(specDir);
-		expect(ledger).toHaveLength(2);
-		expect(ledger[0]!["kind"]).toBe("quarantine");
-		expect(ledger[0]!["paths"]).toEqual(["internal/services/snow/enrichment.go"]);
-		expect(ledger[1]!["kind"]).toBe("judge-environmental");
+		expect(ledger).toHaveLength(1);
+		expect(ledger[0]!["kind"]).toBe("judge-environmental");
 		// Verdict-record shape: null paths/stashRef, reason = "<route>: <diagnosis
 		// tail>" (≤200 chars) — SCENARIO-026's And-clauses.
-		expect(Object.keys(ledger[1]!)).toEqual(["kind", "paths", "stashRef", "reason"]);
-		expect(ledger[1]!["paths"]).toBeNull();
-		expect(ledger[1]!["stashRef"]).toBeNull();
-		expect(String(ledger[1]!["reason"])).toBe("fix-environment: the snow service dependency is broken in the shared environment");
-		// BOTH records share the EXACT key set (AC-12's pin, one shape for both kinds).
 		expect(Object.keys(ledger[0]!)).toEqual(["kind", "paths", "stashRef", "reason"]);
+		expect(ledger[0]!["paths"]).toBeNull();
+		expect(ledger[0]!["stashRef"]).toBeNull();
+		expect(String(ledger[0]!["reason"])).toBe("fix-environment: the snow service dependency is broken in the shared environment");
 		// The boundary still terminal-stops with zero further spawns.
 		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("FIX (RED pre-fix): an ESCALATED verdict (unoffered route → escalate-now, verified evidence) also records — reason carries the escalate-now route + diagnosis; no dirt ⇒ it is the ONLY record", async () => {
+	it("FIX (RED pre-fix; v0.2.6 kill-switch entry): an ESCALATED verdict (unoffered route → escalate-now, verified evidence) also records — reason carries the escalate-now route + diagnosis; no quarantine ⇒ it is the ONLY record", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx({
+		const { ctx, calls } = realGitCtx({
 			judgeControl: {
 				diagnosis: "the RED tests are unsatisfiable",
 				route: "re-author-tests", // unoffered at this wiring point ⇒ escalate
@@ -1061,9 +1125,13 @@ describe("T6.2 — judge-environmental verdict records (SCENARIO-026 · AC-12)",
 				evidence: [{ file: "tests/red.test.ts", quote: "SCENARIO-004 env blocker" }],
 			},
 		});
-		await (implementationStage as Stage).run(mkState(wt), ctx);
+		try {
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
 
-		const ledgerPath = join(wt, "docs", "specifications", "env-blk", ".environment-faults.jsonl");
+		const ledgerPath = join(repo, "docs", "specifications", "env-blk", ".environment-faults.jsonl");
 		const lines = readFileSync(ledgerPath, "utf8").split("\n").filter((l) => l.trim() !== "");
 		expect(lines).toHaveLength(1); // no dirt ⇒ no quarantine record; one verdict record
 		const record = JSON.parse(lines[0]!) as Record<string, unknown>;
@@ -1075,20 +1143,24 @@ describe("T6.2 — judge-environmental verdict records (SCENARIO-026 · AC-12)",
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
-	it("GUARD (verdict-records-only pin): a DEGRADED outcome (SUPER_DEV_DISABLE_JUDGE=1 — no verdict exists) appends NO judge-environmental record", async () => {
+	it("GUARD (verdict-records-only pin; v0.2.6 kill-switch entry): a DEGRADED outcome (SUPER_DEV_DISABLE_JUDGE=1 — no verdict exists) appends NO judge-environmental record", async () => {
+		const { wt: repo, specDir } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		process.env.SUPER_DEV_DISABLE_JUDGE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
-		const { ctx, calls } = mkCtx();
+		const { ctx, calls } = realGitCtx();
 		try {
-			await (implementationStage as Stage).run(mkState(wt), ctx);
+			await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
 		} finally {
 			delete process.env.SUPER_DEV_DISABLE_JUDGE;
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
 		}
 
 		expect(calls.judge).toHaveLength(0);
-		// No quarantine happened (no dirt) and no verdict exists ⇒ no ledger at all.
-		expect(existsSync(join(wt, "docs", "specifications", "env-blk", ".environment-faults.jsonl"))).toBe(false);
+		// No quarantine happened (kill-switch) and no verdict exists ⇒ no ledger at all.
+		expect(existsSync(join(specDir, ".environment-faults.jsonl"))).toBe(false);
 	}, 20_000);
 });
 
@@ -1098,14 +1170,22 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 	// Unlike the setup e2e (whose specDir hosts the fail-closed AC-30 run lock),
 	// the in-loop specDir has no lock — the literal spec mechanism (chmod 0o555
 	// the ledger's directory, skipped as root) works directly here.
-	it("PIN: env-blocker harness with an unwritable specDir (chmod 0o555, skipped as root) ⇒ the quarantine still runs, the ledger appends degrade to warnings, the judge route completes, no throw, implementer count unchanged", async () => {
+	it("PIN (v0.2.6 kill-switch + routed-verdict entry): env-blocker harness with an unwritable specDir (chmod 0o555, skipped as root) ⇒ the judge route completes, the verdict-ledger append degrades to warnings, no throw, implementer count unchanged", async () => {
 		if (typeof process.getuid === "function" && process.getuid() === 0) return; // root ignores 0o555
 		const { wt: repo, specDir } = mkEnvBlockerWorktree();
 		repos.push(repo);
 		chmodSync(specDir, 0o555);
-		gateSeq([envBlockerGate()]); // dirt present: quarantine → re-run still blocked → judge
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
+		gateSeq([envBlockerGate()]); // foreign dirt + kill-switch → judge directly
 		redThenGreen();
-		const { ctx, calls } = realGitCtx();
+		const { ctx, calls } = realGitCtx({
+			judgeControl: {
+				diagnosis: "the snow service dependency is broken in the shared environment",
+				route: "fix-environment",
+				confidence: 0.9,
+				evidence: [{ file: "internal/services/snow/enrichment.go", quote: SNOW_TEST }],
+			},
+		});
 		let threw = false;
 		try {
 			await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
@@ -1113,6 +1193,7 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 			threw = true;
 		} finally {
 			chmodSync(specDir, 0o755); // restore for the asserts + cleanup
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
 		}
 
 		// Never fatal: the stage completed without throwing (AC-13).
@@ -1120,10 +1201,9 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 		// The branch still completed THROUGH the judge route (the T4.1 hand-off).
 		expect(calls.judge).toHaveLength(1);
 		expect(calls.judge[0]!.prompt).toContain("stage9.impl-env-blocker.phase-01");
-		// The quarantine itself succeeded — the ledger failure never blocks the
-		// state change (the stash exists)…
-		expect(git(repo, "stash", "list").split("\n").filter(Boolean)).toHaveLength(1);
-		// …but no record could be written: the append degraded, never threw.
+		// Kill-switch: nothing was stashed (detection only)…
+		expect(git(repo, "stash", "list").trim()).toBe("");
+		// …and the verdict record could not be written: the append degraded, never threw.
 		expect(existsSync(join(specDir, ".environment-faults.jsonl"))).toBe(false);
 		// The degrade warning through the log sink (the primitive's exact literal).
 		expect(calls.logs.filter((l) => /ledger append failed/.test(l)).length).toBeGreaterThanOrEqual(1);
@@ -1132,5 +1212,276 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 		expect(calls.impl).toHaveLength(1);
 		// The terminal stop still fired — never fatal, never a loop continue.
 		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+	}, 20_000);
+});
+
+// ─── v0.2.6 — G1 provenance / G2 feedback truth / G3 judge arbitration ─────
+
+describe("v0.2.6 G1 — dirt provenance: a tree clean at phase start classifies PRODUCT even in the full environmental shape (runs 01-47 / 05-09)", () => {
+	/** mkEnvBlockerWorktree minus the foreign pre-dirt: committed clean, nothing
+	 * dirty at phase start. The implementer writes an UNDECLARED out-of-scope
+	 * edit mid-attempt (src/persistence.ts — the run-05-09 shape). */
+	function mkCleanStartWorktree(): { wt: string; specDir: string } {
+		const wt = mkdtempSync(join(tmpdir(), "sd-envblk-clean-"));
+		git(wt, "init", "-q", "-b", "main");
+		git(wt, "config", "user.email", "t@t");
+		git(wt, "config", "user.name", "t");
+		writeRepoFile(wt, "internal/services/snow/enrichment.go", "package snow\n\nfunc Enrich() int { return 1 }\n");
+		writeRepoFile(wt, "src/save.ts", "export const save = (n: number): number => n;\n");
+		git(wt, "add", "-A");
+		git(wt, "commit", "-qm", "init");
+		const specDir = join(wt, "docs", "specifications", "env-blk");
+		writeRepoFile(wt, "docs/specifications/env-blk/spec.md", "# spec\n");
+		writeRepoFile(wt, "tests/red.test.ts", `import { save } from "../src/save";\nexpect(save(1)).toBe(2); // SCENARIO-004 env blocker\n`);
+		writeRepoFile(wt, "src/in-scope.ts", "export const IN_SCOPE = 1;\n");
+		return { wt, specDir };
+	}
+
+	it("G1 FIX (RED pre-fix): clean-at-start + the implementer's undeclared out-of-scope edit → PRODUCT — no quarantine, no stash, no judge; the retry FEEDBACK names the undeclared edit explicitly", async () => {
+		const { wt: repo } = mkCleanStartWorktree();
+		repos.push(repo);
+		gateSeq([envBlockerGate()]);
+		redThenGreen();
+		// The implementer writes an UNDECLARED out-of-scope edit mid-attempt —
+		// exactly run 05-09's src/persistence.ts shape (ownDirt, never stashable).
+		const made = mkCtx({ maxImplAttempts: 2 });
+		const origAgent = made.ctx.agent.bind(made.ctx);
+		made.ctx.agent = async (call: AgentCall): Promise<AgentResult> => {
+			if (call.agent === "implementer") {
+				made.calls.impl.push(call);
+				writeRepoFile(repo, "src/persistence.ts", "export type WriterId = \"03\" | \"07\";\n");
+				return { text: "", control: { filesCreated: ["src/in-scope.ts"] } };
+			}
+			return origAgent(call);
+		};
+		await (implementationStage as Stage).run(mkRealGitState(repo), made.ctx);
+
+		// PRODUCT: no environmental class line, no quarantine, no stash, no judge.
+		expect(made.calls.logs.some((l) => l.includes("class=environment"))).toBe(false);
+		expect(git(repo, "stash", "list").trim()).toBe("");
+		expect(made.calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
+		// The undeclared edit is still on disk (never swept away)…
+		expect(git(repo, "status", "--porcelain")).toContain("src/persistence.ts");
+		// …the implementer is re-spawned (product retry)…
+		expect(made.calls.impl.length).toBeGreaterThanOrEqual(2);
+		// …and the RETRY FEEDBACK names the undeclared out-of-scope edit (G1).
+		const retryPrompt = made.calls.impl[1]!.prompt;
+		expect(retryPrompt).toContain("out-of-scope edit (this run): src/persistence.ts");
+	}, 20_000);
+
+	it("G1 FIX-pinned (adversarial sd26-F6: RED pre-fix — one of the 17): FOREIGN dirt at phase start still classifies environmental and quarantines ONLY the foreign path (the mac-run class keeps its fix; pre-fix the quarantine swept the untracked this-phase file too)", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		gateSeq([envBlockerGate(), { pass: true, inScopePass: false, ran: ["mock"], errors: [], outOfScopeErrors: [] }]);
+		redThenGreen();
+		// The implementer ALSO writes an undeclared edit mid-attempt — it must
+		// survive the quarantine untouched (foreign-only stashing).
+		const made = mkCtx({ maxImplAttempts: 2 });
+		const origAgent = made.ctx.agent.bind(made.ctx);
+		made.ctx.agent = async (call: AgentCall): Promise<AgentResult> => {
+			if (call.agent === "implementer") {
+				made.calls.impl.push(call);
+				writeRepoFile(repo, "src/undeclared-this-phase.ts", "export const X = 1;\n");
+				return { text: "", control: { filesCreated: ["src/new.ts"] } };
+			}
+			return origAgent(call);
+		};
+		await (implementationStage as Stage).run(mkRealGitState(repo), made.ctx);
+
+		// Environmental arm fired with foreign dirt present…
+		expect(made.calls.logs.some((l) => l.includes("next=<quarantine+re-gate>"))).toBe(true);
+		// …the quarantine stashed EXACTLY the foreign path… (stash show covers the
+		// tracked commit; the untracked parent is refs/stash^3 — assert BOTH ways)
+		expect(git(repo, "stash", "show", "--name-only")).toContain("internal/services/snow/enrichment.go");
+		const untrackedInStash = (() => { try { return git(repo, "show", "--name-only", "refs/stash^3"); } catch { return ""; } })();
+		expect(untrackedInStash).not.toContain("src/undeclared-this-phase.ts");
+		// …the this-phase undeclared edit is STILL on disk (never stashed; the
+		// green phase commit may have swept it into history — on-disk existence
+		// is the honest observable)…
+		expect(existsSync(join(repo, "src/undeclared-this-phase.ts"))).toBe(true);
+		// …and the green re-run completes the phase (the mac-run recovery path).
+		expect(made.calls.logs.some((l) => /^Implementation phase-01 GREEN on attempt 1$/.test(l))).toBe(true);
+	}, 20_000);
+});
+
+describe("v0.2.6 G3 — judge arbitration: route=implementer-retry overrides the environmental class, audited, implementer re-spawned with the diagnosis", () => {
+	it("G3 FIX (RED pre-fix): kill-switch entry + judge verdict route=implementer-retry → override log + ledger record + diagnosis in the retry prompt; NO HITL escalation, NO convergence block, NO terminal stop", async () => {
+		const { wt: repo, specDir } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
+		gateSeq([envBlockerGate()]);
+		redThenGreen();
+		const { ctx, calls } = realGitCtx({
+			maxImplAttempts: 3,
+			judgeControl: {
+				diagnosis: "NOT environmental — a cross-phase sequencing conflict the implementer must resolve",
+				route: "implementer-retry",
+				confidence: 0.85,
+				evidence: [{ file: "internal/services/snow/enrichment.go", quote: "func Enrich() int" }],
+			},
+		});
+		try {
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
+
+		// The audited override log names the classifier-vs-judge disagreement.
+		expect(calls.logs.some((l) => /judge route=implementer-retry: classifier=environment OVERRIDDEN by judge diagnosis — class=product; next=<implementer-retry>/.test(l))).toBe(true);
+		// The ledger records the override verdict.
+		const ledger = readLedger(specDir);
+		expect(ledger.some((r) => r["kind"] === "judge-environmental" && String(r["reason"]).startsWith("implementer-retry: NOT environmental"))).toBe(true);
+		// The implementer IS re-spawned and its retry prompt carries the diagnosis.
+		expect(calls.impl.length).toBeGreaterThanOrEqual(2);
+		expect(calls.impl[1]!.prompt).toContain("judge override — the deterministic classifier said environment, but the judge diagnosis says this is a product defect");
+		// NO HITL surface at the ENV-BLOCKER boundary, NO terminal stop, NO
+		// convergence block — product path. (A later impl-no-progress escalation
+		// from the retry ladder is a DIFFERENT boundary and permitted — its
+		// message never claims an environmental failure.)
+		expect(calls.escalations.every((e) => !String(e.message).includes("environmental failure"))).toBe(true);
+		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(false);
+		expect(calls.logs.some((l) => /convergence blocked \(no automatic re-entry\)/.test(l))).toBe(false);
+	}, 20_000);
+
+	it("G3 GUARD: implementer-retry is a JUDGE_ROUTES member and missing-evidence-exempt (diagnosis-driven, INV-2 parity with re-author-tests/fix-environment) — a zero-evidence implementer-retry verdict still ROUTES at the env-blocker boundary", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
+		gateSeq([envBlockerGate()]);
+		redThenGreen();
+		const { ctx, calls } = realGitCtx({
+			maxImplAttempts: 2,
+			judgeControl: {
+				diagnosis: "product defect — retry the implementer",
+				route: "implementer-retry",
+				confidence: 0.85,
+				evidence: [], // MISSING evidence: must ROUTE, not discard (v0.2.5 J5 parity)
+			},
+		});
+		try {
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
+
+		expect(calls.logs.some((l) => /judge route=implementer-retry/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /verdict DISCARDED — evidence verification failed/.test(l))).toBe(false);
+		expect(calls.impl.length).toBeGreaterThanOrEqual(2);
+	}, 20_000);
+});
+
+describe("v0.2.6 G2 — feedback truth: the post-re-gate product fall-through feeds the RE-RUN's errors, not the stale pre-quarantine gate", () => {
+	it("G2 FIX (RED pre-fix): still-failing re-run → the implementer retry prompt carries the re-run's error text (run-05-09: the quarantine-manufactured tsc errors were the tree's truth)", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		const REGATE_ERROR = "src/staged.ts(75,51): error TS2322: Type '\"07\"' is not assignable to type 'WriterId'.";
+		// Call 1 = the environmental shape; call 2 (post-quarantine re-run) fails
+		// with a DIFFERENT, in-scope product error — the quarantine-manufactured
+		// tsc shape from run 05-09.
+		gateSeq([envBlockerGate(), {
+			pass: false,
+			inScopePass: false,
+			ran: ["mock"],
+			errors: [REGATE_ERROR],
+			outOfScopeErrors: [],
+		}]);
+		redThenGreen();
+		const { ctx, calls } = realGitCtx({ maxImplAttempts: 2 });
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+
+		// The re-run was classified product and the judge skipped.
+		expect(calls.logs.some((l) => /post-quarantine re-run classified product/.test(l) && /environmental judge skipped/.test(l))).toBe(true);
+		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
+		// The retry prompt carries the RE-RUN's error (current tree truth)…
+		expect(calls.impl.length).toBeGreaterThanOrEqual(2);
+		expect(calls.impl[1]!.prompt).toContain("WriterId");
+		// …the implementer is re-spawned (product retry semantics).
+		expect(calls.impl.length).toBeGreaterThanOrEqual(2);
+	}, 20_000);
+});
+
+// ─── v0.2.6 review round 2 — CR-1/CR-2 behavioral: run-start provenance round-trips across §D iterations ───
+
+describe("v0.2.6 CR-1/CR-2 — ONE run-start snapshot persists across convergence iterations (control round-trip)", () => {
+	it("CR-2 FIX (RED pre-fix): feeding the returned control back as state.implementation reuses the run-start snapshot (NO recapture — post-iteration-1 dirt stays OWN) and the guidance grant is spent on the second choice", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
+		gateSeq([envBlockerGate()]);
+		redThenGreen();
+		const judgeControl = {
+			diagnosis: "the snow service dependency is broken in the shared environment",
+			route: "fix-environment",
+			confidence: 0.9,
+			evidence: [{ file: "internal/services/snow/enrichment.go", quote: SNOW_TEST }],
+		};
+		const { ctx, calls } = realGitCtx({
+			judgeControl,
+			escalate: async () => ({ choice: "retry-with-guidance", guidance: "fix the environment then re-run" }),
+		});
+		const state = mkRealGitState(repo);
+		const control = await (implementationStage as Stage).run(state, ctx) as ControlObj;
+
+		// Iteration 1 produced the persisted provenance + grant state.
+		expect(Array.isArray(control.runStartDirt)).toBe(true);
+		expect(control.runStartDirt).toContain("internal/services/snow/enrichment.go");
+		expect((control.phaseGuidanceReentryUsed as Record<string, true>)["phase-01"]).toBe(true);
+		// The FIRST retry-with-guidance granted re-entry (convergence NOT blocked).
+		expect(calls.logs.some((l) => /guidance re-entry GRANTED: convergence not blocked/.test(l))).toBe(true);
+
+		// NEW dirt introduced AFTER iteration 1 — absent from the iteration-1
+		// snapshot; a recapturing implementation would classify it FOREIGN.
+		writeRepoFile(repo, "src/late-iteration-dirt.ts", "export const LATE = 1;\n");
+
+		// Iteration 2: same harness, control fed back through state.implementation.
+		redThenGreen(); // fresh RED-oracle closure so iteration 2's initial RED is red again
+		const second = realGitCtx({
+			judgeControl,
+			escalate: async () => ({ choice: "retry-with-guidance", guidance: "still fixing" }),
+		});
+		const state2 = mkRealGitState(repo);
+		(state2 as { implementation?: unknown }).implementation = control;
+		const control2 = await (implementationStage as Stage).run(state2, second.ctx) as ControlObj;
+
+		// (a) NO recapture: the reuse log fired and the snapshot still predates
+		// the late dirt (late dirt stays OWN; enrichment.go stays FOREIGN).
+		expect(second.calls.logs.some((l) => /reusing persisted run-start dirt snapshot/.test(l))).toBe(true);
+		expect(control2.runStartDirt).toContain("internal/services/snow/enrichment.go");
+		expect(control2.runStartDirt).not.toContain("src/late-iteration-dirt.ts");
+		// (b) The SECOND retry-with-guidance finds the per-phase-EVER grant spent:
+		// terminal stop WITH the convergence block (no re-grant across iterations).
+		expect(second.calls.logs.some((l) => /re-entry budget already spent/.test(l))).toBe(true);
+		expect(second.calls.logs.some((l) => /convergence blocked \(no automatic re-entry\)/.test(l))).toBe(true);
+		// The late dirt never became foreign: it is named as this-run own work in
+		// the judge-visible inventory path (still in dirtPaths, never quarantined —
+		// kill-switch arm) and the stash list stays empty throughout.
+		expect(git(repo, "stash", "list").trim()).toBe("");
+	}, 20_000);
+});
+
+describe("v0.2.6 CR-3 — the outcome-ladder wording never fires for the implementer-retry override", () => {
+	it("CR-3 FIX (RED pre-fix): routed implementer-retry emits NO 'next=<human: escalate>' ladder line (neither HITL wording nor terminal wording precede the override)", async () => {
+		const { wt: repo } = mkEnvBlockerWorktree();
+		repos.push(repo);
+		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
+		gateSeq([envBlockerGate()]);
+		redThenGreen();
+		const { ctx, calls } = realGitCtx({
+			maxImplAttempts: 2,
+			judgeControl: {
+				diagnosis: "product defect — retry the implementer",
+				route: "implementer-retry",
+				confidence: 0.85,
+				evidence: [{ file: "internal/services/snow/enrichment.go", quote: "func Enrich() int" }],
+			},
+		});
+		try {
+		await (implementationStage as Stage).run(mkRealGitState(repo), ctx);
+		} finally {
+			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
+		}
+		expect(calls.logs.some((l) => l.includes("next=<human: escalate>"))).toBe(false);
+		expect(calls.logs.some((l) => l.includes("next=<human: fix-environment>"))).toBe(false);
+		expect(calls.logs.some((l) => /judge route=implementer-retry/.test(l))).toBe(true);
 	}, 20_000);
 });
