@@ -21,6 +21,7 @@ Find ambiguity, untestable acceptance criteria, internal conflicts, missing non-
 - **D4 Completeness**: Error/edge paths, non-functional requirements (security, performance, accessibility as applicable), and success criteria are all present — not just the happy path.
 - **D5 Feasibility/Scope**: The requirements are achievable and bounded; no hidden mega-requirement; no gold-plating.
 - **D6 Resolved decisions**: `openQuestions` is empty or only holds genuine user-only blockers — not deferred design work masquerading as a requirement.
+- **D7 Existence grounding (BLOCKING)**: Any AC that asserts an EXISTING code entity — "preserve the existing X unchanged", "extend the current Y", "the committed Z contract/schema/route/type/connection" — MUST correspond to something that actually exists in the codebase. VERIFY it (you have read access: grep/read the repo). An AC that demands preserving or extending a baseline that is NOT present is unimplementable and will stall downstream RED tests (a test cannot pin the "unchanged" values of a thing that does not exist). Record it as a blocking finding (`ownerStage: requirements`): the AC must either be rewritten as NEW/greenfield capability or point to where the baseline truly lives.
 
 ## The `Task Type` / `UI Scope` context line is a HINT, not authority
 

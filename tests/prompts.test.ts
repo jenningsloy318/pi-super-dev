@@ -386,3 +386,32 @@ describe("AC-31 (SCENARIO-064): a five-backtick payload escalates to a six-backt
 function hostileSetupFor(): import("../src/types.ts").SetupControl {
 	return mkSetup(mkdtempSync(join(tmpdir(), "sd-fence-")));
 }
+
+describe("v0.2.8 — no-nonexistent-references prompt discipline", () => {
+	const s = () => mkSetup(mkdtempSync(join(tmpdir(), "sd-v028-")));
+	// G4/G1: judge route glosses
+	it("buildJudgePrompt glosses replan-upstream and allow-scaffold when offered", () => {
+		const p = buildJudgePrompt("stage9.red-no-progress.phase-01", "ctx", ["re-author-tests", "replan-upstream", "allow-scaffold"]);
+		expect(p).toContain("replan-upstream");
+		expect(p).toMatch(/replan-upstream — .*upstream artifact is defective/i);
+		expect(p).toContain("allow-scaffold");
+		expect(p).toMatch(/allow-scaffold — .*declaration-only scaffolding/i);
+	});
+	// G2: requirements grounding
+	it("buildRequirementsPrompt forbids asserting a non-existent existing-code baseline", () => {
+		const p = buildRequirementsPrompt(s(), null, "t");
+		expect(p).toMatch(/VERIFY it actually exists in the codebase/i);
+		expect(p).toMatch(/does not exist.*greenfield|greenfield.*instead of asserting/i);
+	});
+	// G2: bdd no-invent AC
+	it("buildBddPrompt forbids minting an AC absent from requirements", () => {
+		const p = buildBddPrompt(s(), null, "t", null);
+		expect(p).toMatch(/NEVER invent an acceptance criterion/i);
+	});
+	// G2: spec no-invent refs
+	it("buildSpecPrompt forbids referencing a non-existent scenario/AC/code entity", () => {
+		const p = buildSpecPrompt(s(), null, "t", null, null, null, null, null);
+		expect(p).toMatch(/Reference ONLY upstream IDs that actually exist/i);
+		expect(p).toMatch(/non-existent scenario, AC, or code entity/i);
+	});
+});

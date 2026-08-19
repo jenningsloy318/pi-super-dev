@@ -465,6 +465,20 @@ describe("P3 — RED loop: green/broken triggers a budgeted no-progress-guarded 
 		expect(calls.impl).toHaveLength(0); // never proceeds to implementer
 		expect(calls.logs.some((l) => /oscillating|no progress/i.test(l))).toBe(true);
 	});
+
+	// v0.2.8 G1+G4: the RED no-progress judge is now offered replan-upstream (route
+	// an upstream-artifact defect back) and allow-scaffold (bless declaration-only
+	// scaffolding), in addition to re-author-tests / fix-environment.
+	it("v0.2.8: the RED no-progress judge is offered replan-upstream and allow-scaffold", async () => {
+		resetJudgeBudgets();
+		redSeq("green"); // always-green → no-progress ceiling → no-progress judge fires
+		const { ctx, calls } = mkCtx();
+		await (implementationStage as Stage).run(mkState(), ctx);
+		expect(calls.judge.length).toBeGreaterThanOrEqual(1);
+		const prompt = calls.judge[0]!.prompt;
+		expect(prompt).toContain("replan-upstream");
+		expect(prompt).toContain("allow-scaffold");
+	});
 });
 
 describe("P3 — RED loop: no-progress stop is a hard RED gate", () => {

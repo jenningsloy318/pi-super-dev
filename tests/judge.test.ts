@@ -57,7 +57,38 @@ describe("judge unit", () => {
 	});
 
 	it("closed route set is frozen", () => {
-		expect([...JUDGE_ROUTES]).toEqual(["re-author-tests", "challenge-test", "fix-environment", "implementer-retry", "continue", "escalate-now"]);
+		expect([...JUDGE_ROUTES]).toEqual(["re-author-tests", "challenge-test", "fix-environment", "implementer-retry", "replan-upstream", "allow-scaffold", "continue", "escalate-now"]);
+	});
+
+	// ── v0.2.8 (run 2026-08-19T08-32-47-962Z): replan-upstream routes an
+	// upstream-artifact contradiction (an AC referencing a non-existent code
+	// baseline; a spec citing a non-existent scenario/AC) back to the owning
+	// stage. It is EVIDENCE-REQUIRED (NOT missing-evidence-exempt): re-running
+	// upstream stages is consequential, so the judge must quote the offending
+	// artifact text + the contradicting reality; a zero-evidence verdict discards.
+	// SCENARIO-002
+	it("v0.2.8: a zero-evidence replan-upstream verdict DISCARDS (evidence-required, NOT missing-evidence-exempt)", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "replan-upstream", evidence: [] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-ru-empty", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment", "replan-upstream"] });
+		expect(out.status).toBe("discarded");
+	});
+
+	// SCENARIO-003
+	it("v0.2.8: an evidence-backed replan-upstream verdict ROUTES", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "replan-upstream" }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-ru-ok", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment", "replan-upstream"] });
+		expect(out.status).toBe("routed");
+		if (out.status === "routed") expect(out.verdict.route).toBe("replan-upstream");
+	});
+
+	// allow-scaffold is likewise evidence-required (not missing-evidence-exempt).
+	it("v0.2.8: a zero-evidence allow-scaffold verdict DISCARDS; an evidence-backed one ROUTES", async () => {
+		const empty = makeCtx(() => ({ control: baseVerdict({ route: "allow-scaffold", evidence: [] }) as Record<string, unknown> }));
+		expect((await runJudge(empty.ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-as-empty", worktreePath: wt, context: "ctx", allowedRoutes: ["allow-scaffold", "re-author-tests"] })).status).toBe("discarded");
+		const ok = makeCtx(() => ({ control: baseVerdict({ route: "allow-scaffold" }) as Record<string, unknown> }));
+		const out = await runJudge(ok.ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-as-ok", worktreePath: wt, context: "ctx", allowedRoutes: ["allow-scaffold", "re-author-tests"] });
+		expect(out.status).toBe("routed");
+		if (out.status === "routed") expect(out.verdict.route).toBe("allow-scaffold");
 	});
 
 	it("evidence verification passes a verbatim quote from the worktree", () => {

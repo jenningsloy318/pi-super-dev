@@ -34,7 +34,7 @@ import { buildJudgePrompt } from "../prompts.ts";
 import { appendRunEvent } from "../runlog.ts";
 import type { StageContext } from "../types.ts";
 
-export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environment", "implementer-retry", "continue", "escalate-now"] as const;
+export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environment", "implementer-retry", "replan-upstream", "allow-scaffold", "continue", "escalate-now"] as const;
 export type JudgeRoute = (typeof JUDGE_ROUTES)[number];
 
 /**

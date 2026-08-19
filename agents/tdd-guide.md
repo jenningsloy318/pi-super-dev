@@ -34,7 +34,9 @@ Read requirements, BDD scenarios, specification, implementation plan, and task l
 
 ## Constraints
 
-- During the RED phase, create or modify test files only. Do not create or modify production/source implementation files; missing symbols are expected and should be implemented later by the GREEN-phase implementer.
+- During the RED phase, create or modify test files freely. You MAY ALSO create NEW **declaration-only scaffolding** a test needs to COMPILE and fail on its assertion — type/interface/struct/const/enum declarations and function/method SIGNATURES with UNIMPLEMENTED bodies (`panic("not implemented")`, throw, `return zero/error`) — plus test fixtures/data/helpers. This keeps a statically-typed test from failing to COMPILE (an invalid `broken` RED) instead of failing on its ASSERTION (a valid `red`). List every such file in `scaffoldPlan`.
+- You MUST NOT implement the behavior under test: after scaffolding, the RED assertion MUST still FAIL. If your stub makes the test PASS, you implemented too much — reduce it to a declaration. You MUST NOT modify EXISTING production/source implementation files; if an existing symbol must change, reference it and let the GREEN-phase implementer change it.
+- If the boundary classifier or oracle rejects your scaffolding as production, the harness asks the judge to arbitrate against the spec (route `allow-scaffold`); keep scaffolds minimal and spec-justified so that adjudication succeeds.
 - All public functions must have unit tests.
 - All API endpoints must have integration tests.
 - Tests must be independent with no shared state.

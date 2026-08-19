@@ -16,9 +16,10 @@ import { appendGateChecked } from "../runlog.ts";
 import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
-import { buildRedBoundaryPrompt, classifyObviousRedPath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
+import { buildRedBoundaryPrompt, classifyObviousRedPath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
 import { runJudge } from "./judge.ts";
+import { triggerReplanForFindings } from "../replan/replan.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
@@ -1186,6 +1187,10 @@ export const implementationStage: Stage = {
 					let retries = 0;
 					let redHint = "";
 					const redProgressHistory: string[] = [];
+					// v0.2.8 G4 (allow-scaffold): paths the judge has blessed as declaration-
+					// only scaffolding this phase; re-admitted through the boundary on the
+					// next try (the RED oracle remains the final guard).
+					const redScaffoldApproved = new Set<string>();
 					while (ctx.budget.check()) {
 						const redDiagnostics: RedCheckDiagnostic[] = [];
 						const redTryDetail = attemptDetail(attempt, `try ${retries + 1}`);
@@ -1207,7 +1212,9 @@ export const implementationStage: Stage = {
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
 						announceActivity("RED boundary", redTryDetail);
-						const boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
+						let boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
+						// v0.2.8 G4: re-admit judge-approved scaffolding before classifying.
+						if (redScaffoldApproved.size) boundary = approveScaffoldPaths(boundary, redScaffoldApproved);
 						ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
 						redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied, diagnostics: redDiagnostics });
 						// R1 — FAIL CLOSED on an unclassifiable/absent RED when the phase is
@@ -1365,9 +1372,49 @@ export const implementationStage: Stage = {
 										"## Files changed during RED",
 										redChangedFiles.join("\n") || "(none)",
 									].join("\n"),
-									allowedRoutes: ["re-author-tests", "fix-environment"],
+									allowedRoutes: ["re-author-tests", "fix-environment", "replan-upstream", "allow-scaffold"],
 									outputTails: [...(redEvidence.diagnostics ?? []).map((d) => d.outputTail), tdd?.text ?? ""],
 								});
+								// v0.2.8 G4 (allow-scaffold): the judge read the spec + the changed
+								// files and blessed them as declaration-only scaffolding the test
+								// needs to compile and still fail RED. Re-admit those paths through
+								// the boundary and restart the RED loop; the oracle remains the guard
+								// (the test must still be `red` next try). Bounded by the judge's
+								// per-signature budget.
+								if (judgeOut.status === "routed" && judgeOut.verdict.route === "allow-scaffold") {
+									for (const f of redChangedFiles) redScaffoldApproved.add(f);
+									redProgressHistory.length = 0;
+									retries++;
+									redHint = `\n\n## Judge approved your scaffolding (allow-scaffold)\n${judgeOut.verdict.diagnosis}\nKeep the declaration-only scaffolding you created (do NOT implement the behavior); make the test COMPILE and still FAIL on its assertion (a valid RED). Evidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+									ctx.log(`Implementation ${phaseId} judge route=allow-scaffold: approved declaration-only scaffolding (${redChangedFiles.length} path(s)) — re-admitting through the RED boundary; oracle still guards`);
+									continue;
+								}
+								// v0.2.8 G1 (replan-upstream, run 2026-08-19T08-32-47-962Z): the judge
+								// determined the RED cannot be made strong because an UPSTREAM artifact
+								// is defective (an AC referencing a non-existent code baseline; a spec
+								// citing a non-existent scenario/AC). Route it back to the owning stage
+								// via the replan circuit — the run ends `replan` and auto-resumes at
+								// requirements/bdd/spec. Not routable / budget exhausted ⇒ fall through
+								// to today's HITL with the diagnosis. Never throws.
+								if (judgeOut.status === "routed" && judgeOut.verdict.route === "replan-upstream") {
+									const finding = {
+										id: `red-replan-${phaseId}`,
+										title: `RED cannot converge — upstream artifact defect (phase "${phaseName}")`,
+										detail: judgeOut.verdict.diagnosis,
+										severity: "high",
+										recommendation: judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | "),
+										file: judgeOut.verdict.evidence[0]?.file,
+									};
+									let replanned = false;
+									try { replanned = await triggerReplanForFindings(state, ctx, [finding], "implementation-red", setup.specIdentifier ?? "unknown"); } catch { replanned = false; }
+									if (replanned) {
+										redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${finding.recommendation}`;
+										terminalStopReason = "no-progress";
+										ctx.log(`Implementation ${phaseId} judge route=replan-upstream: routed the upstream-artifact defect back via REPLAN — the run will revise the owning stage and re-enter — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
+										break;
+									}
+									ctx.log(`Implementation ${phaseId} judge route=replan-upstream: no routable owner / replan budget exhausted — falling through to the human boundary with the diagnosis`);
+								}
 								if (judgeOut.status === "routed" && (judgeOut.verdict.route === "re-author-tests" || judgeOut.verdict.route === "fix-environment")) {
 									redProgressHistory.length = 0;
 									retries++;

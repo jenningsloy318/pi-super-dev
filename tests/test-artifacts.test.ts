@@ -5,7 +5,36 @@ import {
 	isSubstrateArtifact,
 	redBoundaryResultFromAgent,
 	redBoundaryResultFromClassifications,
+	approveScaffoldPaths,
 } from "../src/test-artifacts.ts";
+
+describe("v0.2.8 G4 — scaffold category + judge approval", () => {
+	it("a 'scaffold' classification (declaration-only) is ALLOWED, distinct from 'production'", () => {
+		const r = redBoundaryResultFromAgent(["internal/stepmcp/types.go", "internal/stepmcp/impl.go"], {
+			classifications: [
+				{ path: "internal/stepmcp/types.go", category: "scaffold", confidence: 0.9, reason: "declaration-only const+type" },
+				{ path: "internal/stepmcp/impl.go", category: "production", confidence: 0.9, reason: "real behavior" },
+			],
+			forbiddenFiles: ["internal/stepmcp/impl.go"],
+			ambiguousFiles: [],
+			allAllowed: false,
+		});
+		expect(r.forbiddenFiles).toContain("internal/stepmcp/impl.go");
+		expect(r.forbiddenFiles).not.toContain("internal/stepmcp/types.go");
+		expect(r.allAllowed).toBe(false);
+	});
+
+	it("approveScaffoldPaths re-admits a judge-approved forbidden path (allow-scaffold)", () => {
+		const base = redBoundaryResultFromClassifications([
+			{ path: "internal/stepmcp/types.go", category: "production", allowed: false, confidence: 0.9, source: "agent", reason: "looked like production" },
+		]);
+		expect(base.allAllowed).toBe(false);
+		const approved = approveScaffoldPaths(base, new Set(["internal/stepmcp/types.go"]));
+		expect(approved.allAllowed).toBe(true);
+		expect(approved.forbiddenFiles).toHaveLength(0);
+		expect(approved.classifications[0]!.category).toBe("scaffold");
+	});
+});
 
 describe("RED boundary path classification", () => {
 	it("deterministically allows obvious test artifacts without language-specific tables", () => {

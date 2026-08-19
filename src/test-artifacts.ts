@@ -1,6 +1,6 @@
 import { isInternalRuntimeClaim } from "./tracking.ts";
 
-export type RedBoundaryCategory = "test" | "support" | "runtime" | "substrate" | "production" | "ambiguous";
+export type RedBoundaryCategory = "test" | "support" | "runtime" | "substrate" | "scaffold" | "production" | "ambiguous";
 export type RedBoundarySource = "deterministic" | "agent" | "fallback";
 
 export interface RedBoundaryClassification {
@@ -123,12 +123,12 @@ export function classifyObviousRedPath(path: string): RedBoundaryClassification 
 }
 
 function isAllowedCategory(category: RedBoundaryCategory): boolean {
-	return category === "test" || category === "support" || category === "runtime" || category === "substrate";
+	return category === "test" || category === "support" || category === "runtime" || category === "substrate" || category === "scaffold";
 }
 
 function normalizeCategory(value: unknown): RedBoundaryCategory {
 	const v = typeof value === "string" ? value.trim().toLowerCase() : "";
-	if (v === "test" || v === "support" || v === "runtime" || v === "production" || v === "ambiguous" || v === "substrate") return v;
+	if (v === "test" || v === "support" || v === "runtime" || v === "production" || v === "ambiguous" || v === "substrate" || v === "scaffold") return v;
 	return "ambiguous";
 }
 
@@ -152,6 +152,24 @@ export function redBoundaryResultFromClassifications(classifications: RedBoundar
 		ambiguousFiles,
 		allAllowed: forbiddenFiles.length === 0,
 	};
+}
+
+/** v0.2.8 G4 (allow-scaffold): re-admit judge-approved scaffold paths. The judge
+ *  read the spec + the file and blessed it as declaration-only scaffolding, so a
+ *  path in `approved` is reclassified `scaffold`/allowed and dropped from
+ *  forbidden/ambiguous. The RED oracle remains the final guard (the test must
+ *  still be `red` after) — this only lifts the boundary veto, never the oracle. */
+export function approveScaffoldPaths(result: RedBoundaryResult, approved: ReadonlySet<string>): RedBoundaryResult {
+	if (approved.size === 0) return result;
+	const norm = new Set([...approved].map(normalizePath));
+	const classifications = result.classifications.map((c) =>
+		norm.has(c.path) && !c.allowed
+			? { ...c, category: "scaffold" as RedBoundaryCategory, allowed: true, source: "agent" as RedBoundarySource, reason: `judge allow-scaffold: approved declaration-only scaffolding — ${c.reason}` }
+			: c,
+	);
+	const forbiddenFiles = classifications.filter((item) => !item.allowed).map((item) => item.path);
+	const ambiguousFiles = classifications.filter((item) => (item.category === "ambiguous" || item.confidence < MIN_AGENT_CONFIDENCE) && !item.allowed).map((item) => item.path);
+	return { classifications, forbiddenFiles, ambiguousFiles, allAllowed: forbiddenFiles.length === 0 };
 }
 
 export function redBoundaryResultFromAgent(paths: string[], control: unknown): RedBoundaryResult {
@@ -189,7 +207,8 @@ export function redBoundaryResultFromAgent(paths: string[], control: unknown): R
 export function buildRedBoundaryPrompt(args: { changedFiles: string[]; testFiles: string[]; phaseName: string; phaseDescription?: string; redStatus: string }): string {
 	return [
 		"Classify RED-phase file changes for a TDD harness.",
-		"The RED phase may create/modify tests and test-only support artifacts. It must not create/modify production implementation.",
+		"The RED phase may create/modify tests and test-only support artifacts, and may create NEW declaration-only 'scaffold' files a test needs to COMPILE and fail (types/interfaces/consts/enums, or function SIGNATURES with unimplemented bodies such as panic/not-implemented/zero-return). It must NOT create/modify production IMPLEMENTATION (real behavior), and must NOT modify EXISTING production files.",
+		"category 'scaffold' = a NEW production-language file that only DECLARES (no behavior) so the test compiles and still fails RED; category 'production' = real behavior or an edit to an existing production file (forbidden). When a new file mixes a real implementation body with declarations, classify it 'production'. When unsure whether a body is a stub or behavior, mark ambiguous.",
 		"Use semantic project judgment. Do not rely only on file extensions. When unsure, mark ambiguous.",
 		`Phase: ${args.phaseName}`,
 		args.phaseDescription ? `Phase description: ${args.phaseDescription}` : "",
@@ -197,7 +216,7 @@ export function buildRedBoundaryPrompt(args: { changedFiles: string[]; testFiles
 		`Reported test targets: ${args.testFiles.length ? args.testFiles.join(", ") : "none"}`,
 		`Changed files requiring classification: ${args.changedFiles.join(", ")}`,
 		"Return structured_output with:",
-		"- classifications: [{ path, category: 'test'|'support'|'runtime'|'production'|'ambiguous'|'substrate', confidence: 0..1, reason }]",
+		"- classifications: [{ path, category: 'test'|'support'|'runtime'|'scaffold'|'production'|'ambiguous'|'substrate', confidence: 0..1, reason }]",
 		"- forbiddenFiles: production or unsafe paths",
 		"- ambiguousFiles: paths you cannot confidently allow",
 		"- allAllowed: true only when every changed file is safe for RED",

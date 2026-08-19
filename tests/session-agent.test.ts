@@ -22,12 +22,16 @@ describe("deliveryDisciplineFor", () => {
 		expect(impl).toMatch(/whole-file `write`/);
 		expect(impl).toMatch(/source file MUST be modified/);
 	});
-	it("gives tdd-guide a RED-phase test-only discipline", () => {
+	it("gives tdd-guide a RED-phase test-only discipline (with v0.2.8 declaration-only scaffolding)", () => {
 		const tdd = deliveryDisciplineFor("tdd-guide");
 		expect(tdd).toMatch(/APPLIED TEST-CODE EDITS/);
-		expect(tdd).toMatch(/test files only/i);
-		expect(tdd).toMatch(/Do NOT create or modify production\/source implementation files/);
-		expect(tdd).toMatch(/test file MUST be modified/);
+		// v0.2.8 G4: declaration-only scaffolding + fixtures are allowed so a
+		// compiled-language test can COMPILE and still fail RED…
+		expect(tdd).toMatch(/declaration-only scaffolding/i);
+		expect(tdd).toMatch(/unimplemented/i);
+		// …but implementing behavior or editing EXISTING production stays forbidden.
+		expect(tdd).toMatch(/MUST NOT implement the behavior under test/i);
+		expect(tdd).toMatch(/MUST NOT modify EXISTING production/i);
 		expect(tdd).not.toMatch(/APPLIED SOURCE-CODE EDITS/);
 		expect(tdd).not.toMatch(/source file MUST be modified/);
 	});

@@ -15,7 +15,7 @@ Find missing coverage, weak/unobservable scenarios, and broken AC→SCENARIO tra
 
 ## Review Dimensions
 
-- **D1 AC coverage (BLOCKING)**: Every requirements AC-NN is covered by ≥1 scenario; every scenario's acRef names a real AC. Missing coverage or a dangling acRef = blocking finding.
+- **D1 AC coverage (BLOCKING)**: Every requirements AC-NN is covered by ≥1 scenario; every scenario's acRef names a real AC. Missing coverage or a dangling acRef = blocking finding. A scenario must NEVER invent an AC-NN that is absent from the requirements doc — if a behavior needs a backing AC that requirements lacks, that is an UPSTREAM requirements gap (`ownerStage: requirements`), not a new AC to mint here.
 - **D2 Path completeness**: Each behavior has happy-path, edge-case, AND error-path scenarios where applicable — not just the happy path.
 - **D3 Observable behavior**: Each scenario's Then asserts an OBSERVABLE outcome (a returned value, status, emitted effect, error), not an implementation detail or a tautology. A scenario a trivial/wrong implementation would satisfy is weak.
 - **D4 Given/When/Then integrity**: Preconditions (Given), triggers (When), and expected outcomes (Then) are concrete and self-consistent; no vague "it works" outcomes.

@@ -246,7 +246,8 @@ export function deliveryDisciplineFor(agent: string): string {
 		return [
 			"## Delivery discipline (OVERRIDES any contrary instruction above)",
 			"Your deliverable is APPLIED TEST-CODE EDITS for the RED phase — real changes to test files only — followed by your structured_output call.",
-			"- Do NOT create or modify production/source implementation files during RED. If a test needs a missing symbol, reference that symbol from the test and let the implementer create it during GREEN.",
+			"- You MAY create NEW declaration-only scaffolding a test needs to COMPILE and fail: type/interface/struct/const/enum declarations and function/method SIGNATURES with UNIMPLEMENTED bodies (panic/throw 'not implemented', return a zero value/error), plus test fixtures/data/helpers. This keeps a compiled-language test from failing to compile (a `broken` oracle) instead of failing on its assertion (a valid `red`). Declare each such file in scaffoldPlan.",
+			"- You MUST NOT implement the behavior under test (the RED assertion MUST still FAIL after scaffolding — if your stub makes the test pass, you implemented too much), and you MUST NOT modify EXISTING production/source implementation files. If an existing symbol needs changing, reference it and let the implementer change it during GREEN.",
 			"- Read ONLY what you need to write focused failing tests (target API, existing nearby tests, and relevant types). Do NOT read every file or re-read a file you already read.",
 			"- Then APPLY the test edits early. An unfinished turn writes NOTHING to disk.",
 			"- When a single test file needs several changes, prefer ONE whole-file `write` over many `edit` calls. Do NOT thrash on `edit` when its exact-match `oldText` keeps failing (tabs/whitespace); switch to `write` after the first miss. Never hand-patch indentation with `sed`.",

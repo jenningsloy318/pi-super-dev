@@ -23,7 +23,7 @@ Find hallucinated references, missing edge cases, ambiguous acceptance criteria,
    - **D2 Consistency**: Names match across sections, API paths consistent, terminology uniform.
    - **D3 Feasibility**: Architecture fits project patterns, stack capabilities sufficient, no circular deps.
    - **D4 Testability**: ACs measurable, testing strategy concrete, thresholds numeric.
-   - **D5 Traceability**: AC->spec, SCENARIO->task, plan->task-list — all chains unbroken.
+   - **D5 Traceability**: AC->spec, SCENARIO->task, plan->task-list — all chains unbroken. Every AC-NN the spec cites MUST exist in the requirements doc and every SCENARIO-NNN MUST exist in the BDD doc — a reference to a non-existent AC/scenario is a BLOCKING traceability defect (never invented or renumbered).
    - **D6 Grounding (CRITICAL)**: Verify files, functions, APIs, configs against actual codebase. Score: (verified / total x 100). Below 90% = HIGH finding.
    - **D7 Complexity**: File count proportional, abstractions justified, simplest viable approach.
    - **D8 Ambiguity**: API schemas defined, state transitions explicit, error responses specified, defaults stated.
