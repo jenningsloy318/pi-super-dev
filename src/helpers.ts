@@ -22,6 +22,8 @@ import {
 	requirementsContentErrors,
 	bddContentErrors,
 	bddTraceabilityErrors,
+	bddBoundaryLintErrors,
+	deliverablesPreflightErrors,
 	specContentErrors,
 	specGroundingErrors,
 	specTraceabilityErrors,
@@ -135,7 +137,12 @@ function gateBdd(s: Record<string, unknown>): HelperResult {
 		if (doc) {
 			errors.push(...bddContentErrors(doc.content));
 			const requirementsDoc = readSpecDoc(dir, s["write-requirements"] as ControlObj | undefined, "*-requirements.md");
-			if (requirementsDoc) errors.push(...bddTraceabilityErrors(requirementsDoc.content, doc.content));
+			if (requirementsDoc) {
+				errors.push(...bddTraceabilityErrors(requirementsDoc.content, doc.content));
+				// v0.3.2 C3: numeric bounds pinned by ACs must be named by some
+				// scenario — a boundary no scenario exercises cannot be verified.
+				errors.push(...bddBoundaryLintErrors(requirementsDoc.content, doc.content));
+			}
 			else errors.push("No requirements doc found for BDD traceability (no docPath, and no *-requirements.md in the spec dir)");
 		} else {
 			// No doc on disk: metadata is useful diagnostics, but cannot satisfy the
@@ -180,7 +187,13 @@ function gateSpecTrace(s: Record<string, unknown>): HelperResult {
 			errors.push(...specGroundingErrors(((s["setup"] as SetupControl | undefined)?.worktreePath ?? ""), doc.content));
 			const bddDoc = readSpecDoc(dir, s["write-bdd"] as ControlObj | undefined, "*-bdd-scenarios.md");
 			const requirementsDoc = readSpecDoc(dir, s["write-requirements"] as ControlObj | undefined, "*-requirements.md");
-			if (bddDoc) errors.push(...specTraceabilityErrors(bddDoc.content, doc.content, spec, requirementsDoc?.content));
+			if (bddDoc) {
+				errors.push(...specTraceabilityErrors(bddDoc.content, doc.content, spec, requirementsDoc?.content));
+				// v0.3.2 C2: deliverables pre-flight — a malformed deliverable
+				// (bad regex, unknown scenario id, escaping path) is a perma-fail
+				// contract; fail it at spec time, not at phase-GREEN.
+				errors.push(...deliverablesPreflightErrors(normalizedPhases, bddDoc.content));
+			}
 			else errors.push("No BDD doc found for spec traceability (no docPath, and no *-bdd-scenarios.md in the spec dir)");
 			if (!requirementsDoc) errors.push("No requirements doc found for spec acceptance-criteria traceability (no docPath, and no *-requirements.md in the spec dir)");
 			if (!specDocExists(dir, "*-task-list.md")) errors.push("Task list file (*-task-list.md) missing");

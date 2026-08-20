@@ -97,7 +97,7 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildDesignPrompt — bracket shape [{name, description}] stripped whole, no phantom `name`/`description` keys", () => {
 		expectKeys(buildDesignPrompt(s, null, "task", null, null, null, "designer"), [
-			"title", "date", "summary", "designer", "modules", "hasNumericConstants",
+			"title", "date", "summary", "designer", "modules", "hasNumericConstants", "contracts", "alternativesConsidered",
 		]);
 	});
 

@@ -16,7 +16,7 @@
 ## Acceptance Criteria
 
 {% for ac in acceptanceCriteria %}
-- **{{ ac.id }}**: {{ ac.statement }}
+- **{{ ac.id }}**: {{ ac.statement }}{% if ac.verifiedBy %} (verified by: {{ ac.verifiedBy }}){% endif %}
 {% endfor %}
 
 ## Non-Functional Requirements

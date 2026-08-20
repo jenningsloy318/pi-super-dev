@@ -561,3 +561,234 @@ export function specReviewContentErrors(c: string): string[] {
 	if (found.length < 8) e.push(`missing review dimensions (${found.length}/8: ${found.join(", ") || "none"})`);
 	return e;
 }
+
+// ─── v0.3.2 Contract-Claims Layer (WS-1 rung-2 sensors) ────────────────────────
+
+/** A design-stage contract claim: the writer declares a paired
+ *  generate/validate contract (pattern, allowlist, filename convention, key
+ *  set) together with the enumerated closure it claims to admit and the source
+ *  anchor the enumeration derives from. The checker below verifies INTERNAL
+ *  consistency (pattern-vs-enumeration, anchor existence, uniqueness); the
+ *  reviewer verifies the enumeration matches reality. */
+export interface DesignContractClaim {
+	name: string;
+	pattern: string;
+	enumerates: string[];
+	/** Entries the normalizer dropped (non-string/blank) — a non-empty raw
+	 *  array yielding zero valid strings is a VACUOUS claim (sd32 F2). */
+	rawEnumeratesCount: number;
+	sourceAnchor?: string;
+	derivationRule?: string;
+	uniqueness?: boolean;
+}
+
+/** Repo-relative anchor containment: no absolute paths, no `..` escape. */
+function containedRelativePath(value: string): boolean {
+	if (!value || value.startsWith("/") || value.startsWith("\\") || /^[a-z]:/i.test(value)) return false;
+	const parts = value.split(/[\\/]/).filter(Boolean);
+	let depth = 0;
+	for (const part of parts) {
+		if (part === ".") continue;
+		if (part === "..") { depth -= 1; if (depth < 0) return false; continue; }
+		depth += 1;
+	}
+	return depth > 0;
+}
+
+function normalizeClaim(raw: unknown): DesignContractClaim | null {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const c = raw as Record<string, unknown>;
+	const name = typeof c.name === "string" && c.name.trim() ? c.name.trim() : null;
+	const pattern = typeof c.pattern === "string" ? c.pattern : "";
+	const enumerates = Array.isArray(c.enumerates) ? c.enumerates.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [];
+	if (!name || !pattern) return null;
+	return {
+		name,
+		pattern,
+		enumerates,
+		rawEnumeratesCount: Array.isArray(c.enumerates) ? c.enumerates.length : 0,
+		sourceAnchor: typeof c.sourceAnchor === "string" && c.sourceAnchor.trim() ? c.sourceAnchor.trim() : undefined,
+		derivationRule: typeof c.derivationRule === "string" ? c.derivationRule : undefined,
+		uniqueness: c.uniqueness === true || c.uniqueness === "true",
+	};
+}
+
+/** C1: deterministic consistency check over a design control's contract
+ *  claims. Runs EVERY round of design convergence — the run-06-19 class
+ *  (over-restrictive artifact-name validation) is machine-checkable from round
+ *  1, and ALL violations are reported at once (a table, not a drip).
+ *  No claims / malformed entries are ignored (backward-compatible). */
+export function designContractsErrors(control: ControlObj | undefined, worktreePath: string): string[] {
+	const errors: string[] = [];
+	const raw = (control as { contracts?: unknown } | undefined)?.contracts;
+	if (!Array.isArray(raw) || raw.length === 0) return errors;
+	for (const entry of raw) {
+		const claim = normalizeClaim(entry);
+		if (!claim) {
+			errors.push('contract claim malformed: every contract needs a non-empty "name" and a "pattern" string — fix or drop the entry');
+			continue;
+		}
+		// (1) the pattern must compile — an invalid regex is a validator that
+		// cannot even run (and would crash the real validator at runtime).
+		// sd32 adv-F3: a JS-literal-style pattern ("/^x$/i") COMPILES but matches
+		// nothing — name the dialect problem instead of blaming the derivation.
+		if (/^\/.+\/[a-z]*$/i.test(claim.pattern)) {
+			errors.push(`contract "${claim.name}": pattern "${claim.pattern.slice(0, 60)}" looks like a JS regex literal with delimiters/flags — supply the bare source (e.g. "^x$"); flags are not supported`);
+			continue;
+		}
+		let re: RegExp | null = null;
+		try {
+			re = new RegExp(claim.pattern);
+		} catch (error) {
+			errors.push(`contract "${claim.name}": pattern does not compile — ${error instanceof Error ? error.message : String(error)}`);
+			continue;
+		}
+		// sd32 F2 (both reviewers): a declared contract with a vacuous enumeration
+		// passes closure AND uniqueness silently — the flagship sensor would be
+		// defeated by an empty table. The enumeration IS the machine-checked
+		// artifact; if the contract genuinely admits nothing, drop the claim.
+		if (claim.enumerates.length === 0) {
+			const dropped = claim.rawEnumeratesCount > 0 ? ` (the ${claim.rawEnumeratesCount} declared entr${claim.rawEnumeratesCount === 1 ? "y is" : "ies are"} all non-string/blank)` : "";
+			errors.push(`contract "${claim.name}": declares a contract but enumerates no values${dropped} — derive the closure from the sourceAnchor, or drop the contract claim`);
+			continue;
+		}
+		// (2) closure consistency: EVERY enumerated value matches its own
+		// pattern. All violations at once — this is the run-06-19 kill.
+		const violating = claim.enumerates.filter((value) => !re!.test(value));
+		if (violating.length > 0) {
+			const shown = violating.slice(0, 6).map((v) => `"${v}"`).join(", ");
+			errors.push(`contract "${claim.name}": ${violating.length}/${claim.enumerates.length} enumerated value(s) violate the contract's own pattern (${shown}${violating.length > 6 ? `, …(+${violating.length - 6} more)` : ""}) — the derivation rule is wrong: fix the rule or the pattern, then regenerate the enumeration; do not patch individual values`);
+		}
+		// (3) source anchor cites reality: repo-relative, exists, and (with a
+		// `#export` suffix) the file actually contains the named export.
+		if (claim.sourceAnchor) {
+			const [relPath, exportName] = claim.sourceAnchor.split("#", 2);
+			if (!containedRelativePath(relPath)) {
+				errors.push(`contract "${claim.name}": sourceAnchor "${claim.sourceAnchor}" must be a repo-relative path (optional "#export" suffix), not absolute or escaping`);
+			} else if (worktreePath && !existsSync(join(worktreePath, relPath))) {
+				errors.push(`contract "${claim.name}": sourceAnchor path "${relPath}" does not exist in the worktree — derive the enumeration from the real source`);
+			} else if (exportName && worktreePath) {
+				try {
+					const text = readFileSync(join(worktreePath, relPath), "utf8");
+					if (!new RegExp(`(?<![\\w$])${exportName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w$])`).test(text)) {
+						errors.push(`contract "${claim.name}": sourceAnchor export "${exportName}" not found in ${relPath} — cite the symbol the enumeration actually derives from`);
+					}
+				} catch { /* unreadable file falls through to the reviewer */ }
+			}
+		}
+		// (4) uniqueness claims hold over the enumeration.
+		if (claim.uniqueness) {
+			const dupes = claim.enumerates.filter((v, i, all) => all.indexOf(v) !== i);
+			if (dupes.length > 0) errors.push(`contract "${claim.name}": claims uniqueness but the enumeration has duplicate value(s): ${[...new Set(dupes)].slice(0, 5).map((v) => `"${v}"`).join(", ")}`);
+		}
+	}
+	return errors;
+}
+
+/** C2: spec deliverables pre-flight — a malformed deliverable is a perma-fail
+ *  contract that today only surfaces at phase-GREEN (the implementer burns an
+ *  attempt discovering a regex that never compiles or a scenario id that does
+ *  not exist). Fail it at spec time, where the spec writer can fix it. */
+export function deliverablesPreflightErrors(phases: NormalizedPhase[], bddContent: string | undefined): string[] {
+	const errors: string[] = [];
+	const knownScenarios = bddContent ? new Set(extractScenarioIds(bddContent)) : null;
+	for (const phase of phases) {
+		const d = phase.deliverables;
+		if (!d) continue;
+		const label = `phase "${phase.name}"`;
+		// code-C2-REGEX-DIALECT: the phase-GREEN consumer (gates.ts tolerantMatch)
+		// translates a leading "(?i)" to JS flags — the preflight must ACCEPT what
+		// the consumer accepts, or it fails specs the green gate would pass.
+		const compiles = (p: string): string | null => {
+			const source = p.startsWith("(?i)") ? p.slice(4) : p;
+			const flags = p.startsWith("(?i)") ? "i" : "";
+			try { new RegExp(source, flags); return null; } catch (error) {
+				return error instanceof Error ? error.message : String(error);
+			}
+		};
+		for (const entry of (d.requireContains ?? []) as Array<{ file?: unknown; pattern?: unknown }>) {
+			if (!entry || typeof entry !== "object") { errors.push(`${label}: requireContains entry malformed (needs {file, pattern})`); continue; }
+			if (typeof entry.pattern === "string") {
+				const why = compiles(entry.pattern);
+				if (why) errors.push(`${label}: requireContains pattern does not compile — ${why} (${entry.pattern.slice(0, 80)})`);
+			} else {
+				errors.push(`${label}: requireContains entry missing its pattern string`);
+			}
+			if (typeof entry.file === "string" && !containedRelativePath(entry.file)) {
+				errors.push(`${label}: requireContains file "${entry.file}" must be a repo-relative path`);
+			}
+		}
+		for (const pattern of (d.requireNotContains ?? []) as Array<{ file?: unknown; pattern?: unknown }>) {
+			const p = pattern && typeof pattern === "object" ? pattern.pattern : pattern;
+			if (typeof p !== "string") { errors.push(`${label}: requireNotContains entry must be a pattern string`); continue; }
+			// code-C2-NOTCONTAINS-NO-FILE: an entry with no file asserts NOTHING at
+			// phase-GREEN — surface it at spec time instead of silently passing.
+			if (pattern && typeof pattern === "object" && (typeof (pattern as { file?: unknown }).file !== "string" || !(pattern as { file?: string }).file?.trim())) {
+				errors.push(`${label}: requireNotContains entry has no file — it would silently assert nothing at phase-GREEN`);
+			}
+			const why = compiles(p);
+			if (why) errors.push(`${label}: requireNotContains pattern does not compile — ${why} (${p.slice(0, 80)})`);
+		}
+		for (const file of (d.requireFiles ?? []) as unknown[]) {
+			if (typeof file !== "string" || !containedRelativePath(file)) errors.push(`${label}: requireFiles entry "${String(file).slice(0, 80)}" must be a non-empty repo-relative path`);
+		}
+		for (const scenario of (d.requireScenarios ?? []) as unknown[]) {
+			const id = typeof scenario === "string" ? scenario.trim() : "";
+			const m = id.match(/^SCENARIO-(\d{2,})$/i);
+			if (!m) { errors.push(`${label}: requireScenarios entry "${String(scenario).slice(0, 40)}" is not a SCENARIO-NNN id`); continue; }
+			// code-C2-SCENARIO: normalize the pin with the SAME padding rule as
+			// extractScenarioIds so a 4-digit pin compares equal to its 3-digit id.
+			const normalized = `SCENARIO-${String(Number(m[1])).padStart(3, "0")}`;
+			if (knownScenarios && !knownScenarios.has(normalized)) errors.push(`${label}: requireScenarios pins ${normalized}, which does not exist in the BDD doc — the phase can never go green`);
+		}
+		for (const test of (d.requireTests ?? []) as unknown[]) {
+			if (typeof test !== "string" || !test.trim()) errors.push(`${label}: requireTests entry must be a non-empty test-name string`);
+		}
+	}
+	// sd32 adv-F4: announced truncation (cumora discipline — silent drops are
+	// unrecoverable for the writer).
+	if (errors.length > 12) {
+		return [...errors.slice(0, 12), `…(+${errors.length - 12} more deliverable error(s) omitted — fix the listed ones and re-run)`];
+	}
+	return errors;
+}
+
+/** C3: BDD boundary lint — every numeric bound an AC statement PINS must be
+ *  named by some BDD scenario (digit-normalized). A boundary no scenario names
+ *  cannot be exercised; the rethink's BDD-F01 finding is this class. Tight
+ *  guards against false positives: explicit bound-phrases only, AC-statement
+ *  lines only, `1,000`≡`1000` normalization on both sides, ≤4 reported. */
+// sd32 adv-F1/code-C3 fixes: capture the FULL grouped number ("10,000", "1 000",
+// "10_000"), tolerate an immediate unit suffix ("60s", "5ms", "10%"), normalize
+// digits on BOTH sides, and compare with digit boundaries — raw substring
+// containment let "10" be satisfied by "SCENARIO-100". Accepted miss: unit-word
+// spellings ("10k", "ten thousand") do not match a numeric bound — the reviewer
+// layer catches prose.
+const BOUND_PHRASE_RE = /\b(?:at most|no more than|up to|at least|no fewer than|no less than|exactly|precisely|top|first|last|within|max(?:imum)?(?:\s+of)?|min(?:imum)?(?:\s+of)?|limit(?:ed)?\s+to|capped\s+at)\s+(\d{1,3}(?:[,\s_]\d{3})+|\d{1,10})(?=(?:ms|s|min|h|kb|mb|gb|%|x)?(?:[\s.,;:)]|$))/gi;
+
+function normalizeDigits(text: string): string {
+	return text.replace(/(\d)[,\s_](?=\d{3}\b)/g, "$1");
+}
+
+/** Digit-boundary containment: "10" must NOT be satisfied by "SCENARIO-100". */
+function namesBound(bddNormalized: string, value: string): boolean {
+	return new RegExp(`(?<!\d)${value}(?!\d)`).test(bddNormalized);
+}
+
+export function bddBoundaryLintErrors(requirementsContent: string, bddContent: string): string[] {
+	const errors: string[] = [];
+	const bddNormalized = normalizeDigits(bddContent);
+	const acLines = requirementsContent.split("\n").filter((line) => /-\s*\*{0,2}AC-\d{2,}\*{0,2}\s*[:.]/i.test(line));
+	for (const line of acLines) {
+		const acId = (line.match(/AC-\d{2,}/i) ?? ["AC-??"])[0];
+		for (const match of line.matchAll(BOUND_PHRASE_RE)) {
+			const phrase = match[0].trim();
+			const value = normalizeDigits(match[1]);
+			if (!namesBound(bddNormalized, value)) {
+				errors.push(`${acId} pins the numeric bound "${phrase}" but no BDD scenario names the boundary value ${value} — a bound no scenario exercises cannot be verified; add a scenario at the boundary (or remove the pin)`);
+				if (errors.length >= 4) return errors;
+			}
+		}
+	}
+	return errors;
+}

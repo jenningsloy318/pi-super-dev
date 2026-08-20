@@ -56,6 +56,14 @@ export const AcceptanceCriterion = Type.Object({
 	// AC-27 (SCENARIO-055/056): gate-parseable AC id (see BddScenario.acRef).
 	id: Type.String({ pattern: "^AC-\\d{2,}$", description: "gate-parseable AC id, e.g. 'AC-01'" }),
 	statement: Type.String(),
+	// v0.3.2 C4: how this AC is verified — deterministic (a gate/build can
+	// check it), test (needs an automated test), manual (human/visual).
+	// Groundwork: rendered downstream; consumed by later versions.
+	verifiedBy: Type.Optional(Type.Union([
+		Type.Literal("deterministic"), Type.Literal("Deterministic"),
+		Type.Literal("test"), Type.Literal("Test"),
+		Type.Literal("manual"), Type.Literal("Manual"),
+	])),
 });
 
 export const RequirementsData = Type.Object({
@@ -212,6 +220,28 @@ export const DesignData = Type.Object({
 	// emitting a real boolean failed Value.Errors and renderAndWrite silently
 	// DROPPED the whole report doc (audit C-F3). Union keeps both shapes valid.
 	hasNumericConstants: Type.Union([Type.String(), Type.Boolean()]),
+	// v0.3.2 C1 (WS-1 contract-claims layer): every paired generate/validate
+	// contract the design states (patterns, allowlists, filename conventions,
+	// key sets) is DECLARED here with the enumerated closure it admits and the
+	// source anchor the enumeration derives from. A deterministic checker
+	// verifies pattern-vs-enumeration closure + anchor existence every round;
+	// the reviewer verifies the enumeration matches reality.
+	contracts: Type.Optional(Type.Array(Type.Object({
+		name: Type.String({ description: "short stable contract name, e.g. 'artifact-name-allowlist'" }),
+		pattern: Type.String({ description: "the regex the validator applies (must compile)" }),
+		enumerates: Type.Array(Type.String(), { description: "the FULL enumerated closure derived from the real source — every admitted value" }),
+		sourceAnchor: Type.Optional(Type.String({ description: "repo-relative path the enumeration derives from, optional '#exportName' suffix" })),
+		derivationRule: Type.Optional(Type.String({ description: "the stated rule turning the source into the enumeration" })),
+		uniqueness: Type.Optional(Type.Boolean({ description: "true when the enumeration must be duplicate-free" })),
+	}))),
+	// dsh Agent-Notes lesson: a decision recorded without what it beat invites
+	// reviewer re-litigation. Optional; rendered when present.
+	alternativesConsidered: Type.Optional(Type.Array(Type.Object({
+		decision: Type.String(),
+		chosen: Type.String(),
+		rationale: Type.String(),
+		alternatives: Type.Optional(Type.Array(Type.String())),
+	}))),
 });
 export const PrototypeData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),

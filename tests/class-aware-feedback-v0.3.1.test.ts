@@ -167,10 +167,11 @@ describe("F3/F1: reviewer prompts carry the rubric + defectClass duty", () => {
 });
 
 describe("F2: derivation standing rule in design/spec writer prompts", () => {
-	it("buildDesignPrompt carries the derive-from-registry + enumerated-closure-table rule", () => {
+	it("buildDesignPrompt carries the derive-from-registry + enumerated-closure-table rule (v0.3.2 merged it into the contracts-block paragraph)", () => {
 		const p = buildDesignPrompt(setupCtl(), null, "design the thing", { docPath: "01.md" } as ControlObj, null, null, "architect");
-		expect(p).toContain("DERIVED from the actual registry/source");
-		expect(p).toContain("enumerated closure table");
+		expect(p).toContain("derived from the actual source");
+		expect(p).toContain("enumerated closure");
+		expect(p).toContain("derive, never hand-write");
 	});
 	it("buildSpecPrompt carries the same rule", () => {
 		const p = buildSpecPrompt(setupCtl(), null, "spec the thing", { docPath: "01.md" } as ControlObj, { docPath: "02.md" } as ControlObj, null, null, null);

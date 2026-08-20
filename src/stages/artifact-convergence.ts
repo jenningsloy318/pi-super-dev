@@ -4,6 +4,7 @@ import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stag
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
 import { renderAndWrite } from "../render/render.ts";
+import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import { runJudge } from "./judge.ts";
 import { countStageRounds } from "../resume.ts";
@@ -57,8 +58,9 @@ interface ArtifactReviewOptions {
 interface ArtifactConvergenceOptions {
 	stage: Stage;
 	feedbackKey: "requirements" | "bdd" | "research" | "design";
-	/** Deterministic validator. OPTIONAL: the design stage has no deterministic
-	 *  gate (its quality is judged only by the LLM review), so it omits this. */
+	/** Deterministic validator. OPTIONAL: since v0.3.2 the design stage carries
+	 *  `designComplete` (contract-claims sensor — a no-op when the design
+	 *  declares no contracts); research still omits this. */
 	validate?: ArtifactValidator;
 	expected: string;
 	nextAction: string;
@@ -700,14 +702,45 @@ export const researchConvergenceNode = artifactConvergenceNode({
 	nextAction: "Continue online research until each open issue is answered with source evidence. If a question is genuinely unresolvable because tools are unavailable, explicitly disclose that and mark affected claims unverified instead of leaving it in openIssues.",
 });
 
-/** Stage 6 design convergence: the design has no deterministic gate (its quality
- *  is judged only by the design-reviewer's Fagan-style inspection), and it may be
+/** v0.3.2 C1: the design stage's deterministic sensor. Historically the design
+ *  had NO deterministic gate (quality judged only by the reviewer) — which is
+ *  exactly how run 2026-08-20T06-19-50-494Z died: a machine-checkable contract
+ *  inconsistency (over-restrictive artifact-name validation) was discovered by
+ *  the reviewer one filename family per round across 4 rounds. When the design
+ *  control DECLARES contract claims, this validator checks internal consistency
+ *  (pattern compiles; every enumerated value matches its own pattern — ALL
+ *  violations at once; source anchor exists; uniqueness holds) AND that the
+ *  rendered doc actually carries the Contract Claims section (the
+ *  control-had-data-the-template-dropped class, run 2026-08-12). No claims ⇒
+ *  pass unchanged (backward-compatible). */
+export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
+	const control = s.design as ControlObj | undefined;
+	const rawClaims = (control as { contracts?: unknown } | undefined)?.contracts;
+	if (!Array.isArray(rawClaims) || rawClaims.length === 0) return { pass: true, errors: [] };
+	const worktreePath = s.setup?.worktreePath ?? "";
+	const errors = designContractsErrors(control, worktreePath);
+	// Rendered-doc parity: the reviewer reads the RENDERED design — a contracts
+	// block the template dropped makes the reviewer blind and the loop spin.
+	const doc = readSpecDoc(s.setup?.specDirectory ?? "", control, "*-design.md");
+	if (doc && !doc.content.includes("## Contract Claims")) {
+		errors.push("design declares contract claims but the rendered design doc has no '## Contract Claims' section — the enumeration must be visible to the reviewer");
+	}
+	if (errors.length) ctx.log(`Design contracts: ${errors.length} contract-claim error(s): ${errors.slice(0, 2).join("; ")}`);
+	return { pass: errors.length === 0, errors };
+};
+
+/** Stage 6 design convergence: since v0.3.2 the design carries ONE deterministic
+ *  sensor (`designComplete` — contract-claims consistency; a no-op when the
+ *  design declares no contracts); overall quality is judged by the
+ *  design-reviewer's Fagan-style inspection, and it may be
  *  SKIPPED entirely for bug fixes — in which case it produces no artifact and
  *  converges immediately. Otherwise it loops write → review → fix until the
  *  design-reviewer approves (or a stall escalates to the user). */
 export const designConvergenceNode = artifactConvergenceNode({
 	stage: designStage,
 	feedbackKey: "design",
+	// v0.3.2 C1: contract-claims sensor (no-op when the design declares none).
+	validate: designComplete,
 	expected: "A design with defined interface contracts, grounded/feasible architecture, and no requirement/design conflicts, ready for the spec to consume.",
 	nextAction: "Revise the design so every module has a defined input/output/error contract, every referenced integration point is grounded in the actual codebase, and it satisfies every requirement without unjustified complexity, before calling structured_output.",
 	// Intentional skip is decided by CLASSIFICATION (bug fixes are not redesigned),

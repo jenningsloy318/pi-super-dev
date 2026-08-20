@@ -21,3 +21,32 @@
 ## Numeric Constants
 
 - **Has numeric constants requiring validation**: {{ hasNumericConstants }}
+
+{% if contracts and contracts.length %}
+## Contract Claims
+
+Each paired generate/validate contract below ships its enumerated closure — derived from the cited source, not hand-written. A deterministic checker verifies pattern-vs-enumeration closure and anchor existence.
+
+{% for c in contracts %}
+### {{ c.name }}
+
+- **Pattern**: `{{ c.pattern }}`
+{% if c.derivationRule %}- **Derivation rule**: {{ c.derivationRule }}
+{% endif %}{% if c.sourceAnchor %}- **Source anchor**: `{{ c.sourceAnchor }}`
+{% endif %}{% if c.uniqueness %}- **Uniqueness**: the enumeration is duplicate-free
+{% endif %}
+- **Enumerated closure ({{ c.enumerates.length }} value{{ c.enumerates.length == 1 ? '' : 's' }})**:
+
+{% for v in c.enumerates %}
+  - `{{ v }}`
+{% endfor %}
+{% endfor %}
+{% endif %}
+
+{% if alternativesConsidered and alternativesConsidered.length %}
+## Alternatives Considered
+
+{% for a in alternativesConsidered %}
+- **{{ a.decision }}**: chose {{ a.chosen }} — {{ a.rationale }}{% if a.alternatives and a.alternatives.length %} (alternatives rejected: {{ a.alternatives | join("; ") }}){% endif %}
+{% endfor %}
+{% endif %}
