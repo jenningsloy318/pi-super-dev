@@ -113,6 +113,9 @@ function excludeCopiedEnvFiles(worktreeRoot: string, copiedRelPaths: string[]): 
 		// Adversarial F-04 (spec-28 review): the transient spec-dir run lock must
 		// never be snapshotted into pipeline commits by `git add -A`.
 		if (!existing.includes(".run-lock")) additions.push(".run-lock");
+	// v0.3.3 L1: the persisted convergence ledger is harness state — never
+	// snapshotted into pipeline commits by `git add -A`.
+	if (!existing.includes(".convergence-ledger.json")) additions.push(".convergence-ledger.json");
 		for (const rel of copiedRelPaths) if (!lines.has(rel)) additions.push(rel);
 		if (additions.length === 0) return;
 		const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";

@@ -5,6 +5,7 @@ import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-err
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
+import { priorFindingsForInjection } from "../convergence-ledger.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import { runJudge } from "./judge.ts";
 import { countStageRounds } from "../resume.ts";
@@ -427,6 +428,39 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				// writer-revises-per-finding machinery performs the revision. Dedup by
 				// fingerprint keeps restarts idempotent.
 				if (round === 1) {
+					// v0.3.3 L1: unresolved BLOCKING findings from a prior run's
+					// persisted ledger inject at round 1 (the resume/restart path —
+					// the ledger itself restarts empty, but its residue must not).
+					// Fingerprint merge in recordConvergenceFindings keeps this
+					// idempotent across repeated restarts. sd33 self-audit: feedback
+					// calls REPLACE the key's array (setRetryFeedback), so the
+					// prior-run lines and the replan lines below must be merged into
+					// ONE setArtifactFeedback call or the second wipes the first.
+					const round1Lines: string[] = [];
+					const prior = priorFindingsForInjection(state.setup?.specDirectory);
+					if (prior.findings.length > 0 || prior.omitted > 0) {
+						// sd33 ADV-SD33-3: record ALL unresolved rows (the file's
+						// completeness survives restarts); cap only the FEEDBACK lines.
+						recordConvergenceFindings(state, prior.findings.map((f) => ({
+							id: f.id,
+							ownerStage: f.ownerStage,
+							title: f.title,
+							detail: f.detail,
+							severity: f.severity,
+							evidence: f.evidence,
+							recommendation: f.recommendation,
+							defectClass: f.defectClass,
+							status: f.status,
+							blocking: true,
+						})), { detectedAtStage: options.feedbackKey, ownerStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), sourceGate: "prior-run-ledger" });
+						round1Lines.push(
+							// sd33 CODE-SD33-9: prior-run lines capped at 6 so replan
+							// directives (below) always fit the feedback `missing` slice.
+							...prior.findings.slice(0, 6).map((f) => `[prior-run finding ${f.id}] ${f.title}${f.ownerStage ? ` (owner: ${f.ownerStage})` : ""}`),
+							...(prior.omitted > 0 || prior.findings.length > 6 ? [`…(+${Math.max(prior.omitted, prior.findings.length - 6)} more prior-run blocking finding(s) — see .convergence-ledger.json)`] : []),
+						);
+						ctx.log(`${options.feedbackKey} convergence: ${prior.findings.length} prior-run blocking finding(s) injected at round 1${prior.omitted > 0 ? ` (+${prior.omitted} omitted)` : ""}`);
+					}
 					const pendingReplan = pendingReplanRequests(state.setup?.specDirectory, options.feedbackKey);
 					if (pendingReplan.length > 0) {
 						recordConvergenceFindings(state, pendingReplan.map((r) => ({
@@ -438,9 +472,12 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 							status: "open",
 							blocking: true,
 						})), { detectedAtStage: "replan", ownerStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), sourceGate: "replan-request" });
-						setArtifactFeedback(options, state, pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
+						round1Lines.push(...pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
 						ctx.log(`${options.feedbackKey} convergence: ${pendingReplan.length} replan request(s) injected at round 1`);
 					}
+					// Replan directives lead (they are explicit revision orders);
+					// prior-run residue follows within the slice budget.
+					if (round1Lines.length > 0) setArtifactFeedback(options, state, round1Lines);
 				}
 
 				const stageResult = await stageTask.run(state, ctx);

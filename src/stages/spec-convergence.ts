@@ -18,6 +18,7 @@ import {
 	getConvergenceLedger,
 } from "../convergence-ledger.ts";
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
+import { priorFindingsForInjection } from "../convergence-ledger.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
 import { MAX_CONVERGENCE_ROUNDS, effectiveRoundCap, extendedRoundCap } from "./artifact-convergence.ts";
 import { countStageRounds } from "../resume.ts";
@@ -201,6 +202,33 @@ export const specConvergenceNode: Node = {
 			// convergence-ledger findings at round 1 (same machinery as the artifact
 			// convergence nodes); approval below flips them to addressed.
 			if (round === 1) {
+				// v0.3.3 L1: prior-run ledger residue (see artifact-convergence).
+				// sd33 self-audit: setSpecFeedback replaces the key's array — merge
+				// prior-run and replan lines into ONE call.
+				const round1Lines: string[] = [];
+				const prior = priorFindingsForInjection(state.setup?.specDirectory);
+				if (prior.findings.length > 0 || prior.omitted > 0) {
+					// sd33 ADV-SD33-3: record ALL unresolved rows (the file's
+					// completeness survives restarts); cap only the FEEDBACK lines.
+					recordConvergenceFindings(state, prior.findings.map((f) => ({
+						id: f.id,
+						ownerStage: f.ownerStage,
+						title: f.title,
+						detail: f.detail,
+						severity: f.severity,
+						evidence: f.evidence,
+						recommendation: f.recommendation,
+						defectClass: f.defectClass,
+						status: f.status,
+						blocking: true,
+					})), { detectedAtStage: "spec", ownerStage: "spec", sourceGate: "prior-run-ledger" });
+					round1Lines.push(
+						// sd33 CODE-SD33-9: capped at 6 so replan directives fit `missing`.
+						...prior.findings.slice(0, 6).map((f) => `[prior-run finding ${f.id}] ${f.title}${f.ownerStage ? ` (owner: ${f.ownerStage})` : ""}`),
+						...(prior.omitted > 0 || prior.findings.length > 6 ? [`…(+${Math.max(prior.omitted, prior.findings.length - 6)} more prior-run blocking finding(s) — see .convergence-ledger.json)`] : []),
+					);
+					ctx.log(`spec convergence: ${prior.findings.length} prior-run blocking finding(s) injected at round 1${prior.omitted > 0 ? ` (+${prior.omitted} omitted)` : ""}`);
+				}
 				const pendingReplan = pendingReplanRequests(state.setup?.specDirectory, "spec");
 				if (pendingReplan.length > 0) {
 					recordConvergenceFindings(state, pendingReplan.map((r) => ({
@@ -212,9 +240,10 @@ export const specConvergenceNode: Node = {
 						status: "open",
 						blocking: true,
 					})), { detectedAtStage: "replan", ownerStage: "spec", sourceGate: "replan-request" });
-					setSpecFeedback(state, "replan-request", pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
+					round1Lines.push(...pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
 					ctx.log(`spec convergence: ${pendingReplan.length} replan request(s) injected at round 1`);
 				}
+				if (round1Lines.length > 0) setSpecFeedback(state, "prior-run-ledger+replan", round1Lines);
 			}
 
 			const specResult = await specTask.run(state, ctx);

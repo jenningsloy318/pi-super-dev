@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname } from "node:path";
 import { localTimestamp } from "./render/time.ts";
 import { inferReviewFindingStatus, reviewFindingBlocks, reviewFindingFingerprint, reviewFindingHighSeverity } from "./review-findings.ts";
 import type { RetryFeedback } from "./retry-feedback.ts";
@@ -212,6 +215,93 @@ export function getConvergenceLedger(state: PipelineState): ConvergenceLedger {
 	return ledger(state);
 }
 
+// ─── v0.3.3 L1: persisted ledger (cumora: state that outlives the loop) ────────
+
+export const CONVERGENCE_LEDGER_FILE = ".convergence-ledger.json";
+
+interface PersistedLedger {
+	version: 1;
+	taskHash: string;
+	persistedAt: string;
+	findings: ConvergenceFinding[];
+}
+
+/** The task key is the spec dir's `.task` anchor (SPEC_TASK_ANCHOR in
+ *  setup.ts — the ORIGINAL task text, stable across restarts; mirrored here
+ *  rather than imported to avoid a cycle). Absent anchor hashes to "" — both
+ *  sides apply the same rule so they always agree. */
+function anchorTaskHash(specDir: string): string | null {
+	// sd33 ADV-SD33-1/CODE-SD33-8: a missing anchor returns NULL — never a
+	// constant hash. Two different tasks on a legacy track (or two test
+	// fixtures sharing a fixed spec dir) must never cross-inject through the
+	// hash("") collision; no anchor ⇒ no keying ⇒ no injection.
+	try {
+		const text = readFileSync(`${specDir.endsWith("/") ? specDir : specDir + "/"}.task`, "utf8");
+		return createHash("sha256").update(text).digest("hex").slice(0, 16);
+	} catch {
+		return null;
+	}
+}
+
+/** Best-effort persist of the in-memory ledger into the spec dir. Never
+ *  throws (a persistence failure must never kill the run); the file is
+ *  harness bookkeeping (HARNESS_BOOKKEEPING_FILES + git-excluded), never
+ *  agent work. taskText keys the file so a DIFFERENT task on the same track
+ *  never inherits the old task's findings. */
+export function persistConvergenceLedger(state: PipelineState): void {
+	try {
+		const dir = state.setup?.specDirectory;
+		if (!dir) return;
+		const store = ledger(state);
+		const anchor = anchorTaskHash(dir);
+		if (anchor === null) return; // no .task anchor ⇒ do not persist (test/legacy tracks)
+		const payload: PersistedLedger = {
+			version: 1,
+			taskHash: anchor,
+			persistedAt: localTimestamp(),
+			findings: store.findings,
+		};
+		const base = dir.endsWith("/") ? dir : dir + "/";
+		mkdirSync(dirname(base.slice(0, -1)), { recursive: true });
+		// sd33 CODE-SD33-7: atomic temp+rename — a torn write must never leave a
+		// corrupt ledger that kills the NEXT run's injection.
+		const tmp = `${base}${CONVERGENCE_LEDGER_FILE}.tmp`;
+		writeFileSync(tmp, JSON.stringify(payload), "utf8");
+		renameSync(tmp, `${base}${CONVERGENCE_LEDGER_FILE}`);
+	} catch { /* best-effort — resume then starts from an empty ledger, as today */ }
+}
+
+/** Unresolved BLOCKING findings from a prior run's persisted ledger, for
+ *  round-1 injection in the convergence loops (the same seam as pending
+ *  replan requests). Guards: absent/corrupt file → []; taskHash mismatch
+ *  (a different task on the track) → []; duty-downgraded advisories and
+ *  non-blocking rows are skipped; capped at 8 with the remainder counted. */
+export function priorFindingsForInjection(specDir: string | undefined): { findings: ConvergenceFinding[]; omitted: number } {
+	try {
+		if (!specDir) return { findings: [], omitted: 0 };
+		const path = `${specDir.endsWith("/") ? specDir : specDir + "/"}${CONVERGENCE_LEDGER_FILE}`;
+		if (!existsSync(path)) return { findings: [], omitted: 0 };
+		const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<PersistedLedger>;
+		const anchor = anchorTaskHash(specDir);
+		if (anchor === null || raw?.version !== 1 || !Array.isArray(raw.findings) || raw.taskHash !== anchor) {
+			return { findings: [], omitted: 0 };
+		}
+		// Ledger semantics: "addressed" rows are writer claims awaiting reviewer
+		// verification — non-blocking in the ledger, but across a restart nobody
+		// will verify the claim, so they are injected as residue too.
+		const unresolved = raw.findings.filter((f) =>
+			f && typeof f === "object" && !f.downgradeReason &&
+			(f.status === "open" || f.status === "needs-human"
+				? f.blocking === true
+				: f.status === "addressed"));
+		return { findings: unresolved.slice(0, 8), omitted: Math.max(0, unresolved.length - 8) };
+	} catch {
+		return { findings: [], omitted: 0 };
+	}
+}
+
+
+
 /** True only for downgrade reasons produced by the DETERMINISTIC convergence
  *  duty layer (enforceReviewerConvergenceDuty's exact "convergence-duty ("
  *  prefix). LLM-shaped reasons (a forged reviewer field) do not qualify —
@@ -328,7 +418,16 @@ export function recordConvergenceFindings(
 			written.push(normalized);
 		}
 	}
+	persistConvergenceLedger(state);
 	return written;
+}
+
+/** v0.3.3: the one unresolved-BLOCKING predicate (open/needs-human, blocking,
+ *  no duty downgrade) — shared by the completion audit's anomaly check and
+ *  anything else that needs "blockers that were never resolved". */
+export function unresolvedBlockingConvergenceFindings(state: PipelineState): ConvergenceFinding[] {
+	return ledger(state).findings.filter((f) =>
+		["open", "needs-human"].includes(f.status) && f.blocking === true && !f.downgradeReason);
 }
 
 export function activeConvergenceFindings(state: PipelineState): ConvergenceFinding[] {
@@ -398,6 +497,7 @@ export function markConvergenceFindingsAddressedFromResponses(
 		finding.responses = [...(finding.responses ?? []), entry];
 		count++;
 	}
+	persistConvergenceLedger(state);
 	return count;
 }
 
@@ -411,6 +511,7 @@ export function markConvergenceFindingsVerified(state: PipelineState, predicate:
 			count++;
 		}
 	}
+	persistConvergenceLedger(state);
 	return count;
 }
 

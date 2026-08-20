@@ -32,6 +32,7 @@ import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
 import { appendRunEvent, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
+import { writeCompletionAudit } from "./completion-audit.ts";
 import { validateTeamReadiness } from "./team/raci.ts";
 import { recordInstruction } from "./team/messages.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
@@ -660,6 +661,13 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	} else {
 		status = "partial";
 	}
+
+	// v0.3.3 V2: deterministic completion audit — written for EVERY outcome at
+	// the moment the summary is derived (a partial/failed audit is more valuable
+	// than a success audit). Best-effort; never throws, never blocks.
+	try {
+		writeCompletionAudit(state, status);
+	} catch { /* best-effort */ }
 
 	if (!aborted) {
 		// Honest completion log DERIVED FROM `status` (R5): a `tolerant` sequence
