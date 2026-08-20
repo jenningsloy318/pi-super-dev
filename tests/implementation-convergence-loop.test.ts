@@ -87,7 +87,12 @@ describe("§D convergence loop — per-phase green-state carry", () => {
 		expect(out.allGreen).toBe(false);
 		expect(out.phasesCompleted).toBe(1);
 		expect(out.totalPhases).toBe(2);
-		expect(out.phaseStatus).toEqual([{ id: "phase-01", status: "green" }, { id: "phase-02", status: "failed" }]);
+		// v0.3.0: a failed phase is recorded as PARTIAL (best attempt preserved, run
+		// continues) — never "failed"-with-run-termination anymore.
+		expect(out.phaseStatus).toEqual([
+			{ id: "phase-01", status: "green" },
+			expect.objectContaining({ id: "phase-02", status: "partial" }),
+		]);
 		expect(out.lastFailures.map((f) => f.phaseId)).toEqual(["phase-02"]);
 		expect(out.lastFailures[0]!.reasons.length).toBeGreaterThan(0);
 	});
@@ -254,3 +259,58 @@ describe("H3 — GREEN-loop A↔B recurrence detection (AC-03, SCENARIO-006/007)
 		expect(logs.some((l) => /stopped after repeated no-progress failure on attempt 2/.test(l))).toBe(true);
 	}, 20_000);
 });
+
+
+// ─── v0.3.0 (harness research): a failed phase NEVER terminates the run ────
+// The five track-07 deaths all ended PARTIAL 0/N with all prior work discarded;
+// external harnesses structurally cannot end at zero (SWE-agent get_best,
+// Anthropic git-per-increment, Ralph workspace-as-memory).
+describe("v0.3.0 — run never ends at zero: partial + continue", () => {
+	beforeEach(() => { gateQ = []; userNotes = ""; });
+
+	it("phase-1 no-progress death marks phase-01 PARTIAL and phase-02 still runs (no convergenceBlocked)", async () => {
+		// phase-01: two IDENTICAL gate failures (same signature → no-progress at
+		// attempt 2, escalation yields no decision → terminal break of the ATTEMPT
+		// loop); phase-02: green on its first attempt.
+		gateQ = [FAIL, FAIL, PASS];
+		const { ctx, implPhases, logs } = mkCtx("v030-continue");
+		const state = mkState();
+		const out = await implementationStage.run(state, ctx) as { allGreen: boolean; convergenceBlocked?: boolean; phaseStatus: Array<{ id: string; status: string }>; phasesCompleted: number };
+		expect(out.phaseStatus).toEqual([
+			expect.objectContaining({ id: "phase-01", status: "partial" }),
+			{ id: "phase-02", status: "green" },
+		]);
+		expect(out.allGreen).toBe(false);
+		expect(out.convergenceBlocked).toBe(false);
+		// phase-02's implementer actually dispatched — the run did not stop at phase-1
+		expect(implPhases.filter((p) => p === "phase-02").length).toBeGreaterThan(0);
+		expect(logs.some((l) => l.includes("phase-01") && l.includes("partial"))).toBe(true);
+		expect(logs.some((l) => l.includes("continuing to the next phase"))).toBe(true);
+	});
+
+	it("budget reminder reaches the implementer prompt from attempt 2 (attempt number + strategy-change instruction)", async () => {
+		// FRESH signatures each attempt (A,B,C) so no-progress never fires; the
+		// phase goes green on attempt 3.
+		gateQ = [
+			{ ...FAIL, errors: ["boom: compile error A"] },
+			{ ...FAIL, errors: ["boom: compile error B"] },
+			PASS,
+		];
+		const { ctx, implCalls } = mkCtx("v030-reminder");
+		const state = mkState();
+		await implementationStage.run(mkStateSinglePhase(state), ctx);
+		const prompts = implCalls.map((c) => c.prompt);
+		expect(prompts.length).toBeGreaterThanOrEqual(3);
+		expect(prompts[0]).not.toContain("Attempt budget");
+		expect(prompts[1]).toContain("Attempt budget");
+		expect(prompts[1]).toContain("attempt #2");
+		expect(prompts[1]).toContain("DO NOT retry the same strategy");
+		expect(prompts[2]).toContain("attempt #3");
+	});
+});
+
+/** One-phase state for the reminder test (phase-02 never runs). */
+function mkStateSinglePhase(state: PipelineState): PipelineState {
+	(state.spec as { phases: unknown[] }).phases = [{ name: "Phase 1" }];
+	return state;
+}

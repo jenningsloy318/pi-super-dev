@@ -270,7 +270,8 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		// the deliverable contract is unmet.
 		expect(hasLog(fake.logs, "Implementation phase-01 GREEN")).toBe(false);
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
-		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
+		// v0.3.0: the no-progress stop is now PARTIAL + continue wording
+		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress) — continuing to the next phase")).toBe(true);
 		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
@@ -325,7 +326,8 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		)) as ControlObj;
 
 		expect(hasLog(fake.logs, "no-progress escalation")).toBe(false);
-		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
+		// v0.3.0: the no-progress stop is now PARTIAL + continue wording
+		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress) — continuing to the next phase")).toBe(true);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
 	});
@@ -465,7 +467,8 @@ describe("Phase 3 — AND-semantics wiring (AC-03)", () => {
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
-		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
+		// v0.3.0: the no-progress stop is now PARTIAL + continue wording
+		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress) — continuing to the next phase")).toBe(true);
 	});
 
 	it("SCENARIO-011/015 log: the deliverable-check verdict (with missing reasons) is logged next to the build-gate log", async () => {

@@ -117,7 +117,7 @@ describe("runWorkflow honest status", () => {
 	it("logs an honest PARTIAL completion line (not a bare 'complete') when phases are unfinished", async () => {
 		const logs: string[] = [];
 		await runWorkflow(
-			wf(seed({ implementation: { totalPhases: 3, phasesCompleted: 1, allGreen: false, convergenceBlocked: true } })),
+			wf(seed({ implementation: { totalPhases: 3, phasesCompleted: 1, allGreen: false, phaseStatus: [{ id: "phase-01", status: "green" }, { id: "phase-02", status: "partial" }, { id: "phase-03", status: "partial" }] } })),
 			"t",
 			{ progress: { log: (m: string) => logs.push(m), phase() {} } } as never,
 		);
@@ -125,7 +125,8 @@ describe("runWorkflow honest status", () => {
 		expect(complete).toBeDefined();
 		expect(complete).toContain("PARTIAL");
 		expect(complete).toContain("1/3");
-		expect(complete).toContain("convergence blocked");
+		// v0.3.0: partial phases surface in the summary (best attempts stash-preserved)
+		expect(complete).toContain("2 partial");
 	});
 	it("logs a plain 'complete' when implementation is fully green", async () => {
 		const logs: string[] = [];

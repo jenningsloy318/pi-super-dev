@@ -208,15 +208,19 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 			ctx,
 		)) as ControlObj;
 
-		// Phase-2 never started: no agent id references phase-02.
-		expect(fake.agentIds.some((id) => id.includes("phase-02"))).toBe(false);
-		// Only phase-1's no-progress-stopped attempts ran each primitive — NOT phase 2.
-		expect(mock.gateCalls).toBe(2);
-		expect(mock.deliverableCalls).toBe(2);
+		// v0.3.0: phase-2 NOW RUNS after phase-1's partial (the run never ends at
+		// zero) — but the abort semantics hold for phase-1: no commit agent for it
+		// and its status is partial.
+		expect(fake.agentIds.some((id) => id.includes("phase-02"))).toBe(true);
+		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
+		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress)")).toBe(true);
+		expect(mock.gateCalls).toBe(4); // phase-1 (2 attempts) + phase-2 (2 attempts)
+		expect(mock.deliverableCalls).toBe(4); // deliverable check per attempt, both phases
 		// Stage verdict reflects the abort.
 		expect(res.allGreen).toBe(false);
 		expect(res.phasesCompleted).toBe(0);
-		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
+		// v0.3.0: the no-progress stop is now PARTIAL + continue wording
+		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress) — continuing to the next phase")).toBe(true);
 	});
 
 	it("beyond-old-cap convergence: changing failures can recover GREEN on attempt 6 (SCENARIO-012/015)", async () => {

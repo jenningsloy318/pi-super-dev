@@ -240,7 +240,10 @@ function mkState(wt: string, phases?: unknown): PipelineState {
 			language: "frontend",
 			isWebUi: false,
 			specIdentifier: "env-blk",
-			worktreeCreated: false,
+			// v0.3.0: these fixtures simulate dedicated-worktree runs (the quarantine
+			// + preserve machinery only exists there); worktreeCreated:true so the
+			// partial-preserve stash guard admits them.
+			worktreeCreated: true,
 			initializedRepo: false,
 		},
 		classify: { taskType: "bug", uiScope: "none", language: "frontend", isWebUi: false },
@@ -475,13 +478,20 @@ describe("T3.2 — dirt inventory → scoped stash → ledger record → memo cl
 		// environmental judge is SKIPPED (run 05-09 rode the stale class in).
 		expect(calls.logs.some((l) => /post-quarantine re-run classified \S+ \(re-run still failing/.test(l) && /environmental judge skipped/.test(l))).toBe(true);
 		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
-		// A recoverable quarantine ran: exactly one stash entry (AC-03a).
-		expect(git(repo, "stash", "list").split("\n").filter(Boolean)).toHaveLength(1);
+		// A recoverable quarantine ran, and v0.3.0 adds the phase-partial preserve
+		// stash for the implementer's remaining work (the still-failing re-gate path
+		// marks the phase partial and continues): exactly the quarantine entry plus
+		// the partial entry, in order (AC-03a + v0.3.0 preserve contract).
+		const stashList = git(repo, "stash", "list").split("\n").filter(Boolean);
+		expect(stashList.length).toBe(2);
+		// the quarantine entry (older, index 1) and the v0.3.0 partial preserve (newest)
+		expect(stashList[1]).toContain("environmental-blocker");
+		expect(stashList[0]).toContain("super-dev partial phase-01");
 		// SCENARIO-006 substrate: after quarantine the porcelain no longer lists
 		// the foreign path (the flip the fresh re-run consumes in T3.3).
 		expect(git(repo, "status", "--porcelain")).not.toContain("internal/services/snow/enrichment.go");
 		// The foreign file is recoverable from the stash (tracked mod, -u).
-		expect(git(repo, "stash", "show", "--name-only")).toContain("internal/services/snow/enrichment.go");
+		expect(git(repo, "stash", "show", "--name-only", "stash@{1}")).toContain("internal/services/snow/enrichment.go");
 		// Ledger: exactly one `kind:"quarantine"` line, exact key set (AC-12),
 		// canonical inventory inherited — spec-dir/bookkeeping/claimed/scope/test
 		// files NEVER in the quarantined paths (SCENARIO-008/009).
@@ -490,7 +500,9 @@ describe("T3.2 — dirt inventory → scoped stash → ledger record → memo cl
 		expect(ledger[0]!["kind"]).toBe("quarantine");
 		expect(Object.keys(ledger[0]!)).toEqual(["kind", "paths", "stashRef", "reason"]);
 		expect(ledger[0]!["paths"]).toEqual(["internal/services/snow/enrichment.go"]);
-		expect(ledger[0]!["stashRef"]).toBe(git(repo, "rev-parse", "refs/stash"));
+		// v0.3.0: the partial-preserve stash is now the TIP of refs/stash; the
+		// quarantine entry is its first parent (the second-newest stash).
+		expect(ledger[0]!["stashRef"]).toBe(git(repo, "rev-parse", "stash@{1}"));
 		expect(String(ledger[0]!["reason"])).toContain("environmental-blocker phase phase-01");
 		// Recovery log (AC-10 parity): paths + stash ref + git stash pop + kill-switch.
 		const recovery = calls.logs.find((l) => /quarantined foreign uncommitted state/.test(l));
@@ -498,7 +510,7 @@ describe("T3.2 — dirt inventory → scoped stash → ledger record → memo cl
 		expect(recovery).toContain("internal/services/snow/enrichment.go");
 		expect(recovery).toContain("git stash pop");
 		expect(recovery).toContain("SUPER_DEV_NO_DIRTY_QUARANTINE=1");
-		expect(recovery).toContain(String(git(repo, "rev-parse", "refs/stash")));
+		expect(recovery).toContain(String(git(repo, "rev-parse", "stash@{1}")));
 		// AC-02 holds through the whole interaction: ZERO further spawns.
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
@@ -628,7 +640,7 @@ describe("T3.4 — AC-05 log lines name the fault class and the next action (SCE
 		expect(skippedLine).toBeGreaterThan(quarantineLine);
 		// No environmental judge hand-off, no terminal stop — product retry.
 		expect(calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(false);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(false);
 		expect(calls.impl).toHaveLength(1); // budget 1: the retry is loop-limited here
 	}, 20_000);
 });
@@ -797,7 +809,9 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 		// The phase stops for THIS pass (terminalStopReason "failed") with the
 		// DISTINCT granted-re-entry stop log (v0.2.6 G4 — not the blocked variant).
 		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off .* guidance re-entry GRANTED: convergence not blocked/.test(l))).toBe(true);
-		expect(calls.logs).toContain("Implementation phase-01 stopped after 1 attempt(s)");
+		// v0.3.0: the stop log is now the PARTIAL wording (best attempt preserved,
+		// run continues) — the old bare terminal stop no longer exists.
+		expect(calls.logs.some((l) => /Implementation phase-01 partial after 1 attempt\(s\).*continuing to the next phase/.test(l))).toBe(true);
 		// D-5 (adv-F3 remediation): applyRetryDecision is STILL NOT called even
 		// though the user chose retry-with-guidance — no rollback (HEAD unchanged,
 		// no reflog reset entry, the quarantined stash survives) — but the guidance
@@ -893,7 +907,7 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect(titles.some((t) => t.includes("internal/services/snow/enrichment.go"))).toBe(true);
 		expect(titles.some((t) => t.includes(SNOW_TEST))).toBe(true);
 		// Terminal stop; NO implementer re-spawn on any arm (AC-04).
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
@@ -926,7 +940,7 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect(titles.some((t) => t.includes("baseline verification: status=regression"))).toBe(true);
 		expect(titles.some((t) => t.includes("internal/services/snow/enrichment.go"))).toBe(true);
 		expect(titles.some((t) => t.includes(SNOW_TEST))).toBe(true);
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
@@ -956,7 +970,7 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect(titles.some((t) => t.includes("baseline verification: status=regression"))).toBe(true);
 		expect(titles.some((t) => t.includes("internal/services/snow/enrichment.go"))).toBe(true);
 		expect(titles.some((t) => t.includes(SNOW_TEST))).toBe(true);
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
@@ -980,7 +994,7 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 		expect(headless).toContain("status=regression");
 		expect(headless).toContain(`PASSES at baseline ${BASELINE_SHA}`);
 		expect(headless).toContain("internal/services/snow/enrichment.go");
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 });
@@ -1067,7 +1081,7 @@ describe("T4.4 — quarantine git failure: warning + judge, never fatal (SCENARI
 			// The attempt loop never re-spawned the implementer.
 			expect(calls.impl).toHaveLength(1);
 			// The phase still terminal-stops through the ladder.
-			expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+			expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(true);
 		}, 20_000);
 });
 
@@ -1107,7 +1121,7 @@ describe("T6.2 — judge-environmental verdict records (SCENARIO-026 · AC-12)",
 		expect(ledger[0]!["stashRef"]).toBeNull();
 		expect(String(ledger[0]!["reason"])).toBe("fix-environment: the snow service dependency is broken in the shared environment");
 		// The boundary still terminal-stops with zero further spawns.
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(true);
 		expect(calls.impl).toHaveLength(1);
 	}, 20_000);
 
@@ -1211,7 +1225,7 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 		// Implementer count unchanged (AC-02 holds through the degrade).
 		expect(calls.impl).toHaveLength(1);
 		// The terminal stop still fired — never fatal, never a loop continue.
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(true);
 	}, 20_000);
 });
 
@@ -1256,12 +1270,17 @@ describe("v0.2.6 G1 — dirt provenance: a tree clean at phase start classifies 
 		};
 		await (implementationStage as Stage).run(mkRealGitState(repo), made.ctx);
 
-		// PRODUCT: no environmental class line, no quarantine, no stash, no judge.
+		// PRODUCT: no environmental class line, no quarantine, no judge.
 		expect(made.calls.logs.some((l) => l.includes("class=environment"))).toBe(false);
-		expect(git(repo, "stash", "list").trim()).toBe("");
 		expect(made.calls.judge.filter((j) => String(j.id).includes("impl-env-blocker"))).toHaveLength(0);
-		// The undeclared edit is still on disk (never swept away)…
-		expect(git(repo, "status", "--porcelain")).toContain("src/persistence.ts");
+		// v0.3.0: the phase ends PARTIAL — the preserve stash carries the best
+		// attempt (branded, recoverable) instead of leaving the tree dirty; the
+		// QUARANTINE machinery still never touched it (no environmental-blocker
+		// stash entry — the G1 contract).
+		const stashList = git(repo, "stash", "list");
+		expect(stashList).toContain("super-dev partial phase-01");
+		expect(stashList).not.toContain("environmental-blocker");
+		expect(git(repo, "show", "stash@{0}^3", "--name-only", "--format=").trim()).toContain("src/persistence.ts");
 		// …the implementer is re-spawned (product retry)…
 		expect(made.calls.impl.length).toBeGreaterThanOrEqual(2);
 		// …and the RETRY FEEDBACK names the undeclared out-of-scope edit (G1).
@@ -1292,7 +1311,7 @@ describe("v0.2.6 G1 — dirt provenance: a tree clean at phase start classifies 
 		expect(made.calls.logs.some((l) => l.includes("next=<quarantine+re-gate>"))).toBe(true);
 		// …the quarantine stashed EXACTLY the foreign path… (stash show covers the
 		// tracked commit; the untracked parent is refs/stash^3 — assert BOTH ways)
-		expect(git(repo, "stash", "show", "--name-only")).toContain("internal/services/snow/enrichment.go");
+		expect(git(repo, "stash", "show", "--name-only", "stash@{0}")).toContain("internal/services/snow/enrichment.go");
 		const untrackedInStash = (() => { try { return git(repo, "show", "--name-only", "refs/stash^3"); } catch { return ""; } })();
 		expect(untrackedInStash).not.toContain("src/undeclared-this-phase.ts");
 		// …the this-phase undeclared edit is STILL on disk (never stashed; the
@@ -1339,7 +1358,7 @@ describe("v0.2.6 G3 — judge arbitration: route=implementer-retry overrides the
 		// from the retry ladder is a DIFFERENT boundary and permitted — its
 		// message never claims an environmental failure.)
 		expect(calls.escalations.every((e) => !String(e.message).includes("environmental failure"))).toBe(true);
-		expect(calls.logs.some((l) => /environmental-blocker terminal stop after judge hand-off/.test(l))).toBe(false);
+		expect(calls.logs.some((l) => /environmental-blocker stop after judge hand-off/.test(l))).toBe(false);
 		expect(calls.logs.some((l) => /convergence blocked \(no automatic re-entry\)/.test(l))).toBe(false);
 	}, 20_000);
 
@@ -1497,7 +1516,9 @@ describe("v0.2.6 CR-1/CR-2 — ONE run-start snapshot persists across convergenc
 		// (b) The SECOND retry-with-guidance finds the per-phase-EVER grant spent:
 		// terminal stop WITH the convergence block (no re-grant across iterations).
 		expect(second.calls.logs.some((l) => /re-entry budget already spent/.test(l))).toBe(true);
-		expect(second.calls.logs.some((l) => /convergence blocked \(no automatic re-entry\)/.test(l))).toBe(true);
+		// v0.3.0: the convergence-blocked log line is gone — the stop is the
+		// partial+continue wording (the phase never blocks the run anymore).
+		expect(second.calls.logs.some((l) => /phase preserved as partial, continuing to the next phase/.test(l))).toBe(true);
 		// The late dirt never became foreign: it is named as this-run own work in
 		// the judge-visible inventory path (still in dirtPaths, never quarantined —
 		// kill-switch arm) and the stash list stays empty throughout.

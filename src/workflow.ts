@@ -604,7 +604,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	}
 
 	// Derive an honest overall status from the produced state — never faked.
-	const impl = state.implementation as { totalPhases?: number; phasesCompleted?: number; allGreen?: boolean; convergenceBlocked?: boolean } | undefined;
+	const impl = state.implementation as { totalPhases?: number; phasesCompleted?: number; allGreen?: boolean; convergenceBlocked?: boolean; phaseStatus?: Array<{ id: string; status: string }> } | undefined;
 	const review = state.review as { verdict?: string } | undefined;
 	const phases = impl?.totalPhases ?? 0;
 	const green = impl?.allGreen === true;
@@ -677,7 +677,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 					: acceptedLimitations
 						? `a fatal-gate limitation was accepted without validation (see state.__acceptedLimitations: ${Object.keys(acceptedLimitations).join(", ")})`
 						: "review/build/integration/merge or a stage did not fully pass"
-				: `implementation finished ${done}/${total} phase(s)${impl?.convergenceBlocked ? " (convergence blocked — no-progress)" : ""}`;
+				: `implementation finished ${done}/${total} phase(s)${(impl?.phaseStatus ?? []).filter((p) => p.status === "partial").length > 0 ? ` (${(impl?.phaseStatus ?? []).filter((p) => p.status === "partial").length} partial — best attempts stash-preserved, see run log)` : ""}`;
 			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.`);
 		} else if (status === "replan") {
 			progress?.log(`Workflow "${workflow.id}" complete — REPLAN round ${replanMarker?.rounds ?? "?"}: ${replanMarker?.owners?.join(", ") ?? "?"} will revise; auto-resuming`);

@@ -617,6 +617,11 @@ const MAX_RED_RETRIES = (() => {
 	return Number.isFinite(raw) && raw > 0 ? raw : 6;
 })();
 
+/** v0.3.0: after this many §D re-entries a phase whose partial keeps the SAME
+ * failure signature is skipped for the rest of the run (its stash-preserved
+ * best attempt stands; later phases keep getting convergence iterations). */
+export const MAX_PARTIAL_REENTRIES = 2;
+
 /** Hard cap on implementer-driven (challenge) RED re-authors per phase. When the
  *  implementer PROVES a confirmed RED test is unsatisfiable (internal
  *  contradiction, or compile errors in the test it cannot fix because tests are
@@ -893,13 +898,67 @@ export function normalizeStringArray(v: unknown): string[] {
 // attempt 1.
 export interface PhaseStatusEntry {
 	id: string;
-	status: "green" | "failed";
+	status: "green" | "failed" | "partial";
+	/** v0.3.0 windup bound: how many §D convergence iterations re-entered this
+	 *  phase as partial, and the failure signature each pass ended on (a phase
+	 *  whose partial keeps the SAME signature is hopeless this run — after
+	 *  MAX_PARTIAL_REENTRIES passes it is skipped so the budget flows to the
+	 *  phases that can still converge). */
+	partialReEntries?: number;
+	lastFailureSig?: string;
 }
 export interface PhaseFailureEntry {
 	phaseId: string;
 	reasons: string[];
 }
-export function phaseStatusUpsert(arr: PhaseStatusEntry[], id: string, status: "green" | "failed"): void {
+/** v0.3.0 (harness research, docs/requirements/harness-research-and-v0.3.0-architecture.md):
+ *  a phase that exhausts its attempts no longer terminates the run — its best
+ *  attempt is PRESERVED as a labeled git stash and the pipeline continues to
+ *  the next phase (SWE-agent get_best / Anthropic git-per-increment semantics:
+ *  never end a run with zero preserved work). Best-effort and never fatal: a
+ *  stash failure only logs (the dirty tree itself still carries the work). */
+function preservePartialPhase(ctx: StageContext, setup: { worktreePath: string; specDirectory?: string } | undefined, phaseId: string, phaseName: string, reason: string): void {
+	if (!setup) return;
+	// review code-F1 (high): in-place runs share the USER's checkout — an
+	// automatic stash there would sweep the user's own uncommitted work. The
+	// preserve stash only ever runs in a dedicated super-dev worktree.
+	const worktreeCreated = (setup as { worktreeCreated?: boolean }).worktreeCreated;
+	if (worktreeCreated === false) {
+		ctx.log(`Implementation ${phaseId} partial: stash-preserve SKIPPED (in-place run shares the user's checkout — no automatic worktree mutations); any uncommitted phase work stays dirty for inspection`);
+		return;
+	}
+	// The same "no automatic worktree mutations" kill-switch that disables the
+	// quarantine governs this preserve stash — a user who set
+	// SUPER_DEV_NO_DIRTY_QUARANTINE=1 opted out of ALL automatic stashing.
+	if (process.env.SUPER_DEV_NO_DIRTY_QUARANTINE === "1") {
+		ctx.log(`Implementation ${phaseId} partial: stash-preserve SKIPPED (SUPER_DEV_NO_DIRTY_QUARANTINE=1 — no automatic worktree mutations); any uncommitted phase work stays dirty for inspection`);
+		return;
+	}
+	try {
+		// The spec directory (stage docs, evidence ledgers, knowledge) is harness
+		// bookkeeping living untracked in the worktree until the release commit —
+		// it must NEVER ride the partial stash (resume + downstream stages read it).
+		// Pathspec magic excludes it from both the tracked and untracked sweep.
+		const relSpec = ((): string => {
+			const abs = typeof setup.specDirectory === "string" ? setup.specDirectory : "";
+			if (!abs) return "docs/specifications";
+			const rel = abs.startsWith("/") ? abs.slice(setup.worktreePath.length).replace(/^\/+/, "") : abs;
+			return rel || "docs/specifications";
+		})();
+		const r = spawnSync("git", ["-C", setup.worktreePath, "stash", "push", "--include-untracked", "-m", `super-dev partial ${phaseId}: ${reason.slice(0, 120)}`, "--", ".", `:(exclude)${relSpec}`, ":(exclude)docs/specifications"], { encoding: "utf8", timeout: 30_000 });
+		if (r.status === 0 && String(r.stdout).trim().length > 0) {
+			ctx.log(`Implementation ${phaseId} partial preserved via git stash (${String(r.stdout).trim().slice(0, 40)}) — recoverable via git stash list`);
+		} else if (r.status === 0) {
+			ctx.log(`Implementation ${phaseId} partial: tree already clean — no preserve stash created; the committed state IS the best attempt`);
+		} else {
+			ctx.log(`Implementation ${phaseId} partial: stash attempt FAILED (exit ${r.status}) — NOT preserved via stash; any uncommitted phase work stays dirty for inspection (non-fatal)`);
+		}
+	} catch (error) {
+		ctx.log(`Implementation ${phaseId} partial: stash attempt THREW (${error instanceof Error ? error.message : String(error)}) — NOT preserved via stash; non-fatal`);
+	}
+}
+
+export function phaseStatusUpsert(arr: PhaseStatusEntry[], id: string, status: "green" | "failed" | "partial"): void {
 	const i = arr.findIndex((p) => p.id === id);
 	if (i >= 0) arr[i] = { id, status };
 	else arr.push({ id, status });
@@ -963,6 +1022,10 @@ export const implementationStage: Stage = {
 		if (phaseStatus.length) ctx.log(`Implementation: resuming convergence iteration (${phaseStatus.filter((p) => p.status === "green").length}/${phases.length} phases already green)`);
 		let phasesCompleted = 0;
 		let allGreen = true;
+		// v0.3.0 (harness research): DEPRECATED — never set to true anymore. The
+		// field survives on the control shape for downstream readers (workflow
+		// summary, §D loop predicate) which now treat it as always-false; a failed
+		// phase is recorded `partial` and the pipeline CONTINUES (never-zero).
 		let convergenceBlocked = false;
 		let convergenceBlockReason = "";
 		const filesModified: string[] = [];
@@ -974,7 +1037,7 @@ export const implementationStage: Stage = {
 			const phaseHeadline = `Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			const phaseLabel = `↳ Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			let phaseLifecycleStarted = false;
-			const emitPhaseStatus = (status: "running" | "ok" | "failed" | "skipped") => {
+			const emitPhaseStatus = (status: "running" | "ok" | "failed" | "skipped" | "partial") => {
 				ctx.events.emit("stage", {
 					id: `implementation.${phaseId}`,
 					label: phaseLabel,
@@ -1031,6 +1094,19 @@ export const implementationStage: Stage = {
 				emitPhaseStatus("ok");
 				ctx.log(`Implementation ${phaseId} already green (prior convergence iteration) — skipping`);
 				continue;
+			}
+			// v0.3.0 windup bound (review code-F4 / adv SD030-3): a phase that went
+			// partial with the SAME failure signature in MAX_PARTIAL_REENTRIES prior
+			// passes is hopeless this run — skip it so the global budget flows to the
+			// phases that can still converge (never-zero is preserved: the stash
+			// holds its best attempt and the summary reports it as partial).
+			{
+				const prior = phaseStatus.find((p) => p.id === phaseId);
+				const priorFailures = (lastFailures.find((f) => f.phaseId === phaseId)?.reasons ?? []).join("; ").slice(0, 200);
+				if (prior && prior.status === "partial" && (prior.partialReEntries ?? 0) >= MAX_PARTIAL_REENTRIES && prior.lastFailureSig === priorFailures) {
+					ctx.log(`Implementation ${phaseId} partial for ${prior.partialReEntries! + 1} passes with the same failure signature — skipping further re-entry this run (best attempt stays stash-preserved; budget flows to remaining phases)`);
+					continue;
+				}
 			}
 			let green = false;
 			let attemptErrors: string[] = [];
@@ -1103,6 +1179,9 @@ export const implementationStage: Stage = {
 			// `reauthorEvidence` is appended to the tdd-guide prompt; cleared once a
 			// fresh RED is accepted. `challengeReauthors` bounds the proactive loop.
 			let reauthorEvidence = "";
+			// v0.3.0: advisory note carried from a merely-weak RED review into the
+			// implementer prompt (the RED is accepted; the note guides implementation).
+			let redWeaknessAdvisory = "";
 			let challengeReauthors = 0;
 			let implDefects: TestDefect[] = [];
 			let implTextTail = "";
@@ -1332,6 +1411,17 @@ export const implementationStage: Stage = {
 									ctx.log(`Implementation ${phaseId} RED review: CONTRADICTIONS (${verdict || "no verdict"}) — ${summary}`);
 									redEvidence = { ...redEvidence, status: "review-weak", reason: `RED review found jointly unsatisfiable tests: ${summary}` };
 									retryHint = `An independent reviewer PROVED these RED tests are jointly unsatisfiable — NO conforming implementation can pass them all. Rewrite or remove the contradicting tests: ${contradictionList.map((c) => `${c.tests}${c.lines ? ` (${c.lines})` : ""}: ${c.proof}`).join(" | ")}. Resolve the contradiction in favor of the specification's observable behavior and re-run.`;
+								} else if (verdict === "weak") {
+									// v0.3.0 (harness research): a merely-weak RED (an EXPLICIT weak
+									// verdict, no proven contradictions) PROCEEDS to implementation with
+									// the weakness analysis as advisory context — the post-RED oracle
+									// (tests must actually go green) is the deterministic endpoint;
+									// burning up to MAX_RED_RETRIES tdd-guide re-authors on strength
+									// wording was the run-10-39 Catch-22. Empty/invalid/error verdicts
+									// keep the fail-closed re-author path below (R2: a review that did
+									// not run must never equal a pass).
+									ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (${verdict}) — ${summary} (advisory; proceeding — post-RED oracle guards)`);
+									redWeaknessAdvisory = `An independent reviewer rated the RED tests as NOT STRONG: ${summary}. While implementing, prefer making the OBSERVABLE behavior asserted by each test actually correct (concrete expected values/outputs/status codes) over merely satisfying tautological assertions.`;
 								} else {
 									ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (${verdict || review.error || "no verdict"}) — ${summary}`);
 									redEvidence = { ...redEvidence, status: "review-weak", reason: `RED review not strong: ${summary}` };
@@ -1542,6 +1632,10 @@ export const implementationStage: Stage = {
 					implParts.push(judgeGuidance);
 					judgeGuidance = "";
 				}
+				if (redWeaknessAdvisory) {
+					implParts.push(`\n## RED review advisory\n${redWeaknessAdvisory}`);
+					redWeaknessAdvisory = "";
+				}
 				// Forceful, prominent retry feedback when the PRIOR attempt edited a
 				// confirmed RED test file during GREEN (a contract violation — even a
 				// comment-only edit is detected and restored). Placed FIRST so the
@@ -1557,6 +1651,16 @@ export const implementationStage: Stage = {
 						missing: [],
 						nextAction: "Do NOT create, edit, or modify ANY test file — not even a comment, import, or header. The test files are the frozen RED oracle that judges your implementation. Implement ONLY production/source code (the module under test) to make the existing tests pass. If a test looks stale or wrong, that is the RED phase's job — leave the test file untouched.",
 					}));
+				}
+				// v0.3.0 budget reminder (Codex rollout_budget / alatirok model): the
+				// budget is MODEL-VISIBLE context, not a hidden fuse — from attempt 2
+				// the implementer sees its attempt number, the repeating failure
+				// signatures, and the explicit instruction to change strategy when
+				// evidence repeats. (Placed after the RED-violation warning, which is
+				// documented as FIRST — review code-F6.)
+				if (attempt >= 2) {
+					const recentSigs = attemptProgressHistory.slice(-2).map((h) => h.failure.slice(0, 140));
+					implParts.push(`\n## Attempt budget — attempt ${attempt}\nThis is your attempt #${attempt} for this phase; attempts are budget-limited.${recentSigs.length ? `\nPrevious failure signatures (most recent last):\n${recentSigs.map((x) => `- ${x}`).join("\n")}` : ""}\nIf the evidence above repeats your last failure, DO NOT retry the same strategy — diagnose the root cause, or report the blocker explicitly in your summary (testDefects) instead of burning the remaining budget.`);
 				}
 				// §D: seed attempt 1 with the PRIOR convergence iteration's failure reasons
 				// so re-attempts target the real failures instead of resampling.
@@ -2230,9 +2334,12 @@ export const implementationStage: Stage = {
 							// environmental blocker must NOT let the outer convergence loop re-enter
 							// this phase until the global agent budget. The distinct reason names
 							// the class so the summary distinguishes it from product no-progress.
-							convergenceBlocked = true;
+							// v0.3.0 (harness research): the environmental-blocker stop no longer
+							// trips convergenceBlocked — the phase is preserved as partial and the
+							// pipeline continues; the outer convergence loop re-enters bounded by
+							// the global budget fuse.
 							convergenceBlockReason = `environmental-blocker: ${routedFixEnvironment ? "judge route=fix-environment awaiting environment fix" : `judge ${judgeOut.status}`} — out-of-scope-only failures (baseline=${envBaselineStatus}), own-scope evidence green`;
-							ctx.log(`Implementation ${phaseId} environmental-blocker terminal stop after judge hand-off (outcome: ${routedFixEnvironment ? "route=fix-environment" : judgeOut.status}) — awaiting environment fix or user decision — class=environment; next=none this pass; convergence blocked (no automatic re-entry)`);
+							ctx.log(`Implementation ${phaseId} environmental-blocker stop after judge hand-off (outcome: ${routedFixEnvironment ? "route=fix-environment" : judgeOut.status}) — awaiting environment fix or user decision — class=environment; phase preserved as partial, continuing to the next phase this pass (v0.3.0)`);
 						}
 						break;
 					} // end !routedImplementerRetry (v0.2.6 G3)
@@ -2451,8 +2558,26 @@ export const implementationStage: Stage = {
 					...hollowFiles.map((e) => `hollow-file: ${e}`),
 				];
 				recordImplementationConvergenceFailure(state, { phaseId, phaseName, kind: terminalFailureKind, attemptsRun, reasons: terminalReasons });
-				phaseStatusUpsert(phaseStatus, phaseId, "failed");
-				emitPhaseStatus("failed");
+				// v0.3.0 (harness research): a failed phase NEVER terminates the run
+				// anymore. The five track-07 deaths all ended PARTIAL 0/N with hours
+				// of green doc/code work discarded; every external harness ends runs
+				// with the best attempt preserved (SWE-agent get_best, Anthropic
+				// git-per-increment, Ralph workspace-as-memory). The phase is marked
+				// `partial`, its best attempt is stash-preserved, and the pipeline
+				// CONTINUES to the next phase; the outer §D convergence loop re-enters
+				// non-green phases for another bounded pass until allGreen or the
+				// global budget fuse.
+				preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : "gates-unmet");
+				{
+					const sig = terminalReasons.join("; ").slice(0, 200);
+					const prior = phaseStatus.find((p) => p.id === phaseId);
+					const sameSig = prior?.status === "partial" && prior.lastFailureSig === sig;
+					phaseStatusUpsert(phaseStatus, phaseId, "partial");
+					const entry = phaseStatus.find((p) => p.id === phaseId)!;
+					entry.lastFailureSig = sig;
+					entry.partialReEntries = sameSig ? (prior?.partialReEntries ?? 0) + 1 : 0;
+				}
+				emitPhaseStatus("partial");
 				lastFailuresUpsert(lastFailures, phaseId, [
 					...attemptErrors,
 					...missingDeliverables.map((e) => `deliverable: ${e}`),
@@ -2460,18 +2585,12 @@ export const implementationStage: Stage = {
 					...hollowFiles.map((e) => `hollow-file: ${e}`),
 				]);
 				if (terminalFailureKind === "red-generation") {
-					ctx.log(`Implementation ${phaseId} stopped before implementation: RED generation stopped after ${terminalRedTries} tries in implementation attempt ${attemptsRun}${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""}`);
+					ctx.log(`Implementation ${phaseId} partial (RED generation stopped after ${terminalRedTries} tries in attempt ${attemptsRun}${terminalStopReason === "no-progress" ? ", no progress" : terminalStopReason === "budget" ? ", budget exhausted" : ""}) — continuing to the next phase`);
 				} else {
-					ctx.log(`Implementation ${phaseId} stopped after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""}`);
-				}
-				if (terminalStopReason === "no-progress") {
-					convergenceBlocked = true;
-					convergenceBlockReason = terminalFailureKind === "red-generation"
-						? `RED generation repeated the same failing evidence for ${phaseId}`
-						: `Implementation gates repeated the same failing evidence for ${phaseId}`;
+					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""} — continuing to the next phase`);
 				}
 				allGreen = false;
-				break;
+				continue;
 			}
 			phasesCompleted++;
 			if (ctx.budget.check()) {

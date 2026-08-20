@@ -2,6 +2,8 @@
 
 Status: implemented (this commit — v0.3.0)
 
+Verification: tsc clean; 160 files / 2562 tests + 2 gated E2E green; RED-first: 5 flipped/new tests fail on pre-fix code (git stash src/).
+
 本研究综合四类证据：(A) 4 个本地 harness 全码深读（DSH、Codex-Rust、SWE-agent、cumora），(B) 全文精读的 7 篇一手工程文献（Anthropic×2、OpenAI、Cognition×2、ghuntley、alatirok、Tian Pan、Aider 文档），(C) 本仓库 track-07 五连死的死因记录，(D) 仅有的两次完整成功 run 的机器参与度对照。
 
 ## 一、全部来源的收敛结论（每条都有原文锚点）
@@ -98,3 +100,35 @@ Status: implemented (this commit — v0.3.0)
 2. **多 phase 依赖断裂时后续 phase 会连锁 partial**：可接受 —— 每个都留了诚实账目，比 0-phase 归零信息量大得多。
 3. **失去的机器里有些是用户血汗**（v0.2.2 honest-deliverable 抓过真缺陷）：F5 明确保留 deliverable 检查；被删的只有"多步仲裁链"。
 4. **这是哲学切换**：从"机器不信任模型"到"模型管语义、机器管安全和预算"。OpenAI/Anthropic/Google/Cognition/DSH/SWE-agent 全部站在后者；我们五连死的实证也站在后者。
+
+## 四、Dual review outcome (v0.3.0)
+
+Code-reviewer CHANGES REQUESTED (1 high, 3 medium, 2 low) and adversarial
+APPROVED WITH COMMENTS (4 medium, 3 low) — all findings remediated:
+
+- **code-F1 (high)** in-place guard: `preservePartialPhase` never runs when
+  `worktreeCreated === false` (an in-place run shares the USER's checkout —
+  an automatic stash would sweep their uncommitted work).
+- **code-F2 / adv-SD030-1** the env-blocker stop log no longer claims
+  "convergence blocked (no automatic re-entry)" — the honest wording is
+  "phase preserved as partial, continuing to the next phase this pass".
+- **code-F3** new `tests/implementation-partial-preserve.test.ts` (4 pins):
+  spec-dir exclusion (stash carries code, NEVER docs/specifications; the dir
+  survives on disk), kill-switch skip, in-place skip, and the windup bound.
+- **code-F4 / adv-SD030-3/4** windup bound: `PhaseStatusEntry` gains
+  `partialReEntries` + `lastFailureSig`; a phase that goes partial with the
+  SAME failure signature in MAX_PARTIAL_REENTRIES(=2) prior §D passes is
+  skipped for the rest of the run (stash-preserved best attempt stands; the
+  global budget flows to phases that can still converge).
+- **code-F5 / adv-SD030-2** honest preserve-stash outcome labels (preserved /
+  already-clean / FAILED-not-preserved).
+- **code-F6** budget reminder moved after the RED-violation warning (which is
+  documented as FIRST).
+- **adv-SD030-5** convergenceBlocked declarations carry the deprecation note.
+- **adv-SD030-6** relSpec computation guards non-string specDirectory.
+- **adv-SD030-7** (cosmetic RED-review row glyph on a weak verdict that
+  proceeds) accepted as-is.
+
+Final gates: tsc clean; 161 files / 2566 tests + 2 gated E2E green; RED-first
+(5 flipped/new v0.3.0 tests fail on pre-fix code; the 4 preserve-contract pins
+exercise real-git worktrees).

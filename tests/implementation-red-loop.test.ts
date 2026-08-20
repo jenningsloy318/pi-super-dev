@@ -304,19 +304,20 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 		expect(calls.impl[0].prompt).toMatch(/CONFIRMED-red/i);
 	});
 
-	it("Tier 2: a WEAK RED review re-prompts tdd-guide before implementation, then proceeds on STRONG", async () => {
-		redSeq("red", "red"); // two RED oracle passes (initial + after re-prompt)
-		const { ctx, calls } = mkCtx({ reviewVerdicts: ["weak", "strong"] });
+	it("v0.3.0 FLIP: a WEAK RED review (no contradictions) proceeds IMMEDIATELY with an advisory — one tdd-guide call, no re-author loop", async () => {
+		redSeq("red"); // single RED oracle pass
+		const { ctx, calls } = mkCtx({ reviewVerdicts: ["weak"], reviewContradictions: [[]] });
 		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
 
-		// WEAK verdict routed back to tdd-guide once → two tdd-guide calls total.
-		expect(calls.tdd).toHaveLength(2);
-		// The re-prompt carried the reviewer's weakness feedback.
-		expect(calls.tdd[1].prompt).toMatch(/WEAK|weak|assertion/);
-		// Only proceeds to the implementer after the STRONG verdict.
+		// v0.3.0: merely-weak (no proven contradictions) does NOT re-author —
+		// the run-10-39 Catch-22 burned MAX_RED_RETRIES on strength wording while
+		// the post-RED oracle (tests must go green) is the deterministic endpoint.
+		expect(calls.tdd).toHaveLength(1);
 		expect(calls.impl).toHaveLength(1);
+		// The weakness analysis rides into the implementer prompt as advisory.
+		expect(calls.impl[0].prompt).toContain("RED review advisory");
+		expect(calls.logs.some((l) => /RED review: NOT STRONG.*advisory; proceeding/.test(l))).toBe(true);
 		expect(res.phasesCompleted).toBe(1);
-		expect(calls.logs.some((l) => /RED review: NOT STRONG/.test(l))).toBe(true);
 	});
 
 	it("Fix 4: a STRONG verdict WITH named contradictions routes back to tdd-guide carrying the impossibility proof", async () => {
@@ -491,7 +492,9 @@ describe("P3 — RED loop: no-progress stop is a hard RED gate", () => {
 		expect(res.phasesCompleted).toBe(0);
 		expect(res.allGreen).toBe(false);
 		expect(calls.logs.some((l) => /RED gate FAIL: red-not-confirmed/i.test(l))).toBe(true);
-		expect(calls.logs.some((l) => /stopped before implementation: RED generation stopped after 2 tries.*no progress/i.test(l))).toBe(true);
+		// v0.3.0: the no-progress stop marks the phase PARTIAL and continues the
+		// run — the old terminal "stopped before implementation" wording is gone.
+		expect(calls.logs.some((l) => /partial \(RED generation stopped after 2 tries.*continuing to the next phase/i.test(l))).toBe(true);
 	});
 
 	it("no-progress stopped RED never tells an implementer to green weak tests", async () => {
@@ -879,4 +882,21 @@ describe("AC-06 — expectedScenariosForPhase reads task.scenarioRefs (SCENARIO-
 		expect(res.allGreen).toBe(true);
 		expect(calls.coverage[0]!.prompt).toContain("Expected scenarios: SCENARIO-011, SCENARIO-012, SCENARIO-013");
 	}, 20_000);
+});
+
+
+// ─── v0.3.0 (harness research): contradictions still re-author ────────────
+describe("v0.3.0 — weak RED review proceeds with advisory", () => {
+	it("named contradictions still re-author tdd-guide with the impossibility proof (the genuinely-unsatisfiable class is unchanged)", async () => {
+		redSeq("red", "red");
+		const { ctx, calls } = mkCtx({
+			reviewVerdicts: ["weak", "strong"],
+			reviewContradictions: [[{ tests: "tests/red.test.ts", proof: "asserts A and not-A" }], []],
+		});
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+		expect(calls.tdd).toHaveLength(2); // re-authored once with the proof
+		expect(calls.tdd[1].prompt).toContain("jointly unsatisfiable");
+		expect(calls.logs.some((l) => /RED review: CONTRADICTIONS/.test(l))).toBe(true);
+		expect(res.phasesCompleted).toBe(1);
+	});
 });

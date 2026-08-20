@@ -159,46 +159,40 @@ function mkCtx(opts: {
 // ─── RC8: honest RED evidence statuses ──────────────────────────────────────
 
 describe("RC8 — review-rejected RED is never reported as 'tests passed'", () => {
-	it("a WEAK review produces `red-review-rejected: RED review not strong:` log lines, never 'tests passed before implementation'", async () => {
+	it("v0.3.0: a WEAK review proceeds immediately — no retry loop, no 'tests passed before implementation' lie, oracle truth preserved", async () => {
 		redCheck.mockImplementation(() => "red"); // oracle CORRECT all rounds
 		const escalate: RunOptions["escalate"] = async (failure) => undefined; // headless no-op
-		const { ctx, logs } = mkCtx({ reviewVerdicts: ["weak", "weak", "weak", "weak", "weak", "weak", "weak", "weak"], escalate });
+		const { ctx, logs } = mkCtx({ reviewVerdicts: ["weak"], escalate });
 		await (implementationStage as Stage).run(mkState(), ctx);
 
-		const retryLines = logs.filter((l) => /RED generation retry/.test(l));
-		expect(retryLines.length).toBeGreaterThan(0);
-		for (const line of retryLines) {
+		// v0.3.0: merely-weak (explicit verdict, no contradictions) no longer burns
+		// the tdd-guide re-author loop — it proceeds with an advisory. The honesty
+		// contract holds: NO line ever claims tests passed before implementation.
+		for (const line of logs) {
 			expect(line).not.toMatch(/tests passed before implementation/);
-			if (/red-review-rejected/.test(line)) {
-				expect(line).toMatch(/red-review-rejected: RED review not strong:/);
-			}
 		}
-		expect(logs.some((l) => /red-review-rejected: RED review not strong:/.test(l))).toBe(true);
+		expect(logs.some((l) => /RED review: NOT STRONG.*advisory; proceeding/.test(l))).toBe(true);
 		// The oracle truth (red) is preserved in the oracleStatus evidence lines.
 		expect(logs.some((l) => /red-oracle:\s*red\b/.test(l))).toBe(true);
 	});
 
-	it("a contradiction review produces `red-review-rejected: RED review found jointly unsatisfiable tests:`", async () => {
+	it("v0.3.0: an EMPTY/invalid review verdict stays fail-closed (re-authors, red-review-rejected honesty lines)", async () => {
 		redCheck.mockImplementation(() => "red");
 		const escalate: RunOptions["escalate"] = async () => undefined;
-		// Weak verdict + contradictions comes through code-reviewer with a
-		// contradictions array; script via verdict weak and summary containing the
-		// contradiction marker (the stage formats it as jointly unsatisfiable).
-		const { ctx, logs } = mkCtx({ reviewVerdicts: ["weak", "weak", "weak", "weak", "weak", "weak", "weak", "weak"], escalate });
-		await (implementationStage as Stage).run(mkState(), ctx);
-		expect(logs.some((l) => /red-review-rejected/.test(l))).toBe(true);
-		expect(logs.some((l) => /RED review not strong/.test(l))).toBe(true);
-	});
-
-	it("a contradiction review produces `red-review-rejected: ... jointly unsatisfiable` (real contradictions path)", async () => {
-		redCheck.mockImplementation(() => "red");
-		const escalate: RunOptions["escalate"] = async () => undefined;
-		// code-reviewer with contradictions: mkCtx does not script contradictions —
-		// assert via the NOT-STRONG log + the review-weak reason prefix; the joint
-		// path is pinned by the existing Fix-4 tests in implementation-red-loop.
-		const { ctx, logs } = mkCtx({ reviewVerdicts: ["weak"], escalate });
+		// Empty verdict = the review did not run — R2 fail-closed still applies
+		// (a review that did not run must never equal a pass); the re-author loop
+		// burns its budget and the honesty contract pins the reason lines.
+		const { ctx, logs } = mkCtx({ reviewVerdicts: ["", "", "", "", "", "", "", ""] as never, escalate });
 		await (implementationStage as Stage).run(mkState(), ctx);
 		expect(logs.some((l) => /red-review-rejected: RED review not strong:/.test(l))).toBe(true);
+	});
+
+	it("v0.3.0: a weak-proceeds run never fabricates a rejection line (contradiction path pinned in implementation-red-loop)", async () => {
+		redCheck.mockImplementation(() => "red");
+		const escalate: RunOptions["escalate"] = async () => undefined;
+		const { ctx, logs } = mkCtx({ reviewVerdicts: ["weak"], escalate });
+		await (implementationStage as Stage).run(mkState(), ctx);
+		expect(logs.some((l) => /red-review-rejected/.test(l))).toBe(false);
 	});
 
 	it("an ORACLE-green run still reports the canonical reason (back-compat)", async () => {

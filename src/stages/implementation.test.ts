@@ -216,7 +216,7 @@ describe("implementationStage retry loop — in-scope verdict (AC-05)", () => {
 
 		// The same genuine in-scope failure repeated after feedback, so no-progress stops it.
 		expect(hasLog(fake.logs, "terminating early")).toBe(false);
-		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
+		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress) — continuing to the next phase")).toBe(true);
 		// inScopePass never granted a green here → no IN-SCOPE GREEN line.
 		expect(hasLog(fake.logs, "IN-SCOPE GREEN")).toBe(false);
 		// No commit for a genuinely broken phase.
@@ -231,12 +231,14 @@ describe("implementationStage retry loop — in-scope verdict (AC-05)", () => {
 		const { ctx, fake } = makeCtx();
 		const control = (await implementationStage.run(makeState([{ name: "Phase A" }, { name: "Phase B" }]), ctx)) as Record<string, unknown>;
 
-		expect(hasLog(fake.logs, "stopped after 2 attempt(s) (no progress)")).toBe(true);
+		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress)")).toBe(true);
 		expect(control.allGreen).toBe(false);
 		expect(control.phasesCompleted).toBe(0);
 		expect(control.totalPhases).toBe(2);
-		// Phase 2's implementer never spawned once phase 1 aborted.
-		expect(fake.agentIds.some((id) => id.includes("phase-02"))).toBe(false);
+		// v0.3.0: the run NEVER ends at zero — phase-2 runs after phase-1's
+		// partial; phase-1 itself stays uncommitted (no commit agent for it).
+		expect(fake.agentIds.some((id) => id.includes("phase-02"))).toBe(true);
+		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(false);
 	});
 
 	it("SCENARIO-025: attempt 1 genuine-fail, attempt 2 inScopePass → green on attempt 2 (retry-then-in-scope)", async () => {

@@ -414,7 +414,8 @@ describe("P3 edges — RED scenario coverage gates the implementer", () => {
 		expect(coverageCalls).toHaveLength(2);
 		expect(implCalls).toHaveLength(0);
 		expect(logs.some((l) => /red-coverage-incomplete/i.test(l))).toBe(true);
-		expect(logs.some((l) => /stopped before implementation: RED generation stopped after 2 tries.*no progress/i.test(l))).toBe(true);
+		// v0.3.0: the no-progress stop marks the phase PARTIAL and the run continues.
+		expect(logs.some((l) => /partial \(RED generation stopped after 2 tries.*continuing to the next phase/i.test(l))).toBe(true);
 	});
 
 	it("skips the coverage classifier when no scenario baseline is available", async () => {
@@ -657,9 +658,10 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 		expect(redCheck.mock.calls[1][1]).toEqual(["phase2.test.ts"]);
 	});
 
-	it("a no-progress-stopped phase 1 fails fast instead of leaking retry state into phase 2", async () => {
-		// Phase 1 repeats the same green RED evidence. Because unconfirmed RED is now
-		// a hard phase gate, phase 2 must not start.
+	it("v0.3.0: a no-progress-stopped phase 1 is partial and phase 2 starts FRESH (own RED loop, no leaked retry state)", async () => {
+		// Phase 1 repeats the same green RED evidence → no-progress → PARTIAL.
+		// v0.3.0: the run CONTINUES to phase 2, which starts its OWN red-oracle loop
+		// (fresh tdd call + fresh red check) — no retry state leaks across phases.
 		redCheck
 			.mockImplementationOnce(() => "green")
 			.mockImplementationOnce(() => "green")
@@ -668,16 +670,20 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 			tddControls: [
 				{ testFiles: ["p1.test.ts"] }, // phase1 initial
 				{ testFiles: ["p1.test.ts"] }, // phase1 retry 1
-				{ testFiles: ["p2.test.ts"] }, // would be phase2 initial if phase1 passed
+				{ testFiles: ["p2.test.ts"] }, // phase2 initial (v0.3.0: runs)
 			],
 		});
 
 		const res = (await (implementationStage as Stage).run(mkState(2), ctx)) as ControlObj;
 
-		expect(tddCalls).toHaveLength(2);
-		expect(implCalls).toHaveLength(0);
-		expect(redCheck).toHaveBeenCalledTimes(2);
-		expect(res.phasesCompleted).toBe(0);
+		expect(tddCalls).toHaveLength(3); // phase1 x2 + phase2 fresh
+		expect(implCalls).toHaveLength(1); // phase2 confirmed red → implemented
+		expect(redCheck).toHaveBeenCalledTimes(3);
+		expect(res.phasesCompleted).toBe(1); // phase2 green
+		expect(res.phaseStatus).toEqual([
+			expect.objectContaining({ id: "phase-01", status: "partial" }),
+			{ id: "phase-02", status: "green" },
+		]);
 		expect(res.allGreen).toBe(false);
 		expect(logs.some((l) => /red-not-confirmed/i.test(l))).toBe(true);
 	});
