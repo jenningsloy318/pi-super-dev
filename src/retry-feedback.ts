@@ -38,6 +38,16 @@ function compactList(values: string[] | undefined, max = 8): string {
 	return `${shown.join("; ")}${suffix}`;
 }
 
+/** v0.3.1 F1 (sd31-SD31-3/F-01): compactReviewFindings announces truncation
+ *  ("…(+N more findings omitted…") as its LAST line, but the feedback
+ *  assembly slices (missing: errors.slice(0,8)) would cut it off again.
+ *  Re-attach any announcement line the slice dropped so the writer always
+ *  knows findings were elided — silent drops make the loss unrecoverable. */
+export function withOmissionNotice(picked: string[], all: string[]): string[] {
+	const missing = all.filter((line) => line.includes("more findings omitted")).filter((line) => !picked.includes(line));
+	return missing.length ? [...picked, ...missing] : picked;
+}
+
 export function renderRetryFeedbackItem(item: RetryFeedbackInput): string {
 	if (!isRetryFeedback(item)) return `- ${item}`;
 	const prefix = [`stage=${item.stage}`, item.phase ? `phase=${item.phase}` : "", item.attempt ? `attempt=${item.attempt}` : "", `gate=${item.gate}`]
@@ -47,7 +57,7 @@ export function renderRetryFeedbackItem(item: RetryFeedbackInput): string {
 	if (item.location) lines.push(`  location: ${item.location}`);
 	if (item.observed) lines.push(`  observed: ${item.observed}`);
 	if (item.expected) lines.push(`  expected: ${item.expected}`);
-	if (item.missing?.length) lines.push(`  missing: ${compactList(item.missing)}`);
+	if (item.missing?.length) lines.push(`  missing: ${compactList(item.missing, 9)}`);
 	if (item.diagnostics?.length) lines.push(`  diagnostics: ${compactList(item.diagnostics, 4)}`);
 	lines.push(`  next action: ${item.nextAction}`);
 	return lines.join("\n");

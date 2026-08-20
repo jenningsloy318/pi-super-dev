@@ -1,11 +1,12 @@
 import { FatalAbort, gateValidator, task } from "../nodes.ts";
-import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
+import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
 import { enforceReviewerConvergenceDuty, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import {
 	blockingConvergenceFindings,
+	classSweepRetryFeedback,
 	convergenceRetryFeedback,
 	markConvergenceFindingsAddressedFromResponses,
 	markConvergenceFindingsVerified,
@@ -33,13 +34,17 @@ function setSpecFeedback(state: PipelineState, source: string, errors: string[])
 		gate: source,
 		observed: `The latest specification was rejected by ${source}.`,
 		expected: "A specification that passes deterministic traceability and approved spec review with no unresolved ambiguity before implementation starts.",
-		missing: errors.slice(0, 8),
+		// v0.3.1 F1 (sd31-SD31-3/F-01): re-attach the compact view's truncation
+		// announcement so the slice cannot silence it a second time.
+		missing: withOmissionNotice(errors.slice(0, 8), errors),
 		diagnostics: errors.slice(8, 12),
 		nextAction: "Rewrite the complete specification, implementation plan, and task list; preserve valid content and resolve every rejected trace/review/ambiguity item before calling structured_output. When an item concerns out-of-range acceptance-criteria/scenario identifiers, refer to them ONLY generically (e.g. \"out-of-range AC\") — NEVER spell the identifier itself in any section, including reviewResponses prose (the trace gate ignores response sections, but re-quoting teaches the next round to repeat the token).",
 	};
 	setRetryFeedback(state as Record<string, unknown>, "spec", [
 		feedback,
 		...convergenceRetryFeedback(state, { stage: "spec", currentStage: "spec", gate: source }),
+		// v0.3.1 F1: class-sweep directive on spec review rejections.
+		...classSweepRetryFeedback(state, { stage: "spec", gate: source }),
 	]);
 }
 
@@ -47,7 +52,7 @@ function clearSpecFeedback(state: PipelineState) {
 	clearRetryFeedback(state as Record<string, unknown>, "spec", "specReview");
 }
 
-function compactReviewFindings(review: ControlObj | undefined): string[] {
+export function compactReviewFindings(review: ControlObj | undefined): string[] {
 	const lines: string[] = [];
 	if (typeof review?.verdict === "string" && review.verdict.trim()) lines.push(`review verdict: ${review.verdict.trim()}`);
 	if (typeof review?.summary === "string" && review.summary.trim()) lines.push(`review summary: ${review.summary.trim()}`);
@@ -59,9 +64,20 @@ function compactReviewFindings(review: ControlObj | undefined): string[] {
 		const detail = typeof finding.detail === "string" ? finding.detail : "";
 		const owner = typeof finding.ownerStage === "string" ? ` owner=${finding.ownerStage}` : "";
 		const status = typeof finding.status === "string" ? ` status=${finding.status}` : "";
+		const cls = typeof finding.defectClass === "string" && finding.defectClass.trim() ? ` class=${finding.defectClass.trim()}` : "";
 		const recommendation = typeof finding.recommendation === "string" ? ` recommendation=${finding.recommendation}` : "";
-		lines.push(`review ${id} severity=${severity}${owner}${status}: ${title}${detail ? ` — ${detail}` : ""}${recommendation}`);
+		lines.push(`review ${id} severity=${severity}${owner}${status}${cls}: ${title}${detail ? ` — ${detail}` : ""}${recommendation}`);
+		// v0.3.1 F1: evidence passthrough — the writer can re-verify the way the
+		// reviewer falsified it (grounding the revision restores forward movement).
+		const evidence = Array.isArray(finding.evidence) ? finding.evidence.filter((e): e is string => typeof e === "string") : [];
+		for (const item of evidence.slice(0, 2)) {
+			const capped = item.length > 240 ? `${item.slice(0, 240)}…(+${item.length - 240} chars)` : item;
+			lines.push(`  evidence: ${capped}`);
+		}
 	}
+	// v0.3.1 F1 (cumora truncation accounting): announce every eviction with its
+	// exact count — silent drops make the loss unrecoverable for the writer.
+	if (findings.length > 8) lines.push(`…(+${findings.length - 8} more findings omitted from this compact view — read the full review document before revising)`);
 	return lines;
 }
 

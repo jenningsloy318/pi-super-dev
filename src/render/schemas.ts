@@ -124,6 +124,10 @@ const Finding = Type.Object({
 	recommendation: Type.Optional(Type.String()),
 	evidence: Type.Optional(Type.Array(Type.String())),
 	priorFindingId: Type.Optional(Type.String()),
+	/** v0.3.1 F1: short stable name for the defect CLASS when the defect
+	 *  generalizes (e.g. "pattern-rejects-registry-keys") — drives the
+	 *  deterministic class-sweep directive at the 2nd instance. */
+	defectClass: Type.Optional(Type.String({ description: "short stable name for the generalizing defect class, when this defect is one instance of a recurring class" })),
 }, { additionalProperties: false });
 
 const ReviewResponse = Type.Object({

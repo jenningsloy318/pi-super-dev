@@ -935,6 +935,7 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 		let killArmed = false;
 		let killWatchdog: ReturnType<typeof setTimeout> | undefined;
 		let settleTimer: ReturnType<typeof setTimeout> | undefined;
+		let exitSettleTimer: ReturnType<typeof setTimeout> | undefined;
 		const STDERR_CAP = 16 * 1024;
 		const LINE_CAP = 16 * 1024 * 1024;
 		const startedAt = Date.now();
@@ -942,6 +943,7 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 			options.signal?.removeEventListener("abort", onAbort);
 			clearTimeout(killWatchdog);
 			clearTimeout(settleTimer);
+			clearTimeout(exitSettleTimer);
 		};
 		const terminateChild = () => {
 			if (killArmed) return;
@@ -1035,6 +1037,32 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 			cleanup();
 			const pathPreview = (process.env.PATH ?? "").split(":").slice(0, 8).join(":");
 			reject(new Error(`super-dev [${label}]: failed to spawn pi: ${err.message}; cwd=${options.cwd}; PATH=${pathPreview || "(empty)"}`));
+		});
+		// v0.3.1 F5 (cumora lesson): settle abnormal exits on `exit`, not only on
+		// `close` — grandchildren can inherit the stdio pipes, so `close` may never
+		// fire after the child dies. The exit handler schedules the same settle
+		// after SETTLE_GRACE_MS, cancelable when `close` DOES fire (close also
+		// flushes the residual line buffer first, which this path cannot).
+		child.on("exit", (code) => {
+			if (settledMain) return;
+			exitSettleTimer = setTimeout(() => {
+				if (settledMain) return;
+				// sd31-SD31-4/F-06: flush the residual stdout line buffer exactly like
+				// the close path — a final newline-less assistant message_end must not
+				// be dropped just because `close` never fired.
+				if (lineBuf.trim()) driver.ingest(lineBuf.trim());
+				const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
+				onProgress?.event(`subprocess ${label}: exit=${code ?? "signal"} with no close event (pipe held by descendant?) — settling${tail ? ` stderrTail=${tail}` : ""}`);
+				driver.dispose("process exited (no close)");
+				const text = driver.currentText;
+				settledMain = true;
+				cleanup();
+				resolve({
+					text,
+					control: resolveTurnControl(text, options.capturePath),
+						error: `process exited before turn completion (exit ${code ?? "signal"}, no close event)`,
+				});
+			}, SETTLE_GRACE_MS);
 		});
 		child.on("close", (code) => {
 			cleanup();

@@ -238,4 +238,62 @@ describe("runPiRpc [hermetic fake child]", () => {
 		expect(hint).toBeDefined();
 		expect(hint).toContain("pi@0.82.1");
 	});
+
+	it("v0.3.1 F5: exit with NO close event (descendant holds the pipe) still settles after the grace — cumora lesson", async () => {
+		vi.useFakeTimers();
+		try {
+			const child = new FakeChild();
+			// never respond, and emit exit WITHOUT the close the ladder normally queues
+			child.kill = () => { child.kills.push("SIGTERM"); return true; };
+			cpState.stubber = () => child;
+			const events: string[] = [];
+			const pending = runPiRpc({
+				args: ["pi"], cwd: process.cwd(), label: "t", timeoutMs: 60_000,
+				task: "Task: x",
+				onProgress: { event: (line: string) => events.push(line), text: () => {} } as never,
+				correctiveFor: () => "CORRECTIVE",
+			});
+			await vi.advanceTimersByTimeAsync(50); // let the prompt flush
+			expect(child.prompts).toHaveLength(1);
+			// sd31-SD31-4/F-06: a final newline-less assistant message_end must ride the
+			// exit-settle's residual-buffer flush, not be dropped with the missing close.
+			child.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", model: "m", content: [{ type: "text", text: "residual final text" }] } }));
+			child.emit("exit", 1); // child died; a descendant holds stdout so `close` never fires
+			await vi.advanceTimersByTimeAsync(5_000); // SETTLE_GRACE_MS
+			const result = await pending;
+			expect(result.error).toContain("no close event");
+			expect(result.text).toContain("residual final text");
+			expect(events.some((e) => e.includes("no close event"))).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("v0.3.1 F5 control: close within the grace cancels the exit-settle (close path wins, no double settle)", async () => {
+		vi.useFakeTimers();
+		try {
+			const child = new FakeChild();
+			cpState.stubber = () => child;
+			const events: string[] = [];
+			const pending = runPiRpc({
+				args: ["pi"], cwd: process.cwd(), label: "t", timeoutMs: 60_000,
+				task: "Task: x",
+				onProgress: { event: (line: string) => events.push(line), text: () => {} } as never,
+				correctiveFor: () => "CORRECTIVE",
+			});
+			await vi.advanceTimersByTimeAsync(50);
+			child.emit("exit", 1);
+			await vi.advanceTimersByTimeAsync(2_000); // within grace
+			child.emit("close", 1); // the pipe released — the normal path settles first
+			const result = await pending;
+			expect(result.error).toBe("process exited before turn completion (exit 1)");
+			expect(result.error).not.toContain("no close event");
+			// sd31-SD31-8: the stale exit-settle timer must be cleared — advancing past
+			// the grace must NOT produce a second settle event.
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(events.filter((e) => e.includes("settling"))).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

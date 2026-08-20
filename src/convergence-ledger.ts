@@ -44,6 +44,10 @@ export interface ConvergenceFinding {
 	 *  ledger distinguishes a duty-enforced advisory from a reviewer-authored
 	 *  one (code-review G1-DOWNGRADE-AUDIT-LOSS). */
 	downgradeReason?: string;
+	/** v0.3.1 F1: short stable class name (reviewer-filed) when this finding
+	 *  is one instance of a generalizing defect class — drives the
+	 *  deterministic class-sweep directive at the 2nd instance. */
+	defectClass?: string;
 	firstSeenAt: string;
 	lastSeenAt: string;
 	seenCount: number;
@@ -65,6 +69,7 @@ export interface ConvergenceFindingInput {
 	invalidatesStages?: unknown;
 	sourceGate?: unknown;
 	priorFindingId?: unknown;
+	defectClass?: unknown;
 }
 
 export interface ConvergenceFindingResponse {
@@ -250,6 +255,7 @@ function normalizeFinding(input: ConvergenceFindingInput, defaults: { detectedAt
 		invalidatesStages: normalizeInvalidates(input.invalidatesStages, ownerStage),
 		sourceGate,
 		priorFindingId: compact(input.priorFindingId) || undefined,
+		defectClass: compact(input.defectClass) || undefined,
 		downgradeReason: compact(input.downgradeReason) || undefined,
 		firstSeenAt: now,
 		lastSeenAt: now,
@@ -307,6 +313,11 @@ export function recordConvergenceFindings(
 			existing.invalidatesStages = mergeUnique(existing.invalidatesStages, normalized.invalidatesStages) as ConvergenceOwnerStage[];
 			existing.sourceGate = normalized.sourceGate ?? existing.sourceGate;
 			existing.priorFindingId = normalized.priorFindingId ?? existing.priorFindingId;
+			// v0.3.1 F1: the class is descriptive — an incoming record ADOPTS a class
+			// only when the row has none. Keep-first (sd31-SD31-5): a re-record filing
+			// a DIFFERENT class name must never rename the row, or a class loses an
+			// instance and the 2-instance sweep trigger undercounts.
+			if (!existing.defectClass && normalized.defectClass) existing.defectClass = normalized.defectClass;
 			if (normalized.downgradeReason) existing.downgradeReason = normalized.downgradeReason;
 			else if (normalized.blocking) existing.downgradeReason = undefined; // re-flagged blocking clears the stale downgrade
 			existing.lastSeenAt = localTimestamp();
@@ -423,6 +434,7 @@ export function recordReviewFindingsFromControl(
 			evidence: finding.evidence,
 			recommendation: finding.recommendation,
 			priorFindingId: finding.priorFindingId,
+			defectClass: finding.defectClass,
 			downgradeReason: finding.downgradeReason,
 			sourceGate: defaults.sourceGate,
 		})),
@@ -455,4 +467,69 @@ export function convergenceRetryFeedback(
 				: `Resolve ${finding.id} in the current artifact and include a reviewResponses entry naming this finding id.`,
 		} satisfies RetryFeedback;
 	});
+}
+
+/**
+ * v0.3.1 F1 (WS-2): class-sweep retry feedback. Site-addressed feedback
+ * produces whack-a-mole on generalizing defect classes (run 2026-08-20T06-19-50-494Z:
+ * ONE over-restrictive-validation class surfaced one filename family per round across
+ * 4 rounds). This widens the handle to the class: a `defectClass` that owns ≥2 ledger
+ * findings, or one finding re-seen (seenCount ≥ 2), injects a deterministic SWEEP
+ * directive at the 2nd instance — not at stagnation round 4.
+ *
+ * Review remediation (sd31-SD31-1/F-02, SD31-2/F-04): scoped to ONE stage — only
+ * findings detected in this stage's review family (detectedAtStage normalizes to the
+ * stage) participate, so a design-stage class never leaks into the spec writer's
+ * retry prompt; and a class RETIRES once every member finding is verified/deferred
+ * (a fully-verified class was swept — re-sweeping it every later rejection is noise).
+ */
+export function classSweepRetryFeedback(
+	state: PipelineState,
+	args: { stage: string; gate: string; attempt?: number },
+): RetryFeedback[] {
+	// Stage-family scoping (sd31-SD31-1/F-02): findings are recorded under the
+	// stage's REVIEW key ("designReview", "specReview", …) while callers pass
+	// the writer stage ("design", "spec"); strip a trailing "review" so both
+	// sides land in the same family before normalizeConvergenceStage.
+	const familyOf = (value: unknown): ConvergenceOwnerStage =>
+		normalizeConvergenceStage(String(value ?? "").toLowerCase().replace(/review+$/, ""), "implementation");
+	const stage = familyOf(args.stage);
+	const responsesChannel = stage === "spec"
+		? "list the full enumeration in your reviewResponses"
+		: "state the full enumeration explicitly in your document (and in reviewResponses when your schema carries it)";
+	const byClass = new Map<string, { count: number; seenTotal: number; active: boolean; titles: string[] }>();
+	for (const finding of ledger(state).findings) {
+		if (!finding.defectClass) continue;
+		// Stage scoping: only THIS stage's review family participates.
+		if (familyOf(finding.detectedAtStage) !== stage) continue;
+		const entry = byClass.get(finding.defectClass) ?? { count: 0, seenTotal: 0, active: false, titles: [] };
+		entry.count += 1;
+		entry.seenTotal += finding.seenCount;
+		// Retirement: a class stays sweepable while ANY member is still open,
+		// addressed (writer claim, unverified), or needs-human.
+		if (["open", "addressed", "needs-human"].includes(finding.status)) entry.active = true;
+		if (entry.titles.length < 3) entry.titles.push(finding.title);
+		byClass.set(finding.defectClass, entry);
+	}
+	const directives: RetryFeedback[] = [];
+	for (const [defectClass, entry] of byClass) {
+		// Retired: every member verified/deferred — the class was swept and confirmed.
+		if (!entry.active) continue;
+		// Qualify at the 2nd instance (≥2 findings) OR one finding seen ≥2 rounds.
+		if (entry.count < 2 && entry.seenTotal < 2) continue;
+		directives.push({
+			stage: args.stage,
+			attempt: args.attempt,
+			gate: args.gate,
+			location: `defect-class/${defectClass}`,
+			observed: `Defect class "${defectClass}" has now produced ${entry.count} recorded finding(s) across ${entry.seenTotal} sighting(s) — instances include: ${entry.titles.join("; ")}.`,
+			expected: "every sibling site of this class in the artifact is fixed in ONE revision, not just the cited instances",
+			missing: [
+				`SWEEP THE CLASS "${defectClass}": enumerate ALL sibling sites in this artifact the class rule applies to (not only the ones reviewers cited), fix every one, and ${responsesChannel}.`,
+			],
+			diagnostics: [`class findings=${entry.count} total sightings=${entry.seenTotal}`],
+			nextAction: "A site-local fix WILL re-occur as a fresh instance of the same class next round — enumerate the class, do not patch the example.",
+		} satisfies RetryFeedback);
+	}
+	return directives;
 }

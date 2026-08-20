@@ -1,5 +1,5 @@
 import { FatalAbort, gateValidator, task } from "../nodes.ts";
-import { clearRetryFeedback, setRetryFeedback, type RetryFeedback } from "../retry-feedback.ts";
+import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
@@ -10,6 +10,7 @@ import { countStageRounds } from "../resume.ts";
 import { triggerReplanForFindings } from "../replan/replan.ts";
 import {
 	blockingConvergenceFindings,
+	classSweepRetryFeedback,
 	convergenceRetryFeedback,
 	markConvergenceFindingsAddressedFromResponses,
 	markConvergenceFindingsVerified,
@@ -176,7 +177,7 @@ function recordArtifactErrors(options: ArtifactConvergenceOptions, state: Pipeli
 
 /** Compact a reviewer control object into feedback lines the next writer attempt
  *  can act on (mirrors spec-convergence.compactReviewFindings). */
-function compactReviewFindings(review: ControlObj | undefined): string[] {
+export function compactReviewFindings(review: ControlObj | undefined): string[] {
 	const lines: string[] = [];
 	if (typeof review?.verdict === "string" && review.verdict.trim()) lines.push(`review verdict: ${review.verdict.trim()}`);
 	if (typeof review?.summary === "string" && review.summary.trim()) lines.push(`review summary: ${review.summary.trim()}`);
@@ -188,9 +189,20 @@ function compactReviewFindings(review: ControlObj | undefined): string[] {
 		const detail = typeof finding.detail === "string" ? finding.detail : "";
 		const owner = typeof finding.ownerStage === "string" ? ` owner=${finding.ownerStage}` : "";
 		const status = typeof finding.status === "string" ? ` status=${finding.status}` : "";
+		const cls = typeof finding.defectClass === "string" && finding.defectClass.trim() ? ` class=${finding.defectClass.trim()}` : "";
 		const recommendation = typeof finding.recommendation === "string" ? ` recommendation=${finding.recommendation}` : "";
-		lines.push(`review ${id} severity=${severity}${owner}${status}: ${title}${detail ? ` — ${detail}` : ""}${recommendation}`);
+		lines.push(`review ${id} severity=${severity}${owner}${status}${cls}: ${title}${detail ? ` — ${detail}` : ""}${recommendation}`);
+		// v0.3.1 F1: evidence passthrough — the writer can re-verify the way the
+		// reviewer falsified it (grounding the revision restores forward movement).
+		const evidence = Array.isArray(finding.evidence) ? finding.evidence.filter((e): e is string => typeof e === "string") : [];
+		for (const item of evidence.slice(0, 2)) {
+			const capped = item.length > 240 ? `${item.slice(0, 240)}…(+${item.length - 240} chars)` : item;
+			lines.push(`  evidence: ${capped}`);
+		}
 	}
+	// v0.3.1 F1 (cumora truncation accounting): announce every eviction with its
+	// exact count — silent drops make the loss unrecoverable for the writer.
+	if (findings.length > 8) lines.push(`…(+${findings.length - 8} more findings omitted from this compact view — read the full review document before revising)`);
 	return lines;
 }
 
@@ -203,13 +215,18 @@ function setReviewFeedback(options: ArtifactConvergenceOptions, state: PipelineS
 		gate: source,
 		observed: `The latest ${options.feedbackKey} artifact was rejected by ${source}.`,
 		expected: options.expected,
-		missing: errors.slice(0, 8),
+		// v0.3.1 F1 (sd31-SD31-3/F-01): re-attach the compact view's truncation
+		// announcement so the slice cannot silence it a second time.
+		missing: withOmissionNotice(errors.slice(0, 8), errors),
 		diagnostics: errors.slice(8, 12),
 		nextAction: options.nextAction,
 	};
 	setRetryFeedback(state as Record<string, unknown>, options.feedbackKey, [
 		feedback,
 		...convergenceRetryFeedback(state, { stage: options.feedbackKey, currentStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), gate: source }),
+		// v0.3.1 F1: class-sweep directive fires on review-rejected rounds when a
+		// defect class has recurred (2nd instance, not stagnation round 4).
+		...classSweepRetryFeedback(state, { stage: options.feedbackKey, gate: source }),
 	]);
 }
 
