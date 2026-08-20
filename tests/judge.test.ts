@@ -203,10 +203,30 @@ describe("judge unit", () => {
 		if (out.status === "discarded") expect(out.reason).toContain("malformed");
 	});
 
-	// SCENARIO-005
-	it("J5: challenge-test with NO evidence still DISCARDS (not exempt)", async () => {
-		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "challenge-test", evidence: [] }) as Record<string, unknown> }));
-		const out = await runJudge(ctx, { scope: "stage9.green-challenge.phase-01", signature: "sig-j5e", worktreePath: wt, context: "ctx", allowedRoutes: ["challenge-test", "re-author-tests"] });
+	// SCENARIO-005 — FLIPPED in v0.2.11 (run 2026-08-19T14-54-22-165Z): the
+	// challenge-test exclusion killed that run — the judge's 0.92-confidence
+	// joint-unsatisfiability diagnosis (stale spec-01 pin vs the phase's
+	// confirmed RED oracle) was DISCARDED for an empty evidence list, no route
+	// actuated, and the run died at 0/12 phases. The original exclusion
+	// rationale ("can drop an accepted RED gate") applied equally to the
+	// already-exempt re-author-tests; challenge-test is additionally bounded by
+	// MAX_CHALLENGE_REAUTHORS and the re-authored test must still pass RED
+	// strength review.
+	it("v0.2.11: challenge-test with NO evidence ROUTES (INV-2 exemption, documented in .judge.jsonl)", async () => {
+		const spec = join(wt, "docs", "specifications", "31-v0211-challenge");
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "challenge-test", evidence: [], diagnosis: "Provable test contradiction: tests/interface-contracts-ownership.test.ts:618 demands the schema accept {} while the confirmed-RED oracle mandates a closed 13-field Type.Object." }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.impl-no-progress.phase-01", signature: "sig-v0211a", worktreePath: wt, specDirectory: spec, context: "ctx", allowedRoutes: ["challenge-test", "re-author-tests", "continue"] });
+		expect(out.status).toBe("routed");
+		if (out.status === "routed") expect(out.verdict.route).toBe("challenge-test");
+		const line = readFileSync(join(spec, ".judge.jsonl"), "utf8").trim().split("\n").pop();
+		const entry = JSON.parse(line as string) as { routed?: boolean; reason?: string };
+		expect(entry.routed).toBe(true);
+		expect(String(entry.reason ?? "")).toContain("NO evidence");
+	});
+
+	it("v0.2.11: challenge-test with FABRICATED evidence still DISCARDS (fabrication guard unchanged)", async () => {
+		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "challenge-test", evidence: [{ file: "src/a.test.ts", quote: "this quote is fabricated and appears nowhere in the file" }] }) as Record<string, unknown> }));
+		const out = await runJudge(ctx, { scope: "stage9.impl-no-progress.phase-01", signature: "sig-v0211b", worktreePath: wt, context: "ctx", allowedRoutes: ["challenge-test", "re-author-tests"] });
 		expect(out.status).toBe("discarded");
 	});
 
@@ -537,4 +557,30 @@ describe("J10 stage10 stagnation diagnosis", () => {
 		const stag = (s as Record<string, unknown>).__stagnated as { findings?: Array<{ title?: string }> };
 		expect(stag?.findings?.[0]?.title ?? "").not.toContain("judge diagnosis:");
 	}, 10_000);
+});
+
+
+// ─── v0.2.11 F1b: firstCitedTestFile ───────────────────────────────────────
+describe("firstCitedTestFile (v0.2.11 F1b)", () => {
+	it("extracts the stale-pin test path from the verbatim incident diagnosis, :line stripped", async () => {
+		const { firstCitedTestFile } = await import("../src/stages/judge.ts");
+		const diagnosis = "Provable test contradiction, not an implementation defect. The failing pin tests/interface-contracts-ownership.test.ts:618 (SCENARIO-035) demands StageArtifactSchema accept {} while the confirmed-RED oracle stage-artifact-schema.test.ts mandates a closed 13-required-field Type.Object.";
+		expect(firstCitedTestFile(diagnosis)).toBe("tests/interface-contracts-ownership.test.ts");
+	});
+
+	it("prefers a test-looking path over an earlier non-test citation", async () => {
+		const { firstCitedTestFile } = await import("../src/stages/judge.ts");
+		const diagnosis = "src/schemas.ts registers the shape; the contradiction is at tests/stale-pin.test.ts:42 vs the oracle.";
+		expect(firstCitedTestFile(diagnosis)).toBe("tests/stale-pin.test.ts");
+	});
+
+	it("falls back to the first cited path when nothing looks like a test", async () => {
+		const { firstCitedTestFile } = await import("../src/stages/judge.ts");
+		expect(firstCitedTestFile("see src/schemas.ts:381 for the registration")).toBe("src/schemas.ts");
+	});
+
+	it("returns null on path-free text", async () => {
+		const { firstCitedTestFile } = await import("../src/stages/judge.ts");
+		expect(firstCitedTestFile("The two tests are jointly unsatisfiable; no file was cited.")).toBeNull();
+	});
 });

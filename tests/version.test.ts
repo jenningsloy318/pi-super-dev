@@ -10,17 +10,17 @@ import {
 
 describe("super-dev extension version metadata", () => {
 	it("sets the runtime-visible extension version to SUPER_DEV_EXTENSION_VERSION", () => {
-		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.2.10");
+		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.2.11");
 		expect(SUPER_DEV_VERSION_METADATA).toMatchObject({
 			name: "super-dev",
-			version: "0.2.10",
+			version: "0.2.11",
 		});
-		expect(superDevVersionLabel()).toBe("super-dev v0.2.10");
+		expect(superDevVersionLabel()).toBe("super-dev v0.2.11");
 	});
 
 	it("keeps the TUI/run metadata line short", () => {
 		const line = superDevRunMetadataLine();
-		expect(line).toBe("super-dev v0.2.10");
+		expect(line).toBe("super-dev v0.2.11");
 		expect(line).not.toContain("version policy");
 		expect(line).not.toContain("increment patch every commit");
 	});

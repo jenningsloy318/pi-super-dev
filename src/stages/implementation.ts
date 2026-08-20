@@ -18,7 +18,7 @@ import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
-import { runJudge } from "./judge.ts";
+import { firstCitedTestFile, runJudge } from "./judge.ts";
 import { triggerReplanForFindings } from "../replan/replan.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../render/schemas.ts";
@@ -2323,7 +2323,13 @@ export const implementationStage: Stage = {
 					if (judgeOut.status === "routed" && judgeOut.verdict.route === "challenge-test" && acceptedRed && challengeReauthors < MAX_CHALLENGE_REAUTHORS) {
 						challengeReauthors++;
 						const defect = {
-							testFile: judgeOut.verdict.evidence[0]?.file ?? acceptedRed.testFiles[0] ?? "",
+							// v0.2.11 F1b: when the verdict carries no machine-verifiable evidence
+							// (the missing-evidence exemption class), the diagnosis usually names
+							// the culprit test verbatim (run 14-54: the stale spec-01 pin at
+							// tests/interface-contracts-ownership.test.ts:618) — prefer that over
+							// the phase's own RED file, which is NOT the defect in the
+							// cross-spec-contradiction class.
+							testFile: judgeOut.verdict.evidence[0]?.file ?? firstCitedTestFile(judgeOut.verdict.diagnosis) ?? acceptedRed.testFiles[0] ?? "",
 							lines: "",
 							reason: `judge-verified: ${judgeOut.verdict.diagnosis}`,
 						};

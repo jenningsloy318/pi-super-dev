@@ -38,17 +38,23 @@ export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environme
 export type JudgeRoute = (typeof JUDGE_ROUTES)[number];
 
 /**
- * J5 (run 2026-08-19T02-01-12-840Z) + v0.2.6 G3 (run 2026-08-19T05-09-21-800Z):
- * routes whose ACTUATION re-runs bounded deterministic work (re-author the RED,
- * repair the environment, retry the implementer with the diagnosis in feedback)
- * and never acquits a gate (INV-1), bounded by the per-signature judge budget
- * (INV-3). For these the diagnosis is the actionable product, so a
- * MISSING-evidence verdict routes with a documented INV-2 exemption instead of
- * discarding into a no-progress deadlock. FABRICATED / MALFORMED evidence still
- * discards, and challenge-test is intentionally excluded (it can drop an
- * accepted RED gate).
+ * J5 (run 2026-08-19T02-01-12-840Z) + v0.2.6 G3 (run 2026-08-19T05-09-21-800Z)
+ * + v0.2.11 (run 2026-08-19T14-54-22-165Z): routes whose ACTUATION re-runs
+ * bounded deterministic work (re-author the RED, repair the environment,
+ * retry the implementer with the diagnosis in feedback, challenge a test's
+ * premise) and never acquits a gate (INV-1), bounded by the per-signature
+ * judge budget (INV-3) — challenge-test additionally by
+ * MAX_CHALLENGE_REAUTHORS, and its re-authored test must still pass RED
+ * strength review. For these the diagnosis is the actionable product, so a
+ * MISSING-evidence verdict routes with a documented INV-2 exemption instead
+ * of discarding into a no-progress deadlock. FABRICATED / MALFORMED evidence
+ * still discards on every route. The v0.2.5 exclusion of challenge-test
+ * ("it can drop an accepted RED gate") was reversed in v0.2.11: the
+ * already-exempt re-author-tests drops the accepted RED the same way, and
+ * run 14-54's discarded 0.92-confidence joint-unsatisfiability diagnosis
+ * killed a run the routing would have saved.
  */
-const DIAGNOSIS_DRIVEN_MISSING_OK: ReadonlySet<JudgeRoute> = new Set(["re-author-tests", "fix-environment", "implementer-retry"]);
+const DIAGNOSIS_DRIVEN_MISSING_OK: ReadonlySet<JudgeRoute> = new Set(["re-author-tests", "fix-environment", "implementer-retry", "challenge-test"]);
 
 export const JUDGE_CONTROL_KEYS = ["diagnosis", "route", "confidence", "evidence"] as const;
 
@@ -126,6 +132,25 @@ export type JudgeOutcome =
 // SAME stall impossible after 2 attempts, forcing today's HITL path.
 const signatureCalls = new Map<string, number>();
 let runCalls = 0;
+
+/** v0.2.11 F1b: extract the first REPO FILE PATH cited in a judge diagnosis,
+ *  preferring paths that look like test files. Used by the challenge-test
+ *  consumer when the verdict carries no machine-verifiable evidence (the
+ *  missing-evidence exemption class): the incident diagnosis named the stale
+ *  pin `tests/interface-contracts-ownership.test.ts:618` verbatim, and the
+ *  defect the re-author loop must target lives THERE, not in the phase's own
+ *  RED file. `:line` suffixes are stripped; returns null when nothing cites a
+ *  path. Pure + exported for unit tests. */
+const CITED_PATH_RE = /[\w.\/@-]+\.(?:ts|tsx|mts|cts|js|mjs|cjs|go|py|java|kt|rb|rs|md)\b(?::\d+(?::\d+)?)?/g;
+const TEST_LOOKING_RE = /(^|\/)(tests?|__tests__)\/|\.test\.|_test\.|\.spec\./;
+
+export function firstCitedTestFile(text: string): string | null {
+	const matches = text.match(CITED_PATH_RE);
+	if (!matches || matches.length === 0) return null;
+	const clean = matches.map((m) => m.replace(/:\d+(?::\d+)?$/, ""));
+	const testLooking = clean.find((f) => TEST_LOOKING_RE.test(f));
+	return (testLooking ?? clean[0]) ?? null;
+}
 
 export function resetJudgeBudgets(): void {
 	signatureCalls.clear();
@@ -350,8 +375,15 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 			// into the no-progress deadlock that killed run 2026-08-19T02-01-12-840Z
 			// at 0/7 phases. This is the empty-list class ONLY — FABRICATED evidence
 			// (quote fails verification) and MALFORMED evidence (all items
-			// empty/whitespace, the B4 class) still DISCARD below. challenge-test is
-			// deliberately NOT exempt: it can drop an already-accepted RED gate.
+			// empty/whitespace, the B4 class) still DISCARD below.
+			// v0.2.11 (run 2026-08-19T14-54-22-165Z): challenge-test joins the exempt
+			// set — its consumer drops the accepted RED exactly like the
+			// already-exempt re-author-tests, is additionally bounded by
+			// MAX_CHALLENGE_REAUTHORS, and the re-authored test must still pass RED
+			// strength review; the discarded 0.92-confidence joint-unsatisfiability
+			// diagnosis in that run killed it. Consumers without an accepted RED (or
+			// with the cap spent) degrade a routed challenge-test to HITL with the
+			// diagnosis surfaced — the safe floor is unchanged.
 			if (!(missingOnly && DIAGNOSIS_DRIVEN_MISSING_OK.has(verdict.route))) {
 				appendAudit(req, { verdict, discarded: true, evidenceFailures });
 				ctx.log(`judge ${req.scope}: verdict DISCARDED — evidence verification failed: ${evidenceFailures.join("; ")}`);
@@ -383,8 +415,8 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 		// J5: a diagnosis-driven recovery route that survived the allowed/confidence
 		// gates with NO evidence routes with an EXPLICIT audit line — the INV-2
 		// missing-evidence exemption must never be silent (parity with the continue
-		// exemption above). Only reachable for re-author-tests / fix-environment with
-		// an empty evidence list; every other missing case already discarded.
+		// exemption above). Reachable only for DIAGNOSIS_DRIVEN_MISSING_OK routes
+		// with an empty evidence list; every other missing case already discarded.
 		if (verdict.evidence.length === 0 && DIAGNOSIS_DRIVEN_MISSING_OK.has(verdict.route)) {
 			appendAudit(req, { verdict, routed: true, reason: `${verdict.route} routed with NO evidence — INV-2 exemption documented: diagnosis-driven route re-runs bounded deterministic work (never acquits a gate); nothing was machine-verified` });
 			ctx.log(`judge ${req.scope}: route=${verdict.route} confidence=${verdict.confidence} routed with ZERO evidence (INV-2 exemption — documented in .judge.jsonl) — ${verdict.diagnosis}`);
