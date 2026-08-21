@@ -6,12 +6,13 @@
  * re-runs ONE node — no jump primitive existed. The walker wraps the SAME
  * children array:
  *
- *   flag OFF (default): pure pass-through — a RouteBackSignal re-throws
- *     unchanged, so today's emulation (replan/auto-resume) is byte-identical
- *     (G8 fixture 1). The wrapper adds no ctx.results / stage events of its
- *     own, so the observable stream is identical too.
+ *   kill-switch set (SUPER_DEV_NO_INLINE_ROUTEBACK=1 — M3 default is ON):
+ *     pure pass-through — a RouteBackSignal re-throws unchanged, so today's
+ *     emulation (replan/auto-resume) is byte-identical (G8 fixture 1). The
+ *     wrapper adds no ctx.results / stage events of its own, so the
+ *     observable stream is identical too.
  *
- *   flag ON (SUPER_DEV_INLINE_ROUTEBACK=1): the signal is caught ABOVE the
+ *   active (default): the signal is caught ABOVE the
  *     sequence (G2 — before runWorkflow's catch, so the jump never ends the
  *     run). Re-entry protocol, ALL synchronous and ordered (MP1
  *     sync-before-re-entry; every FAILING check runs before any persistent
@@ -89,9 +90,11 @@ export function planInlineRouteBack(
 	findings: Array<{ id?: unknown; ownerStage?: unknown; blocking?: unknown; title?: unknown }>,
 ): RouteBackCommand | null {
 	if (!specDir || !inlineRouteBackEnabled()) return null;
-	// M2 pilot scope (review round-1 adv-F-5): exactly ONE edge — the incident
-	// edge. M3 generalizes to every routable owner; keep the pilot honest.
-	if (from !== "bdd") return null;
+	// M3 pilot scope: the two incident edges — bdd→upstream (run 03-23-47,
+	// phantom AC blocking BDD round 1) and spec→upstream (runs 05-48/06-02,
+	// spec-review upstream blockers). M4 generalizes to every routable
+	// producer; anything else keeps the replan emulation.
+	if (from !== "bdd" && from !== "spec") return null;
 	const owners = new Set<string>();
 	const ids: string[] = [];
 	for (const f of findings) {
@@ -155,7 +158,13 @@ export function withInlineRouteBack(children: Node[]): Node {
 		kind: "routing-walker",
 		id: "pipeline",
 		async run(state: PipelineState, ctx: StageContext): Promise<NodeResult> {
-			startRunEpoch(); // per-RUN budget window (review round-1 F-2/adv-F-3)
+			// Per-RUN budget window (review round-1 F-2/adv-F-3). NOTE: this runs
+			// BEFORE setup (state.setup is empty here), so RESUME seeding cannot
+			// happen at this seam — the setup stage re-seeds from the persisted
+			// epoch file when it detects --resume (review round-1, both reviewers:
+			// seeding here was dead code). This fresh default is immediately
+			// superseded on resumed tracks.
+			startRunEpoch();
 			let pass = children;
 			let jumps = 0;
 			for (;;) {
@@ -165,7 +174,7 @@ export function withInlineRouteBack(children: Node[]): Node {
 					result = await sequence(pass, { tolerant: true }).run(state, ctx);
 				} catch (err) {
 					if (!isRouteBackSignal(err)) throw err; // ordinary abort — untouched
-					if (!inlineRouteBackEnabled()) throw err; // G8: byte-identical emulation
+					if (!inlineRouteBackEnabled()) throw err; // G8: byte-identical emulation (kill-switch)
 					signal = err;
 					result = { status: "failed", error: err.message };
 				}

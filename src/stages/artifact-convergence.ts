@@ -26,6 +26,7 @@ import {
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { RouteBackSignal, isRouteBackSignal } from "../routing/router.ts";
 import { planInlineRouteBack } from "../routing/walker.ts";
+import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 
@@ -79,6 +80,12 @@ interface ArtifactConvergenceOptions {
 	 *  Tests use a small value to assert the cap fires; production leaves it unset.
 	 *  The cap is a liveness floor, not a quality target. */
 	maxRounds?: number;
+	/** M3 G4 (review round-1): OPT-IN to the revision-gate fast-forward. Set
+	 *  ONLY where `validate` is a genuine CROSS-DOC trace gate that re-reads
+	 *  CURRENT upstream state (requirements/bdd). research has no validator;
+	 *  design's designComplete is a contract-claims sensor that does NOT
+	 *  re-check against upstream — both stay OUT (conservative re-run). */
+	fastForwardable?: boolean;
 }
 
 function validResearchSourceCount(r: { sources?: unknown }): number {
@@ -303,6 +310,17 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 		// M2 addressable-walker anchor: the routing sub-walk finds this node by id.
 		id: options.feedbackKey,
 		async run(state: PipelineState, ctx: StageContext) {
+			// M3 G4: revision-gate green-skip. After an inline route-back jump,
+			// stages between the owner and the thrower already converged this
+			// process with an UNCHANGED artifact revision and no pending
+			// requests — re-running their full writer+reviewer loop is pure
+			// waste. The gate fires only when a jump was journaled (inert on
+			// fresh/kill-switch runs) AND the stage's deterministic validator
+			// re-passes against CURRENT upstream state (research has no
+			// validator → never fast-forwards → conservatively re-runs).
+			if (options.fastForwardable === true && await fastForwardGate(state, ctx, options.feedbackKey, state.setup?.specDirectory, options.validate)) {
+				return { status: "ok" as const, attempts: 0 };
+			}
 			const maxRounds = options.maxRounds ?? MAX_CONVERGENCE_ROUNDS;
 			// F3 (RC2): a resumed run REPLAYS this loop's prior rounds as cache hits
 			// (rebuilding retry feedback + ledger state) and must then get FRESH
@@ -505,6 +523,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				if (options.skipped?.(state)) {
 					clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
 					ctx.log(`${options.feedbackKey} convergence: skipped (no artifact produced) — complete (round ${round})`);
+					recordConvergedRevision(state, options.feedbackKey, state.setup?.specDirectory);
 					return { status: "ok" as const, attempts: round };
 				}
 
@@ -679,8 +698,8 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 							// INLINE route-back. The walker above root.run catches it, journals
 							// the jump, injects these findings as round-1 requests, and
 							// sub-walks from the owner — no process restart, no REPLAN marker.
-							// Flag OFF (default): planInlineRouteBack returns null and today's
-							// replan emulation below runs byte-identical (G8).
+							// Kill-switch (M3 default is ON): planInlineRouteBack returns
+							// null and the replan emulation below runs byte-identical (G8).
 							const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamOwned);
 							if (inlineCmd) {
 								ctx.log(`${options.feedbackKey} convergence: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} (budget checked) — throwing RouteBackSignal for the walker`);
@@ -719,6 +738,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					if (consumedReplan > 0) ctx.log(`${options.feedbackKey} convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
 				}
 				ctx.log(`${options.feedbackKey} convergence: complete (round ${round}${round > 1 ? ", after feedback" : ""})`);
+				recordConvergedRevision(state, options.feedbackKey, state.setup?.specDirectory);
 				return { status: "ok" as const, attempts: round };
 			}
 
@@ -730,6 +750,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 }
 
 export const requirementsConvergenceNode = artifactConvergenceNode({
+	fastForwardable: true,
 	stage: requirementsWriter,
 	feedbackKey: "requirements",
 	validate: requirementsComplete,
@@ -739,6 +760,7 @@ export const requirementsConvergenceNode = artifactConvergenceNode({
 });
 
 export const bddConvergenceNode = artifactConvergenceNode({
+	fastForwardable: true,
 	stage: bddWriter,
 	feedbackKey: "bdd",
 	validate: bddComplete,

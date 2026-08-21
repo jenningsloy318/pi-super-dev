@@ -181,10 +181,11 @@ export const PIPELINE_CHILDREN: Node[] = [
 	}),
 ];
 
-// Flag OFF (default): pure pass-through — byte-identical to the old sequence
-// (G8). Flag ON (SUPER_DEV_INLINE_ROUTEBACK=1): catches RouteBackSignal above
-// the walk, journals + re-enters the owning stage in-process (M2 pilot edge:
-// bdd → requirements).
+// M3: inline route-back is DEFAULT-ON. The kill-switch
+// SUPER_DEV_NO_INLINE_ROUTEBACK=1 keeps pure pass-through — byte-identical
+// to the old sequence (G8). Active: catches RouteBackSignal above
+// the walk, journals + re-enters the owning stage in-process (M3 pilot
+// edges: bdd → upstream, spec → upstream).
 const pipeline = withInlineRouteBack(PIPELINE_CHILDREN);
 
 export const SUPER_DEV_WORKFLOW: Workflow = {

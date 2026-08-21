@@ -27,6 +27,9 @@ import { triggerReplanForFindings } from "../replan/replan.ts";
 const specTask = task(specWriter);
 const specReviewTask = task(specReviewWriter);
 const validateSpecTrace = gateValidator("gate-spec-trace", "write-spec", "spec");
+import { RouteBackSignal } from "../routing/router.ts";
+import { planInlineRouteBack } from "../routing/walker.ts";
+import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
 const validateSpecReview = gateValidator("gate-spec-review", "review-spec", "specReview");
 
 function setSpecFeedback(state: PipelineState, source: string, errors: string[]) {
@@ -141,6 +144,12 @@ export const specConvergenceNode: Node = {
 	// sub-walk finds this node by id, mirroring the artifact-convergence nodes.
 	id: "spec",
 	async run(state: PipelineState, ctx: StageContext) {
+		// M3 G4: revision-gate green-skip (see artifact-convergence). The spec's
+		// cheap deterministic gate is the trace validator — it re-checks the
+		// spec against the CURRENT requirements/BDD docs without agents.
+		if (await fastForwardGate(state, ctx, "spec", state.setup?.specDirectory, validateSpecTrace)) {
+			return { status: "ok" as const, attempts: 0 };
+		}
 		let lastErrors: string[] = [];
 		let round = 0;
 		const maxRounds = MAX_CONVERGENCE_ROUNDS;
@@ -380,6 +389,7 @@ export const specConvergenceNode: Node = {
 					if (consumedReplan > 0) ctx.log(`spec convergence: ${consumedReplan} replan request(s) verified and marked addressed`);
 				}
 				ctx.log(`spec convergence: ✓ trace + review approved (round ${round}${round > 1 ? ", after feedback" : ""})`);
+				recordConvergedRevision(state, "spec", state.setup?.specDirectory);
 				return { status: "ok" as const, attempts: round };
 			}
 
@@ -405,6 +415,15 @@ export const specConvergenceNode: Node = {
 			const upstreamFindings = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, "spec"));
 			const upstreamSignature = upstreamFindings.map((f) => f.fingerprint).sort().join("|");
 			if (upstreamSignature.length > 0 && upstreamSignature === priorUpstreamSignature) {
+				// M3 pilot (spec→upstream, runs 05-48/06-02): flag ON (default) +
+				// exactly one strictly-upstream routable owner + edge budget →
+				// INLINE route-back. Kill-switch / out-of-scope → the replan
+				// emulation below runs byte-identical (G8).
+				const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, "spec", upstreamFindings);
+				if (inlineCmd) {
+					ctx.log(`spec convergence: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} (budget checked) — throwing RouteBackSignal for the walker`);
+					throw new RouteBackSignal(inlineCmd);
+				}
 				if (await triggerReplanForFindings(state, ctx, upstreamFindings as unknown as Array<Record<string, unknown>>, "spec", state.setup?.specIdentifier ?? "unknown")) {
 					ctx.log(`spec convergence: ${upstreamFindings.length} upstream-owned finding(s) unchanged across 2 review rounds — routed back via REPLAN; restarting to revise the owning stage(s)`);
 					throw new FatalAbort(`spec convergence: REPLAN at round cap — ${upstreamFindings.length} upstream-owned finding(s) routed back; restarting to revise`);

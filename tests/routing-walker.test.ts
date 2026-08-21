@@ -14,10 +14,12 @@ import {
 	DEFAULT_EDGE_BUDGET,
 	RouteBackSignal,
 	edgeKey,
+	remainingBudget,
 	routeBackOrEscalate,
 } from "../src/routing/router.ts";
 import {
 	chargeRoutingJump,
+	currentRunEpoch,
 	inlineRouteBackEnabled,
 	maxInlineJumps,
 	persistedBudget,
@@ -75,11 +77,25 @@ function seedCacheRows(specDir: string, keys: string[]): void {
 }
 
 const FLAG = "SUPER_DEV_INLINE_ROUTEBACK";
+const KILL = "SUPER_DEV_NO_INLINE_ROUTEBACK";
 const savedFlag = process.env[FLAG];
+const savedKill = process.env[KILL];
 afterEach(() => {
 	if (savedFlag === undefined) delete process.env[FLAG];
 	else process.env[FLAG] = savedFlag;
+	if (savedKill === undefined) delete process.env[KILL];
+	else process.env[KILL] = savedKill;
+	resetRunEpoch();
 });
+/** M3 default-ON: "off" fixtures use the kill-switch; "on" clears both. */
+function setKillSwitch(): void {
+	process.env[KILL] = "1";
+	delete process.env[FLAG];
+}
+function setFlagOn(): void {
+	delete process.env[KILL];
+	delete process.env[FLAG];
+}
 
 // ─── journal IO ─────────────────────────────────────────────────────────────
 
@@ -154,17 +170,40 @@ describe("M2 appendRouteBackRequests", () => {
 
 // ─── pilot planner ──────────────────────────────────────────────────────────
 
-describe("M2 planInlineRouteBack (pilot go/no-go)", () => {
-	it("flag OFF (default) → always null (byte-identical emulation)", () => {
-		delete process.env[FLAG];
+describe("planInlineRouteBack (pilot go/no-go — M2 bdd edge, M3 +spec)", () => {
+	it("kill-switch (M3 default-ON) → always null (byte-identical emulation)", () => {
+		setKillSwitch();
+		expect(inlineRouteBackEnabled()).toBe(false);
 		const dir = mkSpecDir();
 		expect(
 			planInlineRouteBack(dir, "bdd", [{ id: "F-1", ownerStage: "requirements", blocking: true }]),
 		).toBeNull();
 	});
 
-	it("flag ON + single strictly-upstream routable owner + budget → command", () => {
-		process.env[FLAG] = "1";
+	it("default (no env) → enabled (M3 incident-closing flip)", () => {
+		delete process.env[FLAG];
+		delete process.env[KILL];
+		expect(inlineRouteBackEnabled()).toBe(true);
+	});
+
+	it("alias SUPER_DEV_INLINE_ROUTEBACK=0 also kills", () => {
+		delete process.env[KILL];
+		process.env[FLAG] = "0";
+		expect(inlineRouteBackEnabled()).toBe(false);
+	});
+
+	it("M3 planner scope: spec→requirements accepted, research→requirements not", () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		const cmd = planInlineRouteBack(dir, "spec", [{ id: "F-9", ownerStage: "requirements", blocking: true }]);
+		expect(cmd).not.toBeNull();
+		expect(cmd!.from).toBe("spec");
+		expect(cmd!.to).toBe("requirements");
+		expect(planInlineRouteBack(dir, "research", [{ id: "F-9", ownerStage: "requirements", blocking: true }])).toBeNull();
+	});
+
+	it("active (default) + single strictly-upstream routable owner + budget → command", () => {
+		setFlagOn();
 		expect(inlineRouteBackEnabled()).toBe(true);
 		const dir = mkSpecDir();
 		const cmd = planInlineRouteBack(dir, "bdd", [
@@ -177,7 +216,7 @@ describe("M2 planInlineRouteBack (pilot go/no-go)", () => {
 	});
 
 	it("M2 pilot gate: only the incident edge bdd→requirements is live (adv-F-5)", () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		// design→requirements: valid upstream owner, NOT the pilot edge → null.
 		expect(planInlineRouteBack(dir, "design", [
@@ -186,7 +225,7 @@ describe("M2 planInlineRouteBack (pilot go/no-go)", () => {
 	});
 
 	it("advisory (non-blocking) findings never drive jumps (adv-F-6)", () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		expect(planInlineRouteBack(dir, "bdd", [
 			{ id: "N", ownerStage: "requirements", blocking: false },
@@ -194,7 +233,7 @@ describe("M2 planInlineRouteBack (pilot go/no-go)", () => {
 	});
 
 	it("multi-owner, downstream owner, fixer-domain owner, and no-budget all → null", () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		// multi-owner is structurally IMPOSSIBLE under the M2 pilot: among
 		// routable owners only `requirements` precedes `bdd` in STAGE_IDS, so a
@@ -221,9 +260,9 @@ describe("M2 planInlineRouteBack (pilot go/no-go)", () => {
 
 // ─── the walker (G1 sub-walk + G5 + MP1 ordering) ───────────────────────────
 
-describe("M2 withInlineRouteBack — flag OFF (G8 fixture 1)", () => {
+describe("M2 withInlineRouteBack — kill-switch (G8 fixture 1, M3 default-ON)", () => {
 	it("rethrows RouteBackSignal unchanged — identical to a bare sequence", async () => {
-		delete process.env[FLAG];
+		setKillSwitch();
 		const order: string[] = [];
 		const thrower: Stage = {
 			id: "bdd", label: "bdd",
@@ -249,9 +288,9 @@ describe("M2 withInlineRouteBack — flag OFF (G8 fixture 1)", () => {
 	});
 });
 
-describe("M2 withInlineRouteBack — flag ON (the pilot jump, end to end)", () => {
+describe("M2 withInlineRouteBack — active (the pilot jump, end to end)", () => {
 	it("journals, invalidates cache, injects requests, sub-walks from the owner — pre-owner never re-runs", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		seedCacheRows(dir, ["pipeline.requirements@root#1", "pipeline.bdd@root#1", "pipeline.research@root#1"]);
 		const order: string[] = [];
@@ -329,7 +368,7 @@ describe("M2 withInlineRouteBack — flag ON (the pilot jump, end to end)", () =
 	});
 
 	it("MP1 strict ordering: the journal entry exists BEFORE the owner re-runs", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		const observed: number[] = [];
 		const owner: Stage = {
@@ -359,7 +398,7 @@ describe("M2 withInlineRouteBack — flag ON (the pilot jump, end to end)", () =
 	});
 
 	it("defense-in-depth: inline-jump cap rethrows instead of looping forever", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		const savedCap = process.env.SUPER_DEV_MAX_INLINE_JUMPS;
 		process.env.SUPER_DEV_MAX_INLINE_JUMPS = "1";
@@ -387,7 +426,7 @@ describe("M2 withInlineRouteBack — flag ON (the pilot jump, end to end)", () =
 	});
 
 	it("journal-write failure fails closed — no unrecorded re-entry", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const owner: Stage = { id: "requirements", label: "requirements", async run() { throw new Error("must not re-run"); } };
 		const thrower: Stage = {
 			id: "bdd", label: "bdd",
@@ -440,7 +479,7 @@ describe("M2 G8 — flag-on stream ≡ flag-off + expected delta (structural)", 
 		expect(offResult.status).toBe("ok");
 		expect(off.order).toEqual(["requirements", "bdd"]);
 
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const on = build(true);
 		const onResult = await withInlineRouteBack(on.children).run(
 			{ setup: { specDirectory: on.dir } } as unknown as PipelineState, on.ctx,
@@ -483,7 +522,7 @@ describe("M2 round-1 remediation pins", () => {
 	});
 
 	it("decline path degrades to the replan emulation instead of a dead-end abort", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		const order: string[] = [];
 		const log: string[] = [];
@@ -525,7 +564,7 @@ describe("M2 round-1 remediation pins", () => {
 	});
 
 	it("route.taken run event is appended on a successful jump", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		const owner: Stage = { id: "requirements", label: "requirements", async run() { return { status: "ok" }; } };
 		let threw = false;
@@ -570,7 +609,7 @@ describe("M2 round-2 remediation pins", () => {
 	});
 
 	it("revisions precheck: unreadable artifact-revisions.json declines BEFORE any persistent mutation (R2-10)", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		// Seed a cache row for requirements that UNPARSEABLE rows can't shadow:
 		seedCacheRows(dir, ["pipeline.requirements@root#1"]);
@@ -609,7 +648,7 @@ describe("M2 round-2 remediation pins", () => {
 
 describe("M2 round-3 remediation pins", () => {
 	it("pending-rows fallback tier: a second signal after our own injection still terminates REPLAN (R2-3)", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		let throws = 0;
 		const owner: Stage = { id: "requirements", label: "requirements", async run() { return { status: "ok" }; } };
@@ -644,7 +683,7 @@ describe("M2 round-3 remediation pins", () => {
 	});
 
 	it("B6 post-call guard: a 0-drop invalidation with surviving rows declines (chmod read-only cache)", async () => {
-		process.env[FLAG] = "1";
+		setFlagOn();
 		const dir = mkSpecDir();
 		seedCacheRows(dir, ["pipeline.requirements@root#1"]);
 		// Read-only cache file: the real invalidation's WRITE fails silently →
@@ -683,5 +722,173 @@ describe("M2 round-3 remediation pins", () => {
 		for (const m of sc.matchAll(/throw new FatalAbort\(`([^`]*REPLAN[^`]*)`/g)) {
 			expect(m[1]).toContain("REPLAN at round cap");
 		}
+	});
+});
+
+// ═══ M3 (v0.3.7): default-ON, G4 revision-gate, resume fidelity ═════════════
+
+import {
+	fastForwardGate,
+	recordConvergedRevision,
+} from "../src/routing/revision-gate.ts";
+import { seedRunEpochFromJournal } from "../src/routing/journal.ts";
+
+describe("M3 G4 revision-gate", () => {
+	it("inert without a journal (G8 byte-identity for never-jumped runs)", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		const state = {} as PipelineState;
+		recordConvergedRevision(state, "bdd", dir);
+		expect(await fastForwardGate(state, mkCtx(), "bdd", dir, async () => ({ pass: true, errors: [] }))).toBe(false);
+	});
+
+	it("fast-forwards: converged + journal + revision unchanged + no pending + validator green", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		chargeRoutingJump(dir, { from: "bdd", to: "requirements", reason: "r", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: "2026-08-21T00:00:00.000Z", cacheDropped: 2, revisionAfter: 1 });
+		const state = {} as PipelineState;
+		recordConvergedRevision(state, "research", dir); // revision 0 recorded
+		const log: string[] = [];
+		let validateCalls = 0;
+		expect(await fastForwardGate(state, mkCtx(log), "research", dir, async () => { validateCalls++; return { pass: true, errors: [] }; })).toBe(true);
+		expect(validateCalls).toBe(1);
+		expect(log.some((l) => l.includes("revision-gate FAST-FORWARD"))).toBe(true);
+	});
+
+	it("NO fast-forward when the revision changed (this stage was a later jump's owner)", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		chargeRoutingJump(dir, { from: "bdd", to: "requirements", reason: "r", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: "2026-08-21T00:00:00.000Z", cacheDropped: 2, revisionAfter: 1 });
+		const state = {} as PipelineState;
+		recordConvergedRevision(state, "requirements", dir); // recorded at revision 0
+		// a later jump bumped requirements to 1
+		writeFileSync(join(dir, "artifact-revisions.json"), JSON.stringify({ requirements: 1 }));
+		expect(await fastForwardGate(state, mkCtx(), "requirements", dir, async () => ({ pass: true, errors: [] }))).toBe(false);
+	});
+
+	it("NO fast-forward without a validator (research conservatively re-runs)", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		chargeRoutingJump(dir, { from: "spec", to: "requirements", reason: "r", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: "2026-08-21T00:00:00.000Z", cacheDropped: 2, revisionAfter: 1 });
+		const state = {} as PipelineState;
+		recordConvergedRevision(state, "research", dir);
+		expect(await fastForwardGate(state, mkCtx(), "research", dir, undefined)).toBe(false);
+	});
+
+	it("NO fast-forward when the validator fails (upstream revision invalidated the artifact)", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		chargeRoutingJump(dir, { from: "spec", to: "requirements", reason: "r", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: "2026-08-21T00:00:00.000Z", cacheDropped: 2, revisionAfter: 1 });
+		const state = {} as PipelineState;
+		recordConvergedRevision(state, "bdd", dir);
+		expect(await fastForwardGate(state, mkCtx(), "bdd", dir, async () => ({ pass: false, errors: ["dangling scenario"] }))).toBe(false);
+	});
+
+	it("NO fast-forward while pending replan requests target the stage", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		chargeRoutingJump(dir, { from: "spec", to: "bdd", reason: "r", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["bdd"], at: "2026-08-21T00:00:00.000Z", cacheDropped: 2, revisionAfter: 1 });
+		appendRouteBackRequests(dir, "research", [{ id: "F-2", title: "t", detail: "d" }], "run-1");
+		const state = {} as PipelineState;
+		recordConvergedRevision(state, "research", dir);
+		expect(await fastForwardGate(state, mkCtx(), "research", dir, async () => ({ pass: true, errors: [] }))).toBe(false);
+	});
+});
+
+describe("M3 resume fidelity (MP1 — never re-arm a crashed run's budget)", () => {
+	it("seedRunEpochFromJournal counts the crashed run's jumps against the resumed budget", () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		// Simulate a crashed run that already jumped bdd→requirements once
+		// (backdated so the fresh-epoch assertion below can't collide on the
+		// same ISO millisecond — >= is the epoch comparison).
+		const crashedAt = new Date(Date.now() - 60_000).toISOString();
+		resetRunEpoch();
+		chargeRoutingJump(dir, { from: "bdd", to: "requirements", reason: "r", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: crashedAt, cacheDropped: 2, revisionAfter: 1 });
+		// A resumed process seeds its epoch from the journal's LAST entry —
+		// the crashed run's jump still counts (budget NOT re-armed).
+		seedRunEpochFromJournal(dir);
+		expect(remainingOf(dir, "bdd", "requirements")).toBe(DEFAULT_EDGE_BUDGET - 1);
+		// A FRESH process (startRunEpoch = now, strictly later) gets the full
+		// per-run budget back.
+		startRunEpoch();
+		expect(remainingOf(dir, "bdd", "requirements")).toBe(DEFAULT_EDGE_BUDGET);
+	});
+
+	it("epoch-file seeding is PRECISE: a multi-jump crashed run's jumps ALL count (round-2 undercount fix)", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		// Crashed run with TWO jumps on the same edge (budget 2 → exhausted),
+		// charged under one epoch — chargeRoutingJump persists that epoch.
+		startRunEpoch(); // the crashed process's epoch
+		const epochIso = currentRunEpoch();
+		for (let i = 0; i < DEFAULT_EDGE_BUDGET; i++) {
+			chargeRoutingJump(dir, { from: "bdd", to: "requirements", reason: "r", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: new Date().toISOString(), cacheDropped: 0, revisionAfter: 1 });
+		}
+		// chargeRoutingJump persisted the epoch it budgeted under.
+		expect(JSON.parse(readFileSync(join(dir, "routing-epoch.json"), "utf8")).epoch).toBe(epochIso);
+		// Resumed process seeds from the PERSISTED epoch file — ALL 2 jumps
+		// count (the round-1 last-entry fallback would have counted only 1).
+		seedRunEpochFromJournal(dir);
+		expect(remainingOf(dir, "bdd", "requirements")).toBe(0);
+		// Fresh process: full per-run budget (sleep past the ISO millisecond so
+		// the fresh epoch is strictly later than the charged entries).
+		await new Promise((r) => setTimeout(r, 5));
+		startRunEpoch();
+		expect(remainingOf(dir, "bdd", "requirements")).toBe(DEFAULT_EDGE_BUDGET);
+	});
+
+	it("setup-seeded resume: the setup stage calls seedRunEpochFromJournal on --resume (source pin)", () => {
+		const src = readFileSync("src/stages/setup.ts", "utf8");
+		expect(src).toMatch(/if \(resumeId\) seedRunEpochFromJournal\(setup\.specDirectory\);/);
+		// The walker entry must NOT seed (state.setup is empty before setup runs).
+		const walkerSrc = readFileSync("src/routing/walker.ts", "utf8");
+		expect(walkerSrc).not.toContain("seedRunEpochFromJournal");
+	});
+});
+
+function remainingOf(dir: string, from: string, to: string): number {
+	return remainingBudget(persistedBudget(dir), from, to);
+}
+
+describe("M3 incident replay (run 03-23-47 shape, default-ON)", () => {
+	it("bdd round-1 upstream blocker → inline jump → requirements revises → bdd converges → downstream proceeds", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		seedCacheRows(dir, ["pipeline.requirements@root#1", "pipeline.bdd@root#1"]);
+		const order: string[] = [];
+		const reqCalls: number[] = [];
+		const requirements: Stage = {
+			id: "requirements", label: "requirements",
+			async run() {
+				order.push("requirements");
+				reqCalls.push(1);
+				return { status: "ok" };
+			},
+		};
+		const bdd: Stage = {
+			id: "bdd", label: "bdd",
+			async run() {
+				order.push("bdd");
+				if (order.filter((s) => s === "bdd").length === 1) {
+					const cmd = planInlineRouteBack(dir, "bdd", [{ id: "rb-1", ownerStage: "requirements", blocking: true, title: "phantom AC-03 field" }]);
+					if (cmd) throw new RouteBackSignal(cmd);
+					throw new Error("planner returned null");
+				}
+				return { status: "ok" };
+			},
+		};
+		const children: Node[] = [task(requirements), task(bdd), task(recordStage("research", order)), task(recordStage("spec", order))];
+		const state = { setup: { specDirectory: dir, specIdentifier: "s" } } as unknown as PipelineState;
+		// The walker injects LEDGER findings matched by cmd.findingIds — seed one.
+		recordConvergenceFindings(state, [{ id: "rb-1", ownerStage: "requirements", title: "phantom AC-03 field", detail: "FindingSchema is closed", severity: "high", blocking: true }], { detectedAtStage: "bdd", ownerStage: "requirements", sourceGate: "bdd-review" });
+		await withInlineRouteBack(children).run(state, mkCtx());
+		expect(order).toEqual(["requirements", "bdd", "requirements", "bdd", "research", "spec"]);
+		const j = readRoutingJournal(dir);
+		expect(j.entries).toHaveLength(1);
+		expect(j.entries[0].from).toBe("bdd");
+		// The injected request awaits the requirements re-convergence.
+		const requests = JSON.parse(readFileSync(join(dir, REPLAN_REQUESTS_FILE), "utf8"));
+		expect(requests.requests.some((r: { id: string }) => r.id === "rb-rb-1")).toBe(true);
 	});
 });

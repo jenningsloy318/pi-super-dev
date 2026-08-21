@@ -1,6 +1,6 @@
 # Routing Architecture — Why Route-Back Failed Three Times, and the Design That Fixes It
 
-Status: M1–M2 implemented (M1 v0.3.5, M2 v0.3.6); M3–M5 pending
+Status: M1–M3 implemented (M1 v0.3.5, M2 v0.3.6, M3 v0.3.7); M4–M5 pending
 
 ## The incident, in one paragraph
 
@@ -378,6 +378,76 @@ stays available at budget exhaustion).
   routing.
 
 
+## M3 design details (v0.3.7)
+
+**Default-ON semantics.** `inlineRouteBackEnabled()` flips to default TRUE.
+Kill-switch: `SUPER_DEV_NO_INLINE_ROUTEBACK=1` (alias
+`SUPER_DEV_INLINE_ROUTEBACK=0`) restores the replan emulation byte-identical.
+The G8 invariant transfers: flag-off equivalence becomes KILL-SWITCH
+equivalence — same fixture, same assertion, env flipped.
+
+**Pilot edges widen to the two incident classes:** `bdd→<upstream>` (run
+03-23-47: phantom AC in requirements blocking BDD round 1) and
+`spec→<upstream>` (runs 05-48/06-02: spec-review upstream blockers). The
+planner still requires exactly ONE distinct routable strictly-upstream owner;
+spec-convergence gains the same throw-site in its upstream-signature-repeat
+branch (the one existing seam — after the 2-round identical-signature
+trigger, BEFORE triggerReplanForFindings).
+
+**G4 revision-gate green-skip** (`src/routing/revision-gate.ts`):
+- `recordConvergedRevision(state, stageId, specDir)` — called by BOTH
+  convergence loops at genuine approval (incl. duty-override; NOT
+  accept-limitation, which is a user-forced pass with open blockers).
+  Stores `{ revision }` on `state.__convergedRevisions[stageId]` where
+  revision = the stage's CURRENT artifact-revisions.json counter.
+- `revisionGateFastForward(state, ctx, stageId, specDir, validate)` —
+  returns true (and logs) when ALL hold:
+  1. a routing journal exists with ≥1 entry (provably inert on
+     never-jumped runs — G8 byte-identity preserved),
+  2. `__convergedRevisions[stageId]` exists (converged earlier in THIS
+     process — the thrower never records, the owner's recorded revision
+     was just bumped → both re-run),
+  3. current revision == recorded revision (this stage was not re-owned),
+  4. ZERO pending replan requests target this stage,
+  5. the stage's cheap DETERMINISTIC validator passes on the existing
+     state control — agent-free. (Round-2 honesty: this is a genuine
+     re-check ONLY for cross-doc trace gates, so the gate is
+     OPT-IN per node via `fastForwardable: true` — set for requirements
+     and bdd, whose validators re-read CURRENT upstream docs. research has
+     no validator; design's designComplete is a contract-claims sensor that
+     does NOT re-check against upstream — both conservatively re-run.)
+  On true the node returns `{ status: "ok", attempts: 0 }` WITHOUT any
+  writer/reviewer call and re-records the revision (idempotent).
+- Beneficiary analysis (corrected round-2): the sub-walk re-runs owner..end;
+  stages BETWEEN owner and thrower all converged in pass 1 — for
+  `spec→requirements` that is bdd, research, assessment, design, prototype.
+  G4 fast-forwards exactly bdd (trace gate); assessment/prototype are plain
+  writers with no convergence gate; research/design re-run by design.
+
+**Resume fidelity (MP1, round-2 design).** Per-run budget epochs are
+process-local, which would re-arm a crashed run's consumed edge budget on
+resume. The walker entry CANNOT seed (it runs before setup — state.setup is
+empty there; the round-1 resumedTrack-on-walker approach was dead code,
+caught by both reviewers). Fix: chargeRoutingJump persists the epoch it
+budgeted under to `routing-epoch.json` (best-effort, beside the journal);
+the SETUP stage — the first seam with both the spec dir and the resume
+identity — calls `seedRunEpochFromJournal(specDirectory)` on an explicit
+`--resume`, seeding the crashed run's epoch start so ALL its jumps count
+(the last-entry fallback covers a missing epoch file; a missing journal
+means a fresh epoch). Fresh runs keep per-run semantics unchanged. No other
+resume machinery is needed: the jump's persisted effects (cache drop +
+pending requests + revision bump + journal) ARE the resume record; a crash
+anywhere in the ordered protocol leaves a consistent prefix.
+
+**M3 test additions:** kill-switch equivalence (was flag-off), spec throw-site
+e2e, G4 fast-forward (bdd skips agent calls after a jump; research/design
+re-run — fastForwardable is opt-in; second-jump owner does NOT
+fast-forward), G4 inertness without a journal, resume epoch seeding
+(routing-epoch.json: a crashed run's jumps ALL consume the resumed budget;
+spec-convergence also fast-forwards via its trace gate), incident replay
+end-to-end (fake agents: bdd round-1 upstream blocker → jump → requirements
+revises → bdd converges → downstream proceeds).
+
 ## M2 review record (rounds 1–2)
 
 Round 1 (Changes Requested / CONTEST): T3.4b dedupe regression (pending-only
@@ -437,3 +507,50 @@ re-aligned; R4-1 RED-first counts recorded here — final-state verification
 `git stash -- src/` → tests/routing-walker.test.ts: **11 fix-specific tests
 fail on pre-fix src, 14 controls pass on both trees**; 25/25 after restore.
 Full suite 167 files / 2688 passed + 3 skipped; tsc clean.
+
+## M3 review record (round 1)
+
+Both reviewers CHANGES-REQUESTED; convergent findings, all remediated:
+- **R4 dead resume seeding (both, high)** — state.setup is EMPTY at walker
+  entry, so the resumedTrack branch never ran in production. Fixed: the
+  SETUP stage seeds (first seam with specDir + resume identity); the walker
+  entry keeps only the fresh default; SetupControl.resumedTrack removed.
+- **R4 epoch undercount (both, medium)** — seeding from the journal's LAST
+  entry counted only that entry, re-arming all but the final jump of a
+  multi-jump crashed run. Fixed: chargeRoutingJump persists the budgeted
+  epoch to routing-epoch.json; resume seeds that exact epoch (pinned).
+- **R2 validator gap (both, medium)** — condition 5's "re-checks against
+  CURRENT upstream" was false for design (designComplete is a contract
+  sensor) and research (no validator). Fixed: fastForwardable opt-in
+  (requirements + bdd only); research/design pins prove they re-run.
+- R6 stale comments, test env hygiene, package.json em-dash byte restore,
+  doc beneficiary overstatement — all fixed.
+
+## M3 review record (round 2) — final
+
+Code-reviewer CHANGES-REQUESTED (1 medium + 5 low), adversarial PASS (5
+low). All residuals fixed: the plan doc's inverted research/design claim
+corrected; the round-2 pin moved inside its describe, retitled to what it
+exercises (research re-run + a design opt-out source-pin); the remaining
+stale flag comments swept (artifact-convergence throw site, index.ts pilot
+edge); the leftover SetupControl import dropped; the test dead-loop and the
+revision-gate dead parameter removed. Dispositioned: adv-R2-4 (a stale
+epoch file next to an EMPTY journal is already ignored — journal-empty →
+fresh epoch in seedRunEpochFromJournal; a non-empty journal from prior
+aborted runs counting conservatively is the intended never-re-arm
+direction). RED-first final-state counts recorded: `git stash -- src/` →
+16 fix-specific tests fail pre-fix across routing-walker /
+spec-convergence / artifact-convergence, 58 controls pass; 74/74 restored.
+
+## M3 review record (round 3) — final
+
+Verify-only: **code-reviewer APPROVED; adversarial PASS.** Residuals were
+info/low and are fixed: revisionGateFastForward's unused parameter dropped;
+the three "flag ON" comment/title vocabulary spots updated to the M3
+default-active wording; the M2-era planner describe retitle; the design
+source-pin window widened to 1200 chars; and the previously un-pinned
+specConvergenceNode fast-forward gained a direct behavior pin (re-entry
+after a journaled jump → ok, attempts 0, zero agent calls, FAST-FORWARD
+log). Final: 167 files / 2705 passed + 3 skipped; tsc clean; RED-first
+final-state re-check across the three files: 17 fix-specific failures
+pre-fix, 58 controls pass (75 tests).

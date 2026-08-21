@@ -5,6 +5,7 @@
  */
 
 import type { Stage } from "../types.ts";
+import { seedRunEpochFromJournal } from "../routing/journal.ts";
 import { runSetup } from "../setup.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -53,6 +54,12 @@ export const setupStage: Stage = {
 		const relWorktree = abbreviatePath(setup.worktreePath, cwd);
 		const relSpec = abbreviatePath(setup.specDirectory, setup.worktreePath) || ".";
 		ctx.log(`Setup: spec ${setup.specIdentifier} | ${setup.language}${setup.isWebUi ? " (Web UI)" : ""} | branch ${setup.defaultBranch}${resumeId ? " (resumed)" : ""}`);
+		// M3 routing (MP1): on an explicit --resume, seed the routing budget
+		// epoch from the PERSISTED epoch file (routing-epoch.json) — the crashed
+		// run's jumps count against the resumed budget (never re-arm). This is
+		// the first seam where BOTH the spec dir and the resume identity exist
+		// (the walker entry runs before setup, where state.setup is empty).
+		if (resumeId) seedRunEpochFromJournal(setup.specDirectory);
 		ctx.log(`Worktree: ${relWorktree}${setup.worktreeCreated ? " (created)" : " (in-place)"}${setup.initializedRepo ? "; git init'd" : ""}`);
 		ctx.log(`Spec dir: ${relSpec}`);
 		return setup;

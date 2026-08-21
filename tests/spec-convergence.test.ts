@@ -118,8 +118,13 @@ function ctx(state: PipelineState, specControls: ControlObj[], reviewControls: C
 }
 
 let dir: string;
+const savedNoInline = process.env.SUPER_DEV_NO_INLINE_ROUTEBACK;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "sd-spec-converge-")); });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+	rmSync(dir, { recursive: true, force: true });
+	if (savedNoInline === undefined) delete process.env.SUPER_DEV_NO_INLINE_ROUTEBACK;
+	else process.env.SUPER_DEV_NO_INLINE_ROUTEBACK = savedNoInline;
+});
 
 describe("specConvergenceNode", () => {
 	it("feeds spec-review findings back into the next spec-writer attempt", async () => {
@@ -445,7 +450,8 @@ describe("specConvergenceNode", () => {
 	// ── F1 (RC3): the same upstream-owned blocking finding across 2 consecutive
 	// review rounds routes back via the replan circuit instead of spinning to the
 	// round cap (run 2026-08-17T05-48/06-02 died exactly this way).
-	it("routes an unchanged upstream-owned blocker back via REPLAN after 2 identical review rounds", async () => {
+	it("routes an unchanged upstream-owned blocker back via REPLAN after 2 identical review rounds (kill-switch: emulation)", async () => {
+		process.env.SUPER_DEV_NO_INLINE_ROUTEBACK = "1";
 		const s = setup(dir);
 		seedDocs(s);
 		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
@@ -470,6 +476,31 @@ describe("specConvergenceNode", () => {
 		expect(requests.rounds).toBe(1);
 		expect(requests.requests.some((r) => r.ownerStage === "requirements" && r.status === "pending")).toBe(true);
 		expect(((state as Record<string, unknown>).__replan as { owners?: string[] } | undefined)?.owners).toContain("requirements");
+	});
+
+	// ── M3 (v0.3.7): default-ON — the SAME shape now throws RouteBackSignal for
+	// the walker (spec→requirements pilot edge) instead of the replan emulation.
+	it("M3: default-ON — the unchanged upstream-owned blocker throws RouteBackSignal (inline route-back)", async () => {
+		delete process.env.SUPER_DEV_NO_INLINE_ROUTEBACK;
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const seen: RetryFeedbackInput[][] = [];
+		const upstreamFinding = [{ id: "REQ-CONTRA-1", severity: "high", title: "Requirements contradict failed-only semantics", detail: "AC-11 and AC-19 disagree on status=SUCCESS rows.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Resolve the precedence in requirements.", evidence: ["AC-11 vs AC-19"] }];
+
+		await expect(specConvergenceNode.run(
+			state,
+			ctx(
+				state,
+				[specControl(["SCENARIO-001", "SCENARIO-002"]), specControl(["SCENARIO-001", "SCENARIO-002"])],
+				[reviewControl("Changes Requested", upstreamFinding), reviewControl("Changes Requested", upstreamFinding)],
+				seen,
+			),
+		)).rejects.toSatisfy((err: unknown) => err instanceof Error && err.name === "RouteBackSignal");
+
+		// The signal carries the pilot command — NOT the replan side effects.
+		expect((state as Record<string, unknown>).__replan).toBeUndefined();
+		expect(existsSync(`${s.specDirectory}replan-requests.json`)).toBe(false);
 	});
 
 	// ── AC-34 (SCENARIO-068): a round-3 verbatim restatement of a blocking
@@ -650,5 +681,35 @@ describe("AC-17 (SCENARIO-037/038): spec convergence shares the clamped round ac
 		// Rounds 1–24 replay, round 25 is the first FRESH writer round, the fatal
 		// is round 26's entry check — the loop never dies mid-replay.
 		expect(specCalls).toBe(25);
+	});
+});
+
+describe("M3 G4 wiring in specConvergenceNode (revision-gate fast-forward)", () => {
+	it("re-entry after a journaled jump elsewhere fast-forwards with ZERO agent calls", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		// Pass 1: converge (records the spec's revision).
+		const first = await specConvergenceNode.run(state, ctx(state, [specControl(["SCENARIO-001", "SCENARIO-002"])], [reviewControl("Approved")], []));
+		expect(first.status).toBe("ok");
+
+		// A jump happened elsewhere (journaled) — spec's revision unchanged,
+		// no pending requests, and the trace gate re-validates the artifact.
+		const { chargeRoutingJump } = await import("../src/routing/journal.ts");
+		chargeRoutingJump(s.specDirectory, { from: "bdd", to: "requirements", reason: "upstream blocker", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: new Date().toISOString(), cacheDropped: 1, revisionAfter: 1 });
+
+		let agentCalls = 0;
+		const log: string[] = [];
+		const seen: RetryFeedbackInput[][] = [];
+		const silentCtx: StageContext = {
+			...ctx(state, [], [], seen),
+			log: (m: string) => log.push(m),
+			async agent() { agentCalls++; throw new Error("fast-forward must not call agents"); },
+		};
+		const second = await specConvergenceNode.run(state, silentCtx);
+		expect(second.status).toBe("ok");
+		expect(second.attempts).toBe(0);
+		expect(agentCalls).toBe(0);
+		expect(log.some((l) => l.includes("revision-gate FAST-FORWARD"))).toBe(true);
 	});
 });

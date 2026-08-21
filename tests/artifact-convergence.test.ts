@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, effectiveRoundCap, MAX_CONVERGENCE_ROUNDS, PROGRESS_EXTENSION_ROUNDS } from "../src/stages/artifact-convergence.ts";
@@ -441,3 +441,88 @@ describe("AC-17 (+B4/D10): the J10 judge escalate-now fatal reports the EFFECTIV
 function stateFor(harness: { ctx: StageContext }): PipelineState {
 	return harness.ctx.state as PipelineState;
 }
+
+// ── M3 (v0.3.7): G4 revision-gate wiring — the artifact node fast-forwards ──
+
+describe("M3 G4 wiring (revision-gate green-skip in artifactConvergenceNode)", () => {
+	it("re-entry after a jump elsewhere fast-forwards with ZERO agent calls; a revision bump re-runs", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+
+		// Pass 1: converge BDD normally (records the converged revision).
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+		const first = await bddConvergenceNode.run(state, ctx(state, [bddControl(true)], []));
+		expect(first.status).toBe("ok");
+
+		// A jump happened ELSEWHERE on the track (journaled) — BDD's own
+		// artifact revision is unchanged and no requests target it.
+		const { chargeRoutingJump } = await import("../src/routing/journal.ts");
+		chargeRoutingJump(s.specDirectory, { from: "spec", to: "requirements", reason: "upstream blocker", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: new Date().toISOString(), cacheDropped: 1, revisionAfter: 1 });
+
+		// Re-entry: the agent channel must stay SILENT — any call fails the test.
+		let agentCalls = 0;
+		const log: string[] = [];
+		const silentCtx: StageContext = {
+			...ctx(state, [], []),
+			log: (m: string) => log.push(m),
+			async agent() { agentCalls++; throw new Error("fast-forward must not call agents"); },
+		};
+		const second = await bddConvergenceNode.run(state, silentCtx);
+		expect(second.status).toBe("ok");
+		expect(second.attempts).toBe(0);
+		expect(agentCalls).toBe(0);
+		expect(log.some((l) => l.includes("revision-gate FAST-FORWARD"))).toBe(true);
+
+		// Negative control: a later jump TARGETING bdd bumps its revision —
+		// the recorded revision no longer matches, so the loop re-runs.
+		writeFileSync(`${s.specDirectory}artifact-revisions.json`, JSON.stringify({ bdd: 1 }));
+		const third = await bddConvergenceNode.run(state, ctx(state, [bddControl(true)], []));
+		expect(third.status).toBe("ok");
+		expect(third.attempts).toBeGreaterThan(0);
+	});
+
+	it("M3 round-2: research NEVER fast-forwards (fastForwardable unset); design is opted out by source", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+		const first = await researchConvergenceNode.run(state, ctx(state, [researchControl([])], []));
+		expect(first.status).toBe("ok");
+		const { chargeRoutingJump } = await import("../src/routing/journal.ts");
+		chargeRoutingJump(s.specDirectory, { from: "spec", to: "requirements", reason: "upstream blocker", findingIds: ["F"], resumeFromIndex: 1, invalidated: ["requirements"], at: new Date().toISOString(), cacheDropped: 1, revisionAfter: 1 });
+		// Research re-runs its writer loop (agent called again) — no gate.
+		const calls: string[] = [];
+		const seenCtx: StageContext = {
+			...ctx(state, [researchControl([])], []),
+			async agent(call: AgentCall) { calls.push(call.agent ?? (call.id ?? "")); return ctx(state, [researchControl([])], []).agent(call); },
+		};
+		const second = await researchConvergenceNode.run(state, seenCtx);
+		expect(second.status).toBe("ok");
+		expect(second.attempts).toBeGreaterThan(0);
+		expect(calls.length).toBeGreaterThan(0);
+		// Design source-pin: designConvergenceNode does NOT set fastForwardable
+		// (designComplete is a contract-claims sensor, not a cross-doc gate).
+		const src = readFileSync("src/stages/artifact-convergence.ts", "utf8");
+		const designNode = src.slice(src.indexOf("export const designConvergenceNode"));
+		expect(designNode.slice(0, 1200)).not.toContain("fastForwardable: true");
+	});
+});

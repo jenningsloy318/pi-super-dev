@@ -17,7 +17,7 @@
  * small stays auditable by eye.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type RouteStageId,
@@ -30,10 +30,14 @@ import {
 
 export const ROUTING_JOURNAL_FILE = "routing-journal.jsonl";
 
-/** M2 pilot flag — default OFF. When off, the walker re-throws every
- *  RouteBackSignal unchanged and byte-identical emulation holds (G8). */
+/** M3: the pilot is DEFAULT-ON (the incident-closing step). Kill-switch
+ *  SUPER_DEV_NO_INLINE_ROUTEBACK=1 (alias SUPER_DEV_INLINE_ROUTEBACK=0)
+ *  restores the replan emulation byte-identical — the G8 invariant now
+ *  asserts kill-switch equivalence instead of flag-off equivalence. */
 export function inlineRouteBackEnabled(): boolean {
-	return process.env.SUPER_DEV_INLINE_ROUTEBACK === "1";
+	if (process.env.SUPER_DEV_NO_INLINE_ROUTEBACK === "1") return false;
+	if (process.env.SUPER_DEV_INLINE_ROUTEBACK === "0") return false;
+	return true;
 }
 
 /** Total inline-jump bound per run (defense-in-depth above the per-edge
@@ -119,6 +123,10 @@ export function chargeRoutingJump(specDir: string, input: ChargeRoutingJumpInput
 		};
 		const path = journalPath(specDir);
 		mkdirSync(specDir, { recursive: true });
+		// Round-2 (epoch undercount): persist the epoch THIS charge was
+		// budgeted under, so a resume seeds the crashed run's epoch start
+		// (ALL its jumps count), not just its last entry.
+		writeEpochFile(specDir, epoch);
 		// R2-5 (torn-boundary healing, mirrors runlog's fileEndsClean): if a
 		// crash left a partial line without its trailing newline, a naive append
 		// would glue onto it and make BOTH entries unparseable (budget undercount).
@@ -145,6 +153,47 @@ let runEpochIso = "";
 
 export function startRunEpoch(): string {
 	runEpochIso = new Date().toISOString(); // journal IO may mint time (MP3)
+	return runEpochIso;
+}
+
+/**
+ * M3 resume fidelity (MP1), round-2 design: the epoch a run charges under is
+ * PERSISTED next to the journal (routing-epoch.json, best-effort) at every
+ * charge. Resuming seeds from that file — the CRASHED run's epoch start, so
+ * ALL of its jumps count against the resumed budget (never re-arm, and never
+ * an undercount: the last-entry fallback of round 1 only counted the final
+ * jump of a multi-jump crashed run). No epoch file (never-jumped track) →
+ * fresh epoch; no journal either → fresh epoch.
+ */
+export const ROUTING_EPOCH_FILE = "routing-epoch.json";
+
+function epochPath(specDir: string): string {
+	return join(specDir, ROUTING_EPOCH_FILE);
+}
+
+function writeEpochFile(specDir: string, epoch: string): void {
+	try {
+		mkdirSync(specDir, { recursive: true });
+		writeFileSync(epochPath(specDir), JSON.stringify({ epoch }) + "\n");
+	} catch { /* best-effort: absent file = fresh epoch on resume */ }
+}
+
+/** Seed the budget epoch for a RESUMED track (call from the setup stage,
+ *  which is the first place BOTH the spec dir and the resume identity
+ *  exist — the walker entry runs before setup, where state.setup is still
+ *  empty, so seeding there was dead code (review round-1, both reviewers)). */
+export function seedRunEpochFromJournal(specDir: string): string {
+	const j = readRoutingJournal(specDir);
+	if (j.entries.length === 0) return startRunEpoch();
+	try {
+		const parsed = JSON.parse(readFileSync(epochPath(specDir), "utf8")) as { epoch?: unknown };
+		if (typeof parsed?.epoch === "string" && parsed.epoch) {
+			runEpochIso = parsed.epoch;
+			return runEpochIso;
+		}
+	} catch { /* absent/unreadable → last-entry fallback */ }
+	const last = j.entries[j.entries.length - 1];
+	runEpochIso = last ? String(last.at) : new Date().toISOString();
 	return runEpochIso;
 }
 
