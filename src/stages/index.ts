@@ -126,59 +126,66 @@ const implConvergenceBlocked = (s: PipelineState) =>
 
 // ─── The pipeline ───────────────────────────────────────────────────────────
 
-const pipeline = sequence(
-	[
-		task(setupStage),
-		task(classifyStage),
-		// Foundational artifact convergence: write → validate → rewrite until the
-		// artifact is clear, complete, and externally valid. These ambiguity-bearing
-		// stages are bounded by the global run budget/cancellation/environment, not by
-		// a local N-attempt cap, so they cannot fail merely because the fifth rewrite
-		// still had a resolvable gap. Later code-changing loops use the same global
-		// budget boundary plus no-progress/stagnation detection.
-		requirementsConvergenceNode,
-		bddConvergenceNode,
-		researchConvergenceNode,
-		// Conditional branch: debug analysis only for bug fixes.
-		branch(isBug, { yes: task(debugWriter) }),
-		task(assessmentWriter),
-		designConvergenceNode,
-		task(prototypeStage),
-		specConvergenceNode,
-		// §D auto-iterate convergence loop: re-run implementation until allGreen,
-		// global budget exhaustion, or a no-progress block. The per-phase
-		// green-state carry in implementation.ts skips already-green phases each
-		// iteration and seeds failed phases with prior reasons.
-		loop(
-			{ while: (s, c) => !implAllGreen(s) && !implConvergenceBlocked(s) && c.budget.check() },
-			task(implementationStage),
-		),
-		// Verify only runs when implementation produced all phases. The convergence
-		// node owns review/build/integration freshness; a fix is never terminal
-		// evidence and always forces the next attempt to restart at review.
-		branch(hasImplementation, { yes: verificationConvergenceNode }),
-		// Downstream write-capable close-out stages run only after positive Stage 10
-		// verification. A failed/blocking verification in this tolerant sequence must
-		// not be followed by docs/cleanup/merge mutations.
-		branch(hasVerifiedImplementation, {
-			yes: sequence([
-				task(docsWriter),
-				// Pre-merge hard build gate (Gap A): don't merge broken code. Run BEFORE
-				// cleanup so dependency cleanup cannot remove node_modules/toolchains needed
-				// by the final verification pass.
-				task(preMergeBuildStage),
-				task(cleanupTask),
-				// Conditional branch: merge only if cleanup found no sensitive data AND
-				// the pre-merge build gate did not fail.
-				// A-2: the merge self-report is gated by a deterministic git
-				// verification stage (feature head must be an ancestor of the default
-				// head) before the run may claim the merge happened.
-				branch(canMerge, { yes: sequence([task(mergeWriter), task(mergeVerifyTask)]) }),
-			]),
-		}),
-	],
-	{ tolerant: true }, // best-effort: a non-setup stage failure is logged, not fatal
-);
+/** M2 addressable walk (routing-architecture plan, G1 sub-walk): the SAME
+ *  children the sequence held, now addressable by node id so the routing
+ *  walker can re-enter an owning convergence stage (`children[indexOf(owner)..]`)
+ *  on an inline route-back. Pre-owner stages never re-run on a jump. */
+export const PIPELINE_CHILDREN: Node[] = [
+	task(setupStage),
+	task(classifyStage),
+	// Foundational artifact convergence: write → validate → rewrite until the
+	// artifact is clear, complete, and externally valid. These ambiguity-bearing
+	// stages are bounded by the global run budget/cancellation/environment, not by
+	// a local N-attempt cap, so they cannot fail merely because the fifth rewrite
+	// still had a resolvable gap. Later code-changing loops use the same global
+	// budget boundary plus no-progress/stagnation detection.
+	requirementsConvergenceNode,
+	bddConvergenceNode,
+	researchConvergenceNode,
+	// Conditional branch: debug analysis only for bug fixes.
+	branch(isBug, { yes: task(debugWriter) }),
+	task(assessmentWriter),
+	designConvergenceNode,
+	task(prototypeStage),
+	specConvergenceNode,
+	// §D auto-iterate convergence loop: re-run implementation until allGreen,
+	// global budget exhaustion, or a no-progress block. The per-phase
+	// green-state carry in implementation.ts skips already-green phases each
+	// iteration and seeds failed phases with prior reasons.
+	loop(
+		{ while: (s, c) => !implAllGreen(s) && !implConvergenceBlocked(s) && c.budget.check() },
+		task(implementationStage),
+	),
+	// Verify only runs when implementation produced all phases. The convergence
+	// node owns review/build/integration freshness; a fix is never terminal
+	// evidence and always forces the next attempt to restart at review.
+	branch(hasImplementation, { yes: verificationConvergenceNode }),
+	// Downstream write-capable close-out stages run only after positive Stage 10
+	// verification. A failed/blocking verification in this tolerant sequence must
+	// not be followed by docs/cleanup/merge mutations.
+	branch(hasVerifiedImplementation, {
+		yes: sequence([
+			task(docsWriter),
+			// Pre-merge hard build gate (Gap A): don't merge broken code. Run BEFORE
+			// cleanup so dependency cleanup cannot remove node_modules/toolchains needed
+			// by the final verification pass.
+			task(preMergeBuildStage),
+			task(cleanupTask),
+			// Conditional branch: merge only if cleanup found no sensitive data AND
+			// the pre-merge build gate did not fail.
+			// A-2: the merge self-report is gated by a deterministic git
+			// verification stage (feature head must be an ancestor of the default
+			// head) before the run may claim the merge happened.
+			branch(canMerge, { yes: sequence([task(mergeWriter), task(mergeVerifyTask)]) }),
+		]),
+	}),
+];
+
+// Flag OFF (default): pure pass-through — byte-identical to the old sequence
+// (G8). Flag ON (SUPER_DEV_INLINE_ROUTEBACK=1): catches RouteBackSignal above
+// the walk, journals + re-enters the owning stage in-process (M2 pilot edge:
+// bdd → requirements).
+const pipeline = withInlineRouteBack(PIPELINE_CHILDREN);
 
 export const SUPER_DEV_WORKFLOW: Workflow = {
 	id: "super-dev",
@@ -189,6 +196,8 @@ export const SUPER_DEV_WORKFLOW: Workflow = {
 
 // Re-exports for users composing custom workflows.
 export { task, sequence, branch, gate, loop, parallel, noop, gateValidator } from "../nodes.ts";
+import { withInlineRouteBack } from "../routing/walker.ts";
+import type { Node } from "../types.ts";
 export { setupStage } from "./setup.ts";
 export {
 	classifyStage, cleanupTask, requirementsWriter, bddWriter, researchWriter,

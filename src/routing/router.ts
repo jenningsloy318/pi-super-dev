@@ -228,6 +228,10 @@ export interface RoutingJournalEntry {
 	budgetAfter: number;
 	/** Caller-supplied timestamp (MP3: never minted inside the router). */
 	at: string;
+	/** MP1 post-jump offsets (M2): resume-cache rows the jump dropped. */
+	cacheDropped?: number;
+	/** MP1: the owner's artifact-revision counter AFTER the bump. */
+	revisionAfter?: number;
 }
 
 export interface RoutingJournal {

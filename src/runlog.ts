@@ -77,6 +77,8 @@ export interface RunEventDataHints {
 	"replan.routed": { findings: Array<{ id?: string; owner: string; routable: boolean; source: string; reason: string }>; invalidationSet: string[] };
 	"replan.resumed": { runId: string; requests: number };
 	"artifact.revised": { artifact: string; revision: number };
+	"route.taken": { from: string; to: string; seq: number; budgetBefore: number; budgetAfter: number; resumeFromIndex: number };
+	"route.declined": { from: string; to: string; reason: string };
 }
 
 export interface RunEvent<K extends keyof RunEventDataHints = keyof RunEventDataHints> {

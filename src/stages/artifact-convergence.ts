@@ -24,6 +24,8 @@ import {
 	getConvergenceLedger,
 } from "../convergence-ledger.ts";
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
+import { RouteBackSignal, isRouteBackSignal } from "../routing/router.ts";
+import { planInlineRouteBack } from "../routing/walker.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 
@@ -298,6 +300,8 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 	const reviewTask = options.review ? task(options.review.stage) : null;
 	return {
 		kind: `${options.feedbackKey}-convergence`,
+		// M2 addressable-walker anchor: the routing sub-walk finds this node by id.
+		id: options.feedbackKey,
 		async run(state: PipelineState, ctx: StageContext) {
 			const maxRounds = options.maxRounds ?? MAX_CONVERGENCE_ROUNDS;
 			// F3 (RC2): a resumed run REPLAYS this loop's prior rounds as cache hits
@@ -670,9 +674,21 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 							// replan circuit instead: the run ends "replan", auto-resumes,
 							// the OWNING stage revises, and the downstream suffix re-runs.
 							if (!decisionApplied && upstreamOwned.length > 0) {
-								if (await triggerReplanForFindings(state, ctx, upstreamOwned as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
-									ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length} upstream-owned blocker(s) routed back via REPLAN (no human decision surface) — restarting to revise the owning stage(s)`);
-									throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN — ${upstreamOwned.length} upstream-owned blocker(s) routed back to their owning stage(s); restarting to revise`);
+								// M2 pilot (routing-architecture plan): flag ON + exactly one
+							// strictly-upstream routable owner + per-edge budget remaining →
+							// INLINE route-back. The walker above root.run catches it, journals
+							// the jump, injects these findings as round-1 requests, and
+							// sub-walks from the owner — no process restart, no REPLAN marker.
+							// Flag OFF (default): planInlineRouteBack returns null and today's
+							// replan emulation below runs byte-identical (G8).
+							const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamOwned);
+							if (inlineCmd) {
+								ctx.log(`${options.feedbackKey} convergence: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} (budget checked) — throwing RouteBackSignal for the walker`);
+								throw new RouteBackSignal(inlineCmd);
+							}
+							if (await triggerReplanForFindings(state, ctx, upstreamOwned as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
+								ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length} upstream-owned blocker(s) routed back via REPLAN (no human decision surface) — restarting to revise the owning stage(s)`);
+								throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN at round cap — ${upstreamOwned.length} upstream-owned blocker(s) routed back to their owning stage(s); restarting to revise`);
 								}
 							}
 						}

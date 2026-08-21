@@ -1,6 +1,6 @@
 # Routing Architecture — Why Route-Back Failed Three Times, and the Design That Fixes It
 
-Status: M1 implemented (this commit — v0.3.5); M2–M5 pending
+Status: M1–M2 implemented (M1 v0.3.5, M2 v0.3.6); M3–M5 pending
 
 ## The incident, in one paragraph
 
@@ -376,3 +376,64 @@ stays available at budget exhaustion).
   arxiv 2509.08646 §7 (full); OpenAI Agents SDK handoffs + community loop
   threads; cumora coordination docs (prior full read); MetaGPT message-type
   routing.
+
+
+## M2 review record (rounds 1–2)
+
+Round 1 (Changes Requested / CONTEST): T3.4b dedupe regression (pending-only
+suppression + pre-run-addressed re-injection), per-run budget epoch (journal
+`at`-filtered via startRunEpoch; seq from maxSeq), B6 guard, decline-path
+degradation to the replan emulation, planner blocking/pilot-edge gates,
+specConvergenceNode id, route.taken/declined run events.
+
+Round 2 (both Changes Requested): R2-1/F-B injection reordered BEFORE the
+journal charge; R2-2/F-A decline FatalAbort now carries the canonical
+"REPLAN at round cap" literal so the workflow boundary derives status replan
+and auto-resume fires; R2-3 pending-rows fallback tier (the emulation's own
+dedupe can no longer strand a decline); R2-4 order-dependent pin fixed;
+R2-5 torn-boundary healing in chargeRoutingJump (mirrors runlog); R2-10
+revisions precheck + B6 dry probe BEFORE any mutation (a declined jump
+leaves counters, cache, journal untouched).
+
+### Accepted, documented (not fixed in M2)
+- **F-C sub-walk green-skip vs restart emulation**: the sub-walk re-enters
+  implementation with the persisted phaseStatus carry (green phases skip),
+  while a restart re-implements. For the FIRST jump on the pilot edge
+  (bdd→requirements) this is structurally unreachable — implementation has
+  not run when BDD is still converging; a SECOND jump (edge budget 2) could
+  reach a post-implementation thrower in-process, where the carry is the
+  SAFER behavior anyway (green phases skip; failed phases re-attempt with
+  prior reasons). The revision-gate deliverable (M3, G4) makes the skip
+  revision-gated instead of carry-gated.
+- **R2-6 epoch re-arm on resume**: per-run budget re-arms by design; cross-run
+  jump cycling is bounded by the replan auto-resume cap (maxReplanRounds)
+  because every restart path terminates REPLAN and consumes replanRestarts.
+- **R2-8 module-global epoch**: assumes serial runWorkflow per process —
+  guaranteed by the spec-dir run lock; concurrent invocations would clobber
+  the budget window.
+- **F-E ISO-string epoch compare**: same-format Zulu strings compare
+  lexicographically correctly; a mixed-precision clock could mis-scope one
+  boundary millisecond (accepted).
+- **F-D +2 revision skew** when a decline falls back to the emulation after
+  a bump: conservative for invalidation, skews the audit counter by one.
+
+## M2 review record (round 3)
+
+Verify-only round: all nine round-2 remediations VERIFIED. Residuals fixed
+after round 3: V-1 stale module header rewritten to the actual protocol
+order; adversarial F-1 dead dry-probe removed and the B6 guard moved to the
+REAL post-call result (0-drop + surviving rows → decline before the journal
+charge — pinned with a read-only cache); adversarial F-2 (high, pre-existing)
+the two sibling replan terminals in artifact-convergence/spec-convergence now
+carry the canonical "REPLAN at round cap" literal so every replan path
+auto-resumes (source-grep pin); V-4/F-3 `rounds: 1` in the pending-tier
+marker + tier-2 and B6 pins added; F-4 disposition wording corrected above.
+
+## M2 review record (round 4) — final
+
+Verify-only: **code-reviewer approved; adversarial PASS.** Residuals were
+cosmetic and are fixed: R4-2 over-indented block in artifact-convergence
+re-aligned; R4-1 RED-first counts recorded here — final-state verification
+`git stash -- src/` → tests/routing-walker.test.ts: **11 fix-specific tests
+fail on pre-fix src, 14 controls pass on both trees**; 25/25 after restore.
+Full suite 167 files / 2688 passed + 3 skipped; tsc clean.

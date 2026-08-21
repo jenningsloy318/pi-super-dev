@@ -137,6 +137,9 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
  */
 export const specConvergenceNode: Node = {
 	kind: "spec-convergence",
+	// M2 addressable-walker anchor (review round-1 code-F-5): the routing
+	// sub-walk finds this node by id, mirroring the artifact-convergence nodes.
+	id: "spec",
 	async run(state: PipelineState, ctx: StageContext) {
 		let lastErrors: string[] = [];
 		let round = 0;
@@ -404,7 +407,7 @@ export const specConvergenceNode: Node = {
 			if (upstreamSignature.length > 0 && upstreamSignature === priorUpstreamSignature) {
 				if (await triggerReplanForFindings(state, ctx, upstreamFindings as unknown as Array<Record<string, unknown>>, "spec", state.setup?.specIdentifier ?? "unknown")) {
 					ctx.log(`spec convergence: ${upstreamFindings.length} upstream-owned finding(s) unchanged across 2 review rounds — routed back via REPLAN; restarting to revise the owning stage(s)`);
-					throw new FatalAbort(`spec convergence: REPLAN — ${upstreamFindings.length} upstream-owned finding(s) routed back to their owning stage(s); restarting to revise`);
+					throw new FatalAbort(`spec convergence: REPLAN at round cap — ${upstreamFindings.length} upstream-owned finding(s) routed back; restarting to revise`);
 				}
 			}
 			priorUpstreamSignature = upstreamSignature;

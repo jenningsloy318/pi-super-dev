@@ -15,8 +15,11 @@ describe("SUPER_DEV_WORKFLOW composition", () => {
 	it("is the super-dev workflow", () => {
 		expect(SUPER_DEV_WORKFLOW.id).toBe("super-dev");
 	});
-	it("root is a sequence (the tolerant pipeline)", () => {
-		expect(SUPER_DEV_WORKFLOW.root.kind).toBe("sequence");
+	it("root is the routing walker wrapping the tolerant pipeline (M2)", () => {
+		// M2: withInlineRouteBack(PIPELINE_CHILDREN) replaced the bare sequence —
+		// flag OFF it is a pure pass-over (G8 byte-identical), flag ON it catches
+		// RouteBackSignal above the walk. The children remain exportable/addressable.
+		expect(SUPER_DEV_WORKFLOW.root.kind).toBe("routing-walker");
 		expect(typeof SUPER_DEV_WORKFLOW.root.run).toBe("function");
 	});
 	it("has a description", () => {

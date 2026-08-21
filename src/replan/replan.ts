@@ -105,6 +105,59 @@ function writeJson(path: string, value: unknown): boolean {
 	}
 }
 
+/** M2 inline route-back (routing-architecture plan): persist `findings` as
+ *  PENDING replan requests owned by `owner` — the re-entered owning
+ *  convergence node picks them up at round 1 via pendingReplanRequests()
+ *  (the v0.3.3 ledger injection), so the sub-walk's revision work is
+ *  prompted WITHOUT the terminal replan/auto-resume circuit. Dedupes by
+ *  fingerprint against existing rows (a re-blocked finding whose request is
+ *  still pending is NOT double-injected). Returns the number appended. */
+export function appendRouteBackRequests(
+	specDir: string,
+	owner: ReplanOwnerStage,
+	findings: Array<Record<string, unknown>>,
+	originatedRunId: string,
+): number {
+	try {
+		const requestsPath = specPath(specDir, REPLAN_REQUESTS_FILE);
+		const file = readJson<ReplanRequestsFile>(requestsPath, { version: 1, rounds: 0, requests: [] });
+		const now = new Date().toISOString();
+		// T3.4b semantics (review round-1 F-1/F-2): a PENDING request, or one
+		// addressed DURING this run (a consume echo), suppresses re-injection; a
+		// request addressed BEFORE this run is a REGRESSION target and MUST
+		// re-inject — mirrors triggerReplanForFindings' suppressesReroute.
+		const runStart = runStartedAt(specDir, originatedRunId);
+		const suppresses = (r: ReplanRequest): boolean =>
+			r.status !== "addressed" || (runStart !== "" && String(r.addressedAt ?? "") >= runStart);
+		let appended = 0;
+		for (const finding of findings) {
+			const fp = fingerprintFinding(finding);
+			if (file.requests.some((r) => r.fingerprint === fp && suppresses(r))) continue;
+			const title = String(finding.title ?? finding.id ?? "upstream finding");
+			file.requests.push({
+				id: `rb-${String(finding.id ?? fp.slice(0, 24))}`,
+				title,
+				detail: String(finding.detail ?? ""),
+				file: finding.file !== undefined ? String(finding.file) : undefined,
+				severity: String(finding.severity ?? "medium"),
+				ownerStage: owner,
+				classificationSource: "route-back",
+				classificationReason: "inline route-back (M2 pilot): upstream-owned blocker surfaced downstream",
+				requestedRevision: `Revise the ${owner} artifact to resolve: ${title}. ${String(finding.recommendation ?? finding.detail ?? "")}`.trim(),
+				fingerprint: fp,
+				status: "pending",
+				originatedRunId,
+				createdAt: now,
+			});
+			appended++;
+		}
+		if (appended > 0 && !writeJson(requestsPath, file)) return -1; // write FAILURE — distinct from 0-dedupe
+		return appended;
+	} catch {
+		return -1;
+	}
+}
+
 // ─── R4: stage → resume-cache call-id prefixes ──────────────────────────────
 
 /** AC-05: prefixes invalidated on EVERY replan trigger regardless of owner —
@@ -211,7 +264,9 @@ function appendAudit(specDir: string, entry: Record<string, unknown>): void {
  *  exist in the cache? (invalidateResumeCache returning 0 while this is true
  *  means the rewrite failed — the restart would replay stale judge/replan/
  *  downstream state.) Never throws. */
-function resumeCacheHasRowsFor(specDir: string, stages: string[]): boolean {
+/** Exported for the routing walker's B6 guard (M2 review F-3): an
+ *  invalidation that dropped 0 rows while matching rows exist is a FAILURE. */
+export function resumeCacheHasRowsFor(specDir: string, stages: string[]): boolean {
 	try {
 		const path = specPath(specDir, RESUME_CACHE_FILE);
 		if (!existsSync(path)) return false;
