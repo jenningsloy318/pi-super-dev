@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Fixed
+- **Stage 10/11 resume fidelity (V1)** — replayed rounds no longer arm terminal
+  exits. Resuming a run that died at verification with two identical reviewer
+  verdicts used to reconstruct those failures from the resume cache and
+  immediately stagnation-break BEFORE any fresh agent call (run
+  2026-08-21T07-20-57-254Z, escalation 3 — the only remedy was hand-deleting
+  the `pipeline.verify.*` cache rows). The wired Stage 10 choke point
+  (`recordVerificationStagnation` in `verificationConvergenceNode`) plus the
+  legacy `reviewLoopUntil` and Stage 11's `recordTestStagnation` now classify
+  each observation/attempt as replay-derived when
+  the persisted occurrence count covers it (gated on a genuine resume — a
+  reused track with stale rows is never excluded — and the
+  `SUPER_DEV_NO_VERIFY_REPLAY_GUARD=1` kill-switch): replayed observations
+  reconstruct state but only FRESH observations arm stagnation and the
+  dead-state break, mirroring the writer loops' F3 contract
+  ("replayed rounds do not consume the fresh budget"). Fresh-run behavior is
+  byte-identical (parity pinned). Review round 1 (both reviewers Changes
+  Requested) caught the fix initially targeting compatibility-only nodes with
+  an unpopulated gate — remediated onto the wired node with the ctx.options
+  gate source. Round 2 verified both blockers closed and flagged a stale
+  arms memo across route-back re-entry — fixed via the cumulative attempts
+  ledger (re-entry attempts stay fresh). 13 new tests; RED-first with the
+  final file: 9 fix-specific failures pre-fix, 4 controls pass.
+
 - M5 emulation retirement (v0.3.9) — migration complete: the interactive decision suppression is DELETED (upstream-owned blockers route regardless of retry-with-guidance/revise-manually choices; abandon and accept-limitation remain the only genuine human overrides; guidance from a routed retry-with-guidance persists to user-notes for the owner), and the replan emulation is retired for routing at every owner-addressable site (artifact/spec/verify convergence + the walker's create-requests tier): a declined jump is an honest fatal naming the exhausted edge with NO automatic process restart, no __replan marker, and no replan-requests.json write. The emulation survives only for (a) the walker's pending-rows cross-run resume tier, (b) the implementation-RED replan-lead site (findings carry no structured ownerStage — the LLM lead resolves it), and (c) genuinely interrupted runs. Kill-switch SUPER_DEV_NO_INLINE_ROUTEBACK=1 now means “no automatic route-back” (escalation surface / honest fatal) instead of “byte-identical emulation.” 10 new/updated pins; RED-first: 9 fix-specific failures pre-fix, 109 controls pass (118 tests).
 - M4 all-producers + escalation route-back choice (v0.3.8): planInlineRouteBack's pilot `from` allowlist is RETIRED — every routable producer (requirements/bdd/research/design convergence, spec, verify, implementation) can throw when findings hold exactly one strictly-upstream routable owner with edge budget. The escalation surface (G6) gains `route-back` as an EscalationChoice: a route-back-eligible failure offers “Route back to ⟨owner⟩ (recommended)” FIRST (soft + hard), persisted to escalation-report.md with the offered list (MP5); a user-chosen route-back throws RouteBackSignal inline, degrades to the replan emulation on an exhausted edge, and fatals honestly if both decline (applyRetryDecision untouched — it only acts on retry-with-guidance). Verify's blocked-on-decisions seam is inline-first (deferred findings carry ownerStage → jump before maybeTriggerReplan). The implementation env-blocker override arm now consults classifyJudgeRoute (single vocabulary, zero behavior change). 13 new pins; RED-first: 13 fail pre-fix, 119 controls pass.
 - M3 inline route-back default-ON + G4 revision-gate + resume fidelity (v0.3.7): the pilot incident edges (bdd→upstream, spec→upstream) now route back IN-PROCESS by default — kill-switch `SUPER_DEV_NO_INLINE_ROUTEBACK=1` restores the replan emulation byte-identical (G8 transfers to kill-switch equivalence). Spec-convergence gained the pilot throw-site (upstream-signature-repeat branch). New `src/routing/revision-gate.ts`: convergence stages whose artifact revision is unchanged after a jump FAST-FORWARD with zero agent calls (cheap deterministic re-validation only; validator-less research conservatively re-runs; inert on never-jumped tracks). Resume fidelity (MP1): a resumed track seeds its routing-budget epoch from the journal so a crashed run's jumps are never re-armed. 19 new pins; RED-first verified (17 fail pre-fix, controls pass).

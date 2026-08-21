@@ -25,6 +25,7 @@ import { toBool } from "../doc-validators.ts";
 import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../helpers.ts";
 import { RouteBackSignal } from "../routing/router.ts";
 import { planInlineRouteBack } from "../routing/walker.ts";
+import { countStageRounds } from "../resume.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -363,7 +364,60 @@ function recordVerificationReviewFindings(s: PipelineState, ctx: StageContext): 
 	ctx.log(`Stage 10: convergence ledger recorded ${written.length} review finding(s) (${recurring} recurring blocker${recurring === 1 ? "" : "s"})`);
 }
 
-function recordVerificationStagnation(s: PipelineState, ctx: StageContext, record: VerificationAttemptRecord): boolean {
+/** V1 (v0.3.10) — replay-arm budget for the WIRED Stage 10 convergence node.
+ *  On a genuine resume (ctx.options.resumeSpecIdentifier — the same signal
+ *  pipeline.ts uses to preload the cache; state.options is accepted as a test
+ *  fallback), the persisted occurrence count of the three verify review agents
+ *  bounds how many leading loop attempts are REPLAY-DERIVED (cache-hit
+ *  reconstructions carrying no fresh information). Replayed attempts rebuild
+ *  state but never arm the stagnation stop — the wired twin of the writer
+ *  loops' F3 contract, grounded in the durable-execution principle that
+ *  history is evidence for STATE, not TERMINATION. No baseline offset here:
+ *  attempt 1 IS a review outcome (unlike reviewLoopUntil's pre-loop call).
+ *  Kill-switch: SUPER_DEV_NO_VERIFY_REPLAY_GUARD=1. */
+export function verificationReplayArms(state: PipelineState, ctx?: StageContext): number {
+	const s = state as unknown as Record<string, unknown>;
+	if (s.__verificationReplayArms !== undefined) return s.__verificationReplayArms as number;
+	let arms = 0;
+	const specDir = state.setup?.specDirectory;
+	const marker = ctx?.options?.resumeSpecIdentifier
+		?? (state.options as { resumeSpecIdentifier?: string } | undefined)?.resumeSpecIdentifier;
+	const resumed = Boolean(marker);
+	if (specDir && resumed && !process.env.SUPER_DEV_NO_VERIFY_REPLAY_GUARD) {
+		// max over the review family: a crash mid-round (one reviewer recorded,
+		// another not) over-excludes by one attempt — the SAFE direction.
+		const prior = Math.max(
+			countStageRounds(specDir, "pipeline.verify.code-review"),
+			countStageRounds(specDir, "pipeline.verify.adversarial"),
+			countStageRounds(specDir, "pipeline.verify.tests-review"),
+		);
+		if (prior > 0) {
+			arms = prior;
+			ctx?.log(`Stage 10: resuming after ${prior} recorded verify round(s) — replayed attempts do not arm the stagnation stop (fresh evidence required)`);
+		}
+	}
+	s.__verificationReplayArms = arms;
+	return arms;
+}
+
+export function recordVerificationStagnation(s: PipelineState, ctx: StageContext, record: VerificationAttemptRecord): boolean {
+	// V1: a replay-derived attempt (resume cache hit) reconstructs state but is
+	// not evidence — it must neither push into the arming fingerprint history
+	// nor arm the stagnation stop. Single choke point for all three call sites.
+	// The attempt number is CUMULATIVE across in-process re-entry (route-back
+	// re-enters this node with `attempt` restarted at 1 while the arms memo
+	// correctly survives): the persisted __verificationAttempts ledger — which
+	// the node does NOT reset at entry — is the authoritative sequence, so a
+	// re-entry's attempt 1 with 4 recorded attempts classifies fresh (round-2
+	// review: MED-1/R2-1).
+	const attemptSeq = Math.max(
+		record.attempt,
+		((s as Record<string, unknown>).__verificationAttempts as unknown[] | undefined)?.length ?? 0,
+	);
+	if (attemptSeq <= verificationReplayArms(s, ctx)) {
+		ctx.log(`Stage 10: attempt ${record.attempt} is replay-derived (resume cache) — reconstructing only; stagnation not armed on replayed evidence`);
+		return false;
+	}
 	const items = currentVerificationFailureItems(s);
 	const history = rememberVerificationFailureRound(s, record, items);
 	const previous = history.length >= 2 ? history[history.length - 2] : undefined;
@@ -860,6 +914,82 @@ async function judgeStage10Diagnosis(s: PipelineState, ctx: StageContext, scope:
 	return null;
 }
 
+/** V1 (v0.3.10) — Stage 10 replay-arm budget. On an actual RESUME (the same
+ *  `options.resumeSpecIdentifier` signal pipeline.ts uses to preload the
+ *  cache — a merely reused track with stale rows is NOT excluded), the
+ *  persisted occurrence count of the three review agents bounds how many
+ *  leading `reviewLoopUntil` observations are REPLAY-DERIVED (reconstructed
+ *  from cache hits, carrying no fresh information): arms = prior + 1 (the +1
+ *  is the pre-loop baseline observation, which is never a review outcome in
+ *  fresh or resumed runs). Replayed observations reconstruct state but never
+ *  arm the terminal exits — the verify-family twin of the writer loops' F3
+ *  contract ("replayed rounds do not consume the fresh budget"), grounded in
+ *  the durable-execution principle that history is evidence for STATE, not
+ *  evidence for TERMINATION. Kill-switch: SUPER_DEV_NO_VERIFY_REPLAY_GUARD=1. */
+function reviewReplayArms(state: PipelineState, ctx?: StageContext): number {
+	const s = state as unknown as Record<string, unknown>;
+	if (s.__verifyReplayArms !== undefined) return s.__verifyReplayArms as number;
+	let arms = 0;
+	const specDir = state.setup?.specDirectory;
+	const marker = ctx?.options?.resumeSpecIdentifier
+		?? (state.options as { resumeSpecIdentifier?: string } | undefined)?.resumeSpecIdentifier;
+	const resumed = Boolean(marker);
+	if (specDir && resumed && !process.env.SUPER_DEV_NO_VERIFY_REPLAY_GUARD) {
+		// max over the review family: a crash that landed mid-round (one reviewer
+		// recorded, another not) may over-exclude by one observation — the SAFE
+		// direction (delays arming); min would arm on partially-replayed evidence.
+		const prior = Math.max(
+			countStageRounds(specDir, "pipeline.verify.code-review"),
+			countStageRounds(specDir, "pipeline.verify.adversarial"),
+			countStageRounds(specDir, "pipeline.verify.tests-review"),
+		);
+		if (prior > 0) {
+			arms = prior + 1;
+			ctx?.log(`Stage 10: resuming after ${prior} recorded review round(s) — replayed rounds do not arm stagnation/dead-state exits (fresh evidence required)`);
+		}
+	}
+	s.__verifyReplayArms = arms;
+	s.__verifyReplayObs = 0;
+	return arms;
+}
+
+/** V1 — Stage 11 counterpart: arms = recorded integration rounds (no baseline
+ *  offset — the first integration observation IS a test outcome). Exported for
+ *  tests. NOTE: side-effecting classifier — it lazily initializes the arm
+ *  budget and increments the replay-observation counter on every
+ *  replay-derived call (call it exactly ONCE per observation). */
+export function classifyIntegrationObservation(state: PipelineState, ctx?: StageContext): boolean {
+	const s = state as unknown as Record<string, unknown>;
+	if (s.__integrationReplayArms === undefined) {
+		let arms = 0;
+		const specDir = state.setup?.specDirectory;
+		const marker = ctx?.options?.resumeSpecIdentifier
+			?? (state.options as { resumeSpecIdentifier?: string } | undefined)?.resumeSpecIdentifier;
+		const resumed = Boolean(marker);
+		if (specDir && resumed && !process.env.SUPER_DEV_NO_VERIFY_REPLAY_GUARD) {
+			const prior = Math.max(
+				countStageRounds(specDir, "pipeline.integration.api-test"),
+				countStageRounds(specDir, "pipeline.integration.ui-test"),
+			);
+			if (prior > 0) {
+				arms = prior;
+				ctx?.log(`Stage 11: resuming after ${prior} recorded integration round(s) — replayed observations do not arm test stagnation (fresh evidence required)`);
+			}
+		}
+		s.__integrationReplayArms = arms;
+		s.__integrationReplayObs = 0;
+	}
+	const arms = s.__integrationReplayArms as number;
+	const histLen = ((s.__testSignatures as string[] | undefined) ?? []).length;
+	const replayObs = (s.__integrationReplayObs as number | undefined) ?? 0;
+	const callIndex = histLen + replayObs + 1;
+	if (callIndex <= arms) {
+		s.__integrationReplayObs = replayObs + 1;
+		return true; // replay-derived — caller must skip the arming push
+	}
+	return false;
+}
+
 /** Stagnation: same review-findings signature on 2 consecutive rounds → break. */
 export const findingsSignature = (s: PipelineState): string => {
 	const findings = (s.review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
@@ -875,9 +1005,26 @@ export const reviewLoopUntil = async (s: PipelineState, ctx: StageContext): Prom
 	// GAP B/C: successful exit requires review approval AND a green build gate;
 	// otherwise identical-signature OR non-decreasing-count triggers stagnation.
 	const approvedAndBuildGreen = reviewApproved(s) && buildGreen(s);
-	// Capture BEFORE detectStagnation (which pushes the current round into the
-	// histories): `roundsCompleted` must count FULL body rounds that already
-	// ran, so the dead-state break below can never fire at cold start.
+	// V1 (v0.3.10): replay-derived observations (reconstructed from resume cache
+	// hits) are STATE, not EVIDENCE — they never arm stagnation or the dead-state
+	// break. __reviewSignatures is now the ARMING history (fresh observations
+	// only); __verifyReplayObs counts the excluded ones so total observations
+	// (and thus the replay boundary) stay derivable from state alone. Approval
+	// still exits immediately: a replayed approval is legitimate convergence
+	// (the writer loops' green-skip analog).
+	const arms = reviewReplayArms(s, ctx);
+	const replayObsBefore = ((s as Record<string, unknown>).__verifyReplayObs as number | undefined) ?? 0;
+	const callIndex = sigHist.length + replayObsBefore + 1;
+	if (callIndex <= arms) {
+		(s as Record<string, unknown>).__verifyReplayObs = replayObsBefore + 1;
+		if (approvedAndBuildGreen) return true;
+		return false; // replayed failure history must never terminate the loop
+	}
+	// V1: captured BEFORE detectStagnation pushes (never fires at cold start).
+	// The arming history is fresh-only post-V1, so this is FRESH completed
+	// rounds: identical to the old roundsCompleted>0 guard on fresh runs AND on
+	// a post-guidance-reset re-entry (history reset ⇒ 0 ⇒ one completed
+	// post-reset round required — round-2 review: VR-4/R2-4).
 	const roundsCompleted = sigHist.length;
 	const stagnant = detectStagnation(sig, findings.length, sigHist, countHist);
 	(s as Record<string, unknown>).__reviewSignatures = sigHist;
@@ -1395,6 +1542,10 @@ export const integrationLoopNode: Node = {
 			(((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length +
 			(((s.uiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length;
 		const recordTestStagnation = (): boolean => {
+			// V1 (v0.3.10): replay-derived integration observations (resume cache
+			// hits) reconstruct state but never arm test stagnation — same contract
+			// as the Stage 10 review loop above.
+			if (classifyIntegrationObservation(state, ctx)) return false;
 			const sig = testFailuresSignature(state);
 			if (!detectStagnation(sig, testFailureCount(state), testSigHist, testCountHist)) return false;
 			const failures = [
