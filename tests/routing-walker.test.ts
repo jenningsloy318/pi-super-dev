@@ -521,7 +521,7 @@ describe("M2 round-1 remediation pins", () => {
 		expect(persistedBudget(dir).edges["bdd→requirements"]).toBeUndefined();
 	});
 
-	it("decline path degrades to the replan emulation instead of a dead-end abort", async () => {
+	it("M5: decline path rethrows the signal (emulation tier retired) — no restart, no new requests", async () => {
 		setFlagOn();
 		const dir = mkSpecDir();
 		const order: string[] = [];
@@ -547,17 +547,17 @@ describe("M2 round-1 remediation pins", () => {
 			},
 		};
 		const walker = withInlineRouteBack([task(owner), task(thrower)]);
-		// Expect the emulation terminal: FatalAbort carrying REPLAN (restarts).
+		// M5: the signal itself is rethrown (a FatalAbort subclass, G2) —
+		// no REPLAN restart, and replan-requests.json was NEVER written.
 		const err = await walker.run(
 			{ setup: { specDirectory: dir, specIdentifier: "spec-decline" } } as unknown as PipelineState,
 			mkCtx(log),
 		).catch((e: unknown) => e);
 		expect(err).toBeInstanceOf(Error);
-		expect((err as Error).message).toContain("REPLAN at round cap"); // R2-2: the workflow-boundary literal
-		// The emulation persisted replan-requests.json for the owner.
-		const requests = JSON.parse(readFileSync(join(dir, REPLAN_REQUESTS_FILE), "utf8"));
-		expect(requests.requests.some((r: { fingerprint: string }) => r.fingerprint.length > 0)).toBe(true);
-		expect(log.some((l) => l.includes("NOT taken inline") && l.includes("degrading to the replan emulation"))).toBe(true);
+		expect((err as Error).message).toContain("ROUTE-BACK bdd→requirements");
+		expect((err as { name?: string }).name).toBe("RouteBackSignal"); // rethrown AS the signal (G2 subclass)
+		expect(existsSync(join(dir, REPLAN_REQUESTS_FILE))).toBe(false);
+		expect(log.some((l) => l.includes("NOT taken inline") && l.includes("no automatic restart"))).toBe(true);
 		const events = readFileSync(join(dir, "events.jsonl"), "utf8");
 		expect(events).toContain('"route.declined"');
 		expect(events).toContain("edge budget exhausted");

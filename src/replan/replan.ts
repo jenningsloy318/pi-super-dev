@@ -317,13 +317,6 @@ function runStartedAt(specDir: string, runId: string): string {
  * an upstream artifact re-enters that stage's convergence loop instead of
  * oscillating in the loop that cannot fix it.
  */
-export async function maybeTriggerReplan(state: PipelineState, ctx: StageContext, originatedRunId: string): Promise<boolean> {
-	const review = state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined;
-	const candidates = review?.deferredFindings ?? [];
-	if (candidates.length === 0) return false;
-	return triggerReplanForFindings(state, ctx, candidates, "verify", originatedRunId);
-}
-
 /** F1: the generalized replan trigger — route ANY finding set (verify residue,
  * convergence-loop upstream blockers) back to its owning stages. Sets the
  * `__replan` marker on success so workflow.ts derives terminal status "replan"

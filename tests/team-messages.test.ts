@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sendMessage, replyTo, pendingMessagesFor, recordInstruction, MESSAGES_FILE } from "../src/team/messages.ts";
-import { maybeTriggerReplan, consumeReplanRequests, REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";
+import { triggerReplanForFindings, consumeReplanRequests, REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";
 import { readRunEvents } from "../src/runlog.ts";
 import type { PipelineState, StageContext } from "../src/types.ts";
 
@@ -89,7 +89,10 @@ describe("replan ↔ messages wiring (P3.1 real pair)", () => {
 				async helper() { return { value: {}, digest: "" }; },
 				async parallel() { return []; },
 			} as unknown as StageContext;
-			expect(await maybeTriggerReplan(state, ctx, "03-x")).toBe(true);
+			// M5: the verify wrapper was deleted (production-dead); the generalized
+			// trigger serves the same shape directly.
+			const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
+			expect(await triggerReplanForFindings(state, ctx, deferred, "verify", "03-x")).toBe(true);
 			// message.sent to the owner (requirements), ledger event included
 			expect(pendingMessagesFor(d, "requirements")).toHaveLength(1);
 			const events = readRunEvents(d);

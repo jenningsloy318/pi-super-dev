@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, effectiveRoundCap, MAX_CONVERGENCE_ROUNDS, PROGRESS_EXTENSION_ROUNDS } from "../src/stages/artifact-convergence.ts";
@@ -573,7 +573,7 @@ describe("M4 escalation route-back choice (G6)", () => {
 		// G6: the failure carried the single routable owner (RED-discriminating:
 		// pre-M4 this is undefined and the intercept log below is absent).
 		expect(seenOwner).toBe("requirements");
-		expect(log.some((l) => l.includes("user chose route-back"))).toBe(true);
+		expect(log.some((l) => l.includes("INLINE route-back") && l.includes("(user-chosen)"))).toBe(true);
 		// No replan emulation side effects on the inline path.
 		expect((state as Record<string, unknown>).__replan).toBeUndefined();
 	});
@@ -611,11 +611,14 @@ describe("M4 escalation route-back choice (G6)", () => {
 			},
 		};
 		await expect(bddConvergenceNode.run(state, routeBackCtx)).rejects.toSatisfy(
-			(err: unknown) => isFatalAbort(err) && /REPLAN/.test((err as Error).message) && /route-back/.test((err as Error).message),
+			(err: unknown) => isFatalAbort(err) && /route-back declined \(edge budget exhausted or kill-switch/.test((err as Error).message),
 		);
+		// M5: the emulation never ran — no marker, no persisted requests.
+		expect((state as Record<string, unknown>).__replan).toBeUndefined();
+		expect(existsSync(join(s.specDirectory, "replan-requests.json"))).toBe(false);
 	});
 
-	it("M4: route-back choice with BOTH paths declined → honest fatal (no silent downgrade)", async () => {
+	it("M4→M5: route-back choice with BOTH paths declined → honest fatal (no silent downgrade)", async () => {
 		const s = setup(dir);
 		mkdirSync(s.specDirectory, { recursive: true });
 		writeFileSync(`${s.specDirectory}01-requirements.md`, [
@@ -652,10 +655,128 @@ describe("M4 escalation route-back choice (G6)", () => {
 				},
 			};
 			await expect(bddConvergenceNode.run(state, routeBackCtx)).rejects.toSatisfy(
-				(err: unknown) => isFatalAbort(err) && /route-back but no path accepted it/.test((err as Error).message),
+				(err: unknown) => isFatalAbort(err) && /route-back declined \(edge budget exhausted or kill-switch/.test((err as Error).message),
 			);
 		} finally {
 			delete (state as Record<string, unknown>).__replan;
+		}
+	});
+});
+
+// ── M5 (v0.3.9): the interactive decision suppression is DELETED ────────────
+
+describe("M5 — upstream-owned routing is decision-independent", () => {
+	it("a retry-with-guidance choice on an upstream-owned blocker STILL routes (suppression deleted; guidance persisted)", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+		const upstreamFinding = [{ id: "REQ-M5", severity: "high", title: "Requirements contradict semantics", detail: "AC-01 conflicts.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Fix.", evidence: ["AC-01"] }];
+		const log: string[] = [];
+		const ctx5: StageContext = {
+			...ctx(state, [bddControl(true)], []),
+			options: { escalate: async () => ({ choice: "retry-with-guidance" as const, guidance: "fix AC-01 first" }) },
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "bdd-reviewer" || (call.id ?? "").endsWith("bddReview")) {
+					return { text: "", control: { verdict: "Changes Requested", summary: "upstream blocker", findings: upstreamFinding } as ControlObj };
+				}
+				return ctx(state, [bddControl(true)], []).agent(call);
+			},
+		};
+		ctx5.log = (m: string) => log.push(m);
+		// Pre-M5 this resolved ok (a retry round — the suppression) and the loop
+		// oscillated to the cap. M5: RouteBackSignal.
+		await expect(bddConvergenceNode.run(state, ctx5)).rejects.toSatisfy(
+			(err: unknown) => err instanceof Error && err.name === "RouteBackSignal",
+		);
+		expect(log.some((l) => l.includes("routing anyway; guidance persisted for the owner"))).toBe(true);
+		// the guidance reached user-notes (the owner reads it at re-entry)
+		const notes = JSON.parse(readFileSync(join(s.specDirectory, ".user-notes.json"), "utf8")) as { notes?: Array<{ text?: string }> };
+		expect(notes.notes?.some((n) => (n.text ?? "").includes("fix AC-01 first"))).toBe(true);
+		// no worktree rollback was applied (M4 contract on the routed path)
+		expect((state as Record<string, unknown>).__replan).toBeUndefined();
+	});
+
+	it("abandon is respected (fatal), accept-limitation is respected (ok) — genuine human overrides", async () => {
+		for (const choice of ["abandon", "accept-limitation"] as const) {
+			const s = setup(dir);
+			mkdirSync(s.specDirectory, { recursive: true });
+			writeFileSync(`${s.specDirectory}01-requirements.md`, [
+				"# Requirements",
+				"## Executive Summary",
+				"Implement the behavior. " + "details ".repeat(40),
+				"## Acceptance Criteria",
+				"- AC-01: primary behavior",
+				"- AC-02: edge behavior",
+				"## Non-Functional Requirements",
+				"Performance remains acceptable.",
+			].join("\n"));
+			const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+			const upstreamFinding = [{ id: "REQ-M5b", severity: "high", title: "Requirements contradict semantics", detail: "AC-01 conflicts.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Fix.", evidence: ["AC-01"] }];
+			const ctx5: StageContext = {
+				...ctx(state, [bddControl(true)], []),
+				options: { escalate: async () => ({ choice }) },
+				async agent(call: AgentCall): Promise<AgentResult> {
+					if (call.agent === "bdd-reviewer" || (call.id ?? "").endsWith("bddReview")) {
+						return { text: "", control: { verdict: "Changes Requested", summary: "upstream blocker", findings: upstreamFinding } as ControlObj };
+					}
+					return ctx(state, [bddControl(true)], []).agent(call);
+				},
+			};
+			if (choice === "abandon") {
+				await expect(bddConvergenceNode.run(state, ctx5)).rejects.toSatisfy(
+					(err: unknown) => isFatalAbort(err) && /user abandoned the run/.test((err as Error).message),
+				);
+			} else {
+				const r = await bddConvergenceNode.run(state, ctx5);
+				expect(r.status).toBe("ok"); // the human accepted the upstream limitation
+			}
+		}
+	});
+
+	it("headless + declined route-back → honest fatal naming the decline (no marker, no requests file)", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+		// kill-switch → planner always null → the honest M5 fatal.
+		process.env.SUPER_DEV_NO_INLINE_ROUTEBACK = "1";
+		try {
+			const upstreamFinding = [{ id: "REQ-M5c", severity: "high", title: "Requirements contradict semantics", detail: "AC-01 conflicts.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Fix.", evidence: ["AC-01"] }];
+			const ctx5: StageContext = {
+				...ctx(state, [bddControl(true)], []),
+				async agent(call: AgentCall): Promise<AgentResult> {
+					if (call.agent === "bdd-reviewer" || (call.id ?? "").endsWith("bddReview")) {
+						return { text: "", control: { verdict: "Changes Requested", summary: "upstream blocker", findings: upstreamFinding } as ControlObj };
+					}
+					return ctx(state, [bddControl(true)], []).agent(call);
+				},
+			};
+			await expect(bddConvergenceNode.run(state, ctx5)).rejects.toSatisfy(
+				(err: unknown) => isFatalAbort(err) && /route-back declined \(edge budget exhausted or kill-switch/.test((err as Error).message),
+			);
+			expect((state as Record<string, unknown>).__replan).toBeUndefined();
+			expect(existsSync(join(s.specDirectory, "replan-requests.json"))).toBe(false);
+		} finally {
+			delete process.env.SUPER_DEV_NO_INLINE_ROUTEBACK;
 		}
 	});
 });

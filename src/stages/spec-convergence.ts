@@ -22,7 +22,6 @@ import { priorFindingsForInjection } from "../convergence-ledger.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
 import { MAX_CONVERGENCE_ROUNDS, effectiveRoundCap, extendedRoundCap } from "./artifact-convergence.ts";
 import { countStageRounds } from "../resume.ts";
-import { triggerReplanForFindings } from "../replan/replan.ts";
 
 const specTask = task(specWriter);
 const specReviewTask = task(specReviewWriter);
@@ -194,11 +193,16 @@ export const specConvergenceNode: Node = {
 					effectiveCap = extendedRoundCap(effectiveCap, maxRounds);
 					ctx.log(`spec convergence: cap extended to ${effectiveCap} — strict progress (own open blocking ${prevOwnOpen === Number.POSITIVE_INFINITY ? "?" : prevOwnOpen} → ${lastOwnOpen})`);
 				} else {
-					// F1: before the fatal, route upstream-owned blockers back.
+					// F1/M5: before the fatal, route upstream-owned blockers back —
+					// INLINE only (the emulation is retired for routing).
 					const upstreamAtCap = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, "spec"));
-					if (upstreamAtCap.length > 0 && await triggerReplanForFindings(state, ctx, upstreamAtCap as unknown as Array<Record<string, unknown>>, "spec", state.setup?.specIdentifier ?? "unknown")) {
-						ctx.log(`spec convergence: ${upstreamAtCap.length} upstream-owned blocking finding(s) routed back via REPLAN at round cap — restarting to revise the owning stage(s)`);
-						throw new FatalAbort(`spec convergence: REPLAN at round cap — ${upstreamAtCap.length} upstream-owned blocking finding(s) routed back; restarting to revise`);
+					if (upstreamAtCap.length > 0) {
+						const inlineAtCap = planInlineRouteBack(state.setup?.specDirectory, "spec", upstreamAtCap);
+						if (inlineAtCap) {
+							ctx.log(`spec convergence: INLINE route-back ${inlineAtCap.from}→${inlineAtCap.to} at round cap (budget checked) — throwing RouteBackSignal for the walker`);
+							throw new RouteBackSignal(inlineAtCap);
+						}
+						ctx.log(`spec convergence: ${upstreamAtCap.length} upstream-owned blocker(s) at round cap but the route-back declined (budget/kill-switch) — proceeding to the honest cap fatal`);
 					}
 					// Hard liveness floor (see artifact-convergence.ts): a stochastic
 					// spec-reviewer that never approves must stop here, not loop forever.
@@ -424,10 +428,9 @@ export const specConvergenceNode: Node = {
 					ctx.log(`spec convergence: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} (budget checked) — throwing RouteBackSignal for the walker`);
 					throw new RouteBackSignal(inlineCmd);
 				}
-				if (await triggerReplanForFindings(state, ctx, upstreamFindings as unknown as Array<Record<string, unknown>>, "spec", state.setup?.specIdentifier ?? "unknown")) {
-					ctx.log(`spec convergence: ${upstreamFindings.length} upstream-owned finding(s) unchanged across 2 review rounds — routed back via REPLAN; restarting to revise the owning stage(s)`);
-					throw new FatalAbort(`spec convergence: REPLAN at round cap — ${upstreamFindings.length} upstream-owned finding(s) routed back; restarting to revise`);
-				}
+				// M5: the emulation is retired for routing — a declined jump falls
+				// through to the review-rejected round (the cap fatal remains the
+				// honest liveness floor).
 			}
 			priorUpstreamSignature = upstreamSignature;
 			setSpecFeedback(state, "spec review", lastErrors);

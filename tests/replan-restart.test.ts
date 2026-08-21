@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { maybeTriggerReplan, pendingReplanRequests, pendingHumanReplanRequests, consumeReplanRequests, invalidateResumeCache, REPLAN_REQUESTS_FILE, ARTIFACT_REVISIONS_FILE, maxReplanRounds } from "../src/replan/replan.ts";
+import { triggerReplanForFindings, pendingReplanRequests, pendingHumanReplanRequests, consumeReplanRequests, invalidateResumeCache, REPLAN_REQUESTS_FILE, ARTIFACT_REVISIONS_FILE, maxReplanRounds } from "../src/replan/replan.ts";
 import { requirementsConvergenceNode } from "../src/stages/artifact-convergence.ts";
 import { getConvergenceLedger } from "../src/convergence-ledger.ts";
 import { getRetryFeedback } from "../src/retry-feedback.ts";
@@ -69,7 +69,14 @@ const RESUME_ROWS = [
 	'{"key":"pipeline.prototype.r01@root#1","result":{"text":"","control":{}}}',
 ].join("\n") + "\n";
 
-describe("R3/R4/R5 — maybeTriggerReplan", () => {
+describe("R3/R4/R5 — triggerReplanForFindings (the M5 survivor; the verify wrapper was deleted)", () => {
+	// local helper mirroring the deleted wrapper's shape
+	async function maybeTriggerReplan(state: PipelineState, ctx: StageContext, originatedRunId: string): Promise<boolean> {
+		const review = state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined;
+		const candidates = review?.deferredFindings ?? [];
+		if (candidates.length === 0) return false;
+		return triggerReplanForFindings(state, ctx, candidates, "verify", originatedRunId);
+	}
 	beforeEach(() => { delete process.env.SUPER_DEV_MAX_REPLAN_ROUNDS; });
 	afterEach(() => { delete process.env.SUPER_DEV_MAX_REPLAN_ROUNDS; });
 

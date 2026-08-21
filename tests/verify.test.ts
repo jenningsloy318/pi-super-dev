@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { integrationTestsGreen, integrationOutcome, expectedIntegrationRoles, integrationLoopNode, reviewLoopNode, reviewLoopUntil, verificationConvergenceNode, findingsSignature } from "../src/stages/verify.ts";
@@ -285,5 +285,63 @@ describe("M4 round-2 pin — deleting the verify ledger recording must fail this
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+// ── M5 (v0.3.9): maybeTriggerReplan is GONE — multi-owner residue → dead state ─
+
+describe("M5 verify — emulation retired", () => {
+	it("a MULTI-owner deferred set declines the planner → blocked-on-decisions dead state (no restart)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-verify-m5-"));
+		try {
+			const specDir = join(dir, "docs/specifications/01-m5") + "/";
+			const state: PipelineState = {
+				task: "implement feature",
+				options: {},
+				setup: { worktreePath: dir, specDirectory: specDir },
+				classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false },
+				implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true },
+			} as unknown as PipelineState;
+			mkdirSync(specDir, { recursive: true });
+			// TWO distinct upstream owners (requirements + spec) → planner declines.
+			const multi = [
+				{ id: "DF-A", severity: "medium", title: "req gap", detail: "d", ownerStage: "requirements", blocking: true },
+				{ id: "DF-B", severity: "medium", title: "spec gap", detail: "d", ownerStage: "spec", blocking: true },
+			];
+			const ctx: StageContext = {
+				task: "implement feature", options: {}, state,
+				async agent(call: AgentCall): Promise<AgentResult> {
+					if (call.agent === "code-reviewer") {
+						return { text: "", control: { title: "Review", date: "2026-08-17", verdict: "Changes Requested", summary: "fix", findings: multi.map((f) => ({ ...f, file: `ghost-${f.id}.ts` })) } as ControlObj };
+					}
+					if (call.agent === "adversarial-reviewer") {
+						return { text: "", control: { title: "Adv", date: "2026-08-17", verdict: "PASS", summary: "ok", findings: [] } as ControlObj };
+					}
+					return { text: "", control: null };
+				},
+				helper: runHelper,
+				async parallel(calls: Array<() => Promise<unknown>>) { return Promise.all(calls.map((f) => f())) as never; },
+				budget: { check: () => true, spent: () => true, count: 0 },
+				log: () => {}, phase: () => {}, events: new EventEmitter(), results: [],
+			} as unknown as StageContext;
+			const result = await verificationConvergenceNode.run(state, ctx);
+			expect(result.status).toBe("ok"); // the node completes with the dead-state payload
+			const stag = (state as Record<string, unknown>).__stagnated as { kind?: string };
+			expect(stag?.kind).toBe("blocked-on-decisions"); // the honest human boundary
+			expect((state as Record<string, unknown>).__replan).toBeUndefined(); // NO restart marker
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("source pin: maybeTriggerReplan is gone from verify; triggerReplanForFindings survives ONLY in implementation (RED lead)", () => {
+		const verifySrc = readFileSync("src/stages/verify.ts", "utf8");
+		expect(verifySrc).not.toContain("maybeTriggerReplan");
+		const artifactSrc = readFileSync("src/stages/artifact-convergence.ts", "utf8");
+		expect(artifactSrc).not.toContain("triggerReplanForFindings");
+		const specSrc = readFileSync("src/stages/spec-convergence.ts", "utf8");
+		expect(specSrc).not.toContain("triggerReplanForFindings");
+		const implSrc = readFileSync("src/stages/implementation.ts", "utf8");
+		expect(implSrc.match(/triggerReplanForFindings\(/g)?.length).toBe(1); // the RED-site exception
 	});
 });

@@ -450,7 +450,7 @@ describe("specConvergenceNode", () => {
 	// ── F1 (RC3): the same upstream-owned blocking finding across 2 consecutive
 	// review rounds routes back via the replan circuit instead of spinning to the
 	// round cap (run 2026-08-17T05-48/06-02 died exactly this way).
-	it("routes an unchanged upstream-owned blocker back via REPLAN after 2 identical review rounds (kill-switch: emulation)", async () => {
+	it("M5: kill-switch + unchanged upstream-owned blocker → honest round-cap fatal (emulation retired)", async () => {
 		process.env.SUPER_DEV_NO_INLINE_ROUTEBACK = "1";
 		const s = setup(dir);
 		seedDocs(s);
@@ -466,16 +466,11 @@ describe("specConvergenceNode", () => {
 				[reviewControl("Changes Requested", upstreamFinding), reviewControl("Changes Requested", upstreamFinding)],
 				seen,
 			),
-		)).rejects.toSatisfy((err: unknown) => isFatalAbort(err) && /REPLAN/.test((err as Error).message));
+		)).rejects.toSatisfy((err: unknown) => isFatalAbort(err) && /did not converge within/.test((err as Error).message));
 
-		// The replan circuit persisted the routed request for the OWNING stage and
-		// set the terminal marker that flips the run status to "replan".
-		const requestsPath = `${s.specDirectory}replan-requests.json`;
-		expect(existsSync(requestsPath)).toBe(true);
-		const requests = JSON.parse(readFileSync(requestsPath, "utf8")) as { rounds: number; requests: Array<{ ownerStage: string; status: string }> };
-		expect(requests.rounds).toBe(1);
-		expect(requests.requests.some((r) => r.ownerStage === "requirements" && r.status === "pending")).toBe(true);
-		expect(((state as Record<string, unknown>).__replan as { owners?: string[] } | undefined)?.owners).toContain("requirements");
+		// M5: the emulation never ran — no marker, no persisted requests.
+		expect((state as Record<string, unknown>).__replan).toBeUndefined();
+		expect(existsSync(`${s.specDirectory}replan-requests.json`)).toBe(false);
 	});
 
 	// ── M3 (v0.3.7): default-ON — the SAME shape now throws RouteBackSignal for

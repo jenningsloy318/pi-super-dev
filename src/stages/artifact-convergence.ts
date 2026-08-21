@@ -9,7 +9,6 @@ import { priorFindingsForInjection } from "../convergence-ledger.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
 import { runJudge } from "./judge.ts";
 import { countStageRounds } from "../resume.ts";
-import { triggerReplanForFindings } from "../replan/replan.ts";
 import {
 	blockingConvergenceFindings,
 	classSweepRetryFeedback,
@@ -24,7 +23,8 @@ import {
 	getConvergenceLedger,
 } from "../convergence-ledger.ts";
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
-import { RouteBackSignal, isRoutableOwnerStage, isRouteBackSignal } from "../routing/router.ts";
+import { RouteBackSignal, isRoutableOwnerStage } from "../routing/router.ts";
+import { appendUserNotes } from "../render/user-notes.ts";
 import { planInlineRouteBack } from "../routing/walker.ts";
 import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
@@ -415,15 +415,19 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						effectiveCap = extendedRoundCap(effectiveCap, maxRounds);
 						ctx.log(`${options.feedbackKey} convergence: cap extended to ${effectiveCap} — strict progress (own open blocking ${prevOwnOpen === Number.POSITIVE_INFINITY ? "?" : prevOwnOpen} → ${lastOwnOpen})`);
 					} else {
-						// F1 (RC3): before the fatal, route upstream-owned blockers back
-						// to their owning stages via the replan circuit (bounded restart;
-						// the extension auto-resumes). Headless runs previously fell here
-						// with no HITL surface and died (run 08-56: BDD-019
-						// owner=requirements spun rounds 5-8, then FATAL).
+						// F1/M5: before the fatal, route upstream-owned blockers back —
+						// INLINE only (the emulation is retired for routing; the extension
+						// auto-restart survives solely for the RED-site lead and genuine
+						// cross-run interruptions). A declined jump proceeds to the honest
+						// cap fatal below (the escalation surface already fired in-loop).
 						const upstreamAtCap = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, ownStage));
-						if (upstreamAtCap.length > 0 && await triggerReplanForFindings(state, ctx, upstreamAtCap as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
-							ctx.log(`${options.feedbackKey} convergence: ${upstreamAtCap.length} upstream-owned blocking finding(s) routed back via REPLAN at round cap — the run will restart and the owning stage(s) will revise`);
-							throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN at round cap — ${upstreamAtCap.length} upstream-owned blocking finding(s) routed back to their owning stage(s); restarting to revise`);
+						if (upstreamAtCap.length > 0) {
+							const inlineAtCap = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamAtCap);
+							if (inlineAtCap) {
+								ctx.log(`${options.feedbackKey} convergence: INLINE route-back ${inlineAtCap.from}→${inlineAtCap.to} at round cap (budget checked) — throwing RouteBackSignal for the walker`);
+								throw new RouteBackSignal(inlineAtCap);
+							}
+							ctx.log(`${options.feedbackKey} convergence: ${upstreamAtCap.length} upstream-owned blocker(s) at round cap but the route-back declined (budget/kill-switch) — proceeding to the honest cap fatal`);
 						}
 						// Unconditional liveness floor. The stall path below routes ACTIONABLE
 						// stagnation (a recurring blocking finding) to HITL escalation; this cap
@@ -669,67 +673,53 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 								routeBackOwner: [...new Set(upstreamOwned.map((f) => f.ownerStage))]
 									.filter((o, _i, arr) => arr.length === 1 && isRoutableOwnerStage(o))[0],
 							};
-							let decisionApplied = false;
+							let decision: import("../types.ts").EscalationDecision | undefined;
 							if (escalate && escalationBudgetRemaining(state, failure) > 0) {
 								ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length > 0 ? "UPSTREAM-OWNED blocker" : "STALL"} detected — escalating to user (HITL)`);
-							ctx.log(`  blocker: ${failure.message}`);
-								const decision = await runEscalation(state, failure, escalate);
-								if (decision) {
-									// M4 (G6): a user-chosen route-back jumps INLINE — the same
-									// planner/budget/journal path as the headless default. A null
-									// plan (budget/scope) degrades to the replan emulation; if that
-									// also declines, an honest fatal (never silently downgrade an
-									// explicit user choice). applyRetryDecision is NOT called: it
-									// only acts on retry-with-guidance.
-									if (decision.choice === "route-back") {
-										const inlineChoice = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamOwned);
-										if (inlineChoice) {
-											ctx.log(`${options.feedbackKey} convergence: user chose route-back — INLINE jump ${inlineChoice.from}→${inlineChoice.to} (budget checked)`);
-											throw new RouteBackSignal(inlineChoice);
-										}
-										if (await triggerReplanForFindings(state, ctx, upstreamOwned as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
-											throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN at round cap — user chose route-back; edge budget exhausted, restarting to revise the owning stage(s)`);
-										}
-										throw new FatalAbort(`${options.feedbackKey} convergence: user chose route-back but no path accepted it (planner declined — typically an exhausted edge budget; replan emulation declined) — ${failure.message}`);
-									}
-									decisionApplied = true;
-									applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });
-									if (decision.choice === "accept-limitation") {
-										clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
-										ctx.log(`${options.feedbackKey} convergence: user accepted the limitation — proceeding (round ${round})`);
-										return { status: "ok" as const, attempts: round };
-									}
-									if (decision.choice === "abandon") {
-										throw new FatalAbort(`${options.feedbackKey} convergence: user abandoned the run at review escalation — ${failure.message}`);
-									}
-									// retry-with-guidance / revise-manually: fall through to another round
-									// (guidance was persisted to .user-notes.json for the next attempt).
-									priorBlockingSignature = ""; // guidance changes the inputs; reset stall tracking
-								}
+								ctx.log(`  blocker: ${failure.message}`);
+								decision = await runEscalation(state, failure, escalate);
 							}
-							// F1 (RC3): headless / dismissed / budget-exhausted escalation
-							// returned NO decision — the old code silently continued and the
-							// writer oscillated until the round cap killed the run (runs
-							// 08-56 / 08-09). Route the upstream-owned blockers back via the
-							// replan circuit instead: the run ends "replan", auto-resumes,
-							// the OWNING stage revises, and the downstream suffix re-runs.
-							if (!decisionApplied && upstreamOwned.length > 0) {
-								// M2 pilot (routing-architecture plan): flag ON + exactly one
-							// strictly-upstream routable owner + per-edge budget remaining →
-							// INLINE route-back. The walker above root.run catches it, journals
-							// the jump, injects these findings as round-1 requests, and
-							// sub-walks from the owner — no process restart, no REPLAN marker.
-							// Kill-switch (M3 default is ON): planInlineRouteBack returns
-							// null and the replan emulation below runs byte-identical (G8).
-							const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamOwned);
-							if (inlineCmd) {
-								ctx.log(`${options.feedbackKey} convergence: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} (budget checked) — throwing RouteBackSignal for the walker`);
-								throw new RouteBackSignal(inlineCmd);
+							// M5: genuine human overrides are respected FIRST — these two
+							// express a decision about the RUN, not about which actuator fixes it.
+							if (decision?.choice === "accept-limitation") {
+								applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });
+								clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
+								ctx.log(`${options.feedbackKey} convergence: user accepted the limitation — proceeding (round ${round})`);
+								return { status: "ok" as const, attempts: round };
 							}
-							if (await triggerReplanForFindings(state, ctx, upstreamOwned as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
-								ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length} upstream-owned blocker(s) routed back via REPLAN (no human decision surface) — restarting to revise the owning stage(s)`);
-								throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN at round cap — ${upstreamOwned.length} upstream-owned blocker(s) routed back to their owning stage(s); restarting to revise`);
+							if (decision?.choice === "abandon") {
+								throw new FatalAbort(`${options.feedbackKey} convergence: user abandoned the run at review escalation — ${failure.message}`);
+							}
+							// M5 — the interactive decision suppression is DELETED: upstream-
+							// owned blockers route REGARDLESS of the choice (route-back,
+							// retry-with-guidance, revise-manually) or the headless no-decision.
+							// The run-03-23-47 interactive sibling (retry-with-guidance on an
+							// upstream-owned blocker → the writer retried what it cannot fix →
+							// oscillation → cap) is dead. A retry-with-guidance decision in
+							// hand persists its guidance (the owner reads it at re-entry);
+							// applyRetryDecision itself is NOT called (M4 contract: no
+							// worktree rollback on the routed path).
+							if (upstreamOwned.length > 0) {
+								const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamOwned);
+								if (inlineCmd) {
+									if (decision?.choice === "retry-with-guidance" && decision.guidance?.trim()) {
+										try { appendUserNotes(state.setup?.specDirectory, [decision.guidance.trim()]); } catch { /* best-effort */ }
+										ctx.log(`${options.feedbackKey} convergence: retry-with-guidance chosen but the blocker is upstream-owned — routing anyway; guidance persisted for the owner`);
+									}
+									ctx.log(`${options.feedbackKey} convergence: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} (budget checked)${decision?.choice === "route-back" ? " (user-chosen)" : ""} — throwing RouteBackSignal for the walker`);
+									throw new RouteBackSignal(inlineCmd);
 								}
+								// M5 — the emulation is retired for routing: a declined jump
+								// (budget exhausted / kill-switch / scope) is an honest fatal.
+								// The escalation surface fired above (interactive choice or
+								// headless report); there is NO automatic process restart.
+								throw new FatalAbort(`${options.feedbackKey} convergence: route-back declined (edge budget exhausted or kill-switch — ${upstreamOwned.length} upstream-owned blocker(s) persist: ${upstreamOwned.map((f) => f.id).join(", ")}) — the escalation surface was offered when available and no automatic restart remains (M5 retirement) — ${failure.message}`);
+							}
+							// Stall-only residue: retry-with-guidance / revise-manually keep
+							// their same-stage semantics (rollback + persisted guidance).
+							if (decision) {
+								applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });
+								priorBlockingSignature = ""; // guidance changes the inputs; reset stall tracking
 							}
 						}
 						setReviewFeedback(options, state, `${options.feedbackKey} review`, lastErrors);

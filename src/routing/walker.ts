@@ -8,7 +8,8 @@
  *
  *   kill-switch set (SUPER_DEV_NO_INLINE_ROUTEBACK=1 — M3 default is ON):
  *     pure pass-through — a RouteBackSignal re-throws unchanged, so today's
- *     emulation (replan/auto-resume) is byte-identical (G8 fixture 1). The
+ *     routing (G8 fixture 1; M5: the kill-switch now means "no automatic
+ *     route-back" — the emulation fallback was retired). The
  *     wrapper adds no ctx.results / stage events of its own, so the
  *     observable stream is identical too.
  *
@@ -50,7 +51,6 @@ import {
 	invalidateResumeCache,
 	pendingReplanRequests,
 	resumeCacheHasRowsFor,
-	triggerReplanForFindings,
 } from "../replan/replan.ts";
 import { appendRunEvent } from "../runlog.ts";
 import {
@@ -175,7 +175,7 @@ export function withInlineRouteBack(children: Node[]): Node {
 					result = await sequence(pass, { tolerant: true }).run(state, ctx);
 				} catch (err) {
 					if (!isRouteBackSignal(err)) throw err; // ordinary abort — untouched
-					if (!inlineRouteBackEnabled()) throw err; // G8: byte-identical emulation (kill-switch)
+					if (!inlineRouteBackEnabled()) throw err; // kill-switch: no automatic route-back (M5 — the emulation fallback is retired)
 					signal = err;
 					result = { status: "failed", error: err.message };
 				}
@@ -198,27 +198,20 @@ export function withInlineRouteBack(children: Node[]): Node {
 								: remainingBudget(persistedBudget(specDir), cmd.from, cmd.to) <= 0
 									? "edge budget exhausted"
 									: undefined;
-				/** Decline with a DEGRADATION PATH (review round-1 adv-F-1/code-F-4):
-				 *  try the replan emulation first (the mechanism this pilot
-				 *  replaces); only when that also fails do we rethrow the signal —
-				 *  never a bare dead-end "failed" run. */
+				/** Decline with a DEGRADATION PATH (round-1 adv-F-1/code-F-4 shape,
+				 *  M5-retired): consume any PERSISTED pending rows (the cross-run
+				 *  resume record) via a restart; otherwise rethrow the signal (a
+				 *  FatalAbort subclass, G2) — never a bare dead-end "failed" run. */
 				const decline = async (why: string): Promise<never> => {
-					ctx.log(`route-back ${cmd.from}→${cmd.to}: NOT taken inline (${why}) — degrading to the replan emulation`);
+					ctx.log(`route-back ${cmd.from}→${cmd.to}: NOT taken inline (${why}) — M5: no automatic restart (pending-rows consumption is the only restart tier)`);
 					try {
 						if (specDir) appendRunEvent(specDir, { runId: setup?.specIdentifier ?? "unknown", type: "route.declined", data: { from: cmd.from, to: cmd.to, reason: why } });
 					} catch { /* best-effort */ }
-					const fallbackFindings = getConvergenceLedger(state).findings
-						.filter((f) => cmd.findingIds.includes(f.id))
-						.map((f) => f as unknown as Record<string, unknown>);
-					if (
-						fallbackFindings.length > 0 &&
-						(await triggerReplanForFindings(state, ctx, fallbackFindings, cmd.from, setup?.specIdentifier ?? "unknown"))
-					) {
-						ctx.log(`route-back ${cmd.from}→${cmd.to}: replan emulation accepted the findings — restarting to revise the owning stage(s)`);
-						// R2-2: the workflow boundary derives status "replan" only from an
-						// abort whose message carries the canonical literal (A-03) — match it.
-						throw new FatalAbort(`route-back declined (${why}); REPLAN at round cap — ${fallbackFindings.length} finding(s) routed back via the replan circuit; restarting to revise`);
-					}
+					// M5: the create-new-requests emulation tier is RETIRED — routing
+					// never triggers an automatic process restart anymore. The ONLY
+					// remaining restart tier is the pending-rows consumption below
+					// (replan-requests.json as the cross-run resume record: rows
+					// persisted by an earlier/interrupted run).
 					// R2-3: the emulation returns false when OUR OWN injected requests are
 					// still PENDING (its dedupe suppresses them) — but pending rows are
 					// exactly what a restart consumes at round 1, so the replan terminal

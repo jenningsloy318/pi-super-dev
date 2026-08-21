@@ -23,7 +23,6 @@ import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../bui
 import { runJudge } from "./judge.ts";
 import { toBool } from "../doc-validators.ts";
 import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../helpers.ts";
-import { maybeTriggerReplan } from "../replan/replan.ts";
 import { RouteBackSignal } from "../routing/router.ts";
 import { planInlineRouteBack } from "../routing/walker.ts";
 import { appendGateChecked } from "../runlog.ts";
@@ -1241,8 +1240,15 @@ export const verificationConvergenceNode: Node = {
 						ctx.log(`Stage 10: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} for ${inlineCmd.findingIds.length} deferred finding(s) (budget checked; recorded to the ledger for round-1 injection) — throwing RouteBackSignal for the walker`);
 						throw new RouteBackSignal(inlineCmd);
 					}
-					const replanned = await maybeTriggerReplan(state, ctx, state.setup?.specIdentifier ?? "unknown");
-					if (replanned) return { status: "ok" };
+					// M5: the emulation is retired for routing — a declined inline
+					// plan (multi-owner / kill-switch / budget / OWNER-LESS residue)
+					// lands on the honest blocked-on-decisions human boundary below
+					// instead of an automatic process restart. (Disposition: deferred
+					// findings WITHOUT ownerStage could once be resolved by the replan
+					// LEAD (the deleted verify wrapper); M5 narrows routing to structured
+					// owners — owner-less residue is surfaced to the human boundary
+					// where the [deferred: …] titles carry it; the lead remains
+					// reachable from the RED-site exception and genuine resume.)
 					(state as Record<string, unknown>).__stagnated = {
 						kind: "blocked-on-decisions",
 						rounds: attempts.length,

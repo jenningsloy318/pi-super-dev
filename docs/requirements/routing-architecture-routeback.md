@@ -1,6 +1,6 @@
 # Routing Architecture — Why Route-Back Failed Three Times, and the Design That Fixes It
 
-Status: M1–M4 implemented (M1 v0.3.5, M2 v0.3.6, M3 v0.3.7, M4 v0.3.8); M5 pending
+Status: M1–M5 implemented (M1 v0.3.5, M2 v0.3.6, M3 v0.3.7, M4 v0.3.8, M5 v0.3.9) — migration complete
 
 ## The incident, in one paragraph
 
@@ -661,3 +661,97 @@ load-bearing (ledger row DF-77 owner=spec blocking=true after the
 verify-originated jump); R2-F4 detectedAtStage aligned to the file's
 "verification" convention. Final: 168 files / 2719 passed + 3 skipped;
 tsc clean; RED-first final-state: 13 fix-specific failures pre-fix, 119 controls pass (132 tests).
+
+## M5 design details (v0.3.9) — the emulation retires for routing
+
+**Interactive decision suppression — DELETED.** In the escalation block
+the genuine human overrides are respected first (`abandon` → fatal,
+`accept-limitation` → proceed ok); everything else — a user-chosen
+route-back, retry-with-guidance, revise-manually, and the headless
+no-decision — takes the SAME routing path for upstream-owned blockers.
+The run-03-23-47 interactive sibling (user picks retry-with-guidance on
+an upstream-owned blocker → the writer retries → oscillates → cap) is
+dead: routing is decision-independent. When a retry-with-guidance
+decision is in hand on the routed path, the guidance is persisted via
+appendUserNotes (the owner reads it at re-entry) — but applyRetryDecision
+is NOT called (M4 contract: no worktree rollback on the routed path).
+
+**Emulation retired at the owner-addressable sites.**
+artifact-convergence (escalation block + round-cap), spec-convergence
+(round-cap + signature-persistence), and verify (blocked-on-decisions)
+lose their triggerReplanForFindings calls: inline jump or honest
+terminal. A declined jump (budget exhausted / kill-switch / scope) ends
+the escalation-adjacent path with an honest FatalAbort naming the edge —
+per the plan's out-of-scope note, "the escalation path stays available at
+budget exhaustion" (it fired just above), and NO automatic process
+restart remains. The walker's decline path loses its
+create-new-requests emulation tier the same way (it rethrows the signal —
+itself a FatalAbort subclass, G2).
+
+**What legitimately remains of the replan machinery** (the plan's
+"audit + cross-run resume record"): (1) the walker's PENDING-ROWS tier —
+persisted replan-requests.json rows from an earlier/interrupted run are
+consumed by a restart (genuine cross-run resume); (2) the
+implementation-RED site (judge route replan-upstream): its finding
+carries NO structured ownerStage — the owner is resolved by the replan
+LEAD (an LLM call), which the deterministic inline planner structurally
+cannot serve; documented as the accepted M5 exception; (3) extension
+auto-resume while status=replan, serving (1)/(2) and genuinely
+interrupted runs. The maybeTriggerReplan verify wrapper was DELETED
+(production-dead after M5); triggerReplanForFindings is the only
+production caller's entry (RED site), with its tests exercising the
+generalized API directly.
+
+**Owner-less residue disposition (review round-1 R5).** Verify's
+deferred findings WITHOUT a structured ownerStage could once be resolved
+by the replan lead via maybeTriggerReplan; M5 narrows routing to
+structured owners, so owner-less residue surfaces to the
+blocked-on-decisions human boundary (the [deferred: …] titles carry it)
+instead of an automatic restart. The lead path remains reachable for the
+RED-site exception and genuine resume. Accepted narrowing: structured
+ownership is the routing contract; unstructured residue is human work.
+
+**Accepted M5 trades (dispositioned).** (a) Kill-switch semantics
+change: SUPER_DEV_NO_INLINE_ROUTEBACK=1 now means "no automatic
+route-back" (escalation surface / honest fatal) instead of
+"byte-identical emulation" — G8's flag-off≡pre-change promise is
+superseded by completion (the flag-on vs flag-off STRUCTURAL equivalence
+tests survive; the kill-switch planner-null pin survives). (b)
+Multi-owner routable sets still decline (single-owner planner is the
+pinned safety): verify's multi-owner deferred residue lands on the
+blocked-on-decisions human boundary instead of an auto-restart; the
+sequential most-upstream-owner jump is a documented follow-up, not M5.
+(c) Budget-exhausted persistence loops end at the human boundary rather
+than borrowing the emulation's extra bounded restarts — one bounded
+mechanism (per-edge journal budget) instead of two.
+
+**M5 test additions/updates:** suppression-deleted pin (retry-with-
+guidance on an upstream-owned blocker STILL throws RouteBackSignal);
+abandon/accept-limitation respected; headless declined → honest fatal
+with NO __replan marker and NO replan-requests.json write; walker
+decline → signal rethrow (emulation tier gone) while the pending-rows
+tier still restarts; spec-convergence kill-switch pin updated to the
+honest cap fatal; verify maybeTriggerReplan deleted (source pin) with
+multi-owner → dead-state; implementation keeps exactly one
+triggerReplanForFindings call (source pin).
+
+## M5 review record (round 1) — residuals fixed
+
+**Code-reviewer CHANGES-REQUESTED, adversarial CONTEST — both verified the
+behavior correct** (suppression fully deleted with abandon/accept-limitation
+the complete respected-override set; the escalation-budget gate conditions
+only runEscalation, never routing). Residuals remediated:
+- Stale "byte-identical emulation" claims rewritten (walker header + the
+  kill-switch comment; the plan's cross-cutting invariants and M1-era
+  kill-switch line are historical records of the pre-M5 contract and the M5
+  design section supersedes them).
+- maybeTriggerReplan DELETED (production-dead) — its tests retargeted at the
+  generalized triggerReplanForFindings.
+- Walker decline pin's tautological assertion replaced with the concrete
+  RouteBackSignal name check.
+- The honest-fatal message no longer overclaims ("offered when available").
+- Owner-less-residue narrowing dispositioned in code + doc (structured
+  ownership is the routing contract; owner-less residue is human work).
+- Unused isRouteBackSignal import dropped from artifact-convergence.
+Final: 168 files / 2724 passed + 3 skipped; tsc clean; RED-first final-state:
+9 fix-specific failures pre-fix, 109 controls pass.

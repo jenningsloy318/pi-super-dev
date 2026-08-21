@@ -1503,6 +1503,11 @@ export const implementationStage: Stage = {
 										file: judgeOut.verdict.evidence[0]?.file,
 									};
 									let replanned = false;
+									// M5 documented exception: this finding carries NO structured
+									// ownerStage — the owner is resolved by the replan LEAD (an LLM
+									// call), which the deterministic inline planner cannot serve.
+									// The emulation survives here (and for genuine cross-run
+									// interruptions) while every owner-addressable site routes inline.
 									try { replanned = await triggerReplanForFindings(state, ctx, [finding], "implementation-red", setup.specIdentifier ?? "unknown"); } catch { replanned = false; }
 									if (replanned) {
 										redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${finding.recommendation}`;
