@@ -584,3 +584,16 @@ describe("firstCitedTestFile (v0.2.11 F1b)", () => {
 		expect(firstCitedTestFile("The two tests are jointly unsatisfiable; no file was cited.")).toBeNull();
 	});
 });
+
+// ── M4 (v0.3.8): the env-blocker override consults the shared vocabulary ────
+
+describe("M4 G3 fold — classifyJudgeRoute drives the override arms", () => {
+	it("implementer-retry → retry; fix-environment → escalate (single source of truth)", async () => {
+		const { classifyJudgeRoute } = await import("../src/routing/router.ts");
+		expect(classifyJudgeRoute("implementer-retry")).toBe("retry");
+		expect(classifyJudgeRoute("fix-environment")).toBe("escalate");
+		// source pin: the implementation override arm requires the classifier's "retry"
+		const src = readFileSync("src/stages/implementation.ts", "utf8");
+		expect(src).toContain('classifyJudgeRoute(judgeOut.verdict.route) === "retry"');
+	});
+});

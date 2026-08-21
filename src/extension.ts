@@ -404,10 +404,22 @@ const ESCALATE_OPTIONS_HARD = [
 	"Abandon",
 ];
 
-/** Map a ctx.ui.select result to an EscalationDecision (undefined = dismissed). */
-function mapEscalateChoice(choice: unknown): EscalationDecision | undefined {
+/** M4 routing (G6): the full offered list for a failure — when it carries a
+ *  routeBackOwner (exactly one upstream routable owner), "Route back to
+ *  ⟨owner⟩ (recommended)" leads BOTH severity lists. */
+export function escalateOptionsFor(failure: { severity?: string; routeBackOwner?: string }): string[] {
+	const base = failure.severity === "hard" ? ESCALATE_OPTIONS_HARD : ESCALATE_OPTIONS_SOFT;
+	if (!failure.routeBackOwner) return base;
+	return [`Route back to ${failure.routeBackOwner} (recommended)`, ...base];
+}
+
+/** Map a ctx.ui.select result to an EscalationDecision (undefined = dismissed).
+ *  The route-back marker is matched FIRST — "Revise manually" never contains
+ *  "route", but keep the order explicit anyway. */
+export function mapEscalateChoice(choice: unknown): EscalationDecision | undefined {
 	if (typeof choice !== "string") return undefined;
 	const lower = choice.toLowerCase();
+	if (lower.startsWith("route back")) return { choice: "route-back" };
 	if (lower.includes("retry")) return { choice: "retry-with-guidance" };
 	if (lower.includes("revise")) return { choice: "revise-manually" };
 	if (lower.includes("accept")) return { choice: "accept-limitation" };
@@ -452,8 +464,8 @@ export function makeEscalate(ctx: any): Escalate {
 		// Interactive pause-ask-continue — TUI/RPC only.
 		if (ctx?.hasUI === true) {
 			try {
-				const options =
-					failure.severity === "hard" ? ESCALATE_OPTIONS_HARD : ESCALATE_OPTIONS_SOFT;
+				const options = escalateOptionsFor(failure);
+				failure.offeredChoices = options; // MP5: persisted with the report
 				const choice = await ctx.ui?.select?.(
 					formatEscalationPrompt(failure, "Super-dev hit a blocker — how to proceed?"),
 					options,

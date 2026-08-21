@@ -192,14 +192,14 @@ describe("planInlineRouteBack (pilot go/no-go — M2 bdd edge, M3 +spec)", () =>
 		expect(inlineRouteBackEnabled()).toBe(false);
 	});
 
-	it("M3 planner scope: spec→requirements accepted, research→requirements not", () => {
+	it("M3→M4 planner scope: spec→requirements AND research→requirements both plan (allowlist retired at M4)", () => {
 		setFlagOn();
 		const dir = mkSpecDir();
 		const cmd = planInlineRouteBack(dir, "spec", [{ id: "F-9", ownerStage: "requirements", blocking: true }]);
 		expect(cmd).not.toBeNull();
 		expect(cmd!.from).toBe("spec");
 		expect(cmd!.to).toBe("requirements");
-		expect(planInlineRouteBack(dir, "research", [{ id: "F-9", ownerStage: "requirements", blocking: true }])).toBeNull();
+		expect(planInlineRouteBack(dir, "research", [{ id: "F-9", ownerStage: "requirements", blocking: true }])).not.toBeNull();
 	});
 
 	it("active (default) + single strictly-upstream routable owner + budget → command", () => {
@@ -215,12 +215,12 @@ describe("planInlineRouteBack (pilot go/no-go — M2 bdd edge, M3 +spec)", () =>
 		expect(cmd!.findingIds).toEqual(["F-001"]);
 	});
 
-	it("M2 pilot gate: only the incident edge bdd→requirements is live (adv-F-5)", () => {
+	it("M2→M4: downstream or non-routable owners stay null (the pilot gates that mattered)", () => {
 		setFlagOn();
 		const dir = mkSpecDir();
-		// design→requirements: valid upstream owner, NOT the pilot edge → null.
-		expect(planInlineRouteBack(dir, "design", [
-			{ id: "G", ownerStage: "requirements", blocking: true },
+		// requirements has no routable upstream — nothing precedes it.
+		expect(planInlineRouteBack(dir, "requirements", [
+			{ id: "G", ownerStage: "bdd", blocking: true },
 		])).toBeNull();
 	});
 
@@ -890,5 +890,80 @@ describe("M3 incident replay (run 03-23-47 shape, default-ON)", () => {
 		// The injected request awaits the requirements re-convergence.
 		const requests = JSON.parse(readFileSync(join(dir, REPLAN_REQUESTS_FILE), "utf8"));
 		expect(requests.requests.some((r: { id: string }) => r.id === "rb-rb-1")).toBe(true);
+	});
+});
+
+// ═══ M4 (v0.3.8): all producers + escalation route-back choice ═════════════
+
+import { classifyEscalationChoice } from "../src/routing/router.ts";
+
+describe("M4 planner generalization (every routable producer)", () => {
+	it("research→requirements and design→bdd plan commands (allowlist retired)", () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		const r = planInlineRouteBack(dir, "research", [{ id: "F-1", ownerStage: "requirements", blocking: true }]);
+		expect(r).not.toBeNull();
+		expect(r!.from).toBe("research");
+		expect(r!.to).toBe("requirements");
+		const d = planInlineRouteBack(dir, "design", [{ id: "F-2", ownerStage: "bdd", blocking: true }]);
+		expect(d).not.toBeNull();
+		expect(d!.to).toBe("bdd");
+	});
+
+	it("verify→spec plans from deferred-shaped findings", () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		const cmd = planInlineRouteBack(dir, "verify", [{ id: "DF-1", ownerStage: "spec", blocking: true, title: "spec-owned deferred" }]);
+		expect(cmd).not.toBeNull();
+		expect(cmd!.to).toBe("spec");
+	});
+
+	it("a verify throw inside branch/loop nesting reaches the walker (end-to-end)", async () => {
+		setFlagOn();
+		const dir = mkSpecDir();
+		const order: string[] = [];
+		const specNode: Stage = {
+			id: "spec", label: "spec",
+			async run() { order.push("spec"); return { status: "ok" }; },
+		};
+		// The verify child sits inside a sequence+branch nesting mirroring the
+		// real pipeline; its RouteBackSignal must propagate to the walker.
+		const verifyChild: Stage = {
+			id: "verify-inner", label: "verify",
+			async run() {
+				order.push("verify");
+				if (order.filter((s) => s === "verify").length === 1) {
+					const cmd = planInlineRouteBack(dir, "verify", [{ id: "DF-1", ownerStage: "spec", blocking: true }]);
+					if (cmd) throw new RouteBackSignal(cmd);
+				}
+				return { status: "ok" };
+			},
+		};
+		const { branch } = await import("../src/nodes.ts");
+		// NOTE: ids avoid "setup" — the task wrapper applies the (absent)
+		// control to state[stage.id], which would CLOBBER state.setup and
+		// wipe specDirectory (found the hard way).
+		const children: Node[] = [
+			task(recordStage("boot", order)),
+			task(recordStage("classify0", order)),
+			task(recordStage("requirements0", order)),
+			task(specNode),
+			branch(() => true, { yes: task(verifyChild) }),
+		];
+		const state = { setup: { specDirectory: dir, specIdentifier: "s" } } as unknown as PipelineState;
+		const log: string[] = [];
+		await withInlineRouteBack(children).run(state, mkCtx(log));
+		expect(order).toEqual([
+			"boot", "classify0", "requirements0", "spec", "verify",
+			// sub-walk from owner (spec) → verify re-runs and completes
+			"spec", "verify",
+		]);
+		expect(readRoutingJournal(dir).entries[0]).toMatchObject({ from: "verify", to: "spec" });
+	});
+});
+
+describe("M4 escalation route-back choice (G6)", () => {
+	it("classifyEscalationChoice maps route-back", () => {
+		expect(classifyEscalationChoice("route-back")).toBe("route-back");
 	});
 });

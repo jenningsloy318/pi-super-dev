@@ -187,3 +187,103 @@ describe("deferred-finding visibility caps removed (AC-20, D5)", () => {
 		}
 	});
 });
+
+// ── M4 (v0.3.8): verify inline-first — deferred findings drive a jump ───────
+
+describe("M4 verify inline-first (blocked-on-decisions seam)", () => {
+	it("a single routable upstream owner in the deferred set throws RouteBackSignal before the replan emulation", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-verify-m4-"));
+		try {
+			const specDir = join(dir, "docs/specifications/01-m4") + "/";
+			const state: PipelineState = {
+				task: "implement feature",
+				options: {},
+				setup: { worktreePath: dir, specDirectory: specDir },
+				classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false },
+				implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true },
+			} as unknown as PipelineState;
+			mkdirSync(specDir, { recursive: true });
+			// Deferred findings owned by SPEC (cross-stage ownership is exactly why
+			// they were deferred) — one routable upstream owner from "verify".
+			const deferredOwned = Array.from({ length: 3 }, (_, i) => ({
+				id: `DF-${i}`, severity: "medium", title: `spec gap ${i}`, detail: "owned upstream",
+				ownerStage: "spec", blocking: true,
+			}));
+			const ctx: StageContext = {
+				task: "implement feature", options: {}, state,
+				async agent(call: AgentCall): Promise<AgentResult> {
+					if (call.agent === "code-reviewer") {
+						// findings with nonexistent files → R-5 demotes ALL to deferred
+						return { text: "", control: { title: "Review", date: "2026-08-17", verdict: "Changes Requested", summary: "fix", findings: deferredOwned.map((f) => ({ ...f, file: `ghost-${f.id}.ts` })) } as ControlObj };
+					}
+					if (call.agent === "adversarial-reviewer") {
+						return { text: "", control: { title: "Adv", date: "2026-08-17", verdict: "PASS", summary: "ok", findings: [] } as ControlObj };
+					}
+					return { text: "", control: null };
+				},
+				helper: runHelper,
+				async parallel(calls: Array<() => Promise<unknown>>) { return Promise.all(calls.map((f) => f())) as never; },
+				budget: { check: () => true, spent: () => true, count: 0 },
+				log: () => {}, phase: () => {}, events: new EventEmitter(), results: [],
+			} as unknown as StageContext;
+			await expect(verificationConvergenceNode.run(state, ctx)).rejects.toSatisfy(
+				(err: unknown) => err instanceof Error && err.name === "RouteBackSignal",
+			);
+			// The journal recorded the verify→spec edge (the walker would have
+			// charged it; here the signal escaped directly to the test).
+			expect((state as Record<string, unknown>).__replan).toBeUndefined();
+			const stag = (state as Record<string, unknown>).__stagnated;
+			expect(stag).toBeUndefined(); // the dead-state path never ran
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+// ── M4 round-2: the ledger recording is behaviorally load-bearing ───────────
+
+describe("M4 round-2 pin — deleting the verify ledger recording must fail this test", () => {
+	it("the jumped deferred findings ARE in the convergence ledger with ownerStage (walker injection source)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-verify-m4b-"));
+		try {
+			const specDir = join(dir, "docs/specifications/01-m4b") + "/";
+			const state: PipelineState = {
+				task: "implement feature",
+				options: {},
+				setup: { worktreePath: dir, specDirectory: specDir },
+				classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false },
+				implementation: { totalPhases: 1, phasesCompleted: 1, allGreen: true },
+			} as unknown as PipelineState;
+			mkdirSync(specDir, { recursive: true });
+			const deferredOwned = [{ id: "DF-77", severity: "medium", title: "spec gap", detail: "owned upstream", ownerStage: "spec", blocking: true }];
+			const ctx: StageContext = {
+				task: "implement feature", options: {}, state,
+				async agent(call: AgentCall): Promise<AgentResult> {
+					if (call.agent === "code-reviewer") {
+						return { text: "", control: { title: "Review", date: "2026-08-17", verdict: "Changes Requested", summary: "fix", findings: deferredOwned.map((f) => ({ ...f, file: `ghost-${f.id}.ts` })) } as ControlObj };
+					}
+					if (call.agent === "adversarial-reviewer") {
+						return { text: "", control: { title: "Adv", date: "2026-08-17", verdict: "PASS", summary: "ok", findings: [] } as ControlObj };
+					}
+					return { text: "", control: null };
+				},
+				helper: runHelper,
+				async parallel(calls: Array<() => Promise<unknown>>) { return Promise.all(calls.map((f) => f())) as never; },
+				budget: { check: () => true, spent: () => true, count: 0 },
+				log: () => {}, phase: () => {}, events: new EventEmitter(), results: [],
+			} as unknown as StageContext;
+			let thrown: unknown;
+			try { await verificationConvergenceNode.run(state, ctx); } catch (e) { thrown = e; }
+			expect((thrown as Error)?.name).toBe("RouteBackSignal");
+			// THE pin: the ledger carries the jumped finding — remove the
+			// recordConvergenceFindings call and this fails.
+			const ledger = (state as Record<string, unknown>).__convergenceLedger as { findings?: Array<{ id?: string; ownerStage?: string; blocking?: boolean }> } | undefined;
+			const row = ledger?.findings?.find((f) => f.id === "DF-77");
+			expect(row).toBeDefined();
+			expect(row?.ownerStage).toBe("spec");
+			expect(row?.blocking).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

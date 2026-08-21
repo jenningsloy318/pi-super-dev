@@ -526,3 +526,136 @@ describe("M3 G4 wiring (revision-gate green-skip in artifactConvergenceNode)", (
 		expect(designNode.slice(0, 1200)).not.toContain("fastForwardable: true");
 	});
 });
+
+// ── M4 (v0.3.8): the escalation route-back choice drives an INLINE jump ─────
+
+describe("M4 escalation route-back choice (G6)", () => {
+	it("a user-chosen route-back throws RouteBackSignal (inline jump), not a retry round", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+
+		const upstreamFinding = [{ id: "REQ-BAD", severity: "high", title: "Requirements contradict semantics", detail: "AC-01 conflicts.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Fix.", evidence: ["AC-01"] }];
+		let escalateCalls = 0;
+		let reviewCalls = 0;
+		let seenOwner: string | undefined;
+		const routeBackCtx: StageContext = {
+			...ctx(state, [bddControl(true)], []),
+			options: { escalate: async (failure) => {
+				escalateCalls++;
+				seenOwner = failure.routeBackOwner; // asserted AFTER (a stub throw is swallowed by the never-throw escalation)
+				return { choice: "route-back" as const };
+			} },
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "bdd-reviewer" || (call.id ?? "").endsWith("bddReview")) {
+					reviewCalls++;
+					return { text: "", control: { verdict: "Changes Requested", summary: "upstream blocker", findings: upstreamFinding } as ControlObj };
+				}
+				return ctx(state, [bddControl(true)], []).agent(call);
+			},
+		};
+		const log: string[] = [];
+		routeBackCtx.log = (m: string) => log.push(m);
+		await expect(bddConvergenceNode.run(state, routeBackCtx)).rejects.toSatisfy(
+			(err: unknown) => err instanceof Error && err.name === "RouteBackSignal",
+		);
+		expect(escalateCalls).toBe(1);
+		// G6: the failure carried the single routable owner (RED-discriminating:
+		// pre-M4 this is undefined and the intercept log below is absent).
+		expect(seenOwner).toBe("requirements");
+		expect(log.some((l) => l.includes("user chose route-back"))).toBe(true);
+		// No replan emulation side effects on the inline path.
+		expect((state as Record<string, unknown>).__replan).toBeUndefined();
+	});
+
+	it("a route-back choice with an EXHAUSTED edge degrades to the replan emulation (bounded restart)", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+		// Exhaust the bdd→requirements edge (budget 2).
+		const { chargeRoutingJump } = await import("../src/routing/journal.ts");
+		const { startRunEpoch } = await import("../src/routing/journal.ts");
+		startRunEpoch();
+		for (let i = 0; i < 2; i++) {
+			chargeRoutingJump(s.specDirectory, { from: "bdd", to: "requirements", reason: "prior", findingIds: ["X"], resumeFromIndex: 1, invalidated: ["requirements"], at: new Date().toISOString(), cacheDropped: 0, revisionAfter: 1 });
+		}
+		const upstreamFinding = [{ id: "REQ-BAD", severity: "high", title: "Requirements contradict semantics", detail: "AC-01 conflicts.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Fix.", evidence: ["AC-01"] }];
+		const routeBackCtx: StageContext = {
+			...ctx(state, [bddControl(true)], []),
+			options: { escalate: async () => ({ choice: "route-back" as const }) },
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "bdd-reviewer" || (call.id ?? "").endsWith("bddReview")) {
+					return { text: "", control: { verdict: "Changes Requested", summary: "upstream blocker", findings: upstreamFinding } as ControlObj };
+				}
+				return ctx(state, [bddControl(true)], []).agent(call);
+			},
+		};
+		await expect(bddConvergenceNode.run(state, routeBackCtx)).rejects.toSatisfy(
+			(err: unknown) => isFatalAbort(err) && /REPLAN/.test((err as Error).message) && /route-back/.test((err as Error).message),
+		);
+	});
+
+	it("M4: route-back choice with BOTH paths declined → honest fatal (no silent downgrade)", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+		// Exhaust the edge AND pre-arm the replan double-trigger guard (the
+		// documented early-return that makes triggerReplanForFindings decline —
+		// deterministic owner classification routes `requirements` WITHOUT the
+		// replan lead, so disabling the lead alone does NOT decline it).
+		const { chargeRoutingJump, startRunEpoch } = await import("../src/routing/journal.ts");
+		startRunEpoch();
+		for (let i = 0; i < 2; i++) {
+			chargeRoutingJump(s.specDirectory, { from: "bdd", to: "requirements", reason: "prior", findingIds: ["X"], resumeFromIndex: 1, invalidated: ["requirements"], at: new Date().toISOString(), cacheDropped: 0, revisionAfter: 1 });
+		}
+		(state as Record<string, unknown>).__replan = { rounds: 1, owners: ["requirements"], source: "already-replanning" };
+		try {
+			const upstreamFinding = [{ id: "REQ-BAD", severity: "high", title: "Requirements contradict semantics", detail: "AC-01 conflicts.", ownerStage: "requirements", blocking: true, status: "open", recommendation: "Fix.", evidence: ["AC-01"] }];
+			const routeBackCtx: StageContext = {
+				...ctx(state, [bddControl(true)], []),
+				options: { escalate: async () => ({ choice: "route-back" as const }) },
+				async agent(call: AgentCall): Promise<AgentResult> {
+					if (call.agent === "bdd-reviewer" || (call.id ?? "").endsWith("bddReview")) {
+						return { text: "", control: { verdict: "Changes Requested", summary: "upstream blocker", findings: upstreamFinding } as ControlObj };
+					}
+					return ctx(state, [bddControl(true)], []).agent(call);
+				},
+			};
+			await expect(bddConvergenceNode.run(state, routeBackCtx)).rejects.toSatisfy(
+				(err: unknown) => isFatalAbort(err) && /route-back but no path accepted it/.test((err as Error).message),
+			);
+		} finally {
+			delete (state as Record<string, unknown>).__replan;
+		}
+	});
+});

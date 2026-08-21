@@ -90,11 +90,12 @@ export function planInlineRouteBack(
 	findings: Array<{ id?: unknown; ownerStage?: unknown; blocking?: unknown; title?: unknown }>,
 ): RouteBackCommand | null {
 	if (!specDir || !inlineRouteBackEnabled()) return null;
-	// M3 pilot scope: the two incident edges — bdd→upstream (run 03-23-47,
-	// phantom AC blocking BDD round 1) and spec→upstream (runs 05-48/06-02,
-	// spec-review upstream blockers). M4 generalizes to every routable
-	// producer; anything else keeps the replan emulation.
-	if (from !== "bdd" && from !== "spec") return null;
+	// M4: EVERY routable producer may throw — the pilot `from` allowlist
+	// (M2: bdd; M3: +spec) is retired. The safety was never the allowlist:
+	// it is the single-distinct-strictly-upstream-routable-owner, blocking-
+	// only, and per-edge-budget conditions below. The thrower need not be
+	// addressable — only the TARGET is (an upstream convergence node), and
+	// all five carry M2 ids.
 	const owners = new Set<string>();
 	const ids: string[] = [];
 	for (const f of findings) {

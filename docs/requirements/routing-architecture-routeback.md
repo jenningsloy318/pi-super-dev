@@ -1,6 +1,6 @@
 # Routing Architecture — Why Route-Back Failed Three Times, and the Design That Fixes It
 
-Status: M1–M3 implemented (M1 v0.3.5, M2 v0.3.6, M3 v0.3.7); M4–M5 pending
+Status: M1–M4 implemented (M1 v0.3.5, M2 v0.3.6, M3 v0.3.7, M4 v0.3.8); M5 pending
 
 ## The incident, in one paragraph
 
@@ -554,3 +554,110 @@ after a journaled jump → ok, attempts 0, zero agent calls, FAST-FORWARD
 log). Final: 167 files / 2705 passed + 3 skipped; tsc clean; RED-first
 final-state re-check across the three files: 17 fix-specific failures
 pre-fix, 58 controls pass (75 tests).
+
+## M4 design details (v0.3.8)
+
+**Planner generalization.** planInlineRouteBack drops the pilot `from`
+allowlist. Producers that THROW: artifact-convergence
+(requirements/bdd/research/design), spec-convergence, and verify
+(round-1 M4-H1: verify records its deferred findings into the convergence
+ledger BEFORE throwing, so the walker's round-1 injection and decline
+fallback both find them — without this the owner re-enters blind).
+Implementation does NOT throw: it CONSUMES the vocabulary (the G3 fold —
+see below). The single-distinct-strictly-upstream-routable-owner +
+per-edge-budget + blocking-only conditions are unchanged (they were always
+the safety); the allowlist was only pilot honesty. The thrower never needs
+to be addressable — only the TARGET (an upstream convergence node) is, and
+all five are (M2 ids).
+
+**Escalation surface (G6).** EscalationChoice gains `"route-back"`;
+EscalationFailure gains optional `routeBackOwner` — set by
+artifact-convergence when the upstream-owned set holds exactly ONE
+routable owner. When set, the interactive options gain
+`"Route back to ⟨owner⟩ (recommended)"` FIRST (both soft and hard lists);
+mapEscalateChoice maps it to `{ choice: "route-back" }`. The
+artifact-convergence decision branch intercepts the choice BEFORE the
+retry/accept/abandon handling: plan → throw RouteBackSignal; planner null
+(budget) → the replan emulation (bounded restart), and if that also
+declines → an honest FatalAbort (never silently degrade a user choice).
+applyRetryDecision is untouched — it already acts only on
+retry-with-guidance.
+
+**Dismissed/timeout default.** The `!decisionApplied && upstreamOwned`
+branch has been inline-first since M3 (headless = no decision = default
+route-back); generalizing the planner extends it to research/design
+thrown sites. requirements keeps no route (nothing precedes it in
+REPLAN_OWNER_STAGES).
+
+**Verify inline-first (blocked-on-decisions).** At the R-3 dead-state
+seam, BEFORE maybeTriggerReplan: the deferred findings (which carry
+ownerStage — cross-stage ownership is exactly why they were deferred) feed
+planInlineRouteBack("verify", …); a command throws RouteBackSignal for the
+walker. The replan emulation stays the fallback (multi-owner, budget
+exhausted, kill-switch).
+
+**Implementation env-blocker G3 fold.** The judge-override branch now
+additionally requires classifyJudgeRoute(verdict.route) === "retry" —
+DEFENSE-IN-DEPTH, not tautology removal (round-1 review): the explicit
+route check guards against an UNOFFERED retry-classified route
+(re-author-tests/challenge-test classify to "retry" but are never offered
+at the env-blocker scope), while the classifier agreement pins the shared
+vocabulary so route semantics and the override cannot drift apart
+silently. Zero behavior change.
+
+**Accepted asymmetries (round-1 review, dispositioned).** (a) The
+routeBackOwner OFFER gate is stricter than the planner's: the whole
+upstream-owned set must be one routable owner, while the planner filters
+routable owners from mixed sets — mixed sets jump headless (the M3
+default) but never offer the interactive option; conservative by design.
+(b) Verify→upstream sub-walks do not re-execute implementation (the loop
+predicate sees the stale allGreen carry) — parity with the emulation's
+green-skip carry. (c) offeredChoices persists for every interactive
+escalation, not only route-back ones; headless runs omit it (sound).
+
+**MP5 (persisted offered choices).** escalation-report.md records the
+routeBackOwner and the offered choice list when route-back was offered, so
+a resume/re-read reconstructs the decision surface.
+
+**M4 test additions:** planner-scope pins (research→requirements,
+design→bdd, verify→spec); escalation-option pins (offered+recommended
+ordering, mapping); artifact-convergence route-back-choice pin (choice →
+RouteBackSignal; planner-null → emulation; both-null → FatalAbort);
+applyRetryDecision no-op pin; verify inline-first pin; G3
+classifier-source pin; report-content pin.
+
+## M4 review record (round 1)
+
+Code-reviewer CHANGES-REQUESTED, adversarial CONTEST. Remediated:
+- **M4-H1 (high)** — verify-originated jumps injected zero replan requests
+  (deferred findings live outside the convergence ledger): the verify throw
+  site now RECORDS the jumped findings into the ledger first (round-1
+  injection + decline fallback both find them).
+- Missing pins added: applyRetryDecision no-op for route-back; the
+  both-decline honest-fatal arm (exercised via the documented __replan
+  double-trigger guard — deterministic owner classification routes
+  `requirements` without the replan lead, so disabling the lead alone was
+  insufficient).
+- The intercept pin made RED-discriminating (routeBackOwner + "user chose
+  route-back" log asserted AFTER the rejection — stub-internal assertions
+  are swallowed by the never-throw escalation, so the old form passed
+  pre-fix through the headless default).
+- G3 fold comment + doc reworded (implementation consumes, does not throw;
+  the fold is defense-in-depth, not tautology removal); router.ts stale
+  M1-era comment fixed; option-gate asymmetry and verify-sub-walk
+  implementation-skip documented as accepted.
+
+## M4 review record (round 2) — final
+
+**Code-reviewer APPROVED; adversarial PASS.** Residuals fixed:
+R2-M4-L1 router docstring reworded (gate()'s escalation path is NOT
+unified); R2-M4-L2 the no-op pin now exercises guidance-present +
+rollback-eligible inputs and asserts no on-disk user-notes write;
+R2-M4-L3/R2-F2 CHANGELOG counts corrected to 12 pins / 12 pre-fix
+failures; R2-M4-I1 the honest-fatal test moved inside its describe;
+R3-F3 the honest-fatal message no longer hardcodes "edge budget
+exhausted"; R2-F1 a behavioral pin proves the H1 ledger recording is
+load-bearing (ledger row DF-77 owner=spec blocking=true after the
+verify-originated jump); R2-F4 detectedAtStage aligned to the file's
+"verification" convention. Final: 168 files / 2719 passed + 3 skipped;
+tsc clean; RED-first final-state: 13 fix-specific failures pre-fix, 119 controls pass (132 tests).

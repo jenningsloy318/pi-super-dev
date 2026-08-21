@@ -12,6 +12,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
+import { classifyJudgeRoute } from "../routing/router.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
@@ -2202,7 +2203,12 @@ export const implementationStage: Stage = {
 					// judge's grounded reading says product. Trust the judge: the diagnosis
 					// joins the implementer feedback, no HITL surface, no convergence block,
 					// the attempt falls through to failureReasons (normal implementer retry).
-					const routedImplementerRetry = judgeOut.status === "routed" && judgeOut.verdict.route === "implementer-retry";
+					// M4 fold (defense-in-depth, NOT tautology removal): the explicit
+					// route check guards against an UNOFFERED retry-classified route
+					// (re-author-tests/challenge-test also classify to "retry" but are
+					// never offered at this scope); the classifier agreement pins the
+					// shared vocabulary so the two can never drift apart silently.
+					const routedImplementerRetry = judgeOut.status === "routed" && judgeOut.verdict.route === "implementer-retry" && classifyJudgeRoute(judgeOut.verdict.route) === "retry";
 					let envJudgeDiagnosis = "";
 					if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
 						envJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;

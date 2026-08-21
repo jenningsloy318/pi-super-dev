@@ -24,6 +24,8 @@ import { runJudge } from "./judge.ts";
 import { toBool } from "../doc-validators.ts";
 import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../helpers.ts";
 import { maybeTriggerReplan } from "../replan/replan.ts";
+import { RouteBackSignal } from "../routing/router.ts";
+import { planInlineRouteBack } from "../routing/walker.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -1210,6 +1212,35 @@ export const verificationConvergenceNode: Node = {
 					// the owning convergence loops and everything downstream they
 					// invalidate. When nothing is routable or the budget is exhausted this
 					// returns false and today's honest blocked-on-decisions path runs.
+					// M4: inline-first — deferred findings carry ownerStage (cross-stage
+					// ownership is exactly why they were deferred), so the shared
+					// planner can jump instead of restarting the process. Exactly one
+					// routable strictly-upstream owner + edge budget → RouteBackSignal
+					// for the walker (verify needs no addressable id: the TARGET is the
+					// owner). The replan emulation stays the multi-owner/kill-switch/
+					// budget-exhausted fallback.
+					const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, "verify", deferred);
+					if (inlineCmd) {
+						// Review round-1 M4-H1: the walker's MP1 protocol injects LEDGER
+						// findings matched by cmd.findingIds — deferred findings live only
+						// in state.review.deferredFindings. Record them FIRST so the
+						// owner's round 1 carries them (and the walker's decline fallback
+						// finds them too); without this the owner re-enters BLIND.
+						recordConvergenceFindings(state, deferred
+							.filter((f) => typeof f.id === "string" && inlineCmd.findingIds.includes(f.id as string))
+							.map((f) => ({
+								id: String(f.id),
+								ownerStage: typeof f.ownerStage === "string" ? f.ownerStage : inlineCmd.to,
+								title: String(f.title ?? "deferred finding"),
+								detail: String(f.detail ?? f.deferralReason ?? "cross-stage deferred finding"),
+								severity: typeof f.severity === "string" ? f.severity : "medium",
+								evidence: Array.isArray((f as { evidence?: unknown }).evidence) ? ((f as { evidence: unknown[] }).evidence as unknown[]).map(String) : [],
+								recommendation: String((f as { recommendation?: unknown }).recommendation ?? "revise the owning artifact"),
+								blocking: true,
+							})), { detectedAtStage: "verify", ownerStage: inlineCmd.to, sourceGate: "verify-deferred" });
+						ctx.log(`Stage 10: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} for ${inlineCmd.findingIds.length} deferred finding(s) (budget checked; recorded to the ledger for round-1 injection) — throwing RouteBackSignal for the walker`);
+						throw new RouteBackSignal(inlineCmd);
+					}
 					const replanned = await maybeTriggerReplan(state, ctx, state.setup?.specIdentifier ?? "unknown");
 					if (replanned) return { status: "ok" };
 					(state as Record<string, unknown>).__stagnated = {

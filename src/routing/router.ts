@@ -251,11 +251,13 @@ export function budgetFromJournal(journal: RoutingJournal): RoutingBudgetState {
 // ─── Pure classification (maps today's five mechanisms onto the vocabulary) ─
 
 /** Map an escalation choice (types.ts EscalationChoice) onto the vocabulary.
- *  The route-back gap: NONE of today's four choices can express "jump to the
- *  owning stage" — M4 adds `route-back:<owner>` and routes it here.
- *  Known conflation (review F-6): revise-manually → retry matches the
- *  artifact-convergence call site; gate()'s escalation path treats it via
- *  applyRetryDecision — M4 unifies both onto this table. */
+ *  M4 added `route-back` (offered when EscalationFailure.routeBackOwner is
+ *  set; the artifact-convergence call site intercepts it BEFORE
+ *  applyRetryDecision and throws RouteBackSignal). Known conflation
+ *  (review F-6): revise-manually → retry matches the artifact-convergence
+ *  call site; gate()'s escalation path still treats it via
+ *  applyRetryDecision (NOT unified — gate escalations have no route-back
+ *  surface). */
 export function classifyEscalationChoice(choice: string): RoutingAction {
 	switch (choice) {
 		case "retry-with-guidance":
@@ -284,7 +286,8 @@ export function classifyJudgeRoute(route: string): RoutingAction {
 		case "fix-environment":
 			return "escalate"; // today's soft-HITL seam; NOTE (review F-6) the RED-phase
 			// repair-hint seam (implementation.ts ~1298, stage9.red-no-progress) consumes it WITHOUT escalation
-			// — M4 unifies both seams onto this table
+			// — M4 folded the env-blocker OVERRIDE arm onto this table; the repair-hint
+			// seam remains bespoke (a prompt hint, not a routing decision)
 		case "allow-scaffold":
 		case "continue":
 			return "continue";

@@ -38,6 +38,11 @@ export function writeEscalationReport(
 		if (failure.stage) lines.push(`- **Stage:** ${failure.stage}`);
 		if (failure.severity) lines.push(`- **Severity:** ${failure.severity}`);
 		if (failure.worktreePath) lines.push(`- **Worktree:** ${failure.worktreePath}`);
+		// M4 routing (G6/MP5): the route-back surface is part of the record.
+		if (failure.routeBackOwner) lines.push(`- **Route-back owner:** ${failure.routeBackOwner}`);
+		if (failure.offeredChoices && failure.offeredChoices.length > 0) {
+			lines.push(`- **Offered choices:** ${failure.offeredChoices.join(" | ")}`);
+		}
 		lines.push("");
 		lines.push("## Message");
 		lines.push("");

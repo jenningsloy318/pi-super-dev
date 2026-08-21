@@ -227,12 +227,14 @@ describe("M1 drift pins — classification tables track the REAL vocabularies", 
 			"revise-manually": classifyEscalationChoice("revise-manually"),
 			"accept-limitation": classifyEscalationChoice("accept-limitation"),
 			abandon: classifyEscalationChoice("abandon"),
+			"route-back": classifyEscalationChoice("route-back"),
 		};
 		expect(exhaustive).toEqual({
 			"retry-with-guidance": "retry",
 			"revise-manually": "retry",
 			"accept-limitation": "accept-limitation",
 			abandon: "abort",
+			"route-back": "route-back",
 		});
 	});
 });

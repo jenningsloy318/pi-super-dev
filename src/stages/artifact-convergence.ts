@@ -24,7 +24,7 @@ import {
 	getConvergenceLedger,
 } from "../convergence-ledger.ts";
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
-import { RouteBackSignal, isRouteBackSignal } from "../routing/router.ts";
+import { RouteBackSignal, isRoutableOwnerStage, isRouteBackSignal } from "../routing/router.ts";
 import { planInlineRouteBack } from "../routing/walker.ts";
 import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
@@ -664,6 +664,10 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 								worktreePath: state.setup?.worktreePath,
 								specDirectory: state.setup?.specDirectory,
 								findings: blockingConvergenceFindings(state).filter((f) => f.ownerStage === review.ownerStage || ownerPrecedes(f.ownerStage, ownStage)).slice(0, 6).map((f) => ({ severity: f.severity, title: f.title })),
+								// M4 (G6): exactly-one routable upstream owner → offer
+								// "Route back to ⟨owner⟩ (recommended)" first.
+								routeBackOwner: [...new Set(upstreamOwned.map((f) => f.ownerStage))]
+									.filter((o, _i, arr) => arr.length === 1 && isRoutableOwnerStage(o))[0],
 							};
 							let decisionApplied = false;
 							if (escalate && escalationBudgetRemaining(state, failure) > 0) {
@@ -671,6 +675,23 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 							ctx.log(`  blocker: ${failure.message}`);
 								const decision = await runEscalation(state, failure, escalate);
 								if (decision) {
+									// M4 (G6): a user-chosen route-back jumps INLINE — the same
+									// planner/budget/journal path as the headless default. A null
+									// plan (budget/scope) degrades to the replan emulation; if that
+									// also declines, an honest fatal (never silently downgrade an
+									// explicit user choice). applyRetryDecision is NOT called: it
+									// only acts on retry-with-guidance.
+									if (decision.choice === "route-back") {
+										const inlineChoice = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamOwned);
+										if (inlineChoice) {
+											ctx.log(`${options.feedbackKey} convergence: user chose route-back — INLINE jump ${inlineChoice.from}→${inlineChoice.to} (budget checked)`);
+											throw new RouteBackSignal(inlineChoice);
+										}
+										if (await triggerReplanForFindings(state, ctx, upstreamOwned as unknown as Array<Record<string, unknown>>, options.feedbackKey, state.setup?.specIdentifier ?? "unknown")) {
+											throw new FatalAbort(`${options.feedbackKey} convergence: REPLAN at round cap — user chose route-back; edge budget exhausted, restarting to revise the owning stage(s)`);
+										}
+										throw new FatalAbort(`${options.feedbackKey} convergence: user chose route-back but no path accepted it (planner declined — typically an exhausted edge budget; replan emulation declined) — ${failure.message}`);
+									}
 									decisionApplied = true;
 									applyRetryDecision(state, decision, { worktreePath: state.setup?.worktreePath, specDirectory: state.setup?.specDirectory });
 									if (decision.choice === "accept-limitation") {

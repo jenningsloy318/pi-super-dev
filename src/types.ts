@@ -362,6 +362,14 @@ export interface EscalationFailure {
 	worktreePath?: string;
 	findings?: EscalationFinding[];
 	severity?: EscalationSeverity;
+	/** M4 routing (G6): the single upstream routable owner when the
+	 *  upstream-owned blocker set is route-back-eligible — presence adds
+	 *  "Route back to ⟨owner⟩ (recommended)" to the offered choices and is
+	 *  persisted to the escalation report (MP5). */
+	routeBackOwner?: string;
+	/** M4 routing (MP5): the offered choice list (persisted so a resume
+	 *  re-renders the same decision surface). */
+	offeredChoices?: string[];
 }
 
 /** The user's chosen recovery action (SCENARIO-002 / AC-01). */
@@ -369,7 +377,11 @@ export type EscalationChoice =
 	| "retry-with-guidance"
 	| "revise-manually"
 	| "accept-limitation"
-	| "abandon";
+	| "abandon"
+	/** M4 routing: jump to the single upstream owner inline (the walker
+	 *  catches the resulting RouteBackSignal; offered only when
+	 *  EscalationFailure.routeBackOwner is set). */
+	| "route-back";
 
 /**
  * A decision returned by {@link Escalate}. `undefined` = no decision
