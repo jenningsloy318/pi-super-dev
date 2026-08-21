@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+- M1 routing vocabulary (v0.3.5): new `src/routing/router.ts` — normalized `RoutingCommand` (continue/retry/route-back/escalate/accept-limitation/abort), budget-gated `routeBackOrEscalate` (per-edge cap 2, persisted-journal-backed per MP2), `RouteBackSignal extends FatalAbort` (G2 — airtight propagation, zero combinator changes), journal types with walk-position fields (G3), and pure classification tables mapping escalation choices, all 8 judge routes, and findings onto the one vocabulary. Zero production call sites (M1 of the routing-architecture migration; incident 2026-08-21T03-23-47-913Z).
 
 ### Changed
 

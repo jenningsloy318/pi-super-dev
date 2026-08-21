@@ -556,7 +556,14 @@ export function gate(opts: GateOptions, node: Node): Node {
 						}
 							if (decision.choice === "retry-with-guidance") { escalationRetry = true; continue; }
 						}
-					} catch { /* never-throw: degrade to FatalAbort */ }
+					} catch (err) {
+						// G2 (routing M1 review): a RouteBackSignal escaping the decision
+						// handling must NOT be swallowed by this never-throw guard — it is
+						// a FatalAbort subclass the M2+ walker catches above root.run.
+						// Name-based check avoids a nodes→router import cycle.
+						if (err instanceof Error && err.name === "RouteBackSignal") throw err;
+						/* never-throw: degrade to FatalAbort */
+					}
 				}
 				throw new FatalAbort(msg);
 			}
