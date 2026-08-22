@@ -236,9 +236,59 @@ export function slugTokenContainment(slug: string, task: string): number {
 	return hit / slugTokens.length;
 }
 
+/**
+ * v0.3.12 F1 — the leading numerals of PATH-SHAPED SPEC references in a task
+ * text (`docs/requirements/05-verification.md` → "5"). Two shapes:
+ *  1. `NN-slug.md` (with or without a leading path);
+ *  2. `NN-slug` riding a path — ONLY when the path smells like a docs/spec
+ *     tree (docs|doc|requirement|spec|research segment), so source paths
+ *     (`src/254-e2e/…`) and asset paths don't fabricate spec numerals
+ *     (round-2 CR-2: the unrestricted form falsely refused same-spec reuse).
+ * Free-text numerals (ports, ticket ids, dates) are deliberately NOT
+ * extracted. Numerals are stored zero-padding-stripped (round-2 CR-4:
+ * `05-verification` and `5-verification` name the same spec; `\d{1,4}` covers
+ * 4-digit spec numbers).
+ */
+const SPEC_NUM = (raw: string) => String(parseInt(raw, 10));
+export function specRefNumerals(text: string): Set<string> {
+	const out = new Set<string>();
+	for (const m of text.matchAll(/(?<![\w/.-])(\d{1,4})(?=-[a-z0-9][\w.-]*\.md\b)/gi)) out.add(SPEC_NUM(m[1]));
+	for (const m of text.matchAll(/(?:^|[\s(/])((?:[\w.-]+\/)+)(\d{1,4})(?=-[a-z0-9])/gi)) {
+		if (/(?:^|\/)(?:docs?|doc|requirements?|specifications?|specs?|research)(?:\/|$)/i.test(m[1])) out.add(SPEC_NUM(m[2]));
+	}
+	return out;
+}
+
+/**
+ * v0.3.12 F1 (round-2 CR-1/CR-3): the anchor-numeral refusal as a standalone
+ * probe so EVERY reuse branch can pass through it (not just Jaccard) and the
+ * refusal is LOGGABLE (the plan doc promised a visible reason, not silence).
+ * Returns the offending numeral when the anchor names spec(s) the candidate
+ * task does not name — null when the guard passes (or nothing to check).
+ */
+export function anchorNumeralRefusal(anchorTask: string | undefined, task: string): string | null {
+	if (!anchorTask) return null;
+	const anchorNums = specRefNumerals(anchorTask);
+	if (anchorNums.size === 0) return null;
+	const taskNums = specRefNumerals(task);
+	for (const n of anchorNums) if (!taskNums.has(n)) return n;
+	return null;
+}
+
 /** Reuse score threshold: containment >= 0.75 with >= 3 slug tokens, exact
- *  match for 2-token slugs, or Jaccard >= 0.6 for near-identical anchors. */
+ *  match for 2-token slugs, or Jaccard >= 0.6 for near-identical anchors.
+ *  v0.3.12 F1 (incident: the 06 task absorbed into the merged 05 track at
+ *  Jaccard 0.643): the anchor-Jaccard branch now carries the SAME numeric-
+ *  verbatim discipline as the R6 slug rule — an anchor's spec-reference
+ *  numerals (05-verification.md) must appear in the candidate task, else the
+ *  uniform-template prefix drowns the one distinguishing token and reuse
+ *  fires across DIFFERENT workstreams. */
 function reusableScore(slug: string, anchorTask: string | undefined, task: string): number {
+	// v0.3.12 round-2 CR-1: the anchor-numeral guard gates EVERY branch
+	// (containment included — a numeric-stripped slug plus an anchor naming a
+	// DIFFERENT spec is the same cross-workstream absorption the Jaccard
+	// branch had). Guard first, branch after.
+	if (anchorNumeralRefusal(anchorTask, task) !== null) return 0;
 	const slugTokens = slug.toLowerCase().split("-").filter((w) => w.length >= 3 && !STOPWORDS.has(w));
 	const containment = slugTokenContainment(slug, task);
 	if (slugTokens.length >= 3 && containment >= 0.75) return Math.max(containment, 0.75);
@@ -274,6 +324,11 @@ export function findReusableSpec(cwd: string, task: string, opts: { worktree?: b
 			anchor = readFileSync(join(specDir, SPEC_TASK_ANCHOR), "utf8");
 		} catch { /* no anchor — containment-only scoring */ }
 		const slug = id.replace(/^\d+-/, "");
+		const refusedNumeral = anchorNumeralRefusal(anchor, task);
+		if (refusedNumeral !== null) {
+			opts.log?.(`spec-track reuse: refusing track ${id} — its anchor names spec numeral ${refusedNumeral} absent from this task (different workstream under a uniform template)`);
+			return;
+		}
 		const score = reusableScore(slug, anchor, task);
 		if (score <= 0) return;
 		let mtime = 0;

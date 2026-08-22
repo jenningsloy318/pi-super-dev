@@ -5,6 +5,7 @@
  */
 
 import { writerTask, helperTask, isFatalAbort } from "../nodes.ts";
+import { clearResumeCache } from "../resume.ts";
 import type { Stage, SetupControl } from "../types.ts";
 import * as P from "../prompts.ts";
 import { ClassificationData } from "../render/schemas.ts";
@@ -243,6 +244,20 @@ export const mergeVerifyTask: Stage = {
 		if (reasons.length === 0) {
 			state.merge = { ...merge, merged: true, verification: `git-confirmed: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains ${featureBranch}` };
 			ctx.log(`Merge verification PASSED: ${setup.defaultBranch} @ ${defHead!.slice(0, 12)} contains feature head (${featureHead!.slice(0, 12)})`);
+			// v0.3.12 F2 (incident: merged tracks stayed live reuse candidates —
+			// .complete was only written on summary.status==="success", and every
+			// merged run that cancelled/parteled at close-out left the track
+			// isResumable forever; the 06 task then absorbed into merged-05).
+			// A git-confirmed merge IS completion — close the track NOW: cache
+			// cleared + marker written, at the moment git confirms, not at
+			// summary time. clearResumeCache is idempotent (marker-checked), so
+			// the pipeline.ts success-path call stays a no-op.
+			try {
+				clearResumeCache(setup.specDirectory);
+				ctx.log(`merge-verify: track closed — .complete written for ${setup.specIdentifier ?? setup.specDirectory} (merged tracks are never reuse/resume candidates)`);
+			} catch (e) {
+				ctx.log(`merge-verify: track close-out FAILED (best-effort): ${e instanceof Error ? e.message : String(e)}`);
+			}
 		} else {
 			state.merge = { ...merge, merged: false, verification: `FAILED: ${reasons.join("; ")}` };
 			ctx.log(`Merge verification FAILED: ${reasons.join("; ")} — reporting unmerged (run status will be partial, not success)`);
