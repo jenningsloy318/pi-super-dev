@@ -249,7 +249,15 @@ const classifyOwnerOf = (finding: Record<string, unknown>): string => {
 };
 
 function fingerprintFinding(f: Record<string, unknown>): string {
-	return `${String(f.file ?? "")}|${String(f.severity ?? "")}|${String(f.title ?? "")}`.toLowerCase().replace(/\s+/g, " ");
+	// Sweep-3 G36: detail hash + owner join the fingerprint — pre-fix two
+	// DISTINCT blockers sharing file|severity|title (different root causes in
+	// the detail, or different owning stages) deduped into one request and the
+	// second was silently dropped from round-1 injection.
+	const detailHash = String(f.detail ?? "");
+	let h = 5381;
+	for (let i = 0; i < detailHash.length; i++) h = ((h << 5) + h) ^ detailHash.charCodeAt(i);
+	const owner = String(f.ownerStage ?? "").toLowerCase().trim();
+	return `${String(f.file ?? "")}|${String(f.severity ?? "")}|${String(f.title ?? "")}|${(h >>> 0).toString(36)}|${owner}`.toLowerCase().replace(/\s+/g, " ");
 }
 
 function appendAudit(specDir: string, entry: Record<string, unknown>): void {

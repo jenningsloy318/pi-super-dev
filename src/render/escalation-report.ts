@@ -71,7 +71,14 @@ export function writeEscalationReport(
 				lines.push(decision.guidance);
 			}
 		}
-		writeFileSync(join(specDirectory, "escalation-report.md"), lines.join("\n") + "\n");
+		// Sweep-3 G43: per-KIND filename — the old fixed name was overwritten per
+		// blocker, so a multi-blocker run kept only the LAST record. The canonical
+		// bare name stays as the LATEST snapshot (compat with readers/tests), and
+		// the kind-stamped copy preserves each blocker's full record.
+		const body = lines.join("\n") + "\n";
+		writeFileSync(join(specDirectory, "escalation-report.md"), body);
+		const kindTag = String(failure.kind || "unknown").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 60);
+		writeFileSync(join(specDirectory, `escalation-report-${kindTag}.md`), body);
 	} catch {
 		/* best-effort: a report write failure must never abort the run. */
 	}

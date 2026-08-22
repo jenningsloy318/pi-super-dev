@@ -90,9 +90,9 @@ describe("runWorkflow honest status", () => {
 		expect(s.status).toBe("failed");
 		expect(s.failedStages).toEqual([]);
 	});
-	it("reports 'success' when implementation is green and review approved", async () => {
+	it("reports 'success' when implementation is green, review approved AND an affirmative build gate passed (sweep-3 G9: absent buildGate is no longer a vacuous pass)", async () => {
 		const s = await runWorkflow(
-			wf(seed({ implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" } })),
+			wf(seed({ implementation: { totalPhases: 2, allGreen: true }, review: { verdict: "Approved" }, buildGate: { pass: true } })),
 			"t",
 		);
 		expect(s.status).toBe("success");
@@ -134,7 +134,7 @@ describe("runWorkflow honest status", () => {
 	it("logs a plain 'complete' when implementation is fully green", async () => {
 		const logs: string[] = [];
 		await runWorkflow(
-			wf(seed({ implementation: { totalPhases: 2, phasesCompleted: 2, allGreen: true }, review: { verdict: "Approved" } })),
+			wf(seed({ implementation: { totalPhases: 2, phasesCompleted: 2, allGreen: true }, review: { verdict: "Approved" }, buildGate: { pass: true } })),
 			"t",
 			{ progress: { log: (m: string) => logs.push(m), phase() {} } } as never,
 		);

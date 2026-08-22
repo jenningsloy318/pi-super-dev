@@ -11,7 +11,7 @@
  * survives resume/crash and works for both session and subprocess backends.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RuntimeInstruction, RuntimeInstructionImage } from "../types.ts";
 
@@ -180,7 +180,10 @@ export function appendUserNotes(specDir: string | undefined, instructions: Array
 	}
 	if (added === 0) return;
 	try {
-		writeFileSync(path, JSON.stringify(notes, null, 2) + "\n");
+		// Sweep-3 G31: atomic (tmp+rename) — a torn write lost the user's mid-run input.
+		const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+		writeFileSync(tmp, JSON.stringify(notes, null, 2) + "\n");
+		renameSync(tmp, path);
 	} catch { /* best-effort */ }
 }
 

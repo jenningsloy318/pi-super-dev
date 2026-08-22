@@ -206,7 +206,32 @@ export const specConvergenceNode: Node = {
 					}
 					// Hard liveness floor (see artifact-convergence.ts): a stochastic
 					// spec-reviewer that never approves must stop here, not loop forever.
-					const msg = `spec convergence did not converge within ${effectiveCap} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}`;
+					// Sweep-3 G17 (J10-c parity): ONE verified diagnosis at the cap so
+					// the fatal explains WHY — mirrors artifact-convergence's wiring
+					// (escalate-now with non-empty evidence may abort early carrying
+					// the diagnosis; anything else is advisory and falls through).
+					let capJudgeDiagnosis = "";
+					try {
+						const { runJudge } = await import("./judge.ts");
+						const out = await runJudge(ctx, {
+							scope: "spec.convergence-cap", // sweep-3 AR2-5: attributed to SPEC, not stage10/verify
+							signature: `spec:rounds:${effectiveCap}`,
+							worktreePath: state.setup?.worktreePath ?? "",
+							specDirectory: state.setup?.specDirectory,
+							context: ["## Convergence loop: spec", `round ${round} of effective cap ${effectiveCap}; still not converged.`, "## Recurring errors across rounds", ...(lastErrors.length ? lastErrors.slice(0, 8) : ["(none recorded)"])].join("\n"),
+							allowedRoutes: ["escalate-now"],
+						});
+						if ((out.status === "routed" || out.status === "escalate") && out.verdict.route === "escalate-now" && out.verdict.evidence.some((e: unknown) => String((e as { quote?: string }).quote ?? "").trim().length > 0)) {
+							ctx.log(`spec convergence: JUDGE ESCALATE — ${out.verdict.diagnosis}`);
+							throw new FatalAbort(`spec convergence did not converge within ${effectiveCap} round(s): ${out.verdict.diagnosis}`);
+						}
+						const verdict = out.status === "routed" || out.status === "escalate" ? out.verdict : undefined;
+						capJudgeDiagnosis = verdict?.diagnosis ? ` — judge: ${String(verdict.diagnosis).slice(0, 300)}` : "";
+					} catch (fatal) {
+						if (fatal instanceof FatalAbort) throw fatal;
+						/* judge unavailable → undiagnosed cap fatal as before */
+					}
+					const msg = `spec convergence did not converge within ${effectiveCap} round(s)${lastErrors.length ? `: ${lastErrors.join("; ")}` : ""}${capJudgeDiagnosis}`;
 					ctx.log(`spec convergence: ROUND CAP (${effectiveCap}) EXHAUSTED (FATAL — aborting run) — ${msg}`);
 					throw new FatalAbort(msg);
 				}

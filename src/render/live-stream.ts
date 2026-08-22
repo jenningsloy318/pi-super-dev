@@ -470,10 +470,20 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 		// (≤ COMPLETED_TAIL_LINES tail, or header-only via stageMeta synthesis),
 		// so slicing never drops visible content — it only bounds the O(input)
 		// partition cost on huge runs (the streaming hot path).
-		const partitioned =
-			visible.length > PARTITION_INPUT_CAP
-				? visible.slice(-PARTITION_INPUT_CAP)
-				: visible;
+		// Sweep-3 G28 (F-adv F-2): the cap must never drop PINNED content — the
+		// old plain slice discarded the oldest window entirely, so on huge runs
+		// (>PARTITION_INPUT_CAP lines) completed stages lost their sticky
+		// lifecycle anchors before grouping ever ran (the section-collapse
+		// machinery below had nothing left to keep). Keep every sticky/activity
+		// line from the dropped head, unioned with the recent window (order
+		// preserved: the dropped head strictly precedes the window).
+		let partitioned = visible;
+		if (visible.length > PARTITION_INPUT_CAP) {
+			const head = visible.slice(0, visible.length - PARTITION_INPUT_CAP);
+			const window = visible.slice(-PARTITION_INPUT_CAP);
+			const pinnedHead = head.filter((entry) => isStickySectionLine(entry) || isImplementationActivityLine(entry));
+			partitioned = [...pinnedHead, ...window];
+		}
 		// Partition into per-stage sections in FIRST-APPEARANCE order; each
 		// group's status is resolved from the structured stage events captured
 		// at the sink (injected as `statusOf` — no dashboard import, pure helper).

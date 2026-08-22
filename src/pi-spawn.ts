@@ -20,6 +20,7 @@ import { loadAgentPrompt } from "./agents.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
 import { RpcDriver } from "./rpc-driver.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
+import { DATA_FENCE_PREAMBLE, fenceUntrusted } from "./fence.ts";
 import { safetyPreamble } from "./safety.ts";
 import { SO_CAPTURE_ENV, SO_SCHEMA_ENV } from "./subprocess-structured-output.ts";
 import type { AgentAccessMode, AgentProgress, ControlObj, SpawnResult } from "./types.ts";
@@ -531,7 +532,11 @@ function buildSubprocessCorrectivePrompt(originalPrompt: string, previous: Spawn
 		renderRetryFeedbackBlock([feedback], "Corrective Retry"),
 		"",
 		"## Previous Assistant Output",
-		compactPreviousOutput(previous.text || "(empty)"),
+		// Sweep-3 G24: prior assistant output is UNTRUSTED TEXT — fence it with
+		// the shared DATA-fence discipline (AC-31) so model-emitted instructions
+		// can't leak into the task framing unfenced (every other embedder fences).
+		DATA_FENCE_PREAMBLE,
+		fenceUntrusted(compactPreviousOutput(previous.text || "(empty)"), "previous assistant output"),
 	].join("\n");
 }
 
@@ -625,10 +630,26 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 		if (capturePath) {
 			try { unlinkSync(capturePath); } catch { /* absent is the normal fresh state */ }
 		}
+		const correctivePrompt = buildSubprocessCorrectivePrompt(opts.prompt, first, requiredKeys, opts.allowEmptyArraysFor);
 		const retryOpts: SpawnAgentOptions = {
 			...opts,
-			prompt: buildSubprocessCorrectivePrompt(opts.prompt, first, requiredKeys, opts.allowEmptyArraysFor),
+			prompt: correctivePrompt,
 		};
+		// Sweep-3 G7: the corrective prompt REPLACED opts.prompt, so a stale
+		// taskFile would deliver the ORIGINAL task verbatim (buildSpawnArgs
+		// prefers @file over the prompt) — and the corrective prompt is LONGER
+		// than the original, so it must re-qualify for the limit on its own.
+		// Recompute the delivery channel for the retry: a fresh 0600 file when
+		// over-limit, argv when not.
+		if (retryOpts.taskFile) {
+			try { unlinkSync(retryOpts.taskFile); } catch { /* absent is fine */ }
+			retryOpts.taskFile = undefined;
+		}
+		if (correctivePrompt.length > TASK_ARG_LIMIT) {
+			const retryTaskFile = join(tempDir, "task-retry.md");
+			writeFileSync(retryTaskFile, `Task: ${correctivePrompt}`, { mode: 0o600 });
+			retryOpts.taskFile = retryTaskFile;
+		}
 		const retryArgs = buildSpawnArgs(retryOpts, promptPath, extraExtensions);
 		opts.onProgress?.event(`subprocess ${label}: corrective retry argv=${summarizeSpawnArgs(retryArgs)}`);
 		const retry = applyCapture(await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress, soEnv));

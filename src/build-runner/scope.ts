@@ -507,7 +507,7 @@ function touchedHasNpmFailure(touchedSet: Set<string>, failingFile: string, modu
  * @param cwd Absolute worktree path (passed to {@link touchedFilePaths}).
  * @returns The out-of-scope error blocks (subset of `errors`), or [].
  */
-export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string): string[] {
+export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string, baseRef?: string): string[] {
 	try {
 		const safeErrors = Array.isArray(errors) ? errors : [];
 		// Short-circuit: parse the COMBINED output once. If NO failing-file marker
@@ -521,7 +521,7 @@ export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string): stri
 		if (failingFiles.length === 0) return [];
 		// Empty touched set (git error / non-git dir / no diff) ⇒ cannot PROVE any
 		// failure is out-of-scope ⇒ conservative IN-SCOPE.
-		const touched = touchedFilePaths(cwd);
+		const touched = touchedFilePaths(cwd, baseRef);
 		if (touched.length === 0) return [];
 		const touchedSet = new Set(touched.map(normalizePathForScope));
 		// Per-block classification mirroring {@link classifyOutOfScopeErrors}: a
@@ -576,7 +576,7 @@ export function detectFailureBlockLanguage(block: string): BaselineSubjectLangua
 	if (/(?:^|\s)crates\/[\w.-]+\//m.test(s) || /\berror\[E\d{2,4}\]/.test(s) || /\bcargo test\b/.test(s)) return "rust";
 	// Go: package FAIL/ok lines (TAB-separated, or a `<n.n>s`/`(cached)` duration
 	// suffix), a `.go:line:` diagnostic, or an explicit `go test`/`[build failed]`.
-	if (/^FAIL\t\S+/m.test(s) || /^FAIL\s+\S+\/\S+\s+(?:\d+\.\d+s|\(cached\)|\[build failed\]|\[setup failed\])/m.test(s) || /^ok\s+\S+\/\S+/m.test(s) || /^\S+\.go:\d+:/m.test(s) || /\bgo test\b/.test(s)) return "go";
+	if (/^FAIL\t\S+/m.test(s) || /^FAIL[ \t]+\S+\/\S+[ \t]+(?:\d+\.\d+s|\(cached\)|\[build failed\]|\[setup failed\])/m.test(s) || /^ok\s+\S+\/\S+/m.test(s) || /^\S+\.go:\d+:/m.test(s) || /\bgo test\b/.test(s)) return "go";
 	return null;
 }
 
@@ -587,7 +587,10 @@ export function parseFailingGoPackages(blocks: string[]): string[] {
 	const seen = new Set<string>();
 	for (const raw of blocks) {
 		const s = typeof raw === "string" ? raw : String(raw ?? "");
-		const re = /^FAIL\s+(\S+\/\S+?)(?:\s|\t|$)/gm;
+		// Sweep-3 G39 (AR1-4): [ \t] after FAIL — the \s+ form swallows the
+		// newline on a bare `FAIL\n` summary line and captures the NEXT line's
+		// leading token (the exact bug baseline.ts documents).
+		const re = /^FAIL[ \t]+(\S+\/\S+?)(?:\s|\t|$)/gm;
 		let m: RegExpExecArray | null;
 		while ((m = re.exec(s)) !== null) {
 			const pkg = (m[1] ?? "").replace(/[[\],]+$/, "").trim();

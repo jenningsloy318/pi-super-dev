@@ -132,7 +132,14 @@ function bumpOwnerRevision(specDir: string, owner: string): number {
 	revisions[owner] = (revisions[owner] ?? 0) + 1;
 	try {
 		writeFileSync(path, JSON.stringify(revisions, null, "\t") + "\n");
-	} catch { /* best-effort record; the journal carries revisionAfter anyway */ }
+	} catch {
+		// Sweep-3 G32: a FAILED write is NOT a phantom success — returning the
+		// bumped number would let the jump proceed on an unrecorded revision (the
+		// revision-gate fast-forward would then skip re-running the owner on
+		// resume with a STALE revision). Return -1 so the caller declines, same
+		// as the unreadable case.
+		return -1;
+	}
 	return revisions[owner];
 }
 
@@ -205,7 +212,7 @@ export function withInlineRouteBack(children: Node[]): Node {
 				const decline = async (why: string): Promise<never> => {
 					ctx.log(`route-back ${cmd.from}→${cmd.to}: NOT taken inline (${why}) — M5: no automatic restart (pending-rows consumption is the only restart tier)`);
 					try {
-						if (specDir) appendRunEvent(specDir, { runId: setup?.specIdentifier ?? "unknown", type: "route.declined", data: { from: cmd.from, to: cmd.to, reason: why } });
+						if (specDir) appendRunEvent(specDir, { runId: ((state as Record<string, unknown>).__runId as string | undefined) ?? setup?.specIdentifier ?? "unknown", type: "route.declined", data: { from: cmd.from, to: cmd.to, reason: why } });
 					} catch { /* best-effort */ }
 					// M5: the create-new-requests emulation tier is RETIRED — routing
 					// never triggers an automatic process restart anymore. The ONLY
@@ -279,7 +286,7 @@ export function withInlineRouteBack(children: Node[]): Node {
 					throw signal; // unreachable (decline never returns) — narrows `entry`
 				}
 				try {
-					appendRunEvent(dir, { runId: setup?.specIdentifier ?? "unknown", type: "route.taken", data: { from: cmd.from, to: cmd.to, seq: entry.seq, budgetBefore: entry.budgetBefore, budgetAfter: entry.budgetAfter, resumeFromIndex: entry.resumeFromIndex } });
+					appendRunEvent(dir, { runId: ((state as Record<string, unknown>).__runId as string | undefined) ?? setup?.specIdentifier ?? "unknown", type: "route.taken", data: { from: cmd.from, to: cmd.to, seq: entry.seq, budgetBefore: entry.budgetBefore, budgetAfter: entry.budgetAfter, resumeFromIndex: entry.resumeFromIndex } });
 				} catch { /* best-effort */ }
 
 				ctx.log(

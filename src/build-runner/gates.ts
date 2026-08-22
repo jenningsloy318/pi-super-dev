@@ -368,7 +368,7 @@ function bootstrapDependencies(cwd: string, timeoutMs: number, signal: AbortSign
 		const label = `bootstrap:${task.argv.join(" ")}`;
 		ran.push(label);
 		try {
-			const r = spawnSync(task.argv[0], task.argv.slice(1), { cwd: task.cwd, timeout: timeoutMs, encoding: "utf8" });
+			const r = spawnSync(task.argv[0], task.argv.slice(1), { cwd: task.cwd, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); // sweep-3 G5
 			if (r.error || r.status !== 0) {
 				const reason = r.error ? r.error.message.split("\n")[0] : `exit ${String(r.status)}`;
 				const tail = (r.stderr || r.stdout || "").trim().split("\n").slice(-STDERR_TAIL_LINES).join("\n").trim();
@@ -458,12 +458,17 @@ function projectCommandsForDir(root: string, dir: string, rootCmds: ProjectComma
 	return detectProjectCommands(dir);
 }
 
-function moduleBuildPlans(cwd: string, rootCmds: ProjectCommands): BuildCommandPlan[] {
+function moduleBuildPlans(cwd: string, rootCmds: ProjectCommands, baseRef?: string): BuildCommandPlan[] {
 	const root = resolve(cwd);
 	if (rootCmds.language === "rust") return [];
 	if (!hasNestedProjectManifest(cwd)) return [];
-	if (!rootCmds.build && !rootCmds.test && !rootCmds.typecheck && hasAnyManifest(root)) return [];
-	const dirs = projectDirsFromEvidence(cwd, touchedFilePaths(cwd)).filter((dir) => resolve(dir) !== root);
+	// Sweep-3 G11-B5 (audit B-5): a root manifest WITHOUT scripts no longer
+	// suppresses nested plans — npm-workspaces roots routinely declare no
+	// scripts while every real package does, and the old guard made their
+	// build/test gates vacuously green. Nested dirs are already evidence-scoped
+	// (touched files) above, so single-package repos never reach here
+	// (hasNestedProjectManifest is false for them).
+	const dirs = projectDirsFromEvidence(cwd, touchedFilePaths(cwd, baseRef)).filter((dir) => resolve(dir) !== root); // sweep-3 G6
 	const plans: BuildCommandPlan[] = [];
 	for (const dir of dirs) {
 		const cmds = projectCommandsForDir(cwd, dir, rootCmds);
@@ -664,7 +669,7 @@ export function runBuildGate(
 		// identity fallback — SCENARIO-005/006). The validator below re-checks the
 		// result, so every candidate set (opt/env/auto-detect) is validated before
 		// any `-p` flag is built.
-		testPackages = resolveCargoPackageNames(cwd, detectTouchedCargoPackages(cwd));
+		testPackages = resolveCargoPackageNames(cwd, detectTouchedCargoPackages(cwd, opts.defaultBranch)); // sweep-3 G6 (AR1-3)
 	} else {
 		testPackages = [];
 	}
@@ -704,7 +709,7 @@ export function runBuildGate(
 	const ran: string[] = [];
 	const flag = { build: true, test: true, typecheck: true };
 	const rootPlans = commandPlansFromProject(cwd, cwd, cmds);
-	const nestedPlans = moduleBuildPlans(cwd, cmds0);
+	const nestedPlans = moduleBuildPlans(cwd, cmds0, opts.defaultBranch); // sweep-3 G6
 	bootstrapDependencies(cwd, timeoutMs, opts.signal, ran, errors, nestedPlans.map((plan) => plan.cwd));
 	const bootstrapFailed = errors.some((e) => e.startsWith("bootstrap:"));
 	if (bootstrapFailed) {
@@ -722,7 +727,7 @@ export function runBuildGate(
 		}
 		ran.push(label);
 		try {
-			const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
+			const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); // sweep-3 G5: 64MB (default 1MB ENOBUFS-kills large suites)
 			if (opts.signal?.aborted) {
 				flag[key] = false;
 				errors.push(`${label}: aborted`);
@@ -801,7 +806,7 @@ export function runBuildGate(
 	const outOfScopeErrors =
 		cmds0.language === "rust"
 			? classifyOutOfScopeErrors(errors, classScope).outOfScopeErrors
-			: classifyOutOfScopeNpmErrors(errors, cwd);
+			: classifyOutOfScopeNpmErrors(errors, cwd, opts.defaultBranch); // sweep-3 G6: honor the run's real base ref
 	// B-6: the historical formula granted the lenient pass whenever EVERY error
 	// block was out-of-scope, WITHOUT checking that the failing subjects were
 	// actually failing before the branch. Now the same subjects are re-run in an
@@ -880,6 +885,8 @@ export interface RedCheckOptions {
 	signal?: AbortSignal;
 	onPlan?: (plans: RedCheckPlan[]) => void;
 	onResult?: (diagnostic: RedCheckDiagnostic) => void;
+	/** Sweep-3 G6 (AR1-3): the run's real base ref for touched-file scoping. */
+	defaultBranch?: string;
 }
 
 function tailText(text: string, maxLines = STDERR_TAIL_LINES): string {
@@ -1498,7 +1505,10 @@ function npmRedCheckPlans(cwd: string, targets: string[], cmds: ProjectCommands)
 		// ["pnpm","run","test"]). Read the script text to detect the fan-out.
 		const rootTestScript = String(packageScripts(readPackageJson(cwd)).test ?? "");
 		const rootRecursive = /\bpnpm\b[^\n]*\s-r\b|--recursive|\bturbo\b|nx\s+run-many|--workspaces\b|\blerna\b/.test(rootTestScript);
-		if (usesVitest) plans.push({ cwd, argv: ["vitest", "run", ...fallbackTargets] });
+		// Sweep-3 G11-B7: never a bare `vitest` — pnpm/yarn workspaces don't put
+		// .bin on PATH for arbitrary cwd spawns; route through the package
+		// manager's exec form (same pmExec the direct-runner branch uses).
+		if (usesVitest) plans.push({ cwd, argv: pmExec(detectPmForDir(cwd, readPackageJson(cwd)), "vitest", ["run", ...fallbackTargets]) });
 		// Only use the root `test -- <files>` form when it is NOT a recursive
 		// monorepo fan-out — that form ignores the file args and runs every package
 		// (RC-1). When the only root command is recursive and no scoped runner was
@@ -1621,7 +1631,10 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 				for (const stem of stems) plans.push({ cwd, argv: ["cargo", "test", "--test", stem, "--quiet"], language });
 			} else {
 				// No resolvable stems → scope to the touched packages; empty → workspace.
-				const pkgs = detectTouchedCargoPackages(cwd);
+				// Sweep-3 G11-B2: resolve dir SEGMENTS through resolveCargoPackageNames
+				// (manifest `name`) exactly like runBuildGate — pre-fix `-p foo` failed
+				// on every renamed crate.
+				const pkgs = resolveCargoPackageNames(cwd, detectTouchedCargoPackages(cwd, opts?.defaultBranch)); // sweep-3 G6 (AR1-3)
 				if (pkgs.length > 0) {
 					for (const pkg of pkgs) plans.push({ cwd, argv: ["cargo", "test", "-p", pkg, "--quiet"], language });
 				} else {
@@ -1633,7 +1646,14 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 			plans.push({ cwd, argv: ["pytest", ...targets, "-q"], language });
 		} else if (language === "go") {
 			if (!cmds.test || cmds.test.length === 0) return "unknown";
-			plans.push({ cwd, argv: ["go", "test", ...targets], language });
+			// Sweep-3 G1 (blocker): map FILE targets to PACKAGE dirs. `go test
+			// pkg/prod_test.go` builds a synthetic command-line-arguments package
+			// of ONLY that file — a test referencing a symbol DEFINED in prod.go
+			// still fails `undefined`, so in-package tests can never confirm RED
+			// nor reach GREEN. The package form (`go test ./pkg`) is the only
+			// correct invocation; goPackageArg already computes it.
+			const goPkgs = dedupePreservingOrder(targets.map((t) => goPackageArg(cwd, cwd, t)));
+			plans.push({ cwd, argv: ["go", "test", ...goPkgs], language });
 		} else {
 			const ownerPlans = ownerRedCheckPlans(cwd, targets);
 			plans.push(...ownerPlans.plans);
@@ -1652,7 +1672,7 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 			if (opts?.signal?.aborted) return "unknown";
 			const { argv } = plan;
 			try {
-				const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
+				const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); // sweep-3 G5: 64MB (default 1MB ENOBUFS-kills large suites)
 				const combined = "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
 				const status = r.error ? "unknown" : classifyRedStatus(plan.language, combined, r.status === 0, { cwd: plan.cwd, targets });
 				emitRedDiagnostic(opts, {
@@ -1761,7 +1781,7 @@ export interface DeliverableCheckOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	/**
-	 * Skip the {@link requireTests} sub-check entirely (no test-lister spawn).
+	 * Skip the {@link requireTests
 	 *
 	 * Review finding: `runDeliverableCheck` spawned the test-lister even when the
 	 * build gate had ALREADY failed — a wasted compile on a broken build that also
@@ -1772,6 +1792,8 @@ export interface DeliverableCheckOptions {
 	 * build. When the build is green (or this is unset) the full check runs.
 	 */
 	skipTests?: boolean;
+	/** Sweep-3 G6: the run's real base ref for touched-file evidence (default 'main'). */
+	defaultBranch?: string;
 }
 
 /**
@@ -1854,7 +1876,7 @@ function readForDeliverable(
  * does not match. Match by EITHER satisfies. Never throws (an invalid regex →
  * substring). Used for requireContains, requireNotContains, and requireTests.
  */
-function tolerantMatch(pattern: string, text: string): boolean {
+export function tolerantMatch(pattern: string, text: string): boolean {
 	const tryPattern = (p: string): boolean => {
 		// Support common PCRE/Go-style inline case-insensitive prefix generated by
 		// agents/specs (`(?i)permission`) by translating it to JS RegExp flags.
@@ -1882,7 +1904,12 @@ function tolerantMatch(pattern: string, text: string): boolean {
 	// generated one-letter alias form, and only as a fallback after the exact
 	// pattern missed.
 	for (const p of [...variants]) {
-		const relaxed = p.replace(/h\\\./g, String.raw`[A-Za-z_$][\w$]*\.`).replace(/h\./g, String.raw`[A-Za-z_$][\w$]*\.`);
+		// Sweep-3 G12: ANCHORED to a standalone one-letter alias `h` (plain or
+		// regex-escaped) — pre-fix ANY pattern containing the substring 'h.'
+		// (auth\.x, path\.compile) was silently widened.
+		const relaxed = p
+			.replace(/(?<![A-Za-z0-9_$\\])h(?=\\?\.)/g, String.raw`[A-Za-z_$][\w$]*`)
+			.replace(/(?<![A-Za-z0-9_$])h\./g, String.raw`[A-Za-z_$][\w$]*\.`);
 		if (relaxed !== p) variants.push(relaxed);
 	}
 	return variants.some((p) => tryPattern(p));
@@ -1892,7 +1919,7 @@ function tolerantMatch(pattern: string, text: string): boolean {
  * comment that merely mentions `createRootHandlers(...)` cannot satisfy a real
  * wiring assertion. Docs and other non-code files keep their original text. */
 function deliverableMatchText(file: string, text: string): string {
-	return CODE_EXT.test(file) ? stripCommentsAndBlanks(text) : text;
+	return CODE_EXT.test(file) ? stripCommentsAndBlanks(text, file) : text;
 }
 
 /**
@@ -1968,9 +1995,9 @@ const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.|(^|\/)test_|(^|\/)tests?\/|__te
  *  deliverable + touched-file directories, for requireScenarios tag matching.
  *  Bounded (file count + per-file size) so a huge tree cannot stall the gate.
  *  Never throws — unreadable files are skipped. */
-function collectTestFileContents(cwd: string, deliverables: DeliverableContract, stopWhen?: (text: string) => boolean): { text: string; files: string[] } {
+function collectTestFileContents(cwd: string, deliverables: DeliverableContract, stopWhen?: (text: string) => boolean, baseRef?: string): { text: string; files: string[] } {
 	const root = resolve(cwd);
-	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd)];
+	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd, baseRef)]; // sweep-3 G6
 	const collected: string[] = [];
 	const files: string[] = [];
 	const seenFiles = new Set<string>();
@@ -2053,7 +2080,7 @@ function collectTestFileContents(cwd: string, deliverables: DeliverableContract,
 	return { text: collected.join("\n"), files };
 }
 
-function testListPlansForDeliverables(cwd: string, deliverables: DeliverableContract): TestListPlan[] {
+function testListPlansForDeliverables(cwd: string, deliverables: DeliverableContract, baseRef?: string): TestListPlan[] {
 	const rootCmds = detectProjectCommands(cwd);
 	const plans: TestListPlan[] = [];
 	const seen = new Set<string>();
@@ -2065,7 +2092,7 @@ function testListPlansForDeliverables(cwd: string, deliverables: DeliverableCont
 		plans.push(plan);
 	};
 	add(testListPlan(cwd, cwd, rootCmds));
-	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd)];
+	const evidence = [...deliverableEvidencePaths(deliverables), ...touchedFilePaths(cwd, baseRef)]; // sweep-3 G6
 	for (const dir of projectDirsFromEvidence(cwd, evidence)) {
 		if (resolve(dir) === resolve(cwd)) continue;
 		add(testListPlan(cwd, dir, projectCommandsForDir(cwd, dir, rootCmds)));
@@ -2097,7 +2124,7 @@ function loadTestList(
 	let list = "";
 	let available = false;
 	try {
-		const r = spawnSync(plan.argv[0], plan.argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8" });
+		const r = spawnSync(plan.argv[0], plan.argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); // sweep-3 G5
 		if (!r.error && r.status === 0) {
 			const out = (r.stdout ?? "").trim();
 			if (out.length > 0) {
@@ -2245,11 +2272,24 @@ const CODE_EXT = /\.(?:rs|go|py|ts|tsx|js|jsx|mjs|mts|cjs|java|kt|swift|rb|cs|cp
 
 /** Strip block + line comments and blank lines so a doc-comment-only shell
  *  reduces to empty (zero symbols). Pure. */
-function stripCommentsAndBlanks(src: string): string {
+function hashCommentLanguage(file: string): boolean {
+	const lower = file.toLowerCase();
+	if (/(^|\/)(makefile|dockerfile)(\.\w+)?$/.test(lower)) return true;
+	// Accept a full path OR a bare extension ("py") — tests and callers pass both.
+	const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : lower;
+	return HASH_COMMENT_EXTS.has(ext);
+}
+/** Sweep-3 G13: `#`-lines are stripped ONLY for #comment languages. Pre-fix
+ *  the blanket strip made Rust `#[derive]`, C `#include`, and JS `#private`
+ *  invisible to deliverable matching. */
+const HASH_COMMENT_EXTS = new Set(["py", "pyw", "rb", "sh", "bash", "zsh", "yaml", "yml", "toml", "env", "conf", "ini", "cfg", "r", "pl", "tf", "tfvars"]);
+
+export function stripCommentsAndBlanks(src: string, file = ""): string {
+	const stripHash = file === "" ? true : hashCommentLanguage(file);
 	return src
 		.replace(/\/\*[\s\S]*?\*\//g, "")      // /* block comments */
 		.replace(/^[ \t]*\/\/.*$/gm, "")         // // line comments (incl //! ///)
-		.replace(/^[ \t]*#.*$/gm, "")            // # line comments (py/ruby/sh)
+		.replace(stripHash ? /^[ \t]*#.*$/gm : /\u0000/g, "") // # comments — ONLY #comment languages (sweep-3 G13)
 		.replace(/^[ \t]*$/gm, "");              // blank lines
 }
 
@@ -2277,7 +2317,7 @@ export function computeSymbolGate(
 		for (const rel of codeFiles) {
 			try {
 				const src = readFileSync(join(worktreePath, rel), "utf8");
-				if (!pattern.test(stripCommentsAndBlanks(src))) hollow.push(rel);
+				if (!pattern.test(stripCommentsAndBlanks(src, rel))) hollow.push(rel);
 			} catch {
 				// unreadable / missing → skip (deliverable/change gates handle absence)
 			}
@@ -2371,7 +2411,7 @@ export function runDeliverableCheck(
 		const tests = deliverables.requireTests;
 		if (Array.isArray(tests) && tests.length > 0 && !opts?.skipTests) {
 			const timeoutMs = resolveTimeoutMs(opts?.timeoutMs);
-			const plans = testListPlansForDeliverables(cwd, deliverables);
+			const plans = testListPlansForDeliverables(cwd, deliverables, opts?.defaultBranch);
 			const lines: string[] = [];
 			for (const plan of plans) {
 				const list = loadTestList(plan, timeoutMs, opts?.signal);
@@ -2415,7 +2455,7 @@ export function runDeliverableCheck(
 			// MAX_FILES cap then can't hide a tag that exists, regardless of touched-
 			// file ordering. Word-boundary, case-insensitive (`SCENARIO-024` matches,
 			// `SCENARIO-0240` does not).
-			const haystack = collectTestFileContents(cwd, deliverables, (text) => tagRes.every((re) => re.test(text)));
+			const haystack = collectTestFileContents(cwd, deliverables, (text) => tagRes.every((re) => re.test(text)), opts?.defaultBranch);
 			ran.push(haystack.files.length ? `scenarios:${haystack.files.length} test file(s)` : "scenarios:no-test-files");
 			for (let i = 0; i < scenarios.length; i++) {
 				if (!tagRes[i].test(haystack.text)) {
@@ -2450,7 +2490,7 @@ export function runDeliverableCheck(
  * requireFiles are declared (can't determine no-op without file targets).
  * NEVER throws.
  */
-export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableContract): boolean {
+export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableContract, baseRef?: string): boolean {
 	try {
 		const files = deliverables.requireFiles;
 		if (!Array.isArray(files) || files.length === 0) return false;
@@ -2471,7 +2511,7 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 			const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
 			if (scenarios.length > 0) {
 				const tagRes = scenarios.map((tag) => new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i"));
-				const { text } = collectTestFileContents(cwd, deliverables, (t) => tagRes.every((re) => re.test(t)));
+				const { text } = collectTestFileContents(cwd, deliverables, (t) => tagRes.every((re) => re.test(t)), baseRef); // sweep-3 CR-R2-7
 				if (!tagRes.every((re) => re.test(text))) return false;
 			}
 		return true;

@@ -170,19 +170,27 @@ export function task(stage: Stage): Node {
 		id: stage.id,
 		async run(state, ctx) {
 			if (ctx.signal?.aborted) return { status: "cancelled" };
+			// Sweep-3 G20 (A-adv CORE-4): the skip/budget paths previously emitted
+			// a TERMINAL stage event with no prior stage.started — failing the
+			// exported INV-L6 checker on every --skipStages / budget-death run.
+			// record()'s "running" first opens the lifecycle, the terminal closes
+			// it; both events carry the skip/budget reason.
 			if (shouldSkipStage(stage, ctx)) {
 				ctx.log(`task "${stage.id}": skipped (--skipStages)`);
+				ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" }); // G20: open the lifecycle
 				record(ctx, "skipped");
 				return { status: "skipped" };
 			}
 			if (stage.enabled && !stage.enabled(state)) {
 				ctx.log(`task "${stage.id}": skipped (disabled)`);
+				ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" }); // G20: open the lifecycle
 				record(ctx, "skipped");
 				return { status: "skipped" };
 			}
 			if (!ctx.budget.check()) {
 				const error = `task "${stage.id}": budget exhausted before stage start`;
 				ctx.log(error);
+				ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" }); // G20: open the lifecycle
 				record(ctx, "failed", error);
 				return { status: "failed", error };
 			}
@@ -204,7 +212,17 @@ export function task(stage: Stage): Node {
 				const result = await stage.run(state, ctx);
 				const durationMs = Date.now() - startMs;
 				if (result !== undefined && result !== null) state[stage.id] = result;
-				record(ctx, "ok", undefined, displayStatus(result));
+				// Sweep-3 round-2 CR-R2-3/CRR2-2: a stage that recorded an INFRA
+				// failed row mid-run (writerTask's G21 honest marker) must not have
+				// it masked by this same-id ok row — G3's last-status semantics
+				// would read silently green. Emit the ok EVENT (dashboard shows the
+				// round completing) but keep the ROW failed when one exists.
+				const infraFailed = ctx.results.some((r) => r.id === stage.id && r.status === "failed");
+				if (!infraFailed) {
+					record(ctx, "ok", undefined, displayStatus(result));
+				} else {
+					ctx.events.emit("stage", { id: stage.id, label: stage.label, status: displayStatus(result) });
+				}
 				auditAppend({ stage: stage.id, durationMs, control: result });
 				return { status: "ok", value: result };
 			} catch (err) {
@@ -727,6 +745,18 @@ export function writerTask(spec: {
 			if (!result.control) {
 				const said = result.text ? ` (last text: ${result.text.replace(/\s+/g, " ")})` : "";
 				ctx.log(`${spec.id}: agent produced no control object${said}`);
+			}
+			// Sweep-3 G21 (CR-1 corrected): an INFRA agent error must surface —
+			// but NOT via throw (a thrown error dead-ends the gated writers'
+			// bounded retry AND replays forever on resume — the memoizer caches
+			// error results). Instead: record an HONEST failed result row NOW
+			// (deriveRunStatus's last-status-per-stage sees it) and still return
+			// the empty control so the convergence loop's retry feedback runs.
+			// The stage-lifecycle event pair stays open→failed so the dashboard
+			// and run log show the infra error immediately.
+			if (result.error && !result.control) {
+				ctx.results.push({ id: spec.id, label: spec.id, status: "failed", error: result.error.slice(0, 300) });
+				ctx.events.emit("stage", { id: spec.id, label: spec.id, status: "failed", error: result.error.slice(0, 300) });
 			}
 			// Render pipeline: if this stage has a render model, render + write the doc.
 			if (result.control) {

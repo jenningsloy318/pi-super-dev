@@ -423,7 +423,7 @@ export interface RunOptions {
 	maxConcurrency?: number;
 	progress?: ProgressSink;
 	signal?: AbortSignal;
-	/** Specialist execution backend. "subprocess" (default) = raw `pi` spawn;
+	/** Specialist execution backend. "session" (default since v0.2.10) = in-process sessions; "subprocess" = raw `pi` spawn;
 	 *  "session" = in-process `createAgentSession`. Also set via
 	 *  SUPER_DEV_BACKEND env. */
 	backend?: "subprocess" | "session";
@@ -472,4 +472,6 @@ export interface RunSummary {
 	failedStages: { label: string; error?: string }[];
 	/** Error message when the run aborted (e.g. a fatal gate threw). */
 	error?: string;
+	/** Sweep-3 G9/AR2-4: honest reasons the run is NOT `success` (empty on success). */
+	statusReasons?: string[];
 }

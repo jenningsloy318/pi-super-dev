@@ -119,7 +119,7 @@ function gateRequirements(s: Record<string, unknown>): HelperResult {
 		else {
 			// No doc on disk — fall back to self-reported metadata.
 			if (!req.docPath) errors.push("No requirements doc found (no docPath, and no *-requirements.md in the spec dir)");
-			if ((toNumber(req.acCount) ?? 0) < 1) errors.push("Missing acceptance criteria");
+			if ((toNumber(req.acCount) ?? 0) < 2) errors.push("Missing acceptance criteria (needs ≥2, matching the on-disk content check — sweep-3 E-E6)");
 			if (!req.summary) errors.push("Missing summary section");
 			if (!req.featureName) errors.push("Missing feature name");
 		}
@@ -509,7 +509,14 @@ export function commitWorktreeChanges(
 		}
 	}
 	const subject = message.split("\n")[0];
+	// Sweep-3 CR-7 (round-2 CR-R2-1): NEVER sweep harness bookkeeping into
+	// track commits. Bare basenames never match the NESTED spec-dir paths git
+	// staged — unstage by pathspec glob anchored on every known spec-dir layout
+	// (docs/specifications/** and the worktree-relative bookkeeping roots).
 	if (run(["add", "-A"]).status !== 0) return { committed: false, error: "git add -A failed" };
+	for (const base of HARNESS_BOOKKEEPING_FILES) {
+		run(["reset", "--", `**/${base}`, base]); // glob match (nested) + exact (root)
+	}
 	let commit = run(["commit", "-m", message]);
 	if (commit.status !== 0 && /tell me who you are|user\.(name|email)/i.test(commit.stderr)) {
 		commit = run(["-c", "user.name=super-dev (pipeline)", "-c", "user.email=super-dev@pipeline.invalid", "commit", "-m", message]);

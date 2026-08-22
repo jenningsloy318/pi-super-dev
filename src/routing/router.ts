@@ -23,6 +23,7 @@
  */
 
 import { FatalAbort } from "../nodes.ts";
+import { HIGH_SEVERITY_RE } from "../review-findings.ts"; // sweep-3 G37: ONE vocabulary
 import { STAGE_IDS, downstreamOf } from "../graph/edges.ts";
 import { REPLAN_OWNER_STAGES, type ReplanOwnerStage } from "../replan/owners.ts";
 
@@ -339,7 +340,9 @@ export function classifyFindingRoute(
 	const blocking = finding.blocking === true;
 	const needsHuman = finding.status === "needs-human";
 	const severity = typeof finding.severity === "string" ? finding.severity.toLowerCase() : "";
-	const highClass = /(^|\W)(critical|blocker|fatal|high|major|must.?fix|p0|p1|s0|s1|sev0|sev1|serious)(\W|$)/.test(severity);
+	// Sweep-3 G37: the shared HIGH_SEVERITY_RE — the local fork had already
+	// drifted (missing errors?/failures?/rejected? and the plural tolerance).
+	const highClass = HIGH_SEVERITY_RE.test(severity);
 	if (blocking && ownerIsUpstreamOf(finding.ownerStage, ownStage)) {
 		return { action: "route-back", to: finding.ownerStage, findingId: id };
 	}

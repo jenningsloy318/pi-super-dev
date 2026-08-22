@@ -69,7 +69,19 @@ export async function runEscalation(
 	escalate?: Escalate,
 ): Promise<EscalationDecision | undefined> {
 	if (!escalate) return undefined;
-	if (escalationBudgetRemaining(state, failure) <= 0) return undefined;
+	if (escalationBudgetRemaining(state, failure) <= 0) {
+		// Sweep-3 G43 (spec-18 AC-07: the report is ALWAYS written, in every
+		// mode): the budget-exhausted no-op previously wrote NOTHING — a headless
+		// multi-blocker run left no trace of the later blockers. Write the report
+		// with an explicit exhausted marker (decision undefined = never answered).
+		try {
+			const { writeEscalationReport } = await import("./render/escalation-report.ts");
+			writeEscalationReport({ ...failure, message: `[escalation budget exhausted — no further prompts for this kind]
+
+${failure.message}` }, undefined, failure.specDirectory);
+		} catch { /* best-effort */ }
+		return undefined;
+	}
 	// Charge the budget BEFORE awaiting so even a throwing/dismissed callback
 	// counts toward termination (guaranteed bounded spend).
 	retryMap(state)[budgetKey(failure)] = (retryMap(state)[budgetKey(failure)] ?? 0) + 1;
@@ -93,8 +105,23 @@ export function applyRetryDecision(
 	decision: EscalationDecision,
 	opts: { worktreePath?: string; specDirectory?: string },
 ): void {
-	void state;
 	if (decision.choice !== "retry-with-guidance") return;
+	// Sweep-3 G4: `git reset --hard` + `git clean -fd` must NEVER run against the
+	// user's LIVE CHECKOUT. A skipWorktree run has no disposable worktree —
+	// worktreePath IS the main checkout — and a caller with no setup at all is
+	// equally unproven. In both shapes the rollback is REFUSED (guidance still
+	// persists); only a run that explicitly created/reused a worktree may roll
+	// back to its pre-stage baseline. Undisclosed destructive resets of the
+	// user's own tree are the failure class this guard exists to kill.
+	const setup = (state as { setup?: { skipWorktree?: boolean } }).setup;
+	if (!setup || setup.skipWorktree === true) {
+		console.error?.("[super-dev] retry-with-guidance: rollback SKIPPED — this run has no disposable worktree (skipWorktree/unset setup); the live checkout was left untouched (guidance still recorded)");
+		const guidance0 = decision.guidance?.trim();
+		if (guidance0 && opts.specDirectory) {
+			try { appendUserNotes(opts.specDirectory, [guidance0]); } catch { /* never-throw */ }
+		}
+		return;
+	}
 	try {
 		rollbackWorktreeTo(opts.worktreePath);
 		const guidance = decision.guidance?.trim();

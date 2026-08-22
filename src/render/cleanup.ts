@@ -57,9 +57,13 @@ export function cleanupOldRuns(): { deletedRuns: number; deletedTraces: number }
 	return { deletedRuns, deletedTraces };
 }
 
-/** Read the current run's audit.jsonl and update aggregate stats.json. */
-export function updateStats(): void {
-	const auditPath = getAuditPath();
+/** Read the current run's audit.jsonl and update aggregate stats.json.
+ * Sweep-3 G10: `auditPathOverride` lets the run-end caller pin the audit file
+ * captured at run START — the module-global `getAuditPath()` follows
+ * `currentRunDir`, which an overlapping/next run may have already repointed by
+ * the time bookkeeping fires, misattributing audits across runs. */
+export function updateStats(auditPathOverride?: string): void {
+	const auditPath = auditPathOverride ?? getAuditPath();
 	if (!existsSync(auditPath)) return;
 
 	// Read current stats

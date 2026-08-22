@@ -139,7 +139,10 @@ function loadCargoMetadata(cwd: string): CargoMetadataResult {
 			// read of the manifest graph, NOT a full build. Inheriting the 10-min
 			// build timeout meant a hung/missing cargo blocked up to 10 minutes
 			// before the identity fallback kicked in. Overridable via env.
-			{ encoding: "utf8", timeout: cargoMetadataTimeoutMs() },
+			// sweep-3 CR-R2-6: large workspaces emit MB-sized metadata — the default
+			// 1MB maxBuffer killed the lookup (ENOBUFS → identity fallback silently
+			// degraded every -p resolution).
+			{ encoding: "utf8", timeout: cargoMetadataTimeoutMs(), maxBuffer: 64 * 1024 * 1024 },
 		);
 		if (r.error || r.status !== 0) {
 			result = { ok: false };
@@ -314,6 +317,12 @@ export function resolveIntegrationStems(cwd: string, integration: string[]): str
 	for (const raw of paths) {
 		try {
 			const trimmed = raw.trim();
+			// Sweep-3 G11-B1 (audit B-1): an integration TEST target must live under
+			// a package's `tests/` directory — `cargo test --test <stem>` only names
+			// targets there. Pre-fix any existing .rs path became a stem, so
+			// `src/lib.rs` produced `--test lib` → plain `error:` → unknown → the
+			// fail-closed RED stall the audit documented.
+			if (!/(^|\/)tests\//.test(trimmed.replace(/\\/g, "/"))) continue;
 			const base = trimmed.split("/").pop() ?? trimmed;
 			const stem = base.endsWith(".rs") ? base.slice(0, -3) : base;
 			if (!stem) continue;

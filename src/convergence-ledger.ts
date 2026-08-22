@@ -325,7 +325,20 @@ function normalizeFinding(input: ConvergenceFindingInput, defaults: { detectedAt
 	// re-promotes a downgraded late needs-human note to blocking, partially
 	// defeating the enforcement on mixed reject rounds.
 	const downgraded = isDutyDowngradeReason(input.downgradeReason);
-	const blocking = downgraded ? false : ["addressed", "verified", "deferred"].includes(status) ? false : status === "needs-human" ? true : typeof input.blocking === "boolean" ? input.blocking : reviewFindingBlocks(input as Record<string, unknown>) || normalizeBlocking(input.blocking, severity);
+	// Sweep-3 G16: `addressed` KEEPS blocking=true — it is the writer's CLAIM, not
+	// a confirmed fix (the documented invariant). Only `verified` and `deferred`
+	// clear blocking. Pre-fix, a prior run's addressed residue re-injected with
+	// blocking=false and silently stopped blocking convergence without any
+	// reviewer verification ever happening.
+	const blocking = downgraded
+		? false
+		: ["verified", "deferred"].includes(status)
+			? false
+			: status === "needs-human"
+				? true
+				: typeof input.blocking === "boolean"
+					? input.blocking
+					: reviewFindingBlocks(input as Record<string, unknown>) || normalizeBlocking(input.blocking, severity);
 	const fingerprint = reviewFindingFingerprint(ownerStage, sourceGate, title, detail);
 	const rawId = compact(input.id);
 	const id = rawId || `CF-${ownerStage}-${fingerprint}`;

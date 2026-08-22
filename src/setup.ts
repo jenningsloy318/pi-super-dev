@@ -97,7 +97,10 @@ import type { SetupControl } from "./types.ts";
 const COPIED_ENV_EXCLUDE_HEADER = "# pi-super-dev copied env files (never committed)";
 
 function excludeCopiedEnvFiles(worktreeRoot: string, copiedRelPaths: string[]): void {
-	if (copiedRelPaths.length === 0) return;
+	// Sweep-3 G8: the harness-bookkeeping excludes (.run-lock, .convergence-
+	// ledger.json) must be written UNCONDITIONALLY — pre-fix the early return
+	// when no env files were copied left env-less repos with NO excludes, so an
+	// unconditional `git add -A` snapshotted the lock/ledger into user branches.
 	try {
 		const commonDir = git(["rev-parse", "--git-common-dir"], worktreeRoot);
 		if (!commonDir) return;
@@ -374,6 +377,10 @@ function acquireRunLock(specDirectory: string): void {
 		try {
 			fd = openSync(lockPath, "wx");
 			writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+			// Sweep-3 (B SETUP-2): close the descriptor — every acquisition leaked
+			// one fd for the process lifetime (closeSync was imported, never called).
+			closeSync(fd);
+			fd = undefined;
 			heldRunLockPath = lockPath;
 			return;
 		} catch (err) {
@@ -552,6 +559,13 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	let copiedEnvFiles: string[] = [];
 	if (worktreeCreated) {
 		copiedEnvFiles = copyEnvFilesToWorktree(cwd, worktreePath);
+	}
+	// Sweep-3 G8: excludes are written for EVERY worktree-shaped run (fresh OR
+	// reused) and even when NO env files were copied — the .run-lock /
+	// .convergence-ledger.json bookkeeping entries must never ride an
+	// unconditional `git add -A` into user branches. In-place (skipWorktree)
+	// runs never mutate the user's own git config.
+	if (worktreePath !== cwd) {
 		excludeCopiedEnvFiles(worktreePath, copiedEnvFiles);
 	}
 	// RC12a (runs 10-39/15-07): a fresh worktree has NO node_modules — the build

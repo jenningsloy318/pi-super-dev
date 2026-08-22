@@ -15,6 +15,10 @@ import { releaseHeldRunLock } from "./setup.ts";
 import type { RunOptions, RunSummary } from "./types.ts";
 
 export async function runPipelineTask(task: string, optionsIn: RunOptions = {}): Promise<RunSummary> {
+	// Sweep-3 G15 (INV-3): judge budgets are PER-RUN — reset at entry so an
+	// in-process replan auto-resume (or a long-lived extension session) never
+	// carries a prior run's exhausted budget into this one.
+	try { const { resetJudgeBudgets } = await import("./stages/judge.ts"); resetJudgeBudgets(); } catch { /* never block a run on bookkeeping */ }
 	const options: RunOptions = { ...optionsIn };
 	const cwd = options.cwd ?? process.cwd();
 

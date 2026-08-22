@@ -203,7 +203,12 @@ export type AdversarialReviewDataT = Static<typeof AdversarialReviewData>;
 // CLOSED so this stage schema is STRICT-CAPABLE in production (Feature 2).
 export const ImplementationSummaryData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
-	phasesCompleted: Type.String(), allGreen: Type.String(),
+	// Sweep-3 G30 (boolean-drift class, A-2/run 2026-08-15): agents emit
+	// allGreen/phasesCompleted as JSON booleans/numbers despite the String
+	// contract — a strict String REJECTED the whole doc silently. Tolerant
+	// union ingest; consumers read via toBool/tolerant parse.
+	phasesCompleted: Type.Union([Type.String(), Type.Number(), Type.Boolean()]),
+	allGreen: Type.Union([Type.String(), Type.Boolean()]),
 	filesModified: Type.Array(Type.String()),
 }, { additionalProperties: false });
 export const DebugData = Type.Object({

@@ -33,7 +33,9 @@ const failure = (overrides: Partial<EscalationFailure> = {}): EscalationFailure 
 	...overrides,
 });
 
-const freshState = (): PipelineState => ({}) as PipelineState;
+// Sweep-3 G4: rollback callers must carry a setup with skipWorktree=false —
+// the main-checkout guard refuses rollback when setup is absent or in-place.
+const freshState = (): PipelineState => ({ setup: { skipWorktree: false } }) as unknown as PipelineState;
 
 describe("escalationBudgetRemaining — bounded + per-blocker (AC-01)", () => {
 	it("reports the full cap remaining for a fresh blocker", () => {

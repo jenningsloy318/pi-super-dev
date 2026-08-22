@@ -90,10 +90,27 @@ function getModelRuntime(): Promise<ModelRuntime> {
  *  (security/cost-sensitive). The INHERITED main-session model is NOT resolved
  *  here — it is passed through WHOLESALE as a Model<any> object (see
  *  runAgentViaSession), avoiding re-resolution entirely. Best-effort, no-throw. */
-async function resolveExplicitSessionModel(id: string | undefined): Promise<SessionModelOption | undefined> {
+async function resolveExplicitSessionModel(id: string | undefined, activeProviderId?: string): Promise<SessionModelOption | undefined> {
 	if (!id) return undefined;
 	const slash = id.indexOf("/");
-	if (slash < 0) return undefined; // bare explicit id → don't guess; fall to settings default
+	if (slash < 0) {
+		// Sweep-3 G26: a BARE explicit id was silently dropped (undefined →
+		// settings default) while the subprocess backend honored it — and the
+		// start log then misreported the override as active. Resolve it against
+		// the ACTIVE PROVIDER (the inherited main-session model's provider, or
+		// the runtime's first provider): the user's bare id means "this model on
+		// my current provider", which is exactly what the subprocess path does.
+		try {
+			const runtime = await getModelRuntime();
+			// Prefer the ACTIVE provider (the inherited main-session model's
+			// provider) so a bare id means "this model on my current provider".
+			const activeProvider = activeProviderId ?? runtime.getProviders()[0]?.id;
+			if (activeProvider) return runtime.getModel(activeProvider, id) ?? undefined;
+		} catch {
+			return undefined; // runtime unavailable → SDK/settings default (honest)
+		}
+		return undefined;
+	}
 	const provider = id.slice(0, slash);
 	const modelId = id.slice(slash + 1);
 	try {
@@ -498,7 +515,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	let resolvedModel: SessionModelOption | undefined;
 	try {
 		const explicitModel = resolveModel(opts.model);
-		resolvedModel = explicitModel ? await resolveExplicitSessionModel(explicitModel) : opts.inheritedModelObject;
+		resolvedModel = explicitModel ? await resolveExplicitSessionModel(explicitModel, opts.inheritedModelObject?.provider) : opts.inheritedModelObject;
 	} catch {
 		resolvedModel = opts.inheritedModelObject;
 	}

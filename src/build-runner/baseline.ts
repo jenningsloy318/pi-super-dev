@@ -163,6 +163,7 @@ function classifyFileSubjects(
 	subjects: string[],
 	failingAtBaseline: string[],
 	label: string,
+	strictPositive = false,
 ): BaselineCheckResult {
 	if (failingAtBaseline.length === 0) {
 		return { status: "unknown", evidence: `${label}: baseline failed but no recognizable failure markers` };
@@ -174,8 +175,18 @@ function classifyFileSubjects(
 		return { status: "preexisting", evidence: `${label}: all ${subjects.length} subject(s) also fail at baseline (${subjects.join(", ")})` };
 	}
 	if (matched.length === 0) {
+		// Sweep-3 G40: on the whole-suite FALLBACK plan the runner may print in a
+		// format we cannot parse (mocha/tap lack vitest/jest markers) — a partial
+		// parse must NOT read as "subjects pass at baseline". Downgrade to unknown
+		// unless every subject's failure was POSITIVELY observed.
+		if (strictPositive) return { status: "unknown", evidence: `${label}: whole-suite fallback output not positively parsed for subjects (matched 0 of ${subjects.length}) — refusing the regression inference` };
 		return { status: "regression", evidence: `${label}: subjects pass at baseline; baseline failures are unrelated (${failingAtBaseline.join(", ")})` };
 	}
+	// Sweep-3 CR-8 (scoped after the baseline-verify pin): the partial-match
+	// regression inference is the PINNED contract for positively-parsed output
+	// (vitest markers listing other failing files) — kept. The strict-positive
+	// refusal applies ONLY to the matched==0 shape above (no subject positively
+	// observed; mocha/tap partial parses).
 	return {
 		status: "regression",
 		evidence: `${label}: ${unmatched.join(", ")} pass at baseline (only ${matched.join(", ")} fail there) — new failure(s) on this branch`,
@@ -369,7 +380,7 @@ export function verifyUntouchedFailuresAgainstBaseline(input: BaselineVerifyInpu
 								input.language === "python"
 									? parsePytestFailingFiles(out)
 									: parseFailingNpmTestFiles(out);
-							result = classifyFileSubjects(subjects, failing, `${plan.label} at baseline ${shortSha(mergeBase)} (exit ${res.status})`);
+							result = classifyFileSubjects(subjects, failing, `${plan.label} at baseline ${shortSha(mergeBase)} (exit ${res.status})`, plan.label.includes("whole suite")); // sweep-3 G40
 						}
 					}
 				}

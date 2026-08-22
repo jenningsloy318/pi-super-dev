@@ -427,7 +427,10 @@ describe("runBuildGate auto-scoping (AC-03)", () => {
 			const r = runBuildGate(nodeDir);
 			expect(r.pass).toBe(true);
 			expect(r.ran).toEqual([]);
-			expect(mock.calls).toEqual([]);
+			// Sweep-3 G11-B5: the root-no-scripts suppression is gone — nested
+			// evidence probing (2 git calls) is expected; the assertion keeps its
+			// original intent: NO bootstrap/build spawns for unrelated manifests.
+			expect(mock.calls.filter((c) => c.args[0] !== "git")).toEqual([]);
 		} finally {
 			rmSync(nodeDir, { recursive: true, force: true });
 		}

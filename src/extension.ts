@@ -622,6 +622,8 @@ export default function activate(pi: ExtensionAPI): void {
 				return { displayId, occurrence: nextOccurrence };
 			};
 			let liveRunLogPath = "";
+			// Sweep-3 G10: THIS run's audit path, captured at start (finally-scope safe).
+			let liveAuditPath = "";
 			let lastDiskLog = 0;
 			const DISK_LOG_MS = 1000;
 			const persistLiveLog = (force = false) => {
@@ -697,6 +699,8 @@ export default function activate(pi: ExtensionAPI): void {
 				// while this run's async work is still in flight.
 				const runDir = startRun();
 				liveRunLogPath = runLogPathFor(runDir);
+				// Sweep-3 G10: pin THIS run's audit path at capture time.
+				liveAuditPath = join(runDir, "audit.jsonl");
 				stream.sink.log(superDevRunMetadataLine());
 				for (const line of launchMetadataLines(task, process.cwd(), liveRunLogPath)) stream.sink.log(line);
 				persistLiveLog(true);
@@ -764,7 +768,7 @@ export default function activate(pi: ExtensionAPI): void {
 					const humanPending = pendingHumanReplanRequests(summary.specDirectory);
 					if (humanPending.length > 0) stream.sink.log(`⏸ ${humanPending.length} deferred finding(s) awaiting human decision: ${humanPending.map((r) => r.title).join("; ")}`);
 				} catch { /* best-effort */ }
-					try { appendRunEvent(summary.specDirectory, { runId: summary.specIdentifier, type: "replan.resumed", data: { runId: summary.specIdentifier, requests: marker?.newRequests ?? 0 } }); } catch { /* best-effort */ }
+					try { const resumedRunId = ((summary.state as Record<string, unknown>).__runId as string | undefined) ?? summary.specIdentifier; appendRunEvent(summary.specDirectory, { runId: resumedRunId, type: "replan.resumed", data: { runId: resumedRunId, requests: marker?.newRequests ?? 0 } }); } catch { /* best-effort */ }
 					summary = await runOnce(summary.specIdentifier);
 				}
 				// Refine the session name to the resolved spec identifier (pi-native),
@@ -807,7 +811,9 @@ export default function activate(pi: ExtensionAPI): void {
 				inFlight = false;
 				// D-8: aggregate stats + run retention fire even without reflection
 				// (best-effort — never let bookkeeping break a finished run).
-				try { updateStats(); } catch { /* best-effort */ }
+				// Sweep-3 G10: pin the audit file captured at run START (runDir) —
+				// never the module-global currentRunDir a newer run may own.
+				try { if (liveAuditPath) updateStats(liveAuditPath); } catch { /* best-effort */ }
 				try { cleanupOldRuns(); } catch { /* best-effort */ }
 				// Discard the run-state singleton via the exported setter (single write
 				// path) so no queued run input leaks across runs.

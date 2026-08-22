@@ -13,7 +13,7 @@
  * - The agent doesn't read it — the pipeline extracts + injects.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 interface KnowledgeFile {
@@ -48,7 +48,13 @@ export function appendToKnowledge(specDir: string, stageId: string, control: Rec
 		agent: String(control.agent ?? stageId),
 		data: control,
 	};
-	try { writeFileSync(path, JSON.stringify(knowledge, null, 2) + "\n"); } catch { /* best-effort */ }
+	try {
+		// Sweep-3 G31: ATOMIC write (tmp + rename) — a torn write reset the whole
+		// store to empty on crash; rename is atomic on POSIX/NTFS.
+		const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+		writeFileSync(tmp, JSON.stringify(knowledge, null, 2) + "\n");
+		renameSync(tmp, path);
+	} catch { /* best-effort */ }
 }
 
 // ─── Per-agent extraction (option C) ─────────────────────────────────────────

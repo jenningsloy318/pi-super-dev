@@ -49,16 +49,25 @@ function tokenizePath(path: string): string[] {
 }
 
 function hasObviousTestToken(path: string): boolean {
-	const tokens = tokenizePath(path);
-	return tokens.some((token) =>
-		token === "test" ||
-		token === "tests" ||
-		token === "spec" ||
-		token === "specs" ||
-		token === "e2e" ||
-		token === "snapshot" ||
-		token === "snapshots"
-	);
+	const segments = normalizePath(path).split("/");
+	const base = segments[segments.length - 1] ?? "";
+	// rspec/jest-style basename markers: user_spec.rb, a.spec.ts, test_x.py,
+	// x.test.ts — the file's OWN name says test.
+	if (/(?:^|_)spec\.[a-z0-9]+$/i.test(base) || /\.spec\.[a-z0-9]+$/i.test(base) || /^test[_-]/i.test(base) || /[._-]test\.[a-z0-9]+$/i.test(base)) return true;
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i];
+		if (seg === "test" || seg === "tests" || seg === "e2e" || seg === "snapshot" || seg === "snapshots" || seg === "__tests__" || seg === "__specs__") return true;
+		// Sweep-3 G44: bare 'spec'/'specs' PATH SEGMENTS are ambiguous — Go repos
+		// ship production packages named spec (internal/spec/loader.go) exactly
+		// like rspec ships spec/models/. Allowed ONLY in the rspec convention
+		// shape: a TOP-LEVEL spec/specs dir, or nested under a tests root; any
+		// other placement goes to the evaluator as ambiguous.
+		if ((seg === "spec" || seg === "specs") && (i === 0 || segments[i - 1] === "test" || segments[i - 1] === "tests" || segments[i - 1] === "__tests__" || segments[i - 1] === "__specs__")) return true;
+	}
+	// camelCase tokens (specRegistry → 'spec','registry') are deliberately NOT
+	// treated as test evidence (G44) — a production OpenAPI/spec-loader module
+	// is the common false-positive class.
+	return false;
 }
 
 function isRuntimeEvidencePath(path: string): boolean {

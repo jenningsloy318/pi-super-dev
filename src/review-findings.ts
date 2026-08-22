@@ -43,7 +43,7 @@ export function reviewFindingSeverity(finding: Record<string, unknown>, fallback
  *  ('medium-high', 'very high', 'correctness-critical') do not slip under the
  *  old ^ prefix anchor. The trailing \b still excludes prefix false
  *  positives ('majorly cosmetic', 'P10', 'S12', 'highly minor'). */
-const HIGH_SEVERITY_RE = /(critical|blockers?|fatal|high|errors?|fail(?:ure)?s?|reject(?:ed)?|major|must.?fix(?:es)?|p[01]|s[01]|sev[01]|serious)\b/i;
+export const HIGH_SEVERITY_RE = /(critical|blockers?|fatal|high|errors?|fail(?:ure)?s?|reject(?:ed)?|major|must.?fix(?:es)?|p[01]|s[01]|sev[01]|serious)\b/i;
 
 /** M17 (SCENARIO-057/058): negated approvals never classify as approvals.
  *  Evaluated BEFORE the approve-family match so "not approved" /
@@ -186,7 +186,34 @@ export const REVIEWER_DUTY_ROUND = 3;
  *  import would be circular); byte-identical semantics. */
 export function reviewFindingFingerprint(ownerStage: string, sourceGate: string | undefined, title: string, detail: string): string {
 	let hash = 5381;
-	const input = [ownerStage, sourceGate ?? "", title, detail].join("\n").toLowerCase();
+	// Sweep-3 G23 (CR-3/AR2-1): canonicalize ownerStage BEFORE hashing via the
+	// SAME alias vocabulary the ledger's normalizeConvergenceStage carries —
+	// reviewers emit "Requirements", "requirements-review", "Bdd", "Code
+	// Assessment"… and any spelling split let restatements dodge the M22 shield
+	// and de-fang live blockers. (Local map, not imported: convergence-ledger
+	// imports THIS module — importing back would be a cycle.)
+	// Round-2 CR-R2-4: EXACT mirror of normalizeConvergenceStage's map (keep in
+	// sync when that changes — the graph-edges test does not cover this pair).
+	const OWNER_ALIAS: Record<string, string> = {
+		setup: "setup", prestage: "setup",
+		classify: "classify", classification: "classify",
+		requirement: "requirements", requirements: "requirements",
+		bdd: "bdd", scenario: "bdd", scenarios: "bdd",
+		research: "research",
+		debug: "debug", debuganalysis: "debug",
+		assessment: "assessment", codeassessment: "assessment",
+		design: "design", prototype: "prototype",
+		spec: "spec", specification: "spec",
+		specreview: "specreview", review: "verification", integration: "verification",
+		implementation: "implementation", implement: "implementation",
+		verification: "verification", verify: "verification",
+		docs: "docs", documentation: "docs",
+		cleanup: "cleanup", merge: "merge",
+		environment: "environment", env: "environment", human: "human",
+	};
+	const squashed = ownerStage.trim().toLowerCase().replace(/[\s_-]+/g, "");
+	const canonicalOwner = OWNER_ALIAS[squashed] ?? squashed;
+	const input = [canonicalOwner, sourceGate ?? "", title, detail].join("\n").toLowerCase();
 	for (let i = 0; i < input.length; i++) hash = ((hash << 5) + hash) ^ input.charCodeAt(i);
 	return (hash >>> 0).toString(36).padStart(7, "0");
 }

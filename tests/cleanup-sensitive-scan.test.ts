@@ -205,6 +205,7 @@ describe("runWorkflow status honesty for cleanup-blocked runs (A-3)", () => {
 		implementation: { totalPhases: 2, phasesCompleted: 2, allGreen: true },
 		review: { verdict: "Approved" },
 		preMergeBuild: { pass: true },
+		buildGate: { pass: true }, // sweep-3 G9: success requires an affirmative build gate
 	};
 	it("a green run with a cleanup BLOCKED merge reports partial — never success", async () => {
 		const s = await runWorkflow(

@@ -33,7 +33,7 @@ import { STAGE_MODELS } from "../render/schemas.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
-import { recordConvergenceFindings, recordReviewFindingsFromControl, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
+import { persistConvergenceLedger, getConvergenceLedger, recordConvergenceFindings, recordReviewFindingsFromControl, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 import { inferReviewFindingStatus, reviewFindingBlocks, reviewFindingSeverity } from "../review-findings.ts";
 import type { ControlObj, Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
@@ -1341,6 +1341,16 @@ export const verificationConvergenceNode: Node = {
 			const reviewResult = await reviewStep.run(state, ctx);
 			if (reviewResult.status === "cancelled") return reviewResult;
 			recordVerificationReviewFindings(state, ctx);
+			// Sweep-3 AR1-5: on a REPLAYED attempt (memoized review cache-hit) a
+			// non-approved review cannot arm the boundary below — skip the build
+			// spawn too (the G2 guard would only `continue` after it ran; each
+			// replayed attempt re-paid the build gate for nothing).
+			const replayEarly = Math.max(attempt, attempts.length) <= verificationReplayArms(state, ctx);
+			if (replayEarly && !reviewApproved(state)) {
+				recordAttemptEnd(state, record, false);
+				ctx.log(`Stage 10: attempt ${attempt} replay-derived (review cache-hit, not approved) — skipping build re-run and terminal arming until fresh evidence`);
+				continue;
+			}
 			const buildResult = await buildGateStep.run(state, ctx);
 			if (buildResult.status === "cancelled") return buildResult;
 
@@ -1351,7 +1361,23 @@ export const verificationConvergenceNode: Node = {
 				// no build errors + gate absent/green → nothing in this loop can
 				// change state (fixer has no work, stagnation needs non-empty
 				// items). Stop for the human boundary instead of spinning forever.
-				if (!reviewApproved(state) && record.reviewFindings === 0 && record.buildErrors === 0 && (state.buildGate === undefined || buildGreen(state))) {
+					if (!reviewApproved(state) && record.reviewFindings === 0 && record.buildErrors === 0 && (state.buildGate === undefined || buildGreen(state))) {
+					// Sweep-3 G2 (E-code E-1): the outer convergence boundary (inline
+					// route-back throw + blocked-on-decisions marker) must obey the SAME
+					// replay discipline as the inner stagnation classifier (v0.3.10).
+					// On a resumed run the review agents replay from the memoized cache
+					// and reproduce the prior deferred findings — replayed evidence must
+					// not arm a terminal exit. The attempt sequence is cumulative via the
+					// persisted __verificationAttempts ledger; when this attempt is still
+					// inside the replay-arm budget, skip the boundary and let the loop
+					// proceed (each replayed attempt advances the sequence, so this
+					// terminates exactly when genuinely fresh evidence arrives).
+					const replaySeq = Math.max(attempt, attempts.length);
+					if (replaySeq <= verificationReplayArms(state, ctx)) {
+						ctx.log(`Stage 10: attempt ${attempt} boundary evidence is replay-derived (resume cache) — inline route-back/blocked-on-decisions deferred until fresh evidence`);
+						recordAttemptEnd(state, record, false);
+						continue;
+					}
 					const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
 					// R3 (dsh-09 v3): before falling to the human boundary, try routing the
 					// residue back to its OWNING stages — a bounded replan restart re-runs
@@ -1403,7 +1429,34 @@ export const verificationConvergenceNode: Node = {
 						// D5 (AC-20): the COMPLETE deferred list — no slice(0, 6) cap.
 						findings: deferred.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}` })),
 					};
-					ctx.log(`Stage 10: no actionable findings remain after triage (${deferred.length} deferred) and no build driver — stopping for human decision (non-fatal; attempt ${attempt})`);
+					// Sweep-3 G35 (E-code E-4): the human boundary leaves a durable
+					// convergence-ledger record (a resume finds it — state alone is
+					// volatile) and marks THIS attempt terminal in the persisted
+					// attempt ledger so a resume does not treat it as in-flight.
+					try {
+						recordVerificationConvergenceFinding(state, {
+							title: `Blocked on human decision (${deferred.length} deferred finding(s))`,
+							detail: `review=${String((state.review as { verdict?: string } | undefined)?.verdict ?? "unknown")}, no build driver; deferred: ${deferred.map((f) => String(f.title ?? "?")).slice(0, 8).join("; ")}`,
+							evidence: deferred.map((f) => String(f.deferralReason ?? f.title ?? "")),
+							sourceGate: "blocked-on-decisions",
+							// AR1-2: the boundary record is a TRACE (the human's queue),
+							// not a loop-killer — blocking=true would poison the next
+							// run's round-1 injection with an unfixable-by-code blocker.
+							severity: "low",
+						});
+						// The writer hard-codes blocking for non-environment owners;
+						// demote this one row post-hoc (it is surfaced to the human via
+						// __stagnated + the escalation report, not via the blocking set).
+						const lastRow = getConvergenceLedger(state).findings[getConvergenceLedger(state).findings.length - 1];
+						if (lastRow && lastRow.sourceGate === "blocked-on-decisions") {
+							lastRow.blocking = false;
+							// round-2 CR-R2-2/ARR2-2: PERSIST the demotion — memory-only let
+							// the next run's round-1 injection read blocking=true from disk.
+							persistConvergenceLedger(state);
+						}
+					} catch { /* ledger best-effort */ }
+					recordAttemptEnd(state, record, true); // sweep-3 G35: TRUE terminal — survives the end-write (pre-fix the write clobbered the marker)
+					ctx.log(`Stage 10: no actionable findings remain after triage (${deferred.length} deferred) and no build driver — stopping for human decision (non-fatal; attempt ${attempt}; ledger record + terminal attempt marker written)`);
 					return { status: "ok" };
 				}
 				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };

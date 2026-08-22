@@ -55,8 +55,9 @@ describe("task() emits stage events", () => {
 		const seen: string[] = [];
 		events.on("stage", (info: { status: string }) => seen.push(info.status));
 		await task(stage).run({} as PipelineState, ctx);
-		// disabled short-circuits before the "phase"/"running" emit
-		expect(seen).toEqual(["skipped"]);
+		// sweep-3 G20: the skip path OPENS the lifecycle (running) before its terminal
+		// sweep-3 G20: lifecycle opens before the terminal
+		expect(seen).toEqual(["running", "skipped"]);
 	});
 });
 

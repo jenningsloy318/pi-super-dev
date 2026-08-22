@@ -507,6 +507,108 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 }
 
 /** Run a workflow for a task. */
+/** One ctx.results row (structural subset — keeps the derivation testable
+ *  without a full StageContext). */
+export interface StatusDerivationResultRow {
+	id: string;
+	label?: string;
+	status: string;
+	error?: string;
+}
+
+export interface RunStatusDerivation {
+	status: RunStatus;
+	/** Stages that ENDED in `failed` (last status per stage id — G3). */
+	failedStages: { label: string; error?: string }[];
+	/** Honest reasons the run is NOT `success` (G9 surfacing; empty on success). */
+	statusReasons: string[];
+}
+
+/** Sweep-3 G3/G9/G22: the run-status derivation, extracted pure so the
+ *  honesty contracts are unit-pinnable:
+ *  - G3 `failedStages` is LAST-status-per-stage — a convergence loop that
+ *    failed round 1 and converged round 2 must not permanently block `success`
+ *    (the pre-fix first-failure dedupe did exactly that).
+ *  - G9 `success` requires an AFFIRMATIVE build gate (`pass === true`); an
+ *    ABSENT buildGate is not a vacuous pass — no deterministic build
+ *    verification ran and the run is `partial` with the honest reason.
+ *  - G22 a final `success` supersedes the mid-loop `__stagnated` marker — the
+ *    marker is stale loop state and must never reach formatSummary/HITL. */
+export function deriveRunStatus(input: {
+	results: StatusDerivationResultRow[];
+	state: PipelineState;
+	aborted: boolean;
+	abortError?: string;
+}): RunStatusDerivation {
+	const { results, state, aborted, abortError } = input;
+	// G3: LAST status per stage id wins (later success of the same stage clears
+	// an earlier failure — convergence rounds re-run the same task()).
+	const lastByStage = new Map<string, StatusDerivationResultRow>();
+	for (const r of results) lastByStage.set(r.id, r);
+	const failedStages: { label: string; error?: string }[] = [];
+	for (const r of lastByStage.values()) {
+		if (r.status === "failed") failedStages.push({ label: r.label || r.id, error: r.error });
+	}
+
+	const impl = state.implementation as { totalPhases?: number; phasesCompleted?: number; allGreen?: boolean; convergenceBlocked?: boolean; phaseStatus?: Array<{ id: string; status: string }> } | undefined;
+	const review = state.review as { verdict?: string } | undefined;
+	const phases = impl?.totalPhases ?? 0;
+	const green = impl?.allGreen === true;
+	const verdict = review?.verdict;
+	const approved = verdict === "Approved" || verdict === "Approved with Comments";
+	const reviewRan = review !== undefined;
+
+	// G9: the build gate must AFFIRM pass — absent is not a vacuous pass.
+	const buildAffirmed = (state.buildGate as { pass?: boolean } | undefined)?.pass === true;
+	const hardGateFailed =
+		((state.buildGate as { pass?: boolean } | undefined)?.pass === false) ||
+		((state.preMergeBuild as { pass?: boolean } | undefined)?.pass === false) ||
+		((state.integration as { pass?: boolean } | undefined)?.pass === false);
+	const mergeRequired =
+		state.preMergeBuild !== undefined &&
+		(state.preMergeBuild as { pass?: boolean }).pass === true &&
+		state.cleanup !== undefined &&
+		(state.cleanup as { blocked?: boolean }).blocked !== true;
+	// A-2 + boolean-drift (run 2026-08-15T13-45-02): tolerant merge read.
+	const mergeNotConfirmed = mergeRequired && !toBool((state.merge as { merged?: unknown } | undefined)?.merged);
+	// A-3 status honesty: cleanup-blocked ⇒ never a clean success.
+	const cleanupBlocked = (state.cleanup as { blocked?: boolean } | undefined)?.blocked === true;
+
+	// R3: replan is a first-class terminal outcome.
+	const replanMarker = (state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[] } | undefined;
+	// SD-05 (NFR-6): accepted limitations never count as clean success.
+	const acceptedLimitations = (state as Record<string, unknown>).__acceptedLimitations as Record<string, unknown> | undefined;
+	// A-03 (NFR-6): the replan marker must never MASK a subsequent abort.
+	const replanAbort = aborted && abortError !== undefined && abortError.includes("REPLAN at round cap");
+
+	const statusReasons: string[] = [];
+	let status: RunStatus;
+	if (replanMarker && (!aborted || replanAbort)) {
+		status = "replan";
+	} else if (aborted || phases === 0) {
+		status = "failed";
+	} else if (green && reviewRan && approved && buildAffirmed && !hardGateFailed && !mergeNotConfirmed && !cleanupBlocked && !acceptedLimitations && failedStages.length === 0) {
+		status = "success";
+	} else {
+		status = "partial";
+		if (!buildAffirmed && state.buildGate === undefined) statusReasons.push("build gate absent (no deterministic build verification ran)");
+		if (!green) statusReasons.push("implementation not all-green");
+		if (!reviewRan) statusReasons.push("review never ran");
+		else if (!approved) statusReasons.push(`review verdict not approved (${String(verdict)})`);
+		if (hardGateFailed) statusReasons.push("a hard gate failed");
+		if (mergeNotConfirmed) statusReasons.push("merge not confirmed");
+		if (cleanupBlocked) statusReasons.push("cleanup blocked the merge");
+		if (acceptedLimitations) statusReasons.push("accepted limitations present");
+		for (const f of failedStages) statusReasons.push(`stage ${f.label} ended failed${f.error ? `: ${f.error}` : ""}`);
+	}
+
+	// G22: a final success supersedes the mid-loop stagnation marker.
+	if (status === "success") {
+		delete (state as Record<string, unknown>).__stagnated;
+	}
+	return { status, failedStages, statusReasons };
+}
+
 export async function runWorkflow(workflow: Workflow, task: string, options: RunOptions = {}): Promise<RunSummary> {
 	const progress = options.progress;
 	const state: PipelineState = {};
@@ -594,73 +696,24 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		progress?.log(`Workflow "${workflow.id}" aborted: ${abortError}`);
 	}
 
-	// Deduped list of stages that ended in `failed` (with their error).
-	const seen = new Set<string>();
-	const failedStages: { label: string; error?: string }[] = [];
-	for (const r of ctx.results) {
-		if (r.status === "failed" && !seen.has(r.id)) {
-			seen.add(r.id);
-			failedStages.push({ label: r.label || r.id, error: r.error });
-		}
-	}
+	// Sweep-3: derivation extracted pure (G3/G9/G22 contracts unit-pinned in
+	// tests/sweep3-phase1.test.ts). `statusReasons` ride the summary surface for
+	// the completion audit and the honest close-out log lines.
+	const { status, failedStages, statusReasons } = deriveRunStatus({
+		results: ctx.results as StatusDerivationResultRow[],
+		state,
+		aborted,
+		abortError,
+	});
 
-	// Derive an honest overall status from the produced state — never faked.
+	// Locals the close-out log lines below still read (same reads as the
+	// derivation — kept local so deriveRunStatus stays pure over them).
 	const impl = state.implementation as { totalPhases?: number; phasesCompleted?: number; allGreen?: boolean; convergenceBlocked?: boolean; phaseStatus?: Array<{ id: string; status: string }> } | undefined;
-	const review = state.review as { verdict?: string } | undefined;
 	const phases = impl?.totalPhases ?? 0;
 	const green = impl?.allGreen === true;
-	const verdict = review?.verdict;
-	const approved = verdict === "Approved" || verdict === "Approved with Comments";
-	const reviewRan = review !== undefined;
-
-	const hardGateFailed =
-		((state.buildGate as { pass?: boolean } | undefined)?.pass === false) ||
-		((state.preMergeBuild as { pass?: boolean } | undefined)?.pass === false) ||
-		((state.integration as { pass?: boolean } | undefined)?.pass === false);
-	const mergeRequired =
-		state.preMergeBuild !== undefined &&
-		(state.preMergeBuild as { pass?: boolean }).pass === true &&
-		state.cleanup !== undefined &&
-		(state.cleanup as { blocked?: boolean }).blocked !== true;
-	// A-2 + boolean-drift (run 2026-08-15T13-45-02): the merge agent emitted
-	// `merged: "true"` (string); strict `!== true` misreported PARTIAL on a
-	// genuinely merged run. Tolerant read (toBool) mirrors mergeVerifyTask.
-	const mergeNotConfirmed = mergeRequired && !toBool((state.merge as { merged?: unknown } | undefined)?.merged);
-	// A-3 status honesty: a cleanup-blocked run skipped the merge — that is never
-	// a clean success, whatever else passed. Surface as partial with the reason.
 	const cleanupBlocked = (state.cleanup as { blocked?: boolean } | undefined)?.blocked === true;
-
-	// R3 (dsh-09 v3): a replan boundary is a deliberate, first-class terminal
-	// outcome — routable upstream-owned findings were persisted and the extension
-	// will auto-resume; report it as such (never as failed/partial noise).
-	const replanMarker = (state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[] } | undefined;
-	// SD-05 (NFR-6): a fatal gate whose limitation a human ACCEPTED never counts
-	// as a clean success — the gate never validated its artifact.
 	const acceptedLimitations = (state as Record<string, unknown>).__acceptedLimitations as Record<string, unknown> | undefined;
-	// A-03 (NFR-6): the replan marker must never MASK a subsequent abort — any
-	// later throw/cancellation is reclassified as failed with its real error,
-	// unless the abort IS the replan FatalAbort itself (the marker's own
-	// terminal throw, whose message the convergence loop emits atomically with
-	// the marker). Otherwise a crash between marker-set and run end would be
-	// silently converted into an auto-resumed "replan".
-	const replanAbort = aborted && abortError !== undefined && abortError.includes("REPLAN at round cap");
-
-	let status: RunStatus;
-	if (replanMarker && (!aborted || replanAbort)) {
-		status = "replan";
-	} else if (aborted || phases === 0) {
-		// `phases === 0` means the implementation stage produced no phases (gate
-		// aborted before impl, or an empty spec). NOTE (F-8): this couples runStatus
-		// to the super-dev implementation-stage shape — a future workflow with no
-		// implementation stage would need a distinct "no impl expected" signal here
-		// rather than being reported as failed. Fine while super-dev is the only
-		// consumer and every run is expected to implement.
-		status = "failed";
-	} else if (green && reviewRan && approved && !hardGateFailed && !mergeNotConfirmed && !cleanupBlocked && !acceptedLimitations && failedStages.length === 0) {
-		status = "success";
-	} else {
-		status = "partial";
-	}
+	const replanMarker = (state as Record<string, unknown>).__replan as { rounds?: number; owners?: string[] } | undefined;
 
 	// v0.3.3 V2: deterministic completion audit — written for EVERY outcome at
 	// the moment the summary is derived (a partial/failed audit is more valuable
@@ -686,7 +739,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 						? `a fatal-gate limitation was accepted without validation (see state.__acceptedLimitations: ${Object.keys(acceptedLimitations).join(", ")})`
 						: "review/build/integration/merge or a stage did not fully pass"
 				: `implementation finished ${done}/${total} phase(s)${(impl?.phaseStatus ?? []).filter((p) => p.status === "partial").length > 0 ? ` (${(impl?.phaseStatus ?? []).filter((p) => p.status === "partial").length} partial — best attempts stash-preserved, see run log)` : ""}`;
-			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.`);
+			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.${statusReasons.length ? ` Reasons: ${statusReasons.slice(0, 4).join("; ")}` : ""}`);
 		} else if (status === "replan") {
 			progress?.log(`Workflow "${workflow.id}" complete — REPLAN round ${replanMarker?.rounds ?? "?"}: ${replanMarker?.owners?.join(", ") ?? "?"} will revise; auto-resuming`);
 		} else {
@@ -723,6 +776,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		state,
 		status,
 		failedStages,
+		statusReasons,
 		error: abortError,
 	};
 }

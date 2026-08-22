@@ -25,7 +25,7 @@ import {
 	reflectionPathFor,
 } from "./super-dev-dir.ts";
 import { existsSync } from "node:fs";
-import { cleanupOldRuns, updateStats } from "./cleanup.ts";
+import { cleanupOldRuns } from "./cleanup.ts";
 
 /** Spawn the reflection agent asynchronously (fire-and-forget). Non-blocking.
  *  AC-29 (SCENARIO-060): the originating run's dir is threaded through — every
@@ -86,7 +86,9 @@ export async function runReflection(runDir?: string): Promise<void> {
 		},
 	});
 
-	// Phase 6: cleanup old runs/traces + update aggregate stats
-	try { updateStats(); } catch { /* best-effort */ }
+	// Phase 6: cleanup old runs/traces. Sweep-3 G10: updateStats is NO LONGER
+	// called here — extension.ts's run-end block is the SINGLE stats owner
+	// (pre-fix both fired per run, double-counting totalRuns; and this late call
+	// re-read the module-global audit path AFTER awaits, misattributing runs).
 	try { cleanupOldRuns(); } catch { /* best-effort */ }
 }

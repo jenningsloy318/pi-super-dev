@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **v0.3.11 (codebase sweep-3)** — 12-agent whole-codebase review (110 findings → 45 groups): Go RED oracle file-target blocker (package dirs, in-package tests can now confirm RED/GREEN), 64MB maxBuffer on gate spawns, defaultBranch plumbing to all scoping consumers, language-aware `#` comment stripping, anchored alias relaxation, judge budgets per-run, `addressed` stays blocking until verified, Stage-10 replay guard extended to the outer convergence boundary (deferred route-back/blocked-on-decisions), deriveRunStatus extracted (ever-failed→last-status, absent buildGate no longer vacuous success, success clears stale __stagnated), retry-with-guidance never resets the live checkout, unconditional harness-bookkeeping git excludes, corrective respawn re-derives @file delivery + fences prior output, run events carry the RUN uuid (INV-L4/L5), stage lifecycle opens on skip/budget (INV-L6), spec-token RED boundary narrowed, updateStats single-call + run-pinned audit path, atomic knowledge/user-notes writes, per-kind escalation reports + budget-exhausted report, spec-convergence cap-path judge, canonical owner fingerprints in the duty shield + replan dedupe, tolerant render-schema boolean ingest.
 - **Stage 10/11 resume fidelity (V1)** — replayed rounds no longer arm terminal
   exits. Resuming a run that died at verification with two identical reviewer
   verdicts used to reconstruct those failures from the resume cache and

@@ -785,9 +785,10 @@ function quoteCmdArg(arg: string): string {
 	return /^[A-Za-z0-9_./:@%+=,-]+$/.test(arg) ? arg : JSON.stringify(arg);
 }
 
-function redCheckOptions(ctx: StageContext, phaseId: string, diagnostics?: RedCheckDiagnostic[]) {
+export function redCheckOptions(ctx: StageContext, phaseId: string, diagnostics?: RedCheckDiagnostic[], defaultBranch?: string) {
 	return {
 		signal: ctx.signal,
+		defaultBranch, // sweep-3 G6 (AR1-3): the run's real base ref for cargo -p scoping
 		onPlan(plans: RedCheckPlan[]) {
 			for (const plan of plans) {
 				ctx.log(`Implementation ${phaseId} RED test plan: cwd=${plan.cwd} cmd=${plan.argv.map(quoteCmdArg).join(" ")}`);
@@ -1198,7 +1199,7 @@ export const implementationStage: Stage = {
 			// and full deliverable check before marking the phase green.
 			const phaseDeliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
 			const resumeNoOpAllowed = ctx.options.resume === true || typeof ctx.options.resume === "string";
-			if (resumeNoOpAllowed && phaseDeliverables && deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables)) {
+			if (resumeNoOpAllowed && phaseDeliverables && deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables, setup.defaultBranch) /* sweep-3 CR-R2-7 */) {
 				ensurePhaseRunning();
 				announceActivity("Resume verification");
 				resetDeliverableCheckCache();
@@ -1206,7 +1207,7 @@ export const implementationStage: Stage = {
 				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
 				appendGateChecked(state, "phase-green:resume-verify", gate, "implementation");
 				announceActivity("Deliverable check", "resume verification");
-				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
+				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass), defaultBranch: setup.defaultBranch });
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
 					ctx.log(`Implementation ${phaseId} no-op: resume deliverables already satisfied and verified — skipping implementer`);
 					phaseStatusUpsert(phaseStatus, phaseId, "green");
@@ -1263,7 +1264,7 @@ export const implementationStage: Stage = {
 					// here before the implementer runs, so a bad RED sample does not consume or
 					// masquerade as a GREEN implementation attempt.
 					const redBaseline = gitStatusPaths(setup.worktreePath);
-					const baselineDeliverablesSatisfied = phaseDeliverables ? deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables) : false;
+					const baselineDeliverablesSatisfied = phaseDeliverables ? deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables, setup.defaultBranch) /* CR-R2-7 */ : false;
 					let retries = 0;
 					let redHint = "";
 					const redProgressHistory: string[] = [];
@@ -1294,7 +1295,7 @@ export const implementationStage: Stage = {
 							ctx.log(`Implementation ${phaseId} tdd-guide (try ${retries + 1})${tdd.error ? ` error=${tdd.error}` : ""}: test files=${testFiles.join(", ") || "(none)"}${tddSummary ? ` — ${tddSummary.slice(0, 400)}` : ""}`);
 						}
 						announceActivity("RED oracle", redTryDetail);
-						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics));
+						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics, setup.defaultBranch));
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
 						announceActivity("RED boundary", redTryDetail);
@@ -1591,7 +1592,7 @@ export const implementationStage: Stage = {
 						const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
 						appendGateChecked(state, "phase-green:already-satisfied", gate, "implementation");
 						announceActivity("Deliverable check", attemptDetail(attempt));
-						const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass) });
+						const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass), defaultBranch: setup.defaultBranch });
 						ctx.log(`Implementation ${phaseId} RED already-satisfied: build=${gate.pass || gate.inScopePass}, deliverables=${deliverableCheck.pass}`);
 						if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
 							green = true;
@@ -1871,7 +1872,7 @@ export const implementationStage: Stage = {
 					])),
 				};
 				announceActivity("Deliverable check", attemptDetail(attempt));
-				const deliverableCheck = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: !buildGreen });
+				const deliverableCheck = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: !buildGreen, defaultBranch: setup.defaultBranch });
 				missingDeliverables = deliverableCheck.missing;
 				ctx.log(`Implementation ${phaseId} deliverable-check ${deliverableCheck.pass ? "PASS" : "FAIL"} (missing: ${deliverableCheck.missing.join("; ") || "none"}; ran: ${deliverableCheck.ran.join(", ") || "none"})`);
 				// Git cross-check GATE (AC-07, AC-08 → SCENARIO-013/014/015/016/017):
@@ -1934,12 +1935,12 @@ export const implementationStage: Stage = {
 						// carries the real status (green = the edit was the only blocker;
 						// red = real assertions still need production code).
 						announceActivity("Post-RED oracle (restored)", attemptDetail(attempt));
-						const restoredStatus = runRedCheck(setup.worktreePath, acceptedRed.testFiles, redCheckOptions(ctx, phaseId));
+						const restoredStatus = runRedCheck(setup.worktreePath, acceptedRed.testFiles, redCheckOptions(ctx, phaseId, undefined, setup.defaultBranch));
 						ctx.log(`Implementation ${phaseId} post-red-oracle: restored tests re-checked → ${restoredStatus} (ran: ${acceptedRed.testFiles.join(",") || "n/a"})`);
 						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")} (RESTORED from confirmed RED; re-check=${restoredStatus})`);
 					} else if (confirmedRedTargets) {
 						announceActivity("Post-RED oracle", attemptDetail(attempt));
-						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId));
+						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, undefined, setup.defaultBranch));
 						ctx.log(`Implementation ${phaseId} post-red-oracle: ${postRedStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						if (postRedStatus === "red") tddOracleFailures.push(`tdd-targets-still-red: ${testFiles.join(", ")}`);
 						else if (postRedStatus === "broken") tddOracleFailures.push(`tdd-targets-broken-after-implementation: ${testFiles.join(", ")}`);
@@ -2067,7 +2068,7 @@ export const implementationStage: Stage = {
 							if (gate2.pass || gate2.inScopePass) {
 								resetDeliverableCheckCache();
 								announceActivity("Deliverable check", attemptDetail(attempt, "post-quarantine re-run"));
-								const deliverableCheck2 = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: false });
+								const deliverableCheck2 = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: false, defaultBranch: setup.defaultBranch }); // sweep-3 G6
 								latestDeliverableCheck2 = deliverableCheck2;
 								if ((gate2.pass || gate2.inScopePass) && deliverableCheck2.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
 									green = true;
@@ -2305,7 +2306,7 @@ export const implementationStage: Stage = {
 												phaseGuidanceReentryUsed[phaseId] = true;
 												envGuidanceReentryGranted = true;
 											}
-											ctx.log(`Implementation ${phaseId} environmental-blocker retry-with-guidance: guidance persisted to track user-notes${grantReentry ? " — re-entry granted (1/1, per phase ever): the outer convergence loop re-enters this phase and the guidance reaches the next pass" : " — re-entry budget already spent; this stop is terminal (guidance persists for a future manual re-entry)"} — class=environment; next=<${grantReentry ? "re-entry consumes guidance" : "human: manual re-entry"}>`);
+											ctx.log(`Implementation ${phaseId} environmental-blocker retry-with-guidance: guidance persisted to track user-notes${grantReentry ? " — re-entry granted (1/1, per phase ever): the outer convergence loop re-enters this phase and the guidance reaches the next pass" : " — re-entry budget already spent; phase preserved as partial and the pass continues (v0.3.0 semantics), guidance persists for the next convergence iteration"} — class=environment; next=<${grantReentry ? "re-entry consumes guidance" : "human: manual re-entry"}>`);
 										} catch (e) {
 											ctx.log(`Implementation ${phaseId} environmental-blocker guidance persistence failed (logged only — re-entry grant NOT consumed): ${e instanceof Error ? e.message : String(e)}`);
 										}

@@ -33,7 +33,7 @@ export const setupStage: Stage = {
 			try {
 				anchorPreview = readFileSync(join(setup.specDirectory, ".task"), "utf8").slice(0, 100).replace(/\s+/g, " ");
 			} catch { /* anchor absent — containment-only match */ }
-			ctx.log(`Setup: reusing spec track ${setup.specIdentifier} (task similarity match${anchorPreview ? `; anchor: "${anchorPreview}…"` : ""}) — prior docs, knowledge and user notes preserved; convergence ledger restarts; resume cache retained on disk (use --resume to replay); set SUPER_DEV_NO_SPEC_REUSE=1 to force a fresh track`);
+			ctx.log(`Setup: reusing spec track ${setup.specIdentifier} (task similarity match${anchorPreview ? `; anchor: \"${anchorPreview}\"…` : ""}) — prior docs, knowledge and user notes preserved; convergence ledger restarts; the STALE resume cache was truncated for this fresh entry (sweep-3 SETUP-4 honesty: use --resume to REPLAY a dead run instead); set SUPER_DEV_NO_SPEC_REUSE=1 to force a fresh track`);
 		}
 		// A-3 observability (logging-only): make it visible WHY an untracked .env
 		// in the worktree does not block the merge — setup itself copied it for

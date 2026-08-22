@@ -160,7 +160,7 @@ describe("R3/R4/R5 — triggerReplanForFindings (the M5 survivor; the verify wra
 		try {
 			writeFileSync(join(d, REPLAN_REQUESTS_FILE), JSON.stringify({
 				version: 1, rounds: 1,
-				requests: [{ id: "AR-03-03", title: "Resumable NeedsYou has no resume protocol", detail: "", severity: "medium", ownerStage: "spec", classificationSource: "doc-path", classificationReason: "r", requestedRevision: "r", fingerprint: "docs/specifications/03-staging-agent-pipeline.md|medium|resumable needsyou has no resume protocol", status: "pending", createdAt: "t" }],
+				requests: [{ id: "AR-03-03", title: "Resumable NeedsYou has no resume protocol", detail: "", severity: "medium", ownerStage: "spec", classificationSource: "doc-path", classificationReason: "r", requestedRevision: "r", fingerprint: "docs/specifications/03-staging-agent-pipeline.md|medium|resumable needsyou has no resume protocol|45h|", status: "pending", createdAt: "t" }],
 			}));
 			const state = stateWith(d, [{
 				id: "AR-03-03", severity: "medium", title: "Resumable NeedsYou has no resume protocol",
