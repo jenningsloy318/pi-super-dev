@@ -250,8 +250,11 @@ export function resolveModel(explicit?: string): string | undefined {
 	return env || undefined;
 }
 
-/** Per-spawn wall-clock cap. Generous: capable agents legitimately take 1–2 min. */
-const DEFAULT_SPAWN_TIMEOUT_MS = 480_000;
+/** Per-spawn wall-clock cap. 20 min: big-spec writers (46+ scenarios) spend
+ *  ~70% re-verifying anchors then run out of the 480s budget mid-compose —
+ *  the timeout discards the whole structured_output (run 2026-08-23T00-59-32
+ *  rounds 2/4). Aligned with CODE_WRITING_TIMEOUT_MS so every role gets 20 min. */
+const DEFAULT_SPAWN_TIMEOUT_MS = 1_200_000;
 /** Code-writing agents (implementer/tdd-guide) must read large existing files
  *  AND land+verify edits in one turn; on a slow model the doc-writer cap aborts
  *  them mid-exploration before any edit is written. Give them ~20 min. */

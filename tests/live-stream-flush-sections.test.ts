@@ -634,7 +634,7 @@ describe("sticky lifecycle anchors (agent/session/doc/rendered)", () => {
 		"Stage start: BDD Review at 2026-08-14T10:49:34.975+08:00",
 		"bddReview: agent bdd-reviewer working",
 		"agent pipeline.bddReview: start agent=bdd-reviewer backend=session access=source-read-only timeout=role-default thinking=high cwd=/repo model=antigravity/gemini-3.6-flash controlKeys=title,date,verdict,summary promptChars=2589",
-		"session pipeline.bddReview: start timeout=480000ms cwd=/repo access=source-read-only controlKeys=title,date,verdict,summary",
+		"session pipeline.bddReview: start timeout=1200000ms cwd=/repo access=source-read-only controlKeys=title,date,verdict,summary",
 		"agent pipeline.bddReview: end elapsed=219964ms control=yes model=unknown",
 		"bddReview: doc → 04-bdd-review.md",
 		"bddReview: rendered /home/me/04-bdd-review.md (10235 bytes)",

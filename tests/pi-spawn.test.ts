@@ -26,13 +26,17 @@ describe("isCodeWritingAgent / defaultAgentTimeoutMs", () => {
 		expect(isCodeWritingAgent("spec-writer")).toBe(false);
 		expect(isCodeWritingAgent("orchestrator")).toBe(false);
 	});
-	it("gives code-writing agents a strictly larger default timeout than doc writers", () => {
-		// Root-cause fix: the implementer must read a large file AND land+verify
-		// edits within one turn; the 480s doc-writer cap aborted it mid-exploration.
-		expect(defaultAgentTimeoutMs("implementer")).toBeGreaterThan(defaultAgentTimeoutMs("research-agent"));
-		expect(defaultAgentTimeoutMs("tdd-guide")).toBeGreaterThan(defaultAgentTimeoutMs("spec-writer"));
-		expect(defaultAgentTimeoutMs("research-agent")).toBe(480_000);
+	it("gives every role the same 20-minute default wall clock", () => {
+		// v0.3.14: doc-writers (spec/bdd/research/review) previously got 480s while
+		// code-writers got 20 min. Big-spec writers burn ~70% of the budget
+		// re-verifying anchors, then the 480s hard wall kills them mid-compose and
+		// discards the whole structured_output (run 2026-08-23T00-59-32 rounds 2/4).
+		// Every role now gets 20 min — code-writers unchanged, doc-writers raised.
 		expect(defaultAgentTimeoutMs("implementer")).toBe(1_200_000);
+		expect(defaultAgentTimeoutMs("tdd-guide")).toBe(1_200_000);
+		expect(defaultAgentTimeoutMs("research-agent")).toBe(1_200_000);
+		expect(defaultAgentTimeoutMs("spec-writer")).toBe(1_200_000);
+		expect(defaultAgentTimeoutMs("orchestrator")).toBe(1_200_000);
 	});
 });
 
