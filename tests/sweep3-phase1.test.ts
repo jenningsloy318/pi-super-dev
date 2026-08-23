@@ -168,3 +168,11 @@ describe("G22 — success runs never surface __stagnated", () => {
 		expect(s.__stagnated).toBeDefined();
 	});
 });
+
+// v0.3.13: prototype must be labeled 6C (6B belongs to Design Review)
+it("prototype stage label is Stage 6C (no 6B collision with Design Review)", async () => {
+	const { prototypeStage } = await import("../src/stages/prototype.ts");
+	const { designReviewWriter } = await import("../src/stages/writers.ts");
+	expect(prototypeStage.label).toBe("Stage 6C — Prototype");
+	expect(designReviewWriter.label).toBe("Stage 6B — Design Review");
+});

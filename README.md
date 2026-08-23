@@ -172,7 +172,7 @@ sequence([
   branch(isBug, { yes: task(debugWriter) }), // Stage 4  bug fixes only
   task(assessmentWriter),                    // Stage 5  code assessment
   designConvergenceNode,                     // Stage 6A/6B design → review loop
-  task(prototypeStage),                      // Stage 6B prototype (when needed)
+  task(prototypeStage),                      // Stage 6C prototype (when needed)
   specConvergenceNode,                       // Stage 7/8 spec → trace gate → review
   loop(                                      // Stage 9  per-phase TDD until allGreen
     { while: (s,c) => !implAllGreen(s) && !implConvergenceBlocked(s) && c.budget.check() },

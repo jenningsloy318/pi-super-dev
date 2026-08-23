@@ -1,5 +1,5 @@
 /**
- * Stage 6B — Prototype (conditional + loop).
+ * Stage 6C — Prototype (conditional + loop).
  * Self-contained task: only runs when the design declares numeric constants
  * (decided by check-prototype-needed); loops until a PASS verdict, repeated
  * no-progress evidence, the round cap, or global budget exhaustion.
@@ -72,7 +72,7 @@ function prototypeSignature(control: ControlObj | null): string {
 
 export const prototypeStage: Stage = {
 	id: "prototype",
-	label: "Stage 6B — Prototype",
+	label: "Stage 6C — Prototype",
 	async run(state, ctx) {
 		const design = state.design ?? null;
 		if (!design) return null;
