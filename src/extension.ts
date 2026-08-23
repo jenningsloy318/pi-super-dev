@@ -12,6 +12,7 @@
  */
 
 import type { ExtensionAPI, Theme, ExtensionContext, InputEvent, EntryRenderer } from "@earendil-works/pi-coding-agent";
+import { superDevEnv } from "./render/super-dev-dir.ts";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import type { DashboardTheme } from "./render/dashboard.ts";
@@ -209,7 +210,7 @@ export function getActiveRun(): ActiveRun | null {
 /** OQ6 (dsh-09 v3): replan auto-resume defaults ON; SUPER_DEV_REPLAN_MANUAL=1
  *  opts into confirm-first single runs. Lazy env read (defensive rule #5). */
 function autoResumeEnabled(): boolean {
-	return process.env.SUPER_DEV_REPLAN_MANUAL !== "1";
+	return superDevEnv("SUPER_DEV_REPLAN_MANUAL") !== "1";
 }
 
 /** Format a run summary honestly: success ✅ / partial ⚠️ / failed ❌ / replan 🔁. */

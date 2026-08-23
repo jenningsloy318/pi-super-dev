@@ -26,6 +26,7 @@
  * (criteria, prelude, detection, report) ships in the normal suite.
  */
 import { EventEmitter } from "node:events";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,18 +40,18 @@ import type { AgentResult, ControlObj, PipelineState, RunOptions, StageContext, 
 // ─── gating ───────────────────────────────────────────────────────────────────
 
 export function isBenchEnabled(): boolean {
-	return process.env.SUPER_DEV_BENCH === "1";
+	return superDevEnv("SUPER_DEV_BENCH") === "1";
 }
 
 /** Trials per shape. Default 1 = a smoke run; STATISTICAL claims need ≥3
  *  (documented in the report — never present a 1-trial smoke as a pass rate). */
 export function benchTrials(): number {
-	const raw = Number.parseInt(process.env.SUPER_DEV_BENCH_TRIALS ?? "", 10);
+	const raw = Number.parseInt(superDevEnv("SUPER_DEV_BENCH_TRIALS") ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 1;
 }
 
 export function benchAgentTimeoutMs(): number {
-	const raw = Number.parseInt(process.env.SUPER_DEV_BENCH_TIMEOUT_MS ?? "", 10);
+	const raw = Number.parseInt(superDevEnv("SUPER_DEV_BENCH_TIMEOUT_MS") ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 900_000;
 }
 

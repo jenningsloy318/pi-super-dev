@@ -11,6 +11,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { superDevEnv } from "./render/super-dev-dir.ts";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -217,7 +218,7 @@ function asThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
  *  or env var still wins (SCENARIO-005/006). */
 export function resolveThinking(agent: string, perCall?: ThinkingLevel, inherited?: ThinkingLevel): ThinkingLevel {
 	if (perCall) return perCall;
-	const env = asThinkingLevel(process.env.SUPER_DEV_THINKING);
+	const env = asThinkingLevel(superDevEnv("SUPER_DEV_THINKING"));
 	if (env) return env;
 	if (inherited) return inherited;
 	return thinkingForAgent(agent);
@@ -233,7 +234,7 @@ export function resolveThinking(agent: string, perCall?: ThinkingLevel, inherite
  *  (see session-agent.ts), never a creation option. */
 export function resolveExplicitThinking(perCall?: ThinkingLevel, inherited?: ThinkingLevel): ThinkingLevel | undefined {
 	if (perCall) return perCall;
-	const env = asThinkingLevel(process.env.SUPER_DEV_THINKING);
+	const env = asThinkingLevel(superDevEnv("SUPER_DEV_THINKING"));
 	if (env) return env;
 	return inherited;
 }
@@ -246,7 +247,7 @@ export function resolveExplicitThinking(perCall?: ThinkingLevel, inherited?: Thi
 export function resolveModel(explicit?: string): string | undefined {
 	const ex = explicit?.trim();
 	if (ex) return ex;
-	const env = process.env.SUPER_DEV_MODEL?.trim();
+	const env = superDevEnv("SUPER_DEV_MODEL")?.trim();
 	return env || undefined;
 }
 
@@ -282,13 +283,17 @@ export function defaultAgentTimeoutMs(agent: string): number {
  *  inherits host skills, so the subprocess backend keeps parity by default.
  *  `SUPER_DEV_NO_SKILLS=1` restores the pre-v0.2.10 `--no-skills` isolation
  *  for debugging/CI. */
-export function skillsEnabled(env: { SUPER_DEV_NO_SKILLS?: string } = process.env): boolean {
+export function skillsEnabled(env: { SUPER_DEV_NO_SKILLS?: string } = {
+	SUPER_DEV_NO_SKILLS: superDevEnv("SUPER_DEV_NO_SKILLS"),
+}): boolean {
 	return env.SUPER_DEV_NO_SKILLS !== "1";
 }
 
 /** W1: the RPC same-session backend is the default; `SUPER_DEV_NO_RPC_SPAWN=1`
  *  falls back to today's `--mode json -p` one-shot behavior. */
-export function rpcSpawnEnabled(env: { SUPER_DEV_NO_RPC_SPAWN?: string } = process.env): boolean {
+export function rpcSpawnEnabled(env: { SUPER_DEV_NO_RPC_SPAWN?: string } = {
+	SUPER_DEV_NO_RPC_SPAWN: superDevEnv("SUPER_DEV_NO_RPC_SPAWN"),
+}): boolean {
 	return env.SUPER_DEV_NO_RPC_SPAWN !== "1";
 }
 

@@ -14,6 +14,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -383,7 +384,7 @@ export function verificationReplayArms(state: PipelineState, ctx?: StageContext)
 	const marker = ctx?.options?.resumeSpecIdentifier
 		?? (state.options as { resumeSpecIdentifier?: string } | undefined)?.resumeSpecIdentifier;
 	const resumed = Boolean(marker);
-	if (specDir && resumed && !process.env.SUPER_DEV_NO_VERIFY_REPLAY_GUARD) {
+	if (specDir && resumed && !superDevEnv("SUPER_DEV_NO_VERIFY_REPLAY_GUARD")) {
 		// max over the review family: a crash mid-round (one reviewer recorded,
 		// another not) over-excludes by one attempt — the SAFE direction.
 		const prior = Math.max(
@@ -934,7 +935,7 @@ function reviewReplayArms(state: PipelineState, ctx?: StageContext): number {
 	const marker = ctx?.options?.resumeSpecIdentifier
 		?? (state.options as { resumeSpecIdentifier?: string } | undefined)?.resumeSpecIdentifier;
 	const resumed = Boolean(marker);
-	if (specDir && resumed && !process.env.SUPER_DEV_NO_VERIFY_REPLAY_GUARD) {
+	if (specDir && resumed && !superDevEnv("SUPER_DEV_NO_VERIFY_REPLAY_GUARD")) {
 		// max over the review family: a crash that landed mid-round (one reviewer
 		// recorded, another not) may over-exclude by one observation — the SAFE
 		// direction (delays arming); min would arm on partially-replayed evidence.
@@ -966,7 +967,7 @@ export function classifyIntegrationObservation(state: PipelineState, ctx?: Stage
 		const marker = ctx?.options?.resumeSpecIdentifier
 			?? (state.options as { resumeSpecIdentifier?: string } | undefined)?.resumeSpecIdentifier;
 		const resumed = Boolean(marker);
-		if (specDir && resumed && !process.env.SUPER_DEV_NO_VERIFY_REPLAY_GUARD) {
+		if (specDir && resumed && !superDevEnv("SUPER_DEV_NO_VERIFY_REPLAY_GUARD")) {
 			const prior = Math.max(
 				countStageRounds(specDir, "pipeline.integration.api-test"),
 				countStageRounds(specDir, "pipeline.integration.ui-test"),

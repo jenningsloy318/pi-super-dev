@@ -28,6 +28,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { isAbsolute, join } from "node:path";
 import { classifyReplanOwnerDeterministic, type ReplanOwnerDecision, type ReplanOwnerStage, REPLAN_OWNER_STAGES } from "./owners.ts";
 import { classifyReplanOwner } from "./lead.ts";
@@ -44,7 +45,7 @@ const RESUME_CACHE_FILE = ".resume-cache.jsonl";
 /** R5: replan restarts per spec (beside MAX_CHALLENGE_REAUTHORS=2 and
  *  ESCALATION_RETRY_CAP=2). Lazy env read (defensive rule #5). */
 export const maxReplanRounds = (): number => {
-	const n = Number.parseInt(process.env.SUPER_DEV_MAX_REPLAN_ROUNDS ?? "", 10);
+	const n = Number.parseInt(superDevEnv("SUPER_DEV_MAX_REPLAN_ROUNDS") ?? "", 10);
 	return Number.isFinite(n) && n > 0 ? n : 2;
 };
 

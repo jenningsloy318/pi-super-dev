@@ -3,6 +3,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { existsSync as _existsSync, readFileSync as _readFileSync, readdirSync as _readdirSync } from "node:fs";
 import { join as _join } from "node:path";
 import { dedupePreservingOrder, CRATE_SEGMENT_RE } from "./detect.ts";
@@ -10,7 +11,7 @@ import { dedupePreservingOrder, CRATE_SEGMENT_RE } from "./detect.ts";
 /**
  * Parse a comma-separated list of cargo package names into a clean array.
  *
- * Used to read `process.env.SUPER_DEV_BUILD_TEST_PACKAGES`. Splits on commas,
+ * Used to read `superDevEnv("SUPER_DEV_BUILD_TEST_PACKAGES")`. Splits on commas,
  * trims each entry (spaces/tabs/newlines), drops empties, and dedupes while
  * preserving first-seen order. Returns `[]` for undefined/empty/whitespace-only
  * input. Pure & side-effect-free so it is fully unit-testable.
@@ -74,7 +75,7 @@ export function parseTestPackages(raw?: string): string[] {
  */
 export function touchedFilePaths(cwd: string, baseRef?: string): string[] {
 	try {
-		const ref = baseRef ?? process.env.SUPER_DEV_GATE_BASE_REF ?? "main";
+		const ref = baseRef ?? superDevEnv("SUPER_DEV_GATE_BASE_REF") ?? "main";
 		// Layer B (untracked-file union — the motivating stockfan e2e fix, AC-01):
 		// UNION the committed diff against the base ref WITH
 		// `git ls-files --others --exclude-standard` (the untracked-but-not-ignored

@@ -3,6 +3,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
@@ -76,7 +77,7 @@ export const DEFAULT_TIMEOUT_MS = 600_000;
  * Precedence (highest wins):
  *   1. an explicit finite positive `opt` (preserves the opts.timeoutMs unit-test
  *      override; 0/NaN/-x/Infinity are NOT honored and fall through);
- *   2. `process.env.SUPER_DEV_BUILD_TIMEOUT_MS` parsed base-10 — NaN, <=0,
+ *   2. `superDevEnv("SUPER_DEV_BUILD_TIMEOUT_MS")` parsed base-10 — NaN, <=0,
  *      empty, or missing falls through;
  *   3. {@link DEFAULT_TIMEOUT_MS} (600_000 / 10 min).
  *
@@ -90,7 +91,7 @@ export function resolveTimeoutMs(explicit?: number): number {
 	if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
 		return explicit;
 	}
-	const raw = process.env.SUPER_DEV_BUILD_TIMEOUT_MS;
+	const raw = superDevEnv("SUPER_DEV_BUILD_TIMEOUT_MS");
 	if (raw !== undefined && raw !== "") {
 		const parsed = Number.parseInt(raw, 10);
 		if (Number.isFinite(parsed) && parsed > 0) {
@@ -359,7 +360,7 @@ function buildDependencyBootstraps(cwd: string, cmds: ProjectCommands, requiredD
 }
 
 function bootstrapDependencies(cwd: string, timeoutMs: number, signal: AbortSignal | undefined, ran: string[], errors: string[], requiredDirs: string[] = []): void {
-	if (process.env.SUPER_DEV_SKIP_DEP_BOOTSTRAP === "1") return;
+	if (superDevEnv("SUPER_DEV_SKIP_DEP_BOOTSTRAP") === "1") return;
 	const fp = depFingerprint(cwd);
 	const cacheKey = `${resolve(cwd)}\0${requiredDirs.map((dir) => resolve(dir)).sort().join("|")}`;
 	if (depBootstrapCache.get(cacheKey) === fp) return;
@@ -626,7 +627,7 @@ export function runBuildGate(
 	// spawn runs ONLY in tier (iii) — it is SKIPPED whenever a higher tier
 	// supplies a value, so an override never wastes a process (SCENARIO-007).
 	//   (i)   opts.testPackages provided (incl. explicit [] = force workspace-wide);
-	//   (ii)  process.env.SUPER_DEV_BUILD_TEST_PACKAGES (set-but-empty ⇒ [] and
+	//   (ii)  superDevEnv("SUPER_DEV_BUILD_TEST_PACKAGES") (set-but-empty ⇒ [] and
 	//         no spawn, preserving the pre-change env-set behaviour);
 	//   (iii) detectTouchedCargoPackages(cwd) — ONLY for rust repos (AC-01);
 	//   (iv)  [] → workspace-wide (no scoping).
@@ -657,8 +658,12 @@ export function runBuildGate(
 		}
 	} else if (opts.testPackages !== undefined) {
 		testPackages = dedupePreservingOrder(opts.testPackages);
-	} else if (process.env.SUPER_DEV_BUILD_TEST_PACKAGES !== undefined) {
-		testPackages = parseTestPackages(process.env.SUPER_DEV_BUILD_TEST_PACKAGES);
+	} else if (superDevEnv("SUPER_DEV_BUILD_TEST_PACKAGES") !== undefined || process.env.SUPER_DEV_BUILD_TEST_PACKAGES !== undefined) {
+		// Tier (ii) keeps the pre-v0.3.15 set-but-empty escape hatch: an env var
+		// explicitly set to "" means "force workspace-wide, skip auto-detect"
+		// (process.env check — superDevEnv deliberately treats "" as unset).
+		// A config-env value flows through superDevEnv as usual.
+		testPackages = parseTestPackages(superDevEnv("SUPER_DEV_BUILD_TEST_PACKAGES"));
 	} else if (cmds0.language === "rust") {
 		// AC-01/AC-02 (spec-08 Layer C separation): detect the raw touched
 		// DIRECTORY segments via git, THEN resolve them to REAL cargo package

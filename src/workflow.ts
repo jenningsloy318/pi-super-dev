@@ -14,6 +14,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { superDevEnv } from "./render/super-dev-dir.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -231,7 +232,7 @@ function isTransientAgentError(error?: string): boolean {
  *  (5 total tries) at 2s, 4s, 8s, 16s. */
 function transientRetryMs(): number[] {
 	const defaultDelays = Array.from({ length: Math.max(0, WORKFLOW_ATTEMPTS - 1) }, (_, i) => 2000 * (2 ** i)).join(",");
-	return (process.env.SUPER_DEV_TRANSIENT_RETRY_MS ?? defaultDelays)
+	return (superDevEnv("SUPER_DEV_TRANSIENT_RETRY_MS") ?? defaultDelays)
 		.split(",").map((x) => Number.parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
 }
 
@@ -356,11 +357,11 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const allowEmptyArraysFor = call.allowEmptyArraysFor;
 		const timeoutMs = call.timeoutMs;
 		const timeoutLabel = timeoutMs !== undefined ? `${timeoutMs}ms` : "role-default";
-		const thinkingLabel = call.thinking ?? options.inheritedThinking ?? process.env.SUPER_DEV_THINKING ?? "role-default";
+		const thinkingLabel = call.thinking ?? options.inheritedThinking ?? superDevEnv("SUPER_DEV_THINKING") ?? "role-default";
 		const accessMode = call.accessMode ?? "write";
 		const backend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
 			? "subprocess"
-			: (options.backend ?? (process.env.SUPER_DEV_BACKEND as "session" | "subprocess" | undefined) ?? "session");
+			: (options.backend ?? (superDevEnv("SUPER_DEV_BACKEND") as "session" | "subprocess" | undefined) ?? "session");
 		const inheritedModel = options.inheritedModelObject
 			? `${options.inheritedModelObject.provider}/${options.inheritedModelObject.id}`
 			: undefined;

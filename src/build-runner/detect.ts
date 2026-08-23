@@ -3,6 +3,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -18,7 +19,7 @@ import { dirname, join, resolve } from "node:path";
 const DEFAULT_CARGO_METADATA_TIMEOUT_MS = 30_000;
 
 export function cargoMetadataTimeoutMs(): number {
-	const raw = process.env.SUPER_DEV_CARGO_METADATA_TIMEOUT_MS;
+	const raw = superDevEnv("SUPER_DEV_CARGO_METADATA_TIMEOUT_MS");
 	if (raw !== undefined && raw !== "") {
 		const parsed = Number.parseInt(raw, 10);
 		if (Number.isFinite(parsed) && parsed > 0) return parsed;

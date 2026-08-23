@@ -9,6 +9,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
@@ -614,7 +615,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
  *  signature hash might not catch, so a phase can never spin ~indefinitely on the
  *  global budget alone (the 47-retry/15h livelock). Env-overridable for tuning. */
 const MAX_RED_RETRIES = (() => {
-	const raw = Number.parseInt(process.env.SUPER_DEV_MAX_RED_RETRIES ?? "", 10);
+	const raw = Number.parseInt(superDevEnv("SUPER_DEV_MAX_RED_RETRIES") ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 6;
 })();
 
@@ -632,7 +633,7 @@ export const MAX_PARTIAL_REENTRIES = 2;
  *  forever; after the cap the existing no-progress/HITL path takes over.
  *  Env-overridable for tuning. */
 const MAX_CHALLENGE_REAUTHORS = (() => {
-	const raw = Number.parseInt(process.env.SUPER_DEV_MAX_CHALLENGE_REAUTHORS ?? "", 10);
+	const raw = Number.parseInt(superDevEnv("SUPER_DEV_MAX_CHALLENGE_REAUTHORS") ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 2;
 })();
 
@@ -932,7 +933,7 @@ function preservePartialPhase(ctx: StageContext, setup: { worktreePath: string; 
 	// The same "no automatic worktree mutations" kill-switch that disables the
 	// quarantine governs this preserve stash — a user who set
 	// SUPER_DEV_NO_DIRTY_QUARANTINE=1 opted out of ALL automatic stashing.
-	if (process.env.SUPER_DEV_NO_DIRTY_QUARANTINE === "1") {
+	if (superDevEnv("SUPER_DEV_NO_DIRTY_QUARANTINE") === "1") {
 		ctx.log(`Implementation ${phaseId} partial: stash-preserve SKIPPED (SUPER_DEV_NO_DIRTY_QUARANTINE=1 — no automatic worktree mutations); any uncommitted phase work stays dirty for inspection`);
 		return;
 	}

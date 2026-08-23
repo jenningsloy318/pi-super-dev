@@ -5,6 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { superDevEnv } from "./render/super-dev-dir.ts";
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 // PRC (Track 30 Phase 5): the shared dirt primitives — REUSED, never
 // duplicated (D-7: src/fault-classification.ts is the canonical exclusion/
@@ -299,7 +300,7 @@ function reusableScore(slug: string, anchorTask: string | undefined, task: strin
 
 /** Env kill-switch for spec-track reuse. */
 export function specReuseEnabled(): boolean {
-	return process.env.SUPER_DEV_NO_SPEC_REUSE !== "1";
+	return superDevEnv("SUPER_DEV_NO_SPEC_REUSE") !== "1";
 }
 
 /** Find an existing INCOMPLETE spec track whose task matches the new task
@@ -730,7 +731,7 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
  *  pre-installed worktrees no-op. Failures log a warning and never throw —
  *  the pipeline keeps going exactly as before (observable, not blocking). */
 function bootstrapDependencies(cwd: string, worktreePath: string, worktreeCreated: boolean, log?: (m: string) => void): void {
-	if (process.env.SUPER_DEV_NO_BOOTSTRAP === "1") return;
+	if (superDevEnv("SUPER_DEV_NO_BOOTSTRAP") === "1") return;
 	if (!worktreeCreated || worktreePath === cwd) return;
 	const wt = (m: string) => { if (log) log(m); };
 	try {
@@ -742,7 +743,7 @@ function bootstrapDependencies(cwd: string, worktreePath: string, worktreeCreate
 			: null;
 		if (!pm) return;
 		if (!existsSync(join(worktreePath, "package.json"))) return;
-		const timeoutMs = Number.parseInt(process.env.SUPER_DEV_BOOTSTRAP_TIMEOUT_MS ?? "", 10) || 600_000;
+		const timeoutMs = Number.parseInt(superDevEnv("SUPER_DEV_BOOTSTRAP_TIMEOUT_MS") ?? "", 10) || 600_000;
 		// Reviewer F-5/F-6: `--immutable` is Yarn BERRY only — classic yarn (the
 		// common yarn.lock case) needs `--frozen-lockfile`. Distinguish by the
 		// Berry config marker `.yarnrc.yml`. maxBuffer 64MB: the default 1MB

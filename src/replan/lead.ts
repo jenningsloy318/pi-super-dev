@@ -19,6 +19,7 @@
  */
 
 import { buildReplanOwnerPrompt } from "../prompts.ts";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { REPLAN_OWNER_STAGES, type ReplanOwnerDecision, type ReplanOwnerStage } from "./owners.ts";
 import type { StageContext } from "../types.ts";
 
@@ -101,7 +102,7 @@ export function verifyLeadEvidence(evidence: LeadEvidence[], blob: string): stri
  * residue reaches the agent.
  */
 export async function classifyReplanOwner(ctx: StageContext, args: LeadClassifyArgs): Promise<ReplanOwnerDecision> {
-	if (process.env.SUPER_DEV_DISABLE_REPLAN_LEAD === "1") {
+	if (superDevEnv("SUPER_DEV_DISABLE_REPLAN_LEAD") === "1") {
 		return human("residue", "replan-lead disabled (SUPER_DEV_DISABLE_REPLAN_LEAD)");
 	}
 	try {

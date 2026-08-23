@@ -18,6 +18,7 @@
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { join } from "node:path";
 import {
 	type RouteStageId,
@@ -35,15 +36,15 @@ export const ROUTING_JOURNAL_FILE = "routing-journal.jsonl";
  *  restores the replan emulation byte-identical — the G8 invariant now
  *  asserts kill-switch equivalence instead of flag-off equivalence. */
 export function inlineRouteBackEnabled(): boolean {
-	if (process.env.SUPER_DEV_NO_INLINE_ROUTEBACK === "1") return false;
-	if (process.env.SUPER_DEV_INLINE_ROUTEBACK === "0") return false;
+	if (superDevEnv("SUPER_DEV_NO_INLINE_ROUTEBACK") === "1") return false;
+	if (superDevEnv("SUPER_DEV_INLINE_ROUTEBACK") === "0") return false;
 	return true;
 }
 
 /** Total inline-jump bound per run (defense-in-depth above the per-edge
  *  budget; a runaway route-back↔re-block cycle stops here). */
 export function maxInlineJumps(): number {
-	const raw = Number(process.env.SUPER_DEV_MAX_INLINE_JUMPS);
+	const raw = Number(superDevEnv("SUPER_DEV_MAX_INLINE_JUMPS"));
 	return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 4;
 }
 

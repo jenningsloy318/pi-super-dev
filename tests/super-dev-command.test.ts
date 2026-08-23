@@ -45,6 +45,7 @@ vi.mock("../src/render/super-dev-dir.ts", () => ({
 	startRun: vi.fn(() => {}),
 	getRunLogPath: vi.fn(() => ""),
 	getConfig: vi.fn(() => ({})),
+	superDevEnv: vi.fn((k: string) => process.env[k] || undefined),
 }));
 
 vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn(() => {}) }));

@@ -29,6 +29,7 @@
  */
 
 import { existsSync, readFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { join, isAbsolute, sep } from "node:path";
 import { buildJudgePrompt } from "../prompts.ts";
 import { appendRunEvent } from "../runlog.ts";
@@ -65,7 +66,7 @@ const MAX_CALLS_PER_SIGNATURE = 2;
 /** Max judge calls per run (INV-3); env-override SUPER_DEV_MAX_JUDGE_CALLS.
  *  Read lazily per call (tests must be able to set env after import). */
 const maxCallsPerRun = (): number => {
-	const n = Number.parseInt(process.env.SUPER_DEV_MAX_JUDGE_CALLS ?? "", 10);
+	const n = Number.parseInt(superDevEnv("SUPER_DEV_MAX_JUDGE_CALLS") ?? "", 10);
 	return Number.isFinite(n) && n > 0 ? n : 12;
 };
 /** Wall-clock cap for one judge attempt: diagnosis must be fast, never block a
@@ -73,8 +74,8 @@ const maxCallsPerRun = (): number => {
  *  latency is heavy-tailed (observed ~71s typical vs >120s tail on run
  *  2026-08-19T03-16-50-261Z; OpenAI/Anthropic SDKs default 600s per request),
  *  and the old 120s wall killed grounded diagnoses mid-exploration. */
-const judgeTimeoutMs = (): number => {
-	const n = Number.parseInt(process.env.SUPER_DEV_JUDGE_TIMEOUT_MS ?? "", 10);
+export const judgeTimeoutMs = (): number => {
+	const n = Number.parseInt(superDevEnv("SUPER_DEV_JUDGE_TIMEOUT_MS") ?? "", 10);
 	return Number.isFinite(n) && n > 0 ? n : 240_000;
 };
 
@@ -276,7 +277,7 @@ function appendAudit(req: JudgeRequest, entry: Record<string, unknown>): void {
 // The entry point. NEVER throws; every failure mode degrades (INV-6).
 
 async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<JudgeOutcome> {
-	if (process.env.SUPER_DEV_DISABLE_JUDGE === "1") {
+	if (superDevEnv("SUPER_DEV_DISABLE_JUDGE") === "1") {
 		return { status: "degraded", reason: "judge disabled (SUPER_DEV_DISABLE_JUDGE)" };
 	}
 	const allowed = [...new Set([...req.allowedRoutes, "escalate-now" as JudgeRoute])];

@@ -252,9 +252,9 @@ describe("no new runtime dependencies (AC-10 / SCENARIO-014)", () => {
 		// Allowed stdlib + relative imports only.
 		const importLines = SRC.split("\n").filter((l) => /^\s*import /.test(l));
 		for (const line of importLines) {
-			// node: stdlib, or a relative in-repo path are the only acceptable
+			// node: stdlib, or a relative in-repo path (./ or ../) are the only acceptable
 			// runtime imports. Bare specifiers (e.g. a new npm pkg) are rejected.
-			expect(line).toMatch(/from\s+["'](?:node:|\.\/)/);
+			expect(line).toMatch(/from\s+["'](?:node:|\.\.?\/)/);
 		}
 	});
 });

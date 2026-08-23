@@ -7,7 +7,7 @@
  * This module provides path resolution, config defaults, and per-run lifecycle.
  */
 
-import { mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, readFileSync, appendFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -38,9 +38,19 @@ export interface SuperDevConfig {
 	 *  --model), but an explicit per-call model still wins. Unlisted roles are
 	 *  unaffected. Empty/absent = today's behavior. */
 	agentModels?: Record<string, string>;
+	/** v0.3.15: persistent channel for the SUPER_DEV_* tunables (timeouts,
+	 *  budgets, kill-switches, model/backend selectors) so GUI-launched pi
+	 *  sessions — which have no shell env — can still set them. Flat string
+	 *  map; consumed via superDevEnv(). Precedence per key:
+	 *    1. process.env (a one-off shell override beats the persistent file)
+	 *    2. this map (string values only; other types ignored)
+	 *    3. undefined
+	 *  Bootstrap-excluded on purpose: SUPER_DEV_DIR (config.json lives there),
+	 *  and the subprocess IPC / release-tooling plumbing vars. */
+	env?: Record<string, string>;
 }
 
-const DEFAULT_CONFIG: SuperDevConfig = {
+export const DEFAULT_CONFIG: SuperDevConfig = {
 	reflectionEnabled: true,
 	topNPreload: 3,
 	indexListSize: 10,
@@ -75,6 +85,38 @@ export function getConfig(): SuperDevConfig {
 		const raw = readFileSync(getConfigPath(), "utf8");
 		return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
 	} catch { return DEFAULT_CONFIG; }
+}
+
+/** v0.3.15: read a SUPER_DEV_* tunable with config.json as the persistent
+ *  fallback channel. Precedence: process.env > config.env > undefined.
+ *  An EMPTY process.env string is treated as unset so a GUI-inherited empty
+ *  var can never silently mask a configured value (consumers already use
+ *  `?? ""` / parseInt-|| fallbacks, so treating "" as absent is safe).
+ *  Reads config lazily per call — no module-load snapshot — so config edits
+ *  mid-run are observed by later calls. */
+export function superDevEnv(key: string): string | undefined {
+	const fromEnv = process.env[key];
+	if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+	const fromConfig = envConfigCached()?.[key];
+	return typeof fromConfig === "string" && fromConfig !== "" ? fromConfig : undefined;
+}
+
+/** mtime-keyed 1-entry cache of the config's env map (review F4): gates.ts
+ *  reads tunables inside spawn loops; re-reading + re-parsing config.json on
+ *  every lookup is measurable there. A config edit mid-run is still observed
+ *  within one mtime tick of the next lookup. */
+let envConfigCache: { mtimeMs: number; env: Record<string, string> | undefined } | null = null;
+function envConfigCached(): Record<string, string> | undefined {
+	try {
+		const st = statSync(getConfigPath());
+		if (!envConfigCache || envConfigCache.mtimeMs !== st.mtimeMs) {
+			envConfigCache = { mtimeMs: st.mtimeMs, env: getConfig().env };
+		}
+		return envConfigCache.env;
+	} catch {
+		envConfigCache = null;
+		return undefined;
+	}
 }
 
 // ─── per-run lifecycle ──────────────────────────────────────────────────────

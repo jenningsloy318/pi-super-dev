@@ -28,6 +28,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { superDevEnv } from "./render/super-dev-dir.ts";
 import { Type, IsObject, IsOptional, type TSchema } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -695,7 +696,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		clearTimeout(softTimer);
 		opts.signal?.removeEventListener("abort", onAbort);
 		unsub?.();
-		if (process.env.SUPER_DEV_DEBUG) dumpTrace(opts, keys, capture, correctiveNote, session.messages);
+		if (superDevEnv("SUPER_DEV_DEBUG")) dumpTrace(opts, keys, capture, correctiveNote, session.messages);
 		session.dispose();
 	}
 }

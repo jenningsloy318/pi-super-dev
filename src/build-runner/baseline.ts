@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -299,7 +300,7 @@ export function verifyUntouchedFailuresAgainstBaseline(input: BaselineVerifyInpu
 		if (subjects.length === 0) return unknown("no out-of-scope subjects to verify");
 		if (input.signal?.aborted) return unknown("aborted before baseline run");
 		try {
-			if (process.env.SUPER_DEV_DISABLE_BASELINE_CHECK) {
+			if (superDevEnv("SUPER_DEV_DISABLE_BASELINE_CHECK")) {
 				return unknown("baseline check disabled via SUPER_DEV_DISABLE_BASELINE_CHECK");
 			}
 		} catch {
