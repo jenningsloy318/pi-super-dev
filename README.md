@@ -367,7 +367,8 @@ Super-dev stores user-level runtime data under `~/.super-dev/`:
 - `learned.md`, `learned-index.json`, `stats.json` (cross-run learned memory)
 - `traces/`
 
-`config.json` fields (defaults shown; only `agentModels` is commonly set):
+`config.json` fields (defaults shown; `env` and `agentModels` are the commonly
+set keys — see the next two sections):
 
 ```json
 {
@@ -379,7 +380,9 @@ Super-dev stores user-level runtime data under `~/.super-dev/`:
 	"archiveAfterDays": 90,
 	"runRetentionDays": 30,
 	"traceRetentionDays": 7,
-	"escalation": "informative"
+	"escalation": "informative",
+	"agentModels": { "...": "..." },
+	"env": { "SUPER_DEV_...": "..." }
 }
 ```
 
@@ -387,6 +390,33 @@ Super-dev stores user-level runtime data under `~/.super-dev/`:
 summary; headless-safe) or `"interactive"` (additionally prompt a 3-option
 select when stagnation fires in TUI/RPC mode).
 
+### Environment variables (`env` map)
+
+Every user-facing `SUPER_DEV_*` tunable — timeouts, budgets, kill-switches,
+model/backend selectors — is also settable **persistently in `config.json`**
+under the `env` map, for launches that have no shell environment (GUI-launched
+pi sessions):
+
+```json
+{
+	"env": {
+		"SUPER_DEV_JUDGE_TIMEOUT_MS": "240000",
+		"SUPER_DEV_MAX_REPLAN_ROUNDS": "3"
+	}
+}
+```
+
+Precedence per key: `process.env` (non-empty) > `config.json` `env` map
+(non-empty string) > built-in default — so a one-off shell override always
+beats the persistent file. An empty-string `process.env` value is treated as
+unset (it cannot mask a configured value). Exception: the build gate's
+`SUPER_DEV_BUILD_TEST_PACKAGES=""` escape hatch ("set-but-empty = force
+workspace-wide, skip auto-detect") still consults the raw env var. Excluded
+from the map: `SUPER_DEV_DIR` (bootstrap) and subprocess IPC / release-tooling
+plumbing variables. Values are read lazily per call; a config edit mid-run is
+observed by later lookups (mtime-cached).
+
+All keys, defaults, and purposes:
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -396,16 +426,35 @@ select when stagnation fires in TUI/RPC mode).
 | `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
 | `SUPER_DEV_MAX_CHALLENGE_REAUTHORS` | `2` | implementer-driven RED re-author cap |
 | `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
+| `SUPER_DEV_JUDGE_TIMEOUT_MS` | `240000` | judge wall-clock budget per call (retry-on-timeout consumes the 2nd signature slot) |
 | `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
-| `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in setup |
+| `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in build-gate command discovery |
+| `SUPER_DEV_NO_BOOTSTRAP` | — | `1` = skip the setup-time dependency bootstrap (npm ci etc.) in fresh worktrees |
+| `SUPER_DEV_BOOTSTRAP_TIMEOUT_MS` | `600000` | setup dependency-bootstrap timeout |
 | `SUPER_DEV_NO_DIRTY_QUARANTINE` | — | `1` = kill switch, disable automatic foreign-dirt quarantine (setup reuse + Stage 9 env-blocker) |
+| `SUPER_DEV_MAX_REPLAN_ROUNDS` | `2` | replan auto-resume rounds per spec |
+| `SUPER_DEV_REPLAN_MANUAL` | — | `1` = keep single runs (disable replan auto-resume) |
+| `SUPER_DEV_DISABLE_REPLAN_LEAD` | — | `1` = skip the replan-lead enrichment agent |
+| `SUPER_DEV_NO_INLINE_ROUTEBACK` | — | `1` = disable inline (in-loop) upstream route-back |
+| `SUPER_DEV_INLINE_ROUTEBACK` | `1` | `0` = alias for disabling inline route-back |
+| `SUPER_DEV_MAX_INLINE_JUMPS` | `4` | cap on inline route-back jumps per journal |
+| `SUPER_DEV_NO_VERIFY_REPLAY_GUARD` | — | `1` = disable the Stage 10 replay guard |
+| `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |
+| `SUPER_DEV_NO_RPC_SPAWN` | — | `1` = fall back from same-session RPC spawns to one-shot `--mode json -p` |
+| `SUPER_DEV_NO_SKILLS` | — | `1` = spawn subprocess agents with `--no-skills` (pre-v0.2.10 isolation) |
 | `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
-| `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy |
+| `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy (`""` = force workspace-wide) |
 | `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |
 | `SUPER_DEV_CARGO_METADATA_TIMEOUT_MS` | `30000` | cargo metadata lookup timeout |
-| `SUPER_DEV_TRANSIENT_RETRY_MS` | — | transient agent-error retry envelope |
+| `SUPER_DEV_TRANSIENT_RETRY_MS` | `2000,4000,…` | transient agent-error retry envelope (comma-separated backoff delays) |
+| `SUPER_DEV_BENCH` | — | `1` = enable the real-LLM convergence benchmark harness (SUPER_DEV_BENCH_TRIALS=1 implied) |
+| `SUPER_DEV_BENCH_TRIALS` | `1` | trials per benchmark shape (≥3 for statistical claims) |
+| `SUPER_DEV_BENCH_TIMEOUT_MS` | `900000` | per-trial benchmark timeout |
 | `SUPER_DEV_DEBUG` | — | debug logging |
+
+Every entry above can be exported in the shell (traditional behavior,
+unchanged) **or** placed in the `config.json` `env` map.
 
 The four `*_MS`/`*_PACKAGES`/`*_BASE_REF` variables tune the Rust-aware build
 gate **without editing any stage call site**:
