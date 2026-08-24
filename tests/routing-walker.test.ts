@@ -527,11 +527,28 @@ describe("M2 round-1 remediation pins", () => {
 		const order: string[] = [];
 		const log: string[] = [];
 		// Exhaust the edge budget within THIS epoch so the walker declines.
-		startRunEpoch();
-		const now = new Date().toISOString();
-		writeFileSync(join(dir, ROUTING_JOURNAL_FILE),
-			[0, 1].map((i) => JSON.stringify({ seq: i + 1, kind: "route-back", from: "bdd", to: "requirements", reason: "r", findingIds: [], resumeFromIndex: 1, invalidated: [], budgetBefore: i, budgetAfter: i + 1, at: now })).join("\n") + "\n");
-		const owner: Stage = { id: "requirements", label: "requirements", async run() { order.push("requirements"); return { status: "ok" }; } };
+		// Flake fix: the entries must be minted AFTER the walker establishes
+		// the run epoch (startRunEpoch() at run() start), so they count as
+		// this-run consumption. Seeding them pre-run raced the wall clock —
+		// when ≥1ms elapsed before walker.run(), the walker's fresh epoch
+		// fell AFTER the seeded `at` timestamps, the defense-in-depth re-check
+		// saw a full budget, and the walker TOOK the route-back inline
+		// (charging 2 jumps + injecting pending replan requests) before
+		// declining — flipping the outcome to the REPLAN terminal. Seeding
+		// inside the OWNER stage (which runs first, post-epoch) is both
+		// race-free and production-faithful: budget consumption is mid-run.
+		const seedExhaustedEdge = () => {
+			writeFileSync(join(dir, ROUTING_JOURNAL_FILE),
+				[0, 1].map((i) => JSON.stringify({ seq: i + 1, kind: "route-back", from: "bdd", to: "requirements", reason: "r", findingIds: [], resumeFromIndex: 1, invalidated: [], budgetBefore: i, budgetAfter: i + 1, at: new Date().toISOString() })).join("\n") + "\n");
+		};
+		const owner: Stage = {
+			id: "requirements", label: "requirements",
+			async run() {
+				seedExhaustedEdge();
+				order.push("requirements");
+				return { status: "ok" };
+			},
+		};
 		const thrower: Stage = {
 			id: "bdd", label: "bdd",
 			async run(state: PipelineState) {
