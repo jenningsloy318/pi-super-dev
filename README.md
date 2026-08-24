@@ -390,6 +390,17 @@ set keys — see the next two sections):
 summary; headless-safe) or `"interactive"` (additionally prompt a 3-option
 select when stagnation fires in TUI/RPC mode).
 
+Build-gate tuning (full table in the next section): `SUPER_DEV_BUILD_TIMEOUT_MS`
+raises the per-command build-gate timeout (default `600000`), and
+`SUPER_DEV_BUILD_TEST_PACKAGES` scopes cargo build/test/clippy to named crates
+(`""` = force workspace-wide). Rust-workspace example:
+
+```bash
+export SUPER_DEV_BUILD_TIMEOUT_MS=900000
+export SUPER_DEV_BUILD_TEST_PACKAGES="api,store"
+cargo test -p api -p store
+```
+
 ### Environment variables (`env` map)
 
 Every user-facing `SUPER_DEV_*` tunable — timeouts, budgets, kill-switches,

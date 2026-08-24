@@ -367,6 +367,18 @@ export function buildTddPrompt(s: SetupControl, c: Classification | null, phase:
 		"Run the tests to confirm they fail (red phase of TDD). If the suite fails to load solely because the module under test does not exist yet, that is a valid greenfield RED — leave it and report it; the implementer will create the module to make the tests pass.",
 		"In summary, include the scenario coverage matrix as SCENARIO-NNN -> test file/test name and explicitly say `missing scenario coverage: none` when complete.",
 		"",
+		// v0.3.16 F3 (RC-T3, run 2026-08-23T02-59-20-670Z): the RED author died at the
+		// wall clock 15/26 times because it explored for 15+ minutes before writing.
+		// A written-but-unverified file survives a timeout (the oracle can classify
+		// it next round); prose and an unreturned structured_output do not. This
+		// block is deliberately AFTER the correctness instructions and BEFORE the
+		// control spec so it reads as the closing discipline.
+		"## Deadline survival (OVERRIDES exploration thoroughness)",
+		"- WRITE THE TEST FILE TO DISK EARLY. The file on disk is the deliverable; a written-but-unverified file survives a wall-clock timeout, prose and an unreturned structured_output do not.",
+		"- Cap exploration at ~10 tool calls total before you start writing. You do NOT need to re-derive the whole codebase — the phase tasks and BDD scenarios above already state the observable.",
+		"- Order of operations: (1) draft the test file, (2) write it to disk, (3) run the scoped test once to confirm it fails, (4) call structured_output. If you are running low on time, do (2) and (4) even if (3) is incomplete — report honestly in `summary` what was not verified.",
+		"- On a retry whose feedback says the previous try TIMED OUT: do not re-explore material the feedback already summarizes. Go straight to writing/fixing the file.",
+		"",
 		"Output <control> JSON with: testsWritten (number), testFiles (array of paths), allFailing (boolean), summary.",
 	].filter(Boolean).join("\n");
 }

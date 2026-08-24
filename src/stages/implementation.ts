@@ -10,8 +10,8 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { superDevEnv } from "../render/super-dev-dir.ts";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
 import { classifyJudgeRoute } from "../routing/router.ts";
 import { appendGateChecked } from "../runlog.ts";
@@ -1269,6 +1269,11 @@ export const implementationStage: Stage = {
 					let retries = 0;
 					let redHint = "";
 					const redProgressHistory: string[] = [];
+					// v0.3.16 review fix (code F-1/adv F-2): remember the last NON-EMPTY
+					// claim across tries so an agent-death retry can still probe whether
+					// the previously-claimed file is on disk (the claim itself is cleared
+					// by F1 — correctly — but the DISK may hold the written file).
+					let lastClaimedTestFiles: string[] = [];
 					// v0.2.8 G4 (allow-scaffold): paths the judge has blessed as declaration-
 					// only scaffolding this phase; re-admitted through the boundary on the
 					// next try (the RED oracle remains the final guard).
@@ -1288,12 +1293,30 @@ export const implementationStage: Stage = {
 						// regardless, but the dashboard should not show success).
 						emitStep(`TDD RED (${redTryDetail})`, tdd.error ? "failed" : "ok", tddStepSeq);
 						const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
-						testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
+						// v0.3.16 F1 (RC-T1, run 2026-08-23T02-59-20-670Z): an agent that errored or
+						// timed out produced NOTHING this try — keeping the previous try's claim
+						// made the log lie ("test files=tests/screen.test.ts" next to
+						// "error=timed out"), ran the oracle against a cleanup-deleted ghost file
+						// ("No test files found" → misleading red-broken feedback), and poisoned
+						// the next retry's hint. A non-completed agent is not a delivery: clear the
+						// claim so the fail-closed branch below reports the honest cause and the
+						// oracle never runs on stale state. (The legacy fallback ONLY survives for
+						// the normal control-bearing path where testFiles may legitimately be
+						// absent from a later control — the pre-fix echo.)
+						const tddNotCompleted = Boolean(tdd.error) || tdd.control == null;
+						if (tddNotCompleted) {
+							testFiles = [];
+						} else {
+							testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
+							if (testFiles.length) lastClaimedTestFiles = [...testFiles];
+						}
 						// v0.2.9 G5: stream what tdd-guide DID (test files + its own summary),
 						// so the run log shows the RED work each try, not just the oracle verdict.
+						// v0.3.16 F1: the (agent did not complete) annotation makes the discard
+						// visible to operators reading the log tail.
 						{
 							const tddSummary = String((tdd.control as { summary?: unknown } | null)?.summary ?? "").replace(/\s+/g, " ").trim();
-							ctx.log(`Implementation ${phaseId} tdd-guide (try ${retries + 1})${tdd.error ? ` error=${tdd.error}` : ""}: test files=${testFiles.join(", ") || "(none)"}${tddSummary ? ` — ${tddSummary.slice(0, 400)}` : ""}`);
+							ctx.log(`Implementation ${phaseId} tdd-guide (try ${retries + 1})${tdd.error ? ` error=${tdd.error}` : ""}: test files=${testFiles.join(", ") || "(none)"}${tddNotCompleted ? " (agent did not complete — previous claim discarded)" : ""}${tddSummary ? ` — ${tddSummary.slice(0, 400)}` : ""}`);
 						}
 						announceActivity("RED oracle", redTryDetail);
 						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics, setup.defaultBranch));
@@ -1434,6 +1457,43 @@ export const implementationStage: Stage = {
 								ctx.log(`Implementation ${phaseId} RED review: STRONG (no contradictions)`);
 							}
 						}
+						// v0.3.16 F4 (RC-T4): when THIS try died of a wall-clock timeout (the tdd
+						// agent itself, or the RED reviewer whose timeout blocked adjudication),
+						// the next try must know that — the stock hint says "tests did not
+						// compile"/"not strong" which sends the agent hunting a defect that does
+						// not exist (run 02-59 phase-06: five 20-min re-explorations of the same
+						// healthy material). Prefix the honest death cause + the disk state so
+						// the retry can skip re-exploration.
+						{
+							const tddDeath = tddNotCompleted ? String(tdd.error ?? "agent produced no control object") : "";
+							const reviewDeath = redEvidence.status === "review-weak" && /RED review (?:did not complete|returned no usable verdict)/i.test(String(redEvidence.reason ?? "")) ? String(redEvidence.reason ?? "") : "";
+							if (tddDeath || reviewDeath) {
+								// v0.3.16 review fix (code F-1 / adv F-2): probe the DISK, not the
+								// (already-cleared) claim — the union of the current claim (a
+								// completed agent may legitimately re-claim), the files the RED
+								// phase actually touched this try (redChangedFiles — a timed-out
+								// agent may still have written before dying), and nothing else.
+								// Deduped so the hint names each existing file exactly once.
+								const claimedNow = tddNotCompleted ? [] : [...testFiles];
+								const onDisk = [...new Set([...claimedNow, ...lastClaimedTestFiles, ...redChangedFiles])]
+									.filter((f) => { try { return existsSync(resolve(setup.worktreePath, f)); } catch { return false; } });
+								const timeoutHint = [
+									`\n\n## PREVIOUS TRY DIED AT THE WALL CLOCK — do not re-explore`,
+									tddDeath ? `- Your previous run ended with: ${tddDeath}. You ran out of TIME, not correctness.` : "",
+									reviewDeath ? `- Your tests were written but the independent review never completed (${reviewDeath}). The file was PRESERVED on disk — it was never adjudicated.` : "",
+									`- Disk state now: ${onDisk.length ? `${onDisk.join(", ")} exist(s)` : "no claimed test file exists on disk"}.`,
+									"- Skip re-exploration of material you already read (the summary above stands). Write/fix the test file FIRST, run the scoped test once, then call structured_output. If time runs short, prioritize: file on disk > one verification run > structured_output.",
+								].filter(Boolean).join("\n");
+								// v0.3.16 review fix (adv F-1): on an agent-death try the stock
+								// broken/green templates MISLEAD ("tests did not compile" when the
+								// file never existed this try). Keep diagnostics; drop the template
+								// when the agent (not the tests) died. A review-death try keeps its
+								// template only when it carries real verdict content — the preserved
+								// file still needs the stock guidance then.
+								const stockHint = tddDeath ? redDiagnosticsPrompt(redEvidence.diagnostics) : (retryHint ?? "");
+								retryHint = timeoutHint + stockHint;
+							}
+						}
 						if (retryHint) {
 							const signature = redEvidenceSignature(redEvidence);
 							// Cycle/oscillation detection (RC-3): the previous check only
@@ -1569,8 +1629,19 @@ export const implementationStage: Stage = {
 							}
 							// RC8: review-weak evidence must ALSO restore the rejected RED
 							// files before re-authoring (previously rode green-weak-test).
-							if (redEvidence.status === "green-weak-test" || redEvidence.status === "review-weak" || redEvidence.status === "polluted-red") {
+							// v0.3.16 F2 (RC-T2): a review that never RAN must not count as a verdict
+							// against the artifact. When the review-weak reason is the agent-error/
+							// timeout template ("RED review did not complete (...)" — the reviewer
+							// timed out or errored, control=no), the test file is preserved on disk:
+							// it was never adjudicated, the retry hint already names the review
+							// infrastructure failure, and deleting it forces the next try to rewrite
+							// from scratch (run 02-59 try 1 wrote a good file, its review timed out at
+							// 480s, cleanup deleted the file, and every later try fought a ghost).
+							const reviewNeverRan = redEvidence.status === "review-weak" && /RED review (?:did not complete|returned no usable verdict)/i.test(String(redEvidence.reason ?? ""));
+							if (!reviewNeverRan && (redEvidence.status === "green-weak-test" || redEvidence.status === "review-weak" || redEvidence.status === "polluted-red")) {
 								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
+							} else if (reviewNeverRan) {
+								ctx.log(`Implementation ${phaseId} RED cleanup SKIPPED: the review did not complete (no verdict was rendered) — preserving the written test file(s) on disk for the retry`);
 							}
 							retries++;
 							redHint = retryHint;
