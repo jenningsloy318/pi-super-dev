@@ -30,9 +30,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { superDevEnv } from "./render/super-dev-dir.ts";
 import { Type, IsObject, IsOptional, type TSchema } from "typebox";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { getTracesDir } from "./render/super-dev-dir.ts";
 import { loadAgentPrompt } from "./agents.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
@@ -386,10 +386,52 @@ function lastAssistantText(messages: Array<{ role?: string; content?: Array<{ ty
 	return "";
 }
 
+/** Candidate file references inside a task text: `@path` mentions, bare
+ *  relative paths (at least one `/`, so ambiguous bare filenames are skipped),
+ *  and `~/` home paths. Purely textual, bounded, no globbing. */
+export function taskFilePaths(task: string): string[] {
+	const out: string[] = [];
+	const push = (raw: string) => {
+		const s = raw.replace(/^[.,;:()\[\]"']+/g, "").replace(/[.,;:()\[\]"']+$/g, "");
+		if (s && !out.includes(s)) out.push(s);
+	};
+	for (const m of task.matchAll(/@([\w.~/-]+\.[A-Za-z0-9]+)/g)) push(m[1]);
+	for (const m of task.matchAll(/(?<!\w)(~\/[\w.-]+(?:\/[\w.-]+)*\.[A-Za-z0-9]+)/g)) push(m[1]);
+	for (const m of task.matchAll(/(?<![\w@~/.-])((?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]+)/g)) push(m[1]);
+	return out.slice(0, 4);
+}
+
+/** Bounded content excerpts of task-referenced files so the slug model can
+ *  summarize WHAT the referenced requirement asks for instead of echoing its
+ *  FILENAME (incident: `docs/requirements/16-dimension-financials.md` → LLM
+ *  slug "16-dimension-financials" → spec id "16-16-dimension-financials").
+ *  First ~6 KB per file (title/purpose lives up front), at most 3 files,
+ *  unreadable/missing/directory references skipped silently. */
+export function taskFileExcerpts(task: string, cwd: string): Array<{ path: string; excerpt: string }> {
+	const out: Array<{ path: string; excerpt: string }> = [];
+	for (const ref of taskFilePaths(task)) {
+		if (out.length >= 3) break;
+		const abs = ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : isAbsolute(ref) ? ref : resolve(cwd, ref);
+		let text: string;
+		try {
+			if (!statSync(abs).isFile()) continue;
+			text = readFileSync(abs, "utf8");
+		} catch { continue; }
+		const excerpt = text.slice(0, 6000).trim();
+		if (excerpt) out.push({ path: ref, excerpt });
+	}
+	return out;
+}
+
 /** Ask the model for a concise 2-5 word kebab-case slug summarizing the task.
- *  Minimal session: no coding tools, only a structured_output tool — fast and
- *  cheap. Returns "" on any failure/timeout so the caller can fall back to the
- *  deterministic slugifyTask. */
+ *  When the task references files (requirement/design docs), their CONTENT is
+ *  excerpted into the prompt so the slug describes the actual subject matter
+ *  rather than echoing a filename — and index numerals are explicitly barred
+ *  (the pipeline prepends its own number; a numeral echo produced the
+ *  "16-16-dimension-financials" double-index spec id). Minimal session: no
+ *  coding tools, only a structured_output tool — fast and cheap. Returns "" on
+ *  any failure/timeout so the caller can fall back to the deterministic
+ *  slugifyTask. */
 export async function summarizeSlug(task: string, cwd: string, opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<string> {
 	// SD-04 (NFR-6): pre-aborted signal — the post-creation listener would never
 	// fire; skip the session entirely and let the caller use the deterministic
@@ -444,7 +486,11 @@ export async function summarizeSlug(task: string, cwd: string, opts: { signal?: 
 	// awaited session creation above) — the listener would never fire.
 	if (opts.signal?.aborted) onAbort();
 	try {
-		await session.prompt(`Summarize this software task into a concise 2-5 word kebab-case slug (lowercase, words joined by single hyphens, no articles or filler words like "implement/add/feature"). Task:\n"""${task}"""\nCall structured_output with {slug}.`);
+		const excerpts = taskFileExcerpts(task, cwd);
+		const fileContext = excerpts.length === 0
+			? ""
+			: `\nReferenced files (content excerpts — derive the subject from this CONTENT, never from file names):\n${excerpts.map((f) => `--- ${f.path} ---\n${f.excerpt}`).join("\n\n")}\n`;
+		await session.prompt(`Summarize this software task into a concise 2-5 word kebab-case slug (lowercase, words joined by single hyphens, no articles or filler words like "implement/add/feature").\nRules:\n- Name WHAT the work delivers, based on the task text and the CONTENT of the referenced files below — do not echo file or directory names.\n- Never include index or sequence numbers (the pipeline prepends its own number to the spec id); keep an identifier only if it is genuinely part of the feature name in the task text.\nTask:\n"""${task}"""\n${fileContext}Call structured_output with {slug}.`);
 	} catch { /* timeout/abort → fallback */ }
 	clearTimeout(timer);
 	opts.signal?.removeEventListener("abort", onAbort);

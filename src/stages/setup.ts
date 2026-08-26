@@ -6,7 +6,7 @@
 
 import type { Stage } from "../types.ts";
 import { seedRunEpochFromJournal } from "../routing/journal.ts";
-import { runSetup } from "../setup.ts";
+import { runSetup, referencedSpecIdentifier } from "../setup.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { abbreviatePath } from "../pi-spawn.ts";
@@ -22,7 +22,10 @@ export const setupStage: Stage = {
 		const resumeId = ctx.options.resumeSpecIdentifier;
 		// On resume we reuse the existing spec id, so skip the LLM slug call.
 		let slug = "";
-		if (!resumeId) {
+		if (!resumeId && !referencedSpecIdentifier(ctx.task, cwd)) {
+			// Skip the LLM slug call when the task explicitly re-enters an EXISTING
+			// spec track (docs/specifications/NN-…): that runSetup branch never
+			// allocates a fresh id, so an eagerly computed slug would be discarded.
 			try {
 				slug = await summarizeSlug(ctx.task, cwd, { signal: ctx.signal });
 			} catch { /* fallback below */ }

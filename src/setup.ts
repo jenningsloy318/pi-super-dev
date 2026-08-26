@@ -261,6 +261,26 @@ export function specRefNumerals(text: string): Set<string> {
 }
 
 /**
+ * v0.3.18 — content-aware slugs + double-index guard: a slug that still starts
+ * with a referenced spec index numeral (the slug LLM echoing the requirement
+ * FILENAME `docs/requirements/16-dimension-financials.md` → "16-dimension-
+ * financials") doubles the allocated number into "16-16-dimension-financials".
+ * Strip the echo ONLY when the leading numeral provably comes from a docs-path
+ * spec reference in the task text — free-text numerals (step 254, ticket 1234)
+ * are identity tokens for track reuse (R6) and are kept verbatim. Falls back to
+ * the original slug when the remainder would be empty.
+ */
+export function dedupeSlugIndex(slug: string, task: string): string {
+	let s = slug;
+	for (;;) {
+		const m = s.match(/^(\d{1,4})-(.+)$/);
+		if (!m) return s;
+		if (!specRefNumerals(task).has(String(parseInt(m[1], 10)))) return s;
+		s = sanitizeSlug(m[2]) || slug; // empty remainder → restore original
+	}
+}
+
+/**
  * v0.3.12 F1 (round-2 CR-1/CR-3): the anchor-numeral refusal as a standalone
  * probe so EVERY reuse branch can pass through it (not just Jaccard) and the
  * refusal is LOGGABLE (the plan doc promised a visible reason, not silence).
@@ -580,7 +600,7 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 		}
 	} else if (!specReuseEnabled()) {
 		// Kill-switch: the caller has expressed intent for a FRESH track.
-		const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
+		const slug = dedupeSlugIndex(sanitizeSlug(options.slug ?? "") || slugifyTask(task), task);
 		specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
 		if (!options.skipWorktree) {
 			const wt = createOrReuseWorktree(cwd, specIdentifier, defaultBranch);
@@ -599,7 +619,7 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 			specIdentifier = reusable;
 			reusedTrack = true;
 		} else {
-			const slug = sanitizeSlug(options.slug ?? "") || slugifyTask(task);
+			const slug = dedupeSlugIndex(sanitizeSlug(options.slug ?? "") || slugifyTask(task), task);
 			specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
 		}
 		if (!options.skipWorktree) {
