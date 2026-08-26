@@ -565,6 +565,17 @@ const ASSERTION_RE = /\b(?:expect|assert|assert_eq|assert_ne|assertEquals|assert
  *  so flagging it would falsely reject a valid RED set. */
 const TEST_FILE_NAME_RE = /(\.test\.|\.spec\.|_test\.|(^|\/)test_|(^|\/)tests?\/|__tests__\/)/i;
 
+/** v0.3.17 (run 2026-08-26T02-36-42-419Z phase-02): pytest's RESERVED support
+ *  filename. conftest.py is auto-loaded by pytest itself (fixtures, plugins,
+ *  sys.path bootstrap) and legitimately contains no assertions — it is the
+ *  canonical "fixture/helper imported by a test" the guard's doc comment
+ *  already exempts in spirit. Matched on BASENAME at any depth because pytest
+ *  collects it from every directory on the rootdir→test path (a package-root
+ *  conftest is as legal as a tests/ one). Exempting it twice killed REAL RED
+ *  sets in the incident (tries 3 and 5) whose only clean import fix lived in
+ *  conftest.py. */
+const PYTEST_SUPPORT_BASENAME_RE = /(^|\/)conftest\.py$/i;
+
 /** Return the RED TEST files (from a content snapshot) that contain no
  *  recognizable assertion call. Non-test-named support artifacts are skipped
  *  (they may legitimately have no assertion). Files that couldn't be read (null)
@@ -575,6 +586,7 @@ export function assertionPresenceGaps(snapshot: Map<string, string | null>): str
 	for (const [path, content] of snapshot) {
 		if (content == null) continue;
 		if (!TEST_FILE_NAME_RE.test(path)) continue; // support artifact, not a test
+		if (PYTEST_SUPPORT_BASENAME_RE.test(path)) continue; // conftest.py — pytest support artifact (v0.3.17)
 		if (!ASSERTION_RE.test(content)) gaps.push(path);
 	}
 	return gaps;

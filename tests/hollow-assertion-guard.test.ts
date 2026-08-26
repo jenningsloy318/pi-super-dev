@@ -52,3 +52,58 @@ describe("assertionPresenceGaps", () => {
 		expect(gaps).toEqual([]);
 	});
 });
+
+// ─── v0.3.17: conftest.py exemption (run 2026-08-26T02-36-42-419Z phase-02) ─
+
+describe("conftest.py exemption (v0.3.17)", () => {
+	it("does NOT flag python/tests/conftest.py — pytest's canonical support artifact (sys.path bootstrap), legitimately assertion-free", () => {
+		// The exact incident shape: a real RED set whose sys.path fix lives in
+		// conftest.py. Pre-fix, the guard flagged conftest.py and the cleanup
+		// deleted the ENTIRE RED set (twice — tries 3 and 5).
+		const gaps = assertionPresenceGaps(snap({
+			"python/tests/conftest.py": "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n",
+			"python/tests/test_financials.py": "from omisis import financials\n\ndef test_x():\n    assert financials.run({}) is not None\n",
+		}));
+		expect(gaps).toEqual([]);
+	});
+
+	it("package-root conftest.py is exempt via the FIRST gate (not the basename regex) — a control for where the exemption actually lives", () => {
+		// 'python/conftest.py' matches no TEST_FILE_NAME_RE branch (no tests/
+		// segment, no test/spec basename marker), so it is skipped as a support
+		// artifact before the new regex ever fires — on BOTH trees. This test
+		// therefore pins the first-gate behavior (and the run's try-8 boundary
+		// denial was the classifier's doing, not this guard's), not any-depth.
+		const gaps = assertionPresenceGaps(snap({
+			"python/conftest.py": "import sys\nsys.path.insert(0, '.')\n",
+			"python/tests/test_financials.py": "import omisis.financials as fin\n\ndef test_stub_raises():\n    try:\n        fin.run({})\n    except NotImplementedError:\n        return\n    assert False, 'stub did not raise'\n",
+		}));
+		expect(gaps).toEqual([]);
+	});
+
+	it("exempts a conftest.py nested at arbitrary depth under tests/ — the basename regex is depth-agnostic", () => {
+		// The new regex only ever fires for conftests that PASS the first gate
+		// (i.e. live under tests/ or a test-named dir). Pin the deep-nesting
+		// case so a future narrowing of either regex trips this first.
+		const gaps = assertionPresenceGaps(snap({
+			"a/b/c/tests/conftest.py": "import sys\n",
+			"__tests__/conftest.py": "import sys\n",
+		}));
+		expect(gaps).toEqual([]);
+	});
+
+	it("still flags a genuinely hollow TEST file in the same set — the exemption is conftest-only, not tests/-directory-wide", () => {
+		const gaps = assertionPresenceGaps(snap({
+			"python/tests/conftest.py": "import sys\nsys.path.insert(0, '.')\n",
+			"python/tests/hollow_test.py": "def test_todo():\n    pass\n",
+		}));
+		expect(gaps).toEqual(["python/tests/hollow_test.py"]);
+	});
+
+	it("still flags a hollow conftest-LOOKALIKE with a different basename — the match is on the reserved filename, not a substring", () => {
+		const gaps = assertionPresenceGaps(snap({
+			"python/tests/my_conftest_helper.py": "import sys\n",
+		}));
+		// matches the (^|/)tests?/ directory branch → treated as a test file, hollow → flagged (current semantics preserved)
+		expect(gaps).toEqual(["python/tests/my_conftest_helper.py"]);
+	});
+});
