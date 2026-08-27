@@ -192,7 +192,7 @@ export function buildResearchPrompt(s: SetupControl, c: Classification | null, t
 		"- options: array of { name: string, tradeoffs: string } (at least 1), each grounded in a real source and the requirement/BDD it addresses",
 		"- sources: array of { title: string, url: string } — the real URLs you actually fetched/searched (empty ONLY if web tools were unavailable)",
 		"- openIssues: array of concrete answerable blocker questions that need another research pass (empty if none)",
-		"", "Output <control> JSON with: title, date, summary, options, sources, openIssues.");
+		"", "Output <control> JSON with: title, date, summary, options, sources.");
 	return parts.join("\n");
 }
 export function buildDebugPrompt(s: SetupControl, c: Classification | null, task: string, requirements: R, research: R): string {

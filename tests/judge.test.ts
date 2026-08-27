@@ -387,10 +387,10 @@ describe("judge unit", () => {
 
 	// ─── J1/J2 (v0.2.4): timeout budget + retry-on-timeout ─────────────────────
 
-	it("J1: judge timeout defaults to 240s and honors SUPER_DEV_JUDGE_TIMEOUT_MS", async () => {
+	it("J1: judge timeout defaults to 480s and honors SUPER_DEV_JUDGE_TIMEOUT_MS", async () => {
 		const { ctx, calls } = makeCtx(() => ({ control: baseVerdict({}) as Record<string, unknown> }));
 		await runJudge(ctx, { scope: "t-j1", signature: "sig-j1", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
-		expect((calls[0] as { timeoutMs?: number }).timeoutMs).toBe(240_000);
+		expect((calls[0] as { timeoutMs?: number }).timeoutMs).toBe(480_000);
 		process.env.SUPER_DEV_JUDGE_TIMEOUT_MS = "65000";
 		try {
 			const r2 = makeCtx(() => ({ control: baseVerdict({}) as Record<string, unknown> }));

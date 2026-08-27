@@ -105,7 +105,13 @@ export const ResearchData = Type.Object({
 	// so a run where web tools were unavailable still validates; the agent is
 	// instructed to leave it empty ONLY in that case and mark claims unverified.
 	sources: Type.Optional(Type.Array(Type.Object({ title: Type.String(), url: Type.String() }))),
-	openIssues: Type.Array(Type.String()),
+	// OPTIONAL since v0.3.22 (run 2026-08-27T12-33-43-088Z): an 11.5-minute
+	// research report was DISCARDED whole because this one optional-in-spirit key
+	// was absent (`missing required control keys: openIssues`) — semantically it
+	// is "empty when none" exactly like `sources`, and every consumer already
+	// treats it as `?? []`. Requiring it converts a complete report into an
+	// agent-error with no salvage.
+	openIssues: Type.Optional(Type.Array(Type.String())),
 });
 export type ResearchData = Static<typeof ResearchData>;
 

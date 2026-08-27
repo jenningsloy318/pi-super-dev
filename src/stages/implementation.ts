@@ -631,6 +631,75 @@ const MAX_RED_RETRIES = (() => {
 	return Number.isFinite(raw) && raw > 0 ? raw : 6;
 })();
 
+/** Cap on ROUTED judge interventions per phase at the RED no-progress boundary
+ *  (run 2026-08-27T12-33-43-088Z: phase-03 ground through 9 RED tries / 5 judge
+ *  calls / ~3.5h because every routed `re-author-tests` verdict RESET the RED
+ *  retry ladder; the correct `fix-environment` diagnosis only landed at 04:43).
+ *  After the cap, stop resampling and force environment diagnosis.
+ *  Env-overridable for tuning. */
+export const MAX_RED_JUDGE_ROUTES = (() => {
+	const raw = Number.parseInt(superDevEnv("SUPER_DEV_MAX_RED_JUDGE_ROUTES") ?? "", 10);
+	return Number.isFinite(raw) && raw > 0 ? raw : 3;
+})();
+
+/** Pure route-set policy: while `usedRoutes` routed interventions remain under
+ *  `cap`, the full allowed set passes through; at/after the cap only
+ *  `fix-environment` remains — the loop has proven re-sampling cannot converge,
+ *  so the only productive next diagnosis is the environment itself. */
+export function restrictRedJudgeRoutes<T extends readonly string[]>(usedRoutes: number, allowed: T, cap: number = MAX_RED_JUDGE_ROUTES): T | ["fix-environment"] {
+	return usedRoutes >= cap ? (["fix-environment"] as ["fix-environment"]) : allowed;
+}
+
+/** Loose phase shape for the leakage guard — self-contained so spec/doc types
+ *  can evolve without touching this pure function. */
+export type LeakPhase = {
+	name?: string;
+	deliverables?: {
+		requireFiles?: string[];
+		requireContains?: Array<{ file: string }>;
+		requireNotContains?: Array<{ file: string }>;
+		requireTests?: string[];
+	};
+};
+
+const leakNorm = (p: string): string => p.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+
+function phaseDeliverableFiles(phase: LeakPhase | undefined): string[] {
+	const d = phase?.deliverables;
+	if (!d) return [];
+	return [
+		...(d.requireFiles ?? []),
+		...(d.requireContains ?? []).map((x) => x.file),
+		...(d.requireNotContains ?? []).map((x) => x.file),
+		...(d.requireTests ?? []),
+	].map(leakNorm);
+}
+
+/** Cross-phase deliverable leakage (run 2026-08-27T12-33-43-088Z): phase-2's
+ *  implementer changed root index.html — phase-3's DECLARED deliverable — out
+ *  of scope, so phase-3 could never author an honest RED (its deliverable
+ *  already existed; the honest revert was itself flagged "RED pollution").
+ *  Returns the changed files that intersect any LATER phase's declared
+ *  deliverables (path-drift tolerant), current phase excluded. Pure. */
+export function laterPhaseDeliverableHits(changedFiles: string[], phases: LeakPhase[], currentIndex: number): string[] {
+	const later = new Set<string>();
+	for (let j = currentIndex + 1; j < phases.length; j++) {
+		for (const f of phaseDeliverableFiles(phases[j])) later.add(f);
+	}
+	return changedFiles.filter((p) => later.has(leakNorm(p)));
+}
+
+/** Owner names of the later phases whose declared deliverables `changedFiles`
+ *  leak into — for the BLOCKING log line at the advisory site. Pure. */
+export function laterPhaseDeliverableOwners(changedFiles: string[], phases: LeakPhase[], currentIndex: number): string[] {
+	const owners: string[] = [];
+	for (let j = currentIndex + 1; j < phases.length; j++) {
+		const files = new Set(phaseDeliverableFiles(phases[j]));
+		if (changedFiles.some((p) => files.has(leakNorm(p)))) owners.push(phases[j]?.name ?? `phase-${j + 1}`);
+	}
+	return owners;
+}
+
 /** v0.3.0: after this many §D re-entries a phase whose partial keeps the SAME
  * failure signature is skipped for the rest of the run (its stash-preserved
  * best attempt stands; later phases keep getting convergence iterations). */
@@ -1290,6 +1359,11 @@ export const implementationStage: Stage = {
 					// only scaffolding this phase; re-admitted through the boundary on the
 					// next try (the RED oracle remains the final guard).
 					const redScaffoldApproved = new Set<string>();
+					// Per-phase count of ROUTED judge interventions at the RED no-progress
+					// boundary — after MAX_RED_JUDGE_ROUTES, only fix-environment remains
+					// (run 2026-08-27T12-33-43-088Z: 9 tries / 5 judges / ~3.5h of ladder
+					// resets before the environment diagnosis finally landed).
+					let redJudgeRoutes = 0;
 					while (ctx.budget.check()) {
 						const redDiagnostics: RedCheckDiagnostic[] = [];
 						const redTryDetail = attemptDetail(attempt, `try ${retries + 1}`);
@@ -1543,9 +1617,15 @@ export const implementationStage: Stage = {
 										"## Files changed during RED",
 										redChangedFiles.join("\n") || "(none)",
 									].join("\n"),
-									allowedRoutes: ["re-author-tests", "fix-environment", "replan-upstream", "allow-scaffold"],
+									allowedRoutes: (() => {
+								const base = ["re-author-tests", "fix-environment", "replan-upstream", "allow-scaffold"] as const;
+								const restricted = restrictRedJudgeRoutes(redJudgeRoutes, base);
+								if (restricted.length < base.length) ctx.log(`Implementation ${phaseId} red judge routes capped: ${redJudgeRoutes} routed intervention(s) without green — forcing fix-environment (stop resampling, start diagnosing the environment)`);
+								return restricted;
+							})(),
 									outputTails: [...(redEvidence.diagnostics ?? []).map((d) => d.outputTail), tdd?.text ?? ""],
 								});
+								if (judgeOut.status === "routed") redJudgeRoutes++;
 								// v0.2.8 G4 (allow-scaffold): the judge read the spec + the changed
 								// files and blessed them as declaration-only scaffolding the test
 								// needs to compile and still fail RED. Re-admit those paths through
@@ -1987,6 +2067,27 @@ export const implementationStage: Stage = {
 				// NOT report (under-reporting) are surfaced via ctx.log but NEVER fail the
 				// gate — under-reporting is not a false-green.
 				const advisory = phaseChangeRec?.crossCheck?.changedNotClaimed ?? [];
+				// Cross-phase deliverable leakage (run 2026-08-27T12-33-43-088Z):
+				// phase-2 changed root index.html — phase-3's DECLARED deliverable —
+				// out of scope (advisory then), so phase-3 could never author an honest
+				// RED and burned 9 tries. BLOCKING now: revert the leaked paths (this
+				// check runs PRE-commit, so the revert is effective) and name the owner
+				// phases — later phases re-do the work with an honest RED.
+				// The check runs over the attempt's FULL git delta (claimed or not —
+				// run-1's leak was HONESTLY claimed by phase-2, which is exactly why
+				// the advisory-only path would have missed it), minus this phase's
+				// own declared scope (a file declared by BOTH phases belongs here).
+				const gitActual = phaseChangeRec?.gitActual;
+				const changedAll = gitActual
+					? [...(gitActual.created ?? []), ...(gitActual.modified ?? []), ...(gitActual.deleted ?? [])]
+					: advisory;
+				const inOwnScope = changedAll.filter((f) => declaredScope.has(f) || declaredScope.has(f.replace(/\\/g, "/").replace(/^\.\//, "")));
+				const leakOwners = laterPhaseDeliverableOwners(changedAll.filter((f) => !inOwnScope.includes(f)), phases, idx);
+				if (leakOwners.length > 0) {
+					const leakFiles = laterPhaseDeliverableHits(changedAll.filter((f) => !inOwnScope.includes(f)), phases, idx);
+					ctx.log(`Implementation ${phaseId} BLOCKING: changed-not-claimed file(s) ${leakFiles.join(", ")} are DECLARED DELIVERABLES of later phase(s) ${leakOwners.join(", ")} — phase-boundary leak; reverting them (this phase's scope stands, later phases redo the work with an honest RED)`);
+					restorePaths(setup.worktreePath, leakFiles);
+				}
 				if (advisory.length) {
 					ctx.log(`Implementation ${phaseId} advisory: ${advisory.length} changed-not-claimed file(s): ${advisory.join(", ")}`);
 				}

@@ -70,13 +70,16 @@ const maxCallsPerRun = (): number => {
 	return Number.isFinite(n) && n > 0 ? n : 12;
 };
 /** Wall-clock cap for one judge attempt: diagnosis must be fast, never block a
- *  loop. Lazy env override SUPER_DEV_JUDGE_TIMEOUT_MS; default 240s — LLM judge
- *  latency is heavy-tailed (observed ~71s typical vs >120s tail on run
- *  2026-08-19T03-16-50-261Z; OpenAI/Anthropic SDKs default 600s per request),
- *  and the old 120s wall killed grounded diagnoses mid-exploration. */
+ *  loop. Lazy env override SUPER_DEV_JUDGE_TIMEOUT_MS; default 480s — LLM judge
+ *  latency is heavy-tailed (observed ~71s typical; OpenAI/Anthropic SDKs
+ *  default 600s per request). The old 120s wall killed grounded diagnoses
+ *  mid-exploration, and run 2026-08-27T12-33-43-088Z then lost 4/4 judge calls
+ *  at EXACTLY the 240s cap (240161/240193/240244/240237ms — glm-5.2 @
+ *  thinking=high exploring a worktree systematically overruns it while the
+ *  soft-deadline wrap-up fails to terminate). 480s = SDK default minus grace. */
 export const judgeTimeoutMs = (): number => {
 	const n = Number.parseInt(superDevEnv("SUPER_DEV_JUDGE_TIMEOUT_MS") ?? "", 10);
-	return Number.isFinite(n) && n > 0 ? n : 240_000;
+	return Number.isFinite(n) && n > 0 ? n : 480_000;
 };
 
 /** Timeout classification shared by every backend surface (review F-1, both

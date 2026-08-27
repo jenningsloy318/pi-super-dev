@@ -154,6 +154,43 @@ function normalizeTrackerPath(p: string): string {
 
 const INTERNAL_RUNTIME_CLAIM_BASENAMES = new Set([".resume-cache.jsonl", ".run-lock"]);
 
+/** super-dev's OWN bookkeeping artifacts (run 2026-08-27T12-33-43-088Z: the
+ *  changed-not-claimed advisory fired 3x/run listing ~23 files that were
+ *  almost entirely harness bookkeeping — alert fatigue that buried the one
+ *  real signal, gate-baseline.json). These are excluded from the ADVISORY
+ *  ONLY; `claimedNotChanged` (the false-green killer) stays strict over them.
+ *  Recognized wherever they live — most sit inside the in-worktree spec dir
+ *  (docs/specifications/<spec>/). */
+const HARNESS_BOOKKEEPING_BASENAMES = new Set([
+	".knowledge.json",
+	".user-notes.json",
+	".judge.jsonl",
+	"events.jsonl",
+	"change-tracker.jsonl",
+	"implementation-evidence.jsonl",
+	"escalation-report.md",
+]);
+
+export function isHarnessBookkeepingPath(p: string): boolean {
+	const normalized = normalizeTrackerPath(p);
+	if (isInternalRuntimeClaim(normalized)) return true;
+	// The spec directory (spec docs, their ledgers, escalation reports) is
+	// harness-owned surface, not project deliverables.
+	if (normalized.startsWith("docs/specifications/")) return true;
+	const basename = normalized.split("/").pop() ?? normalized;
+	if (HARNESS_BOOKKEEPING_BASENAMES.has(basename)) return true;
+	// Escalation reports carry a kind tag: escalation-report-<n>.md
+	if (/^escalation-report[-.][\w.-]*\.md$/i.test(basename)) return true;
+	return false;
+}
+
+/** Advisory-noise filter: drop harness bookkeeping from a changedNotClaimed
+ *  list, preserving order. Exported for the tracker cross-check AND any other
+ *  advisory surface; NEVER apply to claimedNotChanged. */
+export function filterChangedNotClaimedNoise(paths: string[]): string[] {
+	return paths.filter((p) => !isHarnessBookkeepingPath(p));
+}
+
 /**
  * Some claims name super-dev's own transient runtime artifacts rather than repo
  * deliverables. They are intentionally excluded from git tracking (for example
@@ -552,9 +589,9 @@ export class ChangeTracker {
 			}
 			claimedNotChanged.push(p);
 		}
-		const changedNotClaimed = gitAllChanged.filter(
+		const changedNotClaimed = filterChangedNotClaimedNoise(gitAllChanged.filter(
 			(p) => !claimedAllN.has(normalizeTrackerPath(p)),
-		);
+		));
 		return { claimedNotChanged, changedNotClaimed, ignoredVerified };
 	}
 

@@ -82,7 +82,7 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 	});
 
 	it("buildResearchPrompt", () => {
-		expectKeys(buildResearchPrompt(s, null, "task", null, null, null), ["title", "date", "summary", "options", "sources", "openIssues"]);
+		expectKeys(buildResearchPrompt(s, null, "task", null, null, null), ["title", "date", "summary", "options", "sources"]);
 	});
 
 	it("buildDebugPrompt", () => {
