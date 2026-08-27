@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -528,8 +528,18 @@ describe("M3 G4 wiring (revision-gate green-skip in artifactConvergenceNode)", (
 });
 
 // ── M4 (v0.3.8): the escalation route-back choice drives an INLINE jump ─────
-
+// v0.3.19: the single-routable-owner shape this block exercises now AUTO-ROUTES
+// by default (no human wait) — the human decision surface below is live code
+// gated by SUPER_DEV_NO_AUTO_ROUTEBACK=1, so these tests pin it with the
+// kill-switch set (default-ON behavior is pinned in
+// src/stages/artifact-convergence.test.ts v0.3.19 AUTO-ROUTE block).
 describe("M4 escalation route-back choice (G6)", () => {
+	const savedAutoKill = process.env.SUPER_DEV_NO_AUTO_ROUTEBACK;
+	beforeAll(() => { process.env.SUPER_DEV_NO_AUTO_ROUTEBACK = "1"; });
+	afterAll(() => {
+		if (savedAutoKill === undefined) delete process.env.SUPER_DEV_NO_AUTO_ROUTEBACK;
+		else process.env.SUPER_DEV_NO_AUTO_ROUTEBACK = savedAutoKill;
+	});
 	it("a user-chosen route-back throws RouteBackSignal (inline jump), not a retry round", async () => {
 		const s = setup(dir);
 		mkdirSync(s.specDirectory, { recursive: true });
@@ -666,6 +676,15 @@ describe("M4 escalation route-back choice (G6)", () => {
 // ── M5 (v0.3.9): the interactive decision suppression is DELETED ────────────
 
 describe("M5 — upstream-owned routing is decision-independent", () => {
+	// v0.3.19: same kill-switch pin as the M4 block — these tests drive HUMAN
+	// decisions (retry-with-guidance / abandon / accept-limitation), which the
+	// default auto-route bypasses for the single-owner shape.
+	const savedAutoKill = process.env.SUPER_DEV_NO_AUTO_ROUTEBACK;
+	beforeAll(() => { process.env.SUPER_DEV_NO_AUTO_ROUTEBACK = "1"; });
+	afterAll(() => {
+		if (savedAutoKill === undefined) delete process.env.SUPER_DEV_NO_AUTO_ROUTEBACK;
+		else process.env.SUPER_DEV_NO_AUTO_ROUTEBACK = savedAutoKill;
+	});
 	it("a retry-with-guidance choice on an upstream-owned blocker STILL routes (suppression deleted; guidance persisted)", async () => {
 		const s = setup(dir);
 		mkdirSync(s.specDirectory, { recursive: true });

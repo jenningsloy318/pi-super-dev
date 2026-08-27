@@ -41,6 +41,20 @@ export function inlineRouteBackEnabled(): boolean {
 	return true;
 }
 
+/** v0.3.19: when a convergence blocker's own analysis already resolves to
+ *  exactly ONE routable strictly-upstream owner AND the per-edge jump budget
+ *  allows it, route DIRECTLY — no human round-trip. The HITL wait was already
+ *  ceremonial for that shape since M5 (every non-run-level choice routes
+ *  identically); only accept-limitation/abandon could alter the outcome, and
+ *  they stay reachable via the kill-switch.
+ *  Kill-switch SUPER_DEV_NO_AUTO_ROUTEBACK=1 (alias SUPER_DEV_AUTO_ROUTEBACK=0)
+ *  restores the HITL prompt byte-identically. */
+export function autoRouteBackEnabled(): boolean {
+	if (superDevEnv("SUPER_DEV_NO_AUTO_ROUTEBACK") === "1") return false;
+	if (superDevEnv("SUPER_DEV_AUTO_ROUTEBACK") === "0") return false;
+	return true;
+}
+
 /** Total inline-jump bound per run (defense-in-depth above the per-edge
  *  budget; a runaway route-back↔re-block cycle stops here). */
 export function maxInlineJumps(): number {

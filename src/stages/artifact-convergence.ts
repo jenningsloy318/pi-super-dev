@@ -26,6 +26,7 @@ import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.t
 import { RouteBackSignal, isRoutableOwnerStage } from "../routing/router.ts";
 import { appendUserNotes } from "../render/user-notes.ts";
 import { planInlineRouteBack } from "../routing/walker.ts";
+import { autoRouteBackEnabled } from "../routing/journal.ts";
 import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
@@ -674,6 +675,32 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 									.filter((o, _i, arr) => arr.length === 1 && isRoutableOwnerStage(o))[0],
 							};
 							let decision: import("../types.ts").EscalationDecision | undefined;
+							// v0.3.19 AUTO-ROUTE: when the blocker analysis itself already
+							// resolves the fix path — exactly ONE routable strictly-upstream
+							// owner and a per-edge jump budget that allows it — route DIRECTLY,
+							// no human round-trip (run 2026-08-27T00-59-52: a BDD contradiction
+							// with a crisp owner=requirements recommendation burned a full HITL
+							// wait only for the user to click "route back"). Since M5 the wait
+							// was already ceremonial for this shape — every non-run-level choice
+							// routes identically; the run-level overrides (accept-limitation /
+							// abandon) remain reachable via SUPER_DEV_NO_AUTO_ROUTEBACK=1.
+							// Budget-exhausted, multi-owner, non-routable, or kill-switched
+							// cases fall through to the HITL escalation below unchanged.
+							if (upstreamOwned.length > 0 && autoRouteBackEnabled()) {
+								const autoCmd = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamOwned);
+								if (autoCmd) {
+									// Audit trail: the SAME report surface, decision marked
+									// machine-taken (route-back-auto), so the auto-jump is never
+									// silent. Best-effort — a report failure must not block recovery.
+									try {
+									const { writeEscalationReport } = await import("../render/escalation-report.ts");
+									writeEscalationReport({ ...failure, message: `[auto-route: single upstream owner "${autoCmd.to}" — routed without HITL; kill-switch SUPER_DEV_NO_AUTO_ROUTEBACK=1 restores the human prompt]\n\n${failure.message}` }, { choice: "route-back-auto" }, state.setup?.specDirectory);
+								} catch { /* best-effort audit */ }
+								ctx.log(`${options.feedbackKey} convergence: UPSTREAM-OWNED blocker detected — AUTO-ROUTE ${autoCmd.from}→${autoCmd.to} (single routable owner, budget checked, no HITL; SUPER_DEV_NO_AUTO_ROUTEBACK=1 restores the prompt)`);
+								ctx.log(`  blocker: ${failure.message}`);
+								throw new RouteBackSignal(autoCmd);
+							}
+							}
 							if (escalate && escalationBudgetRemaining(state, failure) > 0) {
 								ctx.log(`${options.feedbackKey} convergence: ${upstreamOwned.length > 0 ? "UPSTREAM-OWNED blocker" : "STALL"} detected — escalating to user (HITL)`);
 								ctx.log(`  blocker: ${failure.message}`);

@@ -17,11 +17,12 @@
  *    later approval still converges (additive baseline).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext, Escalate } from "../types.ts";
-import { requirementsConvergenceNode, designConvergenceNode, MAX_CONVERGENCE_ROUNDS } from "./artifact-convergence.ts";
+import { requirementsConvergenceNode, designConvergenceNode, bddConvergenceNode, MAX_CONVERGENCE_ROUNDS } from "./artifact-convergence.ts";
+import { RouteBackSignal } from "../routing/router.ts";
 
 // The reviewer's control object lands under state.requirementsReview via the
 // task() wrapper (state[stage.id] = result). The deterministic validator
@@ -248,13 +249,13 @@ function designState(taskType: string, specDir: string, worktree: string): Pipel
 }
 
 /** designControls: per-round `pipeline.design` control (null = timeout). */
-function makeDesignCtx(opts: { designControls: Array<Record<string, unknown> | null>; reviews: ControlObj[]; logs: string[]; taskType?: string; maxRounds?: number }): StageContext {
+function makeDesignCtx(opts: { designControls: Array<Record<string, unknown> | null>; reviews: ControlObj[]; logs: string[]; taskType?: string; maxRounds?: number; escalate?: Escalate }): StageContext {
 	let rounds = 0;
 	let designRounds = 0;
 	let reviewRounds = 0;
 	return {
 		task: "t",
-		options: {},
+		options: { escalate: opts.escalate },
 		state: {} as PipelineState,
 		budget: { check: () => rounds++ < (opts.maxRounds ?? 40), spent: () => true, count: 0 },
 		log: (m: string) => opts.logs.push(m),
@@ -337,5 +338,138 @@ describe("designConvergenceNode — skip vs designer-failure (review-finding #1)
 		expect(hasLog(logs, "failed schema/render")).toBe(true);
 		// Exactly one design doc exists on disk (from the valid round).
 		expect(readdirSync(specDir).filter((f) => /-design\.md$/.test(f)).length).toBe(1);
+	});
+});
+
+// --- v0.3.19: AUTO-ROUTE upstream-owned blockers (no HITL wait) -------------
+// Run 2026-08-27T00-59-52 (17-stock-analysis-angles): the BDD review surfaced
+// BDD-F-001 owner=requirements with a crisp, unambiguous recommendation; the
+// loop escalated to HITL only for the user to click "route back" — a full
+// human round-trip confirming a decision the blocker analysis had already
+// made. Now: exactly ONE routable strictly-upstream owner + per-edge jump
+// budget ⇒ RouteBackSignal DIRECTLY (escalation report records the
+// machine-taken route-back-auto decision for audit). Ambiguous shapes
+// (multi-owner, non-routable, budget-exhausted) and SUPER_DEV_NO_AUTO_ROUTEBACK=1
+// keep the HITL prompt byte-identically.
+describe("artifactConvergenceNode — AUTO-ROUTE upstream-owned blockers (v0.3.19)", () => {
+	const savedKill = process.env.SUPER_DEV_NO_AUTO_ROUTEBACK;
+	afterEach(() => {
+		if (savedKill === undefined) delete process.env.SUPER_DEV_NO_AUTO_ROUTEBACK;
+		else process.env.SUPER_DEV_NO_AUTO_ROUTEBACK = savedKill;
+	});
+
+	/** The incident shape: a BDD review blocking finding owned by requirements
+	 *  (requirements strictly precedes bdd in STAGE_IDS). */
+	const ownedByRequirements = (id: string): ControlObj => ({
+		verdict: "Changes Requested",
+		summary: "upstream ambiguity",
+		findings: [{ id, severity: "high", title: `AC-04(b) required-ness undecided`, detail: `detail ${id}`, blocking: true, ownerStage: "requirements", status: "open" }],
+	} as ControlObj);
+
+	function bddState(specDir: string): PipelineState {
+		return {
+			task: "t",
+			options: {} as never,
+			setup: { worktreePath: "/tmp/wt", specDirectory: specDir, defaultBranch: "main", language: "backend", isWebUi: false, specIdentifier: "01", worktreeCreated: false, initializedRepo: false },
+			classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false },
+		} as unknown as PipelineState;
+	}
+
+	function makeBddCtx(logs: string[], reviews: ControlObj[], escalate?: Escalate): StageContext {
+		let rounds = 0;
+		let reviewRounds = 0;
+		return {
+			task: "t",
+			options: { escalate },
+			state: {} as PipelineState,
+			budget: { check: () => rounds++ < 40, spent: () => true, count: 0 },
+			log: (m: string) => logs.push(m),
+			phase: () => {},
+			events: { on() {}, off() {}, emit() {} },
+			results: [],
+			signal: undefined,
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.id === "pipeline.bddReview") {
+					const ctrl = reviews[Math.min(reviewRounds, reviews.length - 1)];
+					reviewRounds++;
+					return { text: "", control: ctrl };
+				}
+				return { text: "", control: { docPath: "/tmp/spec/03-bdd.md" } as ControlObj };
+			},
+			async helper() {
+				return { value: { pass: true, errors: [] } as ControlObj, digest: "PASS" };
+			},
+			async parallel() {
+				return [];
+			},
+		} as unknown as StageContext;
+	}
+
+	it("T1 (the incident): single routable upstream owner ⇒ RouteBackSignal WITHOUT the HITL wait", async () => {
+		const specDir = mkdtempSync(join(tmpdir(), "sd-autorb-")) + "/";
+		const logs: string[] = [];
+		// Sentinel: had the code consulted HITL, "abandon" would FatalAbort —
+		// both assertions below fail together if the wait is back.
+		const escalate = vi.fn<Escalate>().mockResolvedValue({ choice: "abandon" });
+		try {
+			await expect(bddConvergenceNode.run(bddState(specDir), makeBddCtx(logs, [ownedByRequirements("BDD-F-001")], escalate))).rejects.toThrow(RouteBackSignal);
+			expect(escalate).not.toHaveBeenCalled();
+			expect(hasLog(logs, "AUTO-ROUTE bdd→requirements")).toBe(true);
+			expect(hasLog(logs, "escalating to user (HITL)")).toBe(false);
+		} finally { rmSync(specDir, { recursive: true, force: true }); }
+	});
+
+	it("T2: the escalation report records the machine-taken route-back-auto decision (audit)", async () => {
+		const specDir = mkdtempSync(join(tmpdir(), "sd-autorb2-")) + "/";
+		const logs: string[] = [];
+		try {
+			await expect(bddConvergenceNode.run(bddState(specDir), makeBddCtx(logs, [ownedByRequirements("BDD-F-001")]))).rejects.toThrow(RouteBackSignal);
+			const report = readFileSync(join(specDir, "escalation-report.md"), "utf8");
+			expect(report).toContain("route-back-auto");
+			expect(report).toContain("routed without HITL");
+			expect(report).toContain("BDD-F-001");
+		} finally { rmSync(specDir, { recursive: true, force: true }); }
+	});
+
+	it("T3 (kill-switch): SUPER_DEV_NO_AUTO_ROUTEBACK=1 restores the HITL round-trip", async () => {
+		process.env.SUPER_DEV_NO_AUTO_ROUTEBACK = "1";
+		const specDir = mkdtempSync(join(tmpdir(), "sd-autorb3-")) + "/";
+		const logs: string[] = [];
+		const escalate = vi.fn<Escalate>().mockResolvedValue({ choice: "route-back" });
+		try {
+			await expect(bddConvergenceNode.run(bddState(specDir), makeBddCtx(logs, [ownedByRequirements("BDD-F-001")], escalate))).rejects.toThrow(RouteBackSignal);
+			expect(escalate).toHaveBeenCalledTimes(1);
+			expect(hasLog(logs, "escalating to user (HITL)")).toBe(true);
+			expect(hasLog(logs, "(user-chosen)")).toBe(true);
+			expect(hasLog(logs, "AUTO-ROUTE")).toBe(false);
+		} finally { rmSync(specDir, { recursive: true, force: true }); }
+	});
+
+	it("T4: multi-owner blockers keep HITL (no single unambiguous owner to trust)", async () => {
+		const worktree = mkdtempSync(join(tmpdir(), "sd-autorb4-"));
+		const specDir = mkdtempSync(join(tmpdir(), "sd-autorb4s-")) + "/";
+		const logs: string[] = [];
+		// requirements AND research both routable + strictly upstream of design →
+		// planInlineRouteBack declines (owners.size 2) → HITL fires as before.
+		const multiOwner: ControlObj = {
+			verdict: "Changes Requested",
+			summary: "two upstream owners",
+			findings: [
+				{ id: "D1", severity: "high", title: "gap one", detail: "d1", blocking: true, ownerStage: "requirements", status: "open" },
+				{ id: "D2", severity: "high", title: "gap two", detail: "d2", blocking: true, ownerStage: "research", status: "open" },
+			],
+		} as ControlObj;
+		const escalate = vi.fn<Escalate>().mockResolvedValue({ choice: "accept-limitation" });
+		try {
+			const ctx = makeDesignCtx({ taskType: "feature", designControls: [VALID_DESIGN], reviews: [multiOwner], logs, escalate });
+			const result = await designConvergenceNode.run(designState("feature", specDir, worktree), ctx);
+			expect(result.status).toBe("ok"); // accept-limitation converged the loop
+			expect(escalate).toHaveBeenCalledTimes(1);
+			expect(hasLog(logs, "AUTO-ROUTE")).toBe(false);
+			expect(hasLog(logs, "escalating to user (HITL)")).toBe(true);
+		} finally {
+			rmSync(specDir, { recursive: true, force: true });
+			rmSync(worktree, { recursive: true, force: true });
+		}
 	});
 });

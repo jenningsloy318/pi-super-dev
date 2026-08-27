@@ -358,6 +358,17 @@ severity, findings, and any judge diagnosis; headless runs degrade to
 informative reports — `stagnation-report.md` / `escalation-report.md` in the
 spec dir).
 
+**Auto-route (v0.3.19, default ON):** when a convergence blocker's own analysis
+already resolves to exactly ONE routable strictly-upstream owner (e.g. a BDD
+review finding `owner=requirements`) and the per-edge jump budget allows it,
+the loop routes back DIRECTLY — no human round-trip. The decision is recorded
+as `route-back-auto` in the escalation report for audit. Ambiguous shapes
+(multiple owners, non-routable owner, exhausted edge budget) still escalate to
+HITL, and `SUPER_DEV_NO_AUTO_ROUTEBACK=1` restores the human prompt for the
+single-owner shape too. Auto-routing composes with the inline route-back caps
+(`SUPER_DEV_MAX_INLINE_JUMPS`, per-edge journal budgets), so it can never loop
+unbounded.
+
 ## Configuration
 
 Super-dev stores user-level runtime data under `~/.super-dev/`:
@@ -449,6 +460,8 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_DISABLE_REPLAN_LEAD` | — | `1` = skip the replan-lead enrichment agent |
 | `SUPER_DEV_NO_INLINE_ROUTEBACK` | — | `1` = disable inline (in-loop) upstream route-back |
 | `SUPER_DEV_INLINE_ROUTEBACK` | `1` | `0` = alias for disabling inline route-back |
+| `SUPER_DEV_NO_AUTO_ROUTEBACK` | — | `1` = restore the HITL prompt for single-owner upstream blockers (v0.3.19 auto-routes them by default) |
+| `SUPER_DEV_AUTO_ROUTEBACK` | `1` | `0` = alias for disabling auto-route (same as the kill-switch above) |
 | `SUPER_DEV_MAX_INLINE_JUMPS` | `4` | cap on inline route-back jumps per journal |
 | `SUPER_DEV_NO_VERIFY_REPLAY_GUARD` | — | `1` = disable the Stage 10 replay guard |
 | `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |

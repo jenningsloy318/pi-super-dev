@@ -228,6 +228,10 @@ describe("M1 drift pins — classification tables track the REAL vocabularies", 
 			"accept-limitation": classifyEscalationChoice("accept-limitation"),
 			abandon: classifyEscalationChoice("abandon"),
 			"route-back": classifyEscalationChoice("route-back"),
+			// v0.3.19: machine-taken decision — never passes through the classifier
+			// (the RouteBackSignal is thrown before any decision consumer runs); the
+			// default "escalate" (safest actuator: the human) is the defensive pin.
+			"route-back-auto": classifyEscalationChoice("route-back-auto"),
 		};
 		expect(exhaustive).toEqual({
 			"retry-with-guidance": "retry",
@@ -235,6 +239,7 @@ describe("M1 drift pins — classification tables track the REAL vocabularies", 
 			"accept-limitation": "accept-limitation",
 			abandon: "abort",
 			"route-back": "route-back",
+			"route-back-auto": "escalate",
 		});
 	});
 });

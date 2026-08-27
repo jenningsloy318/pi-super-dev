@@ -381,7 +381,12 @@ export type EscalationChoice =
 	/** M4 routing: jump to the single upstream owner inline (the walker
 	 *  catches the resulting RouteBackSignal; offered only when
 	 *  EscalationFailure.routeBackOwner is set). */
-	| "route-back";
+	| "route-back"
+	/** v0.3.19: the pipeline itself resolved a single routable upstream owner
+	 *  and routed WITHOUT waiting for a human (recorded in the escalation
+	 *  report for audit; classifyEscalationChoice never sees it — the
+	 *  RouteBackSignal is thrown before any decision consumer runs). */
+	| "route-back-auto";
 
 /**
  * A decision returned by {@link Escalate}. `undefined` = no decision
