@@ -1,0 +1,15 @@
+{
+  "name": "modern-go-guidelines",
+  "displayName": "Modern Go Guidelines",
+  "version": "1.1.1",
+  "description": "Helps coding agents write modern, idiomatic Go.",
+  "author": {
+    "name": "JetBrains, GoLand Team",
+    "email": "goland@jetbrains.com"
+  },
+  "homepage": "https://github.com/JetBrains/go-modern-guidelines",
+  "repository": "https://github.com/JetBrains/go-modern-guidelines",
+  "license": "Apache-2.0",
+  "keywords": ["go", "golang", "go-best-practices", "guidelines", "modernize"],
+  "skills": "./skills/"
+}

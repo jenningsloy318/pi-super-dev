@@ -24,6 +24,53 @@ describe("loadLangProfile", () => {
 		}
 	});
 
+	describe("v0.3.20: modern-guidelines distillation (JetBrains Go / Trail of Bits Python / Microsoft Rust)", () => {
+		it("go profile teaches version detection from go.mod and version-gated idioms", () => {
+			const go = loadLangProfile("go");
+			expect(go).toMatch(/go\.mod/); // detect version first (JetBrains methodology)
+			expect(go).toMatch(/wg\.Go/); // 1.25
+			expect(go).toMatch(/errors\.AsType/); // 1.26
+			expect(go).toMatch(/slices\.Contains/); // 1.21 baseline helpers
+			expect(go).toMatch(/cmp\.Or/); // 1.22
+			expect(go).toMatch(/omitzero/); // 1.24
+			expect(go).toMatch(/encoding\/json\/v2/); // 1.27
+			expect(go).toMatch(/authoritative/i); // modern idioms win over nearby old code
+		});
+
+		it("python profile teaches uv-only workflow (Trail of Bits modern-python)", () => {
+			const py = loadLangProfile("python");
+			expect(py).toMatch(/uv add/);
+			expect(py).toMatch(/uv run/);
+			expect(py).toMatch(/dependency-groups/); // PEP 735, not optional-dependencies
+			expect(py).toMatch(/PEP 723/);
+			expect(py).toMatch(/ruff/);
+		});
+
+		it("rust profile teaches Microsoft Pragmatic Rust rules", () => {
+			const rs = loadLangProfile("rust");
+			expect(rs).toMatch(/#\[expect/); // M-LINT-OVERRIDE-EXPECT
+			expect(rs).toMatch(/ground truth/i); // M-TAUTOLOGICAL-TESTS
+			expect(rs).toMatch(/From<.*> for/); // M-FROM-ERROR
+			expect(rs).toMatch(/edition = "2024"/); // M-LATEST-EDITION
+			expect(rs).toMatch(/last resort/i); // M-MACRO-LAST-RESORT
+		});
+
+		it("backend profile teaches TypeScript 5.x patterns", () => {
+			const be = loadLangProfile("backend");
+			expect(be).toMatch(/satisfies/);
+			expect(be).toMatch(/\{ cause: err \}/); // Error causes
+			expect(be).toMatch(/structuredClone/);
+			expect(be).toMatch(/AbortSignal/);
+		});
+
+		it("frontend profile keeps version discipline and platform-first rules", () => {
+			const fe = loadLangProfile("frontend");
+			expect(fe).toMatch(/Version discipline/);
+			expect(fe).toMatch(/React Compiler/);
+			expect(fe).toMatch(/platform/);
+		});
+	});
+
 	it("returns '' for mixed and unknown languages (graceful fallback)", () => {
 		expect(loadLangProfile("mixed")).toBe("");
 		expect(loadLangProfile("cobol")).toBe("");

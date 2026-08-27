@@ -118,7 +118,11 @@ stages/index.ts ──► the pipeline expressed with control nodes
 ├─ tracking.ts           git change-tracker (claimed-vs-actual cross-check)
 ├─ render/               TUI dashboard, per-stage live stream, MD report
 │                        rendering, learned-memory, escalation reports
-└─ agents/               31 specialist role files (+ agents/lang/{python,go,rust}.md)
+└─ agents/               31 specialist role files (+ agents/lang/{go,python,rust,backend,frontend}.md
+                         — language profiles distilled from JetBrains Modern Go
+                         Guidelines, Trail of Bits modern-python, and Microsoft
+                         Pragmatic Rust Guidelines; Go reference vendored at
+                         docs/references/go-modern-guidelines)
 ```
 
 ### Two agent backends
