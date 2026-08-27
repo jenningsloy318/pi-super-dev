@@ -559,6 +559,7 @@ export type IntegrationOutcomeStatus =
 	| "failed"
 	| "skipped-not-applicable"
 	| "skipped-service-unavailable"
+	| "skipped-static"
 	| "unknown-runner-unavailable";
 
 export interface IntegrationOutcome {
@@ -611,10 +612,16 @@ export function integrationOutcome(s: PipelineState): IntegrationOutcome {
 	for (const role of expected) {
 		roleStatus[role] = roleIntegrationStatus(role === "api" ? s.apiTest : s.uiTest);
 	}
+	// A STATIC tree (index.html, no package.json — run 2026-08-27T12-33-43-088Z)
+	// has no dev-server machinery: an unstartable integration server there is a
+	// PROPERTY OF THE PROJECT, not failed verification. Classify it skipped-static
+	// so Stage 10 can converge on the deterministic gates without lying (a real
+	// test FAILURE still outranks the skip).
+	const staticSite = s.bringup?.staticSite === true;
 	let status: IntegrationOutcomeStatus;
 	if (Object.values(roleStatus).every((v) => v === "passed")) status = "passed";
 	else if (Object.values(roleStatus).some((v) => v === "failed")) status = "failed";
-	else if (Object.values(roleStatus).some((v) => v === "skipped-service-unavailable")) status = "skipped-service-unavailable";
+	else if (Object.values(roleStatus).some((v) => v === "skipped-service-unavailable")) status = staticSite ? "skipped-static" : "skipped-service-unavailable";
 	else status = "unknown-runner-unavailable";
 	const pass = status === "passed";
 	return {
@@ -622,7 +629,7 @@ export function integrationOutcome(s: PipelineState): IntegrationOutcome {
 		pass,
 		expected,
 		roleStatus,
-		summary: status === "passed" ? "Integration tests passed" : `Integration status: ${status}`,
+		summary: status === "passed" ? "Integration tests passed" : status === "skipped-static" ? "Static site — no integration server startable; deterministic suites are the verification" : `Integration status: ${status}`,
 	};
 }
 
@@ -1298,6 +1305,7 @@ const fixStepIntegration = task({
 
 function inconclusiveIntegrationMessage(outcome: IntegrationOutcome): string {
 	if (outcome.status === "skipped-service-unavailable") return "integration service unavailable; stopping without product-code fix";
+	if (outcome.status === "skipped-static") return "static site with no startable integration server and review/build not fully green";
 	if (outcome.status === "unknown-runner-unavailable") return "integration runner unavailable; stopping without product-code fix";
 	return `integration did not pass (${outcome.status})`;
 }
@@ -1529,6 +1537,15 @@ export const verificationConvergenceNode: Node = {
 			ctx.log(`Stage 10: integration outcome attempt ${attempt}: ${outcome.status} (expected: ${outcome.expected.join(",") || "none"})`);
 			if (outcome.status === "passed" && reviewApproved(state) && buildGreen(state)) {
 				return markIntegrationPassed(state, ctx, `Stage 10: verification converged after ${attempt} attempt(s)`);
+			}
+
+			// Static-tree convergence (run 2026-08-27T12-33-43-088Z): a static site
+			// with no startable integration server must not hard-gate 10h of green
+			// deterministic work into PARTIAL. When review/build ARE green, the
+			// deterministic gates stand as verification — converge honestly with the
+			// skip disclosed in the summary (a real test failure never reaches here).
+			if (outcome.status === "skipped-static" && reviewApproved(state) && buildGreen(state)) {
+				return markIntegrationPassed(state, ctx, "Stage 10: static site — integration server unavailable; deterministic review/build/test gates stand as verification (skipped-static)");
 			}
 
 			if (outcome.status !== "failed") {

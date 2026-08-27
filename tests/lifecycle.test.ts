@@ -303,3 +303,113 @@ describe("AC-24 (SCENARIO-051): tryStartService stops between candidates when th
 		rmSync(dir, { recursive: true, force: true });
 	}, 25_000);
 });
+
+// ─── static-site strategy + discovered-cmd sanitization (run 2026-08-27T12-33-43-088Z) ──
+
+import {
+	sanitizeDiscoveredCmd,
+	fixedPortFromCmd,
+	detectStaticSite,
+	staticServerCandidates,
+	bringupTask as bringupTaskRe,
+} from "../src/stages/lifecycle.ts";
+
+describe("sanitizeDiscoveredCmd — run-1's prose-polluted discovery", () => {
+	it("strips a trailing shell comment from an otherwise clean command", () => {
+		expect(sanitizeDiscoveredCmd("make dev # = caddy run --config Caddyfile")).toBe("make dev");
+	});
+
+	it("sanitizes the observed prose paragraph down to its real command", () => {
+		// Run 1's candidate #1: a clean command leader + a whole explanatory
+		// paragraph in the trailing comment. The fix strips the comment — the
+		// ladder then gets a sane `make dev` (which still fails readiness on the
+		// random port and falls through to the static ladder) instead of garbage.
+		const observed = "make dev   # = caddy run --config Caddyfile  NOTE: Caddyfile root points at the PARENT dir so /nuclear-fission-3d/ resolves";
+		expect(sanitizeDiscoveredCmd(observed)).toBe("make dev");
+	});
+
+	it("REJECTS prose without any comment marker", () => {
+		expect(sanitizeDiscoveredCmd("run the dev server which will serve the static tree from the parent directory")).toBeNull();
+		expect(sanitizeDiscoveredCmd("NOTE: use make dev for local preview")).toBeNull();
+	});
+
+	it("takes the first line of multi-line output; rejects CJK prose outright", () => {
+		expect(sanitizeDiscoveredCmd("npm run dev\nsecond line of explanation")).toBe("npm run dev");
+		expect(sanitizeDiscoveredCmd("启动本地服务器 说明： 请先安装依赖")).toBeNull();
+	});
+
+	it("REJECTS empty/comment-only/absurdly long commands", () => {
+		expect(sanitizeDiscoveredCmd("   ")).toBeNull();
+		expect(sanitizeDiscoveredCmd("# just a comment")).toBeNull();
+		expect(sanitizeDiscoveredCmd(`node ${"a".repeat(250)}.js`)).toBeNull();
+	});
+
+	it("accepts ordinary single-line commands untouched", () => {
+		expect(sanitizeDiscoveredCmd("npm run dev")).toBe("npm run dev");
+		expect(sanitizeDiscoveredCmd("python3 -m http.server $PORT --bind 127.0.0.1")).toBe("python3 -m http.server $PORT --bind 127.0.0.1");
+		expect(sanitizeDiscoveredCmd("  caddy file-server --listen :$PORT --root .  ")).toBe("caddy file-server --listen :$PORT --root .");
+	});
+});
+
+describe("fixedPortFromCmd — self-bound ports", () => {
+	it("extracts :PORT, --listen, --port, -p, -l, http.server forms", () => {
+		// (Input here is ALREADY sanitized — the pipeline strips comments before
+		// this layer, so a port inside a comment is unreachable.)
+		expect(fixedPortFromCmd("python3 -m http.server 8321")).toBe(8321);
+		expect(fixedPortFromCmd("caddy file-server --listen :8321 --root .")).toBe(8321);
+		expect(fixedPortFromCmd("node server.js --port 3000")).toBe(3000);
+		expect(fixedPortFromCmd("php -S 127.0.0.1:8080")).toBe(8080);
+		expect(fixedPortFromCmd("npx serve -l 5000 .")).toBe(5000);
+	});
+
+	it("returns undefined for env-port commands", () => {
+		expect(fixedPortFromCmd("npm run dev")).toBeUndefined();
+		expect(fixedPortFromCmd("python3 -m http.server $PORT")).toBeUndefined();
+		expect(fixedPortFromCmd("caddy file-server --listen :$PORT --root .")).toBeUndefined();
+	});
+});
+
+describe("detectStaticSite — index.html tree without package.json", () => {
+	it("true for an HTML tree, false once package.json exists or no index.html", () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-static-"));
+		try {
+			expect(detectStaticSite(dir)).toBe(false); // no index.html yet
+			writeFileSync(join(dir, "index.html"), "<html></html>");
+			expect(detectStaticSite(dir)).toBe(true); // static tree
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { dev: "vite" } }));
+			expect(detectStaticSite(dir)).toBe(false); // node machinery owns startup
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("static bring-up — run 1's missing strategy", () => {
+	it("brings a static HTML tree up on a PORT-honoring server (python3 ladder)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-static-up-"));
+		writeFileSync(join(dir, "index.html"), "<html><body>static</body></html>");
+		try {
+			const logs: string[] = [];
+			const ctx = { log: (m: string) => logs.push(m), signal: undefined } as unknown as Parameters<typeof bringupTaskRe.run>[1];
+			const state = {
+				setup: { worktreePath: dir },
+				classify: { uiScope: "full" }, // run 1: ui expected for a static site
+			} as unknown as PipelineState;
+			const res = (await bringupTaskRe.run(state, ctx)) as { services: { ui?: ServiceHandle }; staticSite: boolean };
+			expect(res.staticSite).toBe(true);
+			expect(res.services.ui?.ready).toBe(true); // python3 http.server on $PORT
+			const body = await fetch(res.services.ui!.baseUrl);
+			expect(await body.text()).toContain("static");
+			stopService(res.services.ui!);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("staticServerCandidates all expand $PORT via the injected env", () => {
+		for (const spec of staticServerCandidates("/tmp/x")) {
+			expect(spec.cmd).toContain("$PORT");
+			expect(spec.portEnv).toBe("PORT");
+		}
+	});
+});

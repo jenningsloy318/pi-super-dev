@@ -279,9 +279,15 @@ export const classifyStage: Stage = {
 		const setup = S(state);
 		const fallback = await ctx.helper({ name: "classify-task", sources: { setup }, options: { runtimeTask: ctx.task } });
 		const base = fallback.value as { taskType?: string; uiScope?: string; language?: string; isWebUi?: boolean; skipStages?: unknown };
+		// Fabrication honesty (run 2026-08-27T13-12-39-803Z): a fallback-derived
+		// control must NEVER be indistinguishable from an agent verdict — the
+		// aborted run's audit row showed a perfectly healthy classify control that
+		// the deterministic fallback had fabricated. Every fallback return carries
+		// `fallback: true` and logs at WARN so downstream consumers (and the
+		// audit trail) can tell derived-from-task apart from judged-by-model.
 		if (!ctx.budget.check()) {
-			ctx.log("classify: budget exhausted — using deterministic classification");
-			return base;
+				ctx.log("WARN classify: budget exhausted — using deterministic classification (fallback)");
+			return { ...base, fallback: true };
 		}
 		// The classifier is a routing convenience, never a hard dependency: an
 		// ordinary failure (backend/session error, empty/invalid control) degrades to
@@ -301,8 +307,8 @@ export const classifyStage: Stage = {
 			});
 			const c = result.control as { taskType?: string; uiScope?: string; rationale?: string } | null;
 			if (!c || !c.taskType || !c.uiScope) {
-				ctx.log(`classify: LLM classifier produced no usable result${result.error ? ` (${result.error})` : ""} — using deterministic fallback (${base.taskType}/${base.uiScope})`);
-				return base;
+				ctx.log(`WARN classify: LLM classifier produced no usable result${result.error ? ` (${result.error})` : ""} — using deterministic fallback (${base.taskType}/${base.uiScope}, flagged fallback)`);
+				return { ...base, fallback: true };
 			}
 			ctx.log(`classify: taskType=${c.taskType} uiScope=${c.uiScope}${c.rationale ? ` — ${c.rationale}` : ""}`);
 			// Keep the setup-derived language/isWebUi; the LLM owns taskType/uiScope.
@@ -310,8 +316,8 @@ export const classifyStage: Stage = {
 		} catch (err) {
 			if (isFatalAbort(err) || isSafetyBoundaryError(err)) throw err; // never swallow safety/fatal
 			const msg = err instanceof Error ? err.message : String(err);
-			ctx.log(`classify: LLM classifier threw (${msg}) — using deterministic fallback (${base.taskType}/${base.uiScope})`);
-			return base;
+			ctx.log(`WARN classify: LLM classifier threw (${msg}) — using deterministic fallback (${base.taskType}/${base.uiScope}, flagged fallback)`);
+			return { ...base, fallback: true };
 		}
 	},
 };

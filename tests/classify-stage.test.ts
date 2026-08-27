@@ -92,4 +92,25 @@ describe("classifyStage — LLM-first with deterministic fallback", () => {
 		const ctx = makeCtx({ agentControl: null, agentThrows: "source-read-only boundary violation: modified project files (src/x.ts)", logs });
 		await expect(classifyStage.run(makeState(), ctx)).rejects.toThrow(/source-read-only boundary violation/);
 	});
+
+	it("flags every fallback-derived control with fallback:true + WARN (run 2026-08-27T13-12-39-803Z)", async () => {
+		// Fabrication honesty: the aborted run's audit row showed a healthy
+		// classify control the deterministic fallback had fabricated — a fallback
+		// verdict must never be indistinguishable from an agent verdict.
+		for (const opts of [
+			{ agentControl: null, agentError: "aborted by parent signal" },
+			{ agentControl: null, agentThrows: "boom" },
+			{ agentControl: { taskType: "feature", uiScope: "ui+arch" } as ControlObj, budget: false },
+		]) {
+			const logs: string[] = [];
+			const ctx = makeCtx({ ...opts, logs } as Parameters<typeof makeCtx>[0]);
+			const c = (await classifyStage.run(makeState(), ctx)) as Record<string, unknown>;
+			expect(c.fallback).toBe(true);
+			expect(logs.some((l) => l.startsWith("WARN classify:"))).toBe(true);
+		}
+		// an AGENT verdict stays unflagged
+		const logs: string[] = [];
+		const ok = (await classifyStage.run(makeState(), makeCtx({ agentControl: { taskType: "feature", uiScope: "none" } as ControlObj, logs }))) as Record<string, unknown>;
+		expect(ok.fallback).toBeUndefined();
+	});
 });

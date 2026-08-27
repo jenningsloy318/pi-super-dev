@@ -214,6 +214,11 @@ export interface PipelineState {
 	/** Running services brought up by the verify-loop's `bringup` step, so the
 	 *  api/ui test steps know where to hit and `teardown` knows what to kill. */
 	services?: ServiceMap;
+	/** Bring-up result (Stage 10d): started services + STATIC-SITE detection —
+	 *  a static HTML tree (index.html, no package.json) has no dev-server
+	 *  machinery, so verify treats an unstartable integration server as the
+	 *  non-blocking `skipped-static` outcome instead of a hard-gate PARTIAL. */
+	bringup?: { services?: ServiceMap; summary?: string; staticSite?: boolean };
 	review?: ControlObj;
 	codeReview?: ControlObj;
 	adversarialReview?: ControlObj;

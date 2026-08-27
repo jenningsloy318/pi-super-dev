@@ -211,6 +211,18 @@ export function task(stage: Stage): Node {
 				startMs = Date.now();
 				const result = await stage.run(state, ctx);
 				const durationMs = Date.now() - startMs;
+				// Cancellation honesty (run 2026-08-27T13-12-39-803Z): a stage that
+				// RETURNS after the run signal aborted must never record ok —
+				// classifyStage caught an aborted agent and returned the deterministic
+				// fallback, so a cancelled run logged "status=ok" with a perfectly
+				// healthy-looking fabricated control. Record cancelled, DISCARD the
+				// returned value (never written to state — a resume re-runs the stage
+				// honestly), and let the sequence propagate the cancellation.
+				if (ctx.signal?.aborted) {
+					record(ctx, "cancelled");
+					auditAppend({ stage: stage.id, durationMs, error: "aborted by parent signal" });
+					return { status: "cancelled" };
+				}
 				if (result !== undefined && result !== null) state[stage.id] = result;
 				// Sweep-3 round-2 CR-R2-3/CRR2-2: a stage that recorded an INFRA
 				// failed row mid-run (writerTask's G21 honest marker) must not have
@@ -226,13 +238,23 @@ export function task(stage: Stage): Node {
 				auditAppend({ stage: stage.id, durationMs, control: result });
 				return { status: "ok", value: result };
 			} catch (err) {
+				// FatalAbort (a nested fatal gate's exhaustion) must ALWAYS propagate —
+				// never be converted to {status:"failed"}, which a tolerant sequence
+				// would swallow.
+				if (isFatalAbort(err)) throw err;
+				// Cancellation honesty (run 2026-08-27T13-12-39-803Z): an agent aborted
+				// by the run's signal surfaces as a thrown error — that is a CANCELLED
+				// stage, not a failed one.
+				if (ctx.signal?.aborted) {
+					const durationMs = Date.now() - startMs;
+					record(ctx, "cancelled");
+					auditAppend({ stage: stage.id, durationMs, error: "aborted by parent signal" });
+					return { status: "cancelled" };
+				}
 				const error = err instanceof Error ? err.message : String(err);
 				const durationMs = Date.now() - startMs;
 				record(ctx, "failed", error);
 				auditAppend({ stage: stage.id, durationMs, error });
-				// FatalAbort (a nested fatal gate's exhaustion) must ALWAYS propagate — never
-				// be converted to {status:"failed"}, which a tolerant sequence would swallow.
-				if (isFatalAbort(err)) throw err;
 				if (stage.fatal) throw err;
 				return { status: "failed", error };
 			}

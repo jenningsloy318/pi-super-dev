@@ -33,6 +33,7 @@ import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
 import { appendRunEvent, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
+import { auditAppend } from "./render/super-dev-dir.ts";
 import { writeCompletionAudit } from "./completion-audit.ts";
 import { validateTeamReadiness } from "./team/raci.ts";
 import { recordInstruction } from "./team/messages.ts";
@@ -722,6 +723,15 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	try {
 		writeCompletionAudit(state, status);
 	} catch { /* best-effort */ }
+
+	// Cancellation honesty (run 2026-08-27T13-12-39-803Z): audit.jsonl ended at
+	// the last stage row — a cancelled run was indistinguishable from a crashed
+	// or failed one from the trail alone (the run-dir ledger differs from the
+	// spec-dir events ledger, which already closes with run.completed). Write
+	// the TERMINAL cancellation record to the run-dir audit trail, always last.
+	if (aborted) {
+		auditAppend({ stage: "run", error: abortError ?? "cancelled", control: { event: "run.cancelled", runStatus: status, reason: abortError } });
+	}
 
 	if (!aborted) {
 		// Honest completion log DERIVED FROM `status` (R5): a `tolerant` sequence

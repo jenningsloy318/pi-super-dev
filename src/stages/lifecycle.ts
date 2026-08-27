@@ -18,7 +18,7 @@
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Node, NodeResult, PipelineState, ServiceHandle, ServiceMap, Stage, StageContext } from "../types.ts";
 import { checkBashCommand } from "../safety.ts";
@@ -32,6 +32,12 @@ export interface StartSpec {
 	cwd: string;
 	env?: Record<string, string>;
 	portEnv?: string;
+	/** FIXED port the command binds by itself (a Caddyfile's `:8321`,
+	 *  `http.server 8321`, `--listen :8321`, …). When set, readiness polls THIS
+	 *  port — the shared random `PORT` injection can never satisfy a fixed-port
+	 *  server, so without this the candidate is unstartable BY CONSTRUCTION
+	 *  (run 2026-08-27T12-33-43-088Z burned 10h green work into PARTIAL on it). */
+	port?: number;
 	/** Absolute URL polled for readiness (overrides readyPath). */
 	readyUrl?: string;
 	/** Path appended to the base URL for readiness (e.g. "/health"). Defaults to "/". */
@@ -103,7 +109,8 @@ export function loadDotEnv(cwd: string): Record<string, string> {
  *  `ready:false` (the pid is still recorded so teardown can clean it up). Never
  *  throws — bringup records not-ready services and `withServiceDeps` skips. */
 export async function startService(spec: StartSpec, opts: { port?: number; signal?: AbortSignal } = {}): Promise<ServiceHandle> {
-	const port = opts.port ?? (await pickFreePort());
+	// Explicit caller port > the spec's own fixed port > a fresh random one.
+	const port = opts.port ?? spec.port ?? (await pickFreePort());
 	// The service command is MODEL-DISCOVERED (assessment output) and runs via
 	// shell:true with the full env + .env — it never passes through the agent bash
 	// safety hook. Screen it with the SAME denylist before spawning: a dangerous
@@ -129,7 +136,19 @@ export async function startService(spec: StartSpec, opts: { port?: number; signa
 	child.unref();
 	const baseUrl = `http://127.0.0.1:${port}`;
 	const readyUrl = spec.readyUrl ?? `${baseUrl}${spec.readyPath ?? "/"}`;
-	const ready = await waitForReady(readyUrl, spec.readinessTimeoutMs ?? 20_000, opts.signal);
+	// Fast-fail a candidate whose process EXITS before readiness (run
+	// 2026-08-27T12-33-43-088Z: "npm run dev"/"vite"/"next dev" on a static tree
+	// die instantly, yet each burned its FULL 12s poll window before the ladder
+	// moved on). Race the readiness poll against child exit — first to settle
+	// wins; a long-lived server never fires exit, so readiness is unchanged.
+	const exited = new Promise<false>((resolveExit) => {
+		child.once("exit", () => resolveExit(false));
+		child.once("error", () => resolveExit(false));
+	});
+	const ready = await Promise.race([
+		waitForReady(readyUrl, spec.readinessTimeoutMs ?? 20_000, opts.signal),
+		exited,
+	]);
 	return { role: spec.role, baseUrl, pid: child.pid ?? -1, port, cmd: spec.cmd, external: false, ready };
 }
 
@@ -198,18 +217,95 @@ export function detectServices(cwd: string): { api?: StartSpec; ui?: StartSpec }
 	return out;
 }
 
+/** True when the project is a STATIC site: a servable HTML tree with NO node
+ *  dev-server machinery (no package.json — Caddyfile/Makefile/plain-HTML
+ *  projects). Run 2026-08-27T12-33-43-088Z: such a project failed every
+ *  npm/vite/next fallback and its 10h of green deterministic work was reported
+ *  PARTIAL solely because bringup could not express "static site, no dev
+ *  server". */
+export function detectStaticSite(cwd: string): boolean {
+	try {
+		if (!existsSync(join(cwd, "index.html"))) return false;
+	} catch {
+		return false;
+	}
+	try {
+		JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+		return false; // a package.json owns api/ui startup — not static-only
+	} catch {
+		return true;
+	}
+}
+
+/** PORT-honoring static servers for a static tree (run 1's missing strategy).
+ *  `$PORT` is expanded by the shell from the injected env var, so readiness on
+ *  the CHOSEN random port can pass — unlike the fixed-port Caddyfile original
+ *  the assessment discovered. Ladder order: python3 (ubiquitous), caddy,
+ *  npx serve. */
+export function staticServerCandidates(cwd: string, role: "api" | "ui" = "ui"): StartSpec[] {
+	return [
+		{ role, cmd: "python3 -m http.server $PORT --bind 127.0.0.1", cwd, portEnv: "PORT" },
+		{ role, cmd: "caddy file-server --listen :$PORT --root .", cwd, portEnv: "PORT" },
+		{ role, cmd: "npx --yes serve -l $PORT .", cwd, portEnv: "PORT" },
+	];
+}
+
+/** Prose markers that never appear in a real single shell command but DID
+ *  appear in run 2026-08-27T12-33-43-088Z: the assessment agent returned `cmd`
+ *  as a whole explanatory paragraph ("make dev # = caddy run --config Caddyfile
+ *  … NOTE: Caddyfile root points at the PARENT dir …"). */
+const DISCOVERED_PROSE_MARKERS = /\bNOTE\b|N\.B\.|note that|说明：|注意：|——|…|\bthis command\b|\bwhich will\b|\bthe above\b/i;
+
+/** Sanitize a model-discovered service command into a single executable shell
+ *  line, or null when the "command" is prose. One line, shell comments
+ *  stripped, bounded length/token count, no prose markers, no CJK text, first
+ *  token must look like an executable. */
+export function sanitizeDiscoveredCmd(raw: string): string | null {
+	// A real command is one line; multi-line output is prose.
+	const first = raw.split(/\r?\n/, 1)[0];
+	// Strip a trailing shell comment: '#' at token start through end of line.
+	const stripped = first.replace(/(^|\s)#.*$/, "").trim();
+	if (!stripped) return null;
+	if (stripped.length > 200) return null;
+	if (DISCOVERED_PROSE_MARKERS.test(stripped)) return null;
+	const tokens = stripped.split(/\s+/);
+	if (tokens.length > 16) return null;
+	// First token must look like an executable path/binary (no quotes-with-
+	// spaces, no CJK, no sentence punctuation).
+	if (!/^[\w@./~"'-]+$/.test(tokens[0]!)) return null;
+	if (/[\u4e00-\u9fff]/.test(stripped)) return null;
+	return stripped;
+}
+
+/** Extract a port the command binds BY ITSELF: `:8321`, `--listen :8321`,
+ *  `--port 8321`, `-p 8321`, `serve -l 8321`, `http.server 8321`. Returns
+ *  undefined when the command takes its port from an env var (`$PORT`) — the
+ *  PORT-injected ladder already handles that shape. */
+export function fixedPortFromCmd(cmd: string): number | undefined {
+	const m = cmd.match(/(?:--listen\s+:?|--port[= ]\s*|-p\s+|-l\s+|http\.server\s+|:)(\d{2,5})\b/);
+	if (!m) return undefined;
+	const n = Number(m[1]);
+	return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : undefined;
+}
+
 /** Normalize a model-discovered service spec (loose object from assessment's
- *  control JSON) into a StartSpec. Returns null if there's no usable cmd. */
+ *  control JSON) into a StartSpec. Returns null if there's no usable cmd —
+ * the raw `cmd` is SANITIZED first (run 2026-08-27T12-33-43-088Z shipped a
+ * prose paragraph as candidate #1) and a self-declared fixed port is honored. */
 function normalizeDiscovered(role: "api" | "ui", raw: unknown, cwd: string): StartSpec | null {
 	if (!raw || typeof raw !== "object") return null;
-	const r = raw as { cmd?: unknown; portEnv?: unknown; readyPath?: unknown };
-	const cmd = typeof r.cmd === "string" ? r.cmd.trim() : "";
+	const r = raw as { cmd?: unknown; portEnv?: unknown; readyPath?: unknown; port?: unknown };
+	if (typeof r.cmd !== "string") return null;
+	const cmd = sanitizeDiscoveredCmd(r.cmd);
 	if (!cmd) return null;
+	const declared = typeof r.port === "number" && Number.isInteger(r.port) && r.port >= 1 && r.port <= 65535 ? r.port : undefined;
+	const port = declared ?? fixedPortFromCmd(cmd);
 	return {
 		role,
 		cmd,
 		cwd,
 		portEnv: typeof r.portEnv === "string" ? r.portEnv : "PORT",
+		...(port ? { port } : {}),
 		readyPath: typeof r.readyPath === "string" ? r.readyPath : "/",
 	};
 }
@@ -227,6 +323,10 @@ function candidatesFor(role: "api" | "ui", override: { api?: unknown; ui?: unkno
 		? ["npm start", "node src/server.js", "node server.js", "node src/app.js"]
 		: ["npm run dev", "vite", "next dev"];
 	for (const cmd of fallbacks) list.push({ role, cmd, cwd, portEnv: "PORT" });
+	// Static tree (run 2026-08-27T12-33-43-088Z): every node fallback fails
+	// instantly (nothing installed) — append PORT-honoring static servers so a
+	// plain HTML project CAN bring its ui role up for integration testing.
+	if (role === "ui" && detectStaticSite(cwd)) list.push(...staticServerCandidates(cwd, role));
 	const seen = new Set<string>();
 	return list.filter((s) => {
 		if (seen.has(s.cmd)) return false;
@@ -263,6 +363,7 @@ export const bringupTask: Stage = {
 	async run(state, ctx) {
 		const cwd = state.setup?.worktreePath ?? process.cwd();
 		const detected = detectServices(cwd);
+		const staticSite = detectStaticSite(cwd);
 		const override = (state.assessment as { services?: { api?: unknown; ui?: unknown } } | undefined)?.services;
 		const hasApi = !!normalizeDiscovered("api", override?.api, cwd) || !!detected.api;
 		const uiScope = (state.classify as { uiScope?: string } | undefined)?.uiScope;
@@ -280,7 +381,10 @@ export const bringupTask: Stage = {
 		(state as PipelineState).services = services;
 		const summary = Object.entries(services).map(([r, h]) => `${r}@${h.baseUrl}:${h.ready ? "ready" : "not-ready"}`).join(", ") || "no services";
 		ctx.log(`bringup: ${summary}`);
-		return { services, summary };
+		// `staticSite` rides the task() result into `state.bringup` so verify can
+		// treat an unstartable integration server on a static tree as NON-blocking
+		// (skipped-static) instead of a hard-gate PARTIAL over green work.
+		return { services, summary, staticSite };
 	},
 };
 
