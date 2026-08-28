@@ -40,6 +40,7 @@ import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.t
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
 import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
+import { agentTerminalLine, newNarrationLines } from "./progress-lines.ts";
 import type { AgentAccessMode, AgentProgress, SpawnResult } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -350,14 +351,56 @@ export function structuredOutputTool(capture: Capture, keys: string[], schema?: 
  *  text_end carry `partial.content` with the accumulated block text); tool calls
  *  arrive as top-level `tool_execution_start`. Text partials reset per message
  *  block, so finalizing at each tool call doesn't duplicate prefixes. */
-function forwardProgress(session: { subscribe(listener: (e: unknown) => void): () => void }, onProgress: AgentProgress): () => void {
+/** v0.3.28: sum usage across a session's assistant messages (the live shape,
+ *  verified against a real sd-* child session.jsonl: every assistant entry
+ *  carries usage {input, output, cacheRead, cacheWrite, cost:{total}} + model). */
+function sessionUsageSummary(messages: Array<{ role?: string; model?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } }>): { model?: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } {
+	let model: string | undefined;
+	let turns = 0;
+	let input = 0;
+	let output = 0;
+	let cacheRead = 0;
+	let cacheWrite = 0;
+	let cost = 0;
+	for (const m of messages ?? []) {
+		if (m?.role !== "assistant") continue;
+		turns++;
+		if (m.model) model = m.model;
+		const u = m.usage;
+		if (!u) continue;
+		input += u.input ?? 0;
+		output += u.output ?? 0;
+		cacheRead += u.cacheRead ?? 0;
+		cacheWrite += u.cacheWrite ?? 0;
+		cost += u.cost?.total ?? 0;
+	}
+	return { model, turns, input, output, cacheRead, cacheWrite, cost };
+}
+
+function forwardProgress(session: { subscribe(listener: (e: unknown) => void): () => void }, onProgress: AgentProgress, label: string, stats: { toolCalls: number }): { dispose(): void; flush(): void } {
 	let lastText = ""; // dedup: only forward text when it changes; reset per tool block
-	return session.subscribe((event: unknown) => {
+	let prevNarrationLines: string[] = []; // v0.3.28: run.log narration diff (⇢ lines)
+	// v0.3.28: narration parity — the text sink feeds the TUI typing effect but
+	// never landed in run.log; the other backends log `label: ⇢ line`.
+	const flush = () => {
+		if (!lastText.trim()) return;
+		const lines = lastText.split("\n").map((l) => l.trim()).filter(Boolean);
+		for (const l of newNarrationLines(lines, prevNarrationLines)) {
+			onProgress.event(`${label}: ⇢ ${l.slice(0, 200)}`);
+		}
+		prevNarrationLines = [...prevNarrationLines, ...lines].slice(-50);
+	};
+	const dispose = session.subscribe((event: unknown) => {
 		const e = event as { type?: string; toolName?: string; args?: Record<string, unknown>; assistantMessageEvent?: { type?: string; partial?: { content?: Array<{ type: string; text?: string }> } } };
 		if (!e?.type) return;
 		if (e.type === "tool_execution_start" && e.toolName) {
+			stats.toolCalls++;
+			flush();
 			lastText = "";
 			onProgress.event(`→ ${summarize(e.toolName, e.args)}`);
+		} else if (e.type === "message_end") {
+			flush();
+			lastText = "";
 		} else if (e.type === "message_update") {
 			const a = e.assistantMessageEvent;
 			if (a?.type === "text_delta" || a?.type === "text_end") {
@@ -370,6 +413,7 @@ function forwardProgress(session: { subscribe(listener: (e: unknown) => void): (
 			}
 		}
 	});
+	return { dispose, flush };
 }
 
 function summarize(name: string, args: Record<string, unknown> | undefined): string {
@@ -597,9 +641,11 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	// (applyThinkingLevel swallows any throw).
 	if (!creationThinking) applyThinkingLevel(session, resolveThinking(opts.agent, opts.thinkingLevel, opts.inheritedThinking));
 
-	const unsub = opts.onProgress ? forwardProgress(session, opts.onProgress) : undefined;
-	let timedOut = false;
+	const startedAt = Date.now(); // v0.3.28: terminal usage duration
 	const label = opts.id ?? opts.agent;
+	const stats = { toolCalls: 0 }; // v0.3.28: tool count for the terminal line
+	const unsub = opts.onProgress ? forwardProgress(session, opts.onProgress, label, stats) : undefined;
+	let timedOut = false;
 	opts.onProgress?.event(`session ${label}: start timeout=${timeoutMs}ms cwd=${opts.cwd} access=${opts.accessMode ?? "write"} controlKeys=${keys.join(",") || "(none)"}`);
 	const onAbort = () => {
 		opts.onProgress?.event(`session ${label}: aborted by parent signal`);
@@ -734,6 +780,19 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 
 		const text = lastAssistantText(session.messages as Parameters<typeof lastAssistantText>[0]);
 		const control = capture.called ? (capture.value as Record<string, unknown>) : extractControl(text);
+		// v0.3.28 full-field parity: flush any pending narration, then the shared
+		// terminal summary (model/turns/tools/tokens/cache/cost/duration) — the
+		// session backend previously logged NO usage even though session.messages
+		// assistant entries carry it.
+		if (!timedOut && !opts.signal?.aborted) {
+			unsub?.flush();
+			const u = sessionUsageSummary(session.messages as Parameters<typeof sessionUsageSummary>[0]);
+			opts.onProgress?.event(agentTerminalLine("session", label, "completed", {
+				model: u.model, turns: u.turns, toolCalls: stats.toolCalls,
+				input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite,
+				cost: u.cost, durationMs: Date.now() - startedAt,
+			}));
+		}
 		return { text, control: control ?? null, error: timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s${capture.called ? " (structured_output captured before abort)" : ""}` : undefined };
 	} catch (err) {
 		return { text: "", control: null, error: err instanceof Error ? err.message : String(err) };
@@ -741,7 +800,7 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		clearTimeout(timer);
 		clearTimeout(softTimer);
 		opts.signal?.removeEventListener("abort", onAbort);
-		unsub?.();
+		unsub?.dispose();
 		if (superDevEnv("SUPER_DEV_DEBUG")) dumpTrace(opts, keys, capture, correctiveNote, session.messages);
 		session.dispose();
 	}

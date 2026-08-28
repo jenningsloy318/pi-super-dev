@@ -18,6 +18,7 @@ import { tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentPrompt } from "./agents.ts";
+import { agentTerminalLine, newNarrationLines, newUsageStats, accumulateUsage, type LiveUsageStats } from "./progress-lines.ts";
 import { extractControl, missingControlKeys } from "./control.ts";
 import { RpcDriver } from "./rpc-driver.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
@@ -771,6 +772,19 @@ export function runPi(args: string[], cwd: string, signal: AbortSignal | undefin
 		let timedOut = false;
 		let turns = 0;
 		let currentText = ""; // live streaming text of the current agent text block
+		const startedAt = Date.now(); // v0.3.28: terminal usage duration
+		const usageStats = newUsageStats(); // v0.3.28: terminal usage accumulation
+		let prevNarrationLines: string[] = []; // v0.3.28: ⇢ narration diff
+		// v0.3.28: narration parity — flush the accumulated live text as
+		// `label: ⇢ line` run.log lines (was: one bare unprefixed flush), matching
+		// the delegation and session backends.
+		const flushNarration = () => {
+			if (!currentText.trim()) return;
+			const lines = stripControl(currentText).trim().split("\n").map((l) => l.trim()).filter(Boolean);
+			for (const l of newNarrationLines(lines, prevNarrationLines)) onProgress?.event(`${label}: ⇢ ${l.slice(0, 200)}`);
+			prevNarrationLines = [...prevNarrationLines, ...lines].slice(-50);
+			currentText = "";
+		};
 		const STDERR_CAP = 16 * 1024;
 		const LINE_CAP = 16 * 1024 * 1024;
 		/** AC-12 (SCENARIO-027): one NDJSON line's handling, shared by the chunk
@@ -784,12 +798,17 @@ export function runPi(args: string[], cwd: string, signal: AbortSignal | undefin
 			const a = assistantFromMessageEnd(ev);
 			if (a) {
 				if (a.text) { lastAssistantText = a.text; if (a.model) lastModel = a.model; }
+				if (a.model) usageStats.model = a.model;
+				accumulateUsage(usageStats, a.usage);
 				// a finished message finalizes any in-progress live text
-				if (onProgress && currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
+				flushNarration();
 				return;
 			}
+			// v0.3.28: turn/tool accounting is UNCONDITIONAL (the terminal summary
+			// must not depend on onProgress wiring).
+			if (ev.type === "turn_start") turns++;
 			if (!onProgress) return;
-			const se = renderEvent(ev, () => ++turns);
+			const se = renderEvent(ev, () => turns);
 			if (!se) return;
 			if (se.kind === "text") {
 				// live typing: update the mutable live line
@@ -797,8 +816,8 @@ export function runPi(args: string[], cwd: string, signal: AbortSignal | undefin
 				onProgress.text(stripControl(currentText));
 			} else {
 				// a permanent event finalizes any in-progress text first
-				if (currentText.trim()) { onProgress.event(stripControl(currentText).trim()); currentText = ""; }
-				if (se.kind === "tool") onProgress.event(`→ ${se.summary}`);
+				flushNarration();
+				if (se.kind === "tool") { usageStats.toolCalls++; onProgress.event(`→ ${se.summary}`); }
 			}
 		};
 		const cleanup = () => {
@@ -880,6 +899,15 @@ export function runPi(args: string[], cwd: string, signal: AbortSignal | undefin
 			// lastAssistantText already holds the last non-empty assistant text
 			// (resilient to a trailing tool-call turn or a mid-stream kill).
 			if (lastAssistantText) {
+				// v0.3.28 full-field parity: terminal usage summary on success —
+				// the child's message_end events carry full usage.
+				if (!aborted && !timedOut) {
+					onProgress?.event(agentTerminalLine("subprocess", label, "completed", {
+						model: lastModel ?? usageStats.model, turns, toolCalls: usageStats.toolCalls,
+						input: usageStats.input, output: usageStats.output, cacheRead: usageStats.cacheRead, cacheWrite: usageStats.cacheWrite,
+						cost: usageStats.cost, durationMs: Date.now() - startedAt,
+					}));
+				}
 				resolve({ text: lastAssistantText, control: extractControl(lastAssistantText), model: lastModel, error: timedOut ? `timed out after ${timeoutMs}ms (used partial output)` : undefined });
 				return;
 			}
@@ -939,20 +967,39 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 		let turns = 0;
 		let liveText = "";
 		let rawEventCount = 0; // review F-6: zero-event quick-exit = host pi may lack rpc mode
+		const usageStats = newUsageStats(); // v0.3.28: terminal usage accumulation
+		let prevNarrationLines: string[] = []; // v0.3.28: ⇢ narration diff
+		// v0.3.28: narration parity — flush as `label: ⇢ line` run.log lines (was:
+		// one bare unprefixed flush), matching the delegation and session backends.
+		const flushNarration = () => {
+			if (!liveText.trim()) return;
+			const lines = stripControl(liveText).trim().split("\n").map((l) => l.trim()).filter(Boolean);
+			for (const l of newNarrationLines(lines, prevNarrationLines)) onProgress?.event(`${label}: ⇢ ${l.slice(0, 200)}`);
+			prevNarrationLines = [...prevNarrationLines, ...lines].slice(-50);
+			liveText = "";
+		};
 		const driver = new RpcDriver({
 			write: (line) => {
 				try { child.stdin?.write(`${line}\n`); } catch { /* handled via turn error */ }
 			},
 			onRawEvent: (event) => {
 				rawEventCount++;
+				// v0.3.28: turn/tool accounting is UNCONDITIONAL (the terminal
+				// summary must not depend on onProgress wiring). message_end finalizes
+				// the pending narration block; its usage is already accumulated inside
+				// the driver (message_end is intercepted there first).
+				const ev = event as PiJsonEvent;
+				if (ev.type === "turn_start") turns++;
+				if (ev.type === "tool_execution_start" && ev.toolName) usageStats.toolCalls++;
+				if (ev.type === "message_end") { flushNarration(); return; }
 				if (!onProgress) return;
-				const se = renderEvent(event as PiJsonEvent, () => ++turns);
+				const se = renderEvent(ev, () => turns);
 				if (!se) return;
 				if (se.kind === "text") {
 					liveText = se.text;
 					onProgress.text(stripControl(liveText));
 				} else if (se.kind === "tool") {
-					if (liveText.trim()) { onProgress.event(stripControl(liveText).trim()); liveText = ""; }
+					flushNarration();
 					onProgress.event(`→ ${se.summary}`);
 				}
 			},
@@ -989,6 +1036,17 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 		const finishMain = (result: SpawnResult): void => {
 			if (settledMain) return;
 			settledMain = true;
+			// v0.3.28 full-field parity: terminal usage summary on success — usage
+			// comes from driver.usage (message_end is intercepted there); turns are
+			// the counted turn_start events; tools from tool_execution_start ticks.
+			if (!result.error && !aborted) {
+				const u = driver.usage;
+				onProgress?.event(agentTerminalLine("subprocess", label, "completed", {
+					model: result.model ?? u.model, turns, toolCalls: Math.max(usageStats.toolCalls, 0),
+					input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite,
+					cost: u.cost, durationMs: Date.now() - startedAt,
+				}));
+			}
 			terminateChild(); // we own the child's lifetime; it never self-exits
 			resolve(result);
 		};
@@ -1122,19 +1180,28 @@ interface PiJsonEvent {
 	type?: string;
 	toolName?: string;
 	args?: Record<string, unknown>;
-	message?: { role?: string; model?: string; content?: Array<{ type: string; text?: string }> };
+	message?: {
+		role?: string;
+		model?: string;
+		content?: Array<{ type: string; text?: string }>;
+		/** v0.3.28: the child's assistant message_end carries full usage —
+		 *  same shape as session.messages entries (verified live). */
+		usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } };
+	};
 }
 
 /** If an event is an assistant message_end, return its text + model (shared by
  *  the streaming capture and the batch extractFinalAssistant). */
-function assistantFromMessageEnd(ev: PiJsonEvent): { text: string; model?: string } | null {
+function assistantFromMessageEnd(ev: PiJsonEvent): { text: string; model?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } } | null {
 	if (ev.type !== "message_end" || ev.message?.role !== "assistant") return null;
 	const text = (ev.message.content ?? [])
 		.filter((p) => p.type === "text" && typeof p.text === "string")
 		.map((p) => p.text as string)
 		.join("");
-	return { text, model: ev.message.model };
+	return { text, model: ev.message.model, usage: ev.message.usage }; // v0.3.28: usage rides along for the terminal summary
 }
+
+// v0.3.28: live usage accounting moved to progress-lines.ts (shared with rpc-driver.ts).
 
 /** Compact one-line summary of a tool call, for live progress.
  *  Paths/commands are shown IN FULL (no truncation, no abbreviation) — the

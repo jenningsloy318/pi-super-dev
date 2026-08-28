@@ -351,3 +351,180 @@ describe("review-2 fixes", () => {
 		await pending;
 	});
 });
+
+/**
+ * v0.3.28 progress parity — the delegation update events carry far more than
+ * the bare tool name (SubagentDelegationUpdate: currentToolArgs, recentOutput,
+ * recentTools, model, toolCount, durationMs, tokens; the terminal response
+ * carries usage {input, output, turns, toolCalls, durationMs}). The session
+ * backend logs `→ tool args…`, the subprocess backend logs `→ summary` + live
+ * text; the delegation backend logged ONLY `${agent}: ${tool}` — the run.log
+ * went nearly silent under the pi-subagents backend (live run
+ * 2026-08-28T16-09-12: every line was `requirements-clarifier: ls`). These
+ * tests pin the restored observability.
+ */
+describe("progress parity (v0.3.28)", () => {
+	it("logs the tool WITH its args preview, session-backend style (`→ tool args`)", async () => {
+		const bus = new FakeBus();
+		const progress: string[] = [];
+		const pending = runAgentViaDelegation(baseOpts({
+			agent: "requirements-clarifier",
+			events: bus,
+			onProgress: { event: (m: string) => progress.push(m), text: () => {} },
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		bus.deliver("prompt-template:subagent:update", {
+			requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+			currentTool: "read", currentToolArgs: "src/PopupActivity.kt",
+		});
+		bus.deliver("prompt-template:subagent:response", { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId, status: "completed", result: textResult("done") });
+		await pending;
+		expect(progress).toContain("requirements-clarifier: → read src/PopupActivity.kt");
+	});
+
+	it("dedupes rapid identical update ticks (one line per tool call, not per progress tick)", async () => {
+		const bus = new FakeBus();
+		const progress: string[] = [];
+		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			onProgress: { event: (m: string) => progress.push(m), text: () => {} },
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		for (let i = 0; i < 4; i++) {
+			bus.deliver("prompt-template:subagent:update", {
+				requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+				currentTool: "bash", currentToolArgs: "git status --porcelain",
+			});
+		}
+		bus.deliver("prompt-template:subagent:update", {
+			requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+			currentTool: "bash", currentToolArgs: "git diff --stat",
+		});
+		bus.deliver("prompt-template:subagent:response", { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId, status: "completed", result: textResult("done") });
+		await pending;
+		const toolLines = progress.filter((m) => m.includes("→ bash"));
+		expect(toolLines).toEqual(["judge: → bash git status --porcelain", "judge: → bash git diff --stat"]);
+	});
+
+	it("logs a request lifecycle line when the delegation request is emitted", async () => {
+		const bus = new FakeBus();
+		const progress: string[] = [];
+		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			timeoutMs: 90_000,
+			onProgress: { event: (m: string) => progress.push(m), text: () => {} },
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		bus.deliver("prompt-template:subagent:response", { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId, status: "completed", result: textResult("done") });
+		await pending;
+		const start = progress.find((m) => m.startsWith("delegation judge: request"));
+		expect(start).toBeTruthy();
+		expect(start).toContain("agent=sd-judge");
+		expect(start).toContain("timeout=90000ms");
+	});
+
+	it("logs a terminal summary line with usage when the response carries it", async () => {
+		const bus = new FakeBus();
+		const progress: string[] = [];
+		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			onProgress: { event: (m: string) => progress.push(m), text: () => {} },
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		bus.deliver("prompt-template:subagent:response", {
+			requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+			status: "completed", result: textResult("done"), model: "zai-coding-cn/glm-5.2",
+			usage: { input: 1200, output: 340, turns: 3, toolCalls: 7, durationMs: 45_678, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
+		});
+		await pending;
+		const done = progress.find((m) => m.startsWith("delegation judge: completed"));
+		expect(done).toContain("status=completed");
+		expect(done).toContain("model=zai-coding-cn/glm-5.2");
+		expect(done).toContain("turns=3");
+		expect(done).toContain("tools=7");
+		expect(done).toContain("tokens=1200/340");
+		expect(done).toContain("cache=0/0");
+		expect(done).toContain("$0.01");
+		expect(done).toContain("duration=45.7s");
+	});
+
+	it("terminal without usage still logs a completed line (no usage segment, no crash)", async () => {
+		const bus = new FakeBus();
+		const progress: string[] = [];
+		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			onProgress: { event: (m: string) => progress.push(m), text: () => {} },
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		bus.deliver("prompt-template:subagent:response", { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId, status: "completed", result: textResult("done") });
+		await pending;
+		const done = progress.find((m) => m.startsWith("delegation judge: completed"));
+		expect(done).toBe("delegation judge: completed status=completed");
+	});
+
+	it("surfaces tools missed between ticks via the recentTools history diff (pi-prompt-template-model pattern)", async () => {
+		const bus = new FakeBus();
+		const progress: string[] = [];
+		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			onProgress: { event: (m: string) => progress.push(m), text: () => {} },
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		// Tick 1: one tool visible as current; a second tool already finished.
+		bus.deliver("prompt-template:subagent:update", {
+			requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+			currentTool: "bash", currentToolArgs: "git log --oneline -3",
+			recentTools: [
+				{ tool: "read", args: "docs/requirements/fix.md" },
+				{ tool: "bash", args: "git log --oneline -3" },
+			],
+		});
+		bus.deliver("prompt-template:subagent:response", { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId, status: "completed", result: textResult("done") });
+		await pending;
+		// BOTH history entries surface — including the read that finished between ticks.
+		expect(progress).toContain("judge: → read docs/requirements/fix.md");
+		expect(progress).toContain("judge: → bash git log --oneline -3");
+		// And no duplicate from the currentTool tick (same tool+args already logged).
+		expect(progress.filter((m) => m === "judge: → bash git log --oneline -3")).toHaveLength(1);
+	});
+
+	it("logs agent narration output lines (⇢) once per new line, capped — subprocess live-text parity", async () => {
+		const bus = new FakeBus();
+		const progress: string[] = [];
+		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			onProgress: { event: (m: string) => progress.push(m), text: () => {} },
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		bus.deliver("prompt-template:subagent:update", {
+			requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+			currentTool: "bash", currentToolArgs: "ls",
+			recentOutputLines: ["Found 14 DictFieldElement entries", "audio elements are dead code"],
+		});
+		// Same lines again on the next tick — deduped.
+		bus.deliver("prompt-template:subagent:update", {
+			requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+			currentTool: "bash", currentToolArgs: "ls",
+			recentOutputLines: ["Found 14 DictFieldElement entries", "audio elements are dead code"],
+		});
+		// A NEW line appears.
+		bus.deliver("prompt-template:subagent:update", {
+			requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+			currentTool: "bash", currentToolArgs: "ls",
+			recentOutputLines: ["Found 14 DictFieldElement entries", "audio elements are dead code", "definition maps keyed by display names"],
+		});
+		bus.deliver("prompt-template:subagent:response", { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId, status: "completed", result: textResult("done") });
+		await pending;
+		expect(progress).toContain("judge: ⇢ Found 14 DictFieldElement entries");
+		expect(progress).toContain("judge: ⇢ audio elements are dead code");
+		expect(progress).toContain("judge: ⇢ definition maps keyed by display names");
+		expect(progress.filter((m) => m === "judge: ⇢ audio elements are dead code")).toHaveLength(1);
+	});
+});

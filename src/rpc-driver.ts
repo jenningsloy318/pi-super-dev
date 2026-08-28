@@ -18,6 +18,8 @@
  * against synthetic NDJSON lines with no child process.
  */
 
+import { type LiveUsageStats, accumulateUsage } from "./progress-lines.ts";
+
 export interface RpcTurnResult {
 	text: string;
 	model?: string;
@@ -57,6 +59,10 @@ export class RpcDriver {
 	 *  turn-completion signal (response acks arrive before the turn runs). */
 	private settledCount = 0;
 	private disposed = false;
+	/** v0.3.28: cumulative usage across every assistant message_end — the
+	 *  driver is the single point that sees them (they never reach
+	 *  onRawEvent), so the terminal summary reads it from here. */
+	readonly usage: LiveUsageStats = { toolCalls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
 
 	constructor(deps: RpcDriverDeps) {
 		this.deps = deps;
@@ -90,8 +96,10 @@ export class RpcDriver {
 		}
 		const type = event.type;
 		if (type === "message_end") {
-			const message = event.message as { role?: string; model?: string; content?: Array<{ type: string; text?: string }> } | undefined;
+			const message = event.message as { role?: string; model?: string; content?: Array<{ type: string; text?: string }>; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } } | undefined;
 			if (message?.role === "assistant") {
+				if (message.model) this.usage.model = message.model;
+				accumulateUsage(this.usage, message.usage);
 				const text = (message.content ?? [])
 					.filter((part) => part.type === "text" && typeof part.text === "string")
 					.map((part) => part.text as string)
@@ -101,6 +109,12 @@ export class RpcDriver {
 					if (message.model) this.lastModel = message.model;
 				}
 			}
+			// v0.3.28: ALSO surface message_end to onRawEvent (after internal
+			// capture) — the caller's narration flush finalizes the pending live
+			// text block at message end, not only at the next tool boundary.
+			// renderEvent treats message_end as null, so legacy consumers are
+			// unaffected.
+			this.deps.onRawEvent?.(event);
 			return;
 		}
 		if (type === "response" && typeof event.id === "string") {

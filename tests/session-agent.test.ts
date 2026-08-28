@@ -117,7 +117,12 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 		abortCalls = 0;
 		promptCalls = 0;
 		messages: unknown[] = [];
-		async prompt() { this.promptCalls++; }
+		/** v0.3.28 tests: optional per-test behavior — runs inside prompt(). */
+		onPrompt?: (s: FakeSession) => void;
+		/** v0.3.28 tests: captured subscribe listener (forwardProgress registers it). */
+		listener?: (e: unknown) => void;
+		subscribe(fn: (e: unknown) => void): () => void { this.listener = fn; return () => { this.listener = undefined; }; }
+		async prompt() { this.promptCalls++; this.onPrompt?.(this); }
 		async abort() { this.abortCalls++; }
 		dispose() {}
 	}
@@ -171,5 +176,63 @@ describe("SD-04: runAgentViaSession guards abort-listener registration with sync
 		} finally {
 			sessionHarness.abortOnReload = null;
 		}
+	});
+});
+
+// ─── v0.3.28 full-field progress parity (user request: 全量一致) ───────────────
+// The delegation backend logs tool+args, ⇢ narration, and a terminal usage
+// summary. The session backend had tool lines + TUI-only narration text (never
+// landed in run.log) and NO terminal usage — while session.messages assistant
+// entries carry full usage {input, output, cacheRead, cacheWrite, cost} + model
+// (verified against a live sd-* child session.jsonl, 2026-08-29). These tests
+// pin the parity: same ⇢ narration format, same terminal segments.
+describe("v0.3.28: terminal usage summary + run.log narration (session backend)", () => {
+	it("emits `session <label>: completed` with model/turns/tools/tokens/cache/cost/duration and ⇢ narration lines", async () => {
+		const { runAgentViaSession } = await import("../src/session-agent.ts");
+		const events: string[] = [];
+		const controller = new AbortController();
+		const pending = runAgentViaSession({
+			agent: "requirements-clarifier",
+			id: "pipeline.requirements.a1",
+			prompt: "Clarify.\n\nOutput <control> JSON with: ok.",
+			cwd: "/tmp",
+			controlKeys: ["ok"],
+			signal: controller.signal,
+			onProgress: { event: (m: string) => events.push(m), text: () => {} },
+		});
+		await vi.waitFor(() => expect(sessionHarness.lastSession).toBeTruthy());
+		const s = sessionHarness.lastSession as unknown as {
+			messages: unknown[];
+			listener?: (e: unknown) => void;
+			onPrompt?: (s: unknown) => void;
+		};
+		s.onPrompt = (sess) => {
+			// narration streams in via message_update (text_end shape)
+			s.listener?.({ type: "message_update", assistantMessageEvent: { type: "text_end", partial: { content: [{ type: "text", text: "Reading the export chain." }] } } });
+			// the assistant reply lands in session.messages WITH usage (live shape).
+			// Only on the FIRST prompt — runAgentViaSession's self-heal #1 re-prompts
+			// once when structured_output was never called; that turn adds no message
+			// here (usage must not double-count).
+			const first = (sess as { promptCalls: number }).promptCalls === 1;
+			if (first) (sess as { messages: unknown[] }).messages.push({
+				role: "assistant",
+				model: "zai-coding-cn/glm-5.2",
+				content: [{ type: "text", text: "<control>{\"ok\": true}</control>" }],
+				usage: { input: 210, output: 55, cacheRead: 1900, cacheWrite: 0, cost: { total: 0.0042 } },
+			});
+		};
+		const result = await pending;
+		expect(result.control).toEqual({ ok: true });
+		const done = events.find((m) => m.startsWith("session pipeline.requirements.a1: completed"));
+		expect(done).toBeTruthy();
+		expect(done).toContain("model=zai-coding-cn/glm-5.2");
+		expect(done).toContain("turns=1");
+		expect(done).toContain("tools=0");
+		expect(done).toContain("tokens=210/55");
+		expect(done).toContain("cache=1900/0");
+		expect(done).toContain("$0.0042");
+		expect(done).toContain("duration=");
+		// Narration now lands in run.log with the same ⇢ prefix as the other backends.
+		expect(events).toContain("pipeline.requirements.a1: ⇢ Reading the export chain.");
 	});
 });

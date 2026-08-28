@@ -297,3 +297,44 @@ describe("runPiRpc [hermetic fake child]", () => {
 		}
 	});
 });
+
+// ─── v0.3.28 full-field progress parity (user request: 全量一致) ───────────────
+// The delegation backend now logs tool+args, narration (⇢), and a terminal
+// usage summary. The subprocess backend already had tool lines + narration but
+// logged narration UNPREFIXED and no terminal usage — while the child's
+// message_end carries full usage {input, output, cacheRead, cacheWrite, cost}.
+// These tests pin the parity: same ⇢ narration format, same terminal segments.
+describe("v0.3.28: terminal usage summary + narration parity (subprocess backend)", () => {
+	it("emits `subprocess <label>: completed` with model/turns/tools/tokens/cache/cost/duration and ⇢ narration lines", async () => {
+		const child = new FakeChild();
+		cpState.stubber = () => child;
+		const events: string[] = [];
+		child.script = (c, ev, _i) => {
+			c.stdout.write(`${JSON.stringify({ type: "response", id: ev.id, success: true })}\n`);
+			c.stdout.write(`${JSON.stringify({ type: "turn_start" })}\n`);
+			c.stdout.write(`${JSON.stringify({ type: "tool_execution_start", toolName: "read", args: { path: "src/PopupActivity.kt" } })}\n`);
+			c.stdout.write(`${JSON.stringify({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "Inspecting the export path." }] } })}\n`);
+			c.stdout.write(`${JSON.stringify({ type: "message_end", message: { role: "assistant", model: "fake-model", content: [{ type: "text", text: "<control>{\"ok\": true}</control>" }], usage: { input: 100, output: 40, cacheRead: 12, cacheWrite: 0, cost: { total: 0.0123 } } } })}\n`);
+			c.stdout.write(`${JSON.stringify({ type: "agent_settled" })}\n`);
+		};
+		const result = await runPiRpc({
+			args: ["pi"], cwd: process.cwd(), label: "t", timeoutMs: 30_000,
+			task: "Task: x",
+			onProgress: { event: (line: string) => events.push(line), text: () => {} } as never,
+			correctiveFor: () => null,
+		});
+		expect(result.control).toEqual({ ok: true });
+		const done = events.find((e) => e.startsWith("subprocess t: completed"));
+		expect(done).toBeTruthy();
+		expect(done).toContain("model=fake-model");
+		expect(done).toContain("turns=1");
+		expect(done).toContain("tools=1");
+		expect(done).toContain("tokens=100/40");
+		expect(done).toContain("cache=12/0");
+		expect(done).toContain("$0.0123");
+		expect(done).toContain("duration=");
+		// Narration now lands in run.log with the same ⇢ prefix as the delegation
+		// backend (was: bare unprefixed lines).
+		expect(events).toContain("t: ⇢ Inspecting the export path.");
+	});
+});

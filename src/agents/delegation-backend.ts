@@ -29,6 +29,7 @@
 
 import { extractControl, missingControlKeys } from "../control.ts";
 import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "../pi-spawn.ts";
+import { agentTerminalLine } from "../progress-lines.ts";
 import type { AgentProgress, SpawnResult } from "../types.ts";
 
 /** The minimal structural slice of pi's EventBus this backend needs. */
@@ -79,8 +80,62 @@ interface DelegationTerminalResponse {
 	nodeId?: string;
 	status: string;
 	error?: string;
+	runId?: string;
+	agent?: string;
 	model?: string;
 	result?: unknown;
+	usage?: DelegationUsage;
+}
+
+/** Structural slice of pi-subagents' SubagentDelegationUsage (api/delegation.ts)
+ *  — declared locally per the no-runtime-import contract rule. */
+export interface DelegationUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	turns: number;
+	toolCalls: number;
+	durationMs: number;
+}
+
+/** Structural slice of pi-subagents' SubagentDelegationUpdate — every field
+ *  the bridge can send on a progress tick. v0.3.28: consumed in full. Before
+ *  this, onUpdate read ONLY currentTool, so run.log under agentBackend
+ *  pi-subagents degraded to bare tool names (live run 2026-08-28T16-09-12:
+ *  every line was `requirements-clarifier: ls`) while the session backend logs
+ *  `→ tool args…` + narration and the subprocess backend `→ summary` + live
+ *  text. Reference consumers (pi-prompt-template-model subagent-widget)
+ *  surface all of these fields. */
+export interface DelegationUpdatePayload {
+	requestId?: string;
+	currentTool?: string;
+	currentToolArgs?: string;
+	recentOutput?: string;
+	recentOutputLines?: string[];
+	recentTools?: Array<{ tool: string; args: string }>;
+	model?: string;
+	toolCount?: number;
+	durationMs?: number;
+	tokens?: number;
+}
+
+/** v0.3.28: the terminal summary line — turns/tools/tokens/cache/cost/duration
+ *  from SubagentDelegationUsage, via the SHARED formatter so all three
+ *  backends emit identical segment formats in run.log. */
+function delegationTerminalLine(agent: string, resp: DelegationTerminalResponse): string {
+	return agentTerminalLine("delegation", agent, resp.status, {
+		model: resp.model,
+		turns: resp.usage?.turns,
+		toolCalls: resp.usage?.toolCalls,
+		input: resp.usage?.input,
+		output: resp.usage?.output,
+		cacheRead: resp.usage?.cacheRead,
+		cacheWrite: resp.usage?.cacheWrite,
+		cost: resp.usage?.cost,
+		durationMs: resp.usage?.durationMs,
+	});
 }
 
 /** The execution options — the same `common` object the other two backends
@@ -162,6 +217,18 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 	if (thinking) request.thinking = thinking;
 	if (timeoutMs) request.timeoutMs = timeoutMs;
 
+	// v0.3.28 progress parity: per-attempt log state. `toolLines` dedupes rapid
+	// identical ticks (one line per tool call, not per progress tick);
+	// `prevOutputLines` diffs the narration window so each line logs once.
+	const toolLines = new Set<string>();
+	let prevOutputLines: string[] = [];
+	const logToolLine = (line: string) => {
+		if (toolLines.has(line)) return;
+		toolLines.add(line);
+		opts.onProgress?.event?.(`${opts.agent}: ${line}`);
+	};
+	opts.onProgress?.event?.(`delegation ${opts.agent}: request agent=${request.agent}${model ? ` model=${model}` : ""}${timeoutMs ? ` timeout=${timeoutMs}ms` : ""} cwd=${opts.cwd}`);
+
 	return new Promise((resolve) => {
 		let settled = false;
 		// Review-2 P1: pi-subagents treats `on()`'s RETURN as the unsubscribe
@@ -183,15 +250,39 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 			const payload = raw as DelegationTerminalResponse;
 			if (!matches(payload)) return;
 			if (payload.status === "invalid_request") {
+				opts.onProgress?.event?.(`delegation ${opts.agent}: rejected status=invalid_request${payload.error ? ` (${payload.error})` : ""}`);
 				finish({ response: null, error: `delegation bridge rejected the request: ${payload.error ?? "invalid_request"}` });
 				return;
 			}
+			opts.onProgress?.event?.(delegationTerminalLine(opts.agent, payload));
 			finish({ response: payload });
 		};
 		const onUpdate = (raw: unknown) => {
-			const payload = raw as { requestId?: string; currentTool?: string };
-			if (payload?.requestId !== requestId || !payload.currentTool) return;
-			opts.onProgress?.event?.(`${opts.agent}: ${payload.currentTool}`);
+			const payload = raw as DelegationUpdatePayload;
+			if (payload?.requestId !== requestId) return;
+			// Tool coverage: the append-only recentTools history first (it surfaces
+			// tools that finished between ticks), then the live currentTool tick.
+			// toolLines dedupes a tool that appears in both.
+			if (Array.isArray(payload.recentTools)) {
+				for (const entry of payload.recentTools) {
+					if (!entry || typeof entry.tool !== "string") continue;
+					logToolLine(`→ ${entry.tool}${entry.args ? ` ${entry.args}` : ""}`);
+				}
+			}
+			if (payload.currentTool) {
+				logToolLine(`→ ${payload.currentTool}${payload.currentToolArgs ? ` ${payload.currentToolArgs}` : ""}`);
+			}
+			// Narration output tail (subprocess live-text parity): prefer the
+			// bridge's recentOutputLines window, fall back to splitting
+			// recentOutput; log only lines new since the previous tick.
+			const lines = Array.isArray(payload.recentOutputLines) && payload.recentOutputLines.length > 0
+				? payload.recentOutputLines.filter((l): l is string => typeof l === "string" && l.trim().length > 0)
+				: (typeof payload.recentOutput === "string" ? payload.recentOutput.split("\n") : []).filter((l) => l.trim().length > 0);
+			for (const line of lines) {
+				if (prevOutputLines.includes(line)) continue;
+				opts.onProgress?.event?.(`${opts.agent}: ⇢ ${line.slice(0, 200)}`);
+			}
+			prevOutputLines = lines;
 		};
 		const cancel = (reason: string) => {
 			// Cancel affects only the exact tuple (including cancel-before-start

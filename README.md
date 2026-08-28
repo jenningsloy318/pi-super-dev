@@ -189,6 +189,19 @@ stages/index.ts ──► the pipeline expressed with control nodes
   async runs and never shows these. Under other backends the external rows
   are display-only labels by contract.
 
+**Full-field progress parity (v0.3.28)**: run.log now reads uniformly across
+all three backends. Tool lines `label: → tool args…`, narration lines
+`label: ⇢ <text>` (session-backend narration previously fed only the TUI
+typing effect and never landed in run.log; the subprocess backend logged it
+unprefixed), and a terminal summary per call —
+`<backend> <label>: completed status=completed model=… turns=N tools=N
+tokens=in/out cache=r/w $cost duration=Xs`. The usage data was always
+available (the delegation terminal response carries `usage`; a session's
+assistant messages and the subprocess child's `message_end` events carry
+`{input, output, cacheRead, cacheWrite, cost}` — verified against live
+sessions); before v0.3.28 nobody aggregated it, and the delegation backend
+logged only the bare current tool name (`requirements-clarifier: ls`).
+
 Role timeouts: 480 s default, 1200 s for code-writing roles (`implementer`,
 `tdd-guide`) whose deliverable is real edits to large files.
 
