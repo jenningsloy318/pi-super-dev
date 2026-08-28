@@ -50,7 +50,14 @@ export function loadAgentPrompt(name: string): string {
 // injected into the delegation task prompt by the same seam the session
 // backend uses, so registrations never go stale after reflection updates.
 export function loadAgentBasePrompt(name: string): string {
-	return loadAgentPromptBase(name);
+	// v0.3.26: pi-subagents' runtime-agent registration validates the system
+	// prompt as "a non-empty string without leading or trailing whitespace"
+	// (validateString in its runtime-agent-registry). Raw agents/*.md bodies
+	// end with a trailing newline, which silently rejected 30 of 32
+	// registrations in run 2026-08-28T15-50-08 — only code-reviewer and
+	// adversarial-reviewer (the two files that happen to end without a
+	// newline) survived, so every other sd-* delegation hit "Unknown agent".
+	return loadAgentPromptBase(name).trim();
 }
 
 export function agentsDirectory(): string {

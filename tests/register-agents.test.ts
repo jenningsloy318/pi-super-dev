@@ -52,6 +52,35 @@ function makeOwnerBus(accepted: string[] = []): { bus: RecordingBus; requests: a
 }
 
 describe("registerSuperDevAgents", () => {
+	it("all 32 registrations pass pi-subagents' strict systemPrompt validator — no leading/trailing whitespace (run 2026-08-28T15-50-08: 30/32 rejected on trailing newline)", () => {
+		// Mirror pi-subagents validateString: "a non-empty string without leading
+		// or trailing whitespace". v0.3.25 shipped untrimmed .md bodies, so only
+		// the 2 files that happened to end without a newline survived.
+		const accepted: string[] = [];
+		const requests: any[] = [];
+		const bus: any = {
+			on() { return () => {}; },
+			emit(_channel: string, payload: any) {
+				const req = payload;
+				requests.push(req);
+				const sp = req.definition?.systemPrompt;
+				if (typeof sp !== "string" || sp.length === 0 || sp !== sp.trim()) {
+					req.result = { ok: false, error: new Error("systemPrompt must be a non-empty string without leading or trailing whitespace") };
+				} else {
+					accepted.push(req.name);
+					req.result = { ok: true, registration: { dispose() {} } };
+				}
+			},
+		};
+		registerSuperDevAgents(bus);
+		const rejected = requests.filter((r) => r.result && !r.result.ok);
+		expect(rejected).toEqual([]);
+		expect(accepted.length).toBe(requests.length);
+		expect(accepted.length).toBe(29); // REGISTERED_AGENTS (32 .md files exist; 3 are not registered)
+		// every emitted systemPrompt is trim-clean by itself (belt and braces)
+		for (const r of requests) expect(r.definition.systemPrompt).toBe(r.definition.systemPrompt.trim());
+	});
+
 	it("emits registration requests even with no owner listening — silent skip, no crash", () => {
 		const { bus } = makeOwnerBus();
 		const dispose = registerSuperDevAgents(bus as any);

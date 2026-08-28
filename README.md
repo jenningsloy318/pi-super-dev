@@ -159,6 +159,16 @@ stages/index.ts ──► the pipeline expressed with control nodes
   them; terminal Fleet rows are best-effort and may unregister early if the
   registry prunes them; delegation is unavailable in headless/rpc pi sessions
   that expose no event bus (the session fallback applies).
+  **Fail-safe guarantees** (v0.3.26): registration prompts are trimmed to
+  satisfy pi-subagents' strict validator (the v0.3.25 bug where 27 of 29
+  registrations were silently rejected on a trailing newline, leaving only
+  `sd-code-reviewer`/`sd-adversarial-reviewer` resolvable); if the
+  registration handshake finds no pi-subagents owner in the process, the
+  whole backend degrades to `session` with one WARN instead of hanging to the
+  20-minute timeout; and a per-call `Unknown agent` answer degrades that
+  single call to `session` instead of burning convergence rounds. Registration
+  outcomes are summarized at activation (`registered N/29`, ERROR lines for
+  rejections) so a partial registration is visible immediately.
 - **FleetView visibility** (v0.3.25, always-on in extension mode): every
   specialist call also publishes a display-only external run in pi's Fleet UI
   (live `currentAction`, terminal state, preview) through

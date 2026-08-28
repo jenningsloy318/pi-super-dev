@@ -61,6 +61,13 @@ vi.mock("../src/agents/fleet-visibility.ts", () => ({
 	fleetFinish: vi.fn((_mod: unknown, _sid: string, _id: string, r: { state: string; preview?: string }) => { fleet.finished.push({ id: _id, ...r }); }),
 }));
 
+/** v0.3.26 owner-presence probe: controllable per test. Default `null`
+ *  (never probed) must NOT degrade — only a definite `false` does. */
+const ownerProbe = vi.hoisted(() => ({ present: null as boolean | null }));
+vi.mock("../src/agents/register-agents.ts", () => ({
+	delegationOwnerPresent: vi.fn(() => ownerProbe.present),
+}));
+
 import { makeContext } from "../src/workflow.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
@@ -86,6 +93,21 @@ function ownerBus(resultText = 'done <control>{"route":"escalate-now"}</control>
 		});
 	});
 	return { bus, requests };
+}
+
+/** An owner that answers every delegation request with a FAILED terminal. */
+function failingOwnerBus(error: string) {
+	const bus = new EventEmitter() as any;
+	bus.on("prompt-template:subagent:request", (req: any) => {
+		captured.delegationRequests.push(req);
+		queueMicrotask(() => {
+			bus.emit("prompt-template:subagent:response", {
+				requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+				status: "failed", error,
+			});
+		});
+	});
+	return { bus };
 }
 
 describe("backend selection: pi-subagents delegation", () => {
@@ -130,6 +152,38 @@ describe("backend selection: pi-subagents delegation", () => {
 		} finally {
 			delete process.env.SUPER_DEV_BACKEND;
 		}
+	});
+
+	it("degrades to the session backend when delegation answers 'Unknown agent' — must not burn convergence rounds (run 2026-08-28T15-50-08: 8 requirements rounds lost in ~2.5s)", async () => {
+		ownerProbe.present = null; // probe unknown → delegation still attempted
+		captured.delegationRequests = [];
+		delete captured.session;
+		const { bus } = failingOwnerBus("Unknown agent: sd-task-classifier");
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests.length).toBeGreaterThanOrEqual(1); // delegation WAS tried
+		expect(captured.session).toBeDefined(); // ...then degraded to session
+		expect(result.control).toEqual({ a: 1 }); // session result surfaced, no error
+	});
+
+	it("degrades EVERY call to session without emitting a request when the registration handshake found no pi-subagents owner (20-min hang prevented)", async () => {
+		ownerProbe.present = false;
+		captured.delegationRequests = [];
+		delete captured.session;
+		const { bus } = ownerBus();
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t3" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests).toHaveLength(0); // never even asked
+		expect(captured.session).toBeDefined();
+		expect(result.control).toEqual({ a: 1 });
+		ownerProbe.present = null;
+	});
+
+	it("other delegation errors do NOT trigger the session fallback (real failures stay visible)", async () => {
+		captured.delegationRequests = [];
+		delete captured.session;
+		const { bus } = failingOwnerBus("spawn crashed: oom");
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t2" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		expect(captured.session).toBeUndefined();
+		expect(result.error).toContain("oom");
 	});
 });
 

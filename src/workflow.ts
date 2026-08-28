@@ -24,6 +24,7 @@ import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
 import { runAgentViaDelegation } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 import { runAgentViaSession } from "./session-agent.ts";
+import { delegationOwnerPresent } from "./agents/register-agents.ts";
 import { runHelper } from "./helpers.ts";
 import { toBool } from "./doc-validators.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
@@ -226,6 +227,10 @@ export function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
  *  resets. Retried with backoff INSIDE one agent call — not counted as a fresh
  *  gate attempt (which burned the budget when a model 429'd on every attempt). */
 const TRANSIENT_RE = /\b(429|rate.?limit|overload|too many requests|service unavailable|503|502|520|521|522|524|ECONNRESET|ETIMEDOUT|socket hang up)\b/i;
+/** v0.3.26: pi-subagents' executor answers unresolvable agent names with
+ *  "Unknown agent: <name>". That error is a backend capability gap, never a
+ *  task failure — realAgent degrades the call to the session backend. */
+const UNKNOWN_AGENT_ERROR_RE = /unknown agent/i;
 function isTransientAgentError(error?: string): boolean {
 	return !!error && TRANSIENT_RE.test(error);
 }
@@ -305,6 +310,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	// Single EventEmitter for the whole context: `ctx.phase()` emits on it and
 	// runWorkflow subscribes ("phase"/"stage") to route into the progress sink.
 	const events = new EventEmitter();
+
+	// v0.3.26: one-shot WARN for the pi-subagents→session whole-backend degrade.
+	let ownerWarned = false;
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
 		// BUG-4: atomic reservation — bail BEFORE doing any work when the cap is hit,
@@ -462,7 +470,28 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// options.events (extension mode); the selection above already degraded to
 		// "session" without it.
 		const exec = backend === "pi-subagents"
-			? () => runAgentViaDelegation({ ...common, events: options.events!, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state) })
+			? async () => {
+				// v0.3.26 capability gate: if activate()'s registration handshake
+				// found no pi-subagents owner in this process, delegation requests
+				// would hang to the 20-minute timeout backstop. Degrade the whole
+				// backend to session instead (config stays untouched).
+				if (delegationOwnerPresent() === false && !ownerWarned) {
+					ownerWarned = true;
+					log("WARN pi-subagents backend requested but pi-subagents is not active in this session — degrading every agent call to the session backend. Install the pi-subagents pi package or unset agentBackend in ~/.super-dev/config.json.");
+				}
+				if (delegationOwnerPresent() === false) return runAgentViaSession(common);
+				const delegated = await runAgentViaDelegation({ ...common, events: options.events!, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state) });
+				// v0.3.26: an unresolvable agent name must not burn convergence
+				// rounds — run 2026-08-28T15-50-08 lost all 8 requirements rounds
+				// to instant "Unknown agent" errors after 30/32 registrations were
+				// rejected on trailing whitespace. Degrade that single call to the
+					// session backend, which needs no registration.
+				if (delegated.error && UNKNOWN_AGENT_ERROR_RE.test(delegated.error)) {
+					log(`WARN agent ${call.id ?? call.agent}: delegation rejected (${delegated.error}) — degrading to session backend`);
+					return runAgentViaSession(common);
+				}
+				return delegated;
+			}
 			: backend === "session" ? () => runAgentViaSession(common) : () => spawnAgent(common);
 		const label = call.id ?? call.agent;
 		const started = Date.now();

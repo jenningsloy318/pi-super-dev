@@ -100,8 +100,22 @@ function descriptionFor(name: string): string {
 	return `super-dev pipeline specialist: ${name.replace(/-/g, " ")} (13-stage development pipeline)`;
 }
 
-/** Emit one registration request; returns the dispose when accepted. */
-function registerOne(events: DelegationEventBus, name: string, log: (line: string) => void): (() => void) | null {
+let ownerPresentSeen: boolean | null = null;
+
+/** v0.3.26: whether pi-subagents answered the registration handshake at
+ *  activate() time. `null` = never probed (tests, CLI, or a different
+ *  module instance) — callers must treat unknown as "proceed", only a
+ *  definite `false` degrades. This is the capability check for the
+ *  `agentBackend: "pi-subagents"` config: without an owner listening,
+ *  every delegation request would hang to its timeout backstop. */
+export function delegationOwnerPresent(): boolean | null {
+	return ownerPresentSeen;
+}
+
+/** Emit one registration request; returns the dispose when accepted.
+ *  `onAnswered` fires when the owner wrote any result (ok or rejection) —
+ *  the v0.3.26 capability signal that pi-subagents is listening. */
+function registerOne(events: DelegationEventBus, name: string, log: (line: string) => void, onAnswered: () => void): (() => void) | null {
 	const request: {
 		version: 1;
 		name: string;
@@ -124,8 +138,9 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	}
 	const result = request.result;
 	if (!result) return null; // no owner listening — silent skip
+	onAnswered();
 	if (!result.ok) {
-		log(`super-dev: agent registration rejected for sd-${name}: ${result.error.message}`);
+		log(`ERROR super-dev: agent registration rejected for sd-${name}: ${result.error.message}`);
 		return null;
 	}
 	return result.registration.dispose.bind(result.registration);
@@ -136,13 +151,25 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
  *  that unregisters everything accepted so far. */
 export function registerSuperDevAgents(events: DelegationEventBus, log: (line: string) => void = () => {}): () => void {
 	const accepted: Array<() => void> = [];
+	let answered = 0; // requests that got ANY result back → an owner is listening
 	for (const name of REGISTERED_AGENTS) {
 		try {
-			const dispose = registerOne(events, name, log);
+			const dispose = registerOne(events, name, log, () => { answered++; });
 			if (dispose) accepted.push(dispose);
 		} catch (error) {
 			log(`super-dev: agent registration failed for ${name}: ${error instanceof Error ? error.message : String(error)}`);
 		}
+	}
+	ownerPresentSeen = answered > 0;
+	const total = REGISTERED_AGENTS.length;
+	if (answered === 0) {
+		// No pi-subagents owner in this process: the delegation backend would
+		// hang per call, so say exactly what the user should do (v0.3.26).
+		log("WARN super-dev: pi-subagents is not active in this session — the 'pi-subagents' agentBackend would degrade to 'session'. Install pi-subagents (the pi package, not an npm dep) or remove agentBackend from ~/.super-dev/config.json.");
+	} else if (accepted.length < total) {
+		log(`ERROR super-dev: only ${accepted.length}/${total} sd-* agents registered — delegation for the missing names degrades to the session backend per call (see the rejection lines above).`);
+	} else {
+		log(`super-dev: registered ${accepted.length}/${total} sd-* agents with pi-subagents`);
 	}
 	return () => {
 		for (const dispose of accepted) {
