@@ -45,6 +45,14 @@ export function loadAgentPrompt(name: string): string {
 	return learned ? `${base}\n\n${learned}` : base;
 }
 
+// Public (v0.3.25 L3): the base .md body WITHOUT learned lessons — the
+// runtime-agent registration system prompt. Lessons stay per-call: they are
+// injected into the delegation task prompt by the same seam the session
+// backend uses, so registrations never go stale after reflection updates.
+export function loadAgentBasePrompt(name: string): string {
+	return loadAgentPromptBase(name);
+}
+
 export function agentsDirectory(): string {
 	return AGENTS_DIR;
 }

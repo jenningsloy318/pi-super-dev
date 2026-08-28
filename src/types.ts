@@ -434,9 +434,16 @@ export interface RunOptions {
 	progress?: ProgressSink;
 	signal?: AbortSignal;
 	/** Specialist execution backend. "session" (default since v0.2.10) = in-process sessions; "subprocess" = raw `pi` spawn;
-	 *  "session" = in-process `createAgentSession`. Also set via
-	 *  SUPER_DEV_BACKEND env. */
-	backend?: "subprocess" | "session";
+	 *  "pi-subagents" (v0.3.25) = structured delegation through pi-subagents' executor
+	 *  (Fleet UI, steering, stop/resume) — falls back to "session" when no event bus
+	 *  is threaded (standalone CLI). Also set via SUPER_DEV_BACKEND env. */
+	backend?: "subprocess" | "session" | "pi-subagents";
+	/** v0.3.25: pi's in-process event bus, threaded from extension.execute(). The
+	 *  pi-subagents delegation backend and FleetView visibility are enabled by its
+	 *  presence; without it both are inert (standalone CLI mode). */
+	events?: import("./agents/delegation-backend.ts").DelegationEventBus;
+	/** v0.3.25: the pi session id (for external-run registry attribution). */
+	sessionId?: string;
 	/** Resume an interrupted run: `true` = auto-pick the most-recent resumable
 	 *  spec; a string = a specific spec identifier (e.g. "07-foo-bar"). */
 	resume?: boolean | string;

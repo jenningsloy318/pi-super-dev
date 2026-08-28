@@ -21,6 +21,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
+import { runAgentViaDelegation } from "./agents/delegation-backend.ts";
+import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "./helpers.ts";
 import { toBool } from "./doc-validators.ts";
@@ -360,9 +362,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const timeoutLabel = timeoutMs !== undefined ? `${timeoutMs}ms` : "role-default";
 		const thinkingLabel = call.thinking ?? options.inheritedThinking ?? superDevEnv("SUPER_DEV_THINKING") ?? "role-default";
 		const accessMode = call.accessMode ?? "write";
-		const backend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
+		const forcedBackend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
 			? "subprocess"
-			: (options.backend ?? (superDevEnv("SUPER_DEV_BACKEND") as "session" | "subprocess" | undefined) ?? "session");
+			: (options.backend ?? (superDevEnv("SUPER_DEV_BACKEND") as "session" | "subprocess" | "pi-subagents" | undefined) ?? "session");
+		// v0.3.25: the pi-subagents delegation backend requires the in-process event
+		// bus (extension mode). Without it (standalone CLI) degrade to the session
+		// backend — an inert bus would hang every call on an unanswered request.
+		const backend = forcedBackend === "pi-subagents" && !options.events ? "session" : forcedBackend;
 		const inheritedModel = options.inheritedModelObject
 			? `${options.inheritedModelObject.provider}/${options.inheritedModelObject.id}`
 			: undefined;
@@ -449,13 +455,44 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// pi's web tools (pi-web-access), which load via extension discovery in an
 		// ISOLATED process, never in the parent's in-process session (the session
 		// backend runs noExtensions + createCodingTools only, so it has no web tools).
-		const exec = backend === "session" ? () => runAgentViaSession(common) : () => spawnAgent(common);
+		// v0.3.25: backend "pi-subagents" routes the call through pi-subagents'
+		// structured-delegation executor — the same machinery as the `subagent` tool —
+		// so every specialist call appears in pi's Fleet UI (turns/tools/tokens/output
+		// logs) and is steerable/stoppable like any pi subagent. Requires
+		// options.events (extension mode); the selection above already degraded to
+		// "session" without it.
+		const exec = backend === "pi-subagents"
+			? () => runAgentViaDelegation({ ...common, events: options.events!, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state) })
+			: backend === "session" ? () => runAgentViaSession(common) : () => spawnAgent(common);
 		const label = call.id ?? call.agent;
 		const started = Date.now();
 		let boundaryChecked = false;
+		// v0.3.25 L1: FleetView visibility for THIS call — a display-only external
+		// run (register on start, throttled currentAction from progress events,
+		// terminal record on settle). Best-effort by contract: no session id (CLI
+		// mode), an unresolvable pi-subagents install, or a throwing registry are
+		// all silent no-ops; execution is never gated on visibility.
+		const fleetMod = options.sessionId ? await resolveExternalRunsModule() : null;
+		const fleetSession = options.sessionId;
+		if (fleetMod && fleetSession && common.onProgress?.event) {
+			const origEvent = common.onProgress.event.bind(common.onProgress);
+			common.onProgress.event = (m: string) => {
+				fleetUpdate(fleetMod, fleetSession, label, m);
+				origEvent(m);
+			};
+		}
+		if (fleetMod && fleetSession) fleetBegin(fleetMod, { sessionId: fleetSession, id: label, label: call.agent, source: "super-dev" });
+		const fleetDone = (result: { error?: string; text?: string } | null) => {
+			if (!fleetMod || !fleetSession) return;
+			fleetFinish(fleetMod, fleetSession, label, {
+				state: result?.error ? "failed" : "completed",
+				preview: result?.error ?? result?.text?.slice(0, 160),
+			});
+		};
 		log(`agent ${label}: start agent=${call.agent} backend=${backend} access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${common.model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
 		try {
 			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
+			fleetDone(result);
 			boundaryChecked = true;
 			enforceSourceBoundary();
 			const elapsed = Date.now() - started;
@@ -476,6 +513,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				try { enforceSourceBoundary(); }
 				catch (boundaryErr) { finalErr = boundaryErr; }
 			}
+			fleetDone({ error: finalErr instanceof Error ? finalErr.message : String(finalErr) });
 			const elapsed = Date.now() - started;
 			const message = finalErr instanceof Error ? finalErr.message : String(finalErr);
 			log(`agent ${label}: threw elapsed=${elapsed}ms error=${message}`);

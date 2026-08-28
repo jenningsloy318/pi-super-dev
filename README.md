@@ -141,6 +141,31 @@ stages/index.ts ──► the pipeline expressed with control nodes
   --no-extensions --no-context-files` (research agents additionally load only
   `pi-web-access` + `pi-mcp-adapter`), NDJSON stdout parsing, and partial-output
   rescue on timeout (`timed out after Xms (used partial output)`).
+- **pi-subagents backend** (v0.3.25, `backend: "pi-subagents"` in config or the
+  tool parameter, or `SUPER_DEV_BACKEND=pi-subagents`): every specialist call
+  is executed by pi-subagents' structured-delegation executor — the SAME
+  machinery as the `subagent` tool. Each call appears in pi's Fleet UI with
+  real turns/tool uses/tokens/output logs, is live-steerable and stoppable,
+  and is attributed to your pi session. The specialists register as first-class
+  `sd-*` agents at extension activation (`sd-judge`, `sd-implementer`, …) with
+  the same `agents/*.md` system prompts and the same read-only/coding tool
+  split as the session backend. Text results flow through the identical
+  `<control>` parser, so stages see byte-identical SpawnResults — including
+  the one bounded corrective re-prompt for missing control keys. Requires the
+  in-process event bus (running inside pi); without it (standalone CLI) the
+  backend silently degrades to `session`. Browser/web-research agents stay on
+  the forced subprocess backend. Caveats: agent registrations are captured at
+  activation — edit `agents/*.md` and run `/reload` (or restart pi) to refresh
+  them; terminal Fleet rows are best-effort and may unregister early if the
+  registry prunes them; delegation is unavailable in headless/rpc pi sessions
+  that expose no event bus (the session fallback applies).
+- **FleetView visibility** (v0.3.25, always-on in extension mode): every
+  specialist call also publishes a display-only external run in pi's Fleet UI
+  (live `currentAction`, terminal state, preview) through
+  `pi-subagents/external-runs` — even under the default session backend — so
+  the whole pipeline is observable from the Fleet panel. Best-effort by
+  contract: a missing pi-subagents install or a registry error is a silent
+  no-op.
 
 Role timeouts: 480 s default, 1200 s for code-writing roles (`implementer`,
 `tdd-guide`) whose deliverable is real edits to large files.
@@ -422,6 +447,7 @@ set keys — see the next two sections):
 	"traceRetentionDays": 7,
 	"escalation": "informative",
 	"language": "english",
+	"agentBackend": "session",
 	"agentModels": { "...": "..." },
 	"env": { "SUPER_DEV_...": "..." }
 }
@@ -483,7 +509,7 @@ All keys, defaults, and purposes:
 |---|---|---|
 | `SUPER_DEV_MODEL` | — | global model override (per-role `agentModels` wins) |
 | `SUPER_DEV_LANGUAGE` | `english` | output language for every agent-written artifact (beats `config.json` `language`) |
-| `SUPER_DEV_BACKEND` | `session` | agent backend: `session` or `subprocess` |
+| `SUPER_DEV_BACKEND` | `session` | agent backend: `session`, `subprocess`, or `pi-subagents` (v0.3.25; the config `agentBackend` key and the tool parameter override) |
 | `SUPER_DEV_THINKING` | — | per-agent thinking level for the session backend |
 | `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
 | `SUPER_DEV_MAX_RED_JUDGE_ROUTES` | `3` | routed judge interventions per phase before only `fix-environment` remains |

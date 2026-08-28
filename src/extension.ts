@@ -33,6 +33,7 @@ import { releaseHeldRunLock } from "./setup.ts";
 import { appendRunEvent } from "./runlog.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
+import { registerSuperDevAgents } from "./agents/register-agents.ts";
 import { superDevRunMetadataLine } from "./version.ts";
 import type { Escalate, EscalationDecision, EscalationFailure, ProgressSink, RunStatus, RunSummary, RuntimeInstruction, RuntimeInstructionImage } from "./types.ts";
 
@@ -507,6 +508,19 @@ export {
 };
 
 export default function activate(pi: ExtensionAPI): void {
+	// v0.3.25 L3: register super-dev's specialists as first-class pi-subagents
+	// agents (sd-* names) through the runtime-agent event contract. Best-effort
+	// by contract: a missing pi-subagents install, a rejected registration, or a
+	// throwing bus is logged (or silently skipped) — activation never fails. The
+	// dispose is retained for a future deactivate hook; pi extensions live for
+	// the process lifetime, so registrations ride along.
+	let superDevAgentsDispose: (() => void) | undefined;
+	try {
+		const delegationBus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
+		if (delegationBus) {
+			superDevAgentsDispose = registerSuperDevAgents(delegationBus, (line: string) => { try { pi.appendEntry?.("super-dev-agent-registration", { line }); } catch { /* best-effort */ } });
+		}
+	} catch { /* best-effort */ }
 	// Phase 1 (AC-01 / SCENARIO-001): register the mid-run input listener EXACTLY
 	// ONCE at module lifetime (inside activate, never per execute() call). The
 	// handler implements the {active-run + interactive}→handled / {else}→continue
@@ -558,6 +572,7 @@ export default function activate(pi: ExtensionAPI): void {
 			task: Type.String({ description: "The full development task, e.g. 'implement OAuth2 login' or 'fix the crash on large file upload'." }),
 			skipWorktree: Type.Optional(Type.Boolean({ description: "Skip git worktree creation and operate in the current directory. Default: false." })),
 			skipStages: Type.Optional(Type.Array(Type.String(), { description: "Stage output keys to skip (advanced). Default: none." })),
+			backend: Type.Optional(Type.Union([Type.Literal("session"), Type.Literal("subprocess"), Type.Literal("pi-subagents")], { description: "Specialist execution backend. 'pi-subagents' runs specialists through pi's subagent executor (Fleet UI, steering, stop). Default: the config.json backend key, then session." })),
 			model: Type.Optional(Type.String({ description: "Model override for spawned specialist agents in provider/id form." })),
 			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
 			resume: Type.Optional(Type.Boolean({ description: "Resume the most-recent interrupted run from where it left off (memoized replay). Default: false." })),
@@ -742,6 +757,22 @@ export default function activate(pi: ExtensionAPI): void {
 				// Wire the mid-run input drain to the activeRun singleton. workflow.ts
 				// realAgent drains this ONCE per specialist spawn; empty while idle/after
 				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
+					// v0.3.25: thread pi's in-process event bus + session id into the run so
+					// the pi-subagents delegation backend (SUPER_DEV_BACKEND=pi-subagents or
+					// options.backend) and FleetView external-run visibility can operate in
+					// extension mode. Both degrade to inert in standalone CLI mode.
+					// v0.3.25: backend selector — explicit tool param beats the config.json
+					// `agentBackend` key beats the session default. "pi-subagents" activates the
+					// structured-delegation backend (Fleet UI / steering); it degrades to
+					// "session" automatically when no event bus is threaded (CLI mode).
+					backend: (typeof params.backend === "string" ? params.backend : getConfig().agentBackend) as import("./types.ts").RunOptions["backend"],
+					events: (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined,
+					sessionId: (() => {
+						try {
+							const sm = (ctx as { sessionManager?: { getSessionId?: () => string } } | undefined)?.sessionManager;
+							return typeof sm?.getSessionId === "function" ? sm.getSessionId() : undefined;
+						} catch { return undefined; }
+					})(),
 					userSteerProvider: () => getActiveRun()?.drainInstructions() ?? [],
 				// Phase 2 (spec-18 / AC-01): thread the inline escalate callback so the
 				// Phase 3 firing points can pause-ask-continue via ctx.ui. Additive —

@@ -50,6 +50,12 @@ export interface SuperDevConfig {
 	 *  --model), but an explicit per-call model still wins. Unlisted roles are
 	 *  unaffected. Empty/absent = today's behavior. */
 	agentModels?: Record<string, string>;
+	/** v0.3.25: specialist execution backend. "session" (default) | "subprocess"
+	 *  | "pi-subagents" (structured delegation through pi-subagents' executor —
+	 *  Fleet UI rows, live steering, stop/resume; degrades to "session" when no
+	 *  in-process event bus is available, e.g. the standalone CLI). The tool
+	 *  parameter and SUPER_DEV_BACKEND env override this. */
+	agentBackend?: "session" | "subprocess" | "pi-subagents";
 	/** v0.3.15: persistent channel for the SUPER_DEV_* tunables (timeouts,
 	 *  budgets, kill-switches, model/backend selectors) so GUI-launched pi
 	 *  sessions — which have no shell env — can still set them. Flat string
