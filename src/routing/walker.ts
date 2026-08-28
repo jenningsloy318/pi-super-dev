@@ -117,7 +117,11 @@ export function planInlineRouteBack(
 
 // ─── The walker ─────────────────────────────────────────────────────────────
 
-function bumpOwnerRevision(specDir: string, owner: string): number {
+/** v0.3.24 (review-2 F1): exported for the convergence carried exits —
+ *  bumping the owner's revision counter makes any EARLIER convergence record
+ *  for that owner stale, so the revision-gate fast-forward cannot skip the
+ *  owner's loop when carried debt is waiting for its round 1. */
+export function bumpOwnerRevision(specDir: string, owner: string): number {
 	const path = join(specDir, ARTIFACT_REVISIONS_FILE);
 	let revisions: Record<string, number> = {};
 	if (existsSync(path)) {

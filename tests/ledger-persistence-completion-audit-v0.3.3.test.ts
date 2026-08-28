@@ -82,7 +82,7 @@ describe("L1: persisted ledger", () => {
 		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 
-	it("caps injection at 8 with the remainder announced", () => {
+	it("returns ALL unresolved rows — prompt capping happens at the feedback seam, never at the recording seam (v0.3.24 review-2 F5)", () => {
 		const dir = mkdtempSync(join(tmpdir(), "sd33-"));
 		try {
 			const specDir = `${dir}/docs/specifications/001/`;
@@ -91,8 +91,12 @@ describe("L1: persisted ledger", () => {
 			const s = state(dir);
 			recordConvergenceFindings(s, Array.from({ length: 11 }, (_, i) => ({ id: `B-${i}`, title: `gap ${i}`, detail: "d", severity: "high", blocking: true, status: "open" })), { detectedAtStage: "requirements", ownerStage: "requirements" });
 			const injected = priorFindingsForInjection(specDir);
-			expect(injected.findings).toHaveLength(8);
-			expect(injected.omitted).toBe(3);
+			// the old 8-row cap meant an own-owned blocker past the cap silently
+			// stopped pinning after a restart (the carried exit could then fire
+			// over actionable debt). Recording must see every row; the round-1
+			// feedback lines cap themselves (slice + overflow note).
+			expect(injected.findings).toHaveLength(11);
+			expect(injected.omitted).toBe(0);
 		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 

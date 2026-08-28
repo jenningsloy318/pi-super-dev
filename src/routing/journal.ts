@@ -87,6 +87,26 @@ export function readRoutingJournal(specDir: string): RoutingJournal {
 	return { entries };
 }
 
+/** v0.3.24 S3: is the CURRENT walk a re-entry caused by a route-back whose
+ *  owner is `stage`? True only when the LAST journaled jump targeted this
+ *  stage (a later jump to a different owner means this stage's segment is
+ *  stale news). Used by the convergence loops to reset the round budget to
+ *  segment scope: a route-back re-entry is a REVISION walk, not a durable
+ *  resume — granting it the resume-style `priorRounds + cap` budget inflated
+ *  run 2026-08-28T13-04-28-485Z's deadlocked loop from 4 to 8 rounds before
+ *  the fatal. The global bound for repeated re-entries is the per-edge JUMP
+ *  budget, so a segment reset cannot ping-pong forever. */
+export function routeBackReentry(specDir: string | undefined, stage: string): boolean {
+	try {
+		if (!specDir) return false;
+		const journal = readRoutingJournal(specDir);
+		const last = journal.entries[journal.entries.length - 1];
+		return !!last && last.kind === "route-back" && String(last.to).trim().toLowerCase() === stage.trim().toLowerCase();
+	} catch {
+		return false;
+	}
+}
+
 export interface ChargeRoutingJumpInput {
 	from: RouteStageId;
 	to: RoutableOwnerStage;

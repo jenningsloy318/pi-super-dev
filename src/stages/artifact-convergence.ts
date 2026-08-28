@@ -2,7 +2,7 @@ import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
-import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
+import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewBlockingVerdictFindings } from "../review-findings.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
 import { priorFindingsForInjection } from "../convergence-ledger.ts";
@@ -11,8 +11,10 @@ import { runJudge } from "./judge.ts";
 import { countStageRounds } from "../resume.ts";
 import {
 	blockingConvergenceFindings,
+	carriedConvergenceFindings,
 	classSweepRetryFeedback,
 	convergenceRetryFeedback,
+	isActionableOwnerStage,
 	markConvergenceFindingsAddressedFromResponses,
 	markConvergenceFindingsVerified,
 	normalizeConvergenceStage,
@@ -22,12 +24,12 @@ import {
 	type ConvergenceOwnerStage,
 	getConvergenceLedger,
 } from "../convergence-ledger.ts";
-import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
+import { pendingReplanRequests, consumeReplanRequests, appendRouteBackRequests } from "../replan/replan.ts";
 import { RouteBackSignal, isRoutableOwnerStage } from "../routing/router.ts";
 import { appendUserNotes } from "../render/user-notes.ts";
-import { planInlineRouteBack } from "../routing/walker.ts";
-import { autoRouteBackEnabled } from "../routing/journal.ts";
 import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
+import { planInlineRouteBack, bumpOwnerRevision } from "../routing/walker.ts";
+import { autoRouteBackEnabled, routeBackReentry } from "../routing/journal.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
 import { designStage } from "./design.ts";
 
@@ -279,6 +281,59 @@ export function reviewVerdictApproves(verdict: unknown): boolean {
 	return /\b(approved|pass|accept)/i.test(v);
 }
 
+/** v0.3.24 S2 (review-2 F1): the CONVERGED-CARRIED exit's delivery half —
+ *  persist the carried rows as PENDING REPLAN REQUESTS for each routable
+ *  owner and bump the owner's revision counter. Without this, the
+ *  revision-gate fast-forward could skip the owner's round 1 entirely
+ *  (journal + owner converged earlier + revision unchanged + no pending
+ *  requests), so the "re-injects at the owner's round 1" contract was not
+ *  deterministic. The replan requests defeat fast-forward condition (4) and
+ *  ARE the round-1 injection; the revision bump defeats condition (3). The
+ *  caller must NOT recordConvergedRevision for the exiting stage (that
+ *  would defeat condition (2) the WRONG way — green-skipping a
+ *  never-approved artifact in later sub-walks). */
+export function deliverCarriedDebt(
+	state: PipelineState,
+	ownStage: ConvergenceOwnerStage,
+	log: (line: string) => void,
+): void {
+	const specDir = state.setup?.specDirectory;
+	const carried = carriedConvergenceFindings(state, ownStage);
+	if (specDir && carried.length > 0) {
+		const byOwner = new Map<string, typeof carried>();
+		for (const f of carried) {
+			const owner = normalizeConvergenceStage(String(f.ownerStage), ownStage);
+			if (!byOwner.has(owner)) byOwner.set(owner, []);
+			byOwner.get(owner)!.push(f);
+		}
+		const runId = state.setup?.specIdentifier ?? "unknown";
+		for (const [owner, rows] of byOwner) {
+			if (!isRoutableOwnerStage(owner)) {
+				// e.g. a downstream loop-less stage (implementation/verification): the
+				// ledger rows still inject into every subsequent agent prompt via the
+				// workflow seam — disclose that this is the delivery path.
+				log(`CONVERGED-CARRIED delivery: ${rows.length} finding(s) owned by non-routable stage ${owner} stay in the convergence ledger (injected into subsequent agent prompts); no replan request persisted`);
+				continue;
+			}
+			const injected = appendRouteBackRequests(specDir, owner, rows.map((f) => f as unknown as Record<string, unknown>), runId);
+			const revision = bumpOwnerRevision(specDir, owner);
+			log(`CONVERGED-CARRIED delivery: ${injected} replan request(s) persisted for owner ${owner}; its revision counter bumped to ${revision} (fast-forward disabled — the owner loop re-runs and receives the debt at round 1)`);
+		}
+	}
+}
+
+/** v0.3.24 S4-4: does a judge escalate-now verdict carry actionable evidence?
+ * B4 (D10) required a non-empty `evidence[].quote`, but the judge's
+ * degrade-to-escalate path legitimately emits notes/text instead — run
+ * 2026-08-28T13-04-28-485Z round 6 discarded a correct escalation diagnosis
+ * ("route to the bdd stage") purely on the missing `.quote` shape. Accept any
+ * non-empty verbatim-ish field on the evidence entries. */
+export function judgeEscalateEvidencePresent(evidence: unknown): boolean {
+	const rows = Array.isArray(evidence) ? evidence as Array<Record<string, unknown>> : [];
+	return rows.some((e) => ["quote", "note", "text", "detail", "finding", "fact"]
+		.some((field) => String(e?.[field] ?? "").trim().length > 0));
+}
+
 /** F2 (RC1, run 2026-08-17T02-16-49-478Z): one bounded extension when the loop
  *  is still making STRICT progress at the cap. Research grounding — Refine-n-Judge
  *  (arXiv 2508.01543) and verification-loop practice: a hard cap alone kills
@@ -329,8 +384,18 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 			// the run before any fresh call (runs 02-47 / 06-02). countStageRounds
 			// reads the persisted occurrence count; fresh runs see 0.
 			const priorRounds = state.setup?.specDirectory ? countStageRounds(state.setup.specDirectory, `pipeline.${options.stage.id}`) : 0;
-			let effectiveCap = effectiveRoundCap(maxRounds, priorRounds);
-			if (effectiveCap > maxRounds) ctx.log(`${options.feedbackKey} convergence: resuming after ${priorRounds} recorded round(s) — round budget extended to ${effectiveCap} (replayed rounds do not consume the fresh budget)`);
+			// v0.3.24 S3: a route-back re-entry is a REVISION walk, not a durable
+			// resume — the recorded rounds belong to a PREVIOUS walk segment, and
+			// granting them the resume-style `prior + cap` budget inflated run
+			// 2026-08-28T13-04-28-485Z's deadlocked requirements loop from its base
+			// cap to 8 rounds before the fatal. Reset to segment scope; repeated
+			// re-entries stay bounded by the per-edge JUMP budget (the walker's
+			// anti-ping-pong bound), not by replayed-round arithmetic.
+			const segmentReentry = routeBackReentry(state.setup?.specDirectory, options.feedbackKey);
+			let effectiveCap = effectiveRoundCap(maxRounds, segmentReentry ? 0 : priorRounds);
+			if (segmentReentry) {
+				ctx.log(`${options.feedbackKey} convergence: route-back re-entry (journal) — round budget reset to segment scope (${maxRounds}); jump budget bounds re-entry cycles`);
+			} else if (effectiveCap > maxRounds) ctx.log(`${options.feedbackKey} convergence: resuming after ${priorRounds} recorded round(s) — round budget extended to ${effectiveCap} (replayed rounds do not consume the fresh budget)`);
 			// AC-17 (SCENARIO-038): the recorded REVIEW rounds of THIS loop — strict
 			// progress may only arm on a FRESH (cache-miss) review reading; a replayed
 			// reading carries no fresh information and must never earn the extension.
@@ -383,10 +448,11 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						});
 						if ((out.status === "routed" || out.status === "escalate") && out.verdict.route === "escalate-now") {
 							// B4 (D10): an escalate-now verdict may only abort the run when it
-							// carries at least one NON-EMPTY evidence quote — an evidence-less
+							// carries at least one NON-EMPTY evidence entry — an evidence-less
 							// diagnosis (the judge's degrade-to-escalate path) is advisory, not
 							// fatal; log it and fall through to the normal cap path.
-							const hasEvidence = out.verdict.evidence.some((e) => String((e as { quote?: string }).quote ?? "").trim().length > 0);
+							// v0.3.24 S4-4: widened from quote-only via judgeEscalateEvidencePresent.
+							const hasEvidence = judgeEscalateEvidencePresent(out.verdict.evidence);
 							if (hasEvidence) {
 								ctx.log(`${options.feedbackKey} convergence: JUDGE ESCALATE — ${out.verdict.diagnosis}`);
 								// D10: the fatal reports the EFFECTIVE cap (replayed rounds
@@ -631,7 +697,41 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					// NOT a reviewer approval — replan consumption and the replan verified-flip
 					// below are gated on the GENUINE verdict signal alone.
 					genuineApproval = reviewVerdictApproves(reviewControl?.verdict);
-					const approved = (genuineApproval || downgraded > 0) && !reviewHasBlockingVerdictFinding(reviewControl);
+					// v0.3.24 S1: the verdict gate is OWNER-AWARE — this loop may only be
+					// pinned by findings its own stage (or an upstream route-back) can act
+					// on. Blocking findings owned by a DOWNSTREAM stage are carried debt:
+					// they persist in the ledger and re-inject at the owner's round 1
+					// (the v0.3.3 machinery — how the debt reached this loop at all), so
+					// they must not keep THIS loop open. Run 2026-08-28T13-04-28-485Z: six
+					// rounds rejected solely on bdd-owned blockers after a v0.3.19
+					// auto-route-back re-entry — including a literal "Approved" verdict at
+					// round 7 — until ROUND CAP 8 killed the run (a textbook wait-for-graph
+					// cycle: this loop waits on bdd; bdd waits for this loop to converge).
+					const verdictBlocking = reviewBlockingVerdictFindings(reviewControl);
+					const verdictCarried = verdictBlocking.filter((f) => !isActionableOwnerStage((f as { ownerStage?: unknown }).ownerStage, ownStage));
+					// actionable verdict-blockers (own/upstream/unknown owner) still pin the
+					// verdict exactly as before — ONLY the downstream-owned subset stops
+					// pinning (it is carried debt for the owner stage instead).
+					const approved = (genuineApproval || downgraded > 0) && (verdictBlocking.length - verdictCarried.length) === 0;
+					if (!approved && verdictCarried.length > 0) {
+						// v0.3.24 S2: deterministic wait-for-graph resolution — every open
+						// blocking finding is owned by a stage this loop cannot reach without
+						// exiting. Exit CONVERGED-CARRIED instead of spinning to the cap: the
+						// walk continues to the owner, which receives the debt at its round 1.
+						const ownActionableOpen = blockingConvergenceFindings(state).filter((f) => isActionableOwnerStage(f.ownerStage, ownStage));
+						if (ownActionableOpen.length === 0 && verdictBlocking.length === verdictCarried.length) {
+							recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review-carried` });
+							clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
+							ctx.log(`${options.feedbackKey} convergence: CONVERGED-CARRIED (round ${round}) — every open blocking finding is owned downstream (${carriedConvergenceFindings(state, ownStage).map((f) => `${f.id} owner=${f.ownerStage}`).join(", ")}); no ${options.feedbackKey} rewrite can close them. The walk continues to the owner stage, where they re-inject at its round 1.`);
+							// review-2 F1: DELIVER the debt (pending replan requests + owner
+							// revision bump) and deliberately do NOT recordConvergedRevision —
+							// this exit is a harness-forced pass with open blockers, and the
+							// revision-gate invariant says only a GENUINE approval may make the
+							// artifact green-skippable in later sub-walks.
+							deliverCarriedDebt(state, ownStage, ctx.log);
+							return { status: "ok" as const, attempts: round };
+						}
+					}
 					if (!approved) {
 						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
 						lastErrors = compactReviewFindings(reviewControl);
@@ -759,13 +859,27 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review` });
 						ctx.log(`${options.feedbackKey} convergence: ${downgraded} downgraded finding(s) recorded as advisory on approval`);
 					}
-					ctx.log(`${options.feedbackKey} convergence: ✓ review approved round ${round}`);
+					// v0.3.24 S1: an approval that carries downstream-owned debt records
+					// it too — the ledger is the transport to the owner stage, and the
+					// verified flip below now skips downstream rows (they must stay open
+					// so the owner's round-1 injection re-arms them).
+					if (verdictCarried.length > 0) {
+						recordReviewFindingsFromControl(state, reviewControl, { detectedAtStage: review.reviewStateKey, ownerStage: review.ownerStage, sourceGate: `${options.feedbackKey}-review-carried` });
+						ctx.log(`${options.feedbackKey} convergence: ✓ review approved round ${round} with ${verdictCarried.length} carried downstream-owned blocking finding(s) — they remain open for the owner stage`);
+					} else {
+						ctx.log(`${options.feedbackKey} convergence: ✓ review approved round ${round}`);
+					}
 				}
 
 				clearRetryFeedback(state as Record<string, unknown>, options.feedbackKey);
 				markConvergenceFindingsVerified(state, (finding) => !finding.downgradeReason && (
 					(finding.ownerStage === ownStage && finding.detectedAtStage === options.feedbackKey) ||
-					(options.review ? finding.detectedAtStage === options.review.reviewStateKey : false) ||
+					// v0.3.24 S1: the review-detected flip now requires an ACTIONABLE
+					// owner — a downstream-owned finding detected by this review must NOT
+					// be verified here (that would erase the carried debt before the
+					// owner stage ever sees it; run 13-04-28's bdd rows would have been
+					// silently closed by a requirements approval).
+					(options.review && isActionableOwnerStage(finding.ownerStage, ownStage) ? finding.detectedAtStage === options.review.reviewStateKey : false) ||
 					(genuineApproval && finding.ownerStage === ownStage && finding.detectedAtStage === "replan")
 				));
 				if (genuineApproval) {

@@ -275,7 +275,10 @@ export function persistConvergenceLedger(state: PipelineState): void {
  *  round-1 injection in the convergence loops (the same seam as pending
  *  replan requests). Guards: absent/corrupt file → []; taskHash mismatch
  *  (a different task on the track) → []; duty-downgraded advisories and
- *  non-blocking rows are skipped; capped at 8 with the remainder counted. */
+ *  non-blocking rows are skipped. v0.3.24 (review-2 F5): returns ALL
+ *  unresolved rows — the recording side must see every open blocker (an
+ *  own-owned row past a cap would otherwise stop pinning after a restart);
+ *  prompt-size capping happens at the feedback-line seam in the callers. */
 export function priorFindingsForInjection(specDir: string | undefined): { findings: ConvergenceFinding[]; omitted: number } {
 	try {
 		if (!specDir) return { findings: [], omitted: 0 };
@@ -294,7 +297,7 @@ export function priorFindingsForInjection(specDir: string | undefined): { findin
 			(f.status === "open" || f.status === "needs-human"
 				? f.blocking === true
 				: f.status === "addressed"));
-		return { findings: unresolved.slice(0, 8), omitted: Math.max(0, unresolved.length - 8) };
+		return { findings: unresolved, omitted: 0 };
 	} catch {
 		return { findings: [], omitted: 0 };
 	}
@@ -465,6 +468,27 @@ export function blockingConvergenceFindings(state: PipelineState): ConvergenceFi
 export function ownerPrecedes(ownerStage: ConvergenceOwnerStage, currentStage: ConvergenceOwnerStage): boolean {
 	if (ownerStage === "environment") return true;
 	return (STAGE_ORDER.get(ownerStage) ?? Number.MAX_SAFE_INTEGER) < (STAGE_ORDER.get(currentStage) ?? Number.MAX_SAFE_INTEGER);
+}
+
+/** v0.3.24 S1: may the CURRENT loop act on a finding with this raw owner
+ *  value? True when the owner is the stage itself or precedes it (upstream —
+ *  reachable via route-back, `environment` blocks everywhere). False only for
+ *  a DOWNSTREAM owner: the loop would have to EXIT (let the walk continue to
+ *  the owner) to make progress — that is carried debt, not actionable work.
+ *  A missing or UNKNOWN owner label normalizes to the current stage
+ *  (conservative: unattributable findings stay actionable — no laundering a
+ *  blocker out of a loop by inventing an owner stage name). */
+export function isActionableOwnerStage(ownerValue: unknown, ownStage: ConvergenceOwnerStage): boolean {
+	const owner = normalizeConvergenceStage(ownerValue, ownStage);
+	return owner === ownStage || ownerPrecedes(owner, ownStage);
+}
+
+/** v0.3.24 S1/S2: the open blocking findings owned strictly DOWNSTREAM of
+ *  `ownStage` — the wait-for-graph residue that a converged-carried exit
+ *  carries forward (persisted in the ledger, re-injected at the owner's
+ *  round 1 by the v0.3.3 machinery). */
+export function carriedConvergenceFindings(state: PipelineState, ownStage: ConvergenceOwnerStage): ConvergenceFinding[] {
+	return blockingConvergenceFindings(state).filter((finding) => !isActionableOwnerStage(finding.ownerStage, ownStage));
 }
 
 /**

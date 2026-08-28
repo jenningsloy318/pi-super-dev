@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { specConvergenceNode } from "../src/stages/spec-convergence.ts";
-import { REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";
+import { ARTIFACT_REVISIONS_FILE, REPLAN_REQUESTS_FILE, pendingReplanRequests } from "../src/replan/replan.ts";
 import { runHelper } from "../src/helpers.ts";
 import { getConvergenceLedger } from "../src/convergence-ledger.ts";
 import { readFileSync, existsSync } from "node:fs";
@@ -706,5 +706,66 @@ describe("M3 G4 wiring in specConvergenceNode (revision-gate fast-forward)", () 
 		expect(second.attempts).toBe(0);
 		expect(agentCalls).toBe(0);
 		expect(log.some((l) => l.includes("revision-gate FAST-FORWARD"))).toBe(true);
+	});
+});
+
+// ─── v0.3.24 review-2 parity: the spec loop gets the same carried-exit
+// delivery guarantee, escalate-now evidence widening, and segment budget —
+// plus the shape-error guard the artifact loop gets for free from its gate.
+
+describe("spec carried-exit debt delivery (review-2 findings 1-4)", () => {
+	it("the spec carried exit persists the debt openly and does not record a converged revision (non-routable downstream owner)", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		// bdd is UPSTREAM of spec (a bdd-owned blocker auto-routes spec->bdd, it
+		// does not carry) - the carried shape for the spec loop is a DOWNSTREAM
+		// owner such as implementation. That owner is NOT replan-routable, so the
+		// delivery path is the convergence ledger itself (injected into every
+		// subsequent agent prompt) with an explicit disclosure log.
+		const downstream = [{ id: "SPEC-IMPL-1", severity: "high", title: "spec demands behavior implementation cannot honor", detail: "rebuild the phase table around the real constraint", ownerStage: "implementation", blocking: true, status: "open", recommendation: "amend", evidence: ["AC-05 conflicts with the runtime limit"] }];
+		const logs: string[] = [];
+
+		const result = await specConvergenceNode.run(
+			state,
+			(() => {
+				const base = ctx(state, [specControl(["SCENARIO-001", "SCENARIO-002"])], [reviewControl("Changes Requested", downstream)], []);
+				const origLog = base.log.bind(base);
+				return { ...base, log(line: string) { logs.push(line); origLog(line); } };
+			})(),
+		);
+
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(1);
+		expect(logs.join("\n")).toContain("CONVERGED-CARRIED");
+		expect(logs.join("\n")).toContain("non-routable stage implementation");
+		// the debt stays open in the ledger for the downstream prompts
+		const open = getConvergenceLedger(state).findings.filter((f) => f.ownerStage === "implementation");
+		expect(open.length).toBeGreaterThan(0);
+		expect(open.every((f) => f.blocking && f.status !== "verified")).toBe(true);
+		// never-approved spec: no converged revision recorded (not green-skippable)
+		const revisionsPath = join(s.specDirectory, ARTIFACT_REVISIONS_FILE);
+		const revisions = existsSync(revisionsPath) ? JSON.parse(readFileSync(revisionsPath, "utf8")) as Record<string, number> : {};
+		expect(revisions.spec).toBeUndefined();
+	});
+	it("the spec carried exit does NOT fire while the review document has shape errors (a malformed review must not become a carried pass)", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		// A review whose rendered document drops one required dimension — the
+		// deterministic gate reports "missing review dimensions" (a non-verdict
+		// shape error). The review never validly happened, so even all-downstream
+		// blockers must not convert it into a carried exit; the loop stays honest
+		// and fatals at the cap.
+		const broken = reviewControl("Changes Requested", [
+			{ id: "SPEC-BDD-2", severity: "high", title: "stale bdd coverage map", detail: "14-vs-13 AC mapping", ownerStage: "bdd", blocking: true, status: "open" },
+		]);
+		(broken.dimensions as unknown[]).pop(); // drop one of the 8 required dimensions
+
+		await expect(specConvergenceNode.run(
+			state,
+			ctx(state, [specControl(["SCENARIO-001"])], [broken], []),
+		)).rejects.toThrow(/did not converge/);
+		expect(pendingReplanRequests(s.specDirectory, "bdd").length).toBe(0);
 	});
 });

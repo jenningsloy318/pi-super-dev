@@ -1,13 +1,15 @@
 import { FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
-import { enforceReviewerConvergenceDuty, reviewHasBlockingVerdictFinding } from "../review-findings.ts";
+import { enforceReviewerConvergenceDuty, reviewBlockingVerdictFindings } from "../review-findings.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import {
 	blockingConvergenceFindings,
+	carriedConvergenceFindings,
 	classSweepRetryFeedback,
 	convergenceRetryFeedback,
+	isActionableOwnerStage,
 	markConvergenceFindingsAddressedFromResponses,
 	markConvergenceFindingsVerified,
 	normalizeConvergenceStage,
@@ -20,7 +22,7 @@ import {
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { priorFindingsForInjection } from "../convergence-ledger.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
-import { MAX_CONVERGENCE_ROUNDS, effectiveRoundCap, extendedRoundCap } from "./artifact-convergence.ts";
+import { MAX_CONVERGENCE_ROUNDS, effectiveRoundCap, extendedRoundCap, judgeEscalateEvidencePresent, deliverCarriedDebt } from "./artifact-convergence.ts";
 import { countStageRounds } from "../resume.ts";
 
 const specTask = task(specWriter);
@@ -28,6 +30,7 @@ const specReviewTask = task(specReviewWriter);
 const validateSpecTrace = gateValidator("gate-spec-trace", "write-spec", "spec");
 import { RouteBackSignal } from "../routing/router.ts";
 import { planInlineRouteBack } from "../routing/walker.ts";
+import { routeBackReentry } from "../routing/journal.ts";
 import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
 const validateSpecReview = gateValidator("gate-spec-review", "review-spec", "specReview");
 
@@ -157,10 +160,16 @@ export const specConvergenceNode: Node = {
 		// before the user's new guidance could reach the writer (runs 05-46 /
 		// 06-02). Hard cumulative ceiling 3× the base cap.
 		const priorRounds = state.setup?.specDirectory ? countStageRounds(state.setup.specDirectory, "pipeline.spec") : 0;
-		// AC-17 (SCENARIO-037): shared clamped arithmetic — the ceiling wins over
-		// priorRounds growth (equals, never exceeds, 3 × maxRounds).
-		let effectiveCap = effectiveRoundCap(maxRounds, priorRounds);
-		if (effectiveCap > maxRounds) ctx.log(`spec convergence: resuming after ${priorRounds} recorded round(s) — round budget extended to ${effectiveCap}`);
+		// v0.3.24 S3 (review-2 F3): a route-back re-entry into spec is a REVISION
+		// walk, not a durable resume — grant the segment its full base budget
+		// instead of the resume-style prior+cap arithmetic that inflated the
+		// deadlocked requirements loop of run 2026-08-28T13-04-28-485Z (same
+		// treatment as the artifact loops).
+		const segmentReentry = routeBackReentry(state.setup?.specDirectory, "spec");
+		let effectiveCap = effectiveRoundCap(maxRounds, segmentReentry ? 0 : priorRounds);
+		if (segmentReentry) {
+			ctx.log(`spec convergence: route-back re-entry (journal) — round budget reset to segment scope (${maxRounds}); jump budget bounds re-entry cycles`);
+		} else if (effectiveCap > maxRounds) ctx.log(`spec convergence: resuming after ${priorRounds} recorded round(s) — round budget extended to ${effectiveCap}`);
 		// AC-17 (SCENARIO-038): the recorded REVIEW rounds — strict progress may
 		// only arm on a FRESH (cache-miss) review reading.
 		const priorReviewRounds = state.setup?.specDirectory ? countStageRounds(state.setup.specDirectory, "pipeline.specReview") : 0;
@@ -221,7 +230,7 @@ export const specConvergenceNode: Node = {
 							context: ["## Convergence loop: spec", `round ${round} of effective cap ${effectiveCap}; still not converged.`, "## Recurring errors across rounds", ...(lastErrors.length ? lastErrors.slice(0, 8) : ["(none recorded)"])].join("\n"),
 							allowedRoutes: ["escalate-now"],
 						});
-						if ((out.status === "routed" || out.status === "escalate") && out.verdict.route === "escalate-now" && out.verdict.evidence.some((e: unknown) => String((e as { quote?: string }).quote ?? "").trim().length > 0)) {
+						if ((out.status === "routed" || out.status === "escalate") && out.verdict.route === "escalate-now" && judgeEscalateEvidencePresent(out.verdict.evidence)) {
 							ctx.log(`spec convergence: JUDGE ESCALATE — ${out.verdict.diagnosis}`);
 							throw new FatalAbort(`spec convergence did not converge within ${effectiveCap} round(s): ${out.verdict.diagnosis}`);
 						}
@@ -395,8 +404,35 @@ export const specConvergenceNode: Node = {
 			// approval signal — a duty override may converge the loop, but replan
 			// consumption and the replan verified-flip below gate on review.pass alone.
 			const genuineApproval = review.pass;
-			const approved = (review.pass || (downgraded > 0 && shapeErrors.length === 0)) && !reviewHasBlockingVerdictFinding(specReviewControl);
+			// v0.3.24 S1: owner-aware verdict gate (mirrors artifact-convergence) — the
+			// spec loop may only be pinned by spec-owned or upstream-owned findings;
+			// blocking findings owned downstream (implementation/verification/…)
+			// are carried debt that re-injects at the owner's round 1.
+			const specVerdictBlocking = reviewBlockingVerdictFindings(specReviewControl);
+			const specVerdictCarried = specVerdictBlocking.filter((f) => !isActionableOwnerStage((f as { ownerStage?: unknown }).ownerStage, "spec"));
+			// actionable verdict-blockers (own/upstream/unknown owner) still pin the
+			// verdict exactly as before — ONLY the downstream-owned subset stops pinning.
+			const approved = (review.pass || (downgraded > 0 && shapeErrors.length === 0)) && (specVerdictBlocking.length - specVerdictCarried.length) === 0;
 			if (review.pass && !approved) ctx.log("spec convergence: review verdict approved but blocking finding(s) are present — treating as rejection");
+			if (!approved && specVerdictCarried.length > 0 && shapeErrors.length === 0) {
+				// v0.3.24 S2: deterministic wait-for-graph resolution — every open
+				// blocking finding is owned downstream of spec. Exit
+				// CONVERGED-CARRIED; the walk continues to the owner. The
+				// shapeErrors guard (review-2 F4): a malformed/missing review
+				// document means the review never validly happened — it must not
+				// convert into a carried pass; that path stays an honest cap fatal.
+				const specActionableOpen = blockingConvergenceFindings(state).filter((f) => isActionableOwnerStage(f.ownerStage, "spec"));
+				if (specActionableOpen.length === 0 && specVerdictBlocking.length === specVerdictCarried.length) {
+					recordReviewFindingsFromControl(state, specReviewControl, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "spec-review-carried" });
+					clearSpecFeedback(state);
+					ctx.log(`spec convergence: CONVERGED-CARRIED (round ${round}) — every open blocking finding is owned downstream (${carriedConvergenceFindings(state, "spec").map((f) => `${f.id} owner=${f.ownerStage}`).join(", ")}); the walk continues to the owner stage, where they re-inject at its round 1.`);
+					// review-2 F1: DELIVER the debt (pending replan requests + owner
+					// revision bump); never recordConvergedRevision on a carried exit —
+					// only a genuine approval may make the artifact green-skippable.
+					deliverCarriedDebt(state, "spec", ctx.log);
+					return { status: "ok" as const, attempts: round };
+				}
+			}
 			if (approved) {
 				// G1: a downgrade-approval still records the advisory findings
 				// (audit trail) before the verified flip discards them.
@@ -404,8 +440,15 @@ export const specConvergenceNode: Node = {
 					recordReviewFindingsFromControl(state, specReviewControl, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "spec-review" });
 					ctx.log(`spec convergence: ${downgraded} downgraded finding(s) recorded as advisory on approval`);
 				}
+				// v0.3.24 S1: approval carrying downstream debt records it, and the
+				// flip below skips non-actionable rows so the debt survives for the owner.
+				if (specVerdictCarried.length > 0) {
+					recordReviewFindingsFromControl(state, specReviewControl, { detectedAtStage: "specReview", ownerStage: "spec", sourceGate: "spec-review-carried" });
+					ctx.log(`spec convergence: ✓ trace + review approved round ${round} with ${specVerdictCarried.length} carried downstream-owned blocking finding(s) — they remain open for the owner stage`);
+				}
 				markConvergenceFindingsVerified(state, (finding) => {
 					if (finding.downgradeReason) return false; // duty-enforced advisories stay visible in the ledger
+					if (!isActionableOwnerStage(finding.ownerStage, "spec")) return false; // v0.3.24 S1: carried debt stays open
 					const detected = normalizeConvergenceStage(finding.detectedAtStage, "implementation");
 					return detected === "spec" || detected === "specReview" || (genuineApproval && String(finding.detectedAtStage) === "replan");
 				});

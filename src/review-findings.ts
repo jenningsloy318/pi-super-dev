@@ -134,8 +134,20 @@ export function reviewHasBlockingFinding(review: { findings?: unknown } | undefi
  *  the verdict only through their own blocking flag / high severity, never
  *  through the status alone. */
 export function reviewHasBlockingVerdictFinding(review: { findings?: unknown } | undefined): boolean {
+	return reviewBlockingVerdictFindings(review).length > 0;
+}
+
+/** v0.3.24 S1: the verdict-pinning findings themselves (the decomposed form of
+ *  {@link reviewHasBlockingVerdictFinding}). The owner-aware convergence gate
+ *  filters THIS list by finding ownership instead of asking a boolean: a loop
+ *  may only be pinned by findings its own stage (or an upstream route) can act
+ *  on — blocking findings owned by a DOWNSTREAM stage are carried debt that
+ *  re-injects at the owner's round 1 (run 2026-08-28T13-04-28-485Z: six rounds
+ *  rejected solely on bdd-owned blockers, including a literal "Approved"
+ *  verdict at round 7, until ROUND CAP 8 killed the run). */
+export function reviewBlockingVerdictFindings(review: { findings?: unknown } | undefined): Array<Record<string, unknown>> {
 	const findings = (review?.findings as Array<Record<string, unknown>> | undefined) ?? [];
-	return findings.some(reviewFindingBlocksVerdict);
+	return findings.filter(reviewFindingBlocksVerdict);
 }
 
 /** All needs-human findings not already in a verified-class state — the

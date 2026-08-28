@@ -70,7 +70,7 @@ function hasObviousTestToken(path: string): boolean {
 	return false;
 }
 
-function isRuntimeEvidencePath(path: string): boolean {
+export function isRuntimeEvidencePath(path: string): boolean {
 	const basename = normalizePath(path).split("/").pop() ?? "";
 	return RUNTIME_EVIDENCE_BASENAMES.has(basename);
 }
@@ -186,8 +186,8 @@ export function redBoundaryResultFromAgent(paths: string[], control: unknown): R
 	const obj = control != null && typeof control === "object" && !Array.isArray(control)
 		? control as Record<string, unknown>
 		: {};
-	const explicitForbidden = new Set(stringArray(obj.forbiddenFiles));
-	const explicitAmbiguous = new Set(stringArray(obj.ambiguousFiles));
+	const explicitForbidden = new Set(stringArray(obj.forbiddenFiles).map(normalizePath));
+	const explicitAmbiguous = new Set(stringArray(obj.ambiguousFiles).map(normalizePath));
 	const rawClassifications = Array.isArray(obj.classifications) ? obj.classifications : [];
 	const byPath = new Map<string, Record<string, unknown>>();
 	for (const item of rawClassifications) {
@@ -196,13 +196,48 @@ export function redBoundaryResultFromAgent(paths: string[], control: unknown): R
 		const path = typeof rec.path === "string" ? normalizePath(rec.path) : "";
 		if (path) byPath.set(path, rec);
 	}
+	// v0.3.24 S4-1: the evaluator routinely echoes paths with a DIFFERENT prefix
+	// than the harness's git-status-relative form — absolute worktree paths above
+	// all (run 2026-08-28T12-51-40-028Z: three textbook-valid RED scaffolds were
+	// denied as `fallback: evaluator omitted this path` because the exact-match
+	// lookup missed every absolute echo). Resolve by path SUFFIX, but only when
+	// EXACTLY one candidate fits — an ambiguous suffix (two same-basename files)
+	// stays a conservative fallback instead of a lucky guess.
+	const resolveAgentPath = (path: string): string | null => {
+		if (byPath.has(path)) return path;
+		const suffixMatches = [...byPath.keys()].filter((cand) =>
+			cand !== path && (cand.endsWith(`/${path}`) || (path.length > 0 && path.endsWith(`/${cand}`))));
+		return suffixMatches.length === 1 ? suffixMatches[0] : null;
+	};
+	// v0.3.24 review-2 F7: how many evaluator echoes suffix-match this path —
+	// used only to report WHY a lookup fell back to a conservative deny.
+	const suffixEchoes = (path: string): number =>
+		[...byPath.keys()].filter((cand) =>
+			cand !== path && (cand.endsWith(`/${path}`) || (path.length > 0 && path.endsWith(`/${cand}`)))).length;
+	const resolveExplicit = (set: Set<string>, path: string): boolean => {
+		if (set.has(path)) return true;
+		for (const cand of set) {
+			if (cand !== path && (cand.endsWith(`/${path}`) || path.endsWith(`/${cand}`))) return true;
+		}
+		return false;
+	};
 
 	const classifications = requested.map((path) => {
-		const rec = byPath.get(path);
+		const resolved = resolveAgentPath(path);
+		const rec = resolved != null ? byPath.get(resolved) : undefined;
 		if (!rec) {
-			return decision(path, "ambiguous", false, 0, "fallback", "evaluator omitted this path");
+			// v0.3.24 review-2 F7: distinguish the two deny reasons — a path the
+			// evaluator genuinely never echoed vs one whose echo could not be
+			// uniquely bound (same-basename collision: the evaluator DID echo it,
+			// possibly twice — conservative deny either way).
+			const reason = suffixEchoes(path) > 1
+				? "ambiguous path echo — multiple same-basename candidates; denying conservatively"
+				: "evaluator omitted this path";
+			return decision(path, "ambiguous", false, 0, "fallback", reason);
 		}
-		const category = explicitForbidden.has(path) ? "production" : explicitAmbiguous.has(path) ? "ambiguous" : normalizeCategory(rec.category);
+		const category = resolveExplicit(explicitForbidden, path) || (resolved != null && explicitForbidden.has(resolved)) ? "production"
+			: resolveExplicit(explicitAmbiguous, path) || (resolved != null && explicitAmbiguous.has(resolved)) ? "ambiguous"
+			: normalizeCategory(rec.category);
 		const confidence = normalizeConfidence(rec.confidence);
 		const reason = typeof rec.reason === "string" && rec.reason.trim()
 			? rec.reason.trim()

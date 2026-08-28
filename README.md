@@ -373,6 +373,31 @@ single-owner shape too. Auto-routing composes with the inline route-back caps
 (`SUPER_DEV_MAX_INLINE_JUMPS`, per-edge journal budgets), so it can never loop
 unbounded.
 
+**Owner-aware convergence + converged-carried exits (v0.3.24):** a route-back
+jump adds a BACK edge to the stage graph, and a re-entered loop can be handed
+blocking findings owned by a stage DOWNSTREAM of it — work that loop
+structurally cannot perform (a wait-for-graph cycle). The verdict gates in
+both convergence loops are therefore owner-aware: blocking findings owned by
+the current stage or upstream pin the verdict exactly as before, while
+downstream-owned blockers are **carried debt** — they stay open in
+`.convergence-ledger.json`, do not keep the current loop open, and are
+**delivered deterministically**: pending replan requests + a revision bump
+for the owner (when routable) defeat the revision-gate fast-forward and
+re-inject at the owner's round 1; non-routable owners keep the ledger rows,
+which inject into every subsequent agent prompt (disclosed in the log).
+When a review rejects but every remaining blocker is downstream-owned, the
+loop exits **CONVERGED-CARRIED** (logged) and the walk continues to the owner.
+Findings with a missing/unknown owner label normalize to the current stage
+(conservative — no laundering a blocker out of a loop by inventing an owner).
+Route-back re-entries also reset the round budget to segment scope (the jump
+budget bounds cycles), and the judge's escalate-now evidence gate accepts any
+non-empty evidence field, not only verbatim quotes. In Stage 9, the RED
+boundary evaluator's path matching is suffix-tolerant (absolute-path echoes
+land), the RED evidence signature excludes harness bookkeeping so oscillation
+detection actually fires, RED cleanup never `git clean`s harness files, and
+the post-cap judge floor keeps both late recovery routes
+(`fix-environment` + `allow-scaffold`).
+
 ## Configuration
 
 Super-dev stores user-level runtime data under `~/.super-dev/`:

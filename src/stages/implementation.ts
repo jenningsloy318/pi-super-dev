@@ -15,10 +15,10 @@ import { join, resolve } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
 import { classifyJudgeRoute } from "../routing/router.ts";
 import { appendGateChecked } from "../runlog.ts";
-import { getActiveTracker, isInternalRuntimeClaim } from "../tracking.ts";
+import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
-import { buildRedBoundaryPrompt, classifyObviousRedPath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../test-artifacts.ts";
+import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
 import { firstCitedTestFile, runJudge } from "./judge.ts";
 import { triggerReplanForFindings } from "../replan/replan.ts";
@@ -121,12 +121,26 @@ function repeatedNoProgress(history: ProgressSignature[], next: ProgressSignatur
 	return history.some((h) => h.failure === next.failure && h.footprint === next.footprint);
 }
 
-function redEvidenceSignature(e: RedEvidence): string {
+/** v0.3.24 S4-2: harness runtime-evidence and spec-dir bookkeeping paths are
+ *  EXCLUDED from the RED evidence signature — implementation-evidence.jsonl is
+ *  appended after EVERY try (inside the worktree's spec dir), so its presence in
+ *  raw changedFiles made every signature unique and the repeated-signature
+ *  escape never fired (run 12-51-40: the judge / allow-scaffold path was
+ *  unreachable until the 6-try ceiling). Exported for tests. */
+export function signatureStableChangedFiles(changedFiles: string[]): string[] {
+	return changedFiles.filter((p) => !isRuntimeEvidencePath(p) && !normalizeSlash(p).startsWith("docs/specifications/"));
+}
+
+function normalizeSlash(path: string): string {
+	return String(path ?? "").replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+export function redEvidenceSignature(e: RedEvidence): string {
 	return JSON.stringify({
 		status: e.status,
 		oracleStatus: e.oracleStatus,
 		testFiles: stableUnique(e.testFiles),
-		changedFiles: stableUnique(e.changedFiles),
+		changedFiles: stableUnique(signatureStableChangedFiles(e.changedFiles)),
 		forbiddenFiles: stableUnique(e.forbiddenFiles),
 		missingScenarios: stableUnique(e.missingScenarios ?? []),
 		coveredScenarios: stableUnique(e.coveredScenarios ?? []),
@@ -289,7 +303,14 @@ function restorePaths(cwd: string, paths: string[]): void {
 }
 
 function restoreUnacceptedRedChanges(ctx: StageContext, cwd: string, phaseId: string, paths: string[]): void {
-	const restorable = paths.filter((p) => !isInternalRuntimeClaim(p) && !isSubstrateArtifact(p));
+	// v0.3.24 S4-2 follow-up: harness bookkeeping (implementation-evidence.jsonl
+	// above all — appended after EVERY try) must never be `git clean`d away by RED
+	// cleanup: restorePaths runs checkout+clean per path, and cleaning the
+	// harness's own audit trail destroyed it exactly when the new noise-free
+	// signatures let oscillation detection fire the terminal path (previously
+	// masked because signatures never repeated). Reverting a harness-owned file
+	// is meaningless anyway — checkout no-ops on it, only the clean is harmful.
+	const restorable = paths.filter((p) => !isInternalRuntimeClaim(p) && !isSubstrateArtifact(p) && !isHarnessBookkeepingPath(p));
 	if (restorable.length === 0) return;
 	restorePaths(cwd, restorable);
 	ctx.log(`Implementation ${phaseId} RED cleanup: restored unaccepted RED change(s): ${restorable.join(", ")}`);
@@ -513,7 +534,7 @@ function boundarySummary(result: RedBoundaryResult): string {
 	return `allAllowed=${result.allAllowed} forbidden=${listOrNone(result.forbiddenFiles)} ambiguous=${listOrNone(result.ambiguousFiles)} classifications=${classifications}`;
 }
 
-async function resolveRedBoundary(args: { ctx: StageContext; phaseId: string; phaseName: string; phase: unknown; redStatus: RedStatus; testFiles: string[]; changedFiles: string[] }): Promise<RedBoundaryResult> {
+export async function resolveRedBoundary(args: { ctx: StageContext; phaseId: string; phaseName: string; phase: unknown; redStatus: RedStatus; testFiles: string[]; changedFiles: string[]; cwd: string }): Promise<RedBoundaryResult> {
 	const deterministic = args.changedFiles.map(classifyObviousRedPath);
 	const ambiguous = deterministic.filter((item) => item.category === "ambiguous" && !item.allowed).map((item) => item.path);
 	if (ambiguous.length === 0) return redBoundaryResultFromClassifications(deterministic);
@@ -532,6 +553,18 @@ async function resolveRedBoundary(args: { ctx: StageContext; phaseId: string; ph
 				redStatus: args.redStatus,
 			}),
 		});
+		// v0.3.24 S4-1 context: the byPath matching inside
+		// redBoundaryResultFromAgent is now SUFFIX-TOLERANT — the evaluator's
+		// absolute/differently-prefixed path echoes no longer fall to
+		// `fallback: evaluator omitted this path` denies (run
+		// 2026-08-28T12-51-40-028Z: three textbook-valid declaration-only
+		// scaffolds reverted purely on that plumbing mismatch). A deliberate
+		// design note: a genuinely-omitted verdict still DENIES — "new file +
+		// failing RED" alone does not prove declaration-only content (a RED agent
+		// can write partial real implementation), so there is no deterministic
+		// scaffold repair here; the escape hatches are the evaluator itself, the
+		// widened late judge floor (fix-environment + allow-scaffold), and the
+		// noise-free signature cycle detection.
 		const agentResult = redBoundaryResultFromAgent(ambiguous, evaluated.control);
 		const byPath = new Map(agentResult.classifications.map((item) => [item.path, item]));
 		return redBoundaryResultFromClassifications(deterministic.map((item) => byPath.get(item.path) ?? item));
@@ -643,11 +676,15 @@ export const MAX_RED_JUDGE_ROUTES = (() => {
 })();
 
 /** Pure route-set policy: while `usedRoutes` routed interventions remain under
- *  `cap`, the full allowed set passes through; at/after the cap only
- *  `fix-environment` remains — the loop has proven re-sampling cannot converge,
- *  so the only productive next diagnosis is the environment itself. */
-export function restrictRedJudgeRoutes<T extends readonly string[]>(usedRoutes: number, allowed: T, cap: number = MAX_RED_JUDGE_ROUTES): T | ["fix-environment"] {
-	return usedRoutes >= cap ? (["fix-environment"] as ["fix-environment"]) : allowed;
+ *  `cap`, the full allowed set passes through; at/after the cap the floor is
+ *  `fix-environment` + `allow-scaffold` — the loop has proven re-sampling
+ *  cannot converge, so only the environment diagnosis and the last
+ *  deterministic scaffold re-admission remain. */
+export function restrictRedJudgeRoutes<T extends readonly string[]>(usedRoutes: number, allowed: T, cap: number = MAX_RED_JUDGE_ROUTES): T | readonly ["fix-environment", "allow-scaffold"] {
+	// v0.3.24: the post-cap floor keeps BOTH late recovery routes — fix-environment
+	// alone starved allow-scaffold, the last deterministic exit for a genuinely
+	// scaffold-legal RED whose boundary classification kept failing.
+	return usedRoutes >= cap ? (["fix-environment", "allow-scaffold"] as const) : allowed;
 }
 
 /** Loose phase shape for the leakage guard — self-contained so spec/doc types
@@ -1360,9 +1397,10 @@ export const implementationStage: Stage = {
 					// next try (the RED oracle remains the final guard).
 					const redScaffoldApproved = new Set<string>();
 					// Per-phase count of ROUTED judge interventions at the RED no-progress
-					// boundary — after MAX_RED_JUDGE_ROUTES, only fix-environment remains
-					// (run 2026-08-27T12-33-43-088Z: 9 tries / 5 judges / ~3.5h of ladder
-					// resets before the environment diagnosis finally landed).
+					// boundary — after MAX_RED_JUDGE_ROUTES, only the fix-environment +
+					// allow-scaffold floor remains (run 2026-08-27T12-33-43-088Z: 9 tries /
+					// 5 judges / ~3.5h of ladder resets before the environment diagnosis
+					// finally landed).
 					let redJudgeRoutes = 0;
 					while (ctx.budget.check()) {
 						const redDiagnostics: RedCheckDiagnostic[] = [];
@@ -1409,7 +1447,7 @@ export const implementationStage: Stage = {
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
 						announceActivity("RED boundary", redTryDetail);
-						let boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles });
+						let boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles, cwd: setup.worktreePath });
 						// v0.2.8 G4: re-admit judge-approved scaffolding before classifying.
 						if (redScaffoldApproved.size) boundary = approveScaffoldPaths(boundary, redScaffoldApproved);
 						ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
