@@ -176,6 +176,18 @@ stages/index.ts ──► the pipeline expressed with control nodes
   the whole pipeline is observable from the Fleet panel. Best-effort by
   contract: a missing pi-subagents install or a registry error is a silent
   no-op.
+  **v0.3.27 fixes + viewing notes**: records are now registered with the
+  session FILE path (`getSessionFile() ?? getSessionId()`), mirroring
+  pi-subagents' own fleet filter — the v0.3.25/26 code passed the bare
+  session uuid, which made every external row invisible in every Fleet view
+  (verified by an in-process probe: `snapshotExternalRuns(sessionFile)`
+  returned 0 rows). To actually see the pipeline: open the Fleet view
+  (`Ctrl+Alt+F`) **in the pi session that started the run** — foreground
+  state is per-process. Under the `pi-subagents` backend each call is a real
+  foreground subagent run (full turns/tools/tokens, live transcript under
+  `<session-dir>/subagent-artifacts/`); the “Async Result” panel lists only
+  async runs and never shows these. Under other backends the external rows
+  are display-only labels by contract.
 
 Role timeouts: 480 s default, 1200 s for code-writing roles (`implementer`,
 `tdd-guide`) whose deliverable is real edits to large files.

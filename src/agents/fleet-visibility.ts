@@ -48,6 +48,31 @@ const CANDIDATE_PATHS = (): string[] => {
 
 let cached: ExternalRunsModule | null | undefined;
 
+/** Minimal session identity surface pi exposes on ExtensionContext. */
+interface SessionIdentitySource {
+	getSessionId?: () => string | null | undefined;
+	getSessionFile?: () => string | null | undefined;
+}
+
+/** v0.3.27 — resolve the session identity pi-subagents' Fleet filters by.
+ *  pi-subagents' `resolveCurrentSessionId` is `getSessionFile() ??
+ *  getSessionId()` (the session FILE path on pi 0.84.3). Registering external
+ *  runs with the bare uuid made `snapshotExternalRuns(sessionFile)` return 0
+ *  rows, so external runs were invisible in every Fleet view (proven by the
+ *  E7 in-process probe during run 2026-08-28T16-09-12 diagnosis). Mirroring
+ *  the exact precedence keeps us aligned across pi versions. */
+export function resolvePiSessionIdentity(source: SessionIdentitySource | undefined | null): string | undefined {
+	if (!source) return undefined;
+	try {
+		const file = typeof source.getSessionFile === "function" ? source.getSessionFile() : undefined;
+		if (typeof file === "string" && file) return file;
+		const id = typeof source.getSessionId === "function" ? source.getSessionId() : undefined;
+		return typeof id === "string" && id ? id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Resolve the external-runs module (cached; `force` re-resolves — test
  *  seam). null when unavailable — the wrappers then no-op. Never throws. */
 export async function resolveExternalRunsModule(extraCandidates: string[] = [], force = false): Promise<ExternalRunsModule | null> {

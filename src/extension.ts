@@ -34,6 +34,7 @@ import { appendRunEvent } from "./runlog.ts";
 import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
 import { setActiveTracker } from "./tracking.ts";
 import { registerSuperDevAgents } from "./agents/register-agents.ts";
+import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
 import { superDevRunMetadataLine } from "./version.ts";
 import type { Escalate, EscalationDecision, EscalationFailure, ProgressSink, RunStatus, RunSummary, RuntimeInstruction, RuntimeInstructionImage } from "./types.ts";
 
@@ -769,8 +770,12 @@ export default function activate(pi: ExtensionAPI): void {
 					events: (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined,
 					sessionId: (() => {
 						try {
-							const sm = (ctx as { sessionManager?: { getSessionId?: () => string } } | undefined)?.sessionManager;
-							return typeof sm?.getSessionId === "function" ? sm.getSessionId() : undefined;
+							// v0.3.27: pi-subagents' Fleet filters external runs by the session
+							// FILE path (resolveCurrentSessionId = getSessionFile() ??
+							// getSessionId()). Passing the bare uuid made our records invisible
+							// (E7 in-process probe, run 2026-08-28T16-09-12 diagnosis).
+							const sm = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | null } } | undefined)?.sessionManager;
+							return resolvePiSessionIdentity(sm);
 						} catch { return undefined; }
 					})(),
 					userSteerProvider: () => getActiveRun()?.drainInstructions() ?? [],

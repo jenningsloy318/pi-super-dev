@@ -19,6 +19,7 @@ import {
 	fleetUpdate,
 	fleetFinish,
 	resolveExternalRunsModule,
+	resolvePiSessionIdentity,
 } from "../src/agents/fleet-visibility.ts";
 
 let dir: string;
@@ -52,6 +53,27 @@ function fakeModule(): { mod: ExternalRunsModule; calls: any[] } {
 	};
 	return { mod, calls };
 }
+
+describe("resolvePiSessionIdentity (v0.3.27 — run 2026-08-28T16-09-12 fleet invisibility)", () => {
+	it("prefers the session FILE path over the session id, mirroring pi-subagents' resolveCurrentSessionId", () => {
+		// E7 production probe (pi 0.84.3): getSessionId() returns a uuid while
+		// pi-subagents' fleet filter passes resolveCurrentSessionId() =
+		// getSessionFile() ?? getSessionId(). Registering with the uuid made
+		// snapshotExternalRuns(sessionFile) return 0 rows — external runs never
+		// appeared in any Fleet view.
+		const sm = {
+			getSessionId: () => "01a04932-ccb3-73b3-bf64-53cb83e66d69",
+			getSessionFile: () => "/home/jenningsl/.pi/agent/sessions/--tmp--/2026-08-28T16-27-41-107Z_01a04932.jsonl",
+		};
+		expect(resolvePiSessionIdentity(sm)).toBe(sm.getSessionFile());
+	});
+
+	it("falls back to the session id when no session file exists, and to undefined when neither is available", () => {
+		expect(resolvePiSessionIdentity({ getSessionId: () => "uuid-only" })).toBe("uuid-only");
+		expect(resolvePiSessionIdentity({ getSessionFile: () => null })).toBeUndefined();
+		expect(resolvePiSessionIdentity({})).toBeUndefined();
+	});
+});
 
 describe("fleet visibility wrappers", () => {
 	it("fleetBegin registers a running external run; fleetFinish writes the terminal state and unregisters", () => {
