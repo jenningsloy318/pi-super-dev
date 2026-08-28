@@ -396,6 +396,7 @@ set keys — see the next two sections):
 	"runRetentionDays": 30,
 	"traceRetentionDays": 7,
 	"escalation": "informative",
+	"language": "english",
 	"agentModels": { "...": "..." },
 	"env": { "SUPER_DEV_...": "..." }
 }
@@ -404,6 +405,15 @@ set keys — see the next two sections):
 `escalation`: `"informative"` (default — non-blocking diagnostics in the run
 summary; headless-safe) or `"interactive"` (additionally prompt a 3-option
 select when stagnation fires in TUI/RPC mode).
+
+`language`: the natural language **every agent-written artifact** is produced
+in — spec docs, reports, escalation/stagnation reports, `learned.md` /
+`reflection.md` history, audit/ledger text, and commit messages — regardless
+of the language of the task or repository (default `"english"`; any string,
+normalized to trimmed lowercase). A one-off run can override it with
+`SUPER_DEV_LANGUAGE` (env or the `env` map), which beats the config key.
+Use it when your task text is not English but you want English artifacts:
+no more UTF-8/Chinese-character output to decode.
 
 Build-gate tuning (full table in the next section): `SUPER_DEV_BUILD_TIMEOUT_MS`
 raises the per-command build-gate timeout (default `600000`), and
@@ -447,12 +457,14 @@ All keys, defaults, and purposes:
 | Variable | Default | Purpose |
 |---|---|---|
 | `SUPER_DEV_MODEL` | — | global model override (per-role `agentModels` wins) |
+| `SUPER_DEV_LANGUAGE` | `english` | output language for every agent-written artifact (beats `config.json` `language`) |
 | `SUPER_DEV_BACKEND` | `session` | agent backend: `session` or `subprocess` |
 | `SUPER_DEV_THINKING` | — | per-agent thinking level for the session backend |
 | `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
+| `SUPER_DEV_MAX_RED_JUDGE_ROUTES` | `3` | routed judge interventions per phase before only `fix-environment` remains |
 | `SUPER_DEV_MAX_CHALLENGE_REAUTHORS` | `2` | implementer-driven RED re-author cap |
 | `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
-| `SUPER_DEV_JUDGE_TIMEOUT_MS` | `240000` | judge wall-clock budget per call (retry-on-timeout consumes the 2nd signature slot) |
+| `SUPER_DEV_JUDGE_TIMEOUT_MS` | `480000` | judge wall-clock budget per call (retry-on-timeout consumes the 2nd signature slot) |
 | `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
 | `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in build-gate command discovery |

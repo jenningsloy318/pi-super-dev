@@ -14,7 +14,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { superDevEnv } from "./render/super-dev-dir.ts";
+import { languageDirective, superDevEnv } from "./render/super-dev-dir.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -369,9 +369,17 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const promptWithAccess = accessMode === "source-read-only"
 			? `${promptWithNotes}\n\n## Source mutation boundary\nThis call is source-read-only. You may inspect files and run diagnostics, but do not edit, write, stage, commit, delete, move, or generate files under the project worktree except temporary files outside the repository (for example under /tmp). The super-dev pipeline renders report artifacts for you.`
 			: promptWithNotes;
+		// v0.3.23: output-language directive rides on EVERY agent call — appended
+		// last at THIS seam (the backends may wrap delivery-discipline sections
+		// after it, but it stays the final TASK-content section; recency beats
+		// system prompts for output language) so every artifact
+		// (spec docs, reports, ledger/audit text, commits) lands in the configured
+		// language (default english) regardless of the task's language. One choke
+		// point covers both backends; judge calls flow through ctx.agent too.
+		const promptWithLanguage = `${promptWithAccess}\n\n${languageDirective()}`;
 		const common = {
 			agent: call.agent,
-			prompt: promptWithAccess,
+			prompt: promptWithLanguage,
 			cwd: agentCwd,
 			accessMode,
 			controlKeys,

@@ -29,6 +29,18 @@ export interface SuperDevConfig {
 	 *    stagnation fires AND the run is in TUI/RPC mode (ctx.hasUI). Headless
 	 *    runs always fall back to "informative". */
 	escalation: "informative" | "interactive";
+	/** Natural language for ALL agent-written output (v0.3.23). Run
+	 *  2026-08-27T12-33-43-088Z drove this: a Chinese task produced Chinese spec
+	 *  docs, ledger summaries, and commit messages that the operator then had
+	 *  to read as UTF-8 noise. Default "english" keeps every AGENT-WRITTEN
+	 *  artifact — spec docs, reports, reflection/learned history, audit control
+	 *  text, commit messages — in one language regardless of the task's language.
+	 *  (Harness-RENDERED reports — escalation/stagnation templates, run-summary
+	 *  scaffolding — are English by construction and outside this setting.)
+	 *  Any BCP-47-ish string is accepted (normalized to
+	 *  trimmed lowercase); empty/absent = "english". A one-off override can use
+	 *  SUPER_DEV_LANGUAGE (env or the env map), which beats this key. */
+	language?: string;
 	/** Per-agent-role model overrides. Keys are agent role names (e.g.
 	 *  "code-reviewer", "adversarial-reviewer"); values are qualified "provider/id"
 	 *  model strings. Lets you run review on a DIFFERENT model than implementation
@@ -60,6 +72,7 @@ export const DEFAULT_CONFIG: SuperDevConfig = {
 	runRetentionDays: 30,
 	traceRetentionDays: 7,
 	escalation: "informative",
+	language: "english",
 };
 
 // ─── paths ──────────────────────────────────────────────────────────────────
@@ -117,6 +130,35 @@ function envConfigCached(): Record<string, string> | undefined {
 		envConfigCache = null;
 		return undefined;
 	}
+}
+
+/** ─── output language (v0.3.23) ───────────────────────────────────────────
+ * Resolves the natural language every agent must write in. Precedence matches
+ * the superDevEnv family: SUPER_DEV_LANGUAGE (process env > config.env map)
+ * beats the config `language` key; both normalize (trim + lowercase); anything
+ * empty/absent falls back to "english". Never throws. */
+export function outputLanguage(cfg?: Partial<SuperDevConfig>): string {
+	const fromCfgRaw = cfg !== undefined ? cfg.language : (() => { try { return getConfig().language; } catch { return undefined; } })();
+	// P1 (review): config.json is spread-merged over defaults with NO schema
+	// validation — a non-string `language` (42, true, []) must degrade to the
+	// default, never throw (this runs on EVERY agent call via realAgent).
+	const fromCfg = typeof fromCfgRaw === "string" ? fromCfgRaw : "";
+	const raw = superDevEnv("SUPER_DEV_LANGUAGE") ?? fromCfg;
+	const norm = raw.trim().toLowerCase();
+	return norm === "" ? "english" : norm;
+}
+
+/** The prompt directive enforcing {@link outputLanguage}. Appended as the LAST
+ * section of every agent prompt (recency matters more than system prompts for
+ * output language). Identifiers, paths, commands, and short verbatim source
+ * quotes stay in original form — only natural-language prose is constrained. */
+export function languageDirective(cfg?: Partial<SuperDevConfig>): string {
+	const lang = outputLanguage(cfg);
+	return [
+		"## Output language",
+		`Write ALL natural-language output — every document, title, summary, diagnosis, rationale, report, and every <control> JSON text field — in ${lang}, regardless of the language of the task, the repository, prior artifacts, user notes, or commit messages you see. If you write a commit message, write it in ${lang} too.`,
+		"Identifiers, file paths, commands, code, and short verbatim quotes of source text may keep their original form.",
+	].join("\n");
 }
 
 // ─── per-run lifecycle ──────────────────────────────────────────────────────

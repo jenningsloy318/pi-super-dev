@@ -23,9 +23,31 @@ import {
 	auditAppend,
 	auditPathFor,
 	reflectionPathFor,
+	languageDirective,
 } from "./super-dev-dir.ts";
 import { existsSync } from "node:fs";
 import { cleanupOldRuns } from "./cleanup.ts";
+
+/** v0.3.23: pure task builder so the language directive (and any future prompt
+ *  policy) is unit-testable without touching audit files. Reflection calls
+ *  runAgentViaSession DIRECTLY — it bypasses realAgent's prompt seam — so the
+ *  output-language directive must ride here explicitly: learned.md /
+ *  reflection.md are cross-run history and must honor config.language. */
+export function buildReflectionTask(runDir?: string | null): string {
+	return [
+		"## Files",
+		`- Audit trail: ${runDir ? auditPathFor(runDir) : getAuditPath()}`,
+		`- Knowledge base: ${getLearnedPath()}`,
+		`- Archive: ${getLearnedArchivePath()}`,
+		`- Index: ${getLearnedIndexPath()}`,
+		`- Reflection summary: ${runDir ? reflectionPathFor(runDir) : getReflectionPath()}`,
+		"",
+		"## Task",
+		"Analyze the audit trail. Identify patterns (retries, errors, timing).",
+		"Score each pattern. Update learned.md (append/update). Rebuild learned-index.json.",
+		"Write reflection.md summary.",
+	].join("\n") + "\n\n" + languageDirective();
+}
 
 /** Spawn the reflection agent asynchronously (fire-and-forget). Non-blocking.
  *  AC-29 (SCENARIO-060): the originating run's dir is threaded through — every
@@ -51,28 +73,12 @@ export function runReflectionAsync(runDir: string | undefined): void {
 export async function runReflection(runDir?: string): Promise<void> {
 	// Paths are captured at ENTRY — no getAuditPath()/getReflectionPath() read
 	// after the agent await below can observe a newer run's dir.
-	const auditPath = runDir ? auditPathFor(runDir) : getAuditPath();
-	const learnedPath = getLearnedPath();
-	const archivePath = getLearnedArchivePath();
-	const indexPath = getLearnedIndexPath();
-	const reflectionPath = runDir ? reflectionPathFor(runDir) : getReflectionPath();
 	const superDevDir = getSuperDevDir();
+	const auditPath = runDir ? auditPathFor(runDir) : getAuditPath();
 
 	if (!existsSync(auditPath)) return;
 	const systemPrompt = loadAgentPrompt("reflection");
-	const task = [
-		"## Files",
-		`- Audit trail: ${auditPath}`,
-		`- Knowledge base: ${learnedPath}`,
-		`- Archive: ${archivePath}`,
-		`- Index: ${indexPath}`,
-		`- Reflection summary: ${reflectionPath}`,
-		"",
-		"## Task",
-		"Analyze the audit trail. Identify patterns (retries, errors, timing).",
-		"Score each pattern. Update learned.md (append/update). Rebuild learned-index.json.",
-		"Write reflection.md summary.",
-	].join("\n");
+	const task = buildReflectionTask(runDir);
 
 	await runAgentViaSession({
 		agent: "reflection",
