@@ -10,7 +10,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { superDevEnv } from "../render/super-dev-dir.ts";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync , rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
 import { classifyJudgeRoute } from "../routing/router.ts";
@@ -31,10 +31,12 @@ import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "../fault-classification.ts";
 import { clearBaselineCache } from "../build-runner/baseline.ts";
+// v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
+import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, type TestRunnerSpec } from "../build-runner/runner-discovery.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
 
-interface RedEvidence {
+export interface RedEvidence {
 	phaseId: string;
 	attempt: number;
 	status: RedEvidenceStatus;
@@ -328,7 +330,7 @@ function appendImplementationEvidence(specDir: string | undefined, evidence: Red
  *  two coupled sites reading ONE constant instead of duplicated strings). */
 const CANONICAL_GREEN_WEAK_REASON = "RED tests passed before implementation";
 
-function classifyRedEvidence(args: { phaseId: string; attempt: number; redStatus: RedStatus; testFiles: string[]; changedFiles: string[]; boundary: RedBoundaryResult; redRetries: number; alreadySatisfied: boolean; diagnostics?: RedCheckDiagnostic[] }): RedEvidence {
+export function classifyRedEvidence(args: { phaseId: string; attempt: number; redStatus: RedStatus; testFiles: string[]; changedFiles: string[]; boundary: RedBoundaryResult; redRetries: number; alreadySatisfied: boolean; diagnostics?: RedCheckDiagnostic[] }): RedEvidence {
 	const { phaseId, attempt, redStatus, testFiles, changedFiles, boundary, redRetries, alreadySatisfied } = args;
 	const forbiddenFiles = boundary.forbiddenFiles;
 	const diagnostics = args.diagnostics?.map((d) => ({ ...d, plan: { cwd: d.plan.cwd, argv: [...d.plan.argv] } }));
@@ -354,7 +356,7 @@ function firstRedDiagnosticDetail(e: RedEvidence): string {
 	return diagnostic ? `diagnostic: ${formatRedDiagnosticSummary(diagnostic)}` : "";
 }
 
-function redEvidenceFailureReasons(e: RedEvidence): string[] {
+export function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	if (e.status === "polluted-red") return [`red-polluted: RED phase changed production file(s): ${e.forbiddenFiles.join(", ")}`];
 	const detail = firstRedDiagnosticDetail(e);
 	if (e.status === "coverage-incomplete") return [`red-coverage-incomplete: missing BDD scenario coverage: ${(e.missingScenarios ?? []).join(", ") || "unknown"}${e.reason ? `; ${e.reason}` : ""}`];
@@ -367,6 +369,13 @@ function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	}
 	if (e.status === "review-weak") return [`red-review-rejected: ${e.reason ?? "an independent reviewer did not confirm the RED tests as STRONG"} (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
 	if (e.status === "broken-test") return [`red-broken: tests did not compile/collect (${e.testFiles.join(", ") || "no tests"})${detail ? `; ${detail}` : ""}`];
+	// v0.3.30 F2 (run 2026-08-28T16-09-12-785Z): unknown evidence gets its OWN
+	// honest template. Previously the fail-closed guard relabeled unknown to
+	// broken-test and this template claimed "tests did not compile/collect"
+	// while the agent's own gradle run showed 127 tests ran and 122 FAILED —
+	// a lie that misdirected retries and polluted judge inputs.
+	if (e.status === "unknown-no-runner") return [`red-unverified: no supported test runner was available — the RED oracle executed nothing, so the tests were NOT observed failing (nor passing); the harness could not observe them at all${detail ? `; ${detail}` : ""}`];
+	if (e.status === "unknown-unclassified") return [`red-unverified: the RED oracle could not classify the runner output${e.reason ? ` — ${e.reason}` : ""}${detail ? `; ${detail}` : ""}`];
 	return [];
 }
 
@@ -416,7 +425,7 @@ function redDiagnosticsPrompt(diagnostics: RedCheckDiagnostic[] | undefined): st
 	return `\n\n## RED runner diagnostics from the last oracle run\n${rendered}\n\nUse these exact command results. First make the test file compile/collect and execute, then make it fail for the intended missing behavior. Do not resample unrelated tests.`;
 }
 
-function redGenerationRetryHint(e: RedEvidence): string | null {
+export function redGenerationRetryHint(e: RedEvidence, opts?: { failClosed?: boolean }): string | null {
 	if (e.status === "coverage-incomplete") return tddCoverageRetryHint({
 		allCovered: false,
 		expectedScenarios: e.expectedScenarios ?? [],
@@ -426,6 +435,22 @@ function redGenerationRetryHint(e: RedEvidence): string | null {
 	});
 	if (e.status === "green-weak-test") return redRePromptHint("green") + redDiagnosticsPrompt(e.diagnostics);
 	if (e.status === "broken-test") return redRePromptHint("broken") + redDiagnosticsPrompt(e.diagnostics);
+	// v0.3.30 F2: unknown evidence retries with a HONEST, scoped hint so the
+	// fail-closed loop engages without lying about compilation. The hint must
+	// never send the agent outside the worktree (run 16-09-12 try 4 spent
+	// minutes full-disk hunting the harness's own source after a misdirected
+	// toolchain hint). Gated on `failClosed` — when the phase does NOT require
+	// tests, unknown still falls through to the implementer (the documented
+	// "proceed without stalling" P3 contract; retrying there is a regression).
+	if ((e.status === "unknown-no-runner" || e.status === "unknown-unclassified") && opts?.failClosed) {
+		return `\n\n${implementationRetrySection("RED oracle could not verify the tests", {
+			gate: "red-oracle",
+			location: "TDD RED test execution",
+			observed: e.status === "unknown-no-runner" ? "no supported test runner was available — the oracle executed nothing" : "the runner output could not be classified",
+			expected: "a runnable, recognized test command executes the tests and they FAIL for the right reason",
+			nextAction: "Ensure this project has a runnable test command (Gradle: ./gradlew test / testDebugUnitTest; Maven: mvn test; npm test; pytest; cargo test; go test) with its toolchain installed, and run the scoped test ONCE yourself to confirm it FAILS for the right reason. Do NOT modify production code to work around a verification limitation, and do NOT search, read, or modify anything outside this worktree — if the stack is unsupported by the harness, state that limitation in your result and stop.",
+		})}` + redDiagnosticsPrompt(e.diagnostics);
+	}
 	if (e.status === "polluted-red") {
 		return `\n\n${implementationRetrySection("RED boundary rejected the previous test set", {
 			phase: e.phaseId,
@@ -662,6 +687,18 @@ const pad = (n: number) => String(n).padStart(2, "0");
 const MAX_RED_RETRIES = (() => {
 	const raw = Number.parseInt(superDevEnv("SUPER_DEV_MAX_RED_RETRIES") ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 6;
+})();
+
+/** v0.3.30 F3 (run 2026-08-28T16-09-12-785Z try 4): a judge `fix-environment`
+ *  verdict restarts the RED loop with a repair hint. When the environment gap
+ *  is outside the worktree (harness-side, e.g. an unsupported runner), blind
+ *  restarts only burn budget and the misdirected "repair the toolchain" hint
+ *  sent the agent full-disk hunting the harness's own source. ONE restart is
+ *  granted for genuinely in-repo environment fixes; the next fix-environment
+ *  verdict terminates the loop honestly (`environment-blocked`). */
+const MAX_RED_ENV_RESTARTS = (() => {
+	const raw = Number.parseInt(superDevEnv("SUPER_DEV_MAX_RED_ENV_RESTARTS") ?? "", 10);
+	return Number.isFinite(raw) && raw >= 0 ? raw : 1;
 })();
 
 /** Cap on ROUTED judge interventions per phase at the RED no-progress boundary
@@ -904,10 +941,11 @@ function quoteCmdArg(arg: string): string {
 	return /^[A-Za-z0-9_./:@%+=,-]+$/.test(arg) ? arg : JSON.stringify(arg);
 }
 
-export function redCheckOptions(ctx: StageContext, phaseId: string, diagnostics?: RedCheckDiagnostic[], defaultBranch?: string) {
+export function redCheckOptions(ctx: StageContext, phaseId: string, diagnostics?: RedCheckDiagnostic[], defaultBranch?: string, runner?: TestRunnerSpec) {
 	return {
 		signal: ctx.signal,
 		defaultBranch, // sweep-3 G6 (AR1-3): the run's real base ref for cargo -p scoping
+		...(runner ? { runner } : {}), // v0.3.30 C: cached/validated agent-proposed runner
 		onPlan(plans: RedCheckPlan[]) {
 			for (const plan of plans) {
 				ctx.log(`Implementation ${phaseId} RED test plan: cwd=${plan.cwd} cmd=${plan.argv.map(quoteCmdArg).join(" ")}`);
@@ -1234,7 +1272,7 @@ export const implementationStage: Stage = {
 			let attemptsRun = 0;
 			let terminalFailureKind: "red-generation" | "implementation-gate" = "implementation-gate";
 			let terminalRedTries = 0;
-			let terminalStopReason: "budget" | "no-progress" | "failed" = "failed";
+			let terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" = "failed";
 			// Track 30 PRA (T3.2 — SCENARIO-005, AC-03): the environmental-blocker
 			// one-gate-re-run budget. Per-phase hoisted state — reset each convergence
 			// iteration (a later re-entry gets a fresh budget of exactly 1) and grants
@@ -1387,6 +1425,12 @@ export const implementationStage: Stage = {
 					let retries = 0;
 					let redHint = "";
 					const redProgressHistory: string[] = [];
+					let redFailClosedUnknown = false; // v0.3.30 F2: unknown evidence retries/fails terminally ONLY when fail-closed (phase requires tests)
+					// v0.3.30 C: cached runner spec from a prior discovery (spec-dir
+					// test-runner.json — harness-owned, boundary-excluded), plus the
+					// one-shot guard for THIS phase's discovery attempt.
+					let runnerSpec: TestRunnerSpec | null = readCachedTestRunner(setup.specDirectory);
+					let runnerDiscoveryTried = runnerSpec !== null;
 					// v0.3.16 review fix (code F-1/adv F-2): remember the last NON-EMPTY
 					// claim across tries so an agent-death retry can still probe whether
 					// the previously-claimed file is on disk (the claim itself is cleared
@@ -1402,6 +1446,10 @@ export const implementationStage: Stage = {
 					// 5 judges / ~3.5h of ladder resets before the environment diagnosis
 					// finally landed).
 					let redJudgeRoutes = 0;
+					// v0.3.30 F3 (review-2 F9: phase scope, not per-attempt): fix-environment
+					// restarts are capped per PHASE so a convergence re-entry cannot reset
+					// the cap.
+					let redEnvRestarts = 0;
 					while (ctx.budget.check()) {
 						const redDiagnostics: RedCheckDiagnostic[] = [];
 						const redTryDetail = attemptDetail(attempt, `try ${retries + 1}`);
@@ -1443,7 +1491,7 @@ export const implementationStage: Stage = {
 							ctx.log(`Implementation ${phaseId} tdd-guide (try ${retries + 1})${tdd.error ? ` error=${tdd.error}` : ""}: test files=${testFiles.join(", ") || "(none)"}${tddNotCompleted ? " (agent did not complete — previous claim discarded)" : ""}${tddSummary ? ` — ${tddSummary.slice(0, 400)}` : ""}`);
 						}
 						announceActivity("RED oracle", redTryDetail);
-						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics, setup.defaultBranch));
+						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
 						announceActivity("RED boundary", redTryDetail);
@@ -1472,8 +1520,87 @@ export const implementationStage: Stage = {
 										? "the TDD agent returned no test files"
 										: "the RED test status could not be confirmed";
 								ctx.log(`Implementation ${phaseId} RED fail-closed: ${why}; phase requires tests — retrying instead of proceeding without a confirmed RED`);
-								redEvidence = { ...redEvidence, status: "broken-test", reason: `RED not confirmed: ${why}` };
+								redFailClosedUnknown = true;
+								// v0.3.30 F2: keep the status HONEST — unknown stays unknown (with
+								// its own red-unverified reason/hint templates). The pre-0.3.29
+								// coercion to broken-test made the retry log claim "tests did not
+								// compile/collect" even when 127 tests had run and 122 failed
+								// (run 2026-08-28T16-09-12-785Z tries 2-3).
+								redEvidence = { ...redEvidence, reason: `RED not confirmed: ${why}` };
 							}
+						}
+						// v0.3.30 Layer C: the registry has no runner for this stack —
+						// ONE discovery attempt before burning retries. The agent
+						// PROPOSES a command under a mandatory per-test-evidence
+						// contract; the harness MACHINE-VERIFIES it by executing it;
+						// a validated spec is cached (spec-dir test-runner.json) and
+						// threads into every later oracle run. LLM proposes, machine
+						// verifies — the gate decision itself stays deterministic.
+						if (redFailClosedUnknown && !runnerSpec && !runnerDiscoveryTried) {
+							runnerDiscoveryTried = true;
+							announceActivity("Runner discovery", redTryDetail);
+							const discovery = await ctx.agent({
+								id: `pipeline.implementation.${phaseId}.runner-discovery.a${attempt}.t${retries + 1}`,
+								agent: "debug-analyzer",
+								prompt: [
+									"## Purpose",
+									"Discover how to run this project's test suite so a deterministic harness can verify TDD RED/GREEN states.",
+									"The harness could NOT find any recognized test runner for this repository (no package.json / go.mod / pyproject / Cargo / Gradle / Maven convention matched with a runnable test command).",
+									"",
+									"## Contract (MANDATORY — your proposal is machine-verified)",
+									"The command you return MUST emit per-test pass/fail detail the harness can parse:",
+									"- JUnit XML written to a conventional results directory (build/test-results/**, target/surefire-reports/**) — Gradle and Maven do this by default; or",
+									"- TAP output (lines `ok N ...` / `not ok N ...`); or",
+									"- a runner the harness already parses with per-test lines (pytest -rA, vitest run, jest --verbose, go test -v).",
+									"The harness will EXECUTE your command once to validate it. A command that only prints prose (e.g. 'all tests passed') is REJECTED.",
+									"You may run candidate commands yourself to confirm they work. Do NOT create, edit, or delete ANY file — explore, read, and run only.",
+									"",
+									"## Project",
+									`- worktree root: ${setup.worktreePath}`,
+									`- detected stack: language=${setup.language}${state.classify ? ` (${state.classify.language})` : ""}`,
+									`- test files this phase expects: ${testFiles.join(", ") || "(none yet)"}`,
+									"",
+									"## Steps",
+									"1. Inspect manifests/build files (Makefile, justfile, CMake, meson, composer, dotnet, xcodeproj, vendor scripts …) to identify the test entry point.",
+									"2. Run a scoped candidate ONCE (ideally targeting one test file/class) and confirm it emits per-test pass/fail detail.",
+									"3. Return the single best command (shell string; you may include quoting). Prefer deterministic, non-interactive, non-watch invocations.",
+									"",
+									"Output <control> JSON with: command, resultFormat.",
+								].join("\n"),
+								accessMode: "source-read-only",
+							});
+							const dControl = (discovery.control ?? {}) as { command?: unknown; cwd?: unknown; resultFormat?: unknown };
+							const dCommand = typeof dControl.command === "string" ? dControl.command.trim() : "";
+							if (dCommand) {
+								const spec: TestRunnerSpec = {
+									version: 1,
+									command: dCommand,
+									...(typeof dControl.cwd === "string" && dControl.cwd.trim() ? { cwd: dControl.cwd.trim() } : {}),
+									resultFormat: dControl.resultFormat === "tap" || dControl.resultFormat === "junit-xml" ? dControl.resultFormat : "console",
+									discoveredAt: new Date().toISOString(),
+								};
+								const validation = validateRunnerSpec(spec, setup.worktreePath, 180_000, ctx.signal);
+								if (validation.ok) {
+									runnerSpec = spec;
+									writeCachedTestRunner(setup.specDirectory, spec);
+									ctx.log(`Implementation ${phaseId} runner-discovery: VALIDATED agent-proposed runner (${validation.evidence}) — cached for reuse; the oracle now runs: ${spec.command}`);
+								} else {
+									ctx.log(`Implementation ${phaseId} runner-discovery: proposal REJECTED (${validation.evidence}) — continuing on the honest unknown path`);
+								}
+							} else {
+								ctx.log(`Implementation ${phaseId} runner-discovery: agent returned no usable command — continuing on the honest unknown path`);
+							}
+						}
+						// review-2 F12: a cached runner spec whose command no longer SPAWNS
+						// (ENOENT-class `error` on the dynamic plan) self-heals — drop the
+						// cache file and the in-memory spec so a later phase can rediscover.
+						// Precise by design: only true staleness (command gone) invalidates;
+						// a scoping miss ("No tests found") or unparseable output keeps the
+						// cache and surfaces honestly as red-unverified instead.
+						if (runnerSpec && redStatus === "unknown" && redDiagnostics.some((d) => d.error)) {
+							runnerSpec = null;
+							try { rmSync(join(setup.specDirectory, "test-runner.json"), { force: true }); } catch { /* best effort */ }
+							ctx.log(`Implementation ${phaseId} runner-cache: cached runner failed to spawn — cache invalidated; a later phase may rediscover`);
 						}
 						if (redEvidence.status === "red-behavior-failure" && expectedScenarios.length > 0) {
 							announceActivity("RED scenario coverage", redTryDetail);
@@ -1504,7 +1631,7 @@ export const implementationStage: Stage = {
 						// so tdd-guide adds real assertions, routed through the SAME retry
 						// machinery below (no-progress detection, restore, redHint). Cheap +
 						// deterministic; weak-but-present assertions are Tier 2's job.
-						let retryHint = redGenerationRetryHint(redEvidence);
+						let retryHint = redGenerationRetryHint(redEvidence, { failClosed: redFailClosedUnknown });
 						if (!retryHint && redEvidence.status === "red-behavior-failure" && testFiles.length > 0) {
 							const hollow = assertionPresenceGaps(snapshotFiles(setup.worktreePath, testFiles));
 							if (hollow.length > 0) {
@@ -1710,9 +1837,22 @@ export const implementationStage: Stage = {
 									ctx.log(`Implementation ${phaseId} judge route=replan-upstream: no routable owner / replan budget exhausted — falling through to the human boundary with the diagnosis`);
 								}
 								if (judgeOut.status === "routed" && (judgeOut.verdict.route === "re-author-tests" || judgeOut.verdict.route === "fix-environment")) {
+									// v0.3.30 F3 (run 16-09-12 try 4): one fix-environment restart is
+									// granted for genuinely in-repo environment repairs; a SECOND
+									// fix-environment verdict means the fix is outside the RED loop's
+									// reach (typically harness-side) — terminate honestly instead of
+									// another blind restart that burns budget and tempts the agent to
+									// hunt the harness's own source outside the worktree.
+									if (judgeOut.verdict.route === "fix-environment" && redEnvRestarts >= MAX_RED_ENV_RESTARTS) {
+										redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+										terminalStopReason = "environment-blocked";
+										ctx.log(`Implementation ${phaseId} RED generation stopped — environment-blocked: ${redEnvRestarts} fix-environment restart(s) granted without progress; the fix is outside the RED loop's reach — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
+										break;
+									}
+									if (judgeOut.verdict.route === "fix-environment") redEnvRestarts++;
 									redProgressHistory.length = 0;
 									retries++;
-									redHint = `\n\n## Judge diagnosis (verified evidence — act on it)\n${judgeOut.verdict.diagnosis}\n${judgeOut.verdict.route === "fix-environment" ? "The judge classified this as an ENVIRONMENT problem: repair the toolchain/dependency availability first (install or bootstrap what is missing), then author the RED test." : "The judge classified the RED tests themselves as contradictory or unsatisfiable: re-author the affected tests into a satisfiable form that still pins the same behavior."}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+									redHint = `\n\n## Judge diagnosis (verified evidence — act on it)\n${judgeOut.verdict.diagnosis}\n${judgeOut.verdict.route === "fix-environment" ? "The judge classified this as an ENVIRONMENT problem. Repair it INSIDE this worktree only (install dependencies, fix toolchain/config files that live in this repository), then author the RED test. If the fix requires anything OUTSIDE this repository (a capability the harness itself lacks), do NOT hunt for, read, or modify external files — state the limitation in your result and stop; the harness will escalate." : "The judge classified the RED tests themselves as contradictory or unsatisfiable: re-author the affected tests into a satisfiable form that still pins the same behavior."}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
 									ctx.log(`Implementation ${phaseId} judge route=${judgeOut.verdict.route}: restarting RED with the diagnosis`);
 									continue;
 								}
@@ -1808,14 +1948,18 @@ export const implementationStage: Stage = {
 						ctx.log(`Implementation ${phaseId} RED already-satisfied verification FAIL: ${[...attemptErrors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "phase gates unmet"}`);
 						break;
 					}
-					const redFailures = redEvidenceFailureReasons(redEvidence);
+					// v0.3.30 F2: unknown (red-unverified) evidence is only a TERMINAL
+					// failure when the fail-closed guard engaged (the phase requires
+					// tests). Otherwise the P3 contract holds: unknown falls through to
+					// the implementer with an unconfirmed-RED advisory, no stall.
+					const redFailures = redEvidenceFailureReasons(redEvidence).filter((r) => redFailClosedUnknown || !r.startsWith("red-unverified:"));
 					if (redFailures.length) {
 						restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
 						attemptErrors = redFailures;
 						terminalFailureKind = "red-generation";
 						terminalRedTries = retries + 1;
-						if (terminalStopReason !== "no-progress") terminalStopReason = ctx.budget.check() ? "failed" : "budget";
-						ctx.log(`Implementation ${phaseId} RED generation stopped after ${retries + 1} tries${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""}`);
+						if (terminalStopReason !== "no-progress" && terminalStopReason !== "environment-blocked") terminalStopReason = ctx.budget.check() ? "failed" : "budget";
+						ctx.log(`Implementation ${phaseId} RED generation stopped after ${retries + 1} tries${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment-blocked)" : ""}`);
 						ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
 						ctx.log(redEvidenceLogLine(redEvidence));
 						break;
@@ -2788,6 +2932,11 @@ export const implementationStage: Stage = {
 				// §D: record the failure so the next convergence iteration targets it
 				const terminalReasons = [
 					...attemptErrors,
+					// review-2 F8: the judge's verified diagnosis (fix-environment /
+					// no-progress terminal stops) reaches the convergence record —
+					// without it, environment-blocked phases surface only generic
+					// red-unverified strings downstream.
+					...(redJudgeDiagnosis ? [`judge diagnosis: ${redJudgeDiagnosis.slice(0, 400)}`] : []),
 					...missingDeliverables.map((e) => `deliverable: ${e}`),
 					...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`),
 					...hollowFiles.map((e) => `hollow-file: ${e}`),
@@ -2802,7 +2951,7 @@ export const implementationStage: Stage = {
 				// CONTINUES to the next phase; the outer §D convergence loop re-enters
 				// non-green phases for another bounded pass until allGreen or the
 				// global budget fuse.
-				preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : "gates-unmet");
+				preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : terminalStopReason === "environment-blocked" ? "environment-blocked" : "gates-unmet"); // review-2 F8: keep the honest reason
 				{
 					const sig = terminalReasons.join("; ").slice(0, 200);
 					const prior = phaseStatus.find((p) => p.id === phaseId);
@@ -2820,9 +2969,9 @@ export const implementationStage: Stage = {
 					...hollowFiles.map((e) => `hollow-file: ${e}`),
 				]);
 				if (terminalFailureKind === "red-generation") {
-					ctx.log(`Implementation ${phaseId} partial (RED generation stopped after ${terminalRedTries} tries in attempt ${attemptsRun}${terminalStopReason === "no-progress" ? ", no progress" : terminalStopReason === "budget" ? ", budget exhausted" : ""}) — continuing to the next phase`);
+					ctx.log(`Implementation ${phaseId} partial (RED generation stopped after ${terminalRedTries} tries in attempt ${attemptsRun}${terminalStopReason === "no-progress" ? ", no progress" : terminalStopReason === "budget" ? ", budget exhausted" : terminalStopReason === "environment-blocked" ? ", environment blocked (fix is outside this worktree — judge diagnosis above)" : ""}) — continuing to the next phase`); // review-2 F8
 				} else {
-					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : ""} — continuing to the next phase`);
+					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : ""} — continuing to the next phase`); // review-2 F8
 				}
 				allGreen = false;
 				continue;

@@ -25,6 +25,8 @@ const RUNTIME_EVIDENCE_BASENAMES = new Set([
 	"change-tracker.jsonl",
 	".resume-cache.jsonl",
 	".user-notes.json",
+	".judge.jsonl",
+	"test-runner.json",
 	"stagnation-report.md",
 	"escalation-report.md",
 	"api-test-report.md",

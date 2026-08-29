@@ -550,6 +550,7 @@ export const HARNESS_BOOKKEEPING_FILES = new Set([
 	".run-lock", // AC-30: the spec-dir run lock — harness self-write, never agent work
 	".convergence-ledger.json", // v0.3.3 L1: persisted ledger — harness state, never agent work
 	"completion-audit.md", // v0.3.3 V2: per-run operator record — never swept into track commits
+	"test-runner.json", // v0.3.30 C: cached agent-proposed runner spec — harness-owned cache, never agent work
 ]);
 
 /** True when `path` is a harness bookkeeping file inside the run's spec

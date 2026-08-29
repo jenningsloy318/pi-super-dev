@@ -9,6 +9,9 @@ import { dirname, join, relative, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
 import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors, parseFailingNpmTestFiles, parseFailingPythonTestFiles, detectFailureBlockLanguage, parseFailingGoPackages, resolveGoModuleForPackages } from "./scope.ts";
 import { verifyUntouchedFailuresAgainstBaseline, type BaselineCheckResult, type BaselineVerifyInput } from "./baseline.ts";
+// v0.3.30 Layer A/C: universal structured classification + agent-proposed runners.
+import { classifyFromStructuredCounts, harvestJUnitXml, parseTapCounts, sumHarvestedXml } from "./result-parse.ts";
+import { dynamicRedCheckPlans, type TestRunnerSpec } from "./runner-discovery.ts";
 
 export interface RedCheckPlan {
 	cwd: string;
@@ -196,7 +199,9 @@ export interface GateOptions {
 }
 
 const DEP_PRUNE_DIRS = new Set([".git", ".worktree", "node_modules", "target", "dist", "build", ".next", ".nuxt", "vendor", ".venv", "venv", "__pycache__", "coverage"]);
-const PROJECT_MANIFEST_NAMES = ["package.json", "go.mod", "pyproject.toml", "setup.py", "requirements.txt", "pytest.ini", "tox.ini", "Cargo.toml"];
+// v0.3.30 F1: JVM manifests (run 2026-08-28T16-09-12-785Z — a Gradle/Android
+// project had ZERO oracle plans because no manifest was recognized).
+const PROJECT_MANIFEST_NAMES = ["package.json", "go.mod", "pyproject.toml", "setup.py", "requirements.txt", "pytest.ini", "tox.ini", "Cargo.toml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml"];
 const depBootstrapCache = new Map<string, string>();
 
 function readJson(path: string): Record<string, unknown> | null {
@@ -462,6 +467,12 @@ function projectCommandsForDir(root: string, dir: string, rootCmds: ProjectComma
 function moduleBuildPlans(cwd: string, rootCmds: ProjectCommands, baseRef?: string): BuildCommandPlan[] {
 	const root = resolve(cwd);
 	if (rootCmds.language === "rust") return [];
+	// Review-2 F5: gradle/maven modules have no wrapper of their own, so
+	// nested detection would exec PATH `gradle` (wrapper-only machines get
+	// ENOENT) or double-run full builds with version drift. The root plan
+	// (`./gradlew testDebugUnitTest` etc.) already builds every included
+	// module — same contract as the rust guard above.
+	if (rootCmds.language === "gradle" || rootCmds.language === "maven") return [];
 	if (!hasNestedProjectManifest(cwd)) return [];
 	// Sweep-3 G11-B5 (audit B-5): a root manifest WITHOUT scripts no longer
 	// suppresses nested plans — npm-workspaces roots routinely declare no
@@ -892,6 +903,9 @@ export interface RedCheckOptions {
 	onResult?: (diagnostic: RedCheckDiagnostic) => void;
 	/** Sweep-3 G6 (AR1-3): the run's real base ref for touched-file scoping. */
 	defaultBranch?: string;
+	/** v0.3.30 Layer C: an agent-proposed, machine-validated runner spec used
+	 *  when the deterministic registry matched nothing for this stack. */
+	runner?: TestRunnerSpec;
 }
 
 function tailText(text: string, maxLines = STDERR_TAIL_LINES): string {
@@ -1294,8 +1308,137 @@ function isRustGreenfieldCompileFailure(out: string, cwd?: string): boolean {
  * `ctx` carries `cwd` + `targets` so the npm-family greenfield check can verify
  * whether an imported relative module actually exists on disk.
  */
-function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?: { cwd?: string; targets?: string[] }): RedStatus {
+// ── JVM (Gradle/Maven) RED plans, v0.3.30 F1 ─────────────────────────────────
+// Scoped per test class: derive the FQN from the conventional src/test/java
+// layout, target the OWNING gradle/maven module, and invoke the wrapper found
+// walking up from the module (root gradlew is the norm). Pure reads — no spawn.
+
+const GRADLE_MANIFEST_NAMES = ["build.gradle", "build.gradle.kts"];
+
+function gradleModuleDir(root: string, target: string): string {
+	let cur = resolve(root, dirname(target));
+	const top = resolve(root);
+	for (let i = 0; i < 16; i++) {
+		if (GRADLE_MANIFEST_NAMES.some((n) => existsSync(join(cur, n)))) return cur;
+		if (cur === top) break;
+		const parent = dirname(cur);
+		if (parent === cur) break;
+		cur = parent;
+	}
+	return top;
+}
+
+function gradleWrapperArgv0(moduleDir: string): string {
+	let cur = moduleDir;
+	for (let i = 0; i < 16; i++) {
+		if (existsSync(join(cur, "gradlew"))) return join(cur, "gradlew");
+		const parent = dirname(cur);
+		if (parent === cur) return "gradle";
+		cur = parent;
+	}
+	return "gradle";
+}
+
+/** Extract a test-class FQN from a conventional JVM test path
+ *  (`…/src/(android)test/(java|kotlin)/com/x/Y.kt` → `com.x.Y`). Null when the
+ *  layout is non-standard (the caller falls back to a module-level plan). */
+function jvmTestFqn(path: string): string | null {
+	const m = String(path ?? "").replace(/\\/g, "/").match(/(?:^|\/)src\/(?:android)?test\/(?:java|kotlin)\/(.+?)\.(?:kt|java)$/);
+	return m ? m[1].split("/").join(".") : null;
+}
+
+function isAndroidGradleModule(dir: string): boolean {
+	const text = GRADLE_MANIFEST_NAMES.map((n) => readMaybe(dir, n)).join("");
+	return /com\.android|\bandroid\s*\{/i.test(text);
+}
+
+export function gradleRedCheckPlans(cwd: string, targets: string[]): RedCheckPlan[] {
+	const plans: RedCheckPlan[] = [];
+	const seen = new Set<string>();
+	for (const target of targets) {
+		const moduleDir = gradleModuleDir(cwd, target);
+		const exe = gradleWrapperArgv0(moduleDir);
+		const task = isAndroidGradleModule(moduleDir) ? "testDebugUnitTest" : "test";
+		const fqn = jvmTestFqn(target);
+		const argv = fqn ? [exe, task, "--tests", fqn] : [exe, task];
+		const key = `${moduleDir}\0${argv.join(" ")}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		plans.push({ cwd: moduleDir, argv });
+	}
+	return plans;
+}
+
+export function mavenRedCheckPlans(cwd: string, targets: string[]): RedCheckPlan[] {
+	const plans: RedCheckPlan[] = [];
+	const seen = new Set<string>();
+	for (const target of targets) {
+		let moduleDir = resolve(cwd, dirname(target));
+		const top = resolve(cwd);
+		let found = false;
+		for (let i = 0; i < 16; i++) {
+			if (existsSync(join(moduleDir, "pom.xml"))) { found = true; break; }
+			if (moduleDir === top) break;
+			const parent = dirname(moduleDir);
+			if (parent === moduleDir) break;
+			moduleDir = parent;
+		}
+		if (!found && !existsSync(join(top, "pom.xml"))) continue;
+		if (!found) moduleDir = top;
+		const exe = existsSync(join(moduleDir, "mvnw")) ? join(moduleDir, "mvnw") : "mvn";
+		const fqn = jvmTestFqn(target);
+		const argv = fqn ? [exe, "test", `-Dtest=${fqn}`] : [exe, "test"];
+		const key = `${moduleDir}\0${argv.join(" ")}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		plans.push({ cwd: moduleDir, argv });
+	}
+	return plans;
+}
+
+/** v0.3.30 Layer A: STRUCTURED classification takes precedence over console
+ *  regexes. (a) fresh JUnit XML harvested from conventional result dirs is
+ *  language-agnostic ground truth (Gradle/Maven write it by default; the
+ *  freshness bound guarantees the XML belongs to THIS invocation); (b) TAP on
+ *  the console is honored for agent-proposed dynamic runners only (avoids
+ *  false positives on other tools' prose). Null = no structured opinion. */
+function structuredRedClassification(plan: RedExecutionPlan, startedMs: number, exitOk: boolean, combined: string): RedStatus | null {
+	const xml = sumHarvestedXml(harvestJUnitXml(plan.cwd, startedMs));
+	if (xml) {
+		const fromXml = classifyFromStructuredCounts(xml, exitOk);
+		if (fromXml) return fromXml;
+	}
+	if (plan.language === "dynamic") {
+		const tap = parseTapCounts(combined);
+		if (tap) {
+			const fromTap = classifyFromStructuredCounts(tap, exitOk);
+			if (fromTap) return fromTap;
+		}
+	}
+	return null;
+}
+
+export function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?: { cwd?: string; targets?: string[] }): RedStatus {
 	const out = combined ?? "";
+	// v0.3.30 F1 (run 2026-08-28T16-09-12-785Z): JVM/Gradle/Maven markers.
+	// Ordering mirrors the rust/python/go branches: greenfield compile
+	// failure → red; other compile failures → broken; test-failure markers →
+	// red; BUILD FAILED with no recognized marker → broken; else unknown.
+	if (language === "gradle" || language === "maven" || language === "jvm") {
+		if (!ok && isJvmGreenfieldCompileFailure(out)) return "red";
+		if (isJvmCompileFailure(out)) return "broken";
+		if (ok && /BUILD SUCCESS/i.test(out)) return "green";
+		// Review-2 F3: a `--tests`/`-Dtest` filter that matches ZERO tests fails
+		// the task with the normal FAILED marker — but no test executed, so it
+		// is neither red nor broken (package≠directory and renames make this a
+		// legal miss). Check BEFORE the failure markers; the honest `unknown`
+		// keeps the loop on the fail-closed re-derive path instead of
+		// confirming a phantom RED the GREEN loop could never confirm.
+		if (/No tests found for given includes|No tests matching|No tests were executed/i.test(out)) return "unknown";
+		if (/tests? completed,? ?\d+ failed|> Task [^\n]*:test[^\n]*FAILED|There are test failures|Tests run:.*?(?:Failures|Errors): [1-9]/i.test(out)) return "red";
+		if (/BUILD FAILED|BUILD FAILURE/.test(out)) return "broken";
+		return "unknown";
+	}
 	if (language === "rust") {
 		// RED (greenfield) — the crate failed to compile solely because the code
 		// under test does not exist yet (missing crate/module targets). Cross-
@@ -1659,6 +1802,11 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 			// correct invocation; goPackageArg already computes it.
 			const goPkgs = dedupePreservingOrder(targets.map((t) => goPackageArg(cwd, cwd, t)));
 			plans.push({ cwd, argv: ["go", "test", ...goPkgs], language });
+		} else if (language === "gradle") {
+			// v0.3.30 F1: scoped per-class gradle plans (module cwd + wrapper + FQN).
+			plans.push(...gradleRedCheckPlans(cwd, targets).map((p) => ({ ...p, language: "gradle" })));
+		} else if (language === "maven") {
+			plans.push(...mavenRedCheckPlans(cwd, targets).map((p) => ({ ...p, language: "maven" })));
 		} else {
 			const ownerPlans = ownerRedCheckPlans(cwd, targets);
 			plans.push(...ownerPlans.plans);
@@ -1666,6 +1814,11 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 			plans.push(...npmRedCheckPlans(cwd, npmTargets, cmds).map((plan) => ({ ...plan, language: "backend" })));
 		}
 
+		// v0.3.30 Layer C: no registry plans (unknown stack) → use the cached/
+		// validated agent-proposed runner when one is available.
+		if (plans.length === 0 && opts?.runner) {
+			plans.push(...dynamicRedCheckPlans(cwd, targets, opts.runner).map((p) => ({ ...p, language: "dynamic" })));
+		}
 		if (plans.length === 0) return "unknown";
 		emitRedPlans(opts, plans);
 
@@ -1677,9 +1830,10 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 			if (opts?.signal?.aborted) return "unknown";
 			const { argv } = plan;
 			try {
+				const startedMs = Date.now(); // v0.3.30 A: freshness bound for harvested result XML
 				const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); // sweep-3 G5: 64MB (default 1MB ENOBUFS-kills large suites)
 				const combined = "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
-				const status = r.error ? "unknown" : classifyRedStatus(plan.language, combined, r.status === 0, { cwd: plan.cwd, targets });
+				const status = r.error ? "unknown" : (structuredRedClassification(plan, startedMs, r.status === 0, combined) ?? classifyRedStatus(plan.language, combined, r.status === 0, { cwd: plan.cwd, targets }));
 				emitRedDiagnostic(opts, {
 					plan: { cwd: plan.cwd, argv: [...plan.argv] },
 					language: plan.language,
@@ -1712,6 +1866,42 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		// stall). SCENARIO-001/002/003 (degrade instead of throwing).
 		return "unknown";
 	}
+}
+
+/** JVM compile-failure banner/markers: gradle "Compilation failed;…" AND
+ *  KGP's real banner "> Compilation error. See log for more details"; kotlin
+ *  compiler lines — both the legacy `e: file:…: error: …` form and the real
+ *  KGP shape `e: file:///…:(20, 9): Unresolved reference: X` (no "error:"
+ *  token; review-2 F1, web-verified against real KGP output); javac
+ *  `X.java:[l,c] error: …` / `X.java:l:c error:`; maven "COMPILATION ERROR"
+ *  and maven-compiler-plugin's reformatted `[ERROR] /path/A.java:[7,9] cannot
+ *  find symbol` (review-2 F2 — maven reformats javac lines, dropping the
+ *  lowercase "error:" token). */
+function isJvmCompileFailure(out: string): boolean {
+	return /Compilation failed|COMPILATION ERROR|Compilation error\. See log/i.test(out)
+		|| /^\s*e: .*error:/m.test(out)
+		|| /^\s*e: file:.*:\(\d+, ?\d+\):/m.test(out) // KGP `e: file://…:(l, c): msg`
+		|| /\.java:\[?\d+[,:]\d+\]?(?::| )\s*error:/m.test(out)
+		|| /\.java:\d+:\d+: error:/m.test(out)
+		|| /^\s*\[ERROR\] .*\.java:\[\d+,\d+\]/m.test(out); // maven-compiler-plugin javac reformat
+}
+
+/** Greenfield JVM RED: the build failed to compile and EVERY error line is a
+ *  missing-symbol error (kotlin `unresolved reference`, javac `cannot find
+ *  symbol` / `package … does not exist` / `cannot access`) — i.e. the tests
+ *  reference production classes that do not exist yet, the textbook greenfield
+ *  RED for compiled languages (same contract as rust/python/go greenfield).
+ *  A genuine syntax/type error breaks the every() and stays `broken`. */
+function isJvmGreenfieldCompileFailure(out: string): boolean {
+	if (!isJvmCompileFailure(out)) return false;
+	// Review-2 F1/F2: collect error lines in every real shape — KGP legacy
+	// (`e: … error:`), real KGP (`e: file://…:(l, c): msg`), javac
+	// (`X.java:[l,c] error:`), and maven's `[ERROR] /path/X.java:[l,c] msg`.
+	const errorLines = out.split("\n").map((l) => l.trim()).filter((l) =>
+		/^e: .*error:/i.test(l) || /^e: file:.*:\(\d+, ?\d+\):/i.test(l) || /^\[ERROR\] .*\.java:\[\d+,\d+\]/.test(l) || /error: /i.test(l));
+	if (errorLines.length === 0) return false;
+	return errorLines.every((l) =>
+			/unresolved reference|cannot find symbol|package .* does not exist|cannot access/i.test(l));
 }
 
 /**

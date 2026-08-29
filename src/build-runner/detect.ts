@@ -4,7 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { superDevEnv } from "../render/super-dev-dir.ts";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -452,6 +452,23 @@ function pmRun(pm: string, script: string): string[] {
 	return pm === "deno" ? ["deno", "task", script] : [pm, "run", script];
 }
 
+/** Detect an Android gradle build: the android plugin can be declared at the
+ *  ROOT or in any first-level module's build file (AnkiQuick-style: root
+ *  declares plugins, app/ applies them). Reads root + ≤8 module files. */
+function gradleProjectLooksAndroid(cwd: string): boolean {
+	const texts = [readMaybe(cwd, "build.gradle"), readMaybe(cwd, "build.gradle.kts")];
+	try {
+		for (const entry of readdirSync(cwd, { withFileTypes: true })) {
+			if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+			for (const name of ["build.gradle", "build.gradle.kts"]) {
+				texts.push(readMaybe(join(cwd, entry.name), name));
+			}
+			if (texts.length > 10) break;
+		}
+	} catch { /* unreadable dir — root manifests only */ }
+	return /com\.android|\bandroid\s*\{/i.test(texts.join(""));
+}
+
 /**
  * Detect build/test/typecheck commands from the project's manifests. Returns
  * only the commands that SHOULD run (script/tool is configured). Empty for
@@ -545,6 +562,40 @@ export function detectProjectCommands(cwd: string): ProjectCommands {
 			cmds.ran.push("tsc --noEmit");
 		}
 		return cmds;
+	}
+
+
+	// Review-2 F7: JVM branches run AFTER package.json so kotlin-js /
+	// gradle-node hybrid repos keep their node toolchain (test/typecheck/npm
+	// oracle); pure JVM repos have no package.json and are unaffected. React
+	// native keeps its android/ nesting below root, so it stays frontend.
+	if (has("build.gradle") || has("build.gradle.kts") || has("settings.gradle") || has("settings.gradle.kts")) {
+		// v0.3.30 F1 (run 2026-08-28T16-09-12-785Z): JVM/Gradle projects were
+		// invisible to every deterministic gate — no branch existed, so Gradle
+		// repos fell through to "mixed" with no build/test commands and the RED
+		// oracle returned `unknown` forever while the agent's own gradle runs
+		// proved the tests genuinely failed. Android projects use the variant
+		// unit-test task (testDebugUnitTest) + a compile-only build; pure JVM
+		// uses `test`/`classes`.
+		const android = gradleProjectLooksAndroid(cwd);
+		const exe: string[] = has("gradlew") ? ["./gradlew"] : ["gradle"];
+		const cmds: ProjectCommands = { language: "gradle", ran: [] };
+		cmds.test = android ? [...exe, "testDebugUnitTest"] : [...exe, "test"];
+		cmds.ran.push(cmds.test.join(" "));
+		cmds.build = android ? [...exe, "compileDebugSources"] : [...exe, "classes"];
+		cmds.ran.push(cmds.build.join(" "));
+		return cmds;
+	}
+
+	if (has("pom.xml")) {
+		// v0.3.30 F1: Maven — plain `mvn` (a repo wrapper mvnw is honored by the
+		// RED plans, not the project commands; both work with cwd-based spawn).
+		return {
+			language: "maven",
+			build: ["mvn", "-q", "compile"],
+			test: ["mvn", "test"],
+			ran: ["mvn compile", "mvn test"],
+		};
 	}
 
 	return { language: "mixed", ran: [] };

@@ -433,6 +433,37 @@ single-owner shape too. Auto-routing composes with the inline route-back caps
 (`SUPER_DEV_MAX_INLINE_JUMPS`, per-edge journal budgets), so it can never loop
 unbounded.
 
+**Universal test verification (v0.3.30):** the deterministic TDD oracle no
+longer grows one hardcoded rule per language. Three layers:
+
+1. **Structured classification first** — `runRedCheck` harvests fresh JUnit XML
+   from conventional result directories (`build/test-results/**`, Gradle
+   variant dirs included; `target/surefire-reports|failsafe-reports/`; bounded
+   by the invocation's start time so stale results never classify a new run)
+   and classifies from counts: failures>0 → red, errors>0 → broken, zero tests
+   + failing exit → broken, clean + exit 0 → green. Console regexes are the
+   fallback only. JUnit XML is the de-facto interchange (Gradle/Maven write it
+   by default; pytest/jest/node/go can emit it with a flag).
+2. **A data-driven runner registry** — manifest → command conventions for
+   npm/go/python/cargo/Gradle/Maven (Android projects resolve
+   `./gradlew testDebugUnitTest`, JVM tests are scoped per class with
+   `--tests <FQN>`, maven with `-Dtest=<FQN>`; a greenfield compile failure
+   whose errors are all `unresolved reference`/`cannot find symbol` counts as a
+   valid RED).
+3. **Agent-proposed runners for unknown stacks** — when the registry matches
+   nothing, ONE `runner-discovery` call proposes a command under a mandatory
+   contract (it must emit per-test pass/fail detail); the harness EXECUTES the
+   proposal and machine-verifies parseable evidence (JUnit XML or TAP), then
+   caches the validated spec to the spec dir (`test-runner.json`) for every
+   later oracle run. The LLM never decides pass/fail — it proposes a runner
+   once; verification and the gate stay deterministic.
+
+Related honesty fixes shipped with it: `unknown` oracle evidence keeps its own
+`red-unverified` reason/hint (no more "tests did not compile/collect" lies),
+judge `fix-environment` restarts are capped (`SUPER_DEV_MAX_RED_ENV_RESTARTS`,
+default 1) and terminate as `environment-blocked` beyond that, and `.judge.jsonl`
+no longer pollutes the RED boundary.
+
 **Owner-aware convergence + converged-carried exits (v0.3.24):** a route-back
 jump adds a BACK edge to the stage graph, and a re-entered loop can be handed
 blocking findings owned by a stage DOWNSTREAM of it — work that loop
