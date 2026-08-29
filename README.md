@@ -11,8 +11,8 @@ verification convergence → docs → cleanup → merge (git-verified) — by sp
 specialist `pi` subagents (31 role files, 24 spawned across the stages,
 including a bounded **LLM judge** that routes at deadlock boundaries).
 **No dependency on `@agwab/pi-workflow` or any other external workflow
-engine.** Supports **node, python, go, and rust** projects: RED/GREEN oracles,
-build gates, dependency bootstraps, and greenfield detection are cross-language.
+engine.** Supports **node, python, go, rust, and JVM (Gradle/Maven)** projects: RED/GREEN oracles,
+build gates, dependency bootstraps, and structured-evidence classification are cross-language.
 
 The design principle throughout is **verify, never trust**: every LLM
 self-report (tests pass, files written, merge done) is re-derived by
@@ -102,7 +102,7 @@ stages/index.ts ──► the pipeline expressed with control nodes
 ├─ build-runner/         deterministic build/test/typecheck oracle
 │    ├─ detect.ts        per-language project/command detection (npm, uv/pip,
 │    │                   go, cargo) + dependency bootstraps
-│    ├─ gates.ts         RED/GREEN classification incl. greenfield detection
+│    ├─ gates.ts         language-blind RED/GREEN oracle engine (structured evidence only)
 │    ├─ scope.ts         out-of-scope failure classification (touched files)
 │    └─ baseline.ts      merge-base baseline runs (B-6 regression verification)
 ├─ session-agent.ts      session backend: structured output, corrective
@@ -282,15 +282,14 @@ back as `## Claimed changes not present in git`), git-edits-under-reported
 stays advisory. Never throws; degrades to pass when git is unavailable.
 
 **RED/GREEN TDD oracle (Stage 9, cross-language).** The RED check runs the
-actual test command (vitest/jest/pytest/go test/cargo test) and classifies the
-output: red / green / broken / unknown. **Greenfield detection** (probed
-byte-for-byte against real toolchains) recognizes a test failing because the
-module under test does not exist yet as *valid RED* — python `ERROR collecting`
-+ `ModuleNotFoundError` with the module absent, go `undefined:` diagnostics on
-test-only dirs, rust E0432/E0433/E0583 on internal crate paths — ending the
-old create-a-stub / RED-boundary-violation deadlock. The RED boundary
-classifier (`red-boundary-classifier`) rejects production-file edits during
-RED; tdd-guide is told up front that greenfield module-not-found is valid RED.
+scoped test command from the conventions table and classifies STRICTLY from
+structured evidence (JUnit XML / TAP / go-test-JSON / declared count lines)
+plus the exit code: red / green / broken / unknown — console prose never
+classifies (the Bazel principle; see *Universal test verification* below). A
+greenfield suite whose tests cannot even compile is honestly `unknown` and
+routes through the judge's `allow-scaffold` escape instead of a regex
+shortcut. The RED boundary classifier (`red-boundary-classifier`) rejects
+production-file edits during RED.
 
 **RED review with joint-satisfiability screening (Stage 9).** A Tier-2
 reviewer (`code-reviewer`) judges the RED suite for behavior-binding
@@ -433,36 +432,48 @@ single-owner shape too. Auto-routing composes with the inline route-back caps
 (`SUPER_DEV_MAX_INLINE_JUMPS`, per-edge journal budgets), so it can never loop
 unbounded.
 
-**Universal test verification (v0.3.30):** the deterministic TDD oracle no
-longer grows one hardcoded rule per language. Three layers:
+**Universal test verification (v0.3.30, rewritten v0.3.31 — zero per-language
+oracle code).** Deep research (Bazel test encyclopedia, SWE-Factory FSE'26,
+gotestsum, cargo-nextest/pytest/vitest docs) validated the design: *exit code
+is the only authoritative gate; console prose never classifies* (Bazel:
+"writing any of the strings PASS or FAIL to stdout has no significance");
+per-test detail comes from structured channels the runner itself can emit.
+Three levels:
 
-1. **Structured classification first** — `runRedCheck` harvests fresh JUnit XML
-   from conventional result directories (`build/test-results/**`, Gradle
-   variant dirs included; `target/surefire-reports|failsafe-reports/`; bounded
-   by the invocation's start time so stale results never classify a new run)
-   and classifies from counts: failures>0 → red, errors>0 → broken, zero tests
-   + failing exit → broken, clean + exit 0 → green. Console regexes are the
-   fallback only. JUnit XML is the de-facto interchange (Gradle/Maven write it
-   by default; pytest/jest/node/go can emit it with a flag).
-2. **A data-driven runner registry** — manifest → command conventions for
-   npm/go/python/cargo/Gradle/Maven (Android projects resolve
-   `./gradlew testDebugUnitTest`, JVM tests are scoped per class with
-   `--tests <FQN>`, maven with `-Dtest=<FQN>`; a greenfield compile failure
-   whose errors are all `unresolved reference`/`cannot find symbol` counts as a
-   valid RED).
-3. **Agent-proposed runners for unknown stacks** — when the registry matches
-   nothing, ONE `runner-discovery` call proposes a command under a mandatory
-   contract (it must emit per-test pass/fail detail); the harness EXECUTES the
-   proposal and machine-verifies parseable evidence (JUnit XML or TAP), then
-   caches the validated spec to the spec dir (`test-runner.json`) for every
-   later oracle run. The LLM never decides pass/fail — it proposes a runner
-   once; verification and the gate stay deterministic.
+1. **Structured classification — the ONLY status decision.** `runRedCheck`
+   collects evidence per the runner's declared channel: fresh JUnit XML from
+   conventional result dirs or an explicit harness-owned temp path (`--junitxml=`),
+   TAP on stdout (`node --test --test-reporter=tap`, `vitest --reporter=tap`),
+   `go test -json` events, or a declared count-line pattern (vitest/jest
+   summaries, cargo's `test result: …` lines — parser-as-data). Counts decide:
+   tests>0 with failures/errors → red, clean+exit 0 → green, zero tests+
+   failing exit → broken. **No structured evidence → `unknown`, always** — a
+   failing exit cannot be told red from broken without per-test evidence, and
+   a passing exit cannot be told green from a scope miss. The old per-language
+   regex chains and greenfield predicates are deleted.
+2. **Conventions as data — the single per-ecosystem seam**
+   (`src/build-runner/conventions.ts`): rows declare manifest anchors, target
+   transforms (npm owning-package + RC-1 recursive-script guard, go package
+   dirs, cargo integration stems, JVM `--tests <FQN>`/`-Dtest=<FQN>` per class,
+   android `testDebugUnitTest`) and each row's structured channel. The engine
+   (`gates.ts runRedCheck`) is language-blind; adding or fixing a stack means
+   editing convention data, never engine code.
+3. **Agent-proposed runners for unknown stacks ("LLM proposes, machine
+   verifies, cache reuses")** — when no convention matches, ONE
+   `runner-discovery` call proposes a command under a mandatory structured-
+   evidence contract (JUnit XML / TAP / go-JSON); the harness EXECUTES the
+   proposal and machine-verifies parseable evidence, then caches the validated
+   spec (`test-runner.json`) for every later oracle run. The LLM never decides
+   pass/fail.
 
 Related honesty fixes shipped with it: `unknown` oracle evidence keeps its own
 `red-unverified` reason/hint (no more "tests did not compile/collect" lies),
 judge `fix-environment` restarts are capped (`SUPER_DEV_MAX_RED_ENV_RESTARTS`,
 default 1) and terminate as `environment-blocked` beyond that, and `.judge.jsonl`
-no longer pollutes the RED boundary.
+no longer pollutes the RED boundary. A greenfield compile failure (tests
+reference symbols that do not exist yet) is now honestly `unknown` — the
+fail-closed loop routes it to the judge's `allow-scaffold` / `fix-environment`
+routes instead of a regex shortcut blessing a phantom RED.
 
 **Owner-aware convergence + converged-carried exits (v0.3.24):** a route-back
 jump adds a BACK edge to the stage graph, and a re-entered loop can be handed

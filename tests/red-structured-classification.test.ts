@@ -59,7 +59,7 @@ describe("v0.3.30 A — runRedCheck XML-first classification", () => {
 		expect(status).toBe("green");
 	});
 
-	it("no XML produced → falls back to console classification (gradle BUILD SUCCESSFUL → green)", () => {
+	it("no XML produced → unknown (v0.3.31: console prose NEVER classifies — green requires structured evidence)", () => {
 		// a gradlew that only prints and exits 0 with no XML anywhere
 		writeFileSync(join(root, "settings.gradle"), 'include ":app"\n');
 		writeFileSync(join(root, "build.gradle"), "");
@@ -69,6 +69,6 @@ describe("v0.3.30 A — runRedCheck XML-first classification", () => {
 		writeFileSync(gw, "#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nexit 0\n");
 		chmodSync(gw, 0o755);
 		const status = runRedCheck(root, ["app/src/test/java/com/x/ATest.kt"], { timeoutMs: 30_000 });
-		expect(status).toBe("green");
+		expect(status).toBe("unknown");
 	});
 });

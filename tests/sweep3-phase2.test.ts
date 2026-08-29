@@ -71,7 +71,7 @@ describe("G1 — go RED oracle maps file targets to package dirs", () => {
 		expect(plans.length).toBeGreaterThan(0);
 		const goPlan = plans.find((a) => a[0] === "go" && a[1] === "test");
 		expect(goPlan).toBeDefined();
-		expect(goPlan).toEqual(["go", "test", "./pkg"]);
+		expect(goPlan).toEqual(["go", "test", "-json", "./pkg"]);
 		expect(JSON.stringify(goPlan)).not.toContain("prod_test.go");
 	});
 
@@ -81,7 +81,7 @@ describe("G1 — go RED oracle maps file targets to package dirs", () => {
 		const plans: string[][] = [];
 		runRedCheck(dir, ["main_test.go"], { onPlan: (ps) => ps.forEach((p) => plans.push(p.argv)) });
 		const goPlan = plans.find((a) => a[0] === "go" && a[1] === "test");
-		expect(goPlan).toEqual(["go", "test", "."]);
+		expect(goPlan).toEqual(["go", "test", "-json", "."]);
 	});
 
 	it("CONTROL: multiple files in one package dedupe to ONE package target", () => {
@@ -92,7 +92,7 @@ describe("G1 — go RED oracle maps file targets to package dirs", () => {
 		const plans: string[][] = [];
 		runRedCheck(dir, ["pkg/a_test.go", "pkg/b_test.go"], { onPlan: (ps) => ps.forEach((p) => plans.push(p.argv)) });
 		const goPlans = plans.filter((a) => a[0] === "go" && a[1] === "test");
-		expect(goPlans).toEqual([["go", "test", "./pkg"]]);
+		expect(goPlans).toEqual([["go", "test", "-json", "./pkg"]]);
 	});
 });
 
@@ -158,11 +158,14 @@ describe("G11-B2 — rust RED fallback resolves package names", () => {
 				return { status: 0, stdout: "", stderr: "", signal: null };
 			};
 			cpMock.spawned.length = 0;
-			const plans: string[][] = [];
-			runRedCheck(dir, ["crates/foo/src/does_not_exist_test.rs"], { onPlan: (ps) => ps.forEach((p) => plans.push(p.argv)) });
-			const cargoPlan = plans.find((a) => a.includes("-p"));
+			const plans: Array<{ cwd: string; argv: string[] }> = [];
+			runRedCheck(dir, ["crates/foo/src/does_not_exist_test.rs"], { onPlan: (ps) => ps.forEach((p) => plans.push(p)) });
+			// v0.3.31: the cargo convention scopes by running AT the nearest
+			// crate (crates/foo) instead of resolving workspace -p names from
+			// the root — same single-crate scope, no metadata spawn needed.
+			const cargoPlan = plans.find((p) => p.argv[0] === "cargo");
 			expect(cargoPlan).toBeDefined();
-			expect(cargoPlan).toContain("renamed-pkg");
+			expect(cargoPlan?.cwd.replace(/\\/g, "/")).toContain("crates/foo");
 			expect(cargoPlan).not.toContain("foo");
 		} finally {
 			cpMock.stubber = null;

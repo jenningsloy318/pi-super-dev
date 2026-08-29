@@ -56,15 +56,15 @@ describe("Phase 5 (Feature 5 / AC-11) — CHANGELOG [Unreleased] entry for spec-
 		});
 
 		it("the entry lives UNDER `[Unreleased]`, not under a new released-version header", () => {
-			// The first released version after [Unreleased] is still the existing
-			// one (0.3.0) — no premature `## [0.4.0]` was added for an unreleased
-			// summary.
+			// The first released version after [Unreleased] is the newest
+			// released header (0.3.31 since v0.3.31 shipped) — no premature
+			// future-version header for unreleased summaries.
 			const afterUnreleased = CHANGELOG.slice(
 				CHANGELOG.indexOf("## [Unreleased]") + "## [Unreleased]".length,
 			);
 			const nextVersionMatch = afterUnreleased.match(/\n## \[(\d+\.\d+\.\d+)\]/);
 			expect(nextVersionMatch).not.toBeNull();
-			expect(nextVersionMatch![1]).toBe("0.3.0");
+			expect(nextVersionMatch![1]).toBe("0.3.31");
 		});
 
 		it("Feature 1: the entry mentions INHERITING the main session's model + thinking", () => {

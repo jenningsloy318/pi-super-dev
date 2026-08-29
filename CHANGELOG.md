@@ -159,6 +159,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Agent self-verification prompts forbid `--lib`-only green.** `buildImplementPrompt` / `buildQaPrompt` (`src/prompts.ts`) now append a Rust-scoped clause requiring `cargo test -p <pkg>` WITHOUT `--lib` (so `tests/` integration binaries run) plus any spec-mandated e2e/integration target, gated on the setup-detected `language === 'rust'`. Prompt-text only — no control-flow / nodes / workflow / pipeline change.
 
+## [0.3.31] — conventions data replaces all per-language oracle code
+### Changed
+- **Zero per-language test-oracle rules in the engine.** `runRedCheck` is now
+  language-blind: scoped plans come from the conventions table
+  (`src/build-runner/conventions.ts` — anchors, target transforms, structured
+  result channels as editable data + row builders), and classification is
+  `classifyFromEvidence`: structured counts + exit code only. `classifyRedStatus`
+  and every per-language regex chain / greenfield predicate are deleted.
+- **Console prose never classifies** (Bazel test encyclopedia principle).
+  Without structured evidence the status is honestly `unknown` — for failing
+  exits (red-vs-broken undecidable) and passing exits (scope-miss false-green
+  guard). SWE-Factory (FSE'26), gotestsum, cargo-nextest, pytest and vitest
+  docs grounded the structured-channel design.
+- Structured channels: JUnit XML harvest (conventional dirs + explicit
+  `--junitxml` temp redirect that never pollutes the worktree), TAP stdout
+  (`node --test --test-reporter=tap`, `vitest --reporter=tap`), `go test -json`
+  events, declared count-line patterns (vitest/jest/cargo; parser-as-data).
+- Layer C discovery contract updated: proposals must declare a structured
+  channel; the old "runner the harness already parses" console clause is gone.
+- node:test plans now emit TAP; go plans use `-json`; pytest plans redirect
+  JUnit to a harness temp dir (cleaned up after classification).
+### Fixed
+- Rust workspace scoping simplifies to the nearest crate dir (no `cargo
+  metadata` spawn); go/rust/jest plan parity otherwise preserved.
+
 ## [0.3.0] - 2026-07-06
 
 ### Added

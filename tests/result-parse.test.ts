@@ -18,7 +18,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseJUnitXmlCounts, parseTapCounts, harvestJUnitXml, classifyFromStructuredCounts } from "../src/build-runner/result-parse.ts";
+import { parseJUnitXmlCounts, parseTapCounts, harvestJUnitXml, classifyFromStructuredCounts, parseGoTestJson, parseCountsPattern } from "../src/build-runner/result-parse.ts";
 
 let root = "";
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "sd-resparse-")); });
@@ -91,6 +91,48 @@ describe("v0.3.30 A — classifyFromStructuredCounts (precedence over console re
 		expect(classifyFromStructuredCounts({ tests: 0, failures: 0, errors: 0, skipped: 0 }, false)).toBe("broken");
 	});
 });
+
+	describe("v0.3.31 — parseGoTestJson (go test -json test2json events)", () => {
+		it("counts terminal Test events: pass/fail/skip", () => {
+			const out = [
+				'{"Action":"run","Package":"pkg","Test":"TestA"}',
+				'{"Action":"pass","Package":"pkg","Test":"TestA"}',
+				'{"Action":"run","Package":"pkg","Test":"TestB"}',
+				'{"Action":"fail","Package":"pkg","Test":"TestB"}',
+				'{"Action":"run","Package":"pkg","Test":"TestC"}',
+				'{"Action":"skip","Package":"pkg","Test":"TestC"}',
+				'{"Action":"pass","Package":"pkg","Test":""}',
+			].join("\n");
+			expect(parseGoTestJson(out)).toEqual({ tests: 3, failures: 1, errors: 0, skipped: 1 });
+		});
+		it("package-level fail WITHOUT test events still yields counts (tests=0) so the classifier can say broken", () => {
+			const out = [
+				'{"Action":"build-output","Package":"pkg","Output":"# pkg\\n"}',
+				'{"Action":"fail","Package":"pkg","Test":""}',
+			].join("\n");
+			expect(parseGoTestJson(out)).toEqual({ tests: 0, failures: 0, errors: 0, skipped: 0 });
+		});
+		it("returns null for prose output with no events", () => {
+			expect(parseGoTestJson("just some text\nnothing"))?.toBeNull?.();
+		});
+	});
+
+	describe("v0.3.31 — parseCountsPattern (declared count-line channel)", () => {
+		const VITEST = /Tests\s+(?<failed>\d+) failed \| (?<passed>\d+) passed/;
+		const RUST = /test result: \w+\. (?<passed>\d+) passed; (?<failed>\d+) failed; (?<skipped>\d+) ignored/;
+		it("parses vitest summary with named groups", () => {
+			expect(parseCountsPattern("\n Tests  4 failed | 29 passed (33)\n", VITEST))?.toMatchObject({ tests: 33, failures: 4 });
+		});
+		it("parses rust libtest summary", () => {
+			expect(parseCountsPattern("test result: FAILED. 5 passed; 12 failed; 0 ignored;", RUST))?.toMatchObject({ tests: 17, failures: 12, skipped: 0 });
+		});
+		it("computes tests = failed + passed when only those groups exist", () => {
+			expect(parseCountsPattern("Tests: 3 failed, 5 passed, 8 total", /(?<failed>\d+) failed, (?<passed>\d+) passed/))?.toMatchObject({ tests: 8, failures: 3 });
+		});
+		it("returns null when the pattern does not match (honest unknown)", () => {
+			expect(parseCountsPattern("no summary here", VITEST))?.toBeNull?.();
+		});
+	});
 
 describe("v0.3.30 A — harvestJUnitXml (conventional result paths, freshness filter)", () => {
 	it("harvests gradle + surefire + failsafe paths newer than `since`, ignoring stale ones", () => {

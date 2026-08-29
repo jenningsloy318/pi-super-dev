@@ -157,3 +157,65 @@ export function sumHarvestedXml(files: string[]): TestResultCounts | null {
 	}
 	return counts.length > 0 ? sumResultCounts(counts) : null;
 }
+
+/** Parse `go test -json` (test2json) TestEvent lines. Terminal events carry
+ *  Action pass/fail/skip with a Test name; package-level events have
+ *  Test === "" and do not count as tests. A run that only emits package-level
+ *  events (e.g. build failure) still yields counts (tests=0) so the
+ *  classifier can distinguish broken from unknown. Null when no events parse
+ *  (prose output). (v0.3.31 — gotestsum-grounded; the -json flag is the
+ *  runner's own structured channel, no external tool needed.) */
+export function parseGoTestJson(text: string): TestResultCounts | null {
+	const out: TestResultCounts = { tests: 0, failures: 0, errors: 0, skipped: 0 };
+	let events = 0;
+	for (const raw of String(text ?? "").split(/\r?\n/)) {
+		const line = raw.trim();
+		if (!line.startsWith("{")) continue;
+		let ev: { Action?: string; Test?: string };
+		try {
+			ev = JSON.parse(line) as { Action?: string; Test?: string };
+		} catch {
+			continue;
+		}
+		if (typeof ev.Action !== "string") continue;
+		events++;
+		if (!ev.Test) continue; // package-level event
+		if (ev.Action === "pass") out.tests++;
+		else if (ev.Action === "fail") {
+			out.tests++;
+			out.failures++;
+		} else if (ev.Action === "skip") {
+			out.tests++;
+			out.skipped++;
+		}
+	}
+	return events > 0 ? out : null;
+}
+
+/** Parse a DECLARED count-line pattern (parser-as-data). The pattern must use
+ *  named groups `failed` and `passed` (optional `skipped`, `total`). ALL
+ *  matches are summed — runners like cargo print one summary line per test
+ *  binary. Null when nothing matches (honest unknown). (v0.3.31.) */
+export function parseCountsPattern(text: string, pattern: RegExp): TestResultCounts | null {
+	const out: TestResultCounts = { tests: 0, failures: 0, errors: 0, skipped: 0 };
+	const re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+	let matched = false;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(String(text ?? ""))) !== null) {
+		if (m[0].length === 0) { re.lastIndex++; continue; }
+		const g = m.groups ?? {};
+		if (g.failed === undefined && g.passed === undefined && g.skipped === undefined && g.total === undefined) {
+			continue; // matched the literal but no count group — not evidence
+		}
+		matched = true;
+		const failed = Number.parseInt(g.failed ?? "0", 10) || 0;
+		const passed = Number.parseInt(g.passed ?? "0", 10) || 0;
+		const skipped = Number.parseInt(g.skipped ?? "0", 10) || 0;
+		const total = g.total !== undefined ? Number.parseInt(g.total, 10) || 0 : failed + passed + skipped;
+		out.failures += failed;
+		out.skipped += skipped;
+		out.tests += total;
+	}
+	if (!matched) return null;
+	return out;
+}

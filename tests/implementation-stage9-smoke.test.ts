@@ -57,18 +57,18 @@ function contextFor(root: string): { ctx: StageContext; calls: { tdd: AgentCall[
 		async agent(call: AgentCall): Promise<AgentResult> {
 			if (call.agent === "tdd-guide") {
 				calls.tdd.push(call);
+				// v0.3.31: node --test --test-reporter=tap reports a load-failing
+				// test file as `not ok 1 - <file>` — a STRUCTURED red (Bazel-
+				// consistent), so a syntax-error RED no longer routes through the
+				// broken-diagnostics retry; the RED-quality review owns weakness.
 				const testPath = join(root, "src", "math.test.js");
-				if (!call.prompt.includes("RED runner diagnostics from the last oracle run")) {
-					writeFileSync(testPath, "require('node:test');\nthrow new SyntaxError('stage9-smoke-syntax-marker');\n");
-				} else {
-					writeFileSync(testPath, [
-						"const test = require('node:test');",
-						"const assert = require('node:assert/strict');",
-						"const { add } = require('./math.js');",
-						"test('add sums numbers', () => assert.equal(add(2, 3), 5));",
-						"",
-					].join("\n"));
-				}
+				writeFileSync(testPath, [
+					"const test = require('node:test');",
+					"const assert = require('node:assert/strict');",
+					"const { add } = require('./math.js');",
+					"test('add sums numbers', () => assert.equal(add(2, 3), 5));",
+					"",
+				].join("\n"));
 				return { text: "", control: { testFiles: ["src/math.test.js"] } };
 			}
 			if (call.agent === "implementer") {
@@ -93,7 +93,7 @@ function contextFor(root: string): { ctx: StageContext; calls: { tdd: AgentCall[
 }
 
 describe("Stage 9 direct smoke", () => {
-	it("recovers from a broken RED test using runner diagnostics, then implements to green", async () => {
+	it("confirms RED via the structured tap channel, then implements to green", async () => {
 		const { root, specDir } = makeTinyProject();
 		try {
 			const state = stateFor(root, specDir);
@@ -103,10 +103,11 @@ describe("Stage 9 direct smoke", () => {
 
 			expect(result.allGreen).toBe(true);
 			expect(result.phasesCompleted).toBe(1);
-			expect(calls.tdd).toHaveLength(2);
-			expect(calls.tdd[1]!.prompt).toContain("RED runner diagnostics from the last oracle run");
+			expect(calls.tdd).toHaveLength(1);
 			expect(calls.impl).toHaveLength(1);
-			expect(calls.logs.some((line) => line.includes("RED runner diagnostic") && line.includes("status=broken") && line.includes("tail=")), calls.logs.join("\n")).toBe(true);
+			// The RED oracle must have SEEN the structured failing evidence
+			// (node:test TAP channel) and logged the red diagnostic.
+			expect(calls.logs.some((line) => line.includes("RED runner diagnostic") && line.includes("status=red")), calls.logs.join("\n")).toBe(true);
 			expect(calls.logs.some((line) => line.includes("Implementation phase-01 GREEN on attempt 1"))).toBe(true);
 		} finally {
 			rmSync(root, { recursive: true, force: true });

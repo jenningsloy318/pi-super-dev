@@ -4,13 +4,15 @@
 
 import { spawnSync } from "node:child_process";
 import { superDevEnv } from "../render/super-dev-dir.ts";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { dedupePreservingOrder, detectProjectCommands, readMaybe, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
+import { dedupePreservingOrder, detectProjectCommands, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "./detect.ts";
 import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors, parseFailingNpmTestFiles, parseFailingPythonTestFiles, detectFailureBlockLanguage, parseFailingGoPackages, resolveGoModuleForPackages } from "./scope.ts";
 import { verifyUntouchedFailuresAgainstBaseline, type BaselineCheckResult, type BaselineVerifyInput } from "./baseline.ts";
 // v0.3.30 Layer A/C: universal structured classification + agent-proposed runners.
-import { classifyFromStructuredCounts, harvestJUnitXml, parseTapCounts, sumHarvestedXml } from "./result-parse.ts";
+import { classifyFromStructuredCounts, harvestJUnitXml, parseTapCounts, sumHarvestedXml, parseGoTestJson, parseCountsPattern, type TestResultCounts } from "./result-parse.ts";
+// v0.3.31: the single per-ecosystem seam — convention DATA, no engine knowledge.
+import { conventionPlansFor, detectPmForDir, hasPackageTool, pmExec, type ConventionPlan, type ResultChannel } from "./conventions.ts";
 import { dynamicRedCheckPlans, type TestRunnerSpec } from "./runner-discovery.ts";
 
 export interface RedCheckPlan {
@@ -113,10 +115,6 @@ interface BuildCommandPlan {
 	argv: string[];
 	key: CmdKey;
 	label: string;
-}
-
-interface RedExecutionPlan extends RedCheckPlan {
-	language: string;
 }
 
 interface TestListPlan {
@@ -917,608 +915,55 @@ function emitRedDiagnostic(opts: RedCheckOptions | undefined, diagnostic: RedChe
 	try { opts?.onResult?.(diagnostic); } catch { /* diagnostics must never affect the oracle */ }
 }
 
-function emitRedPlans(opts: RedCheckOptions | undefined, plans: RedExecutionPlan[]): void {
+function emitRedPlans(opts: RedCheckOptions | undefined, plans: Array<{ cwd: string; argv: string[] }>): void {
 	try { opts?.onPlan?.(plans.map((plan) => ({ cwd: plan.cwd, argv: [...plan.argv] }))); } catch { /* diagnostics must never affect the oracle */ }
 }
 
-// Source extensions tried when resolving a relative module specifier to a file
-// on disk (greenfield RED detection). Mirrors Node/TS resolver basics.
-const RED_SOURCE_EXTS = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
-
-/** SUPERSEDED by extractFailedSpecifiers (run 2026-08-15T13-45-02 postmortem):
- *  whole-output scanning vetted specifiers that appear in vitest/jest SOURCE
- *  FRAMES too. Removed — extractFailedSpecifiers is the live path. */
-
-/** A module-resolution FAILURE named by the runner itself: which specifier
- *  failed, and (when the format carries it) which file imported it. Only these
- *  statements answer the greenfield question — source frames and surrounding
- *  text mention specifiers that did NOT fail (run 2026-08-15T13-45-02
- *  postmortem: the printed test source contained a legit import of an EXISTING
- *  sibling module, which the old whole-output scan vetoed, classifying a valid
- *  greenfield RED as broken and costing an 11-minute re-author). Formats,
- *  probed against real toolchains (vitest 3.2.6, jest, node ESM, rollup):
- *   - Cannot find module '<spec>' imported from '<importer>'   (vitest/vite)
- *   - Cannot find module '<spec>' from '<importer>'            (jest)
- *   - Cannot find module '<spec>' imported from <importer>     (node ESM, unquoted)
- *   - Could not resolve '<spec>' from '<importer>'             (rollup)
- *   - Failed to load url <spec> (resolved id: …) in <importer> (vite-node)
- *  Pure + never throws. */
-export interface FailedSpecifier {
-	/** The specifier the runner could not resolve (verbatim, quotes stripped). */
-	spec: string;
-	/** Absolute path of the importing file when the format carries one. */
-	importer?: string;
-}
-
-function extractFailedSpecifiers(out: string): FailedSpecifier[] {
-	const found = new Map<string, FailedSpecifier>();
-	const add = (spec?: string, importer?: string): void => {
-		if (!spec) return;
-		const clean = spec.replace(/[:;,]+$/, "");
-		if (clean) found.set(`${clean}\u0000${importer ?? ""}`, { spec: clean, importer });
-	};
-	let m: RegExpExecArray | null;
-	// quoted spec + quoted importer (vitest / jest / rollup)
-	const reQuoted = /(?:Cannot find module|Could not resolve)\s+'([^']+)'\s+(?:imported )?from\s+'([^']+)'/g;
-	while ((m = reQuoted.exec(out))) add(m[1], m[2]);
-	// quoted spec + UNquoted importer (node ESM: imported from /abs/path.js)
-	const reNode = /Cannot find module\s+'([^']+)'\s+imported from\s+(\S+)/g;
-	while ((m = reNode.exec(out))) add(m[1], m[2].replace(/[.)\]]+$/, ""));
-	// unquoted vite-node url + importer
-	const reUrl = /Failed to load url\s+(\S+?)\s+\(resolved id:[^)]*\)\s+in\s+(\S+?)(?:\.|$)/gm;
-	while ((m = reUrl.exec(out))) add(m[1], m[2]);
-	return [...found.values()];
-}
-
-/** Does a relative specifier resolve to an EXISTING source file under any of
- *  `dirs` (importer dir first when known, then cwd + RED-target dirs)? Pure +
- *  never throws (existsSync is wrapped). */
-function specifierResolves(dirs: string[], spec: string): boolean {
+/** Collect structured per-test evidence for one executed plan, per its
+ *  DECLARED channel (conventions data or a validated dynamic spec). Pure read
+ *  + parse; never throws; null = no evidence. (v0.3.31.) */
+function collectStructuredEvidence(plan: ConventionPlan, startedMs: number, combined: string): TestResultCounts | null {
 	try {
-		for (const dir of dirs) {
-			const base = resolve(dir, spec);
-			for (const ext of RED_SOURCE_EXTS) {
-				if (existsSync(base + ext)) return true;
-				if (existsSync(join(base, "index" + (ext || ".ts")))) return true;
+		const ch = plan.channel;
+		if (ch.format === "tap") return parseTapCounts(combined);
+		if (ch.format === "gojson") return parseGoTestJson(combined);
+		if (ch.format === "counts") return parseCountsPattern(combined, ch.pattern);
+		if (ch.format === "junit-xml") {
+			const files = harvestJUnitXml(plan.cwd, startedMs);
+			for (const f of ch.explicitFiles ?? []) {
+				try { if (statSync(f).mtimeMs + 1 >= startedMs) files.push(f); } catch { /* missing */ }
 			}
+			return sumHarvestedXml(files);
 		}
-		return false;
-	} catch {
-		return false;
-	}
-}
-
-/** GREENFIELD RED: a test failing ONLY because it imports a not-yet-created
- *  RELATIVE project module is failing because the implementation is missing —
- *  the textbook greenfield RED (the contract `buildTddPrompt` states is valid).
- *  Detected so `classifyRedStatus` returns "red" instead of "broken".
- *
- *  Conservative by design:
- *  - SyntaxError / `No test files found` / `Cannot find package` → NOT
- *    greenfield (those are genuinely broken).
- *  - Only specifiers named in runner FAILURE STATEMENTS are considered (never
- *    source frames / surrounding text — see extractFailedSpecifiers).
- *  - Any failure naming a BARE specifier (no `./`/`../`, not absolute) → NOT
- *    greenfield: a dependency-resolution problem stays broken.
- *  - Greenfield only when EVERY relative specifier named in failure statements
- *    resolves to an ABSENT file (importer dir first when the format carries
- *    one, then cwd + RED-target dirs). An existing module that fails to load
- *    is a real load failure → broken (never mis-read as greenfield).
- *  - Absolute-path failures (node ESM form) are checked with direct
- *    existsSync. Pure + never throws. */
-function isGreenfieldModuleMissing(out: string, cwd?: string, targets: string[] = []): boolean {
-	if (/SyntaxError|No test files found|Cannot find package/i.test(out)) return false;
-	if (!/Failed to load url|ERR_MODULE_NOT_FOUND|Cannot find module|Could not resolve|does not exist|not found/i.test(out)) return false;
-	const fails = extractFailedSpecifiers(out);
-	if (fails.length === 0) return false;
-	const fallbackDirs = cwd ? [cwd, ...targets.map((t) => join(cwd, dirname(t)))] : [];
-	let sawMissingSignal = false;
-	for (const f of fails) {
-		const rel = f.spec.startsWith("./") || f.spec.startsWith("../");
-		const abs = f.spec.startsWith("/");
-		if (!rel && !abs) return false; // bare specifier failure → dependency problem
-		if (abs) {
-			// absolute form (node ESM): the resolved path IS the answer — present
-			// means a real load failure, absent means the module under test is new.
-			try {
-				if (existsSync(f.spec)) return false;
-			} catch { /* stays a candidate */ }
-			sawMissingSignal = true;
-			continue;
-		}
-		sawMissingSignal = true;
-		const dirs = f.importer ? [dirname(f.importer), ...fallbackDirs] : fallbackDirs;
-		if (dirs.length === 0) return true; // no cwd at all — text-only fallback (legacy behavior)
-		if (specifierResolves(dirs, f.spec)) return false;
-	}
-	return sawMissingSignal;
-}
-
-/** Python module existence check for the greenfield detector: a dotted
- *  module name resolves to <root>/<dotted-as-path>.py or
- *  <root>/<dotted-as-path>/__init__.py under any of the conventional roots
- *  (repo root, src/, tests/). Pure + never throws. */
-function pythonModuleExists(cwd: string, dotted: string): boolean {
-	const rel = dotted.replace(/\./g, "/");
-	for (const root of [cwd, join(cwd, "src"), join(cwd, "tests")]) {
-		try {
-			if (existsSync(join(root, rel + ".py"))) return true;
-			if (existsSync(join(root, rel, "__init__.py"))) return true;
-		} catch {
-			/* best-effort */
-		}
-	}
-	return false;
-}
-
-/** GREENFIELD RED (python): pytest collection failed with ModuleNotFoundError
- *  for module(s) that do NOT exist under any conventional root — the
- *  implementation is simply not written yet (the contract buildTddPrompt
- *  states is valid RED). An EXISTING module that fails to import (RuntimeError
- *  at import time, circular import, …) produces ERROR collecting WITHOUT a
- *  ModuleNotFoundError and stays broken.
- *  Probed byte-for-byte against pytest 8.3.5 (exit 2):
- *      "ERROR collecting tests/test_thing.py"
- *      "E   ModuleNotFoundError: No module named 'mypkg'"          */
-function isPythonGreenfieldCollectionFailure(out: string, cwd?: string): boolean {
-	if (!/ERROR collecting/i.test(out)) return false;
-	if (/SyntaxError/i.test(out)) return false;
-	const names = [...out.matchAll(/ModuleNotFoundError: No module named '([^']+)'/g)].map((m) => m[1]);
-	if (names.length === 0) return false;
-	if (!cwd) return true;
-	return names.every((name) => !pythonModuleExists(cwd, name));
-}
-
-/** Go: does the directory (relative to the module root) contain ONLY *_test.go
- *  files (zero production .go)? An absent dir counts (nothing production
- *  there yet). Pure + never throws. */
-function goDirHasOnlyTestFiles(cwd: string, relDir: string): boolean {
-	try {
-		const dir = resolve(cwd, relDir);
-		if (!existsSync(dir)) return true;
-		const entries = readdirSync(dir).filter((e) => e.endsWith(".go"));
-		return entries.length > 0 && entries.every((e) => e.endsWith("_test.go"));
-	} catch {
-		return false;
-	}
-}
-
-/** Read the `module <path>` directive from go.mod (null when unreadable). */
-function readGoModuleName(cwd: string): string | null {
-	try {
-		const text = readFileSync(join(cwd, "go.mod"), "utf8");
-		const m = /(?:^|\n)module\s+(\S+)/.exec(text);
-		return m ? m[1] : null;
-	} catch {
-		return null;
-	}
-}
-
-/** GREENFIELD RED (go): the build failed ONLY because the code under test
- *  does not exist yet, in one of two probed shapes (go 1.26.3):
- *   1. `path/file_test.go:L:C: undefined: Ident` + `FAIL\t<pkg> [build failed]`
- *      where the referenced directory contains ONLY *_test.go files.
- *   2. `no required module provides package <module>/<dir>; to add it:`
- *      (a same-module package whose directory is absent) + `[setup failed]`.
- *  Any diagnostic on a PRODUCTION .go file, or any non-`undefined` diagnostic,
- *  means the suite is genuinely broken → not greenfield. Pure + never throws. */
-function isGoGreenfieldBuildFailure(out: string, cwd?: string): boolean {
-	const errorLines = [...out.matchAll(/([^\s:]+\.go):\d+:\d+: ([^\n]+)/g)];
-	const undefinedLines = errorLines.filter((m) => /^undefined: /.test(m[2]));
-	if (undefinedLines.length > 0) {
-		if (errorLines.length !== undefinedLines.length) return false;
-		const files = undefinedLines.map((m) => m[1]);
-		if (!files.every((f) => /_test\.go$/.test(f))) return false;
-		if (!cwd) return true;
-		if (files.every((f) => goDirHasOnlyTestFiles(cwd, dirname(f)))) return true;
-		// RC10 (run 10-39): shape 3 — cross-module/same-package greenfield. The
-		// failing package dir is NOT test-only (an existing package with real
-		// sources, e.g. internal/database), but every `undefined: <ref>` symbol
-		// has NO top-level declaration in ANY non-test .go file of the module →
-		// the code under test does not exist yet → greenfield red. A typo'd
-		// reference to an EXISTING symbol still finds its declaration → stays
-		// broken (safe direction). Reviewer F-3/F-4: a QUALIFIED ref
-		// (`alias.Symbol`) counts only when the failing test files import that
-		// alias from a path INSIDE this module — an external/vendored package's
-		// missing symbol is an environment/broken problem, never greenfield.
-		const refs = new Set<string>();
-		for (const m of undefinedLines) {
-			const ref = m[2].replace(/^undefined:\s*/, "").trim();
-			if (!ref) return false;
-			refs.add(ref);
-		}
-		if (!goQualifiedRefsAreInternal(cwd, files, refs)) return false;
-		return goSymbolsDeclaredNowhere(cwd, [...refs]);
-	}
-	const missingPkg = [...out.matchAll(/no required module provides package (\S+?)[;\s]/g)].map((m) => m[1]);
-	if (missingPkg.length > 0) {
-		if (!cwd) return true;
-		const modulePath = readGoModuleName(cwd);
-		if (!modulePath) return false;
-		return missingPkg.every((pkg) => pkg.startsWith(modulePath + "/") && !existsSync(join(cwd, pkg.slice(modulePath.length + 1))));
-	}
-	return false;
-}
-
-/** RC10 helper: every QUALIFIED ref (`alias.Symbol`) must be imported by one of
- *  the failing `_test.go` files under an alias whose import PATH resolves
- *  inside the module tree (module-path prefix or an existing directory). Bare
- *  refs are trivially internal (same-package). External-package undefined
- *  symbols (not imported from inside the module, or imported from outside)
- *  return false → the failure stays `broken`, never greenfield. */
-function goQualifiedRefsAreInternal(cwd: string, files: string[], refs: Set<string>): boolean {
-	const qualified = [...refs].filter((r) => r.includes("."));
-	if (qualified.length === 0) return true;
-	// alias -> import path map, merged across the failing test files.
-	const aliases = new Map<string, string>();
-	const modulePath = readGoModuleName(cwd);
-	for (const f of files) {
-		let text = "";
-		try { text = readFileSync(resolve(cwd, f), "utf8"); } catch { return false; }
-		const addImport = (alias: string | undefined, path: string) => {
-			if (!path) return;
-			// No explicit alias: Go's package name = last path segment.
-			aliases.set(alias ?? path.slice(path.lastIndexOf("/") + 1), path);
-		};
-		for (const rawLine of text.split("\n")) {
-			const line = rawLine.trim();
-			// import ( block ) members
-			const member = /^(?:([A-Za-z_]\w*)\s+)?"([^"]+)"$/.exec(line);
-			if (member) { addImport(member[1], member[2]); continue; }
-			// single-line import
-			const single = /^import\s+(?:([A-Za-z_]\w*|\.[\w.]+)\s+)?"([^"]+)"$/.exec(line);
-			if (single) { addImport(single[1], single[2]); continue; }
-		}
-	}
-	for (const ref of qualified) {
-		const qualifier = ref.slice(0, ref.lastIndexOf("."));
-		const path = aliases.get(qualifier);
-		if (!path) return false; // qualifier not imported by any failing test file
-		const internal = (modulePath && (path === modulePath || path.startsWith(modulePath + "/")))
-			|| path.startsWith("./") || path.startsWith("../");
-		if (!internal) return false; // external package — environment, not greenfield
-	}
-	return true;
-}
-
-/** RC10 helper: collect every TOP-LEVEL declared name (type/func/var/const) in
- *  the module's non-test .go files, reachable under cwd. Non-throwing; empty
- *  on any read failure (the caller then treats nothing as declared). */
-function goDeclaredTopLevelNames(cwd: string): Set<string> {
-	const names = new Set<string>();
-	const declRe = /^\s*(?:type|func|var|const)\s+([A-Za-z_][\w]*)/gm;
-	try {
-		const walk = (dir: string): void => {
-			for (const entry of readdirSync(dir, { withFileTypes: true })) {
-				if (entry.name === "vendor" || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
-				const full = join(dir, entry.name);
-				if (entry.isDirectory()) { walk(full); continue; }
-				if (!entry.name.endsWith(".go") || entry.name.endsWith("_test.go")) continue;
-				const text = readFileSync(full, "utf8");
-				for (const m of text.matchAll(declRe)) names.add(m[1]);
-			}
-		};
-		walk(cwd);
-	} catch {
-		// best-effort: whatever was collected stands
-	}
-	return names;
-}
-
-/** Levenshtein distance capped at `cap` (early exit when exceeded) — used only
- *  for the go typo probe, never on hot paths. */
-function levenshteinWithin(a: string, b: string, cap: number): boolean {
-	if (Math.abs(a.length - b.length) > cap) return false;
-	const row = Array.from({ length: b.length + 1 }, (_, i) => i);
-	for (let i = 1; i <= a.length; i++) {
-		let prev = row[0];
-		row[0] = i;
-		let best = row[0];
-		for (let j = 1; j <= b.length; j++) {
-			const tmp = row[j];
-			row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-			prev = tmp;
-			if (row[j] < best) best = row[j];
-		}
-		if (best > cap) return false;
-	}
-	return row[b.length] <= cap;
-}
-
-/** RC10 discriminator: every `undefined: <ref>` symbol must be declared NOWHERE
- *  for a greenfield verdict. A ref may be package-qualified (`models.X`) — the
- *  DECLARATION lives as top-level `X` inside that package's files, so compare
- *  the LAST segment against collected top-level names. A NEAR-miss (levenshtein
- *  <= 2 against a declared name of length >= 5) is a test-file TYPO, not
- *  greenfield — those stay `broken` (the implementer could never satisfy a
- *  typo). Safe direction: any match/near-match => false (not greenfield). */
-function goSymbolsDeclaredNowhere(cwd: string, refs: string[]): boolean {
-	if (refs.length === 0) return false;
-	const declared = goDeclaredTopLevelNames(cwd);
-	if (declared.size === 0) return false; // unreadable tree: do not guess greenfield
-	for (const ref of refs) {
-		const last = ref.includes(".") ? ref.slice(ref.lastIndexOf(".") + 1) : ref;
-		if (!last) return false;
-		if (declared.has(last)) return false;
-		for (const name of declared) {
-			if (name.length >= 5 && last.length >= 5 && levenshteinWithin(last, name, 2)) return false;
-		}
-	}
-	return true;
-}
-
-/** Read the [package].name from Cargo.toml, normalized to the lib name
- *  (hyphens → underscores). Null when unreadable. */
-function readCargoPackageName(cwd: string): string | null {
-	try {
-		const text = readFileSync(join(cwd, "Cargo.toml"), "utf8");
-		const pkg = /\[package\]([^\[]*)/.exec(text);
-		const m = pkg ? /name\s*=\s*"([^"]+)"/.exec(pkg[1]) : null;
-		return m ? m[1].replace(/-/g, "_") : null;
-	} catch {
-		return null;
-	}
-}
-
-/** GREENFIELD RED (rust): the crate failed to compile ONLY because the code
- *  under test does not exist yet, in one of three shapes (cargo 1.95.0):
- *   1. greenfield crate (no src/lib.rs): `error[E0433]: cannot find module or
- *      crate `<this-crate>` ` naming THIS crate.
- *   2. undeclared module: `error[E0432]: unresolved import `<crate>::<mod>`
- *      where the leading segment is this crate (`crate::`/`self::`/`super::`
- *      also count as internal).
- *   3. declared-but-absent module: `error[E0583]: file not found for module
- *      `<mod>` `.
- *  An EXTERNAL unresolved crate (serde_json, …) is broken — the test author
- *  referenced a dependency missing from Cargo.toml. Any unresolved-EXTERNAL
- *  diagnostic anywhere disqualifies greenfield. Pure + never throws. */
-function isRustGreenfieldCompileFailure(out: string, cwd?: string): boolean {
-	if (!/error\[E04(32|33)\]|error\[E0583\]/.test(out)) return false;
-	const crateName = cwd ? readCargoPackageName(cwd) : null;
-	const isInternalPath = (path: string): boolean => {
-		const first = path.split("::")[0];
-		if (first === "crate" || first === "self" || first === "super") return true;
-		return crateName !== null && first === crateName;
-	};
-	let sawInternal = false;
-	for (const m of out.matchAll(/error\[E0432\]: unresolved import `([^`]+)`/g)) {
-		if (!isInternalPath(m[1])) return false;
-		sawInternal = true;
-	}
-	for (const m of out.matchAll(/error\[E0433\]: cannot find module or crate `([^`]+)`/g)) {
-		// E0433 naming THIS crate ⇒ the lib target does not exist (greenfield
-		// crate). Naming anything else ⇒ external dependency missing → broken.
-		if (crateName === null || m[1] !== crateName) return false;
-		sawInternal = true;
-	}
-	for (const m of out.matchAll(/error\[E0583\]: file not found for module `([^`]+)`/g)) {
-		sawInternal = true; // by definition a module of THIS crate whose file is absent
-	}
-	return sawInternal;
-}
-
-/**
- * Classify a runner's COMBINED stdout+stderr into a RED-phase status using
- * per-language heuristics (spec §A.2, AC-01). Pure + NEVER throws. Precedence
- * is always: BROKEN markers (compile/collection failure) → GREEN (exit 0) →
- * RED (exit≠0 + a failure marker) → UNKNOWN (ambiguous). This order guarantees
- * a compile error that also emits a `FAILED` marker is `broken` (the test
- * never ran), not `red` (review finding: precedence over red).
- *
- * `ctx` carries `cwd` + `targets` so the npm-family greenfield check can verify
- * whether an imported relative module actually exists on disk.
- */
-// ── JVM (Gradle/Maven) RED plans, v0.3.30 F1 ─────────────────────────────────
-// Scoped per test class: derive the FQN from the conventional src/test/java
-// layout, target the OWNING gradle/maven module, and invoke the wrapper found
-// walking up from the module (root gradlew is the norm). Pure reads — no spawn.
-
-const GRADLE_MANIFEST_NAMES = ["build.gradle", "build.gradle.kts"];
-
-function gradleModuleDir(root: string, target: string): string {
-	let cur = resolve(root, dirname(target));
-	const top = resolve(root);
-	for (let i = 0; i < 16; i++) {
-		if (GRADLE_MANIFEST_NAMES.some((n) => existsSync(join(cur, n)))) return cur;
-		if (cur === top) break;
-		const parent = dirname(cur);
-		if (parent === cur) break;
-		cur = parent;
-	}
-	return top;
-}
-
-function gradleWrapperArgv0(moduleDir: string): string {
-	let cur = moduleDir;
-	for (let i = 0; i < 16; i++) {
-		if (existsSync(join(cur, "gradlew"))) return join(cur, "gradlew");
-		const parent = dirname(cur);
-		if (parent === cur) return "gradle";
-		cur = parent;
-	}
-	return "gradle";
-}
-
-/** Extract a test-class FQN from a conventional JVM test path
- *  (`…/src/(android)test/(java|kotlin)/com/x/Y.kt` → `com.x.Y`). Null when the
- *  layout is non-standard (the caller falls back to a module-level plan). */
-function jvmTestFqn(path: string): string | null {
-	const m = String(path ?? "").replace(/\\/g, "/").match(/(?:^|\/)src\/(?:android)?test\/(?:java|kotlin)\/(.+?)\.(?:kt|java)$/);
-	return m ? m[1].split("/").join(".") : null;
-}
-
-function isAndroidGradleModule(dir: string): boolean {
-	const text = GRADLE_MANIFEST_NAMES.map((n) => readMaybe(dir, n)).join("");
-	return /com\.android|\bandroid\s*\{/i.test(text);
-}
-
-export function gradleRedCheckPlans(cwd: string, targets: string[]): RedCheckPlan[] {
-	const plans: RedCheckPlan[] = [];
-	const seen = new Set<string>();
-	for (const target of targets) {
-		const moduleDir = gradleModuleDir(cwd, target);
-		const exe = gradleWrapperArgv0(moduleDir);
-		const task = isAndroidGradleModule(moduleDir) ? "testDebugUnitTest" : "test";
-		const fqn = jvmTestFqn(target);
-		const argv = fqn ? [exe, task, "--tests", fqn] : [exe, task];
-		const key = `${moduleDir}\0${argv.join(" ")}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		plans.push({ cwd: moduleDir, argv });
-	}
-	return plans;
-}
-
-export function mavenRedCheckPlans(cwd: string, targets: string[]): RedCheckPlan[] {
-	const plans: RedCheckPlan[] = [];
-	const seen = new Set<string>();
-	for (const target of targets) {
-		let moduleDir = resolve(cwd, dirname(target));
-		const top = resolve(cwd);
-		let found = false;
-		for (let i = 0; i < 16; i++) {
-			if (existsSync(join(moduleDir, "pom.xml"))) { found = true; break; }
-			if (moduleDir === top) break;
-			const parent = dirname(moduleDir);
-			if (parent === moduleDir) break;
-			moduleDir = parent;
-		}
-		if (!found && !existsSync(join(top, "pom.xml"))) continue;
-		if (!found) moduleDir = top;
-		const exe = existsSync(join(moduleDir, "mvnw")) ? join(moduleDir, "mvnw") : "mvn";
-		const fqn = jvmTestFqn(target);
-		const argv = fqn ? [exe, "test", `-Dtest=${fqn}`] : [exe, "test"];
-		const key = `${moduleDir}\0${argv.join(" ")}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		plans.push({ cwd: moduleDir, argv });
-	}
-	return plans;
-}
-
-/** v0.3.30 Layer A: STRUCTURED classification takes precedence over console
- *  regexes. (a) fresh JUnit XML harvested from conventional result dirs is
- *  language-agnostic ground truth (Gradle/Maven write it by default; the
- *  freshness bound guarantees the XML belongs to THIS invocation); (b) TAP on
- *  the console is honored for agent-proposed dynamic runners only (avoids
- *  false positives on other tools' prose). Null = no structured opinion. */
-function structuredRedClassification(plan: RedExecutionPlan, startedMs: number, exitOk: boolean, combined: string): RedStatus | null {
-	const xml = sumHarvestedXml(harvestJUnitXml(plan.cwd, startedMs));
-	if (xml) {
-		const fromXml = classifyFromStructuredCounts(xml, exitOk);
-		if (fromXml) return fromXml;
-	}
-	if (plan.language === "dynamic") {
+		// auto: dynamic/validated runners and generic npm scripts — try every
+		// structured shape; Layer C validation guaranteed one fires for dynamic
+		// specs (junit/tap evidence was REQUIRED to cache them).
+		const xml = sumHarvestedXml(harvestJUnitXml(plan.cwd, startedMs));
+		if (xml) return xml;
 		const tap = parseTapCounts(combined);
-		if (tap) {
-			const fromTap = classifyFromStructuredCounts(tap, exitOk);
-			if (fromTap) return fromTap;
-		}
+		if (tap) return tap;
+		return parseGoTestJson(combined);
+	} catch {
+		return null;
 	}
-	return null;
 }
 
-export function classifyRedStatus(language: string, combined: string, ok: boolean, ctx?: { cwd?: string; targets?: string[] }): RedStatus {
-	const out = combined ?? "";
-	// v0.3.30 F1 (run 2026-08-28T16-09-12-785Z): JVM/Gradle/Maven markers.
-	// Ordering mirrors the rust/python/go branches: greenfield compile
-	// failure → red; other compile failures → broken; test-failure markers →
-	// red; BUILD FAILED with no recognized marker → broken; else unknown.
-	if (language === "gradle" || language === "maven" || language === "jvm") {
-		if (!ok && isJvmGreenfieldCompileFailure(out)) return "red";
-		if (isJvmCompileFailure(out)) return "broken";
-		if (ok && /BUILD SUCCESS/i.test(out)) return "green";
-		// Review-2 F3: a `--tests`/`-Dtest` filter that matches ZERO tests fails
-		// the task with the normal FAILED marker — but no test executed, so it
-		// is neither red nor broken (package≠directory and renames make this a
-		// legal miss). Check BEFORE the failure markers; the honest `unknown`
-		// keeps the loop on the fail-closed re-derive path instead of
-		// confirming a phantom RED the GREEN loop could never confirm.
-		if (/No tests found for given includes|No tests matching|No tests were executed/i.test(out)) return "unknown";
-		if (/tests? completed,? ?\d+ failed|> Task [^\n]*:test[^\n]*FAILED|There are test failures|Tests run:.*?(?:Failures|Errors): [1-9]/i.test(out)) return "red";
-		if (/BUILD FAILED|BUILD FAILURE/.test(out)) return "broken";
-		return "unknown";
+/** v0.3.31 universal classifier — the ONLY status decision in the engine.
+ *  Structured counts + exit code; without counts the honest answer is
+ *  `unknown` — for a failing exit (red vs broken is undecidable without
+ *  per-test evidence) AND for a passing exit (scope-miss false-green guard:
+ *  pytest exit 5, cargo/go filter misses exit 0). Console prose NEVER
+ *  classifies (Bazel test encyclopedia: "writing any of the strings PASS or
+ *  FAIL to stdout has no significance to the test runner"). */
+export function classifyFromEvidence(exitOk: boolean, counts: TestResultCounts | null): RedStatus {
+	if (!counts) return "unknown";
+	return classifyFromStructuredCounts(counts, exitOk) ?? "unknown";
+}
+
+function cleanupConventionPlans(plans: ConventionPlan[]): void {
+	for (const dir of plans.flatMap((p) => p.cleanupDirs ?? [])) {
+		try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
 	}
-	if (language === "rust") {
-		// RED (greenfield) — the crate failed to compile solely because the code
-		// under test does not exist yet (missing crate/module targets). Cross-
-		// language parity with the npm isGreenfieldModuleMissing check below.
-		if (isRustGreenfieldCompileFailure(out, ctx?.cwd)) return "red";
-		// BROKEN — compile failed (no test executed).
-		if (/error\[E[0-9]/i.test(out) || /could not compile/i.test(out)) return "broken";
-		// BROKEN — matched no test binary (the RED phase produced no executable).
-		if (/no tests to run/i.test(out)) return "broken";
-		if (ok) return "green";
-		if (/test result: FAILED/i.test(out) || /FAILED/i.test(out) || /panicked/i.test(out)) {
-			return "red";
-		}
-		return "unknown";
-	}
-	if (language === "python") {
-		// RED (greenfield) — collection failed solely because the module under
-		// test does not exist yet (the buildTddPrompt greenfield contract).
-		if (isPythonGreenfieldCollectionFailure(out, ctx?.cwd)) return "red";
-		// BROKEN — pytest could not even collect.
-		if (/ERROR collecting/i.test(out)) return "broken";
-		// M12/ISS-02 (spec-28 AC-22, SCENARIO-047): usage/CLI errors (exit 4)
-		// and no-tests-collected (exit 5) are infrastructure failures, never a
-		// RED sample. `ERROR: file or directory not found` and `ERROR: usage` are
-		// pytest's exit-4 usage-error banners; `no tests ran` / `collected 0
-		// items` are the exit-5 empty-collection shape (markers only — the
-		// boolean `ok` already encodes exit≠0; no signature change, D3).
-		if (/ERROR: (file or directory not found|usage)/i.test(out)) return "broken";
-		if (/no tests ran/i.test(out) || /collected\s+0\s+items?/i.test(out)) return "broken";
-		if (ok) return "green";
-		// RED requires a test-FAILURE marker (SCENARIO-048): exit≠0 alone or the
-		// bare word "error" is ambiguous → unknown, retried — never blessed RED.
-		// Markers: pytest's `FAILED <nodeid>` summary line, an AssertionError,
-		// a traceback `E   <error>` line, or an `N failed` count summary.
-		if (/^FAILED\b/m.test(out) || /AssertionError/i.test(out) || /^E\s{2,}/m.test(out) || /\d+\s+failed/i.test(out)) return "red";
-		return "unknown";
-	}
-	if (language === "go") {
-		// RED (greenfield) — the build failed solely because the code under test
-		// does not exist yet (undefined ident in a test-only package dir, or a
-		// same-module package whose directory is absent).
-		if (isGoGreenfieldBuildFailure(out, ctx?.cwd)) return "red";
-		if (/build failed/i.test(out) || /setup failed/i.test(out) || /no required module provides package/i.test(out)) return "broken";
-		if (ok) return "green";
-		if (/^--- FAIL:/m.test(out) || /^FAIL\b/m.test(out) || /\bpanic:/i.test(out)) return "red";
-		return "unknown";
-	}
-	// npm family: vitest / jest / npm run test (frontend + backend).
-	// BROKEN — test/source syntax error before any test ran.
-	if (/SyntaxError/i.test(out)) return "broken";
-	// BROKEN — the positional filter matched no test file (no run).
-	if (/No test files found/i.test(out)) return "broken";
-	// BROKEN — a missing EXTERNAL dependency (bare package specifier).
-	if (/Cannot find package/i.test(out)) return "broken";
-	// RED (greenfield) — the test imports a not-yet-created RELATIVE project
-	// module; the suite fails to load solely because the implementation is
-	// missing. This is the textbook greenfield RED (matches buildTddPrompt's
-	// stated contract). Distinguished from a real load failure by the relative
-	// module being ABSENT on disk; an existing module that fails to load is
-	// caught by the next rule and stays broken.
-	if (isGreenfieldModuleMissing(out, ctx?.cwd, ctx?.targets)) return "red";
-	// BROKEN — any OTHER collection/load failure (config load, an existing
-	// module that throws at import, a missing bare specifier that isn't
-	// "Cannot find package", …).
-	if (/failed to load|ERR_MODULE_NOT_FOUND|Cannot find module/i.test(out)) return "broken";
-	if (ok) return "green";
-	// RED — a failing-test marker appeared after a successful collection.
-	// R7 (spec-28): the bare `❯` glyph is deliberately NOT in this list — it
-	// frames PASSING runs' source snippets too (untrustworthy); the remaining
-	// markers cover every real failing-test shape (vitest/jest/node:test).
-	if (
-		/^✖\s+/m.test(out) ||
-		/^FAIL\s+/m.test(out) ||
-		/failing tests/i.test(out) ||
-		/AssertionError/i.test(out) ||
-		/Tests:?\s+\d+\s*failed/i.test(out)
-	) {
-		return "red";
-	}
-	return "unknown";
 }
 
 function readPackageJson(dir: string): Record<string, unknown> | null {
@@ -1537,179 +982,6 @@ function packageDeps(pkg: Record<string, unknown> | null): Record<string, string
 	return { ...(pkg?.dependencies as Record<string, string> | undefined), ...(pkg?.devDependencies as Record<string, string> | undefined) };
 }
 
-function detectPmForDir(dir: string, pkg: Record<string, unknown> | null): string {
-	const pm = String(pkg?.packageManager ?? "").split("@")[0];
-	if (pm && /^(npm|pnpm|yarn|bun|deno)$/.test(pm)) return pm;
-	if (existsSync(join(dir, "bun.lockb")) || existsSync(join(dir, "bun.lock"))) return "bun";
-	if (existsSync(join(dir, "deno.lock"))) return "deno";
-	if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
-	if (existsSync(join(dir, "yarn.lock"))) return "yarn";
-	return "npm";
-}
-
-function nearestPackageDir(cwd: string, target: string): string | null {
-	const root = resolve(cwd);
-	let cur = dirname(resolve(cwd, target));
-	while (cur.startsWith(root)) {
-		if (existsSync(join(cur, "package.json"))) return cur;
-		const next = dirname(cur);
-		if (next === cur) break;
-		cur = next;
-	}
-	return existsSync(join(root, "package.json")) ? root : null;
-}
-
-function relTarget(pkgDir: string, cwd: string, target: string): string {
-	const rel = relative(pkgDir, resolve(cwd, target));
-	return rel.startsWith("..") ? target : rel;
-}
-
-function isJsTsTarget(target: string): boolean {
-	return /\.(?:[cm]?[jt]sx?)$/i.test(target);
-}
-
-function isTsTarget(target: string): boolean {
-	return /\.(?:[cm]?ts|tsx)$/i.test(target);
-}
-
-function fileUsesNodeTest(cwd: string, target: string): boolean {
-	try {
-		const content = readFileSync(resolve(cwd, target), "utf8");
-		return /(?:from\s+['"]node:test['"]|require\(\s*['"]node:test['"]\s*\)|node:test)/.test(content);
-	} catch {
-		return false;
-	}
-}
-
-function hasPackageTool(pkgDir: string, pkg: Record<string, unknown> | null, tool: string): boolean {
-	const deps = packageDeps(pkg);
-	return Boolean(deps[tool]) || existsSync(join(pkgDir, "node_modules", ".bin", tool)) || existsSync(join(pkgDir, "node_modules", tool));
-}
-
-function pmExec(pm: string, tool: string, args: string[]): string[] {
-	if (pm === "yarn") return [pm, "exec", tool, ...args];
-	if (pm === "bun") return [pm, "x", tool, ...args];
-	if (pm === "deno") return ["deno", "task", tool, ...args];
-	return [pm, "exec", tool, ...args];
-}
-
-function npmRedCheckPlans(cwd: string, targets: string[], cmds: ProjectCommands): RedCheckPlan[] {
-	const plans: RedCheckPlan[] = [];
-	const fallbackTargets: string[] = [];
-	for (const target of targets) {
-		const pkgDir = nearestPackageDir(cwd, target) ?? cwd;
-		const pkg = readPackageJson(pkgDir);
-		const scripts = packageScripts(pkg);
-		const rel = relTarget(pkgDir, cwd, target);
-		const pm = detectPmForDir(pkgDir, pkg);
-
-		if (isJsTsTarget(target) && fileUsesNodeTest(cwd, target)) {
-			if (!isTsTarget(target)) {
-				plans.push({ cwd: pkgDir, argv: ["node", "--test", rel] });
-				continue;
-			}
-			if (hasPackageTool(pkgDir, pkg, "tsx")) {
-				plans.push({ cwd: pkgDir, argv: ["node", "--import", "tsx", "--test", rel] });
-				continue;
-			}
-		}
-
-		if (scripts.test) {
-			// RC-1: a package `test` script only scopes to a single file if the runner
-			// accepts the file as a positional arg. `pnpm -r run test` (recursive) does
-			// NOT — it forwards the arg to EVERY workspace, which ignore it and run their
-			// whole suite (→ the new test never runs in isolation → the RED oracle sees
-			// the pre-existing suite pass → "red-not-confirmed" forever, the 15h livelock).
-			// So: prefer a DIRECT runner invocation whenever we can detect one; only use
-			// the `run test -- <file>` form when the script is NOT a recursive fan-out.
-			if (/vitest/i.test(scripts.test) || hasPackageTool(pkgDir, pkg, "vitest")) { plans.push({ cwd: pkgDir, argv: pmExec(pm, "vitest", ["run", rel]) }); continue; }
-			if (isJsTsTarget(target) && hasPackageTool(pkgDir, pkg, "tsx")) { plans.push({ cwd: pkgDir, argv: ["node", "--import", "tsx", "--test", rel] }); continue; }
-			const recursive = /\bpnpm\b[^\n]*\s-r\b|\bpnpm\b[^\n]*--recursive|\bturbo\b|\bnx\s+run-many|--workspaces\b/.test(scripts.test);
-			if (!recursive) { plans.push({ cwd: pkgDir, argv: pm === "deno" ? ["deno", "task", "test", rel] : [pm, "run", "test", "--", rel] }); continue; }
-			// Recursive/monorepo test script with no directly-runnable runner for this
-			// package: fall through so the caller surfaces an honest "no scoped runner"
-			// blocker instead of running the whole monorepo and misreading it as green.
-			fallbackTargets.push(target);
-			continue;
-		}
-
-		if (hasPackageTool(pkgDir, pkg, "vitest")) {
-			plans.push({ cwd: pkgDir, argv: pmExec(pm, "vitest", ["run", rel]) });
-			continue;
-		}
-		// No package `test` script and no vitest: try a direct tsx/node runner for a
-		// JS/TS file before giving up to the (non-scoping) root fallback.
-		if (isJsTsTarget(target) && hasPackageTool(pkgDir, pkg, "tsx")) {
-			plans.push({ cwd: pkgDir, argv: ["node", "--import", "tsx", "--test", rel] });
-			continue;
-		}
-
-		fallbackTargets.push(target);
-	}
-	if (fallbackTargets.length > 0) {
-		const usesVitest = cmds.ran.some((label) => /vitest/i.test(label)) || hasVitestScript(cwd);
-		// Recursion lives in the root package.json `test` SCRIPT BODY (e.g.
-		// "pnpm -r run test"), not in the resolved argv (which is just
-		// ["pnpm","run","test"]). Read the script text to detect the fan-out.
-		const rootTestScript = String(packageScripts(readPackageJson(cwd)).test ?? "");
-		const rootRecursive = /\bpnpm\b[^\n]*\s-r\b|--recursive|\bturbo\b|nx\s+run-many|--workspaces\b|\blerna\b/.test(rootTestScript);
-		// Sweep-3 G11-B7: never a bare `vitest` — pnpm/yarn workspaces don't put
-		// .bin on PATH for arbitrary cwd spawns; route through the package
-		// manager's exec form (same pmExec the direct-runner branch uses).
-		if (usesVitest) plans.push({ cwd, argv: pmExec(detectPmForDir(cwd, readPackageJson(cwd)), "vitest", ["run", ...fallbackTargets]) });
-		// Only use the root `test -- <files>` form when it is NOT a recursive
-		// monorepo fan-out — that form ignores the file args and runs every package
-		// (RC-1). When the only root command is recursive and no scoped runner was
-		// found, emit NO plan for these targets: runRedCheck then reports a no-runner
-		// state (broken) instead of a false green, and the RED loop surfaces it.
-		else if (cmds.test && cmds.test.length > 0 && !rootRecursive) plans.push({ cwd, argv: [...cmds.test, "--", ...fallbackTargets] });
-	}
-	return plans.filter((plan) => plan.argv.length > 0);
-}
-
-function goPackageArg(moduleDir: string, cwd: string, target: string): string {
-	const rel = relTarget(moduleDir, cwd, target).replace(/\\/g, "/");
-	const pkgDir = /\.go$/i.test(rel) ? dirname(rel).replace(/\\/g, "/") : rel.replace(/\/$/, "");
-	if (!pkgDir || pkgDir === ".") return ".";
-	return pkgDir.startsWith("./") ? pkgDir : `./${pkgDir}`;
-}
-
-function ownerRedCheckPlans(cwd: string, targets: string[]): { plans: RedExecutionPlan[]; handled: Set<string> } {
-	const groups = new Map<string, { dir: string; language: string; targets: string[] }>();
-	const handled = new Set<string>();
-	for (const target of targets) {
-		const dir = nearestProjectDir(cwd, target);
-		if (!dir) continue;
-		const cmds = detectProjectCommands(dir);
-		if (cmds.language !== "rust" && cmds.language !== "python" && cmds.language !== "go") continue;
-		const key = `${resolve(dir)}\0${cmds.language}`;
-		const group = groups.get(key) ?? { dir, language: cmds.language, targets: [] };
-		group.targets.push(target);
-		groups.set(key, group);
-		handled.add(target);
-	}
-	const plans: RedExecutionPlan[] = [];
-	for (const group of groups.values()) {
-		const cmds = detectProjectCommands(group.dir);
-		if (!cmds.test || cmds.test.length === 0) continue;
-		if (group.language === "rust") {
-			const relTargets = group.targets.map((target) => relTarget(group.dir, cwd, target));
-			const stems = resolveIntegrationStems(group.dir, relTargets);
-			if (stems.length > 0) {
-				for (const stem of stems) plans.push({ cwd: group.dir, argv: ["cargo", "test", "--test", stem, "--quiet"], language: "rust" });
-			} else {
-				plans.push({ cwd: group.dir, argv: ["cargo", "test", "--quiet"], language: "rust" });
-			}
-		} else if (group.language === "python") {
-			plans.push({ cwd: group.dir, argv: ["pytest", ...group.targets.map((target) => relTarget(group.dir, cwd, target)), "-q"], language: "python" });
-		} else if (group.language === "go") {
-			const pkgs = dedupePreservingOrder(group.targets.map((target) => goPackageArg(group.dir, cwd, target)));
-			plans.push({ cwd: group.dir, argv: ["go", "test", ...pkgs], language: "go" });
-		}
-	}
-	return { plans, handled };
-}
-
 function combineRedStatuses(statuses: RedStatus[]): RedStatus {
 	if (statuses.length === 0) return "unknown";
 	if (statuses.includes("broken")) return "broken";
@@ -1719,124 +991,51 @@ function combineRedStatuses(statuses: RedStatus[]): RedStatus {
 }
 
 /**
- * Deterministic "red" oracle for the Stage 9 TDD cycle (Gap 1a, AC-01).
- *
- * Modeled on the {@link runBuildGate} skeleton and reuses its primitives —
- * {@link detectProjectCommands}, {@link resolveTimeoutMs}, and
- * {@link resolveIntegrationStems} — introducing NO new spawn/git machinery. It
- * runs the tdd-guide-authored {@link testTargets} and classifies the outcome
- * into exactly one {@link RedStatus} so `implementation.ts` can enforce a
- * genuine RED phase (Gap 1b/Phase 3 re-prompt loop).
- *
- * Per-language scoped invocation:
- *   - `rust`   → resolve integration STEMS via {@link resolveIntegrationStems}
- *               (file paths → basenames, stat-validated; NO `--lib`); run each
- *               stem as `cargo test --test <stem>`. When no stems resolve,
- *               fall back to a scoped `cargo test -p <pkg>` for the touched
- *               packages ({@link detectTouchedCargoPackages}); empty scope → a
- *               single workspace-wide `cargo test`.
- *   - npm/vitest/jest/node:test (frontend+backend) → resolve each target's
- *               owning package directory first, then run that package's direct
- *               node:test/vitest/script plan. Only fall back to the root test
- *               command when no package-local runner can be identified.
- *   - `python` → `pytest <targets> -q`.
- *   - `go`     → root modules use the root command; nested modules are grouped
- *               by owning `go.mod` and run as `go test <package>` from that cwd.
- *
- * No-spawn short-circuit → `unknown`: a greenfield dir (no manifest or owning
- * package runner), unresolved/empty targets, or a target set for which no safe
- * package/root test plan can be identified. A greenfield repo CANNOT stall the
- * pipeline — it has nothing to verify RED against.
- *
- * NEVER throws (the load-bearing invariant mirrored from every existing gate):
- * the ENTIRE body is try/caught; any spawn error (`r.error` / ENOENT), a
- * throwing spawnSync, a timeout, or a parse ambiguity returns `unknown`.
- *
- * @param cwd Absolute worktree path to run the targets in.
- * @param testTargets The tdd-guide-authored test file paths to run.
- * @param opts Optional timeout/signal envelope (shares the GateOptions shape).
- * @returns One of `red` | `green` | `broken` | `unknown`. Never throws.
- */
+ * v0.3.31 — the universal RED oracle. The engine is LANGUAGE-BLIND: plans come
+ * from the conventions table (src/build-runner/conventions.ts — editable rows
+ * + row-owned builders; the single per-ecosystem seam) or from a
+ * machine-VALIDATED agent-proposed runner (runner-discovery.ts, Layer C —
+ * "LLM proposes, machine verifies, cache reuses"). Classification reads ONLY
+ * structured evidence plus the exit code (see classifyFromEvidence). All
+ * per-language branches, regex chains, and greenfield predicates that lived
+ * here through v0.3.30 are DELETED — adding or fixing a stack means editing
+ * convention DATA, never this engine.
+ * NEVER-THROW: any spawn error, thrown exception, or ambiguity degrades to
+ * `unknown` (proceed, do not stall). */
 export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckOptions): RedStatus {
+	const plans: ConventionPlan[] = [];
 	try {
 		// No targets → nothing to verify RED against (no spawn).
 		if (!Array.isArray(testTargets) || testTargets.length === 0) return "unknown";
-		const cmds = detectProjectCommands(cwd);
 		if (opts?.signal?.aborted) return "unknown";
-
 		const timeoutMs = resolveTimeoutMs(opts?.timeoutMs);
-		const language = cmds.language;
 		const targets = testTargets.filter((t) => typeof t === "string" && t.trim().length > 0);
 		if (targets.length === 0) return "unknown";
 
-		// Build the scoped spawn plan(s) per language, mirroring runBuildGate's branch.
-		const plans: RedExecutionPlan[] = [];
-		if (language === "rust") {
-			if (!cmds.test || cmds.test.length === 0) return "unknown";
-			const stems = resolveIntegrationStems(cwd, targets);
-			if (stems.length > 0) {
-				// Per-stem integration binaries — NEVER `--lib` (no-`--lib` discipline).
-				for (const stem of stems) plans.push({ cwd, argv: ["cargo", "test", "--test", stem, "--quiet"], language });
-			} else {
-				// No resolvable stems → scope to the touched packages; empty → workspace.
-				// Sweep-3 G11-B2: resolve dir SEGMENTS through resolveCargoPackageNames
-				// (manifest `name`) exactly like runBuildGate — pre-fix `-p foo` failed
-				// on every renamed crate.
-				const pkgs = resolveCargoPackageNames(cwd, detectTouchedCargoPackages(cwd, opts?.defaultBranch)); // sweep-3 G6 (AR1-3)
-				if (pkgs.length > 0) {
-					for (const pkg of pkgs) plans.push({ cwd, argv: ["cargo", "test", "-p", pkg, "--quiet"], language });
-				} else {
-					plans.push({ cwd, argv: ["cargo", "test", "--quiet"], language });
-				}
-			}
-		} else if (language === "python") {
-			if (!cmds.test || cmds.test.length === 0) return "unknown";
-			plans.push({ cwd, argv: ["pytest", ...targets, "-q"], language });
-		} else if (language === "go") {
-			if (!cmds.test || cmds.test.length === 0) return "unknown";
-			// Sweep-3 G1 (blocker): map FILE targets to PACKAGE dirs. `go test
-			// pkg/prod_test.go` builds a synthetic command-line-arguments package
-			// of ONLY that file — a test referencing a symbol DEFINED in prod.go
-			// still fails `undefined`, so in-package tests can never confirm RED
-			// nor reach GREEN. The package form (`go test ./pkg`) is the only
-			// correct invocation; goPackageArg already computes it.
-			const goPkgs = dedupePreservingOrder(targets.map((t) => goPackageArg(cwd, cwd, t)));
-			plans.push({ cwd, argv: ["go", "test", ...goPkgs], language });
-		} else if (language === "gradle") {
-			// v0.3.30 F1: scoped per-class gradle plans (module cwd + wrapper + FQN).
-			plans.push(...gradleRedCheckPlans(cwd, targets).map((p) => ({ ...p, language: "gradle" })));
-		} else if (language === "maven") {
-			plans.push(...mavenRedCheckPlans(cwd, targets).map((p) => ({ ...p, language: "maven" })));
-		} else {
-			const ownerPlans = ownerRedCheckPlans(cwd, targets);
-			plans.push(...ownerPlans.plans);
-			const npmTargets = targets.filter((target) => !ownerPlans.handled.has(target));
-			plans.push(...npmRedCheckPlans(cwd, npmTargets, cmds).map((plan) => ({ ...plan, language: "backend" })));
-		}
-
-		// v0.3.30 Layer C: no registry plans (unknown stack) → use the cached/
-		// validated agent-proposed runner when one is available.
+		// Level 2 (conventions data) → Level 3 (validated cached runner).
+		plans.push(...conventionPlansFor(cwd, targets));
 		if (plans.length === 0 && opts?.runner) {
-			plans.push(...dynamicRedCheckPlans(cwd, targets, opts.runner).map((p) => ({ ...p, language: "dynamic" })));
+			plans.push(...dynamicRedCheckPlans(cwd, targets, opts.runner).map((p) => ({ ...p, conventionId: "dynamic", channel: { format: "auto" } as ResultChannel })));
 		}
 		if (plans.length === 0) return "unknown";
 		emitRedPlans(opts, plans);
 
-		// Run each argv under the shared timeout envelope. Each plan is classified
-		// with its own language because RED targets may live in nested modules whose
-		// stack differs from the repository root.
 		const statuses: RedStatus[] = [];
 		for (const plan of plans) {
 			if (opts?.signal?.aborted) return "unknown";
 			const { argv } = plan;
 			try {
-				const startedMs = Date.now(); // v0.3.30 A: freshness bound for harvested result XML
-				const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); // sweep-3 G5: 64MB (default 1MB ENOBUFS-kills large suites)
+				const startedMs = Date.now();
+				const r = spawnSync(argv[0], argv.slice(1), { cwd: plan.cwd, timeout: timeoutMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 				const combined = "\n" + (r.stdout ?? "") + "\n" + (r.stderr ?? "");
-				const status = r.error ? "unknown" : (structuredRedClassification(plan, startedMs, r.status === 0, combined) ?? classifyRedStatus(plan.language, combined, r.status === 0, { cwd: plan.cwd, targets }));
+				// review-2 F4: row-declared exit codes that mean "tests could not
+				// even run" (pytest 2/4) classify broken BEFORE counts — a
+				// collection error must never be confirmed as a valid RED.
+				const brokenByExit = typeof r.status === "number" && r.status !== 0 && (plan.brokenExitCodes ?? []).includes(r.status);
+				const status = r.error ? "unknown" : brokenByExit ? "broken" : classifyFromEvidence(r.status === 0, collectStructuredEvidence(plan, startedMs, combined));
 				emitRedDiagnostic(opts, {
-					plan: { cwd: plan.cwd, argv: [...plan.argv] },
-					language: plan.language,
+					plan: { cwd: plan.cwd, argv: [...argv] },
+					language: plan.conventionId,
 					status,
 					exitCode: typeof r.status === "number" ? r.status : null,
 					signal: typeof r.signal === "string" ? r.signal : null,
@@ -1848,8 +1047,8 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 				statuses.push(status);
 			} catch (err) {
 				emitRedDiagnostic(opts, {
-					plan: { cwd: plan.cwd, argv: [...plan.argv] },
-					language: plan.language,
+					plan: { cwd: plan.cwd, argv: [...argv] },
+					language: plan.conventionId,
 					status: "unknown",
 					exitCode: null,
 					signal: null,
@@ -1861,62 +1060,9 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		}
 		return combineRedStatuses(statuses);
 	} catch {
-		// The load-bearing NEVER-THROW invariant: any spawn error, thrown
-		// exception, or parse ambiguity degrades to `unknown` (proceed, do not
-		// stall). SCENARIO-001/002/003 (degrade instead of throwing).
 		return "unknown";
-	}
-}
-
-/** JVM compile-failure banner/markers: gradle "Compilation failed;…" AND
- *  KGP's real banner "> Compilation error. See log for more details"; kotlin
- *  compiler lines — both the legacy `e: file:…: error: …` form and the real
- *  KGP shape `e: file:///…:(20, 9): Unresolved reference: X` (no "error:"
- *  token; review-2 F1, web-verified against real KGP output); javac
- *  `X.java:[l,c] error: …` / `X.java:l:c error:`; maven "COMPILATION ERROR"
- *  and maven-compiler-plugin's reformatted `[ERROR] /path/A.java:[7,9] cannot
- *  find symbol` (review-2 F2 — maven reformats javac lines, dropping the
- *  lowercase "error:" token). */
-function isJvmCompileFailure(out: string): boolean {
-	return /Compilation failed|COMPILATION ERROR|Compilation error\. See log/i.test(out)
-		|| /^\s*e: .*error:/m.test(out)
-		|| /^\s*e: file:.*:\(\d+, ?\d+\):/m.test(out) // KGP `e: file://…:(l, c): msg`
-		|| /\.java:\[?\d+[,:]\d+\]?(?::| )\s*error:/m.test(out)
-		|| /\.java:\d+:\d+: error:/m.test(out)
-		|| /^\s*\[ERROR\] .*\.java:\[\d+,\d+\]/m.test(out); // maven-compiler-plugin javac reformat
-}
-
-/** Greenfield JVM RED: the build failed to compile and EVERY error line is a
- *  missing-symbol error (kotlin `unresolved reference`, javac `cannot find
- *  symbol` / `package … does not exist` / `cannot access`) — i.e. the tests
- *  reference production classes that do not exist yet, the textbook greenfield
- *  RED for compiled languages (same contract as rust/python/go greenfield).
- *  A genuine syntax/type error breaks the every() and stays `broken`. */
-function isJvmGreenfieldCompileFailure(out: string): boolean {
-	if (!isJvmCompileFailure(out)) return false;
-	// Review-2 F1/F2: collect error lines in every real shape — KGP legacy
-	// (`e: … error:`), real KGP (`e: file://…:(l, c): msg`), javac
-	// (`X.java:[l,c] error:`), and maven's `[ERROR] /path/X.java:[l,c] msg`.
-	const errorLines = out.split("\n").map((l) => l.trim()).filter((l) =>
-		/^e: .*error:/i.test(l) || /^e: file:.*:\(\d+, ?\d+\):/i.test(l) || /^\[ERROR\] .*\.java:\[\d+,\d+\]/.test(l) || /error: /i.test(l));
-	if (errorLines.length === 0) return false;
-	return errorLines.every((l) =>
-			/unresolved reference|cannot find symbol|package .* does not exist|cannot access/i.test(l));
-}
-
-/**
- * Whether the root `package.json` `test` script invokes vitest. Used by the
- * root fallback path only; package-local plans inspect the owning package.
- * Pure read, never throws.
- */
-function hasVitestScript(cwd: string): boolean {
-	try {
-		if (!existsSync(join(cwd, "package.json"))) return false;
-		const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as Record<string, unknown>;
-		const scripts = (pkg.scripts ?? {}) as Record<string, string>;
-		return typeof scripts.test === "string" && /vitest/i.test(scripts.test);
-	} catch {
-		return false;
+	} finally {
+		cleanupConventionPlans(plans);
 	}
 }
 

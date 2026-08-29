@@ -289,7 +289,7 @@ describe("RC10 — Go undefined-symbol greenfield in an EXISTING package", () =>
 		cpMock.stubber = null;
 	});
 
-	it("all-undefined refs declared nowhere → greenfield RED (not broken)", () => {
+	it("all-undefined refs declared nowhere → unknown (v0.3.31: prose never classifies; judge routes own the escape)", () => {
 		// The test imports the INTERNAL models package (no alias — Go derives
 		// the name from the path) and references a symbol it does not declare.
 		writeFileSync(join(dir, "internal", "database", "step_test.go"), "package database\n\nimport (\n\t\"testing\"\n\t\"example.com/app/internal/models\"\n)\n\nfunc TestX(t *testing.T) { _ = models.StepProcess }\n");
@@ -297,28 +297,28 @@ describe("RC10 — Go undefined-symbol greenfield in an EXISTING package", () =>
 			"internal/database/step_test.go:5:9: undefined: models.StepProcess\nFAIL\texample.com/app/internal/database [build failed]\n",
 		);
 		const r = runRedCheckRealGo(dir, ["internal/database/step_test.go"]);
-		expect(r).toBe("red");
+		expect(r).toBe("unknown");
 	});
 
-	it("a typo'd reference to an EXISTING symbol stays broken", () => {
+	it("a typo'd reference to an EXISTING symbol → unknown (was broken via regex; now honestly unclassified)", () => {
 		writeFileSync(join(dir, "internal", "database", "step_test.go"), "package database\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) { _ = Existng() }\n");
 		cpMock.stubber = goStub(
 			"internal/database/step_test.go:5:9: undefined: Existng\nFAIL\texample.com/app/internal/database [build failed]\n",
 		);
 		const r = runRedCheckRealGo(dir, ["internal/database/step_test.go"]);
-		expect(r).toBe("broken");
+		expect(r).toBe("unknown");
 	});
 
-	it("an EXTERNAL package's undefined symbol stays broken (never greenfield)", () => {
+	it("an EXTERNAL package's undefined symbol → unknown (never a phantom verdict)", () => {
 		writeFileSync(join(dir, "internal", "database", "step_test.go"), "package database\n\nimport (\n\t\"testing\"\n\t\"github.com/some/external/pkg\"\n)\n\nfunc TestX(t *testing.T) { _ = pkg.Undefined }\n");
 		cpMock.stubber = goStub(
 			"internal/database/step_test.go:5:9: undefined: pkg.Undefined\nFAIL\texample.com/app/internal/database [build failed]\n",
 		);
 		const r = runRedCheckRealGo(dir, ["internal/database/step_test.go"]);
-		expect(r).toBe("broken");
+		expect(r).toBe("unknown");
 	});
 
-	it("top-level declarations only: a usage inside a function body does not rescue the symbol", () => {
+	it("top-level declarations only: a usage inside a function body → still unknown (no structured evidence either way)", () => {
 		writeFileSync(join(dir, "internal", "database", "step_test.go"), "package database\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) { MigrateStepE2E() }\n");
 		// MigrateStepE2E appears only INSIDE a function body (not top-level) →
 		// still nowhere-declared → greenfield red.
@@ -327,7 +327,7 @@ describe("RC10 — Go undefined-symbol greenfield in an EXISTING package", () =>
 			"internal/database/step_test.go:5:9: undefined: MigrateStepE2E\nFAIL\texample.com/app/internal/database [build failed]\n",
 		);
 		const r = runRedCheckRealGo(dir, ["internal/database/step_test.go"]);
-		expect(r).toBe("red");
+		expect(r).toBe("unknown");
 	});
 });
 

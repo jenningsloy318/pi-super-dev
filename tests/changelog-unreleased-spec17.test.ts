@@ -109,13 +109,13 @@ describe("CHANGELOG [Unreleased] entry for spec-17 (ambient extension inheritanc
 			expect(UNRELEASED).toContain("resolves real cargo package names");
 		});
 
-		it("the next released version after [Unreleased] is still 0.3.0 (no premature release header)", () => {
+		it("the next released version after [Unreleased] is the newest released header (0.3.31) — no premature future release header", () => {
 			const afterUnreleased = CHANGELOG.slice(
 				CHANGELOG.indexOf("## [Unreleased]") + "## [Unreleased]".length,
 			);
 			const nextVersionMatch = afterUnreleased.match(/\n## \[(\d+\.\d+\.\d+)\]/);
 			expect(nextVersionMatch).not.toBeNull();
-			expect(nextVersionMatch![1]).toBe("0.3.0");
+			expect(nextVersionMatch![1]).toBe("0.3.31");
 		});
 	});
 });
