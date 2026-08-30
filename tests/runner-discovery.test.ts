@@ -84,3 +84,39 @@ describe("v0.3.30 C — dynamicRedCheckPlans", () => {
 		expect(plans[0].argv).toEqual(["./gradlew", "test", "--tests", "com.x.Y"]);
 	});
 });
+
+// ─── v0.3.38: shell-compound runner proposals ────────────────────────────────
+// Run 2026-08-30T04-53-26 (cosmic-clock): the debug-analyzer proposed the
+// judge-verified-healthy `cd <worktree> && node --test --test-reporter=tap …`
+// but splitShellCommand made argv[0]="cd" — spawnSync ENOENTs WITHOUT throwing
+// (error on the result, stdout/stderr null) — so the oracle logged "proposal
+// REJECTED (no parseable per-test evidence)" while the suite was perfectly red.
+// The judge burned an 8-minute escalation diagnosing it as a toolchain defect.
+describe("v0.3.38: shell-compound runner proposals resolve sanely", () => {
+	it("a leading `cd <dir> &&` becomes the cwd and the real command runs (live TAP validated)", async () => {
+		const { resolveRunnerCommand } = await import("../src/build-runner/runner-discovery.ts");
+		const spec = { version: 1, command: `cd ${root} && node -e "console.log('TAP version 13\\n1..2\\nok 1 a\\nnot ok 2 b\\n# tests 2')"`, resultFormat: "tap", discoveredAt: "x" };
+		const out = validateRunnerSpec(spec as never, "/tmp", 30_000);
+		expect(out.ok).toBe(true);
+		expect(out.counts).toMatchObject({ tests: 2 });
+		expect(out.evidence).toContain("tap");
+		const plans = dynamicRedCheckPlans("/tmp", [], spec as never);
+		expect(plans[0].cwd).toBe(root);
+		expect(plans[0].argv[0]).toBe("node");
+	}, 60_000);
+
+	it("remaining shell operators (pipes/redirects/&&) route through bash -c", async () => {
+		const { resolveRunnerCommand } = await import("../src/build-runner/runner-discovery.ts");
+		const { argv } = resolveRunnerCommand({ version: 1, command: "npm test 2>&1 | tee out.log", resultFormat: "tap", discoveredAt: "x" }, root);
+		expect(argv).toEqual(["bash", "-c", "npm test 2>&1 | tee out.log"]);
+		// operators INSIDE quotes never trigger the shell path
+		const plain = resolveRunnerCommand({ version: 1, command: `node -e "console.log('a && b')"` , resultFormat: "tap", discoveredAt: "x" }, root);
+		expect(plain.argv[0]).toBe("node");
+	}, 60_000);
+
+	it("a bare `cd` with nothing left is an empty (invalid) command", async () => {
+		const { resolveRunnerCommand } = await import("../src/build-runner/runner-discovery.ts");
+		const { argv } = resolveRunnerCommand({ version: 1, command: "cd app", resultFormat: "tap", discoveredAt: "x" }, root);
+		expect(argv).toEqual([]);
+	}, 60_000);
+});

@@ -14,7 +14,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { harvestJUnitXml, sumHarvestedXml, parseTapCounts, type TestResultCounts } from "./result-parse.ts";
 
 export interface TestRunnerSpec {
@@ -92,15 +92,41 @@ export interface RunnerValidation {
 	evidence: string;
 }
 
+/** Resolve a runner proposal to { cwd, argv } handling the shell compounds
+ *  models actually emit (run 2026-08-30T04-53-26: the judge traced a healthy
+ *  TAP proposal rejected because the command was `cd <dir> && node --test …` —
+ *  splitShellCommand made argv[0]="cd", spawnSync ENOENTs WITHOUT throwing,
+ *  stdout/stderr are null, and the oracle reports 'no parseable per-test
+ *  evidence' while the suite is perfectly red):
+ *   1. a leading `cd <dir> &&` (or `;`) becomes the cwd;
+ *   2. remaining shell operators (outside quotes) force `bash -c` execution;
+ *   3. otherwise the plain quote-aware split (byte-identical to before).
+ *  A bare `cd` with nothing left is invalid (empty argv). */
+export function resolveRunnerCommand(spec: TestRunnerSpec, projectRoot: string): { cwd: string; argv: string[] } {
+	let command = String(spec.command ?? "").trim();
+	let cwd = resolve(projectRoot, spec.cwd ?? ".");
+	const cdMatch = command.match(/^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;|;)\s*([\s\S]*)$/);
+	if (cdMatch) {
+		const dir = cdMatch[1] ?? cdMatch[2] ?? cdMatch[3] ?? ".";
+		cwd = isAbsolute(dir) ? dir : resolve(cwd, dir);
+		command = cdMatch[4].trim();
+	}
+	// Detect shell operators OUTSIDE quotes by masking quoted spans first.
+	const masked = command.replace(/"[^"]*"|'[^']*'/g, "");
+	if (/[&&;|<>]|\$\(|\$\{/.test(masked)) {
+		return { cwd, argv: command ? ["bash", "-c", command] : [] };
+	}
+	const argv = splitShellCommand(command);
+	return { cwd, argv: argv[0] === "cd" ? [] : argv };
+}
 /** Machine-verify an LLM-proposed runner by EXECUTING it once and requiring
  *  parseable per-test evidence: fresh JUnit XML under conventional paths, or
  *  TAP plan lines on stdout/stderr. A command that only prints prose ("all
  *  fine, trust me") is rejected — the RepoLaunch mandatory contract. */
 export function validateRunnerSpec(spec: TestRunnerSpec, projectRoot: string, timeoutMs: number, signal?: AbortSignal): RunnerValidation {
-	const argv = splitShellCommand(spec.command);
+	const { cwd, argv } = resolveRunnerCommand(spec, projectRoot);
 	if (argv.length === 0 || !argv[0]) return { ok: false, evidence: "empty command" };
 	if (signal?.aborted) return { ok: false, evidence: "aborted before validation" };
-	const cwd = resolve(projectRoot, spec.cwd ?? ".");
 	const startedMs = Date.now();
 	let combined = "";
 	try {
@@ -125,5 +151,6 @@ export function validateRunnerSpec(spec: TestRunnerSpec, projectRoot: string, ti
  *  output precisely so future scoping (per-class filters persisted alongside
  *  the command) can be added without changing the cache format. */
 export function dynamicRedCheckPlans(projectRoot: string, _targets: string[], spec: TestRunnerSpec): Array<{ cwd: string; argv: string[] }> {
-	return [{ cwd: resolve(projectRoot, spec.cwd ?? "."), argv: splitShellCommand(spec.command) }];
+	const { cwd, argv } = resolveRunnerCommand(spec, projectRoot);
+	return [{ cwd, argv }];
 }
