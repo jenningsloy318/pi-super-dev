@@ -235,6 +235,18 @@ function pruneNulls(schemaNode: unknown, obj: Record<string, unknown>, inOptiona
  *  returned as-is), and empty arrays / objects / null stay untouched so the
  *  located error names the field for the retrying agent (null/undefined and
  *  empty objects stay untouched — there is nothing to render). */
+/** Wrap a SINGLETON emitted into a declared array slot: one string or one
+ *  plain object becomes [value] (run 2026-08-30T04-53-26: prototype-runner
+ *  emitted measurements as one prose string). EXACT array contracts only —
+ *  unions are skipped (legal values never rewritten), and anything that
+ *  already validates (arrays, null, undefined) passes through untouched. */
+function coerceArraySlot(schemaNode: unknown, value: unknown): unknown {
+	const s = schemaNode as Record<string, unknown> | null;
+	if (!s || typeof s !== "object" || s.type !== "array" || "anyOf" in s) return value;
+	if (typeof value === "string" || (value && typeof value === "object" && !Array.isArray(value))) return [value];
+	return value;
+}
+
 function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
 	// Null-in-optional pruning runs FIRST (it may delete whole subtrees the
 	// string walk would otherwise waste time on — and `services.api: null` is
@@ -247,12 +259,15 @@ function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
 		if (s.type === "object" && s.properties && typeof s.properties === "object") {
 			for (const key of Object.keys(s.properties)) {
 				const child = (s.properties as Record<string, unknown>)[key];
-				const coerced = coerceStringSlot(child, v[key]);
+				// Try string coercion first; if it changed nothing, try array coercion
+				// (chain explicitly — `??` short-circuits on a non-nullish unchanged value).
+				let coerced = coerceStringSlot(child, v[key]);
+				if (coerced === v[key]) coerced = coerceArraySlot(child, v[key]);
 				// Assign ONLY on a real coercion: an unconditional `v[key] = coerced`
 				// materializes absent keys as `key: undefined`, which flips TypeBox's
 				// error class from "must have required properties" to per-field type
 				// errors (caught by the round-feedback contract tests).
-				if (coerced !== v[key]) v[key] = coerced;
+				if (coerced !== undefined && coerced !== v[key]) v[key] = coerced;
 				// un-coerced slots that are containers recurse deeper
 				if (v[key] && typeof v[key] === "object") walk(child, v[key]);
 			}
@@ -260,8 +275,9 @@ function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
 		}
 		if (s.type === "array" && s.items && Array.isArray(v)) {
 			for (let i = 0; i < v.length; i++) {
-				const coerced = coerceStringSlot(s.items, v[i]);
-				if (coerced !== v[i]) v[i] = coerced;
+				let coerced = coerceStringSlot(s.items, v[i]);
+				if (coerced === v[i]) coerced = coerceArraySlot(s.items, v[i]);
+				if (coerced !== undefined && coerced !== v[i]) v[i] = coerced;
 				if (v[i] && typeof v[i] === "object") walk(s.items, v[i]);
 			}
 		}

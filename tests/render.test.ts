@@ -418,6 +418,20 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		const r2 = renderStage("assessment", { title: "t", date: "2026-08-30", summary: null, patterns: [{ name: "p", example: "e", consistency: "c" }], recommendations: ["r"], filesAssessed: ["f"] });
 		expect(r2.errors.some((e) => e === "summary: must be string")).toBe(true);
 	});
+	it("singleton-into-array drift: prototype measurements/adjustments emitted as ONE string/object wrap into [value] instead of dropping the doc (run 2026-08-30T04-53-26)", () => {
+		const control: Record<string, any> = {
+			title: "Proto", date: "2026-08-30", summary: "s", verdict: "pass",
+			measurements: { method: "Node 24 script re-implementing each mandated formula", result: "all 15 golden values recomputed and matching" },
+			adjustments: "Pin Rydberg constant R = 1.097e7 m⁻¹ in constants.js",
+		};
+		const r = renderStage("prototype", control);
+		expect(r.errors).toEqual([]);
+		expect(r.markdown).toContain("re-implementing each mandated formula");
+		expect(r.markdown).toContain("Rydberg constant");
+		// In place: both fields are arrays downstream.
+		expect(Array.isArray(control.measurements)).toBe(true);
+		expect(control.adjustments).toEqual(["Pin Rydberg constant R = 1.097e7 m⁻¹ in constants.js"]);
+	});
 	it("real shape mismatches in string slots stay REJECTED and located (null/empty-object summary → 'executiveSummary: must be string'), never guessed away", () => {
 		const r = renderStage("requirements", { title: "t", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: null, acceptanceCriteria: [{ id: "AC-01", statement: "s" }], nonFunctional: [] });
 		expect(r.errors.some((e) => e === "executiveSummary: must be string")).toBe(true);
