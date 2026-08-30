@@ -129,7 +129,7 @@ describe("v0.3.38: shell-compound runner proposals resolve sanely", () => {
 describe("v0.3.40: runnerCoversTargets — cached runner phase scoping", () => {
 	it("a runner naming specific test files covers only phases whose targets match", async () => {
 		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
-		const phase1 = { version: 1, command: "node --test --test-reporter=tap cosmic-clock-3d/tests/phase1-shell.test.mjs", resultFormat: "tap" as const, discoveredAt: "x" };
+		const phase1: TestRunnerSpec = { version: 1, command: "node --test --test-reporter=tap cosmic-clock-3d/tests/phase1-shell.test.mjs", resultFormat: "tap", discoveredAt: "x" };
 		expect(runnerCoversTargets(phase1, ["cosmic-clock-3d/tests/phase1-shell.test.mjs"])).toBe(true);
 		expect(runnerCoversTargets(phase1, ["cosmic-clock-3d/tests/phase2-engine.test.mjs"])).toBe(false);
 		expect(runnerCoversTargets(phase1, ["tests/agent-roster.test.ts"])).toBe(false);
@@ -137,11 +137,34 @@ describe("v0.3.40: runnerCoversTargets — cached runner phase scoping", () => {
 	it("suite-wide commands (no file tokens) cover every phase", async () => {
 		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
 		for (const command of ["npm test", "./gradlew testDebugUnitTest", "npm exec vitest run --reporter=tap"]) {
-			expect(runnerCoversTargets({ version: 1, command, resultFormat: "tap", discoveredAt: "x" }, ["any/phase9.test.ts"])).toBe(true);
+			expect(runnerCoversTargets({ version: 1, command, resultFormat: "tap", discoveredAt: "x" } as TestRunnerSpec, ["any/phase9.test.ts"])).toBe(true);
 		}
 	});
 	it("matches either direction (runner token as suffix of, or equal to, the target)", async () => {
 		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
-		expect(runnerCoversTargets({ version: 1, command: "npm exec vitest run --reporter=tap tests/agent-roster.test.ts", resultFormat: "tap", discoveredAt: "x" }, ["tests/agent-roster.test.ts"])).toBe(true);
+		expect(runnerCoversTargets({ version: 1, command: "npm exec vitest run --reporter=tap tests/agent-roster.test.ts", resultFormat: "tap", discoveredAt: "x" } as TestRunnerSpec, ["tests/agent-roster.test.ts"])).toBe(true);
+	});
+});
+
+// ─── v0.3.41: npm exec flag-swallowing ───────────────────────────────────────
+// OM run 2026-08-30T08-17-36-563Z: `npm exec vitest run --reporter=tap tests/x`
+// logged "npm warn Unknown cli config --reporter" — npm ATE the child's
+// --reporter flag, the oracle received ANSI FAIL blocks instead of TAP, and
+// every RED try honestly degraded to red-unverified. resolveRunnerCommand
+// inserts ` -- ` after the exec/dlx subcommand so flags reach the child.
+describe("v0.3.41: npm exec / npx forward child flags after --", () => {
+	it("inserts ` -- ` after the subcommand when child flags are present", async () => {
+		const { resolveRunnerCommand } = await import("../src/build-runner/runner-discovery.ts");
+		const a = resolveRunnerCommand({ version: 1, command: "npm exec vitest run --reporter=tap tests/agent-roster.test.ts", resultFormat: "tap", discoveredAt: "x" }, root);
+		expect(a.argv).toEqual(["npm", "exec", "vitest", "--", "run", "--reporter=tap", "tests/agent-roster.test.ts"]);
+		const b = resolveRunnerCommand({ version: 1, command: "npx vitest run --reporter=tap", resultFormat: "tap", discoveredAt: "x" }, root);
+		expect(b.argv).toEqual(["npx", "vitest", "--", "run", "--reporter=tap"]);
+	});
+	it("leaves already-guarded and flag-free commands untouched", async () => {
+		const { resolveRunnerCommand } = await import("../src/build-runner/runner-discovery.ts");
+		const guarded = resolveRunnerCommand({ version: 1, command: "npm exec -- vitest run --reporter=tap x.test.ts", resultFormat: "tap", discoveredAt: "x" }, root);
+		expect(guarded.argv).toEqual(["npm", "exec", "--", "vitest", "run", "--reporter=tap", "x.test.ts"]);
+		const plain = resolveRunnerCommand({ version: 1, command: "npm test", resultFormat: "tap", discoveredAt: "x" }, root);
+		expect(plain.argv).toEqual(["npm", "test"]);
 	});
 });

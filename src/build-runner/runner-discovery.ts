@@ -111,6 +111,21 @@ export function resolveRunnerCommand(spec: TestRunnerSpec, projectRoot: string):
 		cwd = isAbsolute(dir) ? dir : resolve(cwd, dir);
 		command = cdMatch[4].trim();
 	}
+	// npm exec/npx (and dlx variants) CONSUME `--flag=value` tokens after the
+	// subcommand as npm config ("npm warn Unknown cli config --reporter" — run
+	// 2026-08-30T08-17-36-563Z: the validated vitest TAP runner silently lost
+	// --reporter=tap, the oracle got ANSI FAIL blocks instead of TAP, and every
+	// RED try honestly degraded to red-unverified). Guard: insert ` -- ` right
+	// after the package token so flags reach the child binary. Only for the
+	// exec/dlx shapes where npm owns args; plain `npm test` is untouched.
+	const npmExec = command.match(/^(npm\s+(?:exec|dlx)|npx|pnpm\s+dlx|yarn\s+dlx)(\s+(?!--)\S+)?/);
+	if (npmExec) {
+		const subEnd = (npmExec.index ?? 0) + npmExec[0].length;
+		const after = command.slice(subEnd);
+		if (!/^\s*--(\s|$)/.test(after) && /(^|\s)-{1,2}[^\s]/.test(after)) {
+			command = `${command.slice(0, subEnd)} --${after}`;
+		}
+	}
 	// Detect shell operators OUTSIDE quotes by masking quoted spans first.
 	const masked = command.replace(/"[^"]*"|'[^']*'/g, "");
 	if (/[&&;|<>]|\$\(|\$\{/.test(masked)) {
