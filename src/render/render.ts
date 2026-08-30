@@ -247,6 +247,25 @@ function coerceArraySlot(schemaNode: unknown, value: unknown): unknown {
 	return value;
 }
 
+/** Coerce ONE schema-declared boolean slot from boolean-WORD strings/numbers
+ *  models emit (`uniqueness: "true"`, `allGreen: 1`). EXACT boolean words
+ *  only — prose like "the enumeration is duplicate-free" (run
+ *  2026-08-30T08-17-36 design attempt 2) describes the boolean's meaning
+ *  without asserting it, so guessing it would rewrite meaning; it stays
+ *  rejected with its located error and the retry loop converges (observed:
+ *  one ~4-minute round). */
+function coerceBooleanSlot(schemaNode: unknown, value: unknown): unknown {
+	const s = schemaNode as Record<string, unknown> | null;
+	if (!s || typeof s !== "object" || s.type !== "boolean" || "anyOf" in s) return value;
+	if (typeof value === "number" && (value === 0 || value === 1)) return value === 1;
+	if (typeof value === "string") {
+		const word = value.trim().toLowerCase();
+		if (word === "true" || word === "yes") return true;
+		if (word === "false" || word === "no") return false;
+	}
+	return value;
+}
+
 function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
 	// Null-in-optional pruning runs FIRST (it may delete whole subtrees the
 	// string walk would otherwise waste time on — and `services.api: null` is
@@ -263,6 +282,7 @@ function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
 				// (chain explicitly — `??` short-circuits on a non-nullish unchanged value).
 				let coerced = coerceStringSlot(child, v[key]);
 				if (coerced === v[key]) coerced = coerceArraySlot(child, v[key]);
+				if (coerced === v[key]) coerced = coerceBooleanSlot(child, v[key]);
 				// Assign ONLY on a real coercion: an unconditional `v[key] = coerced`
 				// materializes absent keys as `key: undefined`, which flips TypeBox's
 				// error class from "must have required properties" to per-field type
@@ -277,6 +297,7 @@ function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
 			for (let i = 0; i < v.length; i++) {
 				let coerced = coerceStringSlot(s.items, v[i]);
 				if (coerced === v[i]) coerced = coerceArraySlot(s.items, v[i]);
+				if (coerced === v[i]) coerced = coerceBooleanSlot(s.items, v[i]);
 				if (coerced !== undefined && coerced !== v[i]) v[i] = coerced;
 				if (v[i] && typeof v[i] === "object") walk(s.items, v[i]);
 			}

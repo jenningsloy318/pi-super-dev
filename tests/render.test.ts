@@ -492,3 +492,26 @@ describe("generatedAt uses local time (matches run.log timestamp format)", () =>
 		expect(line).not.toMatch(/Z$/);
 	});
 });
+
+// ─── v0.3.39: boolean-word drift at exact boolean slots ──────────────────────
+// OM run 2026-08-30T08-17-36 design attempt 2 emitted
+// uniqueness: "the enumeration is duplicate-free" (prose where boolean belongs).
+// Boolean WORDS are exact (zero-risk) coercion; prose stays rejected located —
+// it describes the boolean's meaning without asserting it (observed: one
+// ~4-minute retry round converged).
+describe("boolean-word coercion at exact boolean slots", () => {
+	it("coerces \"true\"/\"yes\"/\"false\"/\"no\"/0/1 into declared booleans", async () => {
+		const { renderStage } = await import("../src/render/render.ts");
+		const ctl = { title: "T", date: "d", summary: "s", designer: "x", modules: [{ name: "M", description: "d" }], hasNumericConstants: "true", contracts: [{ name: "c", pattern: "p", enumerates: ["a", "b"], uniqueness: "yes", namespaced: "false" }] };
+		const r = renderStage("design", ctl);
+		expect(r.errors).toEqual([]);
+		expect(r.markdown).toContain("`a`");
+		expect(r.markdown).toContain("`b`");
+	});
+	it("leaves prose at a boolean slot rejected with the located error", async () => {
+		const { renderStage } = await import("../src/render/render.ts");
+		const ctl = { title: "T", date: "d", summary: "s", designer: "x", modules: [{ name: "M", description: "d" }], hasNumericConstants: true, contracts: [{ name: "c", pattern: "p", enumerates: ["a"], uniqueness: "the enumeration is duplicate-free" }] };
+		const r = renderStage("design", ctl);
+		expect(r.errors.join(" ")).toContain("contracts[].uniqueness: must be boolean");
+	});
+});
