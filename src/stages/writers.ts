@@ -55,6 +55,9 @@ export const debugWriter: Stage = writerTask({
 	agent: "debug-analyzer",
 	accessMode: "source-read-only",
 	requires: ["*-requirements.md"],
+	// One-shot task-wired writer: no convergence node guards its render — retry
+	// inline (runs 2026-08-30T00-14-16/05-26-19 dropped the debug doc silently).
+	renderRetries: 2,
 	buildPrompt: (state, ctx) => P.buildDebugPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null),
 });
 
@@ -63,6 +66,7 @@ export const assessmentWriter: Stage = writerTask({
 	label: "Stage 5 — Code Assessment",
 	agent: "code-assessor",
 	accessMode: "source-read-only",
+	renderRetries: 2,
 	buildPrompt: (state, ctx) => P.buildAssessmentPrompt(S(state), state.classify ?? null, ctx.task, state.research ?? null, state.debug ?? null),
 });
 
@@ -161,6 +165,7 @@ export const docsWriter: Stage = writerTask({
 	agent: "docs-executor",
 	accessMode: "source-read-only",
 	requires: ["*-specification.md"],
+	renderRetries: 2,
 	buildPrompt: (state, ctx) => P.buildDocsPrompt(S(state), state.classify ?? null, ctx.task, state.spec ?? null),
 });
 
@@ -168,6 +173,7 @@ export const mergeWriter: Stage = writerTask({
 	id: "merge",
 	label: "Stage 14 — Merge",
 	agent: "orchestrator",
+	renderRetries: 2,
 	buildPrompt: (state) => P.buildMergePrompt(S(state)),
 });
 

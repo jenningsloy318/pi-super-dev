@@ -541,3 +541,69 @@ describe("task precondition check", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
+
+// ─── v0.3.34: one-shot writer inline render retries ─────────────────────────
+// Runs 2026-08-30T00-14-16-142Z and 05-26-19-571Z (AnkiQuick): debugWriter is
+// wired as a plain task() — NO convergence node guards its render, so a render
+// rejection silently dropped the durable doc with stage status=ok. Now
+// renderRetries writers re-run inline with the located errors fed back.
+describe("v0.3.34: writerTask inline render retries (one-shot writers)", () => {
+	const setup = (agentResults: Array<{ control: unknown }>) => {
+		let calls = 0;
+		const { mkdtempSync, rmSync, readdirSync } = require("node:fs");
+		const { tmpdir } = require("node:os");
+		const { join } = require("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "sd-wtr-"));
+		const ctx = mkCtx();
+		ctx.agent = async () => agentResults[Math.min(calls++, agentResults.length - 1)] as never;
+		return { ctx, dir, rm: () => rmSync(dir, { recursive: true, force: true }), files: () => readdirSync(dir) };
+	};
+
+	it("a render-rejected attempt retries inline, feeds back located errors, and converges", async () => {
+		const { writerTask } = await import("../src/nodes.ts");
+		const bad = { title: "only a title" }; // missing required fields → render rejects
+		const good = { title: "Debug", date: "2026-08-30", summary: "s", hypotheses: ["h1"], rootCause: "r", reproductionSteps: ["step"] };
+		const { ctx, dir, rm, files } = setup([{ control: bad }, { control: good }]);
+		const stage = writerTask({
+			id: "debug", label: "Stage 4", agent: "debug-analyzer", renderRetries: 1,
+			buildPrompt: () => "p",
+		});
+		const state = { setup: { specDirectory: dir + "/", worktreePath: dir } } as never;
+		const out = await stage.run(state, ctx);
+		// Agent called exactly twice: attempt 1 rejected, attempt 2 rendered.
+		expect(out).toMatchObject({ hypotheses: ["h1"] });
+		expect(files().some((f: string) => f.includes("debug"))).toBe(true);
+		// Success clears the retry feedback slot — no stale error leaks downstream.
+		expect(((state as Record<string, unknown>).__feedback ?? {}) as Record<string, unknown>).toEqual({});
+		expect((state as Record<string, unknown>).__renderErrors).toBeUndefined();
+		expect(ctx.results.some((r) => r.status === "failed")).toBe(false);
+		rm();
+	});
+
+	it("persistent render failure records an HONEST failed row + __renderErrors (never silent ok)", async () => {
+		const { writerTask } = await import("../src/nodes.ts");
+		const bad = { title: "only a title" };
+		const { ctx, dir, rm, files } = setup([{ control: bad }]);
+		const stage = writerTask({
+			id: "debug", label: "Stage 4", agent: "debug-analyzer", renderRetries: 1,
+			buildPrompt: () => "p",
+		});
+		const state = { setup: { specDirectory: dir + "/", worktreePath: dir } } as never;
+		await stage.run(state, ctx);
+		expect(ctx.results.some((r) => r.id === "debug" && r.status === "failed" && /render rejected after 2 attempts/.test(String(r.error)))).toBe(true);
+		expect(((state as Record<string, unknown>).__renderErrors as string[]).length).toBeGreaterThan(0);
+		expect(files().some((f: string) => f.includes("debug"))).toBe(false);
+		rm();
+	});
+
+	it("writers WITHOUT renderRetries call the agent exactly once (convergence nodes own their retries)", async () => {
+		const { writerTask } = await import("../src/nodes.ts");
+		const bad = { title: "only a title" };
+		const { ctx, dir, rm } = setup([{ control: bad }, { control: bad }]);
+		const stage = writerTask({ id: "debug", label: "Stage 4", agent: "debug-analyzer", buildPrompt: () => "p" });
+		const state = { setup: { specDirectory: dir + "/", worktreePath: dir } } as never;
+		await stage.run(state, ctx);
+		expect(ctx.results.length).toBe(0); // no inline retry → no extra failed row
+		rm();
+	});
+});

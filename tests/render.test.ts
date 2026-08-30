@@ -375,10 +375,39 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		expect(typeof c.phasesCompleted).toBe("number");
 		expect(c.allGreen).toBe(true);
 	});
-	it("real shape mismatches in string slots stay REJECTED and located (object summary → 'executiveSummary: must be string'), never guessed away", () => {
-		const r = renderStage("requirements", { title: "t", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: { nested: true }, acceptanceCriteria: [{ id: "AC-01", statement: "s" }], nonFunctional: [] });
+	it("structured-OBJECT control drift: hypotheses[] items and rootCause emitted as rich objects no longer drop the debug doc (run 2026-08-30T05-26-19 — live payload verified)", () => {
+		// The debug-analyzer emitted hypotheses as [{id, statement, probability,
+		// falsifiablePrediction, verification}] and rootCause as {verified,
+		// description, codeLocations, recommendedFix} — rich CONTENT, wrong SHAPE.
+		// The template would render [object Object]; boundary flattening turns
+		// each into readable `key: value` prose.
+		const control: Record<string, any> = {
+			title: "Debug", date: "2026-08-30", summary: "Blank cards after i18n refactor.",
+			hypotheses: [
+				{ id: "H1", statement: "Representation mismatch: save stores IDs, export compares display names", probability: "0.70", verification: "CONFIRMED via PlanEditorActivity.kt:233" },
+				{ id: "H2", statement: "Dictionary fallback also misses", probability: "0.15" },
+			],
+			rootCause: { verified: true, description: "Half-finished i18n refactor", codeLocations: ["PopupActivity.kt:1003", "PlanEditorActivity.kt:227"], recommendedFix: "Comparison-time identity resolution" },
+			reproductionSteps: ["run the harness"],
+		};
+		const r = renderStage("debug", control);
+		expect(r.errors).toEqual([]);
+		expect(r.markdown).toContain("id: H1");
+		expect(r.markdown).toContain("verified: true");
+		expect(r.markdown).toContain("PopupActivity.kt:1003; PlanEditorActivity.kt:227");
+		expect(r.markdown).not.toContain("[object Object]");
+		// In place: the control carries the flattened prose downstream.
+		expect(String(control.rootCause)).toContain("verified: true");
+		expect(typeof control.hypotheses[0]).toBe("string");
+	});
+	it("real shape mismatches in string slots stay REJECTED and located (null/empty-object summary → 'executiveSummary: must be string'), never guessed away", () => {
+		const r = renderStage("requirements", { title: "t", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: null, acceptanceCriteria: [{ id: "AC-01", statement: "s" }], nonFunctional: [] });
 		expect(r.errors.some((e) => e === "executiveSummary: must be string")).toBe(true);
 		expect(r.markdown).toBe("");
+		// An object with NOTHING to render (no non-empty values) has no prose to
+		// flatten — it stays rejected too, not silently blanked.
+		const r2 = renderStage("requirements", { title: "t", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: { a: null, b: undefined }, acceptanceCriteria: [{ id: "AC-01", statement: "s" }], nonFunctional: [] });
+		expect(r2.errors.some((e) => e === "executiveSummary: must be string")).toBe(true);
 	});
 	it("ui-test → has flows tested + pass flag", () => {
 		const r = renderStage("uiTest", { title: "UI Test", date: "2026-01-01", summary: "All pass.", pass: "true", flows: "5", failures: [] });

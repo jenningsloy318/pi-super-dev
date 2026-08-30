@@ -125,10 +125,46 @@ export function normalizeProseArrays(stageId: string, data: unknown): unknown {
 	return data;
 }
 
+/** Render a control value as prose for string-slot coercion: scalars
+ *  as-is; arrays joined "; "; nested objects flattened recursively. Empty
+ *  string means "nothing worth rendering" (caller drops the pair). */
+function scalarToProse(v: unknown, depth = 0): string {
+	if (typeof v === "string") return v;
+	if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
+	if (typeof v === "boolean") return String(v);
+	if (Array.isArray(v)) {
+		const items = v.map((x) => scalarToProse(x, depth + 1)).filter((s) => s !== "");
+		return items.join("; ");
+	}
+	if (v && typeof v === "object" && depth < 4) {
+		const nested = flattenObjectToProse(v as Record<string, unknown>, depth + 1);
+		return nested || "";
+	}
+	return "";
+}
+
+/** Flatten an OBJECT emitted into a string slot to readable `key: value`
+ *  prose lines (run 2026-08-30T05-26-19: debug-analyzer emitted rootCause as
+ *  {verified, description, codeLocations, recommendedFix} and hypotheses[]
+ *  items as {id, statement, probability, …} — rich CONTENT, wrong SHAPE;
+ *  the template would render `[object Object]`). Nullish/empty values are
+ *  dropped so the prose stays signal-only. */
+function flattenObjectToProse(obj: Record<string, unknown>, depth = 0): string {
+	const parts: string[] = [];
+	for (const [k, v] of Object.entries(obj)) {
+		if (v === null || v === undefined) continue;
+		const s = scalarToProse(v, depth);
+		if (s === "") continue;
+		parts.push(`${k}: ${s}`);
+	}
+	return parts.join("\n");
+}
+
 /** Coerce ONE schema-declared string slot from the drift shapes models emit
- *  (numeric dates, boolean flags, paragraph ARRAYS). Returns the original value
- *  when the shape is a real mismatch (null/undefined/object/mixed array) so
- *  validation reports it WITH its exact location — never guess those away. */
+ *  (numeric dates, boolean flags, paragraph ARRAYS, structured OBJECTS).
+ *  Returns the original value when the shape is a real mismatch
+ *  (null/undefined) so validation reports it WITH its exact location —
+ *  never guess those away. */
 function coerceStringSlot(schemaNode: unknown, value: unknown): unknown {
 	const s = schemaNode as Record<string, unknown> | null;
 	// EXACT string contract only — never a union (`anyOf`): a number/boolean
@@ -137,9 +173,12 @@ function coerceStringSlot(schemaNode: unknown, value: unknown): unknown {
 	if (!s || typeof s !== "object" || s.type !== "string" || "anyOf" in s) return value;
 	if (typeof value === "number") return Number.isFinite(value) ? String(value) : value;
 	if (typeof value === "boolean") return String(value);
-	if (Array.isArray(value) && value.length > 0 && value.every((x) =>
-		typeof x === "string" || (typeof x === "number" && Number.isFinite(x)) || typeof x === "boolean")) {
-		return value.map((x) => String(x)).join("\n"); // paragraph array → prose
+	if (Array.isArray(value) && value.length > 0) {
+		return value.map((x) => scalarToProse(x)).filter((s2) => s2 !== "").join("\n"); // paragraph array → prose
+	}
+	if (value && typeof value === "object") {
+		const prose = flattenObjectToProse(value as Record<string, unknown>);
+		return prose !== "" ? prose : value;
 	}
 	return value;
 }
@@ -156,7 +195,8 @@ function coerceStringSlot(schemaNode: unknown, value: unknown): unknown {
  *  so numeric/paragraph drift inside containers repairs too. Safety: a value
  *  that would PASS validation is never rewritten (unions skipped, strings
  *  returned as-is), and empty arrays / objects / null stay untouched so the
- *  located error names the field for the retrying agent. */
+ *  located error names the field for the retrying agent (null/undefined and
+ *  empty objects stay untouched — there is nothing to render). */
 function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
 	const walk = (node: unknown, value: unknown): void => {
 		const s = node as Record<string, unknown> | null;

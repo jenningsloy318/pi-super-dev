@@ -735,6 +735,13 @@ export function writerTask(spec: {
 	 *  stale (renderAndWrite returns null on schema failure and the old doc
 	 *  keeps passing the gates). */
 	normalizeControl?: (control: Record<string, unknown>) => Record<string, unknown>;
+	/** Bounded INLINE render retries for ONE-SHOT task-wired writers (debug,
+	 *  assessment, docs, merge) whose render failure no convergence node would
+	 *  otherwise catch — run 2026-08-30T00-14-16/05-26-19: debug's doc was
+	 *  silently dropped with stage status=ok. Convergence-wrapped writers omit
+	 *  this: their loop already folds renderErrs (v0.3.32) and an inline retry
+	 *  would double-consume scripted test fixtures per round. */
+	renderRetries?: number;
 }): Stage {
 	return {
 		id: spec.id,
@@ -756,15 +763,41 @@ export function writerTask(spec: {
 			// exact doc filename it will write is logged by renderAndWrite (`doc → …`,
 			// stable across retries — overwritten in place, never a new index).
 			ctx.log(`${spec.id}: agent ${spec.agent} working`);
-			const result = await ctx.agent({
+			const maxAttempts = 1 + (spec.renderRetries ?? 0);
+			let result = await ctx.agent({
 				id: `pipeline.${spec.id}`,
 				agent: spec.agent,
 				accessMode: spec.accessMode,
 				prompt: spec.buildPrompt(state, ctx),
 				schema: model?.schema,
 			});
+			// v0.3.34: ONE-SHOT writers retry inline on render rejection (see
+			// spec.renderRetries) — the located errors go into retry feedback, and
+			// realAgent prepends it to the next attempt's prompt automatically.
+			let control = result.control as Record<string, unknown> | undefined;
+			let renderErrors: string[] = [];
+			let docPath: string | null = null;
+			for (let attempt = 1; control && attempt <= maxAttempts; attempt++) {
+				control = spec.normalizeControl ? spec.normalizeControl(control) : control;
+				renderErrors = [];
+				docPath = renderAndWrite(state.setup!, (m) => ctx.log(m), spec.id, control, (errs) => renderErrors.push(...errs));
+				if (docPath || renderErrors.length === 0) break;
+				if (attempt < maxAttempts) {
+					setRetryFeedback(state, spec.id, renderErrors.map((e) => `control rejected by schema/render validation — fix this exact field: ${e}`));
+					ctx.log(`${spec.id}: render rejected attempt ${attempt} — retrying with located errors (${renderErrors.length})`);
+					result = await ctx.agent({
+						id: `pipeline.${spec.id}`,
+						agent: spec.agent,
+						accessMode: spec.accessMode,
+						prompt: spec.buildPrompt(state, ctx),
+						schema: model?.schema,
+					});
+					control = result.control as Record<string, unknown> | undefined;
+				}
+			}
+			if (docPath) clearRetryFeedback(state, spec.id);
 			if (result.error) ctx.log(`${spec.id}: agent error — ${result.error}`);
-			if (!result.control) {
+			if (!control) {
 				const said = result.text ? ` (last text: ${result.text.replace(/\s+/g, " ")})` : "";
 				ctx.log(`${spec.id}: agent produced no control object${said}`);
 			}
@@ -780,18 +813,26 @@ export function writerTask(spec: {
 				ctx.results.push({ id: spec.id, label: spec.id, status: "failed", error: result.error.slice(0, 300) });
 				ctx.events.emit("stage", { id: spec.id, label: spec.id, status: "failed", error: result.error.slice(0, 300) });
 			}
-			// Render pipeline: if this stage has a render model, render + write the doc.
-			if (result.control) {
-				const control = spec.normalizeControl ? spec.normalizeControl(result.control as Record<string, unknown>) : (result.control as Record<string, unknown>);
+			// Render pipeline outcome (v0.3.34 restructure): renderErrors survive
+			// only when EVERY inline attempt failed to render.
+			if (control) {
 			// v0.3.32: record schema/render failures for the convergence loop (see
 			// design.ts) — previously a rejected control returned from this writer
 			// left the OLD doc on disk while the gates kept passing on it (the
 			// code-review R2 stale-doc hole) and the retry feedback said nothing.
-				const renderErrors: string[] = [];
-				const docPath = renderAndWrite(state.setup!, (m) => ctx.log(m), spec.id, control, (errs) => renderErrors.push(...errs));
+			// v0.3.34: one-shot writers that STILL fail after their inline retries
+			// get an HONEST failed row (G21 pattern) — never a silent status=ok with
+			// a missing durable doc (run 2026-08-30T00-14-16 debug: ×8 render errors,
+			// status=ok, 04-debug-analysis.md never written).
 				const stateRec = state as Record<string, unknown>;
-				if (!docPath && renderErrors.length > 0) stateRec.__renderErrors = renderErrors;
-				else delete stateRec.__renderErrors;
+				if (!docPath && renderErrors.length > 0) {
+					stateRec.__renderErrors = renderErrors;
+					if (spec.renderRetries) {
+						const error = `render rejected after ${maxAttempts} attempts: ${renderErrors.join("; ").slice(0, 200)}`;
+						ctx.results.push({ id: spec.id, label: spec.id, status: "failed", error });
+						ctx.events.emit("stage", { id: spec.id, label: spec.id, status: "failed", error });
+					}
+				} else delete stateRec.__renderErrors;
 				return control;
 			}
 			return result.control ?? {};
