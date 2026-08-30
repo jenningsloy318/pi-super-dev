@@ -120,3 +120,28 @@ describe("v0.3.38: shell-compound runner proposals resolve sanely", () => {
 		expect(argv).toEqual([]);
 	}, 60_000);
 });
+
+// ─── v0.3.40: cached-runner phase scoping ────────────────────────────────────
+// Run 2026-08-30T08-30-00-814Z phase 2: the phase-1-validated runner pinned
+// `… phase1-shell.test.mjs`; the oracle judged phase-2's engine tests against
+// phase-1's GREEN output and logged a false "tests passed before
+// implementation", burning retries. Stale scope must invalidate, not mis-judge.
+describe("v0.3.40: runnerCoversTargets — cached runner phase scoping", () => {
+	it("a runner naming specific test files covers only phases whose targets match", async () => {
+		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
+		const phase1 = { version: 1, command: "node --test --test-reporter=tap cosmic-clock-3d/tests/phase1-shell.test.mjs", resultFormat: "tap" as const, discoveredAt: "x" };
+		expect(runnerCoversTargets(phase1, ["cosmic-clock-3d/tests/phase1-shell.test.mjs"])).toBe(true);
+		expect(runnerCoversTargets(phase1, ["cosmic-clock-3d/tests/phase2-engine.test.mjs"])).toBe(false);
+		expect(runnerCoversTargets(phase1, ["tests/agent-roster.test.ts"])).toBe(false);
+	});
+	it("suite-wide commands (no file tokens) cover every phase", async () => {
+		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
+		for (const command of ["npm test", "./gradlew testDebugUnitTest", "npm exec vitest run --reporter=tap"]) {
+			expect(runnerCoversTargets({ version: 1, command, resultFormat: "tap", discoveredAt: "x" }, ["any/phase9.test.ts"])).toBe(true);
+		}
+	});
+	it("matches either direction (runner token as suffix of, or equal to, the target)", async () => {
+		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
+		expect(runnerCoversTargets({ version: 1, command: "npm exec vitest run --reporter=tap tests/agent-roster.test.ts", resultFormat: "tap", discoveredAt: "x" }, ["tests/agent-roster.test.ts"])).toBe(true);
+	});
+});

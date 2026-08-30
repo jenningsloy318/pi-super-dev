@@ -154,3 +154,23 @@ export function dynamicRedCheckPlans(projectRoot: string, _targets: string[], sp
 	const { cwd, argv } = resolveRunnerCommand(spec, projectRoot);
 	return [{ cwd, argv }];
 }
+
+/** File-like tokens (paths or *.test.* / *.spec.* names) in a runner command.
+ *  Suite-wide commands (`npm test`, `./gradlew test`) carry none and cover
+ *  every phase (the F10 full-suite behavior). */
+function fileLikeTokens(command: string): string[] {
+	return splitShellCommand(command).filter((t) => (/\.(test|spec)\.[a-z0-9]+$/i.test(t) || (t.includes("/") && /\.[a-z0-9]+$/i.test(t))) && !t.startsWith("-"));
+}
+
+/** True when a cached runner command actually executes the claimed targets.
+ *  Run 2026-08-30T08-30-00-814Z phase 2: the phase-1-validated runner pinned
+ *  `… phase1-shell.test.mjs` and the oracle judged phase-2's engine tests
+ *  against phase-1's GREEN output — a false `red-not-confirmed` verdict that
+ *  burned retries. A runner that names specific test files covers a phase only
+ *  when at least one claimed target matches (either direction, suffix-safe);
+ *  a suite-wide command always covers. */
+export function runnerCoversTargets(spec: TestRunnerSpec, targets: string[]): boolean {
+	const tokens = fileLikeTokens(spec.command);
+	if (tokens.length === 0) return true;
+	return targets.some((t) => tokens.some((tok) => tok === t || t.endsWith(tok) || tok.endsWith(t)));
+}

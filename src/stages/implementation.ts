@@ -32,7 +32,7 @@ import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../conver
 import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "../fault-classification.ts";
 import { clearBaselineCache } from "../build-runner/baseline.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
-import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, type TestRunnerSpec } from "../build-runner/runner-discovery.ts";
+import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../build-runner/runner-discovery.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
 
@@ -1491,6 +1491,20 @@ export const implementationStage: Stage = {
 							ctx.log(`Implementation ${phaseId} tdd-guide (try ${retries + 1})${tdd.error ? ` error=${tdd.error}` : ""}: test files=${testFiles.join(", ") || "(none)"}${tddNotCompleted ? " (agent did not complete — previous claim discarded)" : ""}${tddSummary ? ` — ${tddSummary.slice(0, 400)}` : ""}`);
 						}
 						announceActivity("RED oracle", redTryDetail);
+						// v0.3.40 scope guard: a cached runner validated against an EARLIER
+						// phase's specific test file must not judge THIS phase's tests
+						// (run 2026-08-30T08-30-00-814Z phase 2: the phase-1 runner pinned
+						// phase1-shell.test.mjs and the oracle read phase-1's GREEN output
+						// as 'tests passed before implementation' for phase-2 engine tests
+						// — false red-not-confirmed, pure retry burn). Stale scope ⇒ drop
+						// the runner for this try AND the cache, so a fresh runner-discovery
+						// can propose a phase-appropriate command on the next try.
+						if (runnerSpec && testFiles.length && !runnerCoversTargets(runnerSpec, testFiles)) {
+							ctx.log(`Implementation ${phaseId} runner-cache: cached runner does not execute this phase's test files (${testFiles.join(", ")}) — cache invalidated; runner-discovery will re-propose`);
+							runnerSpec = null;
+							runnerDiscoveryTried = false;
+							try { rmSync(join(setup.specDirectory, "test-runner.json"), { force: true }); } catch { /* best effort */ }
+						}
 						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
