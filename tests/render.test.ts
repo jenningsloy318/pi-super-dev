@@ -334,11 +334,11 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		expect(r.markdown).toContain("src/a.ts:12");
 	});
 	it("schema errors name the offending FIELD (typebox@1.x schemaPath), never a bare \"$\" location (the masking that starved both runs' retries)", () => {
-		const r = renderStage("design", { title: "Design", date: "2026-08-30", summary: "Arch.", designer: "x", modules: [{ name: "M", description: "d" }], hasNumericConstants: true, contracts: [{ name: "c", pattern: "p", enumerates: "NOT-AN-ARRAY" }] });
+		const r = renderStage("design", { title: "Design", date: "2026-08-30", summary: "Arch.", designer: "x", modules: [{ name: "M", description: "d" }], hasNumericConstants: true, contracts: [{ name: "c", pattern: "p", enumerates: 42 }] });
 		expect(r.errors.some((e) => e.startsWith("contracts[].enumerates: must be array"))).toBe(true);
 		expect(r.errors.some((e) => e.startsWith("$"))).toBe(false);
-		// A string `alternatives` still VALIDATES (normalized pre-check) — the
-		// located-error path above is exercised via a field normalization does not touch.
+		// A NUMBER in an array slot stays rejected (strings/objects wrap to
+		// [value] via coerceArraySlot — numbers are not a legal item shape).
 	});
 	// Run 2026-08-30T00-14-16-142Z (AnkiQuick): requirements round-1 burned a
 	// blind 9-minute retry on "$: must be string" ×5 and debug's doc was
