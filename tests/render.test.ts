@@ -340,6 +340,46 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		// A string `alternatives` still VALIDATES (normalized pre-check) — the
 		// located-error path above is exercised via a field normalization does not touch.
 	});
+	// Run 2026-08-30T00-14-16-142Z (AnkiQuick): requirements round-1 burned a
+	// blind 9-minute retry on "$: must be string" ×5 and debug's doc was
+	// silently dropped (×8, status=ok) — the REVERSE drift direction: models
+	// emit numeric dates, paragraph ARRAYS for prose slots, booleans for string
+	// flags. Schema-driven coercion (coerceSchemaStrings) repairs exactly those
+	// would-be failures, for every stage, incl. nested container items.
+	it("scalar/paragraph-array control drift: non-string values in string-contract slots no longer drop requirements/debug docs (run 2026-08-30T00-14-16)", () => {
+		const reqControl: Record<string, any> = { title: "Fix export", date: 2026, type: true, priority: 42,
+			executiveSummary: ["Para one.", "Para two."],
+			acceptanceCriteria: [
+				{ id: "AC-01", statement: ["Nested paragraph drift", "second line"] },
+				{ id: "AC-02", statement: "plain statement" },
+			],
+			nonFunctional: ["60fps"] };
+		const req = renderStage("requirements", reqControl);
+		expect(req.errors).toEqual([]);
+		expect(req.markdown).toContain("Para one.");
+		// Coercion is IN PLACE — the caller's control carries string values downstream.
+		expect(reqControl.date).toBe("2026");
+		expect(reqControl.executiveSummary).toBe("Para one.\nPara two.");
+		expect(reqControl.acceptanceCriteria[0].statement).toBe("Nested paragraph drift\nsecond line");
+		const dbgControl: Record<string, any> = { title: "Debug", date: 2026, summary: ["Para A", "Para B"], hypotheses: ["h1", 2, true], rootCause: 500, reproductionSteps: ["step one"] };
+		const dbg = renderStage("debug", dbgControl);
+		expect(dbg.errors).toEqual([]);
+		expect(dbg.markdown).toContain("Root Cause");
+		expect(dbgControl.hypotheses).toEqual(["h1", "2", "true"]); // array-of-string slots coerce item-wise
+	});
+	it("union-contract fields are NEVER rewritten: a legal number/boolean phasesCompleted/allGreen stays non-string (tolerance repairs only would-be failures)", () => {
+		const c: Record<string, any> = { title: "t", date: "2026-08-30", summary: "s", phasesCompleted: 2, allGreen: true, filesModified: [] };
+		const r = renderStage("implementationSummary", c);
+		expect(r.errors).toEqual([]);
+		expect(c.phasesCompleted).toBe(2);
+		expect(typeof c.phasesCompleted).toBe("number");
+		expect(c.allGreen).toBe(true);
+	});
+	it("real shape mismatches in string slots stay REJECTED and located (object summary → 'executiveSummary: must be string'), never guessed away", () => {
+		const r = renderStage("requirements", { title: "t", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: { nested: true }, acceptanceCriteria: [{ id: "AC-01", statement: "s" }], nonFunctional: [] });
+		expect(r.errors.some((e) => e === "executiveSummary: must be string")).toBe(true);
+		expect(r.markdown).toBe("");
+	});
 	it("ui-test → has flows tested + pass flag", () => {
 		const r = renderStage("uiTest", { title: "UI Test", date: "2026-01-01", summary: "All pass.", pass: "true", flows: "5", failures: [] });
 		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Flows Tested/);

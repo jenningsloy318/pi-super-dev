@@ -125,6 +125,69 @@ export function normalizeProseArrays(stageId: string, data: unknown): unknown {
 	return data;
 }
 
+/** Coerce ONE schema-declared string slot from the drift shapes models emit
+ *  (numeric dates, boolean flags, paragraph ARRAYS). Returns the original value
+ *  when the shape is a real mismatch (null/undefined/object/mixed array) so
+ *  validation reports it WITH its exact location — never guess those away. */
+function coerceStringSlot(schemaNode: unknown, value: unknown): unknown {
+	const s = schemaNode as Record<string, unknown> | null;
+	// EXACT string contract only — never a union (`anyOf`): a number/boolean
+	// there already passes validation (phasesCompleted/allGreen precedent),
+	// so coercion would REWRITE legal data instead of repairing failures.
+	if (!s || typeof s !== "object" || s.type !== "string" || "anyOf" in s) return value;
+	if (typeof value === "number") return Number.isFinite(value) ? String(value) : value;
+	if (typeof value === "boolean") return String(value);
+	if (Array.isArray(value) && value.length > 0 && value.every((x) =>
+		typeof x === "string" || (typeof x === "number" && Number.isFinite(x)) || typeof x === "boolean")) {
+		return value.map((x) => String(x)).join("\n"); // paragraph array → prose
+	}
+	return value;
+}
+
+/** Reverse-direction drift repair, schema-driven: walk the stage schema and
+ *  coerce values that FAIL a declared string contract (see coerceStringSlot).
+ *  Counterpart of normalizeProseArrays (string→array); this one is array/
+ *  number/boolean→string for EVERY stage, because the walk needs no per-stage
+ *  field map — the schema already states the contract. Run
+ *  2026-08-30T00-14-16-142Z (AnkiQuick): requirements round-1 burned a blind
+ *  9-minute retry on "$: must be string" ×5 (pre-located-errors), and debug's
+ *  doc was silently dropped on ×8 of the same class. Deep-walks nested
+ *  objects/arrays (acceptanceCriteria[].id/statement, findings[].severity …)
+ *  so numeric/paragraph drift inside containers repairs too. Safety: a value
+ *  that would PASS validation is never rewritten (unions skipped, strings
+ *  returned as-is), and empty arrays / objects / null stay untouched so the
+ *  located error names the field for the retrying agent. */
+function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
+	const walk = (node: unknown, value: unknown): void => {
+		const s = node as Record<string, unknown> | null;
+		if (!s || typeof s !== "object" || !value || typeof value !== "object") return;
+		const v = value as Record<string, unknown>;
+		if (s.type === "object" && s.properties && typeof s.properties === "object") {
+			for (const key of Object.keys(s.properties)) {
+				const child = (s.properties as Record<string, unknown>)[key];
+				const coerced = coerceStringSlot(child, v[key]);
+				// Assign ONLY on a real coercion: an unconditional `v[key] = coerced`
+				// materializes absent keys as `key: undefined`, which flips TypeBox's
+				// error class from "must have required properties" to per-field type
+				// errors (caught by the round-feedback contract tests).
+				if (coerced !== v[key]) v[key] = coerced;
+				// un-coerced slots that are containers recurse deeper
+				if (v[key] && typeof v[key] === "object") walk(child, v[key]);
+			}
+			return;
+		}
+		if (s.type === "array" && s.items && Array.isArray(v)) {
+			for (let i = 0; i < v.length; i++) {
+				const coerced = coerceStringSlot(s.items, v[i]);
+				if (coerced !== v[i]) v[i] = coerced;
+				if (v[i] && typeof v[i] === "object") walk(s.items, v[i]);
+			}
+		}
+	};
+	walk(schema, data);
+	return data;
+}
+
 /** Augment data with computed fields the template needs (e.g. totalScenarios for
  *  BDD). These are DETERMINISTIC — never trust the model to count correctly.
  *  Every doc also gets `generatedAt`: the exact render/write moment in LOCAL
@@ -156,8 +219,12 @@ export function renderStage(stageId: string, data: unknown): RenderResult {
 	const model = STAGE_MODELS[stageId];
 	if (!model) throw new Error(`renderStage: unknown stage "${stageId}". Known: ${Object.keys(STAGE_MODELS).join(", ")}`);
 
-	// Prose-string drift repair BEFORE validation (see normalizeProseArrays) —
-	// in-place, so the caller's control object carries the normalized arrays.
+	// Drift repair BEFORE validation, both directions, in-place so the
+	// caller's control object carries the normalized values downstream:
+	//   coerceSchemaStrings — schema-driven number/boolean/paragraph-array →
+	//     string for EXACT string contracts (every stage, incl. nested items);
+	//   normalizeProseArrays — string → [string] for the prose-array fields.
+	coerceSchemaStrings(model.schema, data);
 	const normalized = normalizeProseArrays(stageId, data);
 	const errors = validateData(model.schema, normalized);
 	if (errors.length > 0) return { markdown: "", errors };
