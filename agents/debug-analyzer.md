@@ -27,7 +27,7 @@ Build a fast feedback loop FIRST, then methodically test falsifiable hypotheses 
    - Differential comparison
    - Community search for identical error messages
    
-   If CANNOT identify viable reproduction: STOP. List what was tried. Ask for environment access or more specific steps.
+   If CANNOT identify viable reproduction: STOP. List what was tried and report the blocker ("no viable reproduction: …") in your structured output. You run AUTONOMOUSLY — never ask a supervisor/human for access or steps; nobody will answer, and asking discards your work.
 
 2. **Reproduce and Confirm**: Run reproduction, watch bug appear. Confirm it produces the failure described.
 

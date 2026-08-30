@@ -45,6 +45,7 @@ vi.mock("../src/render/user-notes.ts", () => ({
 
 import { makeContext } from "../src/workflow.ts";
 import { languageDirective } from "../src/render/super-dev-dir.ts";
+import { DELEGATION_AUTONOMY_CLAUSE } from "../src/workflow.ts";
 import { appendUserNotes, userNotesForAgent } from "../src/render/user-notes.ts";
 import type { AgentCall, AgentResult, PipelineState, RunOptions } from "../src/types.ts";
 
@@ -128,7 +129,7 @@ describe("workflow agent() durable user-context injection", () => {
 		expect(captured.prompt).not.toMatch(/User context/);
 		// v0.3.23: the unconditional output-language directive rides at the very
 		// end of every prompt; the user-steer baseline is unchanged above it.
-		expect(captured.prompt).toBe("NEUTRAL\n\n" + KNOWLEDGE_MARKER + "\n\n" + languageDirective());
+		expect(captured.prompt).toBe("NEUTRAL\n\n" + DELEGATION_AUTONOMY_CLAUSE + "\n\n" + KNOWLEDGE_MARKER + "\n\n" + languageDirective());
 	});
 
 	it("drains exactly once per fresh spawn (realAgent, not the memoizing wrapper)", async () => {

@@ -25,6 +25,7 @@ vi.mock("../src/pi-spawn.ts", () => ({
 
 import { makeContext } from "../src/workflow.ts";
 import { languageDirective } from "../src/render/super-dev-dir.ts";
+import { DELEGATION_AUTONOMY_CLAUSE } from "../src/workflow.ts";
 import { recordConvergenceFindings } from "../src/convergence-ledger.ts";
 import type { PipelineState } from "../src/types.ts";
 
@@ -64,7 +65,7 @@ describe("workflow agent() feedback injection (retry convergence)", () => {
 		await mkCtx({} as PipelineState).agent({ id: "pipeline.other", agent: "requirements-clarifier", prompt: "PLAIN" });
 		// v0.3.23: the configured-language directive is the one unconditional
 		// addition; with no feedback the prompt is original + directive, byte-exact.
-		expect(captured.prompt).toBe(`PLAIN\n\n${languageDirective()}`);
+		expect(captured.prompt).toBe(`PLAIN\n\n${DELEGATION_AUTONOMY_CLAUSE}\n\n${languageDirective()}`);
 	});
 	it("enforces maxAgents centrally before spawning", async () => {
 		const ctx = makeContext({} as PipelineState, "t", { maxAgents: 0 }, () => {});

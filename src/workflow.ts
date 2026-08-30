@@ -44,6 +44,7 @@ import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
 import { isNonRetryableAgentError } from "./agent-errors.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
 import type {
+
 	AgentCall,
 	AgentResult,
 	Budget,
@@ -57,6 +58,9 @@ import type {
 	StageProgressEvent,
 	Workflow,
 } from "./types.ts";
+
+/** v0.3.35: prepended to EVERY delegation prompt — see realAgent. */
+export const DELEGATION_AUTONOMY_CLAUSE = "## Autonomy (hard constraint)\nYou run AUTONOMOUSLY — there is no human and no supervisor watching, and nobody will answer a question. NEVER call intercom, subagent_supervisor, or subagent_wait, and never wait for a reply. If you are blocked or missing information, complete everything you CAN and state the blocker plainly in your final structured output.";
 
 const DEFAULT_MAX_AGENTS = 200;
 const DEFAULT_MAX_CONCURRENCY = 3;
@@ -339,9 +343,16 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const ledgerFeedback = alreadyHasLedger ? [] : convergenceRetryFeedback(state, { stage: stageKey || call.agent, currentStage: normalizeConvergenceStage(stageKey, "implementation"), gate: "convergence-ledger" });
 		const combinedFeedback = [...feedback, ...ledgerFeedback];
 		const feedbackBlock = combinedFeedback.length ? renderRetryFeedbackBlock(combinedFeedback) : "";
+	// v0.3.35: AUTONOMY CLAUSE on every delegation. Runs 2026-08-30T04-53-26 /
+		// 05-26-19: specialists occasionally "ask a supervisor" mid-task
+		// (intercom/subagent_supervisor) — pi-subagents DETACHES such a child and
+		// the whole multi-minute turn is discarded (observed on
+		// sd-requirements-clarifier and sd-debug-analyzer; each detach cost a full
+		// convergence round). No supervisor exists: state it up front.
+		const autonomy = DELEGATION_AUTONOMY_CLAUSE;
 		const prompt = combinedFeedback.length
-			? `${call.prompt}\n\n${feedbackBlock}\nRe-produce the complete artifact, then call structured_output.`
-			: call.prompt;
+			? `${call.prompt}\n\n${autonomy}\n\n${feedbackBlock}\nRe-produce the complete artifact, then call structured_output.`
+			: `${call.prompt}\n\n${autonomy}`;
 		// Option C: inject ONLY the fields this agent needs from prior stages'
 		// structured_output (control objects), extracted from .knowledge.json.
 		const knowledge = knowledgeForAgent(state.setup?.specDirectory ?? "", call.agent);
