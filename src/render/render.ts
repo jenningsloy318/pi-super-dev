@@ -183,6 +183,44 @@ function coerceStringSlot(schemaNode: unknown, value: unknown): unknown {
 	return value;
 }
 
+/** null-inside-optional pruning (run 2026-08-30T04-53-26: assessment
+ *  emitted services.api:null and services.ui.portEnv:null — the model saying
+ *  "not applicable" where the schema expresses that as ABSENCE). Delete a
+ *  null key when its position is optional (or the whole subtree is); if that
+ *  leaves the parent missing a REQUIRED property, delete the parent too —
+ *  cascade while the chain stays droppable. A null at a required TOP-LEVEL
+ *  slot is left in place so validation reports it LOCATED. Returns false when
+ *  `obj` no longer satisfies its own required set (caller may drop it). */
+function pruneNulls(schemaNode: unknown, obj: Record<string, unknown>, inOptional: boolean): boolean {
+	const s = schemaNode as Record<string, unknown> | null;
+	if (!s || typeof s !== "object" || s.type !== "object" || !s.properties) return true;
+	const required = new Set<string>(Array.isArray(s.required) ? (s.required as string[]) : []);
+	for (const key of Object.keys(s.properties as Record<string, unknown>)) {
+		const v = obj[key];
+		if (v === undefined) continue;
+		if (v === null) {
+			// Absent-able position → drop; required non-optional position → leave (located).
+			if (inOptional || !required.has(key)) delete obj[key];
+			continue;
+		}
+		if (v && typeof v === "object") {
+			const child = (s.properties as Record<string, unknown>)[key];
+			const childOptional = inOptional || !required.has(key);
+			if (Array.isArray(v)) {
+				// Array items cannot express absence individually — prune inside them
+				// but never drop the array (an invalid item stays located).
+				for (const item of v) if (item && typeof item === "object" && !Array.isArray(item)) pruneNulls(child && (child as Record<string, unknown>).items, item as Record<string, unknown>, childOptional);
+			} else {
+				const ok = pruneNulls(child, v as Record<string, unknown>, childOptional);
+				if (!ok && childOptional) delete obj[key]; // child invalidated itself — droppable
+				else if (!ok) return false; // required child now invalid — propagate
+			}
+		}
+	}
+	for (const r of required) if (!(r in obj)) return false;
+	return true;
+}
+
 /** Reverse-direction drift repair, schema-driven: walk the stage schema and
  *  coerce values that FAIL a declared string contract (see coerceStringSlot).
  *  Counterpart of normalizeProseArrays (string→array); this one is array/
@@ -198,6 +236,10 @@ function coerceStringSlot(schemaNode: unknown, value: unknown): unknown {
  *  located error names the field for the retrying agent (null/undefined and
  *  empty objects stay untouched — there is nothing to render). */
 function coerceSchemaStrings(schema: unknown, data: unknown): unknown {
+	// Null-in-optional pruning runs FIRST (it may delete whole subtrees the
+	// string walk would otherwise waste time on — and `services.api: null` is
+	// never a string-coercion candidate).
+	if (data && typeof data === "object" && !Array.isArray(data)) pruneNulls(schema, data as Record<string, unknown>, false);
 	const walk = (node: unknown, value: unknown): void => {
 		const s = node as Record<string, unknown> | null;
 		if (!s || typeof s !== "object" || !value || typeof value !== "object") return;

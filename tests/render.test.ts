@@ -400,6 +400,24 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		expect(String(control.rootCause)).toContain("verified: true");
 		expect(typeof control.hypotheses[0]).toBe("string");
 	});
+	it("null-inside-optional drift: services emitted with null api/portEnv prunes to absence instead of dropping the assessment doc (run 2026-08-30T04-53-26)", () => {
+		// The assessor expressed "not applicable" as nulls (api: null, ui.portEnv:
+		// null); the schema expresses that as ABSENCE. Pruning drops the null keys
+		// and cascades (ui loses required portEnv → ui itself is optional → drop).
+		const control: Record<string, any> = {
+			title: "Assessment", date: "2026-08-30", summary: "s",
+			patterns: [{ name: "p", example: "f:1", consistency: "high" }],
+			recommendations: ["r"], filesAssessed: ["a.ts"],
+			services: { api: null, ui: { cmd: "python3 -m http.server 8322", portEnv: null, readyPath: "/" } },
+		};
+		const r = renderStage("assessment", control);
+		expect(r.errors).toEqual([]);
+		expect(r.markdown.length).toBeGreaterThan(0);
+		expect(control.services).toEqual({}); // pruned IN PLACE to absence
+		// A null at a REQUIRED top-level slot stays REJECTED + located.
+		const r2 = renderStage("assessment", { title: "t", date: "2026-08-30", summary: null, patterns: [{ name: "p", example: "e", consistency: "c" }], recommendations: ["r"], filesAssessed: ["f"] });
+		expect(r2.errors.some((e) => e === "summary: must be string")).toBe(true);
+	});
 	it("real shape mismatches in string slots stay REJECTED and located (null/empty-object summary → 'executiveSummary: must be string'), never guessed away", () => {
 		const r = renderStage("requirements", { title: "t", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: null, acceptanceCriteria: [{ id: "AC-01", statement: "s" }], nonFunctional: [] });
 		expect(r.errors.some((e) => e === "executiveSummary: must be string")).toBe(true);
