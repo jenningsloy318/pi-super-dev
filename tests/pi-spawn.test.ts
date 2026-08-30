@@ -26,14 +26,16 @@ describe("isCodeWritingAgent / defaultAgentTimeoutMs", () => {
 		expect(isCodeWritingAgent("spec-writer")).toBe(false);
 		expect(isCodeWritingAgent("orchestrator")).toBe(false);
 	});
-	it("gives every role the same 20-minute default wall clock", () => {
+	it("gives code-writers 30 minutes and other roles the 20-minute default", () => {
 		// v0.3.14: doc-writers (spec/bdd/research/review) previously got 480s while
 		// code-writers got 20 min. Big-spec writers burn ~70% of the budget
 		// re-verifying anchors, then the 480s hard wall kills them mid-compose and
 		// discards the whole structured_output (run 2026-08-23T00-59-32 rounds 2/4).
-		// Every role now gets 20 min — code-writers unchanged, doc-writers raised.
-		expect(defaultAgentTimeoutMs("implementer")).toBe(1_200_000);
-		expect(defaultAgentTimeoutMs("tdd-guide")).toBe(1_200_000);
+		// v0.3.42: code-writers raised to 30 min — 20 aborted two healthy writers
+		// on 2026-08-30 (AQ phase-02 commit, CC phase-03 implementer, both on
+		// glm-5.3:max thinking), each costing the full window plus a recovery round.
+		expect(defaultAgentTimeoutMs("implementer")).toBe(1_800_000);
+		expect(defaultAgentTimeoutMs("tdd-guide")).toBe(1_800_000);
 		expect(defaultAgentTimeoutMs("research-agent")).toBe(1_200_000);
 		expect(defaultAgentTimeoutMs("spec-writer")).toBe(1_200_000);
 		expect(defaultAgentTimeoutMs("orchestrator")).toBe(1_200_000);

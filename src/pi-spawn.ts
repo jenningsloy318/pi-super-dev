@@ -259,8 +259,11 @@ export function resolveModel(explicit?: string): string | undefined {
 const DEFAULT_SPAWN_TIMEOUT_MS = 1_200_000;
 /** Code-writing agents (implementer/tdd-guide) must read large existing files
  *  AND land+verify edits in one turn; on a slow model the doc-writer cap aborts
- *  them mid-exploration before any edit is written. Give them ~20 min. */
-const CODE_WRITING_TIMEOUT_MS = 1_200_000;
+ *  them mid-exploration before any edit is written. Give them ~30 min — 20
+ *  aborted two healthy writers on 2026-08-30 (AQ phase-02 commit orchestrator,
+ *  CC phase-03 implementer on glm-5.3:max thinking), each costing the full
+ *  window plus a recovery round. */
+const CODE_WRITING_TIMEOUT_MS = 1_800_000;
 
 /** AC-23 (SCENARIO-049): SIGTERM → SIGKILL watchdog. A child that registered a
  *  SIGTERM handler and never exits (or whose grandchildren hold the stdio
