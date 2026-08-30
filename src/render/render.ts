@@ -44,14 +44,85 @@ export interface RenderResult {
  *  keys, so an extra key the model emitted is harmless to the doc; rejecting it
  *  here would fail a render (and its gate) on a harmless property. Required-key
  *  and type errors are still reported as before. */
+/** Format a typebox@1.x error location for humans AND retry feedback:
+ * "#/properties/alternativesConsidered/items/properties/alternatives" →
+ * "alternativesConsidered[].alternatives". typebox@1.x errors carry schemaPath
+ * (NOT `path`), so the old `${e.path ?? "$"}` rendered EVERY location as "$" —
+ * runs 2026-08-30T00-10-34-032Z (aborted after 6 design rounds + judge
+ * escalation) and 2026-08-30T03-23-40-576Z logged only "$: must be array" ×7,
+ * hiding the offending field from the retrying agent, the feedback block, and
+ * the judge (which mis-diagnosed `hasNumericConstants`). The location IS the
+ * actionable part of a schema error; never drop it again. */
+function schemaLocationWithItems(schemaPath: string | undefined): string {
+	if (!schemaPath || schemaPath === "#" || schemaPath === "") return "";
+	const segs = schemaPath.replace(/^#/, "").split("/").filter(Boolean);
+	let out = "";
+	for (const seg of segs) {
+		if (seg === "properties" || seg === "patternProperties") continue;
+		if (seg === "items") out += "[]"; // array element — dot comes with the next name
+		else out += (out ? "." : "") + seg;
+	}
+	return out;
+}
+
+/** Format one error as "location: message" (or bare message at the schema root,
+ * e.g. "must have required properties …"). */
+function formatError(err: unknown): string | null {
+	const e = err as unknown as { message?: string; schemaPath?: string; path?: string };
+	if (typeof e?.message !== "string") return null;
+	if (e.message === "must not have additional properties") return null; // tolerated (see validateData)
+	const loc = schemaLocationWithItems(e.schemaPath) || e.path || "";
+	return loc ? `${loc}: ${e.message}` : e.message;
+}
+
 export function validateData(schema: StageModel["schema"], data: unknown): string[] {
 	const errors: string[] = [];
 	for (const err of Value.Errors(schema, data)) {
-		const e = err as unknown as { path?: string; message: string };
-		if (e.message === "must not have additional properties") continue;
-		errors.push(`${e.path ?? "$"}: ${e.message}`);
+		const line = formatError(err);
+		if (line !== null) errors.push(line);
 	}
 	return errors;
+}
+
+/** Prose-string tolerance for optional string-ARRAY control fields — the same
+ *  drift class as the boolean fix below (hasNumericConstants/pass/unions):
+ *  models reliably summarize `alternatives` and `evidence` as ONE prose string
+ *  ("(a) exact-text equality — rejected: …; (b) …") instead of an array.
+ *  Runs 2026-08-30T00-10-34-032Z (pi-omisis: 6/6 design rounds rejected, judge
+ *  escalated, run aborted) and 2026-08-30T03-23-40-576Z (cosmic-clock: 8 design
+ *  rounds) rejected COMPLETE controls solely on this; review docs
+ *  (requirementsReview/bddReview rounds) were dropped the same way on
+ *  `findings[].evidence` — verdict consumed, durable doc missing. Coerce
+ *  string → [string] BEFORE validation: the doc renders, template loops
+ *  iterate items instead of characters, and downstream consumers (convergence
+ *  ledger, knowledge) see arrays. */
+const PROSE_ARRAY_FIELDS: Record<string, Array<{ container: string; field: string }>> = {
+	design: [{ container: "alternativesConsidered", field: "alternatives" }],
+	specReview: [{ container: "findings", field: "evidence" }],
+	requirementsReview: [{ container: "findings", field: "evidence" }],
+	bddReview: [{ container: "findings", field: "evidence" }],
+	designReview: [{ container: "findings", field: "evidence" }],
+	codeReview: [{ container: "findings", field: "evidence" }],
+	adversarialReview: [{ container: "findings", field: "evidence" }],
+};
+
+/** Mutate the control in place (the caller returns/stores the SAME object, so
+ *  the normalized arrays flow downstream). Unknown shapes are left untouched —
+ *  validation reports them with their exact location. */
+export function normalizeProseArrays(stageId: string, data: unknown): unknown {
+	if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+	const fields = PROSE_ARRAY_FIELDS[stageId];
+	if (!fields) return data;
+	for (const { container, field } of fields) {
+		const list = (data as Record<string, unknown>)[container];
+		if (!Array.isArray(list)) continue;
+		for (const item of list) {
+			if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+			const rec = item as Record<string, unknown>;
+			if (typeof rec[field] === "string") rec[field] = rec[field]!.trim() === "" ? [] : [rec[field] as string];
+		}
+	}
+	return data;
 }
 
 /** Augment data with computed fields the template needs (e.g. totalScenarios for
@@ -85,10 +156,13 @@ export function renderStage(stageId: string, data: unknown): RenderResult {
 	const model = STAGE_MODELS[stageId];
 	if (!model) throw new Error(`renderStage: unknown stage "${stageId}". Known: ${Object.keys(STAGE_MODELS).join(", ")}`);
 
-	const errors = validateData(model.schema, data);
+	// Prose-string drift repair BEFORE validation (see normalizeProseArrays) —
+	// in-place, so the caller's control object carries the normalized arrays.
+	const normalized = normalizeProseArrays(stageId, data);
+	const errors = validateData(model.schema, normalized);
 	if (errors.length > 0) return { markdown: "", errors };
 
-	const augmented = augmentData(stageId, data as Record<string, unknown>);
+	const augmented = augmentData(stageId, normalized as Record<string, unknown>);
 	const template = loadTemplate(model.template);
 	const markdown = render(template, augmented);
 	return { markdown, errors: [] };
@@ -135,6 +209,12 @@ export function renderAndWrite(
 	log: (m: string) => void,
 	stageId: string,
 	control: Record<string, unknown> | null,
+	/** v0.3.32: receives the EXACT schema/render errors when the control is
+	 *  rejected. Callers with a retry loop (design.ts, writerTask) record them
+	 * so the convergence feedback says `alternativesConsidered[].alternatives:
+	 *  must be array` instead of the useless "no artifact (empty/failed output)"
+	 * that starved 6+ retry rounds in runs 2026-08-30T00-10-34/03-23-40. */
+	onRenderErrors?: (errors: string[]) => void,
 ): string | null {
 	const model = STAGE_MODELS[stageId];
 	if (!model || !control) return null;
@@ -149,6 +229,7 @@ export function renderAndWrite(
 	const rendered = renderStage(stageId, control);
 	if (rendered.errors.length > 0) {
 		log(`${stageId}: render validation errors — ${rendered.errors.join("; ")}`);
+		onRenderErrors?.(rendered.errors);
 		return null;
 	}
 	if (rendered.markdown) {

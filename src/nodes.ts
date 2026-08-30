@@ -783,7 +783,15 @@ export function writerTask(spec: {
 			// Render pipeline: if this stage has a render model, render + write the doc.
 			if (result.control) {
 				const control = spec.normalizeControl ? spec.normalizeControl(result.control as Record<string, unknown>) : (result.control as Record<string, unknown>);
-				renderAndWrite(state.setup!, (m) => ctx.log(m), spec.id, control);
+			// v0.3.32: record schema/render failures for the convergence loop (see
+			// design.ts) — previously a rejected control returned from this writer
+			// left the OLD doc on disk while the gates kept passing on it (the
+			// code-review R2 stale-doc hole) and the retry feedback said nothing.
+				const renderErrors: string[] = [];
+				const docPath = renderAndWrite(state.setup!, (m) => ctx.log(m), spec.id, control, (errs) => renderErrors.push(...errs));
+				const stateRec = state as Record<string, unknown>;
+				if (!docPath && renderErrors.length > 0) stateRec.__renderErrors = renderErrors;
+				else delete stateRec.__renderErrors;
 				return control;
 			}
 			return result.control ?? {};

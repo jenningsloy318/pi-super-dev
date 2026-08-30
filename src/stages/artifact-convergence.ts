@@ -162,10 +162,21 @@ function setArtifactFeedback(options: ArtifactConvergenceOptions, state: Pipelin
 		observed: `The latest ${options.feedbackKey} artifact did not pass external validation.`,
 		expected: options.expected,
 		missing: errors.slice(0, 8),
-		diagnostics: errors.slice(8, 12),
+		diagnostics: withOmissionNotice(errors.slice(8, 12), errors),
 		nextAction: options.nextAction,
 	};
 	setRetryFeedback(state as Record<string, unknown>, options.feedbackKey, [feedback]);
+}
+
+/** v0.3.32 (runs 2026-08-30T00-10-34-032Z / 03-23-40-576Z): the writer stages
+ *  (design.ts, writerTask) record the EXACT schema/render validation errors on
+ *  the state here when renderAndWrite rejects a control. Read-and-clear, so a
+ *  slot never leaks into a later round. */
+function readRenderErrors(state: PipelineState): string[] {
+	const stateRec = state as Record<string, unknown>;
+	const v = stateRec.__renderErrors;
+	delete stateRec.__renderErrors;
+	return Array.isArray(v) ? v.map(String).slice(0, 8) : [];
 }
 
 function defaultOwnerForError(feedbackKey: ArtifactConvergenceOptions["feedbackKey"], error: string): ConvergenceOwnerStage {
@@ -601,11 +612,19 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				// The writer reported ok but produced NO artifact (returned null — e.g. a
 				// selected designer timed out). This is a FAILURE, not a skip: retry so a
 				// missing artifact never slips past the deterministic + review gates.
+				// v0.3.32: when the stage recorded schema/render errors (design.ts /
+				// writerTask), surface THOSE — the generic "empty/failed output" line
+				// starved the retries of the one actionable fact (which field, which
+				// type) in runs 2026-08-30T00-10-34 (aborted after 6 rounds) and
+				// 03-23-40 (8 wasted rounds before a lucky valid control).
+				const renderErrs = readRenderErrors(state);
 				if ((state as Record<string, unknown>)[options.feedbackKey] == null) {
-					lastErrors = [`${options.feedbackKey} agent produced no artifact (empty/failed output)`];
-					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-empty`);
+					lastErrors = renderErrs.length > 0
+						? [`${options.feedbackKey} control rejected by schema/render validation — fix these exact fields:`, ...renderErrs]
+						: [`${options.feedbackKey} agent produced no artifact (empty/failed output)`];
+					recordArtifactErrors(options, state, lastErrors, renderErrs.length > 0 ? `${options.feedbackKey}-render` : `${options.feedbackKey}-empty`);
 					setArtifactFeedback(options, state, lastErrors);
-					ctx.log(`${options.feedbackKey} convergence: ✗ no artifact produced round ${round} — retrying`);
+					ctx.log(`${options.feedbackKey} convergence: ✗ no artifact produced round ${round}${renderErrs.length > 0 ? ` — ${renderErrs.join("; ")}` : " — retrying"}`);
 					// F2 (code-review R1): no artifact = no review = no fresh reading.
 					prevOwnOpen = Number.POSITIVE_INFINITY;
 					lastOwnOpen = Number.POSITIVE_INFINITY;
@@ -622,9 +641,14 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				}
 
 				const result = options.validate ? await options.validate(state, ctx) : { pass: true, errors: [] };
-				if (!result.pass) {
-					lastErrors = result.errors;
-					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-validation`);
+				// v0.3.32: a writer control that PASSED validation but FAILED
+				// schema/render (writerTask returns the control and renderAndWrite
+				// returned null) means NO fresh doc on disk — the gates would keep
+				// passing against the STALE doc (the code-review R2 stale-doc hole).
+				// Fold the recorded render errors in so the round retries instead.
+				if (!result.pass || renderErrs.length > 0) {
+					lastErrors = [...result.errors, ...renderErrs];
+					recordArtifactErrors(options, state, lastErrors, renderErrs.length > 0 ? `${options.feedbackKey}-render` : `${options.feedbackKey}-validation`);
 					setArtifactFeedback(options, state, lastErrors);
 					ctx.log(`${options.feedbackKey} convergence: continuing after round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);
 					// F2 (adversarial F2-STALE-PROGRESS): same invalidation — see above.

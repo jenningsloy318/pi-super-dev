@@ -313,6 +313,33 @@ describe("render pipeline: implementation-summary + debug + design + prototype +
 		const design = renderStage("design", { title: "Design", date: "2026-01-01", summary: "Arch.", designer: "architecture-designer", modules: [{ name: "API", description: "REST" }], hasNumericConstants: true });
 		expect(design.errors).toEqual([]); expect(design.markdown).toContain("Has numeric constants requiring validation**: true");
 	});
+	// Run 2026-08-30T00-10-34-032Z (aborted after 6 design rounds + judge escalation)
+	// and 2026-08-30T03-23-40-576Z (8 rounds): GLM designers emitted
+	// `alternativesConsidered[].alternatives` as ONE prose string ("(a) … rejected:
+	// …; (b) …") every round; the strict Array schema rejected each COMPLETE
+	// control and the doc never rendered.
+	it("string control drift: alternativesConsidered[].alternatives as ONE prose string no longer drops the design doc (runs 2026-08-30T00-10-34 / 03-23-40)", () => {
+		const design = renderStage("design", { title: "Design", date: "2026-08-30", summary: "Arch.", designer: "product-designer", modules: [{ name: "M", description: "d" }], hasNumericConstants: true, alternativesConsidered: [{ decision: "storage", chosen: "sqlite", rationale: "r", alternatives: "(a) json files — rejected: no queries; (b) duckdb — rejected: binary weight" }] });
+		expect(design.errors).toEqual([]);
+		expect(design.markdown).toContain("(a) json files — rejected: no queries");
+		// Normalization is IN PLACE: the caller's control object carries the array
+		// downstream (convergence ledger / knowledge accumulate from the same object).
+		const control = { alternativesConsidered: [{ alternatives: "one prose string" }] };
+		renderStage("design", { title: "D", date: "2026-01-01", summary: "s", designer: "x", modules: [], hasNumericConstants: false, ...(control as object) });
+		expect((control.alternativesConsidered as Array<{ alternatives: unknown }>)[0]!.alternatives).toEqual(["one prose string"]);
+	});
+	it("string control drift: findings[].evidence as ONE prose string no longer drops review docs (same runs: review rounds logged '$: must be array' while verdicts were consumed)", () => {
+		const r = renderStage("codeReview", { title: "R", date: "2026-08-30", verdict: "APPROVED", summary: "s", findings: [{ id: "F1", severity: "P2", title: "t", detail: "d", evidence: "src/a.ts:12; tests/b.ts:3" }] });
+		expect(r.errors).toEqual([]);
+		expect(r.markdown).toContain("src/a.ts:12");
+	});
+	it("schema errors name the offending FIELD (typebox@1.x schemaPath), never a bare \"$\" location (the masking that starved both runs' retries)", () => {
+		const r = renderStage("design", { title: "Design", date: "2026-08-30", summary: "Arch.", designer: "x", modules: [{ name: "M", description: "d" }], hasNumericConstants: true, contracts: [{ name: "c", pattern: "p", enumerates: "NOT-AN-ARRAY" }] });
+		expect(r.errors.some((e) => e.startsWith("contracts[].enumerates: must be array"))).toBe(true);
+		expect(r.errors.some((e) => e.startsWith("$"))).toBe(false);
+		// A string `alternatives` still VALIDATES (normalized pre-check) — the
+		// located-error path above is exercised via a field normalization does not touch.
+	});
 	it("ui-test → has flows tested + pass flag", () => {
 		const r = renderStage("uiTest", { title: "UI Test", date: "2026-01-01", summary: "All pass.", pass: "true", flows: "5", failures: [] });
 		expect(r.errors).toEqual([]); expect(r.markdown).toMatch(/Flows Tested/);

@@ -221,6 +221,10 @@ import { runHelper } from "../src/helpers.ts";
 import type { RetryFeedbackInput } from "../src/retry-feedback.ts";
 
 function setupCtl32(dir: string): SetupControl {
+	// v0.3.32: the spec dir must EXIST — a render-valid design control now
+	// actually writes its doc here (previously every fixture control failed
+	// validation, so the missing dir was never noticed).
+	mkdirSync(`${dir}/docs/specifications/001/`, { recursive: true });
 	return { worktreePath: dir, specDirectory: `${dir}/docs/specifications/001/`, defaultBranch: "main", language: "backend", isWebUi: false, specIdentifier: "001", worktreeCreated: true, initializedRepo: false };
 }
 
@@ -252,7 +256,7 @@ describe("sd32 remediation: vacuous enums, dialect, (?i) parity, normalization, 
 		const dir = mkdtempSync(join(tmpdir(), "sd-c1n-"));
 		try {
 			const s = setupCtl32(dir);
-			const designCtl = { title: "d", date: "2026", contracts: [{ name: "names", pattern: "^[a-z0-9-]+$", enumerates: ["stage-01", "BAD_VALUE"] }] };
+			const designCtl = { title: "d", date: "2026", summary: "s", designer: "architecture-designer", modules: [{ name: "M", description: "d" }], hasNumericConstants: "no", contracts: [{ name: "names", pattern: "^[a-z0-9-]+$", enumerates: ["stage-01", "BAD_VALUE"] }] };
 			const state = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false }, design: designCtl } as unknown as PipelineState;
 			const seen: RetryFeedbackInput[][] = [];
 			let writerCalls = 0;
@@ -286,7 +290,7 @@ describe("sd32 remediation: vacuous enums, dialect, (?i) parity, normalization, 
 			const dir2 = mkdtempSync(join(tmpdir(), "sd-c1n2-"));
 			try {
 				const s2 = setupCtl32(dir2);
-				const okState = { setup: s2, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false }, design: { title: "d", date: "2026", contracts: [{ name: "names", pattern: "^[a-z0-9-]+$", enumerates: ["stage-01"] }] } } as unknown as PipelineState;
+				const okState = { setup: s2, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false }, design: { title: "d", date: "2026", summary: "s", designer: "architecture-designer", modules: [{ name: "M", description: "d" }], hasNumericConstants: "no", contracts: [{ name: "names", pattern: "^[a-z0-9-]+$", enumerates: ["stage-01"] }] } } as unknown as PipelineState;
 				const okSeen: RetryFeedbackInput[][] = [];
 				const okCtx = { ...stageCtx, state: okState, async agent(call: AgentCall): Promise<AgentResult> {
 					const key = (call.id ?? "").replace(/^pipeline\./, "");

@@ -46,11 +46,21 @@ export const designStage: Stage = {
 		// validation failed (incomplete control → no NN-design.md on disk). A null
 		// here means the design review would run against a MISSING document, so treat
 		// it as a failure and retry rather than passing the gate on a phantom design.
-		const docPath = renderAndWrite(setup, (m) => ctx.log(m), "design", result.control as Record<string, unknown>);
+		const renderErrors: string[] = [];
+		const docPath = renderAndWrite(setup, (m) => ctx.log(m), "design", result.control as Record<string, unknown>, (errs) => renderErrors.push(...errs));
+		const stateRec = state as Record<string, unknown>;
 		if (!docPath) {
+			// v0.3.32 (runs 2026-08-30T00-10-34 / 03-23-40): the convergence loop's
+			// generic "no artifact" feedback HID the actual schema errors, so the
+			// retrying designer mutated content (reviewResponses, numericConstants)
+			// while the real defect (`alternativesConsidered[].alternatives` as a
+			// prose string) stayed invisible for every round until the judge
+			// escalated on a guess. Record the exact errors where the loop reads them.
+			stateRec.__renderErrors = renderErrors;
 			ctx.log(`Design: designer ${designerAgent} returned control that failed schema/render — no design doc written; retrying`);
 			return null;
 		}
+		delete stateRec.__renderErrors;
 		ctx.log(`Design complete (agent: ${designerAgent})`);
 		return result.control;
 	},

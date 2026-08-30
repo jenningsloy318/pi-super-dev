@@ -75,8 +75,11 @@ function makeCtx(script: Script, escalate?: Escalate, opts?: { maxRounds?: numbe
 				script.writerRounds++;
 				// A valid requirements control: no open questions so the deterministic
 				// validator passes. docPath present so the reviewer prompt is grounded.
+				// v0.3.32: also RENDER-VALID (title/date/…/statement) — a rejected render
+				// now fails the round (stale-doc hole closed), so a render-invalid
+				// fixture can no longer stand in for a converged writer.
 				const extras = script.writerExtras ? script.writerExtras[Math.min(script.writerRounds - 1, script.writerExtras.length - 1)] : undefined;
-				return { text: "", control: { docPath: "/tmp/spec/01-requirements.md", openQuestions: [], acceptanceCriteria: [{ id: "AC-01" }, { id: "AC-02" }], ...extras } as ControlObj };
+				return { text: "", control: { docPath: "/tmp/spec/01-requirements.md", title: "R", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: "s", openQuestions: [], nonFunctional: [], acceptanceCriteria: [{ id: "AC-01", statement: "s1" }, { id: "AC-02", statement: "s2" }], ...extras } as ControlObj };
 			}
 			if (call.id === "pipeline.requirementsReview") {
 				const idx = Math.min(script.writerRounds - 1, script.reviews.length - 1);
@@ -339,6 +342,45 @@ describe("designConvergenceNode — skip vs designer-failure (review-finding #1)
 		// Exactly one design doc exists on disk (from the valid round).
 		expect(readdirSync(specDir).filter((f) => /-design\.md$/.test(f)).length).toBe(1);
 	});
+
+	// v0.3.32 (runs 2026-08-30T00-10-34-032Z aborted / 03-23-40-576Z 8 wasted
+	// rounds): the empty-artifact branch told the retrying designer only "no
+	// artifact (empty/failed output)" while the exact schema errors sat in the
+	// run log. The designer mutated unrelated content every round and the judge
+	// escalated on a guess. The recorded render errors must now reach BOTH the
+	// round-failure log line AND the retry feedback block the next prompt embeds.
+	it("schema/render rejection feeds the EXACT field errors into the round log and retry feedback, not just 'no artifact'", async () => {
+		const logs: string[] = [];
+		const incomplete = { title: "only a title" }; // missing required keys → render fails
+		const state = designState("feature", specDir, worktree);
+		// The SAME failing control every round: never converges, so the feedback
+		// survives the abort (a converged loop clears it) and can be inspected.
+		const ctx = makeDesignCtx({ taskType: "feature", designControls: [incomplete], reviews: [approved], logs });
+		await expect(designConvergenceNode.run(state, ctx)).rejects.toThrow(/did not converge/);
+		// Round-1 failure line names the schema error (located, actionable).
+		expect(logs.some((l) => l.includes("no artifact produced round 1") && l.includes("must have required properties"))).toBe(true);
+		// The retry feedback (workflow.ts realAgent prepends state.__feedback["design"]
+		// to the next designer prompt) carries the exact errors too.
+		const fb = (state as unknown as { __feedback?: Record<string, unknown> }).__feedback?.["design"];
+		expect(JSON.stringify(fb)).toContain("must have required properties");
+		// The recorded slot is consumed each round — it never leaks verbatim.
+		expect((state as Record<string, unknown>).__renderErrors).toBeUndefined();
+	});
+
+	// v0.3.32 prose-drift companion: a control whose ONLY defect is
+	// alternativesConsidered[].alternatives as one prose string previously failed
+	// render → retried forever. It must now RENDER and converge round 1.
+	it("design control with alternatives-as-prose-string renders and converges (no retry)", async () => {
+		const logs: string[] = [];
+		const drifted = { ...VALID_DESIGN, alternativesConsidered: [{ decision: "d", chosen: "c", rationale: "r", alternatives: "(a) other — rejected: slower" }] };
+		const state = designState("feature", specDir, worktree);
+		const ctx = makeDesignCtx({ taskType: "feature", designControls: [drifted], reviews: [approved], logs });
+		const result = await designConvergenceNode.run(state, ctx);
+		expect(result.status).toBe("ok");
+		expect(hasLog(logs, "no artifact produced")).toBe(false);
+		expect(hasLog(logs, "review approved")).toBe(true);
+		expect(readdirSync(specDir).filter((f) => /-design\.md$/.test(f)).length).toBe(1);
+	});
 });
 
 // --- v0.3.19: AUTO-ROUTE upstream-owned blockers (no HITL wait) -------------
@@ -394,7 +436,9 @@ describe("artifactConvergenceNode — AUTO-ROUTE upstream-owned blockers (v0.3.1
 					reviewRounds++;
 					return { text: "", control: ctrl };
 				}
-				return { text: "", control: { docPath: "/tmp/spec/03-bdd.md" } as ControlObj };
+				// v0.3.32: render-valid bdd control (see makeCtx note) — a rejected
+				// render now fails the round instead of converging on a stale doc.
+				return { text: "", control: { docPath: "/tmp/spec/03-bdd.md", title: "B", date: "2026-08-30", source: "./01-requirements.md", features: [{ name: "f", scenarios: [{ id: "001", title: "t", acRef: "AC-01", priority: "high", given: "g", when: "w", then: "then" }] }] } as ControlObj };
 			},
 			async helper() {
 				return { value: { pass: true, errors: [] } as ControlObj, digest: "PASS" };

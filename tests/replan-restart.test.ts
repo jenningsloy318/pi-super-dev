@@ -399,7 +399,7 @@ describe("R3 — convergence-node consumption", () => {
 							const o = item as { missing?: unknown[]; nextAction?: unknown };
 							capturedFeedback.push(...(Array.isArray(o.missing) ? o.missing.map(String) : []), String(o.nextAction ?? ""));
 						}
-						return { text: "", control: { docPath: "/tmp/x.md", openQuestions: [], acceptanceCriteria: [{ id: "AC-01" }] } as ControlObj };
+						return { text: "", control: { docPath: "/tmp/x.md", title: "R", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: "s", openQuestions: [], nonFunctional: [], acceptanceCriteria: [{ id: "AC-01", statement: "s1" }, { id: "AC-02", statement: "s2" }] } as ControlObj };
 					}
 					if (call.id === "pipeline.requirementsReview") {
 						return { text: "", control: { verdict: "Approved", summary: "revised", findings: [] } as ControlObj };
@@ -475,7 +475,7 @@ describe("R3 — convergence-node consumption", () => {
 				results: [], signal: undefined,
 				async agent(call: AgentCall): Promise<AgentResult> {
 					if (call.id === "pipeline.requirements") {
-						return { text: "", control: { docPath: "/tmp/x.md", openQuestions: [], acceptanceCriteria: [{ id: "AC-01" }] } as ControlObj };
+						return { text: "", control: { docPath: "/tmp/x.md", title: "R", date: "2026-08-30", type: "feature", priority: "high", executiveSummary: "s", openQuestions: [], nonFunctional: [], acceptanceCriteria: [{ id: "AC-01", statement: "s1" }, { id: "AC-02", statement: "s2" }] } as ControlObj };
 					}
 					if (call.id === "pipeline.requirementsReview") {
 						return { text: "", control: reviews[Math.min(reviewCalls++, reviews.length - 1)] as ControlObj };
