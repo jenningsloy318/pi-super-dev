@@ -1,6 +1,6 @@
 {
 	"name": "pi-super-dev",
-	"version": "0.3.48",
+	"version": "0.3.49",
 	"description": "Self-contained, modular development pipeline for the Pi coding agent, built on a composable control-flow node algebra (branch/parallel/loop/retry/gate/map/wait). Spawns specialist pi subagents directly — no external workflow engine required.",
 	"private": false,
 	"type": "module",
@@ -35,7 +35,11 @@
 		"build": "tsc",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
-		"arch:doc": "node src/render/arch-doc.ts"
+		"arch:doc": "node src/render/arch-doc.ts",
+		"test:unit": "vitest run \"tests/*.unit.test.ts\" \"src/**/*.unit.test.ts\" --passWithNoTests",
+		"test:contract": "vitest run \"tests/*.contract.test.ts\" \"src/**/*.contract.test.ts\" --passWithNoTests",
+		"test:integration": "vitest run \"tests/*.integration.test.ts\" \"src/**/*.integration.test.ts\" --passWithNoTests",
+		"test:pipeline": "vitest run \"tests/*.pipeline.test.ts\" \"src/**/*.pipeline.test.ts\" --passWithNoTests"
 	},
 	"files": [
 		"src",

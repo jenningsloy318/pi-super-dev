@@ -136,6 +136,50 @@ class-F contract drift between pi, pi-subagents, and the engine.
 
 ---
 
+## 3b. Test categories (v0.3.49 — user mandate 2026-08-31)
+
+Tests are CATEGORIZED, both in this extension's own suite and in the target
+programs super-dev develops. Categories follow the integration-scope axis
+(Fowler pyramid / Testing Trophy), not file age or author.
+
+### This extension's own suite (suffix convention — NEW files)
+| Category | Suffix | Scope | Scripts |
+|---|---|---|---|
+| unit | `*.unit.test.ts` | pure functions, coercion walks, parsers — no spawns, no fs | `npm run test:unit` |
+| contract | `*.contract.test.ts` | prompt/control/schema three-way invariants, log formats | `npm run test:contract` |
+| integration | `*.integration.test.ts` | one real dependency (git repo, node toolchain) | `npm run test:integration` |
+| pipeline | `*.pipeline.test.ts` | stage-level convergence loops with scripted agents | `npm run test:pipeline` |
+| e2e | `*.e2e.test.ts` | full pipeline smoke, `SUPER_DEV_E2E`-gated | — |
+
+Existing 208 files are NOT renamed (churn > value); the convention applies to
+new files and migrations happen opportunistically. The coverage hard gate
+(vitest.config.ts thresholds 85/80) runs on the whole suite regardless of
+category.
+
+### Target programs (the TDD pipeline's output)
+The tdd-guide prompt (v0.3.49) authors RED suites as a categorized pyramid:
+**unit** (pure logic, 100% aim), **integration** (wiring; only external
+boundaries stubbed), **scenario** (one test per owned SCENARIO-NNN, tag
+verbatim in the test name). Category-appropriate file naming is instructed
+per project idiom.
+
+The **coverage hard gate** enforces the quality floor deterministically
+post-GREEN (`src/build-runner/coverage-gate.ts`):
+- ≥85% lines across the phase's production files (declared ∪ claimed ∪
+  required, minus test files), default `SUPER_DEV_COVERAGE_THRESHOLD`;
+- measured by re-running the validated cached runner with coverage
+  instrumented (vitest json-summary / `node --test
+  --experimental-test-coverage` TAP / `go test -coverprofile`), suite-wide
+  (file-scoped positionals stripped so coverage-retry tests are picked up);
+- below floor → the implementer retries with exact per-file numbers;
+  unmeasurable family → loud non-blocking ledger advisory (never silently
+  green, never a dead-lock); `SUPER_DEV_NO_COVERAGE_GATE=1` disables.
+
+Ground-truth notes: `node --test`'s TAP table reports single-line function
+bodies as covered lines (V8 span attribution) — funcs% is logged alongside;
+flags placed AFTER the first positional are silently ignored by node (the
+gate inserts them before).
+
 ## 4. Hard conventions
 
 ### 4.1 Mock hygiene (mandatory)

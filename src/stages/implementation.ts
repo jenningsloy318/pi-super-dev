@@ -33,6 +33,7 @@ import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainP
 import { clearBaselineCache } from "../build-runner/baseline.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
 import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../build-runner/runner-discovery.ts";
+import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../build-runner/coverage-gate.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
 
@@ -1432,6 +1433,11 @@ export const implementationStage: Stage = {
 			// `## Deliverables still missing — create/wire these` block. Resets each
 			// attempt, mirroring `attemptErrors = gate.errors`.
 			let missingDeliverables: string[] = [];
+			// v0.3.49 coverage gate: per-attempt feedback lines from a
+			// below-threshold coverage measurement — fed into the next implementer
+			// retry under a `## Coverage below the hard floor` block. Resets each
+			// attempt, mirroring `missingDeliverables`.
+			let coverageGap: string[] = [];
 			// spec-11 AC-07 (SCENARIO-015): the change-gate's `claimedNotChanged` from
 			// the previous attempt — claimed files git did NOT show changed — fed into
 			// the next implementer retry under a `## Claimed changes not present in git`
@@ -2198,6 +2204,23 @@ export const implementationStage: Stage = {
 				// creates/wires them instead of resampling. Mirrors the deliverables block
 				// above and is bounded by the global run budget plus no-progress detection
 				// in the surrounding attempt loop.
+				// v0.3.49: a previous attempt was green on every other gate but BELOW the
+				// coverage hard floor — inject the exact per-file numbers so the
+				// implementer writes targeted tests for the uncovered behavior instead
+				// of resampling. Test files are exempt (they are authored by RED, and
+				// the phase's production files are what the floor gates).
+				if (coverageGap.length) {
+					implParts.push(implementationRetrySection("Coverage below the hard floor — add tests for uncovered behavior", {
+						phase: phaseId,
+						attempt,
+						gate: "phase-coverage",
+						location: "deterministic coverage measurement on phase production files",
+						observed: "the previous attempt passed every functional gate but the measured line coverage is below the hard floor",
+						expected: `≥${coverageThreshold()}% lines across the phase's production files (aim for 100% on pure logic)`,
+						missing: coverageGap,
+						nextAction: "Write additional unit tests for the UNCOVERED behavior in the listed files (new test files you author in THIS retry are allowed and expected — unlike RED tests, coverage tests are additive). Do NOT weaken or delete existing assertions to raise the number.",
+					}));
+				}
 				if (claimedNotChanged.length) {
 					implParts.push(implementationRetrySection("Claimed changes not present in git — actually create/wire these", {
 						phase: phaseId,
@@ -2499,7 +2522,61 @@ export const implementationStage: Stage = {
 				// spec-11 AC-07/AC-08 (SCENARIO-013): AND `changeGate.pass` so a
 				// claimed-but-never-changed file hard-fails EVEN WHEN build + deliverable
 				// both pass (the false-green killer, closed a second way).
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
+				// v0.3.49 COVERAGE GATE (user mandate 2026-08-31): test coverage on the
+				// TARGET program is a HARD GATE — ≥85% lines on phase production files,
+				// striving for 100%. Deterministically measured from the VALIDATED cached
+				// runner (vitest / node --test / go recipes; SUPER_DEV_COVERAGE_THRESHOLD
+				// and SUPER_DEV_NO_COVERAGE_GATE switches). Unmeasurable families degrade
+				// to a loud non-blocking advisory — never a silent green, never a
+				// dead-lock. Runs ONLY when every other gate is already green so a
+				// broken build never pays the coverage re-run cost.
+				let coverageResult: CoverageGateResult | null = null;
+				coverageGap = [];
+				// The gate reads the runner cache DIRECTLY: `runnerSpec` lives in the
+				// RED sub-scope above, and the cache file IS the current validated
+				// runner (discovery rewrites it on every re-validation).
+				const covRunnerSpec = readCachedTestRunner(setup.specDirectory);
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0 && covRunnerSpec) {
+					const phaseProductionFiles = Array.from(new Set([
+						...projectStructured.filesCreated,
+						...projectStructured.filesModified,
+						...declaredScope,
+						...(bridgedDeliverables.requireFiles ?? []),
+					]));
+					announceActivity("Coverage gate", attemptDetail(attempt));
+					coverageResult = runCoverageGate(setup.worktreePath, {
+						runnerSpec: covRunnerSpec,
+						phaseFiles: phaseProductionFiles,
+						testFiles,
+						log: (m) => ctx.log(`Implementation ${phaseId} coverage: ${m}`),
+					});
+					ctx.log(`Implementation ${phaseId} coverage-gate ${coverageResult.status.toUpperCase()}${coverageResult.linesPct !== undefined ? ` (${coverageResult.linesPct.toFixed(1)}% lines vs ≥${coverageResult.threshold}%)` : ""} — ${coverageResult.detail}`);
+					if (coverageResult.status === "below-threshold") {
+						coverageGap = [
+							`${(coverageResult.linesPct ?? 0).toFixed(1)}% lines vs the ≥${coverageResult.threshold}% hard floor (recipe: ${coverageResult.recipe ?? "n/a"})`,
+							...[...coverageResult.perFile].sort((a, b) => a.linesPct - b.linesPct).slice(0, 8)
+								.map((f) => `${f.file}: ${f.linesPct.toFixed(1)}% lines${f.uncoveredHint ? ` (uncovered ${f.uncoveredHint})` : ""}${typeof f.functionsPct === "number" ? `, funcs ${f.functionsPct.toFixed(1)}%` : ""}`),
+						];
+					} else if (coverageResult.status === "unmeasurable") {
+						// Loud carried debt — the phase still goes green (the gate cannot
+						// invent a recipe for an unwired family), but the ledger records it
+						// for review/verification to see.
+						try {
+							recordConvergenceFindings(state, {
+								detectedAtStage: "implementation",
+								ownerStage: "implementation",
+								severity: "medium",
+								blocking: false,
+								title: `Phase ${phaseId} coverage gate UNMEASURABLE`,
+								detail: coverageResult.detail,
+								evidence: [covRunnerSpec.command.slice(0, 200)],
+								sourceGate: "phase-coverage",
+								recommendation: "Wire a deterministic coverage recipe into the project's test command (vitest --coverage / node --test --experimental-test-coverage / go test -coverprofile) so the ≥85% lines hard floor becomes enforceable.",
+							}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "phase-coverage" });
+						} catch { /* ledger bookkeeping never blocks */ }
+					}
+				}
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0 && coverageResult?.status !== "below-threshold") {
 					green = true;
 					phaseStatusUpsert(phaseStatus, phaseId, "green");
 					emitPhaseStatus("ok");
@@ -2537,7 +2614,14 @@ export const implementationStage: Stage = {
 				});
 				const runStartSet = new Set(runStartDirt);
 				const foreignDirt = dirtPaths.filter((p) => runStartSet.has(p));
-				const ownDirt = dirtPaths.filter((p) => !foreignDirt.includes(p));
+				// v0.3.49: NEW TEST FILES are exempt from own-dirt — the coverage
+				// hard gate's retry step legitimately authors additional test files
+				// (additive evidence, unlike RED files they are never restored),
+				// and a hijacked RED test edit is guarded separately by the
+				// tdd-tests-modified-during-green restore. Production paths keep
+				// full own-dirt semantics.
+				const looksLikeTestPath = (p: string) => /\.(test|spec)\.[A-Za-z0-9]+$/.test(p) || /(^|\/)(__tests__|tests?)\//.test(p);
+				const ownDirt = dirtPaths.filter((p) => !foreignDirt.includes(p) && !looksLikeTestPath(p));
 				// G1 feedback: the implementer's undeclared out-of-scope edits are NAMED in
 				// the retry feedback (spec-only declared scope cannot be over-claimed away).
 				const ownDirtFeedback = ownDirt.map((p) => `out-of-scope edit (this run): ${p} — fold it into the declared scope (requires a spec change) or revert it; it may be the cause of the out-of-scope failures below`);

@@ -354,6 +354,19 @@ export function buildTddPrompt(s: SetupControl, c: Classification | null, phase:
 		...deliverableLines,
 		"",
 		langInstructions ? `## Language-Specific Instructions\n${langInstructions}\n` : "",
+		// v0.3.49: test CATEGORIES (user mandate 2026-08-31) — author the RED
+		// suite as a categorized pyramid instead of one undifferentiated blob.
+		// The coverage hard floor (≥85% lines on phase production files, aim
+		// 100% on pure logic) is enforced deterministically post-GREEN; writing
+		// coverage-complete unit tests from the start avoids coverage retries.
+		"## Test Categories — author every test at its right level",
+		"- UNIT (default): one pure behavior per test — pure logic, parsing, math, state transitions. No I/O, no network, no DOM, no clocks. Fastest tier; aim for 100% line coverage of pure logic here.",
+		"- INTEGRATION: behavior that emerges from wiring — module composition, file I/O through the real API, DOM mounting, request handling. Stub ONLY external boundaries (network/time), never internal collaborators.",
+		"- SCENARIO: BDD-mapped acceptance — one test per SCENARIO-NNN your phase owns, the scenario tag verbatim in the test name, asserting the user-visible outcome end-to-end.",
+		"- Ratio guidance: mostly unit, fewer integration, scenario tests only for acceptance the phase owns. Prefer adding a unit test over thickening an existing one.",
+		"- Name files by category in the project's idiom (e.g. math.unit.test.ts / wiring.integration.test.ts / phase1-acceptance.scenario.test.mjs, *_test.go by package) so the suite stays navigable.",
+		"- COVERAGE HARD FLOOR: after GREEN, the harness measures line coverage over this phase's production files (≥85% floor, deterministic). Write unit tests for every branch of your production code now — uncovered behavior forces a coverage retry later.",
+		"",
 		"## Instructions",
 		"Write failing tests FIRST for this implementation phase.",
 		// RC11: match the test level to the task's stated observable — a

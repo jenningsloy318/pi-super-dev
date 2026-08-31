@@ -620,6 +620,8 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
 | `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in build-gate command discovery |
 | `SUPER_DEV_NO_BOOTSTRAP` | — | `1` = skip the setup-time dependency bootstrap (npm ci etc.) in fresh worktrees |
+| `SUPER_DEV_COVERAGE_THRESHOLD` | `85` | line-coverage hard floor (%) for the TARGET program's phase production files, measured post-GREEN from the validated runner (v0.3.49) |
+| `SUPER_DEV_NO_COVERAGE_GATE` | — | `1` = skip the target-program coverage hard gate entirely |
 | `SUPER_DEV_BOOTSTRAP_TIMEOUT_MS` | `600000` | setup dependency-bootstrap timeout |
 | `SUPER_DEV_NO_DIRTY_QUARANTINE` | — | `1` = kill switch, disable automatic foreign-dirt quarantine (setup reuse + Stage 9 env-blocker) |
 | `SUPER_DEV_MAX_REPLAN_ROUNDS` | `2` | replan auto-resume rounds per spec |

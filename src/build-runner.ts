@@ -8,5 +8,6 @@
  *   - gates.ts  : runBuildGate / runRedCheck / runDeliverableCheck / computeChangeGate + types
  */
 export * from "./build-runner/detect.ts";
+export * from "./build-runner/coverage-gate.ts";
 export * from "./build-runner/scope.ts";
 export * from "./build-runner/gates.ts";
