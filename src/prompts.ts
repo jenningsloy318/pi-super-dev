@@ -454,6 +454,7 @@ export function buildRedReviewPrompt(
 		`- BDD Scenarios: ${(bddControl?.docPath as string) ?? "N/A"}`,
 		"",
 		"## Instructions",
+		"You are STRICTLY READ-ONLY: never create, modify, or delete any file — not tests, not production code, not configs. A review that writes anything is discarded and the boundary guard restores your edits (run 2026-08-31T03-25-44-485Z).",
 		"Read the test files above. There is NO implementation yet — this is the RED phase. Judge ONLY test QUALITY, not whether they pass.",
 		"For each mapped scenario, decide whether its test asserts the scenario's OBSERVABLE behavior with a concrete expected value (status code, returned value, emitted effect, error).",
 		// RC11 (run 10-39): the phase's task rows and deliverables define the

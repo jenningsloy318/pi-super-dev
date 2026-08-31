@@ -1825,6 +1825,13 @@ export const implementationStage: Stage = {
 								}),
 							);
 							redReviewInFlight = review as Promise<{ control: unknown; error?: string } | null>;
+							// v0.3.51: the review is awaited only at the post-implementer join —
+							// a rejection in the gap (e.g. a source-read-only boundary violation,
+							// run 2026-08-31T03-25-44-485Z 16:29) sat unhandled and Node's default
+							// unhandledRejection=throw killed the whole workflow with no terminal
+							// marker. Mark the rejection handled NOW; the join still awaits the
+							// ORIGINAL promise and rethrows the same error there.
+							void redReviewInFlight.catch(() => {});
 							ctx.log(`Implementation ${phaseId} RED review launched in parallel with the implementer (v0.3.43 pipelining) — verdict joins when GREEN returns`);
 							// (v0.3.43: verdict adjudication moved to the post-implementer
 							// join site — see "RC2 join" below. The R2 fail-closed rule and
@@ -2304,7 +2311,17 @@ export const implementationStage: Stage = {
 				// endpoint — same semantics as the serial path). Anything else
 				// discards the GREEN work and re-authors the RED with the evidence.
 				if (redReviewInFlight) {
-					const review = await redReviewInFlight;
+					// v0.3.51: the parallel review can REJECT (agent throw — e.g. a
+					// source-read-only boundary violation, run 2026-08-31T03-25-44-485Z
+					// 16:29). The store site marks the rejection handled; here it must be
+					// adjudicated as a review error (fail-closed re-author), never allowed
+					// to escape the stage.
+					let review: { control: unknown; error?: string } | null;
+					try {
+						review = await redReviewInFlight;
+					} catch (err) {
+						review = { control: null, error: String((err as Error)?.message ?? err) };
+					}
 					redReviewInFlight = null;
 					const verdict = String((review?.control as { verdict?: unknown } | null)?.verdict ?? "").toLowerCase();
 					const contradictionList = parseRedContradictions((review?.control ?? null) as Parameters<typeof parseRedContradictions>[0]);

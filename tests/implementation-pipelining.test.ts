@@ -42,6 +42,7 @@ function mkState(): PipelineState {
 function mkCtx(opts: {
 	reviewVerdicts?: string[];
 	reviewContradictions?: Array<Array<{ tests: string; lines?: string; proof: string }>>;
+	reviewThrows?: string;
 	implControls?: ControlObj[];
 	tddControls?: ControlObj[];
 	escalate?: RunOptions["escalate"];
@@ -61,12 +62,20 @@ function mkCtx(opts: {
 		async helper(): Promise<HelperResult> { return { value: { languageInstructions: "" }, digest: "" }; },
 		async agent(call: AgentCall): Promise<AgentResult> {
 			if (call.agent === "tdd-guide") { counters.tdd++; tddPrompts.push(call.prompt); return { text: "", control: tddQ.shift() ?? { testFiles: ["tests/red.test.ts"] } }; }
-			if (call.agent === "implementer") { counters.impl++; implPrompts.push(call.prompt); return { text: "", control: implQ.shift() ?? { filesModified: ["src/x.ts"] } }; }
 			if (call.agent === "code-reviewer") {
 				counters.review++;
+				if (opts.reviewThrows) return Promise.reject(new Error(opts.reviewThrows));
 				const verdict = reviewQ.shift() ?? "strong";
 				const contradictions = contradictionQ.shift() ?? [];
 				return { text: "", control: { verdict, summary: "s", contradictions } };
+			}
+			if (call.agent === "implementer") {
+				counters.impl++; implPrompts.push(call.prompt);
+				// v0.3.51 test timing: give a rejecting review time to reject FIRST so
+				// the unawaited-promise gap (review rejects while the implementer still
+				// runs) is actually exercised.
+				if (opts.reviewThrows) await new Promise((res) => setTimeout(res, 30));
+				return { text: "", control: implQ.shift() ?? { filesModified: ["src/x.ts"] } };
 			}
 			if (call.agent === "tdd-coverage-classifier") return { text: "", control: { allCovered: true, coveredScenarios: [], missingScenarios: [], summary: "ok" } };
 			if (call.agent === "judge") return { text: "", control: null };
@@ -119,6 +128,27 @@ describe("v0.3.43 RC2 — parallel RED review joins after the implementer", () =
 		const r = mkCtx({ reviewVerdicts: [""] });
 		await (implementationStage as Stage).run(mkState(), r.ctx);
 		expect(r.logs.some((l) => /red-review-rejected: RED review not strong:/.test(l))).toBe(true);
+	});
+	// Run 2026-08-31T03-25-44-485Z 16:29: the parallel review rejected mid-implementer
+	// (source-read-only boundary violation); the stored promise carried no rejection
+	// handler until the join, Node's default unhandledRejection=throw killed the whole
+	// workflow with no terminal marker, and every child agent vanished.
+	it("v0.3.51: a review that THROWS mid-implementer joins as a fail-closed error without an unhandledRejection", async () => {
+		const unhandled: unknown[] = [];
+		const rec = (e: unknown) => unhandled.push(e);
+		process.on("unhandledRejection", rec);
+		try {
+			const r = mkCtx({ reviewThrows: "source-read-only boundary violation: modified production file" });
+			await (implementationStage as Stage).run(mkState(), r.ctx);
+			// Fail-closed join: the throw is adjudicated as a review error, not a crash.
+			expect(r.logs.some((l) => /red-review-rejected: RED review not strong:/.test(l))).toBe(true);
+			expect(r.implCalls).toBeGreaterThanOrEqual(1);
+		} finally {
+			process.off("unhandledRejection", rec);
+			// Give the microtask queue a beat to surface any straggler rejection.
+			await new Promise((res) => setImmediate(res));
+		}
+		expect(unhandled).toEqual([]);
 	});
 });
 
