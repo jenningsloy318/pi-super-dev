@@ -184,6 +184,9 @@ const REASONING_AGENTS = new Set([
 	"debug",
 	"debugger",
 	"assessment",
+	// v0.3.43: judge verdicts are pure analysis (diagnosis + routing) — tiered
+	// HIGH so a `:max` parent session cannot inflate them either.
+	"judge",
 ]);
 
 /** Mechanical bookkeeping agents: little reasoning needed (commits, cleanup,
@@ -196,15 +199,40 @@ const MECHANICAL_AGENTS = new Set([
 	"slug-summarizer",
 ]);
 
+/** v0.3.43 throughput root cause (run-pair forensics 2026-08-30): binary/small
+ *  classification roles were running at the INHERITED main-session thinking
+ *  level and emitting 3.6-4K output tokens for yes/no verdicts (12 boundary
+ *  classifier calls = 43K tokens; 28 coverage calls = 113K). Classification
+ *  needs LOW thinking — the deterministic oracle + downstream gates are the
+ *  real guards; the classifier only triages. */
+const CLASSIFIER_AGENTS = new Set([
+	"tdd-coverage-classifier",
+	"red-boundary-classifier",
+	"task-classifier",
+	"route-specialist",
+]);
+
 /** Role-based default thinking level for an agent, mirroring isCodeWritingAgent.
  *  Reasoning-heavy analysis agents think hard; code writers think medium;
- *  mechanical bookkeeping agents think minimally; everything else defaults to
- *  medium. */
+ *  classifier triage thinks low; mechanical bookkeeping agents think minimally;
+ *  everything else defaults to medium. */
 export function thinkingForAgent(agent: string): ThinkingLevel {
 	if (REASONING_AGENTS.has(agent)) return "high";
 	if (isCodeWritingAgent(agent)) return "medium";
+	if (CLASSIFIER_AGENTS.has(agent)) return "low";
 	if (MECHANICAL_AGENTS.has(agent)) return "minimal";
 	return "medium";
+}
+
+/** Does this agent carry an EXPLICIT throughput tier (reasoning / code-writing /
+ *  classifier / mechanical)? Tiered roles keep their designed level even when a
+ *  main-session thinking level is inherited — the v0.3.43 root-cause fix. A
+ *  `:max` parent session must not silently turn a yes/no classifier or a git
+ *  committer into a max-effort reasoner: measured effect on the 2026-08-30 run
+ *  pair was ~1.5M of 2.36M output tokens (≈10 wall-clock hours across two runs)
+ *  spent on thinking inflation that the role tiers were designed to prevent. */
+export function hasThinkingTier(agent: string): boolean {
+	return REASONING_AGENTS.has(agent) || isCodeWritingAgent(agent) || CLASSIFIER_AGENTS.has(agent) || MECHANICAL_AGENTS.has(agent);
 }
 
 /** Narrow an arbitrary string to a ThinkingLevel (used for the env override). */
@@ -212,17 +240,24 @@ function asThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
 	return value && (THINKING_LEVELS as readonly string[]).includes(value) ? (value as ThinkingLevel) : undefined;
 }
 
-/** Resolve the effective thinking level with precedence (Phase 1 widened):
- *  per-call override → SUPER_DEV_THINKING env override → INHERITED main-session
- *  level (`inherited`) → role default. The INHERITED tier sits ABOVE the role
- *  default but BELOW per-call and SUPER_DEV_THINKING, so an explicit override
- *  or env var still wins (SCENARIO-005/006). */
+/** Resolve the effective thinking level with precedence (v0.3.43 reordered):
+ *  per-call override → SUPER_DEV_THINKING env → ROLE TIER (for explicitly
+ *  tiered agents) → INHERITED main-session level → "medium" fallback.
+ *
+ *  The ROLE TIER sits ABOVE the inherited level for TIERED roles. The previous
+ *  order (inherited above role defaults, SCENARIO-006) let a parent session
+ *  running `:max` propagate max thinking to EVERY specialist — classifiers,
+ *  committers, everyone — measured as the #1 latency root cause (thinking
+ *  tokens were 50-85% of specialist output). Explicit control is preserved:
+ *  per-call and SUPER_DEV_THINKING still override everything, and UNTIERED
+ *  agents keep inheriting the main-session level exactly as before. */
 export function resolveThinking(agent: string, perCall?: ThinkingLevel, inherited?: ThinkingLevel): ThinkingLevel {
 	if (perCall) return perCall;
 	const env = asThinkingLevel(superDevEnv("SUPER_DEV_THINKING"));
 	if (env) return env;
+	if (hasThinkingTier(agent)) return thinkingForAgent(agent);
 	if (inherited) return inherited;
-	return thinkingForAgent(agent);
+	return "medium";
 }
 
 /** Resolve the EXPLICIT-OR-INHERITED thinking level (per-call → SUPER_DEV_THINKING

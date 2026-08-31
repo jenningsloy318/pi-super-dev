@@ -255,7 +255,10 @@ describe("F2 — RED review timeout does NOT delete the written test file", () =
 		const ctxB = { ...ctx, budget: { ...ctx.budget, check: () => n++ < 12 } };
 		await (implementationStage as Stage).run(mkState(), ctxB as StageContext);
 
-		expect(calls.logs.some((l) => /RED cleanup SKIPPED: the review did not complete/.test(l))).toBe(true);
+		// v0.3.43 parallel join: a review death surfaces AFTER the concurrent
+		// implementer ran — the file stays preserved (never restored/deleted) and
+		// the honest rejection line names the incomplete review.
+		expect(calls.logs.some((l) => /red-review-rejected: RED review not strong: RED review did not complete \(timed out after 480s\)/.test(l))).toBe(true);
 		expect(calls.logs.some((l) => /RED cleanup: restored unaccepted RED change\(s\)/.test(l))).toBe(false);
 	});
 
@@ -333,9 +336,11 @@ describe("F4 — the retry hint names the wall-clock death and the disk state", 
 		const ctxB = { ...ctx, budget: { ...ctx.budget, check: () => n++ < 12 } };
 		await (implementationStage as Stage).run(mkState(), ctxB as StageContext);
 
-		const retryPrompt = calls.tdd.map((c) => c.prompt).find((p) => p.includes("PREVIOUS TRY DIED AT THE WALL CLOCK"));
+		// v0.3.43: the review death rides the JOIN re-author evidence (the
+		// implementer ran concurrently; its work was discarded).
+		const retryPrompt = calls.tdd.map((c) => c.prompt).find((p) => p.includes("RED REVIEW REJECTED THE SUITE"));
 		expect(retryPrompt).toBeTruthy();
-		expect(retryPrompt!).toMatch(/review never completed|never completed/);
+		expect(retryPrompt!).toMatch(/RED review did not complete \(timed out after 480s\)/);
 	});
 
 	it("review fix (code F-1/adv F-2): the disk-state line probes the DISK — a file written before the timeout is named even though the claim was cleared", async () => {

@@ -336,9 +336,27 @@ describe("review-2 fixes", () => {
 		expect(bus.emitted.filter((e) => e.channel === "prompt-template:subagent:request")).toHaveLength(1);
 	});
 
-	it("P2: inherited model/thinking ride on the request when no explicit param is set", async () => {
+	it("P2 (v0.3.43): inherited model rides on the request; the thinking ROLE TIER wins for tiered agents (judge=high)", async () => {
 		const bus = new FakeBus();
 		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			inheritedModelObject: { provider: "zai-coding-cn", id: "glm-5.3" },
+			inheritedThinking: "medium",
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const req = bus.last("prompt-template:subagent:request") as DelegationRequestPayload;
+		expect(req.model).toBe("zai-coding-cn/glm-5.3");
+		// "judge" is a REASONING-tier agent — its designed level ("high") must not
+		// be lowered by an inherited main-session "medium" (v0.3.43 root-cause fix).
+		expect(req.thinking).toBe("high");
+		bus.deliver("prompt-template:subagent:response", { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId, status: "completed", result: textResult("ok") });
+		await pending;
+	});
+
+	it("P2 (v0.3.43): UNTIERED agents still inherit the main-session thinking level", async () => {
+		const bus = new FakeBus();
+		const pending = runAgentViaDelegation(baseOpts({
+			agent: "orchestrator",
 			events: bus,
 			inheritedModelObject: { provider: "zai-coding-cn", id: "glm-5.3" },
 			inheritedThinking: "medium",

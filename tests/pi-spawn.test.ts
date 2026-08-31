@@ -248,7 +248,7 @@ const saveEnv = (...keys: string[]) => {
 	};
 };
 
-describe("resolveThinking — widened precedence (INHERITED tier) [AC-03 / SCENARIO-005, SCENARIO-006]", () => {
+describe("resolveThinking — v0.3.43 reordered precedence (ROLE TIER above INHERITED) [SCENARIO-005/006 amended]", () => {
 	const env = saveEnv("SUPER_DEV_THINKING");
 	beforeEach(env.clear);
 	afterEach(env.restore);
@@ -259,17 +259,31 @@ describe("resolveThinking — widened precedence (INHERITED tier) [AC-03 / SCENA
 		expect(resolveThinking("design", "minimal", "xhigh")).toBe("minimal");
 	});
 
-	it("SUPER_DEV_THINKING env wins over the INHERITED level when no per-call override", () => {
+	it("SUPER_DEV_THINKING env wins over the INHERITED level and the role tier when no per-call override", () => {
 		process.env.SUPER_DEV_THINKING = "low";
-		// The INHERITED tier sits BELOW the env tier in the widened chain.
 		expect(resolveThinking("design", undefined, "xhigh")).toBe("low");
+		expect(resolveThinking("slug", undefined, "high")).toBe("low");
 	});
 
-	it("INHERITED main-session level wins over the role default when no per-call/env override (SCENARIO-006)", () => {
-		// "design" role default is "high"; the INHERITED tier sits ABOVE the default.
-		expect(resolveThinking("design", undefined, "xhigh")).toBe("xhigh");
-		// "slug" role default is "minimal"; an inherited "high" lifts the specialist.
-		expect(resolveThinking("slug", undefined, "high")).toBe("high");
+	it("v0.3.43 root-cause fix: the ROLE TIER wins over the inherited main-session level for TIERED agents", () => {
+		// A `:max` parent session must NOT inflate tiered specialists — measured
+		// as the #1 throughput root cause on the 2026-08-30 run pair.
+		expect(resolveThinking("design", undefined, "xhigh")).toBe("high");
+		expect(resolveThinking("implementer", undefined, "max")).toBe("medium");
+		expect(resolveThinking("tdd-guide", undefined, "max")).toBe("medium");
+		expect(resolveThinking("slug", undefined, "high")).toBe("minimal");
+		expect(resolveThinking("tdd-coverage-classifier", undefined, "max")).toBe("low");
+		expect(resolveThinking("red-boundary-classifier", undefined, "max")).toBe("low");
+		expect(resolveThinking("task-classifier", undefined, "xhigh")).toBe("low");
+		expect(resolveThinking("judge", undefined, "max")).toBe("high");
+		expect(resolveThinking("code-reviewer", undefined, "max")).toBe("high");
+	});
+
+	it("UNTIERED agents still inherit the main-session level (SCENARIO-006 semantics preserved where they belong)", () => {
+		// prototype-runner / orchestrator / bdd-writer have no explicit tier —
+		// the inherited main-session level keeps applying to them.
+		expect(resolveThinking("prototype-runner", undefined, "xhigh")).toBe("xhigh");
+		expect(resolveThinking("orchestrator", undefined, "low")).toBe("low");
 	});
 
 	it("falls back to the role default when nothing (per-call/env/inherited) is supplied", () => {

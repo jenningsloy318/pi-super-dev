@@ -314,8 +314,10 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 		// the post-RED oracle (tests must go green) is the deterministic endpoint.
 		expect(calls.tdd).toHaveLength(1);
 		expect(calls.impl).toHaveLength(1);
-		// The weakness analysis rides into the implementer prompt as advisory.
-		expect(calls.impl[0].prompt).toContain("RED review advisory");
+		// v0.3.43 parallel join: the implementer runs CONCURRENTLY with the review,
+		// so the advisory can no longer ride the first implementer prompt — it is
+		// logged at the join (post-RED oracle is the deterministic endpoint).
+		expect(calls.impl[0].prompt).not.toContain("RED review advisory");
 		expect(calls.logs.some((l) => /RED review: NOT STRONG.*advisory; proceeding/.test(l))).toBe(true);
 		expect(res.phasesCompleted).toBe(1);
 	});
@@ -328,15 +330,17 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 		});
 		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
 
-		// The contradiction overrides the STRONG verdict: tdd-guide re-authored once.
+		// v0.3.43 parallel join: the contradiction is adjudicated AFTER the
+		// concurrent implementer ran — its work is discarded and the RED is
+		// re-authored (tdd[1]) with the proof; the SECOND implementer (after the
+		// clean STRONG) completes the phase.
 		expect(calls.tdd).toHaveLength(2);
-		// The re-prompt carried the reviewer's contradiction + proof.
 		expect(calls.tdd[1].prompt).toMatch(/jointly unsatisfiable/);
 		expect(calls.tdd[1].prompt).toMatch(/byte-identical samples cannot differ/);
-		// Implementation proceeds only after the clean STRONG (no contradictions).
-		expect(calls.impl).toHaveLength(1);
+		expect(calls.impl).toHaveLength(2); // 1st ran concurrently (discarded), 2nd completes
 		expect(res.phasesCompleted).toBe(1);
-		expect(calls.logs.some((l) => /RED review: CONTRADICTIONS/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /jointly unsatisfiable/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => l.includes("REJECTED at join"))).toBe(true);
 	});
 
 	it("Fix 4: a STRONG verdict with contradictions: [] proceeds directly (no re-author)", async () => {
@@ -355,10 +359,12 @@ describe("P3 — RED loop: confirmed-red proceeds immediately (SCENARIO-006/010)
 		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
 
 		// Non-strong (here: empty/invalid) must NOT fail open → tdd-guide re-prompted.
+		// v0.3.43 parallel join: the first implementer ran concurrently and was
+		// discarded at the join; the second completes after the strong verdict.
 		expect(calls.tdd).toHaveLength(2);
-		expect(calls.impl).toHaveLength(1); // proceeds only after the strong verdict
+		expect(calls.impl).toHaveLength(2);
 		expect(res.phasesCompleted).toBe(1);
-		expect(calls.logs.some((l) => /RED review: NOT STRONG/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /red-review-rejected: RED review not strong:/.test(l))).toBe(true);
 	});
 
 	it("logs the red-oracle outcome as `Implementation phase-01 red-oracle: red (ran: ...)`", async () => {
@@ -896,7 +902,10 @@ describe("v0.3.0 — weak RED review proceeds with advisory", () => {
 		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
 		expect(calls.tdd).toHaveLength(2); // re-authored once with the proof
 		expect(calls.tdd[1].prompt).toContain("jointly unsatisfiable");
-		expect(calls.logs.some((l) => /RED review: CONTRADICTIONS/.test(l))).toBe(true);
+		// v0.3.43 parallel join: contradictions surface at the join (GREEN work
+		// discarded), not as an in-loop CONTRADICTIONS line.
+		expect(calls.logs.some((l) => /jointly unsatisfiable/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => l.includes("REJECTED at join"))).toBe(true);
 		expect(res.phasesCompleted).toBe(1);
 	});
 });
