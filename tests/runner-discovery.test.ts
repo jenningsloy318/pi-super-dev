@@ -144,6 +144,24 @@ describe("v0.3.40: runnerCoversTargets — cached runner phase scoping", () => {
 		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
 		expect(runnerCoversTargets({ version: 1, command: "npm exec vitest run --reporter=tap tests/agent-roster.test.ts", resultFormat: "tap", discoveredAt: "x" } as TestRunnerSpec, ["tests/agent-roster.test.ts"])).toBe(true);
 	});
+	// Run 2026-08-31T03-25-44-485Z phase 1 try 2: the validated glob runner
+	// `node --test cosmic-clock-3d/tests/*.test.mjs` was dropped by the guard
+	// (glob token != exact target), forcing re-discovery + a judge round
+	// (~20 min). A directory glob DOES execute every file it matches.
+	it("v0.3.50: glob tokens cover every target they match", async () => {
+		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
+		const glob: TestRunnerSpec = { version: 1, command: "node --test cosmic-clock-3d/tests/*.test.mjs", resultFormat: "tap", discoveredAt: "x" };
+		expect(runnerCoversTargets(glob, ["cosmic-clock-3d/tests/phase1-shell.test.mjs"])).toBe(true);
+		expect(runnerCoversTargets(glob, ["cosmic-clock-3d/tests/phase2-engine.test.mjs"])).toBe(true);
+		// * does not cross `/` — a deeper directory is NOT covered by a one-level glob
+		expect(runnerCoversTargets(glob, ["cosmic-clock-3d/tests/deep/nested.test.mjs"])).toBe(false);
+		// bare glob matches by basename
+		expect(runnerCoversTargets({ version: 1, command: "node --test *.test.mjs", resultFormat: "tap", discoveredAt: "x" } as TestRunnerSpec, ["cosmic-clock-3d/tests/phase1-shell.test.mjs"])).toBe(true);
+		// a glob for a DIFFERENT directory still does not cover
+		expect(runnerCoversTargets(glob, ["other/tests/phase1-shell.test.mjs"])).toBe(false);
+		// `?` single-char metacharacter
+		expect(runnerCoversTargets({ version: 1, command: "node --test cosmic-clock-3d/tests/phase?-shell.test.mjs", resultFormat: "tap", discoveredAt: "x" } as TestRunnerSpec, ["cosmic-clock-3d/tests/phase1-shell.test.mjs"])).toBe(true);
+	});
 });
 
 // ─── v0.3.41: npm exec flag-swallowing ───────────────────────────────────────
