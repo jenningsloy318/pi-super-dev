@@ -42,9 +42,77 @@ function tryParseJsonObject(raw: string): ControlObj | null {
 			return value as ControlObj;
 		}
 	} catch {
-		// fall through
+		// v0.3.48: strict parse failed — try the unescaped-inner-quote repair before
+		// giving up (see repairUnescapedQuotes for the incident this ends).
+		const repaired = repairUnescapedQuotes(trimmed);
+		if (repaired && repaired !== trimmed) {
+			try {
+				const value = JSON.parse(repaired);
+				if (value && typeof value === "object" && !Array.isArray(value)) {
+					return value as ControlObj;
+				}
+			} catch {
+				/* repair did not converge — fall through to null */
+			}
+		}
 	}
 	return null;
+}
+
+/** v0.3.48 — repair the unescaped-inner-double-quote JSON class.
+ *
+ * Live incident (run 2026-08-31T01-47-05 + poisoned resume 02-56-26,
+ * cosmic-clock requirements review round 1): the reviewer's control JSON
+ * embedded HTML markup in an evidence string — `countOccurrences('<a class="card "'=8)`
+ * — and the UNESCAPED double quotes inside the string terminated it early
+ * (`Expected ',' or '}' after property value`). The whole 22-minute review
+ * (6 findings, 4 blocking golden-value math contradictions) was discarded,
+ * the delegation corrective retry re-ran the entire agent, the still-unparsed
+ * retry got cached as a permanent error row, and the resume replayed that
+ * poisoned row into an instant abort. Models quoting HTML/markup in evidence
+ * is COMMON, so the parse boundary now repairs this class instead of failing.
+ *
+ * Strategy: a quote inside a string is a REAL closing quote only when the
+ * next non-whitespace character is structural (`,` `:` `}` `]` — the only
+ * legal followers of a string value/key in JSON). Any other quote is inner
+ * and gets escaped. The repair runs ONLY after strict JSON.parse already
+ * failed, so well-formed payloads take the fast path untouched; a wrong
+ * repair just fails parse again (returns null — never worse than before).
+ * Known residual ambiguity (inner quote immediately followed by a comma,
+ * e.g. prose `class="card,"`) stays unrepaired — better honest-null than
+ * silently rewritten content. */
+export function repairUnescapedQuotes(raw: string): string | null {
+	let out = "";
+	let inString = false;
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i]!;
+		if (!inString) {
+			if (ch === '"') inString = true;
+			out += ch;
+			continue;
+		}
+		// inside a string
+		if (ch === "\\") {
+			out += ch + (raw[i + 1] ?? "");
+			i++;
+			continue;
+		}
+		if (ch !== '"') {
+			out += ch;
+			continue;
+		}
+		// candidate closing quote — lookahead to the next non-whitespace char
+		let j = i + 1;
+		while (j < raw.length && /\s/.test(raw[j]!)) j++;
+		const next = raw[j];
+		if (next === undefined || next === "," || next === ":" || next === "}" || next === "]") {
+			inString = false;
+			out += ch;
+		} else {
+			out += '\\"'; // inner quote — escape it
+		}
+	}
+	return out;
 }
 
 /** The list of control keys a stage expects, parsed from its prompt.

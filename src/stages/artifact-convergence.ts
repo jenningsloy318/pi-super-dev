@@ -498,7 +498,10 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						// auto-restart survives solely for the RED-site lead and genuine
 						// cross-run interruptions). A declined jump proceeds to the honest
 						// cap fatal below (the escalation surface already fired in-loop).
-						const upstreamAtCap = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, ownStage));
+						// v0.3.48: non-routable upstream owners (classify) cannot drive a cap
+						// route either — exclude them from the cap-escalation predicate (they
+						// were downgraded to carried advisory at the review site).
+						const upstreamAtCap = blockingConvergenceFindings(state).filter((f) => isRoutableOwnerStage(f.ownerStage) && ownerPrecedes(f.ownerStage, ownStage));
 						if (upstreamAtCap.length > 0) {
 							const inlineAtCap = planInlineRouteBack(state.setup?.specDirectory, options.feedbackKey, upstreamAtCap);
 							if (inlineAtCap) {
@@ -776,7 +779,26 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						//      mismatch owned by `classify`), so escalate IMMEDIATELY rather than
 						//      forcing the writer to oscillate for rounds; OR
 						//  (b) a STALL — the same blocking signature recurred across rounds.
-						const upstreamOwned = blockingConvergenceFindings(state).filter((f) => ownerPrecedes(f.ownerStage, ownStage));
+						// v0.3.48 non-routable-owner downgrade: ownerPrecedes accepts ANY
+						// strictly-upstream stage, but the routing graph can only re-enter
+					// the closed REPLAN_OWNER_STAGES set. A blocker owned by a
+					// NON-routable upstream stage (classify is the live case —
+					// run 2026-08-31T02-56: task-classifier's deterministic fallback
+					// wrote uiScope=none for a UI-heavy app; the reviewer correctly
+					// flagged owner=classify; planInlineRouteBack can NEVER route it;
+					// headless HITL then aborted the run on a defect the artifact
+					// cannot fix). Such findings become carried advisory debt with a
+					// loud log — the run continues on its real (routable/own) blockers.
+						const routableUpstream = blockingConvergenceFindings(state).filter((f) => isRoutableOwnerStage(f.ownerStage) && ownerPrecedes(f.ownerStage, ownStage));
+						const nonRoutableUpstream = blockingConvergenceFindings(state).filter((f) => !isRoutableOwnerStage(f.ownerStage) && ownerPrecedes(f.ownerStage, ownStage));
+						if (nonRoutableUpstream.length > 0) {
+							for (const f of nonRoutableUpstream) {
+								f.blocking = false;
+								f.downgradeReason = `owner ${f.ownerStage} is not routable mid-run (v0.3.48) — carried advisory debt; fix the classification in the task/config for the next run`;
+							}
+							ctx.log(`${options.feedbackKey} convergence: ${nonRoutableUpstream.length} upstream-owned blocker(s) downgraded to CARRIED ADVISORY (owner stage${nonRoutableUpstream.length === 1 ? "" : "s"} ${[...new Set(nonRoutableUpstream.map((f) => f.ownerStage))].join(", ")} not routable mid-run): ${nonRoutableUpstream.map((f) => f.id).join(", ")} — the run continues on its actionable blockers`);
+						}
+						const upstreamOwned = routableUpstream;
 						const signature = blockingSignature(state, review.ownerStage);
 						const stalled = signature.length > 0 && signature === priorBlockingSignature;
 						priorBlockingSignature = signature;

@@ -361,7 +361,15 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 		const text2 = textOf(response2.result);
 		const control2 = extractControl(text2);
 		if (control2 != null) return { text: text2, control: control2, model: response2.model ?? response.model };
-		return { text: text2, control: null, model: response2.model ?? response.model, error: `delegation retry still missing control keys: ${missing.join(", ")}` };
+		// v0.3.48 honest diagnosis: distinguish UNPARSEABLE control JSON (a
+		// `<control>` block exists but strict parse failed — the unescaped-quote
+		// class, now repaired in control.ts) from a genuinely absent block. The
+		// old wording ("still missing control keys") pointed debuggers at the
+		// MODEL omitting keys when the real defect was in the payload's quoting.
+		const hadTag = /<control>[\s\S]*<\/control>/i.test(text2);
+		return { text: text2, control: null, model: response2.model ?? response.model, error: hadTag
+			? `delegation retry produced an UNPARSEABLE control block (originally missing: ${missing.join(", ")}) — the <control> JSON failed to parse; report this payload for corpus capture`
+			: `delegation retry produced no control object at all (originally missing: ${missing.join(", ")})` };
 	}
 	return { text, control, model: response.model };
 }

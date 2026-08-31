@@ -588,6 +588,46 @@ describe("M4 escalation route-back choice (G6)", () => {
 		expect((state as Record<string, unknown>).__replan).toBeUndefined();
 	});
 
+
+	it("v0.3.48: a NON-ROUTABLE upstream owner (classify) is downgraded to carried advisory — no escalation, no fatal, the loop converges (run 2026-08-31T02-56 abort chain)", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		writeFileSync(`${s.specDirectory}01-requirements.md`, [
+			"# Requirements",
+			"## Executive Summary",
+			"Implement the behavior. " + "details ".repeat(40),
+			"## Acceptance Criteria",
+			"- AC-01: primary behavior",
+			"- AC-02: edge behavior",
+			"## Non-Functional Requirements",
+			"Performance remains acceptable.",
+		].join("\n"));
+		const state: PipelineState = { setup: s, requirements: { docPath: `${s.specDirectory}01-requirements.md` } };
+
+		const classifyFinding = [{ id: "F-CLS-001", severity: "high", title: "UI Scope=none contradicts a UI-heavy deliverable", detail: "Routing metadata mismatch.", ownerStage: "classify", blocking: true, status: "open", recommendation: "Escalate upstream.", evidence: ["uiScope"] }];
+		let reviewCalls = 0;
+		let escalateCalls = 0;
+		const c: StageContext = {
+			...ctx(state, [bddControl(true)], []),
+			options: { escalate: async () => { escalateCalls++; return { choice: "accept-limitation" as const }; } },
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "bdd-reviewer" || (call.id ?? "").endsWith("bddReview")) {
+					reviewCalls++;
+					if (reviewCalls === 1) return { text: "", control: { verdict: "Changes Requested", summary: "metadata mismatch", findings: classifyFinding } as ControlObj };
+					return { text: "", control: { verdict: "Approved", summary: "ok", findings: [] } as ControlObj };
+				}
+				return ctx(state, [bddControl(true)], []).agent(call);
+			},
+		};
+		const log: string[] = [];
+		c.log = (m: string) => log.push(m);
+		const out = await bddConvergenceNode.run(state, c);
+		expect(out.status).toBe("ok");
+		expect(escalateCalls).toBe(0); // RED before v0.3.48: escalation fired → headless FatalAbort
+		expect(log.join("\n")).toContain("CARRIED ADVISORY");
+		expect(reviewCalls).toBe(2); // round 1 rejected (downgraded), round 2 approved → converged
+	});
+
 	it("a route-back choice with an EXHAUSTED edge degrades to the replan emulation (bounded restart)", async () => {
 		const s = setup(dir);
 		mkdirSync(s.specDirectory, { recursive: true });

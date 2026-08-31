@@ -1,0 +1,128 @@
+All verification complete. Every existence-grounding claim in the doc checks out against the repo — SCENARIO-024's ④/⑤ assertions pin 8/8 exactly as described, the "+1 pure-append delta" convention comment exists in that file, the ::before-accent=7 pins exist in fusion SCENARIO-004 and fission SCENARIO-023/025, root index.html has exactly 8 cards and 7 accent rules, the exact `#homeBtn` markup matches the fusion-pinned string, and both sibling suites measure 33/33 and 39/39 when run (confirming the doc's correction of the spec's stale 36/36). I also traced every hub-counting assertion in all 7 sibling test files: the "only SCENARIO-024 ④⑤ changes" scope in AC-03 is closure-complete.
+
+The blocking defects are confined to AC-05's frozen golden-value contract (echoed once in AC-08): four rows are unsatisfiable by any correct implementation of the mandated formulas — doppler1pz(0.1)=1.00504 is the transverse factor γ while the spec's own formula and ch07's signed slider need the longitudinal 1.10554; the rvK triple mixes mass/period units (Mj/days vs Mj/years vs M⊕/years) so one function cannot pass all three calls; lambdaObs(14.44, 121.567) must be 1876.99 nm by the doc's own λobs=(1+z)λemit, not the pinned 1882±1; and balmerLine 656.3±0.1 is unreachable by vacuum Rydberg (656.46/656.11) without the unstated air-wavelength convention. These would stall the phase2 golden suite in permanent RED.
+
+<control>
+{
+  "title": "Requirements Review — cosmic-clock-3d 01-requirements.md (spec v2.0 grounding)",
+  "date": "2026-08-31",
+  "verdict": "Changes Requested",
+  "summary": "Structurally strong, heavily grounded requirements: all D7 existence claims were independently verified in-repo (fission phase4-gate SCENARIO-024 assertions ④/⑤ = 8/8 with the documented pure-append +1 convention; fusion SCENARIO-004 and fission SCENARIO-023/025 pin ::before accents at 7; root index.html has exactly 8 cards / 7 accent rules; fission SCENARIO-001/021 exist as cited), and both sibling baselines were reproduced by execution (fusion 33/33, fission 39/39 — the doc's correction of the spec's stale 36/36 is real). The AC-03 'single sanctioned edit' scope is closure-complete: no other sibling assertion pins hub card counts. The blocking defects are confined to the AC-05 frozen golden-value math contract (with one echo in AC-08): four rows cannot be satisfied by any correct implementation of the formulas the doc/spec itself mandates — doppler1pz (value is the transverse factor, contradicting the mandated longitudinal formula and ch07's signed consumer), rvK (three pinned calls require three mutually exclusive unit conventions), lambdaObs (pinned 1882 nm vs mathematically forced 1876.99 nm), and balmerLine (±0.1 band unreachable by vacuum Rydberg without the unstated air convention). Fixing these four rows unblocks the phase2 suite; everything else is approval-grade.",
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "P1",
+      "title": "AC-05 doppler1pz(0.1)=1.00504 contradicts the mandated relativistic formula and ch07's signed consumer",
+      "detail": "AC-05 freezes doppler1pz(0.1) = 1.00504 ±1e-4 described as the relativistic value. 1.00504 is exactly the transverse/second-order factor 1/√(1−β²) at β=0.1 (=1.0050378), while the relativistic longitudinal Doppler the spec itself mandates (spec §11.1: 1+z=√((1+β)/(1−β))) gives √(1.1/0.9) = 1.10554. The two values are mutually exclusive, and only the longitudinal formula can serve the function's only interactive consumer: ch07's v/c slider −0.1c..+0.1c driving a signed z readout with Hα sliding both ways (referenced by AC-06's gate set and AC-08's chapter paths). The transverse γ is even in β — it cannot produce blueshift, so implementing to the pinned 1.00504 silently breaks ch07; implementing the correct ch07 function fails the frozen AC-05 assertion forever. One of the two contracts must move.",
+      "ownerStage": "requirements",
+      "blocking": true,
+      "status": "new",
+      "recommendation": "Pin doppler1pz as the longitudinal relativistic 1+z=√((1+β)/(1−β)) with golden doppler1pz(0.1) = 1.10554 ±1e-4; or explicitly split into doppler1pz (longitudinal, used by ch07) and dopplerGamma (transverse 1/√(1−β²), golden 1.00504) so the frozen value and the chapter behavior no longer compete for one function.",
+      "evidence": "01-requirements.md AC-05 'doppler1pz(0.1) = 1.00504 ±1e-4'; docs/requirements/03-cosmic-clock-3d-animation-spec.md §11.1 '1+z=√((1+β)/(1−β))' and §3 ch07 'v/c 滑块 −0.1c~+0.1c→波环+谱线+z 值读数（Hα 从 656.3nm 滑动）'; arithmetic: √(1.1/0.9)=1.105542, 1/√(0.99)=1.0050378.",
+      "defectClass": "golden-value-vs-formula-contradiction",
+      "confidence": 0.95
+    },
+    {
+      "id": "F-02",
+      "severity": "P1",
+      "title": "AC-05 rvK golden triple is unsatisfiable — the three pinned calls require three mutually exclusive unit conventions",
+      "detail": "AC-05 pins: rvK(0.47, 4.23d, 1.0) = 57 m/s ±5%, rvK(1, 11.86y) ≈ 12.5, rvK(1, 1y) ≈ 0.089. With K = 28.4329·M·(P)^(−1/3): call 1 requires mass unit = Jupiter masses AND period unit = days (computes 59.0, in band); call 2 requires mass = Mj AND period unit = YEARS (12.46; in days it computes 89.1 — 7× off); call 3 requires mass unit = EARTH masses (0.0894; with Mj it computes 28.43 m/s — 320× off). No single (mass, period) convention passes all three, so neither the implementer nor the test author can satisfy the frozen contract. Root cause: the spec ch08 card's planet presets (木星 12.5 / 地球 0.089 / 51 Peg b 57 m/s) were transcribed as function calls without converting 1 M⊕ = 3.1465e-3 Mj and without fixing the period unit.",
+      "ownerStage": "requirements",
+      "blocking": true,
+      "status": "new",
+      "recommendation": "Freeze the signature explicitly, e.g. rvK(Mp_Mj, P_days, sinI=1), and re-express the goldens in those units: rvK(0.47, 4.23, 1.0) ≈ 57 ±5%; rvK(1, 4332.6, 1) ≈ 12.5 (Jupiter); rvK(3.1465e-3, 365.25, 1) ≈ 0.089 (Earth); optionally add rvK(1, 365.25, 1) ≈ 28.4 as the Mj/1yr anchor.",
+      "evidence": "01-requirements.md AC-05 'rvK(0.47, 4.23d, 1.0) = 57 m/s ±5% with rvK(1, 11.86y) ≈ 12.5 and rvK(1, 1y) ≈ 0.089'; spec §3 ch08 '预设：木星 12.5 / 地球 0.089 / 51 Peg b 57 m/s'; computations: 28.4329×0.47×(4.23/365.25)^(−1/3)=59.0; 28.4329×(11.86/365.25)^(−1/3)=89.1 vs 28.4329×11.86^(−1/3)=12.46; 28.4329×3.1465e-3=0.0894 vs 28.4329×1=28.43.",
+      "defectClass": "golden-value-unit-inconsistency",
+      "confidence": 0.93
+    },
+    {
+      "id": "F-03",
+      "severity": "P1",
+      "title": "AC-05/AC-08 lambdaObs golden 1882 nm ±1 is unreachable — the mandated formula forces 1876.99 nm",
+      "detail": "AC-05 freezes lambdaObs(14.44, 121.567nm) = 1882 nm ±1 and AC-08 repeats it as the ch16 key path ('z=14.44 → 1882 nm'). The doc's own formula (spec ch16 card: λobs=(1+z)×λemit) gives 15.44 × 121.567 nm = 1876.99 nm — 5.0 nm outside the ±1 band. A mathematically correct implementation can never go GREEN; the only passing implementation would be a wrong one (e.g. a padded λ0), which corrupts the 'honest-science' golden-value principle the doc itself states. The pinned 1882 corresponds to z≈14.48, not the pinned input z=14.44 (MoM-z14).",
+      "ownerStage": "requirements",
+      "blocking": true,
+      "status": "new",
+      "recommendation": "Re-pin both occurrences to 1877 ±1 nm (AC-05 row and AC-08 ch16 path), or keep 1882 and change the pinned input to z = 14.48 — but input and expectation must close arithmetically.",
+      "evidence": "01-requirements.md AC-05 'lambdaObs(14.44, 121.567nm) = 1882 nm ±1' and AC-08 'ch16 z=14.44 → 1882 nm'; spec §3 ch16 'λobs=(1+z)×121.567nm 读数；预设点 … MoM-z14 14.44'; arithmetic: 15.44×121.567=1876.994.",
+      "defectClass": "golden-value-arithmetic-mismatch",
+      "confidence": 0.97
+    },
+    {
+      "id": "F-04",
+      "severity": "P2",
+      "title": "AC-05 balmerLine 656.3 ±0.1 is unreachable by vacuum Rydberg without the unstated air-wavelength convention",
+      "detail": "AC-05 freezes balmerLine(3→2) = 656.3 nm ±0.1 (band 656.2–656.4). The plain Rydberg computation gives the vacuum wavelength: with reduced-mass R_H = 1.0967758e7 m⁻¹ → 656.46 nm; with R∞ = 1.0973732e7 m⁻¹ → 656.11 nm. Both standard constants land OUTSIDE the band; hitting 656.3 requires the air-wavelength convention (656.28 nm air = 656.46 nm vacuum / n_air≈1.00028), which neither the AC nor the spec states. As written, a textbook-correct vacuum implementation stalls the frozen assertion.",
+      "ownerStage": "requirements",
+      "blocking": true,
+      "status": "new",
+      "recommendation": "Annotate the row 'air wavelength' and require the vacuum→air conversion inside balmerLine (golden 656.3 ±0.1 stands), or widen the tolerance and pin the vacuum value (656.47 ±0.2).",
+      "evidence": "01-requirements.md AC-05 'balmerLine(3→2) = 656.3 nm ±0.1'; spec §11.1 'Hα=656.28nm' (air value); arithmetic: 36/(5×1.0967758e7 m⁻¹)=656.46 nm vacuum; 36/(5×1.0973732e7 m⁻¹)=656.11 nm.",
+      "defectClass": "golden-value-convention-unstated",
+      "confidence": 0.85
+    },
+    {
+      "id": "F-05",
+      "severity": "P3",
+      "title": "AC-07 omits spec §7.5's per-beat mesh cap (≤80) and geometry segment caps (Tube ≤24×8, Sphere ≤24×16)",
+      "detail": "AC-07 carries the factory-reuse, rAF, dispose,禁字, comment-ratio and size gates, but drops three §7.5 budgets: per-beat mesh ≤80 and the TubeGeometry/SphereGeometry segment caps. The governing per-beat draw-call (≤60) and triangle (≤60k/120k) budgets survive in AC-08, so this only weakens the phase4 gate rather than breaking implementability — advisory.",
+      "ownerStage": "requirements",
+      "blocking": false,
+      "status": "new",
+      "recommendation": "Fold the three caps into AC-07's phase4 gate list, or add one sentence declaring AC-08's draw-call/triangle budgets the governing constraint.",
+      "evidence": "01-requirements.md AC-07; spec §7.5 '每拍 mesh ≤80；TubeGeometry ≤24×8、SphereGeometry ≤24×16'.",
+      "confidence": 0.9
+    },
+    {
+      "id": "F-06",
+      "severity": "P3",
+      "title": "AC-05 mis-cites 'spec §7.4' for the pure-function inventory and golden table",
+      "detail": "AC-05 opens 'all spec §7.4 pure functions live in js/constants.js and pass the frozen tolerances', but in the spec §7.4 is the phase3 interaction contract; the function inventory is §5.4 and the frozen golden table is §7.3. The enumerated content is otherwise complete and matches §7.3, so this is a cross-reference slip only.",
+      "ownerStage": "requirements",
+      "blocking": false,
+      "status": "new",
+      "recommendation": "Change the citation to 'spec §5.4/§7.3'.",
+      "evidence": "01-requirements.md AC-05; spec §5.4 '数据正确性（20 个纯函数…）', §7.3 'phase2 golden values', §7.4 'phase3 契约（要点）'.",
+      "confidence": 0.9
+    }
+  ],
+  "priorFindingResolutions": [],
+  "dimensions": [
+    {
+      "name": "D1 Testability",
+      "status": "warn",
+      "notes": "Nearly every AC is objectively verifiable with concrete thresholds, exact markup, counts, and frozen tolerances; verification-method tags (deterministic/test/manual) are correctly assigned. However 4 golden-value rows in AC-05 (doppler1pz, rvK ×3 calls, lambdaObs, balmerLine) are untestable as written — a correct implementation fails them, so the phase2 suite cannot reach GREEN without the fixes in F-01..F-04."
+    },
+    {
+      "name": "D2 Unambiguity",
+      "status": "warn",
+      "notes": "Shell contract, DOM ids, state machine, gates, and NFRs are stated precisely (verified verbatim against sibling pins). Residual ambiguities are confined to AC-05: doppler1pz admits two physically distinct implementations (F-01), rvK's unit convention is undefined and contradictory (F-02), balmerLine's air/vacuum convention is unstated (F-04)."
+    },
+    {
+      "name": "D3 Consistency",
+      "status": "pass",
+      "notes": "No AC-vs-AC conflicts; terminology, counts (5/21/63, 7 accents, 8→9 card bump, 33/39 baselines) and priorities are uniform across ACs and NFRs; AC-08 consistently echoes AC-05 values (the 1882 echo is covered by F-03, not an independent contradiction)."
+    },
+    {
+      "name": "D4 Completeness",
+      "status": "pass",
+      "notes": "Error/edge paths (WebGL2 gate, CDN timeout fallback, manual/partLoop/auto modes, reduced-motion, mobile drawer), performance and accessibility budgets, zero-dependency deployment constraints, cross-app contamination guards, and honest-science copy rules are all present and spec-consistent. Advisory only: three §7.5 geometry caps not carried into AC-07 (F-05)."
+    },
+    {
+      "name": "D5 Feasibility/Scope",
+      "status": "pass",
+      "notes": "Bounded greenfield scope with verified precedents: both sibling suites reproduce the claimed baselines when executed (fusion 33/33, fission 39/39), the sanctioned single-edit scope is closure-complete (traced every hub-counting assertion in all 7 sibling test files), and the engine/gate pattern is byte-grounded in the fusion/fission code."
+    },
+    {
+      "name": "D6 Resolved decisions",
+      "status": "pass",
+      "notes": "No open questions; all contentious decisions are frozen with rationale (baseline 39/39 correction, ::before count 7 semantics, incremental 8→9 bump as the single sanctioned sibling edit, golden values as the math contract)."
+    },
+    {
+      "name": "D7 Existence grounding",
+      "status": "pass",
+      "notes": "Every AC asserting existing baseline entities was verified in-repo: fission phase4-gate SCENARIO-024 ④ countOccurrences('Open →')=8 and ⑤ '<a class="card "'=8 with the documented pure-append +1 convention; fusion phase1 SCENARIO-004 and fission SCENARIO-023/025 pin ::before accents at 7; root index.html has exactly 8 cards and 7 .card--X::before rules; the exact #homeBtn markup string matches fusion's pinned literal; fission SCENARIO-001 (zero-build fingerprint) and SCENARIO-021 (fusion 33/33 pin) exist; cosmic-clock-3d/ correctly absent (greenfield)."
+    }
+  ]
+}
+</control>

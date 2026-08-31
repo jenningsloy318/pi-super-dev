@@ -152,18 +152,22 @@ describe("artifactConvergenceNode — upstream review layer", () => {
 		expect(hasLog(script.logs, "accepted the limitation")).toBe(true);
 	});
 
-	it("upstream-owned (classify) blocking finding ⇒ escalates IMMEDIATELY (round 1, no stall wait)", async () => {
-		// A finding owned by `classify` (upstream of requirements) cannot be fixed by
-		// the requirements writer, so the loop must escalate on the FIRST round rather
-		// than oscillate. Verified: escalate fires with writerRounds === 1.
+	it("v0.3.48: upstream-owned (classify) blocking finding ⇒ downgraded to CARRIED ADVISORY (classify is not routable mid-run), the loop converges — run 2026-08-31T02-56 abort chain", async () => {
+		// OLD contract (pre-v0.3.48): escalate IMMEDIATELY — but classify is NOT in
+		// REPLAN_OWNER_STAGES, so planInlineRouteBack can never route it and a
+		// headless escalation aborts the whole run (the 2026-08-31T02-56 incident:
+		// uiScope=none fallback metadata → owner=classify → "route-back declined"
+		// → fatal). The routable-owner escalation contract lives in
+		// tests/artifact-convergence.test.ts (route-back tests). Here: the finding
+		// the artifact cannot fix becomes loud carried debt, never a fatal.
 		const script: Script = { reviews: [upstreamOwned("REQ-SCOPE"), approved], logs: [], writerRounds: 0 };
 		const escalate = vi.fn<Escalate>().mockResolvedValue({ choice: "accept-limitation" });
 		const ctx = makeCtx(script, escalate);
 		const result = await requirementsConvergenceNode.run(makeState(), ctx);
 		expect(result.status).toBe("ok");
-		expect(escalate).toHaveBeenCalledTimes(1);
-		expect(script.writerRounds).toBe(1); // escalated on round 1, did NOT wait for a stall
-		expect(hasLog(script.logs, "UPSTREAM-OWNED blocker detected")).toBe(true);
+		expect(escalate).toHaveBeenCalledTimes(0); // RED pre-fix: 1 (headless → FatalAbort chain)
+		expect(script.writerRounds).toBe(2); // round 1 rejected (finding downgraded), round 2 approved
+		expect(hasLog(script.logs, "CARRIED ADVISORY")).toBe(true);
 	});
 
 	it("no escalate wired ⇒ never blocks; a later approval still converges", async () => {

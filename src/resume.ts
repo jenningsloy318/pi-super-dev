@@ -20,6 +20,7 @@
 import { appendFileSync, readFileSync, existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentCall, AgentResult } from "./types.ts";
+import { extractControl } from "./control.ts";
 
 const CACHE_FILE = ".resume-cache.jsonl";
 const COMPLETE_FILE = ".complete";
@@ -184,6 +185,21 @@ export function createMemoizingAgent(
 		const hit = cache.get(key);
 		if (hit) {
 			log?.(`resumed (cached): ${call.id ?? key}`);
+			// v0.3.48 poisoned-row recovery: a cached row whose ONLY defect was a
+			// control-extraction failure (the result carries text + an error + no
+			// control) is re-extracted with the CURRENT parser before replay. The
+			// 2026-08-31 cosmic-clock incident cached a 22-minute review whose JSON
+			// had two unescaped inner quotes; every resume replayed the failure
+			// forever even though the text held a complete, verdict-bearing control.
+			// Re-extraction at replay time converts such rows into successes the
+			// moment the parse boundary improves — no manual cache surgery needed.
+			if (hit.error && hit.text && hit.control == null) {
+				const recovered = extractControl(hit.text);
+				if (recovered != null) {
+					log?.(`resumed (cached): ${call.id ?? key} — control RECOVERED from cached text (parse boundary improved since the original attempt)`);
+					return { ...hit, control: recovered, error: undefined };
+				}
+			}
 			return hit;
 		}
 		const result = await realAgent(call);
