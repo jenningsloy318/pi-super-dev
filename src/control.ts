@@ -66,7 +66,18 @@ function tryParseJsonObject(raw: string): ControlObj | null {
  *  the v0.1.51 unsatisfiable-RED-test challenge channel unreachable in real
  *  runs. A segment is accepted when it starts with a valid identifier whose
  *  remainder is empty or an annotation/shape continuation (`(`, `[`, em-dash,
- *  `;`). Unparseable fragments are logged, not silently discarded. */
+ *  `;`). Unparseable fragments are logged, not silently discarded.
+ *
+ *  OPTIONALITY (v0.3.47): a segment may mark its key optional two ways — a
+ *  trailing `?` after the identifier (`priorFindingResolutions?`) or a
+ *  leading `(optional…)` paren annotation (`contracts (optional) [{…}]`,
+ *  `reviewResponses (optional on first attempt…)`). Optional keys are
+ *  EXCLUDED from the returned (required) list: the delegation key check is
+ *  context-free, and a schema-`Type.Optional` field that the contract
+ *  nevertheless DEMANDED cost a live run 22m52s when a reviewer reasonably
+ *  omitted a semantically-empty `priorFindingResolutions` at round 1 and the
+ *  corrective retry re-ran the whole agent (run 2026-08-31T01-47-05). The
+ *  deterministic validators own context-conditional requirements. */
 export function extractControlKeys(prompt: string): string[] {
 	const m = prompt.match(/<control>\s*JSON\s*with:\s*([^\n]+)/i);
 	if (!m) return [];
@@ -100,6 +111,8 @@ export function extractControlKeys(prompt: string): string[] {
 		const id = /^([A-Za-z_]\w*)/.exec(t);
 		if (id) {
 			const rest = t.slice(id[1].length);
+			if (/^\?/.test(rest)) continue; // `key?` — optional, not required
+			if (/^\s*\(\s*optional\b/.test(rest)) continue; // `key (optional …)` — optional
 			if (rest === "" || /^\s*[\u2014\u2013;(\[:]/.test(rest)) {
 				keys.push(id[1]);
 				continue;

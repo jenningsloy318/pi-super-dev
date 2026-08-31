@@ -34,6 +34,7 @@ import {
 	SD_AGENT_PREFIX,
 	delegationAgentName,
 } from "../src/agents/delegation-backend.ts";
+import { extractControlKeys } from "../src/control.ts";
 import type { AgentProgress, SpawnResult } from "../src/types.ts";
 
 /** A fake pi EventBus recording emitted channels + letting tests reply.
@@ -252,6 +253,35 @@ describe("runAgentViaDelegation", () => {
 		bus.deliver("prompt-template:subagent:response", { requestId: second.requestId, ownerRunId: second.ownerRunId, nodeId: second.nodeId, status: "completed", result: textResult('<control>{"route":"re-author-tests","diagnosis":"self-matching regex"}</control>') });
 		const result = await pending;
 		expect(result.control).toEqual({ route: "re-author-tests", diagnosis: "self-matching regex" });
+	});
+
+	it("v0.3.47: a control omitting an OPTIONAL key (declared `key?` upstream, already excluded from controlKeys) passes WITHOUT a corrective retry — the 22m52s priorFindingResolutions burn (run 2026-08-31T01-47-05)", async () => {
+		const bus = new FakeBus();
+		// The upstream-review prompt line now reads `... findings, priorFindingResolutions?, dimensions.`;
+		// extractControlKeys returns only the REQUIRED keys — priorFindingResolutions
+		// is not among them, so a round-1 reviewer control that omits it (no prior
+		// findings to resolve) must be accepted on the FIRST attempt.
+		const prompt = "Output <control> JSON with: title, date, verdict, summary, findings, priorFindingResolutions?, dimensions.";
+		const controlKeys = extractControlKeys(prompt);
+		expect(controlKeys).toEqual(["title", "date", "verdict", "summary", "findings", "dimensions"]);
+		const pending = runAgentViaDelegation(baseOpts({
+			events: bus,
+			prompt,
+			controlKeys,
+		}) as Parameters<typeof runAgentViaDelegation>[0]);
+		await Promise.resolve();
+		const requests: DelegationRequestPayload[] = [];
+		const capture = () => bus.emitted.filter((e) => e.channel === "prompt-template:subagent:request").map((e) => e.payload as DelegationRequestPayload);
+		requests.push(...capture());
+		const first = requests[0];
+		// a COMPLETE control per the required list — priorFindingResolutions deliberately absent
+		bus.deliver("prompt-template:subagent:response", { requestId: first.requestId, ownerRunId: first.ownerRunId, nodeId: first.nodeId, status: "completed", result: textResult('<control>{"title":"R","date":"2026-08-31","verdict":"Approved","summary":"ok","findings":[],"dimensions":[{"name":"Consistency","status":"pass","notes":"clean"}]}</control>') });
+		// findings:[] is DELIBERATE — it pins the v0.3.47 zero-defect-approval fix
+		// (empty findings is a valid outcome, not a missing key).
+		const result = await pending;
+		expect(result.error).toBeUndefined();
+		expect(result.control?.verdict).toBe("Approved");
+		expect(capture()).toHaveLength(1); // NO second request — no corrective retry fired
 	});
 });
 

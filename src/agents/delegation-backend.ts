@@ -344,7 +344,8 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 	// Review-2 P1: the corrective check must honor allowEmptyArraysFor AND the
 	// built-in file-list allow-set — a legitimately empty `filesCreated: []`
 	// must NOT trigger a spurious full second run (session-agent parity).
-	const emptyArrayOk = new Set(["filesCreated", "filesModified", "filesDeleted", ...(opts.allowEmptyArraysFor ?? [])]);
+	// v0.3.47: findings:[] is a valid zero-defect approval (see pi-spawn DEFAULT_EMPTY_ARRAY_OK).
+	const emptyArrayOk = new Set(["filesCreated", "filesModified", "filesDeleted", "findings", ...(opts.allowEmptyArraysFor ?? [])]);
 	const missing = opts.controlKeys && opts.controlKeys.length > 0 && control != null
 		? missingControlKeys(control, opts.controlKeys, { allowEmptyArraysFor: emptyArrayOk })
 		: (control == null && opts.controlKeys && opts.controlKeys.length > 0 ? [...opts.controlKeys] : []);

@@ -608,7 +608,11 @@ export function buildSubprocessTaskPrompt(prompt: string, controlKeys: string[] 
 
 /** Default empty-array allow-list — identical to the session backend's, so both
  *  backends enforce the same completeness contract by default (parity). */
-const DEFAULT_EMPTY_ARRAY_OK = ["filesCreated", "filesModified", "filesDeleted"];
+// v0.3.47: `findings` joins the empty-ok set — a review that APPROVES with
+// zero findings is a first-class outcome (the review prompts say so verbatim:
+// "Zero findings is a valid, respected outcome"), but the strict key check
+// treated findings:[] as a missing key and burned a full corrective re-run.
+const DEFAULT_EMPTY_ARRAY_OK = ["filesCreated", "filesModified", "filesDeleted", "findings"];
 
 function controlError(control: Record<string, unknown> | null, keys: string[], allowEmptyArraysFor?: string[]): string | undefined {
 	const missing = missingControlKeys(control, keys, { allowEmptyArraysFor: [...DEFAULT_EMPTY_ARRAY_OK, ...(allowEmptyArraysFor ?? [])] });

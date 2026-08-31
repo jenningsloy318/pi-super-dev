@@ -863,6 +863,11 @@ export function parseRedContradictions(control: unknown): Array<{ tests: string;
  *  (Fix 1a) so the challenge channel cannot be broken by prompt-text drift.
  *  Must stay in sync with buildImplementPrompt's control line (enforced by
  *  tests/prompt-control-contracts.test.ts). */
+// testDefects stays REQUIRED here: the current prompt line says "ALWAYS emit
+// this key; use [] when none" and the call site passes allowEmptyArraysFor —
+// required-with-empty-ok. (The v0.1.52 HISTORICAL line wording "(optional…)"
+// now parses as optional under v0.3.47, but that line is only a parser
+// fixture; the live contract is this one.)
 const IMPLEMENTER_CONTROL_KEYS = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"];
 
 /** Fix 5 — cheap text-proof heuristic markers. ADVISORY ONLY: text alone never

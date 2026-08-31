@@ -1,6 +1,6 @@
 {
 	"name": "pi-super-dev",
-	"version": "0.3.46",
+	"version": "0.3.47",
 	"description": "Self-contained, modular development pipeline for the Pi coding agent, built on a composable control-flow node algebra (branch/parallel/loop/retry/gate/map/wait). Spawns specialist pi subagents directly — no external workflow engine required.",
 	"private": false,
 	"type": "module",
@@ -55,16 +55,17 @@
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "^0.82.1",
-		"typebox": "^1.1.0",
-		"@earendil-works/pi-tui": "^0.82.1"
+		"@earendil-works/pi-tui": "^0.82.1",
+		"typebox": "^1.1.0"
 	},
 	"devDependencies": {
 		"@earendil-works/pi-coding-agent": "^0.82.1",
+		"@earendil-works/pi-tui": "^0.82.1",
 		"@types/node": "^22.0.0",
+		"@vitest/coverage-v8": "^3.2.6",
 		"typebox": "1.1.38",
 		"typescript": "^5.4",
-		"vitest": "^3.0",
-		"@earendil-works/pi-tui": "^0.82.1"
+		"vitest": "^3.0"
 	},
 	"engines": {
 		"node": ">=22.19.0"

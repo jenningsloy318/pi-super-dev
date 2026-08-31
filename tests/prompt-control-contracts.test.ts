@@ -73,12 +73,12 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildRequirementsPrompt", () => {
 		expectKeys(buildRequirementsPrompt(s, null, "task"), [
-			"title", "date", "type", "priority", "executiveSummary", "acceptanceCriteria", "nonFunctional", "openQuestions",
+			"title", "date", "type", "priority", "executiveSummary", "acceptanceCriteria", "nonFunctional", // openQuestions? — optional since v0.3.47
 		]);
 	});
 
 	it("buildBddPrompt", () => {
-		expectKeys(buildBddPrompt(s, null, "task", null), ["title", "date", "source", "features", "traceability"]);
+		expectKeys(buildBddPrompt(s, null, "task", null), ["title", "date", "source", "features"]); // traceability? — optional since v0.3.47);
 	});
 
 	it("buildResearchPrompt", () => {
@@ -91,13 +91,13 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildAssessmentPrompt", () => {
 		expectKeys(buildAssessmentPrompt(s, null, "task", null, null), [
-			"title", "date", "summary", "patterns", "recommendations", "filesAssessed", "services",
+			"title", "date", "summary", "patterns", "recommendations", "filesAssessed", // services? — optional since v0.3.47
 		]);
 	});
 
 	it("buildDesignPrompt — bracket shape [{name, description}] stripped whole, no phantom `name`/`description` keys", () => {
 		expectKeys(buildDesignPrompt(s, null, "task", null, null, null, "designer"), [
-			"title", "date", "summary", "designer", "modules", "hasNumericConstants", "contracts", "alternativesConsidered",
+			"title", "date", "summary", "designer", "modules", "hasNumericConstants", // contracts/alternativesConsidered (optional…) — excluded since v0.3.47
 		]);
 	});
 
@@ -107,19 +107,19 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildSpecPrompt", () => {
 		expectKeys(buildSpecPrompt(s, null, "task", null, null, null, null, null, null), [
-			"title", "date", "summary", "architecture", "testingStrategy", "acceptanceCriteriaRefs", "scenarioRefs", "phases", "tasks", "reviewResponses", "gate",
+			"title", "date", "summary", "architecture", "testingStrategy", "scenarioRefs", "phases", "tasks", // acceptanceCriteriaRefs?/reviewResponses?/gate? — optional since v0.3.47
 		]);
 	});
 
 	it("buildUpstreamReviewPrompt", () => {
 		expectKeys(buildUpstreamReviewPrompt(s, null, { stage: "requirements", upstream: [] }), [
-			"title", "date", "verdict", "summary", "findings", "priorFindingResolutions", "dimensions",
+			"title", "date", "verdict", "summary", "findings", "dimensions", // priorFindingResolutions? — optional since v0.3.47
 		]);
 	});
 
 	it("buildSpecReviewPrompt", () => {
 		expectKeys(buildSpecReviewPrompt(s, null, null), [
-			"title", "date", "verdict", "summary", "findings", "priorFindingResolutions", "dimensions",
+			"title", "date", "verdict", "summary", "findings", "dimensions", // priorFindingResolutions? — optional since v0.3.47
 		]);
 	});
 
@@ -192,10 +192,10 @@ describe("control-key contracts: call-site parity (Fix 1a)", () => {
 		// IMPLEMENTER_CONTROL_KEYS is module-private in implementation.ts; the
 		// call site is the authoritative consumer. Mirror the literal here and
 		// assert parity with the built prompt (they must never drift apart).
-		const callSiteKeys = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"];
+		const callSiteKeys = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"]; // required-with-empty-ok (allowEmptyArraysFor)
 		const prompt = buildImplementPrompt(s, null, { name: "p" }, null, null);
 		expect(extractControlKeys(prompt)).toEqual(callSiteKeys);
-		// The challenge key must survive BOTH paths (v0.1.52: neither had it).
+		// The challenge key survives BOTH paths (v0.1.52: neither had it).
 		expect(extractControlKeys(prompt)).toContain("testDefects");
 	});
 });
@@ -203,7 +203,9 @@ describe("control-key contracts: call-site parity (Fix 1a)", () => {
 describe("extractControlKeys parser hardening (Fix 1e / 2b)", () => {
 	it("the EXACT v0.1.52 implementer control line yields the full set including testDefects, no phantom lines", () => {
 		const v52Line = "Output <control> JSON with: filesCreated (array), filesModified (array), filesDeleted (array), testsPassCount (number), summary, testDefects (optional array of {testFile, lines, reason} — emit ONLY when you have proven a confirmed RED test is unsatisfiable; omit otherwise).";
-		expect(extractControlKeys(v52Line)).toEqual(["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"]);
+		// v0.3.47: the (optional…) paren now classifies testDefects OPTIONAL — recognized
+		// (no junk-drop, no phantom `lines` — the v0.1.52 lesson) but not required.
+		expect(extractControlKeys(v52Line)).toEqual(["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary"]);
 	});
 
 	it("commas inside parens, braces, and nested combos do not split keys", () => {
