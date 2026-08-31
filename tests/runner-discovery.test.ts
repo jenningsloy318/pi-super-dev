@@ -186,3 +186,38 @@ describe("v0.3.41: npm exec / npx forward child flags after --", () => {
 		expect(plain.argv).toEqual(["npm", "test"]);
 	});
 });
+
+describe("v0.3.52: package-glob and JVM-selector scoping", () => {
+	const mk = (command: string): TestRunnerSpec => ({ version: 1, command, resultFormat: "tap", discoveredAt: "2026-01-01T00:00:00Z" });
+	// Go package globs scope to a subtree but carry no file extension — before
+	// v0.3.52 they read as suite-wide and a stale subtree runner survived for
+	// other phases (the v0.3.40 false-covers class reborn for Go).
+	it("go package globs scope coverage by prefix", async () => {
+		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
+		expect(runnerCoversTargets(mk("go test ./..."), ["x/y_test.go"])).toBe(true);
+		expect(runnerCoversTargets(mk("go test ./pkg/a/..."), ["pkg/a/engine_test.go"])).toBe(true);
+		expect(runnerCoversTargets(mk("go test ./pkg/a/..."), ["pkg/b/other_test.go"])).toBe(false);
+		expect(runnerCoversTargets(mk("go test pkg/a/..."), ["pkg/a/e_test.go"])).toBe(true);
+	});
+	// JVM selectors pin a class: `--tests X` has no path/extension, `-Dtest=X`
+	// starts with a flag dash — both were invisible before v0.3.52.
+	it("gradle --tests / maven -Dtest selectors scope coverage by class", async () => {
+		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
+		expect(runnerCoversTargets(mk("./gradlew test --tests FooTest"), ["app/src/test/java/FooTest.kt"])).toBe(true);
+		expect(runnerCoversTargets(mk("./gradlew test --tests FooTest"), ["app/src/test/java/BarTest.kt"])).toBe(false);
+		expect(runnerCoversTargets(mk("./gradlew test --tests=FooTest"), ["app/src/FooTest.kt"])).toBe(true);
+		expect(runnerCoversTargets(mk("./gradlew test --tests FooTest,BarTest"), ["app/BarTest.kt"])).toBe(true);
+		expect(runnerCoversTargets(mk("./gradlew test --tests com.x.FooTest"), ["app/src/com/x/FooTest.kt"])).toBe(true);
+		expect(runnerCoversTargets(mk("./gradlew test --tests Export*Test"), ["app/ExportFieldResolverTest.kt"])).toBe(true);
+		expect(runnerCoversTargets(mk("mvn test -Dtest=FooTest"), ["src/test/java/BarTest.java"])).toBe(false);
+		expect(runnerCoversTargets(mk("mvn test -Dtest=FooTest"), ["src/test/java/FooTest.java"])).toBe(true);
+	});
+	// The prior grammar classes stay pinned (v0.3.40 exact/stale, v0.3.50 glob).
+	it("file-token grammar is unchanged", async () => {
+		const { runnerCoversTargets } = await import("../src/build-runner/runner-discovery.ts");
+		expect(runnerCoversTargets(mk("node --test tests/phase1.test.mjs"), ["tests/phase1.test.mjs"])).toBe(true);
+		expect(runnerCoversTargets(mk("node --test tests/phase1.test.mjs"), ["tests/phase2.test.mjs"])).toBe(false);
+		expect(runnerCoversTargets(mk("node --test tests/*.test.mjs"), ["tests/phase2.test.mjs"])).toBe(true);
+		expect(runnerCoversTargets(mk("npm test"), ["tests/x.test.ts"])).toBe(true);
+	});
+});

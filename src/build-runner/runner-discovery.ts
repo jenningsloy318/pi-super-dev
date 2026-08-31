@@ -177,6 +177,51 @@ function fileLikeTokens(command: string): string[] {
 	return splitShellCommand(command).filter((t) => (/\.(test|spec)\.[a-z0-9]+$/i.test(t) || (t.includes("/") && /\.[a-z0-9]+$/i.test(t))) && !t.startsWith("-"));
 }
 
+/** Go/Java-style package glob tokens (`./...`, `./pkg/...`, `pkg/a/...`).
+ *  v0.3.52: these SCOPE the run to a subtree but carry no file extension, so
+ *  the file-token grammar saw nothing and every package-glob runner read as
+ *  suite-wide — a stale `go test ./pkg/a/...` runner would be trusted for a
+ *  pkg/b phase (the v0.3.40 false-covers class reborn for Go). */
+function packageGlobTokens(command: string): string[] {
+	return splitShellCommand(command).filter((t) => !t.startsWith("-") && (t === "..." || (t.endsWith("...") && t.includes("/"))));
+}
+
+/** JVM selector values (`--tests X`, `--tests=X`, `-Dtest=X[,Y]`).
+ *  v0.3.52: `--tests FooTest` / `-Dtest=FooTest` pin one class — the value has
+ *  no path or file extension and the `-D` form starts with a flag dash, so
+ *  both scoping forms were invisible to the token grammar (false covers for
+ *  the Gradle/Maven worlds — AnkiQuick-class Kotlin projects). */
+function selectorTokens(command: string): string[] {
+	const out: string[] = [];
+	for (const m of command.matchAll(/(?:--tests(?:=|\s+)|-D(?:test|tests)=)([\w.*?,\\[\]]+)/g)) {
+		const v = m[1].replace(/^["']|["']$/g, "");
+		for (const part of v.split(",")) if (part.trim()) out.push(part.trim());
+	}
+	return out;
+}
+
+/** Package-glob prefix match: `./pkg/a/...` covers targets under pkg/a. */
+function packageGlobMatchesTarget(tok: string, t: string): boolean {
+	const prefix = tok.replace(/^\.\//, "").replace(/\.{3}$/, "").replace(/\/$/, "");
+	if (prefix === "") return true; // `./...` (or bare `...`) is the whole tree
+	const nt = t.replace(/^\.\//, "");
+	return nt === prefix || nt.startsWith(`${prefix}/`);
+}
+
+/** Selector match: `FooTest` covers `.../FooTest.kt` / `FooTest.java`; FQCN
+ *  selectors match by suffix; wildcards (`Foo*Test`) match the basename stem. */
+function selectorMatchesTarget(sel: string, t: string): boolean {
+	const nt = t.replace(/^\.\//, "");
+	const stem = nt.slice(nt.lastIndexOf("/") + 1).replace(/\.[a-z0-9]+$/i, "");
+	const selStem = sel.slice(sel.lastIndexOf(".") + 1); // FQCN → simple class name
+	if (sel === stem || selStem === stem || nt.endsWith(sel)) return true;
+	if (/[*?]/.test(sel)) {
+		const re = new RegExp(`^${sel.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")}$`);
+		return re.test(stem);
+	}
+	return false;
+}
+
 /** Convert a shell glob (only * and ? as metacharacters) to a RegExp.
  *  `*` and `?` do not cross `/` (path-glob semantics); a bare glob like
  *  `*.test.mjs` also matches target basenames via the `(^|/)` anchor. */
@@ -198,9 +243,17 @@ function tokenMatchesTarget(tok: string, t: string): boolean {
  *  burned retries. A runner that names specific test files covers a phase only
  *  when at least one claimed target matches (either direction, suffix-safe;
  *  glob tokens match by wildcard since a `tests/*.test.mjs` runner does
- *  execute every file in that directory); a suite-wide command always covers. */
+ *  execute every file in that directory); a suite-wide command always covers.
+ *  v0.3.52: Go package globs (`./pkg/a/...`) and JVM selectors (`--tests X`,
+ *  `-Dtest=X`) also SCOPE the run — they now participate in the same union so
+ *  a stale subtree/class-scoped runner can no longer masquerade as suite-wide. */
 export function runnerCoversTargets(spec: TestRunnerSpec, targets: string[]): boolean {
-	const tokens = fileLikeTokens(spec.command);
-	if (tokens.length === 0) return true;
-	return targets.some((t) => tokens.some((tok) => tokenMatchesTarget(tok, t)));
+	const files = fileLikeTokens(spec.command);
+	const pkgs = packageGlobTokens(spec.command);
+	const sels = selectorTokens(spec.command);
+	if (files.length === 0 && pkgs.length === 0 && sels.length === 0) return true;
+	return targets.some((t) =>
+		files.some((tok) => tokenMatchesTarget(tok, t))
+		|| pkgs.some((tok) => packageGlobMatchesTarget(tok, t))
+		|| sels.some((sel) => selectorMatchesTarget(sel, t)));
 }
