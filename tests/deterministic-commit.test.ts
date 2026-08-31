@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deterministicPhaseCommit } from "../src/stages/implementation.ts";
+import { deterministicPhaseCommit, discardGreenWork, porcelainEntries, gitStatusPaths } from "../src/stages/implementation.ts";
 
 const ENV_KEYS = ["SUPER_DEV_LLM_COMMITS"];
 
@@ -163,5 +163,89 @@ describe("discardGreenWork (v0.3.43 RC2 — fail-closed join discard)", () => {
 		expect(discarded).toContain("seed.txt");
 		expect(String(git("status", "--porcelain").stdout).trim()).toBe("");
 		rmSync(repo, { recursive: true, force: true });
+	});
+});
+
+/* ── v0.3.45: -z porcelain reader vs C-quoted paths ────────────────────────
+ * Real-repo regression for the v1-quoting class found in the wild: git quotes
+ * space-containing paths on EVERY machine and non-ASCII paths whenever
+ * core.quotepath=true (the git DEFAULT — only this dev box's global config
+ * disables it, which is why every earlier ASCII-only fixture silently passed).
+ * Each repo below PINS core.quotepath=true locally to simulate a default
+ * machine, so these tests prove the engine's -z reader is machine-independent. */
+describe("porcelain -z reader (v0.3.45) — quoted 中文/space/rename paths", () => {
+	function makeQuotedRepo() {
+		const repo = mkdtempSync(join(tmpdir(), "sd-porcelain-"));
+		const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+		git("init", "-q");
+		git("config", "user.email", "t@t");
+		git("config", "user.name", "t");
+		git("config", "core.quotepath", "true"); // simulate the git default machine
+		mkdirSync(join(repo, "中文目录"), { recursive: true });
+		mkdirSync(join(repo, "space dir"), { recursive: true });
+		writeFileSync(join(repo, "seed.txt"), "seed\n");
+		writeFileSync(join(repo, "中文目录", "文件.ts"), "a\n");
+		writeFileSync(join(repo, "space dir", "file.txt"), "b\n");
+		git("add", "-A");
+		git("commit", "-qm", "init");
+		return { repo, git };
+	}
+
+	it("gitStatusPaths returns RAW unquoted paths for modified/untracked 中文 and space files (no ' M' mangling, no quote leakage)", () => {
+		const { repo, git } = makeQuotedRepo();
+		try {
+			writeFileSync(join(repo, "seed.txt"), "seed\nMODIFIED"); // ' M' tracked modification
+			writeFileSync(join(repo, "中文目录", "新文件.kt"), "x"); // untracked non-ASCII
+			writeFileSync(join(repo, "space dir", "new.txt"), "y"); // untracked, space path
+			const paths = gitStatusPaths(repo);
+			expect(paths.has("seed.txt")).toBe(true); // NOT 'eed.txt' (the v1 trim bug)
+			expect(paths.has("中文目录/新文件.kt")).toBe(true); // NOT octal-escaped
+			expect(paths.has("space dir/new.txt")).toBe(true); // NOT wrapped in literal quotes
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("porcelainEntries flattens rename records (both new and old path visible)", () => {
+		const { repo, git } = makeQuotedRepo();
+		try {
+			git("mv", "space dir/file.txt", "space dir/renamed.txt");
+			const entries = porcelainEntries(repo);
+			const renamed = entries.find((e) => e.status.startsWith("R"));
+			expect(renamed?.path).toBe("space dir/renamed.txt"); // unquoted new side
+			expect(renamed?.fromPath).toBe("space dir/file.txt"); // old side as its own field
+			expect(entries.some((e) => e.path === "中文目录/文件.ts")).toBe(false); // clean file not reported
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("discardGreenWork restores modified and removes untracked 中文/space paths under core.quotepath=true", () => {
+		const { repo, git } = makeQuotedRepo();
+		try {
+			writeFileSync(join(repo, "中文目录", "文件.ts"), "a\nGREEN-EDIT"); // tracked modification
+			writeFileSync(join(repo, "space dir", "green-new.ts"), "impl"); // untracked GREEN output
+			const discarded = discardGreenWork(repo, new Set(["tests/keep.test.ts"]));
+			expect(discarded).toContain("中文目录/文件.ts");
+			expect(discarded).toContain("space dir/green-new.ts");
+			expect(String(git("status", "--porcelain").stdout).trim()).toBe(""); // tree back to HEAD
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("deterministicPhaseCommit commits 中文/space files and still excludes runtime scratch under them", () => {
+		const { repo, git } = makeQuotedRepo();
+		try {
+			writeFileSync(join(repo, "中文目录", "prod.ts"), "impl\n");
+			writeFileSync(join(repo, "中文目录", ".judge.jsonl"), "{}\n"); // excluded basename under non-ASCII dir
+			const out = deterministicPhaseCommit(repo, { phaseIndex: 1, totalPhases: 2, phaseName: "中文相位", gateSummary: "all-green", worktreeCreated: true });
+			expect(out.status).toBe("committed");
+			// the production file rides the commit; the judge scratch stays untracked
+			expect(String(git("-c", "core.quotepath=false", "show", "--name-only", "--pretty=format:", "HEAD").stdout)).toContain("中文目录/prod.ts");
+			expect(String(git("status", "--porcelain", "--untracked-files=all").stdout)).toContain(".judge.jsonl");
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
 	});
 });

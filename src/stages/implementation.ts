@@ -151,21 +151,52 @@ export function redEvidenceSignature(e: RedEvidence): string {
 	});
 }
 
-function gitLines(cwd: string, args: string[]): string[] {
-	try {
-		const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-		return out.split("\n").map((l) => l.trim()).filter(Boolean);
-	} catch {
-		return [];
-	}
+/** v0.3.45: machine-independent porcelain reading. `--porcelain -z` output
+ * is NUL-terminated and NEVER C-quotes paths — the v1 line format quotes
+ * paths containing spaces on EVERY machine (and non-ASCII whenever
+ * `core.quotepath=true`, the git default), so RAW v1 parsing fed quoted
+ * phantom paths ("\"space dir/x\"", octal-escaped 中文) into gate sets,
+ * discard/commit pathspecs. Rename records in -z carry the OLD path as the
+ * NEXT NUL field (`XY new\0old`); the reader consumes it so callers see flat
+ * entries (both sides included — a rename dirties both the deleted and the
+ * added path from the gates' perspective). Exported for tests. */
+export interface PorcelainEntry {
+	status: string;
+	path: string;
+	/** For R/C records: the pre-rename path (second -z field). */
+	fromPath?: string;
 }
 
-function gitStatusPaths(cwd: string): Set<string> {
+export function porcelainEntries(cwd: string): PorcelainEntry[] {
+	const r = spawnSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], { encoding: "utf8", timeout: 15_000 });
+	if (r.error || r.status !== 0 || !r.stdout) return [];
+	const recs = String(r.stdout).split("\0");
+	const entries: PorcelainEntry[] = [];
+	for (let i = 0; i < recs.length; i++) {
+		const rec = recs[i]!;
+		if (!rec) continue;
+		const status = rec.slice(0, 2);
+		const path = rec.slice(3);
+		if (!path) continue;
+		if ((status[0] === "R" || status[0] === "C") && recs[i + 1]) {
+			entries.push({ status, path, fromPath: recs[i + 1] });
+			i++;
+			continue;
+		}
+		entries.push({ status, path });
+	}
+	return entries;
+}
+
+/** v0.3.45: dirty-path set from the -z reader (see porcelainEntries). The
+ * old v1-line reader TRIMMED each line first, so a tracked modification
+ * (" M path") lost its leading space and the path mangled to "ath" —
+ * space/quoted/renamed paths also leaked quoted. */
+export function gitStatusPaths(cwd: string): Set<string> {
 	const paths = new Set<string>();
-	for (const line of gitLines(cwd, ["status", "--porcelain=v1", "--untracked-files=all"])) {
-		const raw = line.slice(3).trim();
-		const path = raw.includes(" -> ") ? raw.split(" -> ").pop()!.trim() : raw;
-		if (path) paths.add(path);
+	for (const e of porcelainEntries(cwd)) {
+		paths.add(e.path);
+		if (e.fromPath) paths.add(e.fromPath);
 	}
 	return paths;
 }
@@ -1137,22 +1168,18 @@ export function lastFailuresUpsert(arr: PhaseFailureEntry[], phaseId: string, re
  *  engine never stages during a phase). Returns the restored paths for the
  *  log. Never throws. */
 export function discardGreenWork(worktreePath: string, keepTestFiles: Set<string>): string[] {
-	const git = (...args: string[]) => spawnSync("git", ["-C", worktreePath, ...args], { encoding: "utf8", timeout: 30_000 });
-	const status = git("status", "--porcelain", "-uall");
-	if (status.status !== 0) return [];
+	// v0.3.45: the -z reader replaces RAW v1-line parsing — v1 C-quotes
+	// space paths on every machine and octal-escapes non-ASCII on default
+	// `core.quotepath=true` machines, so rmSync/restore silently missed them.
 	const restored: string[] = [];
-	// RAW porcelain lines (no trim — the XY prefix carries a meaningful space:
-	// " M path" trimmed becomes "M path" and mangles the path to "ath").
-	for (const line of String(status.stdout ?? "").split("\n").filter((l) => l.length > 3)) {
-		const xy = line.slice(0, 2);
-		const path = line.slice(3).trim().replace(/^"/, "").replace(/"$/, "");
-		if (!path) continue;
+	for (const e of porcelainEntries(worktreePath)) {
+		const path = e.path;
 		const base = path.split("/").pop() ?? path;
 		if (keepTestFiles.has(path) || PHASE_COMMIT_EXCLUDED_BASENAMES.has(base) || isHarnessBookkeepingPath(path)) continue;
-		if (xy === "??") {
+		if (e.status === "??") {
 			try { rmSync(resolve(worktreePath, path), { force: true }); restored.push(path); } catch { /* best-effort */ }
 		} else {
-			const r = git("restore", "--worktree", "--", path);
+			const r = spawnSync("git", ["-C", worktreePath, "restore", "--worktree", "--", path], { encoding: "utf8", timeout: 30_000 });
 			if (r.status === 0) restored.push(path);
 		}
 	}
@@ -1186,16 +1213,14 @@ export function deterministicPhaseCommit(
 	const git = (...args: string[]) => spawnSync("git", ["-C", worktreePath, ...args], { encoding: "utf8", timeout: 30_000 });
 	// Snapshot the porcelain BEFORE staging so the exclusion set is applied to
 	// the real change list (not to the staged index we are building).
-	// -uall: porcelain collapses untracked DIRECTORIES (?? docs/), which would
-	// hide the individual file paths the exclusion loop needs to see.
-	const status = git("status", "--porcelain", "-uall");
-	if (status.status !== 0) return { status: "fallback", reason: `git status failed (exit ${status.status})` };
-	// RAW porcelain lines (no trim — the XY prefix carries a meaningful space).
-	const entries = String(status.stdout ?? "").split("\n").filter((l) => l.length > 3);
+	// v0.3.45: the -z reader (see porcelainEntries) — v1 lines C-quote space
+	// paths on every machine and octal-escape non-ASCII on default
+	// `core.quotepath=true` machines, breaking both the exclusion match and
+	// the `git reset -- <path>` pathspec for quoted paths.
+	const entries = porcelainEntries(worktreePath);
 	if (entries.length === 0) return { status: "skipped", reason: "tree already clean — nothing to commit" };
 	const committable = entries.filter((e) => {
-		const path = e.slice(3).trim().replace(/^\"/, "").replace(/\"$/, "");
-		const base = path.split("/").pop() ?? path;
+		const base = e.path.split("/").pop() ?? e.path;
 		return !PHASE_COMMIT_EXCLUDED_BASENAMES.has(base);
 	});
 	if (committable.length === 0) return { status: "skipped", reason: `only runtime-scratch files changed (${entries.length} entr${entries.length === 1 ? "y" : "ies"}) — nothing durable to commit` };
@@ -1205,9 +1230,8 @@ export function deterministicPhaseCommit(
 	// cheapest precise form; a failed reset is non-fatal, the commit message
 	// names the file set honestly either way).
 	for (const e of entries) {
-		const path = e.slice(3).trim().replace(/^\"/, "").replace(/\"$/, "");
-		const base = path.split("/").pop() ?? path;
-		if (PHASE_COMMIT_EXCLUDED_BASENAMES.has(base)) git("reset", "--", path);
+		const base = e.path.split("/").pop() ?? e.path;
+		if (PHASE_COMMIT_EXCLUDED_BASENAMES.has(base)) git("reset", "--", e.path);
 	}
 	const title = `phase ${opts.phaseIndex}/${opts.totalPhases}: ${opts.phaseName}`;
 	const message = [`${title}`, "", `Deterministic super-dev phase commit (v0.3.43+; engine-side, no LLM).`, ``, `Gates: ${opts.gateSummary}`, ``, `[super-dev: deterministic-phase-commit]`].join("\n");

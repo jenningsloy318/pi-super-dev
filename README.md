@@ -746,7 +746,10 @@ pytest/go/cargo), control-JSON parsing and per-prompt control-key contracts,
 RED/GREEN classification per language, judge budgets and evidence
 verification, review triage, baseline verification against real tmp git
 repos, merge verification against real linked worktrees, the TUI render
-layer, and workflow composition integrity.
+layer, and workflow composition integrity. The testing contract itself —
+layered model, mock-hygiene rules, real-repo/real-toolchain lanes, the live
+payload corpus convention, and the prioritized gap register — is documented
+in [docs/testing-strategy.md](docs/testing-strategy.md).
 
 ## License
 
