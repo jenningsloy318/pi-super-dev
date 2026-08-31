@@ -11,7 +11,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { superDevEnv } from "./render/super-dev-dir.ts";
+import { getConfig, superDevEnv } from "./render/super-dev-dir.ts";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -240,21 +240,48 @@ function asThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
 	return value && (THINKING_LEVELS as readonly string[]).includes(value) ? (value as ThinkingLevel) : undefined;
 }
 
-/** Resolve the effective thinking level with precedence (v0.3.43 reordered):
- *  per-call override → SUPER_DEV_THINKING env → ROLE TIER (for explicitly
- *  tiered agents) → INHERITED main-session level → "medium" fallback.
+/** v0.3.44: per-agent thinking override from config.json (`agentThinking`).
+ *  Lazily read per call (the superDevEnv pattern) so config edits apply to
+ *  later dispatches without a process restart; the optional `map` param keeps
+ *  this unit-testable without touching the real ~/.super-dev/config.json.
+ *  Invalid levels are ignored — a typo falls back to tier behavior, not a
+ *  crash. */
+export function agentThinkingFromConfig(agent: string, map?: Record<string, string>): ThinkingLevel | undefined {
+	const source =
+		map ??
+		(() => {
+			try {
+				return getConfig().agentThinking;
+			} catch {
+				return undefined;
+			}
+		})();
+	if (!source) return undefined;
+	return asThinkingLevel(source[agent]?.trim());
+}
+
+/** Resolve the effective thinking level with precedence (v0.3.43 reordered,
+ *  v0.3.44 adds the config tier):
+ *  per-call override → SUPER_DEV_THINKING env → config.agentThinking[role] →
+ *  ROLE TIER (for explicitly tiered agents) → INHERITED main-session level →
+ *  "medium" fallback.
  *
  *  The ROLE TIER sits ABOVE the inherited level for TIERED roles. The previous
  *  order (inherited above role defaults, SCENARIO-006) let a parent session
  *  running `:max` propagate max thinking to EVERY specialist — classifiers,
  *  committers, everyone — measured as the #1 latency root cause (thinking
  *  tokens were 50-85% of specialist output). Explicit control is preserved:
- *  per-call and SUPER_DEV_THINKING still override everything, and UNTIERED
- *  agents keep inheriting the main-session level exactly as before. */
+ *  per-call and SUPER_DEV_THINKING still override everything, UNTIERED agents
+ *  keep inheriting the main-session level exactly as before, and a
+ *  config.agentThinking entry beats the built-in tier for its role (tuning a
+ *  role is the point of the config — e.g. raise implementer to "high" for a
+ *  hard codebase, or drop a reviewer to "low" for a cheap one). */
 export function resolveThinking(agent: string, perCall?: ThinkingLevel, inherited?: ThinkingLevel): ThinkingLevel {
 	if (perCall) return perCall;
 	const env = asThinkingLevel(superDevEnv("SUPER_DEV_THINKING"));
 	if (env) return env;
+	const cfg = agentThinkingFromConfig(agent);
+	if (cfg) return cfg;
 	if (hasThinkingTier(agent)) return thinkingForAgent(agent);
 	if (inherited) return inherited;
 	return "medium";

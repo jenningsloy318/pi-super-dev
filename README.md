@@ -526,6 +526,7 @@ set keys — see the next two sections):
 	"language": "english",
 	"agentBackend": "session",
 	"agentModels": { "...": "..." },
+	"agentThinking": { "...": "..." },
 	"env": { "SUPER_DEV_...": "..." }
 }
 ```
@@ -533,6 +534,19 @@ set keys — see the next two sections):
 `escalation`: `"informative"` (default — non-blocking diagnostics in the run
 summary; headless-safe) or `"interactive"` (additionally prompt a 3-option
 select when stagnation fires in TUI/RPC mode).
+
+`agentThinking`: per-agent thinking-level overrides (v0.3.44). Keys are agent
+role names (`"implementer"`, `"tdd-guide"`, `"code-reviewer"`, ...); values
+are one of `"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"`.
+A configured level beats the built-in role tier but stays below
+`SUPER_DEV_THINKING` (global kill-switch) and per-call overrides. Invalid
+values are ignored. Read lazily per agent dispatch, so a config edit applies
+to later agent calls even mid-run. Example — run a hard codebase's implementer
+at `high` while keeping everything else on its default tier:
+
+```json
+"agentThinking": { "implementer": "high", "requirements-clarifier": "low" }
+```
 
 `language`: the natural language **every agent-written artifact** is produced
 in — spec docs, reports, escalation/stagnation reports, `learned.md` /

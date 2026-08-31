@@ -13,6 +13,13 @@ import { EventEmitter, getEventListeners } from "node:events";
 import { PassThrough } from "node:stream";
 import { extractFinalAssistant, buildSpawnArgs, buildSubprocessTaskPrompt, summarizeToolCall, renderEvent, isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveExtensionEntries, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
 import * as piSpawnModule from "../src/pi-spawn.ts";
+vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
+	// v0.3.44 hermetic pin: resolveThinking now reads config.agentThinking
+	// lazily; pin getConfig to DEFAULT_CONFIG so these precedence tests never
+	// depend on (or break on) the real ~/.super-dev/config.json.
+	const actual = await importOriginal<typeof import("../src/render/super-dev-dir.ts")>();
+	return { ...actual, getConfig: () => actual.DEFAULT_CONFIG };
+});
 
 const line = (obj: unknown) => JSON.stringify(obj);
 /** Minimal inherited-model object for tests (only provider+id are read by buildSpawnArgs). */

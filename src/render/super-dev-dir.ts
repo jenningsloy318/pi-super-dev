@@ -50,6 +50,17 @@ export interface SuperDevConfig {
 	 *  --model), but an explicit per-call model still wins. Unlisted roles are
 	 *  unaffected. Empty/absent = today's behavior. */
 	agentModels?: Record<string, string>;
+	/** v0.3.44: per-agent thinking-level overrides. Keys are agent role names
+	 *  ("implementer", "tdd-guide", "code-reviewer", ...); values are one of
+	 *  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max".
+	 *  Precedence (resolveThinking): per-call override → SUPER_DEV_THINKING env
+	 *  → THIS map → built-in role tier → inherited main-session level →
+	 *  "medium". A configured level beats the built-in tier (tuning it is the
+	 *  point) while SUPER_DEV_THINKING stays a global kill-switch above it.
+	 *  Invalid values are ignored (typo → tier behavior, never a crash). Read
+	 *  lazily per call (superDevEnv pattern) so a config edit applies to later
+	 *  agent dispatches even mid-run; already-running agents are unaffected. */
+	agentThinking?: Record<string, string>;
 	/** v0.3.25: specialist execution backend. "session" (default) | "subprocess"
 	 *  | "pi-subagents" (structured delegation through pi-subagents' executor —
 	 *  Fleet UI rows, live steering, stop/resume; degrades to "session" when no

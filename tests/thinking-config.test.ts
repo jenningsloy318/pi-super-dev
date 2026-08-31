@@ -12,9 +12,16 @@
  * runtime because the implementations are still RED-phase stubs.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { thinkingForAgent, resolveThinking, buildSpawnArgs, type ThinkingLevel } from "../src/pi-spawn.ts";
 import { applyThinkingLevel } from "../src/session-agent.ts";
+vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
+	// v0.3.44 hermetic pin: resolveThinking now reads config.agentThinking
+	// lazily; pin getConfig to DEFAULT_CONFIG so these precedence tests never
+	// depend on (or break on) the real ~/.super-dev/config.json.
+	const actual = await importOriginal<typeof import("../src/render/super-dev-dir.ts")>();
+	return { ...actual, getConfig: () => actual.DEFAULT_CONFIG };
+});
 
 describe("thinkingForAgent role mapping", () => {
 	it("maps reasoning-heavy agents to 'high'", () => {
