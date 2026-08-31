@@ -23,15 +23,25 @@ const MOCK_AGENT_THINKING: Record<string, string> = {
 	badlevel: "ultra", // invalid level — ignored, tier behavior remains
 };
 
+// v0.3.45: agentModels entries may carry a `:level` suffix — colocated
+// model+thinking sugar at the SAME config tier (below the dedicated map).
+const MOCK_AGENT_MODELS: Record<string, string> = {
+	design: "zai-coding-cn/glm-5.3:max", // tiered (high) — suffix beats the tier
+	"code-reviewer": "zai-coding-cn/glm-5.3-flash:low", // tiered (high) — suffix beats the tier
+	"requirements-reviewer": "zai-coding-cn/glm-5.3-flash:high", // UNTIERED — suffix beats inherited
+	implementer: "zai-coding-cn/glm-5.3:minimal", // DEDICATED map (high) must WIN over this suffix
+	slug: "zai/glm-flash:low", // has a suffix AND no agentThinking — covers the pure-lookup path
+};
+
 vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/render/super-dev-dir.ts")>();
 	return {
 		...actual,
-		getConfig: () => ({ ...actual.DEFAULT_CONFIG, agentThinking: MOCK_AGENT_THINKING }),
+		getConfig: () => ({ ...actual.DEFAULT_CONFIG, agentThinking: MOCK_AGENT_THINKING, agentModels: MOCK_AGENT_MODELS }),
 	};
 });
 
-import { agentThinkingFromConfig, resolveThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
+import { agentThinkingFromConfig, agentModelThinkingFromConfig, resolveThinking, splitModelThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
 
 describe("agentThinkingFromConfig (pure lookup)", () => {
 	it("returns the configured level for a listed agent", () => {
@@ -88,8 +98,8 @@ describe("resolveThinking — config.agentThinking tier (v0.3.44)", () => {
 	it("per-call override still beats config", () => {
 		expect(resolveThinking("implementer", "minimal")).toBe("minimal");
 	});
-	it("unlisted agents keep v0.3.43 behavior (design→high, judge→high, orchestrator inherits)", () => {
-		expect(resolveThinking("design")).toBe("high");
+	it("unlisted agents keep v0.3.43 behavior (spec-writer→high, judge→high, orchestrator inherits)", () => {
+		expect(resolveThinking("spec-writer")).toBe("high");
 		expect(resolveThinking("judge")).toBe("high");
 		expect(resolveThinking("orchestrator", undefined, "xhigh")).toBe("xhigh");
 		expect(resolveThinking("orchestrator")).toBe("medium");
@@ -100,5 +110,54 @@ describe("resolveThinking — config.agentThinking tier (v0.3.44)", () => {
 			if (a === "badlevel") continue;
 			expect(valid, a).toContain(resolveThinking(a));
 		}
+	});
+});
+
+describe("agentModels `:level` suffix (v0.3.45)", () => {
+	beforeEach(() => {
+		delete process.env.SUPER_DEV_THINKING;
+	});
+	afterEach(() => {
+		delete process.env.SUPER_DEV_THINKING;
+	});
+
+	it("splitModelThinking splits only VALID level words", () => {
+		expect(splitModelThinking("zai-coding-cn/glm-5.3:high")).toEqual({ model: "zai-coding-cn/glm-5.3", thinking: "high" });
+		expect(splitModelThinking("provider/model:latest")).toEqual({ model: "provider/model:latest", thinking: undefined });
+		expect(splitModelThinking("bare")).toEqual({ model: "bare", thinking: undefined });
+		expect(splitModelThinking("")).toEqual({ model: "", thinking: undefined });
+		expect(splitModelThinking(undefined)).toEqual({ model: "", thinking: undefined });
+		expect(splitModelThinking(" zai/glm:MAX ")).toEqual({ model: "zai/glm", thinking: "max" });
+	});
+
+	it("agentModelThinkingFromConfig reads the suffix off config.agentModels", () => {
+		expect(agentModelThinkingFromConfig("design", { design: "zai/glm:max" })).toBe("max");
+		expect(agentModelThinkingFromConfig("design", { design: "zai/glm" })).toBeUndefined();
+		expect(agentModelThinkingFromConfig("design", {})).toBeUndefined();
+		// undefined map → lazily-read config (mocked): design carries :max there
+		expect(agentModelThinkingFromConfig("design", undefined)).toBe("max");
+	});
+
+	it("suffix beats the built-in role tier (design high→max, code-reviewer high→low)", () => {
+		expect(resolveThinking("design")).toBe("max");
+		expect(resolveThinking("code-reviewer")).toBe("low");
+	});
+
+	it("suffix beats INHERITED for untiered agents (requirements-reviewer would inherit :max)", () => {
+		expect(resolveThinking("requirements-reviewer", undefined, "max")).toBe("high");
+	});
+
+	it("the DEDICATED agentThinking map wins over the suffix (implementer high, not minimal)", () => {
+		expect(resolveThinking("implementer")).toBe("high");
+	});
+
+	it("agents with neither config source keep tier behavior (judge stays high)", () => {
+		expect(resolveThinking("judge")).toBe("high");
+	});
+
+	it("per-call override and SUPER_DEV_THINKING env still beat the suffix", () => {
+		expect(resolveThinking("design", "low")).toBe("low");
+		process.env.SUPER_DEV_THINKING = "off";
+		expect(resolveThinking("design")).toBe("off");
 	});
 });

@@ -1,72 +1,72 @@
 {
-  "name": "pi-super-dev",
-  "version": "0.3.44",
-  "description": "Self-contained, modular development pipeline for the Pi coding agent, built on a composable control-flow node algebra (branch/parallel/loop/retry/gate/map/wait). Spawns specialist pi subagents directly — no external workflow engine required.",
-  "private": false,
-  "type": "module",
-  "license": "MIT",
-  "author": "Jennings Liu",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/jenningsloy318/pi-super-dev.git"
-  },
-  "homepage": "https://github.com/jenningsloy318/pi-super-dev#readme",
-  "bugs": {
-    "url": "https://github.com/jenningsloy318/pi-super-dev/issues"
-  },
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "workflow",
-    "pi",
-    "pipeline",
-    "tdd",
-    "control-flow"
-  ],
-  "exports": {
-    "./extension": "./src/extension.ts",
-    "./pipeline": "./src/pipeline.ts",
-    "./nodes": "./src/nodes.ts",
-    "./workflow": "./src/workflow.ts",
-    "./stages": "./src/stages/index.ts",
-    "./package.json": "./package.json"
-  },
-  "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "arch:doc": "node src/render/arch-doc.ts"
-  },
-  "files": [
-    "src",
-    "agents",
-    "skills",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
-  ],
-  "pi": {
-    "extensions": [
-      "./src/extension.ts"
-    ],
-    "skills": [
-      "./skills/super-dev"
-    ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.82.1",
-    "typebox": "^1.1.0",
-    "@earendil-works/pi-tui": "^0.82.1"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.82.1",
-    "@types/node": "^22.0.0",
-    "typebox": "1.1.38",
-    "typescript": "^5.4",
-    "vitest": "^3.0",
-    "@earendil-works/pi-tui": "^0.82.1"
-  },
-  "engines": {
-    "node": ">=22.19.0"
-  }
+	"name": "pi-super-dev",
+	"version": "0.3.45",
+	"description": "Self-contained, modular development pipeline for the Pi coding agent, built on a composable control-flow node algebra (branch/parallel/loop/retry/gate/map/wait). Spawns specialist pi subagents directly — no external workflow engine required.",
+	"private": false,
+	"type": "module",
+	"license": "MIT",
+	"author": "Jennings Liu",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jenningsloy318/pi-super-dev.git"
+	},
+	"homepage": "https://github.com/jenningsloy318/pi-super-dev#readme",
+	"bugs": {
+		"url": "https://github.com/jenningsloy318/pi-super-dev/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"workflow",
+		"pi",
+		"pipeline",
+		"tdd",
+		"control-flow"
+	],
+	"exports": {
+		"./extension": "./src/extension.ts",
+		"./pipeline": "./src/pipeline.ts",
+		"./nodes": "./src/nodes.ts",
+		"./workflow": "./src/workflow.ts",
+		"./stages": "./src/stages/index.ts",
+		"./package.json": "./package.json"
+	},
+	"scripts": {
+		"build": "tsc",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"arch:doc": "node src/render/arch-doc.ts"
+	},
+	"files": [
+		"src",
+		"agents",
+		"skills",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./src/extension.ts"
+		],
+		"skills": [
+			"./skills/super-dev"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "^0.82.1",
+		"typebox": "^1.1.0",
+		"@earendil-works/pi-tui": "^0.82.1"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "^0.82.1",
+		"@types/node": "^22.0.0",
+		"typebox": "1.1.38",
+		"typescript": "^5.4",
+		"vitest": "^3.0",
+		"@earendil-works/pi-tui": "^0.82.1"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
 }

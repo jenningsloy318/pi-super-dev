@@ -35,3 +35,29 @@ describe("resolveAgentModel (precedence A)", () => {
 		expect(resolveAgentModel({ agent: "code-reviewer" }, {}, "g/m")).toBe("g/m");
 	});
 });
+
+describe("resolveAgentModel — `:level` thinking suffix stripped at every tier (v0.3.45)", () => {
+	it("strips the suffix from an agentModels entry (model id must stay bare)", () => {
+		expect(resolveAgentModel({ agent: "implementer" }, { implementer: "zai-coding-cn/glm-5.3:high" }, undefined)).toBe("zai-coding-cn/glm-5.3");
+	});
+
+	it("strips the suffix from a per-call model", () => {
+		expect(resolveAgentModel({ agent: "implementer", model: "x/y:low" }, { implementer: "zai/glm-5.3" }, "g/m")).toBe("x/y");
+	});
+
+	it("strips the suffix from the global model too", () => {
+		expect(resolveAgentModel({ agent: "implementer" }, {}, "g/m:medium")).toBe("g/m");
+	});
+
+	it("a colon suffix that is NOT a valid level word stays intact (model ids may contain colons)", () => {
+		expect(resolveAgentModel({ agent: "implementer" }, { implementer: "provider/model:latest" }, undefined)).toBe("provider/model:latest");
+	});
+
+	it("suffix matching is case-insensitive and tolerates surrounding whitespace", () => {
+		expect(resolveAgentModel({ agent: "implementer" }, { implementer: " zai/glm-5.3:HIGH " }, undefined)).toBe("zai/glm-5.3");
+	});
+
+	it("a trailing bare colon is not a suffix", () => {
+		expect(resolveAgentModel({ agent: "implementer" }, { implementer: "zai/glm-5.3:" }, undefined)).toBe("zai/glm-5.3:");
+	});
+});

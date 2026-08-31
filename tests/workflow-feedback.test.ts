@@ -14,7 +14,8 @@ vi.mock("../src/session-agent.ts", () => ({
 	}),
 	summarizeSlug: vi.fn(async () => "x"),
 }));
-vi.mock("../src/pi-spawn.ts", () => ({
+vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
 	spawnAgent: vi.fn(async (opts: { prompt?: string }) => {
 		captured.prompt = opts.prompt;
 		return { text: "", control: {} };

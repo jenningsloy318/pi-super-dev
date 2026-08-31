@@ -240,6 +240,41 @@ function asThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
 	return value && (THINKING_LEVELS as readonly string[]).includes(value) ? (value as ThinkingLevel) : undefined;
 }
 
+/** v0.3.45: split a trailing `:level` thinking suffix off a model string
+ * ("zai-coding-cn/glm-5.3:high" → model "zai-coding-cn/glm-5.3", thinking "high").
+ * The suffix only splits on a VALID ThinkingLevel word, so model ids that
+ * merely contain a colon ("provider/model:latest") stay intact. Exported for
+ * resolveAgentModel (which must send the BARE model id on every backend) and
+ * the per-call seam in workflow.ts. */
+export function splitModelThinking(raw: string | undefined): { model: string; thinking: ThinkingLevel | undefined } {
+	const s = raw?.trim();
+	if (!s) return { model: "", thinking: undefined };
+	const idx = s.lastIndexOf(":");
+	if (idx <= 0 || idx === s.length - 1) return { model: s, thinking: undefined };
+	const thinking = asThinkingLevel(s.slice(idx + 1).trim().toLowerCase());
+	if (!thinking) return { model: s, thinking: undefined };
+	return { model: s.slice(0, idx), thinking };
+}
+
+/** v0.3.45: per-agent thinking override embedded as a `:level` suffix on the
+ * config.agentModels entry ("zai-coding-cn/glm-5.3:high" — set model and
+ * thinking together). Same lazy-read pattern as agentThinkingFromConfig;
+ * the DEDICATED agentThinking map wins when both are set (the suffix is
+ * colocated sugar, not a second opinion channel). */
+export function agentModelThinkingFromConfig(agent: string, map?: Record<string, string>): ThinkingLevel | undefined {
+	const source =
+		map ??
+		(() => {
+			try {
+				return getConfig().agentModels;
+			} catch {
+				return undefined;
+			}
+		})();
+	if (!source) return undefined;
+	return splitModelThinking(source[agent]).thinking;
+}
+
 /** v0.3.44: per-agent thinking override from config.json (`agentThinking`).
  *  Lazily read per call (the superDevEnv pattern) so config edits apply to
  *  later dispatches without a process restart; the optional `map` param keeps
@@ -261,8 +296,10 @@ export function agentThinkingFromConfig(agent: string, map?: Record<string, stri
 }
 
 /** Resolve the effective thinking level with precedence (v0.3.43 reordered,
- *  v0.3.44 adds the config tier):
+ *  v0.3.44 adds the config tier; v0.3.45 adds the agentModels `:level`
+ *  suffix at the SAME config tier):
  *  per-call override → SUPER_DEV_THINKING env → config.agentThinking[role] →
+ *  config.agentModels[role] `:level` suffix →
  *  ROLE TIER (for explicitly tiered agents) → INHERITED main-session level →
  *  "medium" fallback.
  *
@@ -282,6 +319,8 @@ export function resolveThinking(agent: string, perCall?: ThinkingLevel, inherite
 	if (env) return env;
 	const cfg = agentThinkingFromConfig(agent);
 	if (cfg) return cfg;
+	const modelSuffix = agentModelThinkingFromConfig(agent);
+	if (modelSuffix) return modelSuffix;
 	if (hasThinkingTier(agent)) return thinkingForAgent(agent);
 	if (inherited) return inherited;
 	return "medium";

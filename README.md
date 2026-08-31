@@ -548,6 +548,15 @@ at `high` while keeping everything else on its default tier:
 "agentThinking": { "implementer": "high", "requirements-clarifier": "low" }
 ```
 
+`agentModels` entries may also carry a `:level` thinking suffix (v0.3.45) —
+set the model and its thinking together: `"implementer":
+"zai-coding-cn/glm-5.3:high"`. The suffix is stripped before the model id is
+used (all backends receive the bare id) and applied at the same config tier:
+it beats the built-in role tier, but a dedicated `agentThinking` entry wins
+when both are set, and `SUPER_DEV_THINKING` / per-call overrides still beat
+both. A colon suffix that is not a valid level word (`provider/model:latest`)
+is left intact.
+
 `language`: the natural language **every agent-written artifact** is produced
 in — spec docs, reports, escalation/stagnation reports, `learned.md` /
 `reflection.md` history, audit/ledger text, and commit messages — regardless

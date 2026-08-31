@@ -20,7 +20,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { spawnAgent, isBrowserAgent, needsWebResearch } from "./pi-spawn.ts";
+import { spawnAgent, isBrowserAgent, needsWebResearch, splitModelThinking } from "./pi-spawn.ts";
 import { runAgentViaDelegation } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 import { runAgentViaSession } from "./session-agent.ts";
@@ -273,17 +273,22 @@ async function runWithTransientRetry<T extends { error?: string }>(
  *    call.model  →  agentModels[call.agent]  →  globalModel  →  undefined.
  *  `undefined` means "no explicit model" — the backends then fall back to the
  *  inherited main-session model, preserving the no-default rule. Pure + exported
- *  for unit tests. */
+ *  for unit tests.
+ *  v0.3.45: every tier strips a trailing `:level` thinking suffix — the request
+ *  must carry the BARE model id (session/subprocess build argv from it; only
+ *  pi-subagents' own display combines model+thinking). The suffix's meaning is
+ *  applied separately: config.agentModels suffixes feed resolveThinking, and a
+ *  per-call suffix feeds the call's perCall thinking in realAgent. */
 export function resolveAgentModel(
 	call: { agent: string; model?: string },
 	agentModels: Record<string, string>,
 	globalModel?: string,
 ): string | undefined {
-	const perCall = call.model?.trim();
+	const perCall = splitModelThinking(call.model).model;
 	if (perCall) return perCall;
-	const byRole = agentModels[call.agent]?.trim();
+	const byRole = splitModelThinking(agentModels[call.agent]).model;
 	if (byRole) return byRole;
-	return globalModel;
+	return splitModelThinking(globalModel).model || undefined;
 }
 
 /** P1.3: the run's ledger id, read at event time (runWorkflow sets __runId
@@ -379,7 +384,11 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const allowEmptyArraysFor = call.allowEmptyArraysFor;
 		const timeoutMs = call.timeoutMs;
 		const timeoutLabel = timeoutMs !== undefined ? `${timeoutMs}ms` : "role-default";
-		const thinkingLabel = call.thinking ?? options.inheritedThinking ?? superDevEnv("SUPER_DEV_THINKING") ?? "role-default";
+		// v0.3.45: a per-call model may carry a `:level` suffix ("glm-5.3:high");
+		// an explicit call.thinking still wins, the suffix fills it when absent
+		// (resolveAgentModel strips the suffix from the model string itself).
+		const perCallThinking = call.thinking ?? splitModelThinking(call.model).thinking;
+		const thinkingLabel = perCallThinking ?? options.inheritedThinking ?? superDevEnv("SUPER_DEV_THINKING") ?? "role-default";
 		const accessMode = call.accessMode ?? "write";
 		const forcedBackend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
 			? "subprocess"
@@ -435,8 +444,8 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// aliased to the same `call.thinking` so one `common` object feeds both
 			// backends; when absent, each backend falls back to SUPER_DEV_THINKING
 			// then the role default.
-			thinking: call.thinking,
-			thinkingLevel: call.thinking,
+			thinking: perCallThinking,
+			thinkingLevel: perCallThinking,
 			onProgress: {
 				event: (m: string) => log(m),
 				text: (partial: string) => options.progress?.text(partial),
