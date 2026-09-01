@@ -57,6 +57,17 @@ export interface AgentCall {
 	 * artifacts outside the child agent call.
 	 */
 	accessMode?: AgentAccessMode;
+	/** v0.3.54: when true, this read-only call runs CONCURRENTLY with a writer
+	 *  (e.g. the RED review vs the implementer). On boundary violation the guard
+	 *  QUARANTINES the violating file contents to a tmp dir and does NOT run
+	 *  `git restore` — a blind restore would revert to HEAD and destroy the
+	 *  concurrent writer's legitimate edits to the same file (live: run
+	 *  2026-08-31T16-03-57-978Z phase 11, "boundary reversion wiped the homepage
+	 *  cosmic card"). Attribution/restoration happens at the join site, which
+	 *  knows the writer's claimed files. Default (absent/false) keeps the
+	 *  historical restore-immediately semantics for read-only calls that have
+	 *  no concurrent writer. */
+	concurrentWriter?: boolean;
 	/** Control keys the caller expects back (for the session backend's
 	 *  structured_output schema). Optional; omitted for non-writer calls. */
 	controlKeys?: string[];

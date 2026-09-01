@@ -194,7 +194,10 @@ export function createMemoizingAgent(
 			// Re-extraction at replay time converts such rows into successes the
 			// moment the parse boundary improves — no manual cache surgery needed.
 			if (hit.error && hit.text && hit.control == null) {
-				const recovered = extractControl(hit.text);
+				// v0.3.54 (F6 wiring): the recovery extraction gets the call's declared
+				// keys so the fallback-object guard can reject a WRONG object instead of
+				// replaying it as this call's control.
+				const recovered = extractControl(hit.text, call.controlKeys);
 				if (recovered != null) {
 					log?.(`resumed (cached): ${call.id ?? key} — control RECOVERED from cached text (parse boundary improved since the original attempt)`);
 					return { ...hit, control: recovered, error: undefined };

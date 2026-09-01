@@ -18,8 +18,9 @@ import { languageDirective, superDevEnv } from "./render/super-dev-dir.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch, splitModelThinking } from "./pi-spawn.ts";
 import { runAgentViaDelegation } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
@@ -28,7 +29,7 @@ import { delegationOwnerPresent } from "./agents/register-agents.ts";
 import { runHelper } from "./helpers.ts";
 import { toBool } from "./doc-validators.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
-import { extractControlKeys } from "./control.ts";
+import { drainControlDrift, extractControlKeys } from "./control.ts";
 import { knowledgeForAgent } from "./render/knowledge.ts";
 import { appendUserNotes, userNotesForAgent } from "./render/user-notes.ts";
 import { getConfig } from "./render/super-dev-dir.ts";
@@ -61,6 +62,17 @@ import type {
 
 /** v0.3.35: prepended to EVERY delegation prompt — see realAgent. */
 export const DELEGATION_AUTONOMY_CLAUSE = "## Autonomy (hard constraint)\nYou run AUTONOMOUSLY — there is no human and no supervisor watching, and nobody will answer a question. NEVER call intercom, subagent_supervisor, or subagent_wait, and never wait for a reply. If you are blocked or missing information, complete everything you CAN and state the blocker plainly in your final structured output.";
+
+/** v0.3.54 review fix (code F4 / adv F2+F3): single source of the quarantine
+ *  error payload. The join-side parser (attributQuarantinedViolations) is
+ *  string-coupled to this format, so both sides must move together — the
+ *  regression tests build their fixture errors through THIS function. The
+ *  JSON payload survives filenames containing ", " and quarantine dirs
+ *  containing spaces (Windows tmpdirs); the legacy comma text stays supported
+ *  as a parse fallback. */
+export function formatBoundaryQuarantineError(violations: string[], quarantineDir: string): string {
+	return `source-read-only boundary violation (quarantined, not restored — concurrent writer): paths=${JSON.stringify(violations)} dir=${JSON.stringify(quarantineDir)}`;
+}
 
 const DEFAULT_MAX_AGENTS = 200;
 const DEFAULT_MAX_CONCURRENCY = 3;
@@ -156,10 +168,25 @@ function sourceBoundaryViolations(before: SourceBoundarySnapshot, after: SourceB
 	return [...paths].filter((path) => !sameFingerprint(before.fingerprints.get(path), after.fingerprints.get(path))).sort();
 }
 
-function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot, after: SourceBoundarySnapshot, paths: string[]): { restored: string[]; manual: string[] } {
+function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot, after: SourceBoundarySnapshot, paths: string[], quarantineDir: string | null, mode: "restore" | "quarantine" = "restore"): { restored: string[]; manual: string[]; quarantined: string[] } {
 	const restored: string[] = [];
 	const manual: string[] = [];
+	const quarantined: string[] = [];
 	for (const relPath of paths) {
+		// v0.3.54: quarantine the violating content BEFORE any mutation so the
+		// evidence survives every downstream branch (P10 — honest evidence trail).
+		if (quarantineDir) {
+			try {
+				const abs0 = resolve(cwd, relPath);
+				if (existsSync(abs0) && statSync(abs0).isFile()) {
+					const safeName = relPath.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120) || "file";
+					mkdirSync(quarantineDir, { recursive: true });
+					copyFileSync(abs0, join(quarantineDir, `${quarantined.length}-${safeName}`));
+					quarantined.push(relPath);
+				}
+			} catch { /* quarantine is best-effort; enforcement continues */ }
+		}
+		if (mode === "quarantine") continue; // v0.3.54: preserve bytes, change nothing
 		if (before.fingerprints.has(relPath)) {
 			manual.push(relPath);
 			continue;
@@ -185,7 +212,7 @@ function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot,
 			manual.push(relPath);
 		}
 	}
-	return { restored, manual };
+	return { restored, manual, quarantined };
 }
 
 function makeBudget(maxAgents: number): Budget {
@@ -381,6 +408,11 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			? `${promptWithKnowledge}\n\n## User context (added during the run)\n${userNotes}`
 			: promptWithKnowledge;
 		const controlKeys = call.controlKeys ?? extractControlKeys(call.prompt);
+		// v0.3.54 (P10): contract-drift telemetry (unbalanced parens, dropped
+		// fragments, F6 fallback acceptances) lands in the RUN LOG with the call
+		// id — console.warn never reached run.log/audit, so live runs could not
+		// see why a control line misparsed.
+		for (const drift of drainControlDrift()) log(`agent ${call.id ?? call.agent}: ${drift}`);
 		const allowEmptyArraysFor = call.allowEmptyArraysFor;
 		const timeoutMs = call.timeoutMs;
 		const timeoutLabel = timeoutMs !== undefined ? `${timeoutMs}ms` : "role-default";
@@ -453,6 +485,14 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		};
 		const sourceBoundaryBefore = accessMode === "source-read-only" ? captureSourceBoundary(agentCwd, state.setup?.specDirectory) : null;
 		if (sourceBoundaryBefore && !sourceBoundaryBefore.ok) log(`agent ${call.id ?? call.agent}: source-read-only boundary unavailable (${sourceBoundaryBefore.error}); relying on tool restrictions`);
+		// v0.3.54: read-only calls that run CONCURRENTLY with a writer (the RED
+		// review vs the implementer) must not let the guard's blind `git restore`
+		// destroy the writer's legitimate edits to the same file (live: phase-11
+		// "boundary reversion wiped the homepage cosmic card"). Quarantine mode:
+		// violating contents are preserved to a tmp dir, NOTHING is restored here,
+		// and the thrown error carries the quarantine dir so the join site can
+		// attribute each path against the writer's claimed files.
+		const boundaryQuarantine = accessMode === "source-read-only" && call.concurrentWriter === true;
 		function enforceSourceBoundary(): void {
 			if (!sourceBoundaryBefore?.ok) return;
 			const after = captureSourceBoundary(agentCwd, state.setup?.specDirectory);
@@ -462,10 +502,15 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			}
 			const violations = sourceBoundaryViolations(sourceBoundaryBefore, after);
 			if (violations.length === 0) return;
-			const restored = restoreNewSourceViolations(agentCwd, sourceBoundaryBefore, after, violations);
-			const restoredLine = restored.restored.length ? ` restored=${restored.restored.join(", ")}` : "";
-			const manualLine = restored.manual.length ? ` manual=${restored.manual.join(", ")}` : "";
+			const quarantineDir = join(tmpdir(), `sd-boundary-${randomUUID().slice(0, 8)}`);
+			const outcome = restoreNewSourceViolations(agentCwd, sourceBoundaryBefore, after, violations, quarantineDir, boundaryQuarantine ? "quarantine" : "restore");
+			const restoredLine = outcome.restored.length ? ` restored=${outcome.restored.join(", ")}` : "";
+			const manualLine = outcome.manual.length ? ` manual=${outcome.manual.join(", ")}` : "";
 			log(`agent ${call.id ?? call.agent}: source-read-only boundary violation paths=${violations.join(", ")}${restoredLine}${manualLine}`);
+			if (boundaryQuarantine) {
+				log(`agent ${call.id ?? call.agent}: boundary QUARANTINE mode (concurrent writer) — nothing restored here; quarantined=${outcome.quarantined.join(", ") || violations.join(", ")} dir=${quarantineDir}`);
+				throw new Error(formatBoundaryQuarantineError(violations, quarantineDir));
+			}
 			throw new Error(`source-read-only boundary violation: modified project files outside the spec artifact directory (${violations.join(", ")})`);
 		}
 		// Backend selectable. Default is 'session' (in-process createAgentSession):
@@ -542,6 +587,12 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		try {
 			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
 			fleetDone(result);
+			// v0.3.54 review fix (adv F5): capture-side drift telemetry (F6 fallback
+			// acceptances, parse warnings) is emitted during RESULT parsing inside
+			// exec — after this call's prompt-time drain ran. Drain again here so
+			// the events land in the run log under THIS call's id, not the next
+			// call's; without it the last call's drift is dropped entirely.
+			for (const drift of drainControlDrift()) log(`agent ${label}: ${drift} (at result)`);
 			boundaryChecked = true;
 			enforceSourceBoundary();
 			const elapsed = Date.now() - started;
@@ -562,6 +613,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				try { enforceSourceBoundary(); }
 				catch (boundaryErr) { finalErr = boundaryErr; }
 			}
+			for (const drift of drainControlDrift()) log(`agent ${label}: ${drift} (at result-throw)`);
 			fleetDone({ error: finalErr instanceof Error ? finalErr.message : String(finalErr) });
 			const elapsed = Date.now() - started;
 			const message = finalErr instanceof Error ? finalErr.message : String(finalErr);

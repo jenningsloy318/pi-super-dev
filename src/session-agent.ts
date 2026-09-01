@@ -779,7 +779,9 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		}
 
 		const text = lastAssistantText(session.messages as Parameters<typeof lastAssistantText>[0]);
-		const control = capture.called ? (capture.value as Record<string, unknown>) : extractControl(text);
+		// v0.3.54 (F6 wiring): text-fallback extraction validates against the
+		// declared keys so a wrong-object fallback can't be accepted silently.
+		const control = capture.called ? (capture.value as Record<string, unknown>) : extractControl(text, keys);
 		// v0.3.28 full-field parity: flush any pending narration, then the shared
 		// terminal summary (model/turns/tools/tokens/cache/cost/duration) — the
 		// session backend previously logged NO usage even though session.messages

@@ -340,7 +340,10 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 		return { text: "", control: null, model: response.model, error: response.error?.trim() || `delegation ended with status ${response.status}` };
 	}
 	const text = textOf(response.result);
-	const control = extractControl(text);
+	// v0.3.54 (F6 wiring): declared keys guard the fallback paths — a fenced or
+	// trailing JSON blob that is NOT this call's control is rejected, not silently
+	// accepted as a verdict.
+	const control = extractControl(text, opts.controlKeys);
 	// Review-2 P1: the corrective check must honor allowEmptyArraysFor AND the
 	// built-in file-list allow-set — a legitimately empty `filesCreated: []`
 	// must NOT trigger a spurious full second run (session-agent parity).
@@ -359,7 +362,7 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 			return { text, control, model: response.model, error: `delegation retry ended with status ${response2.status}${response2.error ? `: ${response2.error}` : ""}` };
 		}
 		const text2 = textOf(response2.result);
-		const control2 = extractControl(text2);
+		const control2 = extractControl(text2, opts.controlKeys);
 		if (control2 != null) return { text: text2, control: control2, model: response2.model ?? response.model };
 		// v0.3.48 honest diagnosis: distinguish UNPARSEABLE control JSON (a
 		// `<control>` block exists but strict parse failed — the unescaped-quote

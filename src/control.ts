@@ -6,6 +6,29 @@
 
 import type { ControlObj } from "./types.ts";
 
+/**
+ * v0.3.54 (P10): contract-drift telemetry used to go to console.warn — the
+ * extension process stderr, invisible in run.log/audit.jsonl, so live runs
+ * never showed WHY a control line was misparsed. Drift events now land in a
+ * bounded ring buffer that workflow.ts drains into the run log right after
+ * computing a call's control keys (the only production extractControlKeys
+ * call site), with the call id for context.
+ */
+const CONTROL_DRIFT_BUFFER: string[] = [];
+const CONTROL_DRIFT_BUFFER_MAX = 50;
+
+/** Record one contract-drift event (bounded; oldest dropped). Drained into
+ *  the run log by drainControlDrift(). */
+export function noteControlDrift(message: string): void {
+	CONTROL_DRIFT_BUFFER.push(`[control] ${message}`);
+	if (CONTROL_DRIFT_BUFFER.length > CONTROL_DRIFT_BUFFER_MAX) CONTROL_DRIFT_BUFFER.shift();
+}
+
+/** Remove and return all buffered drift events (single consumer: workflow). */
+export function drainControlDrift(): string[] {
+	return CONTROL_DRIFT_BUFFER.splice(0, CONTROL_DRIFT_BUFFER.length);
+}
+
 // NOTE: trailing `\s*` (zero-or-more) — NOT `\s` (exactly one). A single
 // trailing whitespace char made `<control>{...}</control>` (compact JSON,
 // no trailing space) miss the primary tag path and silently fall through to
@@ -14,23 +37,60 @@ import type { ControlObj } from "./types.ts";
 // after the block could win). Zero-or-more is the obviously-intended match.
 const CONTROL_TAG_RE = /<control>\s*([\s\S]*?)\s*<\/control>/i;
 
-export function extractControl(text: string): ControlObj | null {
+export function extractControl(text: string, expectedKeys?: string[]): ControlObj | null {
 	if (!text) return null;
 	const tag = text.match(CONTROL_TAG_RE);
 	if (tag?.[1]) {
 		const parsed = tryParseJsonObject(tag[1]);
 		if (parsed) return parsed;
+		// v0.3.54 (P1 edge guard): the tag existed but its body failed to parse.
+		// The fallbacks below can now return a WRONG object (a prose example, a
+		// different JSON blob). Research pattern (jsonrepair/outputguard): repair
+		// is a FALLBACK and the repaired result must be VALIDATED before
+		// acceptance — here, validated against the declared control keys. An
+		// object carrying NONE of them is not this call's control; preferring it
+		// would fabricate a verdict. Returns null and says why, loudly.
+		const tagFailed = true;
+		const guarded = extractControlFallback(text, expectedKeys, tagFailed);
+		if (guarded !== undefined) return guarded;
+		return null;
 	}
+	return extractControlFallback(text, expectedKeys, false) ?? null;
+}
+
+function extractControlFallback(text: string, expectedKeys: string[] | undefined, tagParseFailed: boolean): ControlObj | null | undefined {
 	for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)) {
 		const parsed = tryParseJsonObject(match[1]);
-		if (parsed) return parsed;
+		if (parsed) {
+			if (tagParseFailed) return guardFallbackObject(parsed, "fenced-block", expectedKeys);
+			return parsed;
+		}
 	}
 	const obj = findLastJsonObject(text);
 	if (obj) {
 		const parsed = tryParseJsonObject(obj);
-		if (parsed) return parsed;
+		if (parsed) {
+			if (tagParseFailed) return guardFallbackObject(parsed, "trailing-object", expectedKeys);
+			return parsed;
+		}
 	}
-	return null;
+	// No fallback object exists at all — null is the honest answer (not a
+	// wrong-object acceptance), so the undefined-vs-null distinction ends here.
+	return tagParseFailed ? null : undefined;
+}
+
+/** F6 guard: after a tag-parse failure, a fallback object is accepted only if
+ *  it plausibly IS the control (carries at least one declared key when the
+ *  caller knows them). Every acceptance/failure is loud telemetry. */
+function guardFallbackObject(parsed: ControlObj, source: string, expectedKeys: string[] | undefined): ControlObj | null {
+	const keys = Array.isArray(expectedKeys) ? expectedKeys : [];
+	const overlap = keys.filter((k) => k in parsed);
+	if (keys.length > 0 && overlap.length === 0) {
+		noteControlDrift(`fallback ${source} object REJECTED after <control>-tag parse failure: carries none of the declared keys (${keys.join(", ")}) — returning null instead of a wrong-object verdict`);
+		return null;
+	}
+	noteControlDrift(`fallback ${source} object accepted after <control>-tag parse failure (keys matched: ${overlap.join(", ") || "no expected keys declared"})`);
+	return parsed;
 }
 
 function tryParseJsonObject(raw: string): ControlObj | null {
@@ -154,7 +214,7 @@ export function extractControlKeys(prompt: string): string[] {
 	// is leaking into the contract — warn once (the split below still rescues
 	// the leading identifier of each segment, so keys are NOT lost).
 	const parenDepth = [...raw].reduce((d, ch) => (ch === "(" ? d + 1 : ch === ")" ? d - 1 : d), 0);
-	if (parenDepth !== 0) console.warn(`[control] unbalanced parentheses in control-key line (${parenDepth > 0 ? "unclosed" : "extra closing"}); keys rescued by leading-identifier extraction`);
+	if (parenDepth !== 0) noteControlDrift(`unbalanced parentheses in control-key line (${parenDepth > 0 ? "unclosed" : "extra closing"}); keys rescued by leading-identifier extraction`);
 	// Depth-aware comma split (nesting depth 0).
 	const segments: string[] = [];
 	let depth = 0;
@@ -188,7 +248,7 @@ export function extractControlKeys(prompt: string): string[] {
 		}
 		// Surface drift instead of silently dropping keys (the failure mode
 		// that hid the challenge channel for two versions).
-		console.warn(`[control] unparseable control-key fragment dropped: ${JSON.stringify(t.slice(0, 120))}`);
+		noteControlDrift(`unparseable control-key fragment dropped: ${JSON.stringify(t.slice(0, 120))}`);
 	}
 	return keys;
 }

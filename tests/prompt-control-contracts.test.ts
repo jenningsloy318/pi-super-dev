@@ -43,7 +43,7 @@ import {
 	buildDocsPrompt,
 	buildMergePrompt,
 } from "../src/prompts.ts";
-import { extractControlKeys } from "../src/control.ts";
+import { drainControlDrift, extractControlKeys } from "../src/control.ts";
 import type { SetupControl } from "../src/types.ts";
 
 function mkSetup(language = "frontend"): SetupControl {
@@ -217,20 +217,16 @@ describe("extractControlKeys parser hardening (Fix 1e / 2b)", () => {
 		expect(extractControlKeys("Output <control> JSON with: a, b.g. note here, c.")).toEqual(["a", "c"]); // b.g. note here → unparseable, dropped+logged
 	});
 
-	it("unbalanced paren annotation: the leading identifier is RESCUED (v0.1.52 would have dropped it) and the drift is logged", () => {
-		const warned: string[] = [];
-		const orig = console.warn;
-		console.warn = (msg: string) => warned.push(String(msg));
-		try {
-			// The exact v0.1.52 shape: the naive comma-split left testDefects on a
-			// fragment with an unclosed paren and DROPPED it. The hardened parser
-			// keeps the segment whole and rescues the key.
+	it("unbalanced paren annotation: the leading identifier is RESCUED (v0.1.52 would have dropped it) and the drift is DRAINABLE (v0.3.54 run.log channel)", () => {
+		drainControlDrift();
+		// The exact v0.1.52 shape: the naive comma-split left testDefects on a
+		// fragment with an unclosed paren and DROPPED it. The hardened parser
+		// keeps the segment whole and rescues the key.
 		const keys = extractControlKeys("Output <control> JSON with: ok, broken (unclosed.");
-			expect(keys).toEqual(["ok", "broken"]);
-			expect(warned.some((w) => w.includes("unbalanced parentheses"))).toBe(true);
-		} finally {
-			console.warn = orig;
-		}
+		expect(keys).toEqual(["ok", "broken"]);
+		// v0.3.54 F5: drift goes to the drain buffer (workflow drains it into the
+		// run log with the call id) — console.warn never reached run.log.
+		expect(drainControlDrift().join("\n")).toContain("unbalanced parentheses");
 	});
 
 	it("empty/whitespace and identifier-invalid fragments are filtered", () => {

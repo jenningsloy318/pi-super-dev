@@ -43,6 +43,9 @@ function mkCtx(opts: {
 	reviewVerdicts?: string[];
 	reviewContradictions?: Array<Array<{ tests: string; lines?: string; proof: string }>>;
 	reviewThrows?: string;
+	// v0.3.54 (code F2): backend error AND parsed control can coexist
+	// (delegation-backend returns both); the join must not launder a verdict.
+	reviewError?: string;
 	implControls?: ControlObj[];
 	tddControls?: ControlObj[];
 	escalate?: RunOptions["escalate"];
@@ -67,7 +70,7 @@ function mkCtx(opts: {
 				if (opts.reviewThrows) return Promise.reject(new Error(opts.reviewThrows));
 				const verdict = reviewQ.shift() ?? "strong";
 				const contradictions = contradictionQ.shift() ?? [];
-				return { text: "", control: { verdict, summary: "s", contradictions } };
+				return { text: "", control: { verdict, summary: "s", contradictions }, ...(opts.reviewError ? { error: opts.reviewError } : {}) };
 			}
 			if (call.agent === "implementer") {
 				counters.impl++; implPrompts.push(call.prompt);
@@ -128,6 +131,22 @@ describe("v0.3.43 RC2 — parallel RED review joins after the implementer", () =
 		const r = mkCtx({ reviewVerdicts: [""] });
 		await (implementationStage as Stage).run(mkState(), r.ctx);
 		expect(r.logs.some((l) => /red-review-rejected: RED review not strong:/.test(l))).toBe(true);
+	});
+
+	it("v0.3.54 (code F2): a parsed off-enum verdict ('REJECTED') that arrives WITH a backend error stays FAIL-CLOSED — not laundered into a keep", async () => {
+		const r = mkCtx({ reviewVerdicts: ["REJECTED"], reviewError: "backend degraded after partial response" });
+		await (implementationStage as Stage).run(mkState(), r.ctx);
+		// Fail-closed: the verdict is evidence about the suite, so the join rejects.
+		expect(r.logs.some((l) => l.includes("REJECTED at join"))).toBe(true);
+		// …and it must NOT take the checker-failure fail-open path.
+		expect(r.logs.some((l) => l.includes("red-review-incomplete"))).toBe(false);
+	});
+
+	it("v0.3.54 (code F2): control parsed but verdict EMPTY + backend error still fails OPEN (checker-failure semantics preserved)", async () => {
+		const r = mkCtx({ reviewVerdicts: [""], reviewError: "spawn error mid-review" });
+		await (implementationStage as Stage).run(mkState(), r.ctx);
+		expect(r.logs.some((l) => l.includes("red-review-incomplete"))).toBe(true);
+		expect(r.logs.some((l) => l.includes("REJECTED at join"))).toBe(false);
 	});
 	// Run 2026-08-31T03-25-44-485Z 16:29: the parallel review rejected mid-implementer
 	// (source-read-only boundary violation); the stored promise carried no rejection

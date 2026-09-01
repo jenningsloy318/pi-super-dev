@@ -75,11 +75,91 @@ function formatError(err: unknown): string | null {
 	return loc ? `${loc}: ${e.message}` : e.message;
 }
 
+/** v0.3.54: a missing-required-properties error used to name only the PARENT
+ *  ("$: must have required properties"), even when the model emitted a NEAR
+ *  MISS ("docs" vs "docPath") — the retry prompt then said nothing actionable
+ *  and the model re-guessed. Enhance: when a property of the errored object is
+ *  within edit distance 1 of a required key (case/spacing/typo class), name
+ *  it. Kept conservative: only single-insert/delete/substitute (Levenshtein ≤1),
+ *  and only when the near-miss key is NOT already a declared key. */
+function nearMissHint(err: { message?: string; schemaPath?: string }, data: unknown): string {
+	const message = err.message ?? "";
+	if (!message.includes("required propert")) return "";
+	// typebox@1.1.38 message shape (ground-truthed): `must have required
+	// properties docPath, summary` — names are UNQUOTED, comma-separated.
+	const reqList = message.match(/required propert(?:y|ies) (.+)$/);
+	const required = reqList ? reqList[1].split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean) : [];
+	// v0.3.54 review fix (adv F4): scan the ERRORED object(s), not the root —
+	// a nested "findings[]: must have required properties evidence" used to
+	// scan the root's keys and the hint never fired for its motivating class.
+	for (const obj of resolveErrorObjects(data, err.schemaPath)) {
+		const present = Object.keys(obj);
+		for (const req of required) {
+			for (const key of present) {
+				if (key === req) continue;
+				if (levenshteinAtMostOne(req, key)) return ` (near miss: the object has "${key}" — did you mean "${req}"?)`;
+			}
+		}
+	}
+	return "";
+}
+
+/** Resolve the errored object(s) from the root control along the typebox
+ *  schemaPath: `properties` descends into the named key; `items` fans out
+ *  over array elements (the failing instance index is unknown, so every
+ *  object element is a candidate). Deeper segments after `items` describe the
+ *  ELEMENT schema, not the instance, so resolution stops there. Root-level
+ *  errors (schemaPath "#" / absent) scan the root control as before. */
+function resolveErrorObjects(data: unknown, schemaPath: string | undefined): Record<string, unknown>[] {
+	let cur: unknown = data;
+	const targets: unknown[] = [];
+	const segs = !schemaPath || schemaPath === "#" ? [] : schemaPath.replace(/^#/, "").split("/").filter(Boolean);
+	for (let i = 0; i < segs.length; i++) {
+		const seg = segs[i];
+		if (seg === "properties" || seg === "patternProperties") {
+			const key = segs[++i];
+			if (key === undefined) break;
+			cur = cur && typeof cur === "object" && !Array.isArray(cur) ? (cur as Record<string, unknown>)[key] : undefined;
+			continue;
+		}
+		if (seg === "items") {
+			if (Array.isArray(cur)) targets.push(...cur);
+			break;
+		}
+	}
+	if (!targets.length && cur && typeof cur === "object" && !Array.isArray(cur)) targets.push(cur);
+	return targets.filter((t): t is Record<string, unknown> => !!t && typeof t === "object" && !Array.isArray(t));
+}
+
+function levenshteinAtMostOne(a: string, b: string): boolean {
+	if (a === b) return true;
+	if (Math.abs(a.length - b.length) > 1) return false;
+	let i = 0;
+	let j = 0;
+	let edits = 0;
+	while (i < a.length && j < b.length) {
+		if (a[i] === b[j]) {
+			i++;
+			j++;
+			continue;
+		}
+		if (++edits > 1) return false;
+		if (a.length === b.length) {
+			i++;
+			j++;
+		} else if (a.length > b.length) i++;
+		else j++;
+	}
+	edits += (a.length - i) + (b.length - j);
+	return edits <= 1;
+}
+
 export function validateData(schema: StageModel["schema"], data: unknown): string[] {
 	const errors: string[] = [];
 	for (const err of Value.Errors(schema, data)) {
 		const line = formatError(err);
-		if (line !== null) errors.push(line);
+		if (line === null) continue;
+		errors.push(line + nearMissHint(err, data));
 	}
 	return errors;
 }
@@ -96,23 +176,48 @@ export function validateData(schema: StageModel["schema"], data: unknown): strin
  *  string → [string] BEFORE validation: the doc renders, template loops
  *  iterate items instead of characters, and downstream consumers (convergence
  *  ledger, knowledge) see arrays. */
-const PROSE_ARRAY_FIELDS: Record<string, Array<{ container: string; field: string }>> = {
-	design: [{ container: "alternativesConsidered", field: "alternatives" }],
-	specReview: [{ container: "findings", field: "evidence" }],
-	requirementsReview: [{ container: "findings", field: "evidence" }],
-	bddReview: [{ container: "findings", field: "evidence" }],
-	designReview: [{ container: "findings", field: "evidence" }],
-	codeReview: [{ container: "findings", field: "evidence" }],
-	adversarialReview: [{ container: "findings", field: "evidence" }],
-};
+/**
+ * v0.3.54 (P2/D-class): the prose-array map used to be a hand-maintained
+ * per-stage table (7 entries) while the reverse coercion (coerceSchemaStrings)
+ * is schema-driven — a new/renamed review stage silently missed coercion (the
+ * exact asymmetry that let several drift classes reach production). The pairs
+ * are now DERIVED from the stage schema: every top-level `array of objects`
+ * whose item declares an EXACT `type:"string"` property (no union/anyOf) is a
+ * prose-array slot, for every stage, forever. */
+function proseArrayPairsFromSchema(schema: unknown): Array<{ container: string; field: string }> {
+	const pairs: Array<{ container: string; field: string }> = [];
+	if (!schema || typeof schema !== "object") return pairs;
+	const props = (schema as { properties?: Record<string, unknown> }).properties;
+	if (!props || typeof props !== "object") return pairs;
+	for (const [container, containerSchema] of Object.entries(props)) {
+		if (!containerSchema || typeof containerSchema !== "object") continue;
+		const cs = containerSchema as { type?: unknown; items?: unknown };
+		if (cs.type !== "array" || !cs.items || typeof cs.items !== "object") continue;
+		const itemProps = (cs.items as { properties?: Record<string, unknown> }).properties;
+		if (!itemProps || typeof itemProps !== "object") continue;
+		for (const [field, fieldSchema] of Object.entries(itemProps)) {
+			if (!fieldSchema || typeof fieldSchema !== "object") continue;
+			// Prose-array slot = EXACT array-of-string contract inside the item
+			// (e.g. findings[].evidence, alternativesConsidered[].alternatives,
+			// acceptanceCriteria[].scenarios). Unions/anyOf/enums stay untouched.
+			const fs = fieldSchema as { type?: unknown; items?: unknown; anyOf?: unknown; oneOf?: unknown; enum?: unknown };
+			if (fs.type !== "array" || fs.anyOf || fs.oneOf || fs.enum) continue;
+			// v0.3.54 review fix (code F7): item-level enums stay untouched — a prose
+			// wrap would produce a 1-element array that then fails the enum check.
+			const items = fs.items as { type?: unknown; enum?: unknown } | undefined;
+			if (items && typeof items === "object" && items.type === "string" && !items.enum) pairs.push({ container, field });
+		}
+	}
+	return pairs;
+}
 
 /** Mutate the control in place (the caller returns/stores the SAME object, so
  *  the normalized arrays flow downstream). Unknown shapes are left untouched —
  *  validation reports them with their exact location. */
-export function normalizeProseArrays(stageId: string, data: unknown): unknown {
+export function normalizeProseArrays(stageId: string, data: unknown, schema?: unknown): unknown {
 	if (!data || typeof data !== "object" || Array.isArray(data)) return data;
-	const fields = PROSE_ARRAY_FIELDS[stageId];
-	if (!fields) return data;
+	const fields = schema ? proseArrayPairsFromSchema(schema) : [];
+	if (fields.length === 0) return data;
 	for (const { container, field } of fields) {
 		const list = (data as Record<string, unknown>)[container];
 		if (!Array.isArray(list)) continue;
@@ -344,7 +449,7 @@ export function renderStage(stageId: string, data: unknown): RenderResult {
 	//     string for EXACT string contracts (every stage, incl. nested items);
 	//   normalizeProseArrays — string → [string] for the prose-array fields.
 	coerceSchemaStrings(model.schema, data);
-	const normalized = normalizeProseArrays(stageId, data);
+	const normalized = normalizeProseArrays(stageId, data, model.schema);
 	const errors = validateData(model.schema, normalized);
 	if (errors.length > 0) return { markdown: "", errors };
 

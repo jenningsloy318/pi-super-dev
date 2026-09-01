@@ -11,7 +11,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { superDevEnv } from "../render/super-dev-dir.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync , rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
 import { classifyJudgeRoute } from "../routing/router.ts";
 import { appendGateChecked } from "../runlog.ts";
@@ -1173,6 +1173,132 @@ export function lastFailuresUpsert(arr: PhaseFailureEntry[], phaseId: string, re
  *  tracked modifications/deletions are restored from the index (= HEAD — the
  *  engine never stages during a phase). Returns the restored paths for the
  *  log. Never throws. */
+function isInsidePath(child: string, parent: string): boolean {
+	const rel = relative(parent, child);
+	return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * v0.3.54 — attribute-and-restore for QUARANTINED reviewer violations (F3-real).
+ *
+ * A concurrent-with-writer read-only call (the RED review) that violates its
+ * boundary is QUARANTINED by the guard (contents copied to a tmp dir, nothing
+ * restored) because a blind `git restore` at detection time reverts to HEAD and
+ * destroys the implementer's legitimate concurrent writes to the same file
+ * (live: run 2026-08-31T16-03-57-978Z phase 11 — "boundary reversion wiped the
+ * homepage cosmic card"). Attribution happens HERE, at the join, where the
+ * implementer's claimed files are known:
+ *   - path NOT claimed by the implementer → only the reviewer touched it →
+ *     `git restore` is safe and removes the unreviewed edit;
+ *   - path claimed by the implementer (or a phase test file) → content is mixed
+ *     → left in place; the quarantined copy preserves the mixed state and the
+ *     F2 ledger finding carries the paths for review.
+ *
+ * Trust bound: attribution uses the implementer's DECLARED files, and the
+ * restore loop runs ONLY when the control declared at least one file — a null
+ * control or all-empty file lists carries no attribution signal, so nothing
+ * is restored then (v0.3.54 review fix, adv F1-i). A lying UNDER-claim (a
+ * modified path omitted from the lists) can still cause its restoration: in
+ * this fail-open branch no retry follows, and the change gate snapshots the
+ * tree AFTER this function, so it cannot catch the loss. That residual risk
+ * is honest and bounded — the full file bytes survive in the quarantine dir
+ * and the F2 ledger finding names every path for manual recovery. Phase test
+ * files are always kept (RED-hijack guard). Untracked reviewer-created files
+ * cannot be git-restored; they are left in place and the change gate flags
+ * them changed-not-claimed (conservative).
+ */
+export function attributQuarantinedViolations(
+	worktreePath: string,
+	reviewError: string,
+	implControl: unknown,
+	testFiles: string[],
+	log: (line: string) => void,
+): void {
+	if (!reviewError.includes("quarantined, not restored")) return;
+	const parsed = parseQuarantinePayload(reviewError);
+	if (!parsed) {
+		log("red-review-quarantine: violation error carried no parsable paths — leaving worktree untouched (conservative)");
+		return;
+	}
+	// v0.3.54 review fix (code F1 / adv F1): claims are RAW agent output while
+	// violation paths arrive normalized (`./`-stripped, forward slashes) by the
+	// guard. Comparing raw against normalized loses attribution on styled
+	// claims ("./main.ts", "src\\main.ts") and the restore then wipes the
+	// implementer's own concurrent edit — normalize both sides through one rule.
+	const norm = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "").trim();
+	const claims = new Set<string>(testFiles.map(norm));
+	let declaredAny = false;
+	if (implControl && typeof implControl === "object" && !Array.isArray(implControl)) {
+		const rec = implControl as Record<string, unknown>;
+		for (const key of ["filesCreated", "filesModified", "filesDeleted"]) {
+			const list = rec[key];
+			if (Array.isArray(list)) {
+				for (const f of list) if (typeof f === "string" && f) { claims.add(norm(f)); declaredAny = true; }
+			}
+		}
+	}
+	if (!declaredAny) {
+		// v0.3.54 review fix (adv F1-i): with no implementer-declared files there
+		// is no attribution signal at all — restoring anything would wipe
+		// possibly-undeclared concurrent GREEN work that no retry will bring back.
+		log(`red-review-quarantine: left in place (no implementer file claims available — cannot attribute safely; quarantined copies preserved${parsed.dir ? ` at ${parsed.dir}` : ""}): ${parsed.paths.join(", ")}`);
+		return;
+	}
+	const safe: string[] = [];
+	const kept: string[] = [];
+	const rootAbs = resolve(worktreePath);
+	for (const rel of parsed.paths) {
+		if (claims.has(norm(rel))) {
+			kept.push(rel);
+			continue;
+		}
+		// Defense-in-depth (P1): the path came from an agent-controlled error
+		// string. `--` already blocks option injection, and git rejects escaping
+		// pathspecs anyway, but a malformed/traversal path is simply never worth
+		// executing a restore for — keep it (manual) instead.
+		if (isAbsolute(rel) || rel.includes("..") || rel.includes("\u0000")) {
+			kept.push(rel);
+			continue;
+		}
+		if (!isInsidePath(resolve(rootAbs, rel), rootAbs)) {
+			kept.push(rel);
+			continue;
+		}
+		// Not claimed by the implementer and not a phase test file: the only delta
+		// is the reviewer's — safe to revert. Failure keeps the path (manual).
+		let r = spawnSync("git", ["restore", "--staged", "--worktree", "--", rel], { cwd: worktreePath, encoding: "utf8" });
+		if (r.status !== 0) r = spawnSync("git", ["checkout", "--", rel], { cwd: worktreePath, encoding: "utf8" });
+		if (r.status === 0) safe.push(rel);
+		else kept.push(rel);
+	}
+	if (safe.length) log(`red-review-quarantine: restored unclaimed reviewer edits (implementer never touched them): ${safe.join(", ")}`);
+	if (kept.length) log(`red-review-quarantine: left in place (implementer-owned or mixed content — quarantined copy preserved${parsed.dir ? ` at ${parsed.dir}` : ""}): ${kept.join(", ")}`);
+}
+
+/** Parse the quarantine error's paths+dir payload. v0.3.54 review fix
+ *  (code F4 / adv F2+F3): the producer now JSON-encodes both fields
+ *  (formatBoundaryQuarantineError in workflow.ts) so a filename containing
+ *  ", " is not mis-split into fragments (one of which could collaterally
+ *  git-restore a coincidentally-named modified file) and a quarantine dir
+ *  containing a space (Windows tmpdir under a user name with a space) does
+ *  not defeat the capture. The legacy comma text form stays supported as a
+ *  fallback for in-flight strings produced before this version. */
+function parseQuarantinePayload(reviewError: string): { paths: string[]; dir: string } | null {
+	const j = reviewError.match(/paths=(\[[\s\S]*\]) dir=("(?:[^"\\]|\\.)*")\s*$/);
+	if (j) {
+		try {
+			const paths = JSON.parse(j[1]) as unknown;
+			const dir = JSON.parse(j[2]) as unknown;
+			if (Array.isArray(paths) && paths.every((p) => typeof p === "string")) {
+				return { paths: (paths as string[]).filter(Boolean), dir: typeof dir === "string" ? dir : "" };
+			}
+		} catch { /* malformed JSON → fall through to the legacy text parse */ }
+	}
+	const m = reviewError.match(/paths=([^\n]+?)(?: dir=(\S+))?$/);
+	if (!m) return null;
+	return { paths: m[1].split(",").map((x) => x.trim()).filter(Boolean), dir: m[2] ?? "" };
+}
+
 export function discardGreenWork(worktreePath: string, keepTestFiles: Set<string>): string[] {
 	// v0.3.45: the -z reader replaces RAW v1-line parsing — v1 C-quotes
 	// space paths on every machine and octal-escapes non-ASCII on default
@@ -1586,8 +1712,10 @@ export const implementationStage: Stage = {
 					let redHint = "";
 					const redProgressHistory: string[] = [];
 					let redFailClosedUnknown = false; // v0.3.30 F2: unknown evidence retries/fails terminally ONLY when fail-closed (phase requires tests)
-					// v0.3.30 C: cached runner spec + discovery guard — HOISTED to attempt
-					// scope (v0.3.53 F1) so the post-RED oracle reaches the same runner.
+					// v0.3.30 C: cached runner spec + discovery guard — declared at PHASE
+					// scope (v0.3.53 F1) so the post-RED oracle reaches the same runner;
+					// discovery is a once-per-PHASE budget (resets on convergence
+					// re-entry), not per fresh RED.
 					// v0.3.16 review fix (code F-1/adv F-2): remember the last NON-EMPTY
 					// claim across tries so an agent-death retry can still probe whether
 					// the previously-claimed file is on disk (the claim itself is cleared
@@ -1837,6 +1965,12 @@ export const implementationStage: Stage = {
 									id: `pipeline.implementation.${phaseId}.red-review.a${attempt}.t${retries + 1}`,
 									agent: "code-reviewer",
 									accessMode: "source-read-only",
+									// v0.3.54: runs concurrently with the implementer — boundary
+									// violations must QUARANTINE, not git-restore (a blind restore
+									// wipes the implementer's legitimate concurrent writes to the
+									// same files; live-confirmed in phase 11 of run
+									// 2026-08-31T16-03-57-978Z). The join attributes and restores.
+									concurrentWriter: true,
 									prompt: buildRedReviewPrompt(setup, state.classify ?? null, phase, testFiles, expectedScenarios, state.spec ?? null, state.bdd ?? null),
 									schema: RED_REVIEW_SCHEMA,
 									// `contradictions: []` is the explicit jointly-satisfiable value;
@@ -2351,15 +2485,21 @@ export const implementationStage: Stage = {
 						const summary = String((review?.control as { summary?: unknown } | null)?.summary ?? "") || "test assertions are not bound to the scenario's observable behavior";
 						ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (weak) — ${summary} (advisory; proceeding — the implementer already ran, the post-RED oracle guards)`);
 						redWeaknessAdvisory = `An independent reviewer rated the RED tests as NOT STRONG: ${summary}.`;
-					} else if (!contradictionList.length && review?.error) {
+					} else if (!contradictionList.length && review?.error && !verdict) {
 						// v0.3.53 F2 (P5): the REVIEWER failed (boundary violation, timeout,
-						// spawn error) — a CHECKER failure, not evidence about the suite. The
+						// spawn error) — a CHECKER failure, not evidence about the suite.
+						// v0.3.54 review fix (code F2): fail open ONLY when no verdict text
+						// was parsed. A control carrying an off-enum verdict (e.g. "REJECTED"
+						// via an unconstrained <control> path) IS evidence about the suite —
+						// failing open on it would launder a rejection into a keep; such
+						// controls fall to the fail-closed branch below. The
 						// pre-0.3.53 fail-closed path discarded correct GREEN work and
 						// re-authored the RED, then re-launched the same misbehaving reviewer
 						// (8+ violations, 3 phases partial, ~5h: run 2026-08-31T16-03-57-978Z
 						// phases 05/06/07). Fail OPEN instead: keep the work, degrade to the
 						// deterministic gates, record the finding, count separately; the
 						// launch site stops parallel reviews for this phase at 2 violations.
+						attributQuarantinedViolations(setup.worktreePath, String(review.error), impl?.control, testFiles, (line) => ctx.log(line));
 						phaseReviewViolations++;
 						const reason = String(review.error).slice(0, 300);
 						ctx.log(`Implementation ${phaseId} red-review-incomplete (advisory): ${reason} — GREEN work KEPT (checker failure, not suite evidence); post-RED oracle + deliverable gates remain authoritative${phaseReviewViolations >= 2 ? "; parallel review DISABLED for this phase" : ""}`);

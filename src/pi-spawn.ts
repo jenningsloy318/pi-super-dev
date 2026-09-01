@@ -449,9 +449,11 @@ export function readToolCapture(capturePath: string | null | undefined): Control
 	}
 }
 
-/** Resolve a turn's control with tool-capture preference over text extraction. */
-function resolveTurnControl(text: string, capturePath: string | null | undefined): ControlObj | null {
-	return readToolCapture(capturePath) ?? extractControl(text);
+/** Resolve a turn's control with tool-capture preference over text extraction.
+ *  v0.3.54 (F6 wiring): the declared keys ride into extractControl so the
+ *  fallback-object guard can reject a wrong object after a tag-parse failure. */
+function resolveTurnControl(text: string, capturePath: string | null | undefined, expectedKeys?: string[]): ControlObj | null {
+	return readToolCapture(capturePath) ?? extractControl(text, expectedKeys);
 }
 
 /** Log which control-delivery channel produced the result (auditability):
@@ -711,6 +713,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 				env: soEnv,
 				task: `Task: ${buildSubprocessTaskPrompt(opts.prompt, opts.controlKeys)}`,
 				capturePath,
+				controlKeys: requiredKeys,
 				correctiveFor: (first) => {
 					const err = controlError(first.control, requiredKeys, opts.allowEmptyArraysFor);
 					if (!err || first.error) return null;
@@ -735,7 +738,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 		}
 		const args = buildSpawnArgs(spawnOpts, promptPath, extraExtensions);
 		opts.onProgress?.event(`subprocess ${label}: spawn timeout=${timeoutMs}ms cwd=${opts.cwd} roleExtensions=${extSummary} argv=${summarizeSpawnArgs(args)}`);
-		const first = applyCapture(await runPi(args, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress, soEnv));
+		const first = applyCapture(await runPi(args, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress, soEnv, requiredKeys));
 		const firstError = controlError(first.control, requiredKeys, opts.allowEmptyArraysFor);
 		if (!firstError || first.error || opts.signal?.aborted) return withControlError(first, requiredKeys, opts.allowEmptyArraysFor);
 
@@ -769,7 +772,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<SpawnResult> 
 		}
 		const retryArgs = buildSpawnArgs(retryOpts, promptPath, extraExtensions);
 		opts.onProgress?.event(`subprocess ${label}: corrective retry argv=${summarizeSpawnArgs(retryArgs)}`);
-		const retry = applyCapture(await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress, soEnv));
+		const retry = applyCapture(await runPi(retryArgs, opts.cwd, opts.signal, label, timeoutMs, opts.onProgress, soEnv, requiredKeys));
 		return withControlError(retry, requiredKeys, opts.allowEmptyArraysFor);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
@@ -844,7 +847,7 @@ export function buildSpawnArgs(opts: SpawnAgentOptions, promptPath: string, extr
  *  direct unit testing of the NDJSON streaming/termination contract (the
  *  subprocess backend's single primitive). `extraEnv` carries the
  *  structured-output contract vars to the child (W3). */
-export function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: AgentProgress, extraEnv?: Record<string, string | undefined>): Promise<SpawnResult> {
+export function runPi(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, timeoutMs: number, onProgress?: AgentProgress, extraEnv?: Record<string, string | undefined>, expectedKeys?: string[]): Promise<SpawnResult> {
 	return new Promise((resolve, reject) => {
 		// SD-04 (NFR-6): a listener registered on an ALREADY-aborted signal never
 		// fires (WHATWG/Node EventTarget semantics) — the child would run to its
@@ -1016,7 +1019,7 @@ export function runPi(args: string[], cwd: string, signal: AbortSignal | undefin
 						cost: usageStats.cost, durationMs: Date.now() - startedAt,
 					}));
 				}
-				resolve({ text: lastAssistantText, control: extractControl(lastAssistantText), model: lastModel, error: timedOut ? `timed out after ${timeoutMs}ms (used partial output)` : undefined });
+				resolve({ text: lastAssistantText, control: extractControl(lastAssistantText, expectedKeys), model: lastModel, error: timedOut ? `timed out after ${timeoutMs}ms (used partial output)` : undefined });
 				return;
 			}
 			const reason = timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `produced no output (exit ${code})`;
@@ -1041,6 +1044,8 @@ export interface RpcRunOptions {
 	task: string;
 	/** structured_output capture path (W3); null disables tool-capture merging. */
 	capturePath?: string | null;
+	/** v0.3.54 (F6 wiring): declared control keys for the text-extraction guard. */
+	controlKeys?: string[];
 	/** Decide whether a corrective follow_up is needed once the first turn's
 	 *  control is resolved; returns the in-session message to send, or null to
 	 *  stop after the first turn. */
@@ -1171,7 +1176,7 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 		void (async () => {
 			const turn1 = await driver.send("prompt", options.task, timeoutMs);
 			if (aborted || settledMain) return;
-			const control1 = resolveTurnControl(turn1.text, options.capturePath);
+			const control1 = resolveTurnControl(turn1.text, options.capturePath, options.controlKeys);
 			const first: SpawnResult = { text: turn1.text, control: control1, model: turn1.model, error: turn1.error };
 			const corrective = first.error ? null : options.correctiveFor(first);
 			const remainingMs = timeoutMs - (Date.now() - startedAt);
@@ -1194,7 +1199,7 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 				// event. Same session, same memory — only the event type differs.
 				const turn2 = await driver.send("prompt", corrective, remainingMs);
 				if (aborted || settledMain) return;
-				const control2 = resolveTurnControl(turn2.text, options.capturePath);
+				const control2 = resolveTurnControl(turn2.text, options.capturePath, options.controlKeys);
 				finishMain({
 					text: turn2.text || first.text,
 					control: control2 ?? control1,
@@ -1208,7 +1213,7 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 			const text = driver.currentText;
 			finishMain({
 				text,
-				control: resolveTurnControl(text, options.capturePath),
+				control: resolveTurnControl(text, options.capturePath, options.controlKeys),
 				error: error instanceof Error ? error.message : String(error),
 			});
 		});
@@ -1254,7 +1259,7 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 				cleanup();
 				resolve({
 					text,
-					control: resolveTurnControl(text, options.capturePath),
+					control: resolveTurnControl(text, options.capturePath, options.controlKeys),
 						error: `process exited before turn completion (exit ${code ?? "signal"}, no close event)`,
 				});
 			}, SETTLE_GRACE_MS);
@@ -1276,7 +1281,7 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 				settledMain = true; // the ladder reject below must not double-settle
 				resolve({
 					text,
-					control: resolveTurnControl(text, options.capturePath),
+					control: resolveTurnControl(text, options.capturePath, options.controlKeys),
 					error: `process exited before turn completion (exit ${code ?? "signal"})`,
 				});
 			}
