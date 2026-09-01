@@ -30,34 +30,59 @@ export interface TestRunnerSpec {
 
 const CACHE_BASENAME = "test-runner.json";
 
-/** v0.3.56 F1 (escape class B — unenumerated grammar; P2 single-helper rule):
- *  npm/npx/pnpm/yarn exec-dlx forms CONSUME `--flag=value` tokens after the
- *  child tool as npm config ("npm warn Unknown cli config --reporter" — the
- *  v0.3.41 incident on the string-command path). This is the ONE shared guard
- *  for every exec-family ARGV builder (conventions pmExec, baseline
- *  pmExecLocal): insert ` -- ` after the child tool token when child dash
- *  tokens follow and no standalone `--` already separates them. Mirrors the
- *  string-form guard in resolveRunnerCommand below (same position, same
- *  conditions); no-op on every other shape, so plain `npm test` and guardless
- *  argvs are byte-identical. */
-export function insertNpmExecGuard(argv: string[]): string[] {
-	if (argv.length < 2) return argv;
+/** v0.3.57 review P2: WHERE the exec-family's pm-owned `--` sits. Prefix
+ *  detection is restricted to the EMPIRICALLY-ESTABLISHED flag eaters —
+ *  `npm exec` and `npx` (real-toolchain L2 evidence only; P9 environment
+ *  assumptions asserted, not presumed). pnpm/yarn exec and bun x pass child
+ *  args verbatim per their documented CLI grammar, so a ` -- ` inserted there
+ *  would be forwarded to the child and corrupt its arg stream — those
+ *  executors stay UNGUARDED (pre-v0.3.56 behavior, believed working).
+ *  sepIdx = index of the pm-owned `--` when one already separates the tool
+ *  from the first child dash token (POSITION-AWARE — a `--` after child dash
+ *  tokens like `npm exec vitest run --reporter=tap -- x` does NOT mean
+ *  guarded; npm would still eat `--reporter=tap`), else -1. Null when the
+ *  argv is not an exec-family shape at all. Single source of truth shared by
+ *  insertNpmExecGuard and the coverage gate (P2 one-builder rule). */
+export interface ExecGuardInfo {
+	/** Index of the child tool token. */
+	toolIdx: number;
+	/** Index of an existing pm-owned `--`, or -1 when unguarded. */
+	sepIdx: number;
+}
+export function execGuardInfo(argv: string[]): ExecGuardInfo | null {
+	if (argv.length < 2) return null;
 	const pm = argv[0]!;
 	let prefixEnd: number;
 	if (pm === "npx") prefixEnd = 1;
-	else if ((pm === "npm" || pm === "pnpm" || pm === "yarn") && (argv[1] === "exec" || argv[1] === "dlx")) prefixEnd = 2;
-	else if (pm === "bun" && argv[1] === "x") prefixEnd = 2;
-	else return argv;
-	if (prefixEnd >= argv.length) return argv;
-	// Already guarded → byte-identical no-op.
-	if (argv.slice(prefixEnd).includes("--")) return argv;
+	else if (pm === "npm" && argv[1] === "exec") prefixEnd = 2;
+	else return null;
+	if (prefixEnd >= argv.length) return null;
 	// The child tool is the first non-flag token after the pm's own flags.
 	let tool = prefixEnd;
 	while (tool < argv.length && argv[tool]!.startsWith("-")) tool++;
-	if (tool >= argv.length) return argv;
+	if (tool >= argv.length) return null;
+	for (let i = tool + 1; i < argv.length; i++) {
+		if (argv[i] === "--") return { toolIdx: tool, sepIdx: i };
+		if (argv[i]!.startsWith("-")) return { toolIdx: tool, sepIdx: -1 };
+	}
+	return { toolIdx: tool, sepIdx: -1 };
+}
+
+/** v0.3.56 F1 (escape class B — unenumerated grammar; P2 single-helper rule):
+ *  npm/npx exec forms CONSUME `--flag=value` tokens after the child tool as
+ *  npm config ("npm warn Unknown cli config --reporter" — the v0.3.41
+ *  incident on the string-command path). This is the ONE shared guard for
+ *  every exec-family ARGV builder (conventions pmExec, baseline pmExecLocal):
+ *  insert ` -- ` after the child tool token when child dash tokens follow and
+ *  no pm-owned `--` already separates them. Mirrors the string-form guard in
+ *  resolveRunnerCommand below (same position, same conditions); no-op on every
+ *  other shape, so plain `npm test` and guardless argvs are byte-identical. */
+export function insertNpmExecGuard(argv: string[]): string[] {
+	const info = execGuardInfo(argv);
+	if (!info || info.sepIdx >= 0) return argv;
 	// Guard only when child flags actually follow the tool (else nothing to protect).
-	if (!argv.slice(tool + 1).some((a) => a.startsWith("-"))) return argv;
-	return [...argv.slice(0, tool + 1), "--", ...argv.slice(tool + 1)];
+	if (!argv.slice(info.toolIdx + 1).some((a) => a.startsWith("-"))) return argv;
+	return [...argv.slice(0, info.toolIdx + 1), "--", ...argv.slice(info.toolIdx + 1)];
 }
 
 /** Read the cached runner spec from a spec dir. Null when absent, malformed,
@@ -148,7 +173,10 @@ export function resolveRunnerCommand(spec: TestRunnerSpec, projectRoot: string):
 	// RED try honestly degraded to red-unverified). Guard: insert ` -- ` right
 	// after the package token so flags reach the child binary. Only for the
 	// exec/dlx shapes where npm owns args; plain `npm test` is untouched.
-	const npmExec = command.match(/^(npm\s+(?:exec|dlx)|npx|pnpm\s+dlx|yarn\s+dlx)(\s+(?!--)\S+)?/);
+	// v0.3.57 review P2: guard ONLY the empirically-established eaters (npm
+	// exec, npx — same table as the argv guard); pnpm/yarn dlx pass child args
+	// verbatim, so a ` -- ` there would be forwarded and corrupt the child.
+	const npmExec = command.match(/^(npm\s+exec|npx)(\s+(?!--)\S+)?/);
 	if (npmExec) {
 		const subEnd = (npmExec.index ?? 0) + npmExec[0].length;
 		const after = command.slice(subEnd);
@@ -197,7 +225,11 @@ export function validateRunnerSpec(spec: TestRunnerSpec, projectRoot: string, ti
  *  the command) can be added without changing the cache format. */
 export function dynamicRedCheckPlans(projectRoot: string, _targets: string[], spec: TestRunnerSpec): Array<{ cwd: string; argv: string[] }> {
 	const { cwd, argv } = resolveRunnerCommand(spec, projectRoot);
-	return [{ cwd, argv }];
+	// v0.3.57 review P3: a degenerate spec (command "" or bare `cd` — only
+	// reachable via corrupted/hand-edited cache; validation rejects empty
+	// commands before caching) must fall through to the conventions fallback
+	// upstream instead of blocking it with an unspawneable empty-argv plan.
+	return argv.length > 0 ? [{ cwd, argv }] : [];
 }
 
 /** File-like tokens (paths or *.test.* / *.spec.* names) in a runner command.

@@ -480,7 +480,7 @@ export function deriveConventionsRunnerSpec(root: string, targets: string[]): Te
 			const first = plans[0];
 			if (!first) return null;
 			const format = first.channel.format === "tap" ? "tap" : first.channel.format === "junit-xml" ? "junit-xml" : "console";
-			const command = first.argv.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ");
+			const command = first.argv.map((a) => (/\s/.test(a) ? `'${a}'` : a)).join(" ");
 			return {
 				version: 1,
 				command,

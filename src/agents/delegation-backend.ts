@@ -28,6 +28,7 @@
  */
 
 import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
+import { armDelegationWatchdog } from "../watchdog.ts";
 import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "../pi-spawn.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
 import type { AgentProgress, SpawnResult } from "../types.ts";
@@ -301,10 +302,18 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 			try { events.off?.(DELEGATION_UPDATE_EVENT, onUpdate as (payload: unknown) => void); } catch { /* best-effort */ }
 			opts.signal?.removeEventListener("abort", onAbort);
 			if (timer) clearTimeout(timer);
+			watchdog?.dispose(); // v0.3.57: the settle path ran → tell the external watcher to stand down
 		};
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let watchdog: import("../watchdog.ts").DelegationWatchdog | undefined;
 		if (timeoutMs && timeoutMs > 0) {
 			timer = setTimeout(() => cancel(`agent ${opts.agent} timed out after ${timeoutMs}ms (delegation)`), timeoutMs + 2_000);
+			// v0.3.57 liveness (silent-zombie incident): the timer above lives in
+			// THIS loop — if the loop freezes, it dies with everything else. The
+			// external watcher is a detached process that records the freeze when
+			// the heartbeat is still present past deadline+grace. Telemetry-only;
+			// every failure inside it is fail-open (P5).
+			watchdog = armDelegationWatchdog(opts.agent, timeoutMs);
 		}
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		detachers.push(

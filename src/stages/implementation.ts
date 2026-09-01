@@ -1420,6 +1420,14 @@ export const implementationStage: Stage = {
 			return { phasesCompleted: 0, totalPhases: 0, allGreen: false };
 		}
 		const setup = state.setup!;
+		// v0.3.57 liveness (ledger 2026-09-01, silent-zombie incident): the run's
+		// dedicated worktree being removed EXTERNALLY mid-run must fail the stage
+		// closed with an honest marker — never delegate children into a void that
+		// then hangs awaiting responses that can never arrive.
+		if ((setup as { worktreeCreated?: boolean }).worktreeCreated !== false && !existsSync(setup.worktreePath)) {
+			ctx.log(`Implementation: WORKTREE GONE — ${setup.worktreePath} no longer exists (removed externally). Failing the stage closed; every delegation into it would hang or die silently. If a host process for this run is still alive, stop it, then start a fresh run or resume.`);
+			return { phasesCompleted: 0, totalPhases: phases.length, allGreen: false, filesModified: [], phaseStatus: [], lastFailures: [{ phaseId: "phase-all", reasons: [`worktree removed externally: ${setup.worktreePath}`] }] };
+		}
 		// §D auto-iterate: carry per-phase green state + failure reasons from the
 		// PRIOR convergence iteration (state.implementation holds the last run's
 		// control). Green phases are skipped; a failed phase's prior reasons seed
@@ -1549,6 +1557,10 @@ export const implementationStage: Stage = {
 			let terminalFailureKind: "red-generation" | "implementation-gate" = "implementation-gate";
 			let terminalRedTries = 0;
 			let terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" = "failed";
+			// v0.3.57 liveness: set when the worktree vanished under a running phase —
+			// breaks the PHASE loop after this phase's partial bookkeeping (remaining
+			// phases cannot run in a deleted worktree; re-probing each is pure noise).
+			let worktreeGone = false;
 			// Track 30 PRA (T3.2 — SCENARIO-005, AC-03): the environmental-blocker
 			// one-gate-re-run budget. Per-phase hoisted state — reset each convergence
 			// iteration (a later re-entry gets a fresh budget of exactly 1) and grants
@@ -1656,6 +1668,13 @@ export const implementationStage: Stage = {
 			// 13/13 green independently). Declared here so every oracle call site in
 			// the attempt loop reaches the same validated runner.
 			let runnerSpec: TestRunnerSpec | null = readCachedTestRunner(setup.specDirectory);
+			// v0.3.57 review F-E: conventions-derived coverage runner captured at
+			// RED time (pre-implementer). The gate must measure the derivation that
+			// produced the RED verdict — re-deriving at gate time reads
+			// implementer-mutable worktree state (a legit-looking package.json edit
+			// between RED and the gate steers the derivation to no recipe →
+			// unmeasurable → the 85% floor dodged with only a loud advisory).
+			let covConventionsSpec: TestRunnerSpec | null = null;
 			let runnerDiscoveryTried = runnerSpec !== null;
 			let challengeReauthors = 0;
 			let implDefects: TestDefect[] = [];
@@ -1706,6 +1725,18 @@ export const implementationStage: Stage = {
 			for (let attempt = 1; ctx.budget.check(); attempt++) {
 				attemptsRun = attempt;
 				redReviewInFlight = null; // v0.3.43: a stale in-flight review must never join a later attempt (the join/paths above always null it first — TS types the reset `never`, F3 verified dead)
+				// v0.3.57 liveness: fail the attempt CLOSED when the worktree was
+				// removed externally (silent-zombie incident, ledger 2026-09-01) —
+				// children dispatched into a deleted cwd die silently and the
+				// attempt would burn its whole timeout learning nothing.
+				if ((setup as { worktreeCreated?: boolean }).worktreeCreated !== false && !existsSync(setup.worktreePath)) {
+					terminalFailureKind = "implementation-gate";
+					terminalStopReason = "environment-blocked";
+					worktreeGone = true;
+					attemptErrors.push(`worktree removed externally mid-run: ${setup.worktreePath}`);
+					ctx.log(`Implementation ${phaseId} attempt ${attempt} aborted — WORKTREE GONE: ${setup.worktreePath} no longer exists (removed externally). Failing closed; remaining phases cannot run in a deleted worktree.`);
+					break;
+				}
 				// v0.2.6 G1 — the phase reads the run-start dirt snapshot captured ONCE at
 				// stage entry (line ~953, persisted across §D iterations per sd26-CR-1);
 				// provenance is RUN-START, not per-phase, so this run's own work (any
@@ -1823,6 +1854,11 @@ export const implementationStage: Stage = {
 						}
 						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
+						// v0.3.57 review F-E: capture NOW (post-RED, pre-implementer) so the
+						// coverage gate measures verdict-time inputs. runnerSpec is null here
+						// exactly when RED ran via conventions (the cache initializes it above),
+						// so this never shadows a validated runner.
+						if (!runnerSpec && !covConventionsSpec) covConventionsSpec = deriveConventionsRunnerSpec(setup.worktreePath, testFiles);
 						redChangedFiles = setDiff(gitStatusPaths(setup.worktreePath), redBaseline);
 						announceActivity("RED boundary", redTryDetail);
 						let boundary = await resolveRedBoundary({ ctx, phaseId, phaseName, phase, redStatus, testFiles, changedFiles: redChangedFiles, cwd: setup.worktreePath });
@@ -2777,7 +2813,7 @@ export const implementationStage: Stage = {
 				// `&& covRunnerSpec` below silently skipped the gate AND its advisory
 				// (a silent green, P10). Only when NO runner exists at all does the
 				// loud UNMEASURABLE advisory fire instead of silence.
-				const covRunnerSpec = runnerSpec ?? readCachedTestRunner(setup.specDirectory) ?? deriveConventionsRunnerSpec(setup.worktreePath, testFiles);
+				const covRunnerSpec = runnerSpec ?? readCachedTestRunner(setup.specDirectory) ?? covConventionsSpec ?? deriveConventionsRunnerSpec(setup.worktreePath, testFiles); // F-E: the captured-at-RED spec precedes a fresh (implementer-mutable) re-derive
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
 					if (covRunnerSpec) {
 					const phaseProductionFiles = Array.from(new Set([
@@ -3496,6 +3532,7 @@ export const implementationStage: Stage = {
 					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : ""} — continuing to the next phase`); // review-2 F8
 				}
 				allGreen = false;
+				if (worktreeGone) break; // v0.3.57 liveness: no further phase can run in a deleted worktree
 				continue;
 			}
 			phasesCompleted++;

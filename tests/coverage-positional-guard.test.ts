@@ -32,6 +32,16 @@ describe("insertBeforeFirstPositional — value-taking flags are skipped (F3)", 
 		expect(insertBeforeFirstPositional(["node", "--test", "--", "a.test.mjs"], "--experimental-test-coverage"))
 			.toEqual(["node", "--test", "--experimental-test-coverage", "--", "a.test.mjs"]);
 	});
+	it("v0.3.57 review F-D: node --test's own SPACE-form value flags are skipped, never split", () => {
+		// Insertion happens before the FIRST POSITIONAL; the invariant under test
+		// is that a value-taking flag's value is never orphaned into a filter.
+		expect(insertBeforeFirstPositional(["node", "--test", "--test-reporter", "tap", "tests/a.test.mjs"], "--experimental-test-coverage"))
+			.toEqual(["node", "--test", "--test-reporter", "tap", "--experimental-test-coverage", "tests/a.test.mjs"]);
+		expect(insertBeforeFirstPositional(["node", "--test", "--test-name-pattern", "cov", "--test-shard", "1/2"], "--experimental-test-coverage"))
+			.toEqual(["node", "--test", "--test-name-pattern", "cov", "--test-shard", "1/2", "--experimental-test-coverage"]);
+		expect(insertBeforeFirstPositional(["node", "--conditions", "dev", "--max-old-space-size", "4096", "--test"], "--experimental-test-coverage"))
+			.toEqual(["node", "--conditions", "dev", "--max-old-space-size", "4096", "--test", "--experimental-test-coverage"]);
+	});
 	it("no positional → append (bare node --test shape unchanged)", () => {
 		expect(insertBeforeFirstPositional(["node", "--test"], "--experimental-test-coverage"))
 			.toEqual(["node", "--test", "--experimental-test-coverage"]);

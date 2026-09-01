@@ -232,6 +232,72 @@ describe("runCoverageGate — vitest (real run)", () => {
 	});
 });
 
+describe("runCoverageGate — v0.3.57 review P1: exec-form commands (real run)", () => {
+	it("vitest: coverage flags appended AFTER the pm-owned `--` reach vitest (npm exec)", () => {
+		// Repro of the v0.3.56 P1: pre-`--` insertion fed `--coverage.*` to npm
+		// as its own cli config ("Unknown cli config"), vitest ran WITHOUT
+		// coverage, and every phase reported unmeasurable — the 85% floor was
+		// unenforced on exec-form (npm-PM) projects. End-append lands child-side.
+		const d = tempDir();
+		symlinkSync("/home/jenningsl/development/personal/jenningsloy318/pi-super-dev/node_modules", join(d, "node_modules"));
+		writeFileSync(join(d, "src.mjs"), [
+			"export function cov(a) {",
+			"  const x = a + 1;",
+			"  return x;",
+			"}",
+			"export function uncov(a) {",
+			"  const y = a * 2;",
+			"  return y;",
+			"}",
+			"",
+		].join("\n"));
+		mkdirSync(join(d, "tests"));
+		writeFileSync(join(d, "tests", "a.test.mjs"), [
+			'import { test, expect } from "vitest";',
+			'import { cov } from "../src.mjs";',
+			'test("cov", () => { expect(cov(1)).toBe(2); });',
+			"",
+		].join("\n"));
+		const runner = spec("npm exec vitest -- run tests/a.test.mjs");
+		const r = runCoverageGate(d, { runnerSpec: runner, phaseFiles: ["src.mjs"], testFiles: ["tests/a.test.mjs"], timeoutMs: 180_000 });
+		// Unmeasurable would mean npm ate the coverage flags again.
+		expect(r.status).toBe("below-threshold");
+		expect(r.linesPct).toBeLessThan(85);
+		expect(r.perFile.every((f) => f.file.endsWith("src.mjs"))).toBe(true);
+	}, 240_000);
+
+	it("node-test: the coverage flag lands in the CHILD region of `npm exec node -- --test`", () => {
+		// Pre-fix, insertBeforeFirstPositional scanned from argv[1] and inserted
+		// `--experimental-test-coverage` at index 1 — npm's config stream — so
+		// node ran WITHOUT coverage and the TAP table never printed.
+		const d = tempDir();
+		mkdirSync(join(d, "src"));
+		mkdirSync(join(d, "tests"));
+		writeFileSync(join(d, "src", "part.js"), [
+			"export function covered(a) {",
+			"  return a + 1;",
+			"}",
+			"export function notCovered(a) {",
+			"  const y = a * 2;",
+			"  return y + 1;",
+			"}",
+			"",
+		].join("\n"));
+		writeFileSync(join(d, "tests", "part.test.mjs"), [
+			'import { test } from "node:test";',
+			'import assert from "node:assert/strict";',
+			'import { covered } from "../src/part.js";',
+			'test("covered", () => { assert.equal(covered(1), 2); });',
+			"",
+		].join("\n"));
+		const runner = spec("npm exec node -- --test --test-reporter=tap tests/part.test.mjs");
+		const r = runCoverageGate(d, { runnerSpec: runner, phaseFiles: ["src/part.js"], testFiles: ["tests/part.test.mjs"], timeoutMs: 120_000 });
+		expect(r.status).toBe("below-threshold");
+		expect(r.recipe).toBe("node-test");
+		expect((r.linesPct ?? 0)).toBeLessThan(85);
+	}, 180_000);
+});
+
 describe("runCoverageGate — go (real run)", () => {
 	const goOk = (() => { try { return spawnSync("go", ["version"], { encoding: "utf8" }).status === 0; } catch { return false; } })();
 	it.skipIf(!goOk)("measures statement coverage from the coverprofile", () => {

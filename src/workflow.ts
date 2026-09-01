@@ -18,7 +18,7 @@ import { languageDirective, superDevEnv } from "./render/super-dev-dir.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch, splitModelThinking } from "./pi-spawn.ts";
@@ -94,7 +94,11 @@ export function sweepStaleQuarantineDirs(): void {
 			if (!entry.startsWith("sd-boundary-")) continue;
 			const full = join(tmpdir(), entry);
 			try {
-				if (Date.now() - statSync(full).mtimeMs > 24 * 3_600_000) rmSync(full, { recursive: true, force: true });
+				// v0.3.57 review P3: lstat (not stat) — statSync follows a planted
+				// symlink for the mtime read. rmSync (no recursive deref of the
+				// link target beyond the entry itself) removes the link, never
+				// the target — that safety property is unchanged.
+				if (Date.now() - lstatSync(full).mtimeMs > 24 * 3_600_000) rmSync(full, { recursive: true, force: true });
 			} catch { /* a dir created by another process — skip */ }
 		}
 	} catch { /* best-effort */ }
@@ -220,12 +224,19 @@ export function restoreNewSourceViolations(cwd: string, before: SourceBoundarySn
 					mkdirSync(quarantineDir, { recursive: true, mode: 0o700 });
 					const dest = join(quarantineDir, `${quarantined.length}-${safeName}`);
 					copyFileSync(abs0, dest);
-					// v0.3.56 F9f: close the lstat→copy TOCTOU — re-lstat the SOURCE;
-					// if it was swapped to a symlink/non-file between check and copy,
-					// drop the copy instead of trusting attacker-swapped bytes.
-					if (lstatSync(abs0).isFile()) {
-						quarantined.push(relPath);
-					} else {
+					// v0.3.57 review: re-lstat NARROWS the lstat→copy TOCTOU — it
+					// cannot close one (a swap between copy and re-check, or a
+					// delete, still races). The re-check therefore runs in its own
+					// try/catch: ANY failure drops the copy, so the source being
+					// deleted mid-race can never strand an orphaned copy with no
+					// quarantined[] evidence row (integrity over availability).
+					try {
+						if (lstatSync(abs0).isFile()) {
+							quarantined.push(relPath);
+						} else {
+							try { rmSync(dest, { force: true }); } catch { /* best-effort */ }
+						}
+					} catch {
 						try { rmSync(dest, { force: true }); } catch { /* best-effort */ }
 					}
 				}

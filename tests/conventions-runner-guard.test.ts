@@ -24,15 +24,13 @@ describe("insertNpmExecGuard — the ONE shared exec-family guard (P2)", () => {
 		expect(insertNpmExecGuard(["npm", "exec", "vitest", "run", "--reporter=tap", "tests/x.test.ts"]))
 			.toEqual(["npm", "exec", "vitest", "--", "run", "--reporter=tap", "tests/x.test.ts"]);
 	});
-	it("mirrors the string-form semantics for npx / pnpm dlx / yarn dlx / bun x", () => {
+	it("mirrors the string-form semantics for npx (the only other proven eater)", () => {
 		expect(insertNpmExecGuard(["npx", "vitest", "run", "--reporter=tap"]))
 			.toEqual(["npx", "vitest", "--", "run", "--reporter=tap"]);
+		// v0.3.57 review P2: pnpm/yarn dlx and bun x are unproven eaters — the
+		// guard must NOT touch them (a forwarded ` -- ` corrupts the child).
 		expect(insertNpmExecGuard(["pnpm", "dlx", "vitest", "run", "-c", "v.config.ts"]))
-			.toEqual(["pnpm", "dlx", "vitest", "--", "run", "-c", "v.config.ts"]);
-		expect(insertNpmExecGuard(["yarn", "dlx", "vitest", "run", "--reporter=tap"]))
-			.toEqual(["yarn", "dlx", "vitest", "--", "run", "--reporter=tap"]);
-		expect(insertNpmExecGuard(["bun", "x", "vitest", "run", "--reporter=tap"]))
-			.toEqual(["bun", "x", "vitest", "--", "run", "--reporter=tap"]);
+			.toEqual(["pnpm", "dlx", "vitest", "run", "-c", "v.config.ts"]);
 	});
 	it("skips pm-own flags before the tool token", () => {
 		expect(insertNpmExecGuard(["npm", "exec", "--package=vitest", "vitest", "run", "--reporter=tap"]))
@@ -53,7 +51,30 @@ describe("pmExec — conventions argv carries the guard (class-level: every buil
 		expect(pmExec("npm", "vitest", ["run", "--reporter=tap", "tests/a.test.ts"]))
 			.toEqual(["npm", "exec", "vitest", "--", "run", "--reporter=tap", "tests/a.test.ts"]);
 		expect(pmExec("npm", "jest", ["tests/a.test.ts"])).toEqual(["npm", "exec", "jest", "tests/a.test.ts"]);
-		expect(pmExec("pnpm", "vitest", ["run", "--reporter=tap"])).toEqual(["pnpm", "exec", "vitest", "--", "run", "--reporter=tap"]);
+		// v0.3.57 review P2: guard restricted to the EMPIRICALLY-ESTABLISHED
+		// eaters (npm exec / npx). pnpm exec passes child args verbatim, so a
+		// ` -- ` there would be forwarded to the child and corrupt its arg
+		// stream — pnpm/yarn exec and bun x stay byte-identical (unguarded).
+		expect(pmExec("pnpm", "vitest", ["run", "--reporter=tap"])).toEqual(["pnpm", "exec", "vitest", "run", "--reporter=tap"]);
+	});
+	it("guard table rows: pnpm/yarn exec and bun x are NOT guarded (unproven eaters)", () => {
+		expect(insertNpmExecGuard(["pnpm", "exec", "vitest", "run", "--reporter=tap"]))
+			.toEqual(["pnpm", "exec", "vitest", "run", "--reporter=tap"]);
+		expect(insertNpmExecGuard(["yarn", "exec", "vitest", "run", "--reporter=tap"]))
+			.toEqual(["yarn", "exec", "vitest", "run", "--reporter=tap"]);
+		expect(insertNpmExecGuard(["bun", "x", "vitest", "run", "--reporter=tap"]))
+			.toEqual(["bun", "x", "vitest", "run", "--reporter=tap"]);
+		expect(insertNpmExecGuard(["pnpm", "dlx", "vitest", "run", "--reporter=tap"]))
+			.toEqual(["pnpm", "dlx", "vitest", "run", "--reporter=tap"]);
+	});
+	it("already-guarded check is POSITION-aware: a -- after child dash tokens still guards", () => {
+		// v0.3.57 review P3: the old argv.includes("--") no-oped on this shape,
+		// leaving --reporter=tap in npm's config stream (position-blind trap).
+		expect(insertNpmExecGuard(["npm", "exec", "vitest", "run", "--reporter=tap", "--", "tests/x.test.ts"]))
+			.toEqual(["npm", "exec", "vitest", "--", "run", "--reporter=tap", "--", "tests/x.test.ts"]);
+		// A `--` between tool and first dash token IS guarded (no double insert).
+		expect(insertNpmExecGuard(["npx", "vitest", "--", "run", "--reporter=tap"]))
+			.toEqual(["npx", "vitest", "--", "run", "--reporter=tap"]);
 	});
 });
 

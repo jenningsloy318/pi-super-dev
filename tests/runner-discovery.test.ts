@@ -83,6 +83,13 @@ describe("v0.3.30 C — dynamicRedCheckPlans", () => {
 		expect(plans[0].cwd).toBe(root);
 		expect(plans[0].argv).toEqual(["./gradlew", "test", "--tests", "com.x.Y"]);
 	});
+	it("v0.3.57 review P3: a degenerate spec (bare cd) yields NO plan, so the conventions fallback is consulted", () => {
+		// resolveRunnerCommand maps bare-`cd` commands to an empty argv (nothing
+		// to spawn). Returning it as a plan would block the upstream
+		// plans.length === 0 fallback and classify `unknown` forever.
+		const spec: TestRunnerSpec = { version: 1, command: `cd ${root}`, resultFormat: "tap", discoveredAt: "x" };
+		expect(dynamicRedCheckPlans(root, ["tests/x.test.mjs"], spec)).toEqual([]);
+	});
 });
 
 // ─── v0.3.38: shell-compound runner proposals ────────────────────────────────

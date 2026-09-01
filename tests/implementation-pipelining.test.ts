@@ -12,8 +12,17 @@
  * attempts' actual on-disk production changes ("continue, do NOT restart").
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import type { AgentCall, AgentResult, Budget, ControlObj, HelperResult, PipelineState, RunOptions, Stage, StageContext } from "../src/types.ts";
+
+// v0.3.57 liveness: the implementation stage probes worktree existence at
+// stage entry and per attempt (silent-zombie incident) — fixtures now use a
+// REAL empty dir (gitStatusPaths on it is empty, preserving the RC3 contract
+// that motivated the old nonexistent-path fixture).
+const worktreeDir = mkdtempSync(join(tmpdir(), "sd-pipe-wt-"));
 
 vi.mock("../src/build-runner.ts", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>;
@@ -33,7 +42,7 @@ const redCheck = runRedCheck as unknown as ReturnType<typeof vi.fn>;
 
 function mkState(): PipelineState {
 	return {
-		setup: { worktreePath: "/tmp/sd-pipe-nonexistent", specDirectory: "/tmp/sd", defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "pipe", worktreeCreated: true, initializedRepo: false },
+		setup: { worktreePath: worktreeDir, specDirectory: "/tmp/sd", defaultBranch: "main", language: "frontend", isWebUi: false, specIdentifier: "pipe", worktreeCreated: true, initializedRepo: false },
 		classify: { taskType: "feature", uiScope: "none", language: "frontend", isWebUi: false },
 		spec: { phases: [{ name: "P", description: "d" }] },
 	};
@@ -220,12 +229,11 @@ describe("v0.3.43 RC3 — implementer continuation prompts", () => {
 	beforeEach(() => { redCheck.mockImplementation(() => "red"); });
 
 	it("attempt ≥2 prompts carry the PRIOR ATTEMPT PROGRESS block when git shows predecessor work", async () => {
-		// The mocked gitStatusPaths target (/tmp/sd-pipe-nonexistent) does not
-		// exist, so priorProgress is empty and the block must NOT appear; a real
-		// worktree case is covered by the discardGreenWork/deterministic-commit
-		// integration suite. What we pin HERE: the block never appears on
-		// attempt 1, and appears exactly when paths exist — so assert the
-		// negative-shape contract via the non-existent fixture.
+		// The real-but-EMPTY fixture worktree makes gitStatusPaths return no
+		// paths, so priorProgress is empty and the block must NOT appear; a
+		// populated-worktree case is covered by the discardGreenWork/
+		// deterministic-commit integration suite. What we pin HERE: the block
+		// never appears on attempt 1, and appears exactly when paths exist.
 		const r = mkCtx({ implControls: [{ filesModified: ["src/a.ts"] }, { filesModified: ["src/a.ts"] }] });
 		const state = mkState();
 		// Force a second attempt: first impl control triggers gate failure? Gates

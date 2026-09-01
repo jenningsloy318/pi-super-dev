@@ -12,7 +12,7 @@
  * Near-miss: missing-required errors name a present near-miss key.
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -21,7 +21,7 @@ import { extractControl, extractControlKeys, drainControlDrift, noteControlDrift
 import { attributQuarantinedViolations } from "../src/stages/implementation.ts";
 import { normalizeProseArrays, renderStage, validateData } from "../src/render/render.ts";
 import { STAGE_MODELS } from "../src/render/schemas.ts";
-import { boundaryQuarantinePayload, formatBoundaryQuarantineError } from "../src/workflow.ts";
+import { boundaryQuarantinePayload, formatBoundaryQuarantineError, sweepStaleQuarantineDirs } from "../src/workflow.ts";
 
 describe("v0.3.54 F6 — extractControl fallback guard after tag-parse failure", () => {
 	it("tag body fails AND fallback object carries NONE of the declared keys → null (wrong-object rejected)", () => {
@@ -389,5 +389,54 @@ describe("v0.3.54 F6 wiring — production extractControl call sites pass expect
 		}
 		// sanity: the invariant actually saw the six production sites
 		expect(checked).toBeGreaterThanOrEqual(6);
+	});
+});
+
+// v0.3.57 — the L5 quarantine test lane the v0.3.56 code comments CLAIMED but
+// never shipped (security review P10 honesty defect): sweepStaleQuarantineDirs
+// (fresh survives / >24h swept / planted symlink removed link-only) executed
+// against the real os.tmpdir() conventions.
+describe("v0.3.57 L5 — sweepStaleQuarantineDirs (real fs)", () => {
+	const made: string[] = [];
+	afterEach(() => { for (const d of made.splice(0)) { try { rmSync(d, { recursive: true, force: true }); } catch { /* ok */ } } });
+
+	it("a fresh quarantine dir survives; a >24h dir is swept; a swept dir's planted symlink never deletes its target", () => {
+		const fresh = join(tmpdir(), `sd-boundary-test-fresh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+		const stale = join(tmpdir(), `sd-boundary-test-stale-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(fresh, { recursive: true, mode: 0o700 });
+		mkdirSync(stale, { recursive: true, mode: 0o700 });
+		made.push(fresh, stale);
+		const target = join(stale, "target.txt");
+		writeFileSync(target, "precious");
+		symlinkSync(target, join(stale, "planted-link"));
+		// Backdate the stale dir past the 24h GC horizon.
+		const old = new Date(Date.now() - 25 * 3_600_000);
+		utimesSync(stale, old, old);
+
+		sweepStaleQuarantineDirs();
+
+		expect(existsSync(fresh)).toBe(true);
+		expect(existsSync(stale)).toBe(false);
+		// rmSync removed the directory (and the link entry), never the target's
+		// bytes — the "planted symlinks skipped" claim, proven not presumed.
+		expect(existsSync(target)).toBe(false); // target lived INSIDE the swept dir
+	});
+
+	it("a symlink pointing OUTSIDE a swept dir keeps its target bytes (link-only removal)", () => {
+		const outer = mkdtempSync(join(tmpdir(), "sd-boundary-target-"));
+		made.push(outer);
+		const target = join(outer, "outside.txt");
+		writeFileSync(target, "precious");
+		const stale = join(tmpdir(), `sd-boundary-test-link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(stale, { recursive: true, mode: 0o700 });
+		made.push(stale);
+		symlinkSync(target, join(stale, "escape-link"));
+		const old = new Date(Date.now() - 25 * 3_600_000);
+		utimesSync(stale, old, old);
+
+		sweepStaleQuarantineDirs();
+
+		expect(existsSync(stale)).toBe(false);
+		expect(readFileSync(target, "utf8")).toBe("precious");
 	});
 });

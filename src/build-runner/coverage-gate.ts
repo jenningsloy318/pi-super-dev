@@ -20,7 +20,7 @@ import { spawnSync } from "node:child_process"; // used by spawnCoverageCommand
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { resolveRunnerCommand, type TestRunnerSpec } from "./runner-discovery.ts";
+import { execGuardInfo, resolveRunnerCommand, type TestRunnerSpec } from "./runner-discovery.ts";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -288,16 +288,20 @@ function measure(recipe: CoverageRecipe, opts: CoverageGateOptions, worktreePath
 		: worktreePath;
 
 	if (recipe === "vitest") {
-		// Insert coverage flags BEFORE any standalone "--" separator (vitest
-		// treats post-"--" positionals as test-file filters).
 		const covFlags = ["--coverage.enabled", "--coverage.reporter=json-summary", `--coverage.reportsDirectory=${join(tmp, "vitest")}`];
 		// Suite-wide: strip file-scoped positionals so tests added by a coverage
 		// retry are picked up by vitest's default discovery (dir positionals stay).
 		const stripped = stripFilePositionals(resolved.argv);
-		const sepIdx = stripped.indexOf("--");
-		const argv = sepIdx >= 0
-			? [...stripped.slice(0, sepIdx), ...covFlags, ...stripped.slice(sepIdx)]
-			: insertBeforeFirstPositional(stripped, ...covFlags);
+		// v0.3.57 review P1: APPEND at the end. Two reasons, both class-level:
+		// (1) vitest's cac parser is position-independent, so appending can never
+		// split a flag from its value (kills the VALUE_TAKING_FLAGS guesswork for
+		// vitest entirely); (2) appending always lands CHILD-side of a pm-owned
+		// `--` (exec form `npm exec vitest -- run ...` passes the tail to vitest
+		// verbatim), where the old pre-`--` insertion fed the flags to npm as its
+		// own cli config — the exact v0.3.41 eat-class, one layer deeper.
+		const argv = stripped.some((a) => a === "--coverage.enabled")
+			? stripped
+			: [...stripped, ...covFlags];
 		const run = spawnCoverageCommand(argv, cwd, timeoutMs);
 		if (run.error || (run.status !== 0)) {
 			const err = (run.stderr ?? "") + (run.error?.message ?? "");
@@ -333,7 +337,18 @@ function measure(recipe: CoverageRecipe, opts: CoverageGateOptions, worktreePath
 		const stripped = stripFilePositionals(resolved.argv);
 		const argv = stripped.some((a) => a === "--experimental-test-coverage")
 			? stripped
-			: insertBeforeFirstPositional(stripped, "--experimental-test-coverage");
+			: (() => {
+				// v0.3.57 review P1: on exec form (`npm exec node -- --test ...`)
+				// the pm-owned `--` is node-side territory boundary — scanning from
+				// argv[1] would insert the flag into npm's config stream. Scan the
+				// CHILD region only, rejoin with the pm prefix intact.
+				const info = execGuardInfo(stripped);
+				if (info && info.sepIdx >= 0) {
+					const head = stripped.slice(0, info.sepIdx + 1);
+					return [...head, ...insertBeforeFirstPositional(stripped.slice(info.sepIdx + 1), "--experimental-test-coverage")];
+				}
+				return insertBeforeFirstPositional(stripped, "--experimental-test-coverage");
+			})();
 		const run = spawnCoverageCommand(argv, cwd, timeoutMs);
 		if (run.error || run.status === null) return { rows: [], error: `node coverage run failed to start: ${run.error?.message ?? "unknown"}` };
 		const rows = parseNodeTapCoverage(run.stdout ?? "");
@@ -375,10 +390,23 @@ function measure(recipe: CoverageRecipe, opts: CoverageGateOptions, worktreePath
  *  else coverage flags land BETWEEN the flag and its value and corrupt the
  *  command (`--experimental-test-coverage` became the value of `--import`).
  *  A bare `--` ends the scan: everything after it is positional. Exported for
- *  L2 tests (docs/testing-strategy.md — execute, don't string-match). */
+ *  L2 tests (docs/testing-strategy.md — execute, don't string-match).
+ *  v0.3.57 review P2: the table is NODE's documented value-taking grammar
+ *  only — this scanner is now used solely by the node-test recipe (vitest
+ *  appends instead). Entries verified against node's CLI docs; `-c` (node
+ *  --check, valueless) and vitest's `--config` are deliberately absent — a
+ *  wrong "takes value" row corrupts the command just as surely as a missing
+ *  one. Mainstream space-form rows enumerated per P2; an unlisted space-form
+ *  flag still fails LOUD (the run errors), never silently mis-scopes. */
 const VALUE_TAKING_FLAGS = new Set([
-	"--import", "--require", "--loader", "--experimental-loader",
-	"--es-module-specifier-resolution", "--config", "-r", "-c",
+	"--import", "--require", "-r",
+	"--loader", "--experimental-loader",
+	"--conditions", "-C",
+	"--experimental-default-type",
+	"--test-reporter", "--test-reporter-destination", "--test-name-pattern", "--test-shard",
+	"--test-concurrency",
+	"--cpu-prof-dir", "--heap-prof-dir", "--diagnostic-dir",
+	"--redirect-warnings", "--max-old-space-size", "--max-semi-space-size",
 ]);
 export function insertBeforeFirstPositional(argv: string[], ...flags: string[]): string[] {
 	let idx = -1;
