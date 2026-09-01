@@ -34,6 +34,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { resolveIntegrationStems } from "./detect.ts";
+import { insertNpmExecGuard, type TestRunnerSpec } from "./runner-discovery.ts";
 
 // ---------------------------------------------------------------------------
 // Channel + plan types
@@ -177,10 +178,16 @@ function fileUsesNodeTest(cwd: string, target: string): boolean {
 }
 
 export function pmExec(pm: string, tool: string, args: string[]): string[] {
-	if (pm === "yarn") return [pm, "exec", tool, ...args];
-	if (pm === "bun") return [pm, "x", tool, ...args];
-	if (pm === "deno") return ["deno", "task", tool, ...args];
-	return [pm, "exec", tool, ...args];
+	if (pm === "deno") return ["deno", "task", tool, ...args]; // deno task forwards child args — no npm-config eating
+	// v0.3.56 F1 (class B): npm exec/dlx/npx/bun x consume `--flag=value` child
+	// flags as npm config, so the conventions vitest row silently lost
+	// --reporter=tap and the oracle degraded to unknown. Shared guard (one
+	// helper with the string-form fix) inserts ` -- ` after the tool token;
+	// byte-identical no-op without child flags.
+	const argv = pm === "yarn" ? [pm, "exec", tool, ...args]
+		: pm === "bun" ? [pm, "x", tool, ...args]
+		: [pm, "exec", tool, ...args];
+	return insertNpmExecGuard(argv);
 }
 
 function hasVitestScript(root: string): boolean {
@@ -458,6 +465,36 @@ function goPackageArg(relTarget: string): string {
 	const pkgDir = /\.go$/i.test(rel) ? dirname(rel).replace(/\\/g, "/") : rel.replace(/\/$/, "");
 	if (!pkgDir || pkgDir === ".") return ".";
 	return pkgDir.startsWith("./") ? pkgDir : `./${pkgDir}`;
+}
+
+/** v0.3.56 F2: when phase RED ran via CONVENTIONS (no validated runner →
+ *  discovery never wrote the cache), the coverage gate had no runner spec and
+ *  silently skipped (a silent green — P10). This derives the SAME conventions
+ *  runner as a TestRunnerSpec so the gate can measure it; null when no row
+ *  claims the targets (the caller then emits the loud UNMEASURABLE advisory).
+ *  Best-effort: never throws, tmp junit dirs are cleaned up. */
+export function deriveConventionsRunnerSpec(root: string, targets: string[]): TestRunnerSpec | null {
+	try {
+		const plans = conventionPlansFor(root, targets);
+		try {
+			const first = plans[0];
+			if (!first) return null;
+			const format = first.channel.format === "tap" ? "tap" : first.channel.format === "junit-xml" ? "junit-xml" : "console";
+			const command = first.argv.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ");
+			return {
+				version: 1,
+				command,
+				cwd: first.cwd,
+				resultFormat: format,
+				note: `derived from conventions row ${first.conventionId} (coverage gate; RED ran via conventions)`,
+				discoveredAt: new Date().toISOString(),
+			};
+		} finally {
+			for (const p of plans) for (const d of p.cleanupDirs ?? []) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ } }
+		}
+	} catch {
+		return null;
+	}
 }
 
 /** Resolve scoped oracle plans for `targets` under `root` by consulting the

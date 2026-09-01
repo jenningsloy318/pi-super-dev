@@ -184,31 +184,61 @@ export function validateData(schema: StageModel["schema"], data: unknown): strin
  * are now DERIVED from the stage schema: every top-level `array of objects`
  * whose item declares an EXACT `type:"string"` property (no union/anyOf) is a
  * prose-array slot, for every stage, forever. */
-function proseArrayPairsFromSchema(schema: unknown): Array<{ container: string; field: string }> {
-	const pairs: Array<{ container: string; field: string }> = [];
-	if (!schema || typeof schema !== "object") return pairs;
-	const props = (schema as { properties?: Record<string, unknown> }).properties;
-	if (!props || typeof props !== "object") return pairs;
-	for (const [container, containerSchema] of Object.entries(props)) {
-		if (!containerSchema || typeof containerSchema !== "object") continue;
-		const cs = containerSchema as { type?: unknown; items?: unknown };
-		if (cs.type !== "array" || !cs.items || typeof cs.items !== "object") continue;
-		const itemProps = (cs.items as { properties?: Record<string, unknown> }).properties;
-		if (!itemProps || typeof itemProps !== "object") continue;
-		for (const [field, fieldSchema] of Object.entries(itemProps)) {
+function proseArrayPairsFromSchema(schema: unknown): string[][] {
+	const pairs: string[][] = [];
+	// v0.3.56 F9c (class B — unenumerated schema shapes): the walk was 2 levels
+	// deep (top-level array-of-objects → item slot), so nested slots —
+	// features[].scenarios[].andClauses, phases[].deliverables.requireFiles —
+	// were unreachable. Recurse through object properties and array-of-object
+	// items to ANY depth (capped at 8 against pathological schemas), keeping the
+	// exact-slot guards: no union (anyOf/oneOf), no enum at the leaf slot or its
+	// string items — a prose wrap would fail those contracts.
+	const walk = (node: unknown, path: string[], depth: number): void => {
+		if (!node || typeof node !== "object" || depth > 8) return;
+		const props = (node as { properties?: Record<string, unknown> }).properties;
+		if (!props || typeof props !== "object") return;
+		for (const [key, fieldSchema] of Object.entries(props)) {
 			if (!fieldSchema || typeof fieldSchema !== "object") continue;
-			// Prose-array slot = EXACT array-of-string contract inside the item
-			// (e.g. findings[].evidence, alternativesConsidered[].alternatives,
-			// acceptanceCriteria[].scenarios). Unions/anyOf/enums stay untouched.
 			const fs = fieldSchema as { type?: unknown; items?: unknown; anyOf?: unknown; oneOf?: unknown; enum?: unknown };
-			if (fs.type !== "array" || fs.anyOf || fs.oneOf || fs.enum) continue;
-			// v0.3.54 review fix (code F7): item-level enums stay untouched — a prose
-			// wrap would produce a 1-element array that then fails the enum check.
-			const items = fs.items as { type?: unknown; enum?: unknown } | undefined;
-			if (items && typeof items === "object" && items.type === "string" && !items.enum) pairs.push({ container, field });
+			if (fs.anyOf || fs.oneOf) continue;
+			if (fs.type === "array" && fs.items && typeof fs.items === "object") {
+				const items = fs.items as { type?: unknown; enum?: unknown };
+				if (items.type === "string" && !items.enum) {
+					pairs.push([...path, key]); // exact array-of-string leaf slot
+				} else if (items.type === "object") {
+					const itemProps = (fs.items as { properties?: unknown }).properties;
+					if (itemProps && typeof itemProps === "object") walk(fs.items, [...path, key], depth + 1); // array-of-objects → recurse into item shape
+				}
+			} else if (fs.type === "object") {
+				walk(fs, path, depth + 1); // nested object container → recurse in place
+			}
 		}
-	}
+	};
+	walk(schema, [], 0);
 	return pairs;
+}
+
+/** Follow one schema path through the DATA (object properties; arrays fan out
+ *  over their items) and wrap a string leaf into a 1-element array (empty →
+ *  []). Mutates in place — the caller returns the SAME object. */
+function wrapProseArrayAtPath(root: Record<string, unknown>, path: string[]): void {
+	let nodes: unknown[] = [root];
+	for (let seg = 0; seg < path.length; seg++) {
+		const key = path[seg]!;
+		const next: unknown[] = [];
+		for (const node of nodes) {
+			if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+			const value = (node as Record<string, unknown>)[key];
+			if (seg === path.length - 1) {
+				if (typeof value === "string") (node as Record<string, unknown>)[key] = value.trim() === "" ? [] : [value];
+			} else if (Array.isArray(value)) {
+				next.push(...value);
+			} else if (value && typeof value === "object") {
+				next.push(value);
+			}
+		}
+		nodes = next;
+	}
 }
 
 /** Mutate the control in place (the caller returns/stores the SAME object, so
@@ -218,15 +248,7 @@ export function normalizeProseArrays(stageId: string, data: unknown, schema?: un
 	if (!data || typeof data !== "object" || Array.isArray(data)) return data;
 	const fields = schema ? proseArrayPairsFromSchema(schema) : [];
 	if (fields.length === 0) return data;
-	for (const { container, field } of fields) {
-		const list = (data as Record<string, unknown>)[container];
-		if (!Array.isArray(list)) continue;
-		for (const item of list) {
-			if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-			const rec = item as Record<string, unknown>;
-			if (typeof rec[field] === "string") rec[field] = rec[field]!.trim() === "" ? [] : [rec[field] as string];
-		}
-	}
+	for (const path of fields) wrapProseArrayAtPath(data as Record<string, unknown>, path);
 	return data;
 }
 

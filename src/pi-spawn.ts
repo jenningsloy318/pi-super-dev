@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentPrompt } from "./agents.ts";
 import { agentTerminalLine, newNarrationLines, newUsageStats, accumulateUsage, type LiveUsageStats } from "./progress-lines.ts";
-import { extractControl, missingControlKeys } from "./control.ts";
+import { DEFAULT_EMPTY_ARRAY_OK as CONTROL_DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "./control.ts";
 import { RpcDriver } from "./rpc-driver.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { DATA_FENCE_PREAMBLE, fenceUntrusted } from "./fence.ts";
@@ -614,7 +614,10 @@ export function buildSubprocessTaskPrompt(prompt: string, controlKeys: string[] 
 // zero findings is a first-class outcome (the review prompts say so verbatim:
 // "Zero findings is a valid, respected outcome"), but the strict key check
 // treated findings:[] as a missing key and burned a full corrective re-run.
-const DEFAULT_EMPTY_ARRAY_OK = ["filesCreated", "filesModified", "filesDeleted", "findings"];
+// v0.3.56 F5: the canonical base moved to control.ts (shared with the session
+// and delegation backends — P6). Kept as a local alias so the call sites below
+// and the zero-findings rationale comment stay stable.
+const DEFAULT_EMPTY_ARRAY_OK = CONTROL_DEFAULT_EMPTY_ARRAY_OK;
 
 function controlError(control: Record<string, unknown> | null, keys: string[], allowEmptyArraysFor?: string[]): string | undefined {
 	const missing = missingControlKeys(control, keys, { allowEmptyArraysFor: [...DEFAULT_EMPTY_ARRAY_OK, ...(allowEmptyArraysFor ?? [])] });

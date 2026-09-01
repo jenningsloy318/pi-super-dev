@@ -369,9 +369,25 @@ function measure(recipe: CoverageRecipe, opts: CoverageGateOptions, worktreePath
 }
 
 /** Insert `flags` before the first positional (non-dash) argument — runners
- *  like `node --test` ignore flags that appear after a positional token. */
-function insertBeforeFirstPositional(argv: string[], ...flags: string[]): string[] {
-	const idx = argv.findIndex((a, i) => i > 0 && !a.startsWith("-"));
+ *  like `node --test` ignore flags that appear after a positional token.
+ *  v0.3.56 F3 (class F — environment realism): flags that CONSUME a following
+ *  value token (e.g. `node --import tsx --test`) must have that value skipped,
+ *  else coverage flags land BETWEEN the flag and its value and corrupt the
+ *  command (`--experimental-test-coverage` became the value of `--import`).
+ *  A bare `--` ends the scan: everything after it is positional. Exported for
+ *  L2 tests (docs/testing-strategy.md — execute, don't string-match). */
+const VALUE_TAKING_FLAGS = new Set([
+	"--import", "--require", "--loader", "--experimental-loader",
+	"--es-module-specifier-resolution", "--config", "-r", "-c",
+]);
+export function insertBeforeFirstPositional(argv: string[], ...flags: string[]): string[] {
+	let idx = -1;
+	for (let i = 1; i < argv.length; i++) {
+		const a = argv[i]!;
+		if (a === "--") { idx = i; break; }
+		if (!a.startsWith("-")) { idx = i; break; }
+		if (VALUE_TAKING_FLAGS.has(a)) i++; // skip this flag's value token
+	}
 	return idx === -1 ? [...argv, ...flags] : [...argv.slice(0, idx), ...flags, ...argv.slice(idx)];
 }
 

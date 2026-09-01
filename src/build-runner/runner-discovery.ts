@@ -30,6 +30,36 @@ export interface TestRunnerSpec {
 
 const CACHE_BASENAME = "test-runner.json";
 
+/** v0.3.56 F1 (escape class B — unenumerated grammar; P2 single-helper rule):
+ *  npm/npx/pnpm/yarn exec-dlx forms CONSUME `--flag=value` tokens after the
+ *  child tool as npm config ("npm warn Unknown cli config --reporter" — the
+ *  v0.3.41 incident on the string-command path). This is the ONE shared guard
+ *  for every exec-family ARGV builder (conventions pmExec, baseline
+ *  pmExecLocal): insert ` -- ` after the child tool token when child dash
+ *  tokens follow and no standalone `--` already separates them. Mirrors the
+ *  string-form guard in resolveRunnerCommand below (same position, same
+ *  conditions); no-op on every other shape, so plain `npm test` and guardless
+ *  argvs are byte-identical. */
+export function insertNpmExecGuard(argv: string[]): string[] {
+	if (argv.length < 2) return argv;
+	const pm = argv[0]!;
+	let prefixEnd: number;
+	if (pm === "npx") prefixEnd = 1;
+	else if ((pm === "npm" || pm === "pnpm" || pm === "yarn") && (argv[1] === "exec" || argv[1] === "dlx")) prefixEnd = 2;
+	else if (pm === "bun" && argv[1] === "x") prefixEnd = 2;
+	else return argv;
+	if (prefixEnd >= argv.length) return argv;
+	// Already guarded → byte-identical no-op.
+	if (argv.slice(prefixEnd).includes("--")) return argv;
+	// The child tool is the first non-flag token after the pm's own flags.
+	let tool = prefixEnd;
+	while (tool < argv.length && argv[tool]!.startsWith("-")) tool++;
+	if (tool >= argv.length) return argv;
+	// Guard only when child flags actually follow the tool (else nothing to protect).
+	if (!argv.slice(tool + 1).some((a) => a.startsWith("-"))) return argv;
+	return [...argv.slice(0, tool + 1), "--", ...argv.slice(tool + 1)];
+}
+
 /** Read the cached runner spec from a spec dir. Null when absent, malformed,
  *  or missing a non-empty command (never throws). */
 export function readCachedTestRunner(specDir: string | undefined): TestRunnerSpec | null {

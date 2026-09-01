@@ -490,8 +490,14 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					if (!progressExtensionUsed && prevOwnOpen !== Number.POSITIVE_INFINITY && lastOwnOpen < prevOwnOpen && lastOwnOpen > 0) {
 						progressExtensionUsed = true;
 						// AC-17 (SCENARIO-037): the extension is re-clamped to the 3× ceiling.
+						const priorCap = effectiveCap;
 						effectiveCap = extendedRoundCap(effectiveCap, maxRounds);
-						ctx.log(`${options.feedbackKey} convergence: cap extended to ${effectiveCap} — strict progress (own open blocking ${prevOwnOpen === Number.POSITIVE_INFINITY ? "?" : prevOwnOpen} → ${lastOwnOpen})`);
+						// P10 (v0.3.56 F9b): at the ceiling extendedRoundCap returns the SAME
+						// value — the old log claimed "cap extended" when nothing extended.
+						const progressDetail = `strict progress (own open blocking ${prevOwnOpen === Number.POSITIVE_INFINITY ? "?" : prevOwnOpen} → ${lastOwnOpen})`;
+						ctx.log(effectiveCap > priorCap
+							? `${options.feedbackKey} convergence: cap extended to ${effectiveCap} — ${progressDetail}`
+							: `${options.feedbackKey} convergence: extension granted but the cap already sits at the ${maxRounds}×${MAX_TOTAL_ROUND_MULTIPLE} ceiling — cap stays ${effectiveCap} — ${progressDetail}`);
 					} else {
 						// F1/M5: before the fatal, route upstream-owned blockers back —
 						// INLINE only (the emulation is retired for routing; the extension

@@ -577,7 +577,7 @@ describe("runDeliverableCheck — requireTests (SCENARIO-005/006)", () => {
 			});
 			expect(r.pass).toBe(true);
 			expect(r.ran).toContain("tests:list:auth-service");
-			expect(mock.calls.some((c) => c.cwd === moduleDir && /vitest\s+list/.test(c.args.join(" ")))).toBe(true);
+			expect(mock.calls.some((c) => c.cwd === moduleDir && /vitest\s+(--\s+)?list/.test(c.args.join(" ")))).toBe(true); // v0.3.56 F1: argv form may carry the `--` guard between tool and args
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

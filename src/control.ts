@@ -59,38 +59,44 @@ export function extractControl(text: string, expectedKeys?: string[]): ControlOb
 }
 
 function extractControlFallback(text: string, expectedKeys: string[] | undefined, tagParseFailed: boolean): ControlObj | null | undefined {
+	// v0.3.56 F9d (P1 — agent-influenced fallback): the no-tag path accepted the
+	// FIRST parseable fenced/trailing object with NO declared-keys check — a
+	// decoy example block could fabricate a verdict. Both paths now apply the
+	// same plausibility guard; in the no-tag path a rejected decoy does not END
+	// the scan (a later fenced block may be the real control), while in the
+	// tag-failed path the first rejected candidate stays terminal (the real
+	// control died inside the unparseable tag — v0.3.54 semantics preserved).
+	// '?'-suffixed optional keys normalize so an object carrying the bare name
+	// is not misjudged as keyless.
+	const keys = Array.isArray(expectedKeys) ? expectedKeys.map((k) => k.replace(/\?$/, "")) : [];
+	let sawCandidate = false;
+	const consider = (parsed: ControlObj, source: string): boolean => {
+		sawCandidate = true;
+		const overlap = keys.filter((k) => k in parsed);
+		if (keys.length > 0 && overlap.length === 0) {
+			noteControlDrift(`fallback ${source} object ${tagParseFailed ? "REJECTED after <control>-tag parse failure" : "skipped as a decoy (no-tag path)"}: carries none of the declared keys (${keys.join(", ")})`);
+			return false;
+		}
+		noteControlDrift(`fallback ${source} object accepted${tagParseFailed ? " after <control>-tag parse failure" : ""} (keys matched: ${overlap.join(", ") || "no expected keys declared"})`);
+		return true;
+	};
 	for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)) {
 		const parsed = tryParseJsonObject(match[1]);
-		if (parsed) {
-			if (tagParseFailed) return guardFallbackObject(parsed, "fenced-block", expectedKeys);
-			return parsed;
-		}
+		if (!parsed) continue;
+		if (consider(parsed, "fenced-block")) return parsed;
+		if (tagParseFailed) return null;
 	}
 	const obj = findLastJsonObject(text);
 	if (obj) {
 		const parsed = tryParseJsonObject(obj);
-		if (parsed) {
-			if (tagParseFailed) return guardFallbackObject(parsed, "trailing-object", expectedKeys);
-			return parsed;
-		}
+		if (parsed && consider(parsed, "trailing-object")) return parsed;
 	}
-	// No fallback object exists at all — null is the honest answer (not a
-	// wrong-object acceptance), so the undefined-vs-null distinction ends here.
+	// Candidates existed but none plausibly is this call's control (no-tag), or
+	// the only candidate was rejected (tag-failed) → null (an honest refusal, —
+	// never a wrong-object verdict). No candidate at all → undefined on the
+	// no-tag path (the caller's `?? null` makes both honest).
+	if (sawCandidate) return null;
 	return tagParseFailed ? null : undefined;
-}
-
-/** F6 guard: after a tag-parse failure, a fallback object is accepted only if
- *  it plausibly IS the control (carries at least one declared key when the
- *  caller knows them). Every acceptance/failure is loud telemetry. */
-function guardFallbackObject(parsed: ControlObj, source: string, expectedKeys: string[] | undefined): ControlObj | null {
-	const keys = Array.isArray(expectedKeys) ? expectedKeys : [];
-	const overlap = keys.filter((k) => k in parsed);
-	if (keys.length > 0 && overlap.length === 0) {
-		noteControlDrift(`fallback ${source} object REJECTED after <control>-tag parse failure: carries none of the declared keys (${keys.join(", ")}) — returning null instead of a wrong-object verdict`);
-		return null;
-	}
-	noteControlDrift(`fallback ${source} object accepted after <control>-tag parse failure (keys matched: ${overlap.join(", ") || "no expected keys declared"})`);
-	return parsed;
 }
 
 function tryParseJsonObject(raw: string): ControlObj | null {
@@ -254,6 +260,20 @@ export function extractControlKeys(prompt: string): string[] {
 }
 
 /** Which declared keys are missing/blank in a captured control object. */
+/** v0.3.56 F5/F8 (P6 — shared value at common-ancestor scope): keys whose
+ *  honest value is an EMPTY array. All three backends (pi-spawn subprocess,
+ *  delegation, session) MUST resolve the same base set — the session backend's
+ *  private copy omitted `findings`, so every zero-findings review approval
+ *  burned a corrective re-run under the default backend (the exact defect
+ *  v0.3.47 fixed for the other two). F8 adds the five honest-empty required
+ *  keys (research sources, prototype adjustments, verification regressions,
+ *  ui/api-test failures, docs deviationsDocumented). `dimensions` stays
+ *  REQUIRED-non-empty by design (v0.3.47) — never add it here. */
+export const DEFAULT_EMPTY_ARRAY_OK: readonly string[] = [
+	"filesCreated", "filesModified", "filesDeleted", "findings",
+	"sources", "adjustments", "regressions", "failures", "deviationsDocumented",
+];
+
 export function missingControlKeys(
 	captured: Record<string, unknown> | null | undefined,
 	keys: string[],

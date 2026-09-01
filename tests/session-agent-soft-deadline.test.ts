@@ -83,16 +83,23 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	ModelRuntime: { create: vi.fn(async () => ({ getModel: vi.fn(() => undefined), getModels: vi.fn(() => []) })) },
 }));
 vi.mock("../src/agents.ts", () => ({ loadAgentPrompt: vi.fn(() => "SYSTEM-PROMPT") }));
-vi.mock("../src/control.ts", () => ({
-	extractControl: vi.fn(() => null),
-	missingControlKeys: vi.fn((captured: Record<string, unknown> | null | undefined, keys: string[]) => {
-		if (!captured) return keys;
-		return keys.filter((k) => {
-			const v = captured[k];
-			return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
-		});
-	}),
-}));
+vi.mock("../src/control.ts", async (importOriginal) => {
+	// Mock hygiene (docs/testing-strategy.md class B): spread the ORIGINAL
+	// module so new exports (e.g. DEFAULT_EMPTY_ARRAY_OK) stay real instead
+	// of breaking this file whenever control.ts grows an export.
+	const actual = await importOriginal<typeof import("../src/control.ts")>();
+	return {
+		...actual,
+		extractControl: vi.fn(() => null),
+		missingControlKeys: vi.fn((captured: Record<string, unknown> | null | undefined, keys: string[]) => {
+			if (!captured) return keys;
+			return keys.filter((k) => {
+				const v = captured[k];
+				return v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+			});
+		}),
+	};
+});
 vi.mock("../src/setup.ts", () => ({ sanitizeSlug: vi.fn((s: string) => s) }));
 vi.mock("../src/safety.ts", () => ({ createSafetyExtensionFactory: vi.fn(() => () => ({ name: "safety", activate: () => ({}) })) }));
 vi.mock("../src/render/super-dev-dir.ts", () => ({ getTracesDir: vi.fn(() => "/tmp/traces"), superDevEnv: vi.fn(() => undefined) }));

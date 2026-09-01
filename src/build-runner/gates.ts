@@ -1012,10 +1012,19 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 		const targets = testTargets.filter((t) => typeof t === "string" && t.trim().length > 0);
 		if (targets.length === 0) return "unknown";
 
-		// Level 2 (conventions data) → Level 3 (validated cached runner).
-		plans.push(...conventionPlansFor(cwd, targets));
-		if (plans.length === 0 && opts?.runner) {
+		// Level 0 (v0.3.56 F1): a VALIDATED agent-proposed runner takes precedence
+		// over conventions — the original contract ("a validated runner BYPASSES
+		// conventions entirely") was inverted: conventions plans were pushed
+		// unconditionally FIRST, so on npm-PM vitest projects the conventions row
+		// (whose --reporter=tap npm consumed as config) shadowed the guarded
+		// cached runner and every RED honestly degraded to unknown. Conventions
+		// remain the fallback when no validated runner exists (fresh projects,
+		// discovery declined, unparseable proposal).
+		if (opts?.runner) {
 			plans.push(...dynamicRedCheckPlans(cwd, targets, opts.runner).map((p) => ({ ...p, conventionId: "dynamic", channel: { format: "auto" } as ResultChannel })));
+		}
+		if (plans.length === 0) {
+			plans.push(...conventionPlansFor(cwd, targets));
 		}
 		if (plans.length === 0) return "unknown";
 		emitRedPlans(opts, plans);
@@ -1042,8 +1051,11 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 					...(r.error ? { error: r.error.message } : {}),
 					outputTail: tailText(combined),
 				});
-				// NEVER throw on a spawn error / ENOENT — degrade to unknown.
-				if (r.error) return "unknown";
+				// NEVER throw on a spawn error / ENOENT — degrade to unknown, but do
+				// NOT abort the remaining plans (v0.3.56 review P2: a first-plan
+				// ENOENT previously returned before the later plans could classify;
+				// combineRedStatuses keeps red-over-unknown precedence honest).
+				if (r.error) { statuses.push("unknown"); continue; } // bound: plan loop is finite per runRedCheck call
 				statuses.push(status);
 			} catch (err) {
 				emitRedDiagnostic(opts, {
@@ -1055,7 +1067,8 @@ export function runRedCheck(cwd: string, testTargets: string[], opts?: RedCheckO
 					error: err instanceof Error ? err.message : String(err),
 					outputTail: "",
 				});
-				return "unknown";
+				statuses.push("unknown");
+				continue; // bound: plan loop is finite per runRedCheck call
 			}
 		}
 		return combineRedStatuses(statuses);

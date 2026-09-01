@@ -205,6 +205,15 @@ export function task(stage: Stage): Node {
 				}
 			}
 			let startMs = Date.now();
+			// v0.3.56 F6 (class G — round scoping): rows pushed BEFORE this execution
+			// (a prior round/convergence attempt of the same stage id) must not
+			// suppress this run's ok row. The old check scanned ALL of ctx.results,
+			// so one transient failure permanently pinned the stage failed —
+			// deriveRunStatus's last-status-wins could never see the round-2 ok and
+			// `success` became unreachable after any retry. Mid-run infra rows
+			// pushed by THIS execution (writerTask's G21 honest marker) are after
+			// the snapshot and still suppress, preserving G21.
+			const resultsAtStart = ctx.results.length;
 			try {
 				ctx.events.emit("phase", stage.label);
 				ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" });
@@ -229,7 +238,7 @@ export function task(stage: Stage): Node {
 				// it masked by this same-id ok row — G3's last-status semantics
 				// would read silently green. Emit the ok EVENT (dashboard shows the
 				// round completing) but keep the ROW failed when one exists.
-				const infraFailed = ctx.results.some((r) => r.id === stage.id && r.status === "failed");
+				const infraFailed = ctx.results.slice(resultsAtStart).some((r) => r.id === stage.id && r.status === "failed");
 				if (!infraFailed) {
 					record(ctx, "ok", undefined, displayStatus(result));
 				} else {

@@ -35,7 +35,7 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { getTracesDir } from "./render/super-dev-dir.ts";
 import { loadAgentPrompt } from "./agents.ts";
-import { extractControl, missingControlKeys } from "./control.ts";
+import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "./control.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
@@ -639,7 +639,16 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	// resolution (incl. the role default) best-effort. Tolerant of an older
 	// runtime that lacks setThinkingLevel or a model that rejects the level
 	// (applyThinkingLevel swallows any throw).
-	if (!creationThinking) applyThinkingLevel(session, resolveThinking(opts.agent, opts.thinkingLevel, opts.inheritedThinking));
+	// v0.3.56 F7 (class D — backend parity): ALWAYS run the full tiered
+	// resolution. The old guard treated "creation got the INHERITED parent
+	// level" the same as "creation got per-call/env", so config.agentThinking
+	// tiers were dead under the session backend whenever the parent session had
+	// thinking enabled — while the subprocess/delegation backends clamped them.
+	// Applying only when the resolution DIFFERS keeps SCENARIO-007's
+	// no-double-application guarantee (same value → applyThinkingLevel is a
+	// no-op semantically, so the equality skip is purely defensive).
+	const resolvedThinking = resolveThinking(opts.agent, opts.thinkingLevel, opts.inheritedThinking);
+	if (resolvedThinking !== creationThinking) applyThinkingLevel(session, resolvedThinking);
 
 	const startedAt = Date.now(); // v0.3.28: terminal usage duration
 	const label = opts.id ?? opts.agent;
@@ -751,7 +760,10 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 		// omitted declared keys, send ONE corrective turn in the same session
 		// (same context, same files written) naming exactly what's missing.
 		const afterFirst = capture.called ? (capture.value as Record<string, unknown> | undefined) : undefined;
-		const emptyArrayOk = new Set(["filesCreated", "filesModified", "filesDeleted", ...(opts.allowEmptyArraysFor ?? [])]);
+		// v0.3.56 F5: base set from control.ts — the hand copy here omitted
+		// `findings`, so zero-findings review approvals fired a false corrective
+		// re-prompt under the session backend only (v0.3.47 parity, class D).
+		const emptyArrayOk = new Set([...DEFAULT_EMPTY_ARRAY_OK, ...(opts.allowEmptyArraysFor ?? [])]);
 		const missing = missingKeys(afterFirst, keys, { allowEmptyArraysFor: emptyArrayOk });
 		if (capture.called && missing.length > 0 && !timedOut && !opts.signal?.aborted) {
 			correctiveNote = `corrective re-prompt (missing: ${missing.join(", ")})`;

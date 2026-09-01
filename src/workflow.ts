@@ -86,7 +86,9 @@ export function boundaryQuarantinePayload(violations: string[], quarantineDir: s
  *  delegation and their byte copies are only needed while a run is live.
  *  Before creating a new dir, best-effort sweep stale siblings (>24h old).
  *  Never throws — GC failure must not break enforcement. */
-function sweepStaleQuarantineDirs(): void {
+/** v0.3.56 F9f: exported for the L5 quarantine test lane (fresh dirs survive,
+ *  >24h dirs swept, planted symlinks skipped). */
+export function sweepStaleQuarantineDirs(): void {
 	try {
 		for (const entry of readdirSync(tmpdir())) {
 			if (!entry.startsWith("sd-boundary-")) continue;
@@ -192,7 +194,11 @@ function sourceBoundaryViolations(before: SourceBoundarySnapshot, after: SourceB
 	return [...paths].filter((path) => !sameFingerprint(before.fingerprints.get(path), after.fingerprints.get(path))).sort();
 }
 
-function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot, after: SourceBoundarySnapshot, paths: string[], quarantineDir: string | null, mode: "restore" | "quarantine" = "restore"): { restored: string[]; manual: string[]; quarantined: string[] } {
+/** v0.3.56 F9f: exported (seam) so tests can drive the quarantine path
+ *  directly — captureSourceBoundary/restoreNewSourceViolations are the
+ *  source-read-only enforcement pair; tests pin the :(literal) guard and the
+ *  symlink skip here. */
+export function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot, after: SourceBoundarySnapshot, paths: string[], quarantineDir: string | null, mode: "restore" | "quarantine" = "restore"): { restored: string[]; manual: string[]; quarantined: string[] } {
 	const restored: string[] = [];
 	const manual: string[] = [];
 	const quarantined: string[] = [];
@@ -212,8 +218,16 @@ function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot,
 					// v0.3.55 security review F5: 0o700 — same-uid agents had worktree
 					// read access anyway; other local users need none.
 					mkdirSync(quarantineDir, { recursive: true, mode: 0o700 });
-					copyFileSync(abs0, join(quarantineDir, `${quarantined.length}-${safeName}`));
-					quarantined.push(relPath);
+					const dest = join(quarantineDir, `${quarantined.length}-${safeName}`);
+					copyFileSync(abs0, dest);
+					// v0.3.56 F9f: close the lstat→copy TOCTOU — re-lstat the SOURCE;
+					// if it was swapped to a symlink/non-file between check and copy,
+					// drop the copy instead of trusting attacker-swapped bytes.
+					if (lstatSync(abs0).isFile()) {
+						quarantined.push(relPath);
+					} else {
+						try { rmSync(dest, { force: true }); } catch { /* best-effort */ }
+					}
 				}
 			} catch { /* quarantine is best-effort; enforcement continues */ }
 		}
@@ -438,7 +452,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		appendUserNotes(state.setup?.specDirectory, drained);
 		// P3.1: user instructions are ledger events too (the instruction channel
 		// of the message bus — folds see what the human injected and when).
-		for (const note of drained) recordInstruction(state.setup?.specDirectory, String(note), ledgerRunId(state));
+		for (const note of drained) recordInstruction(state.setup?.specDirectory, typeof note === "string" ? note : note.text, ledgerRunId(state)); // v0.3.56 F9a: RuntimeInstruction objects rendered as '[object Object]' in the ledger (P10)
 		const userNotes = userNotesForAgent(state.setup?.specDirectory);
 		const promptWithNotes = userNotes
 			? `${promptWithKnowledge}\n\n## User context (added during the run)\n${userNotes}`

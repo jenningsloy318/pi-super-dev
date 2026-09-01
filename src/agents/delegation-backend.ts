@@ -27,7 +27,7 @@
  *    the exact identity tuple and settle as an agent error, never a hang.
  */
 
-import { extractControl, missingControlKeys } from "../control.ts";
+import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
 import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "../pi-spawn.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
 import type { AgentProgress, SpawnResult } from "../types.ts";
@@ -348,7 +348,9 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 	// built-in file-list allow-set — a legitimately empty `filesCreated: []`
 	// must NOT trigger a spurious full second run (session-agent parity).
 	// v0.3.47: findings:[] is a valid zero-defect approval (see pi-spawn DEFAULT_EMPTY_ARRAY_OK).
-	const emptyArrayOk = new Set(["filesCreated", "filesModified", "filesDeleted", "findings", ...(opts.allowEmptyArraysFor ?? [])]);
+	// v0.3.56 F5: base set imported from control.ts (shared across all three
+	// backends — P6); the hand copy here could drift from the others.
+	const emptyArrayOk = new Set([...DEFAULT_EMPTY_ARRAY_OK, ...(opts.allowEmptyArraysFor ?? [])]);
 	const missing = opts.controlKeys && opts.controlKeys.length > 0 && control != null
 		? missingControlKeys(control, opts.controlKeys, { allowEmptyArraysFor: emptyArrayOk })
 		: (control == null && opts.controlKeys && opts.controlKeys.length > 0 ? [...opts.controlKeys] : []);

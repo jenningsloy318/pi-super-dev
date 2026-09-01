@@ -239,7 +239,8 @@ describe("runRedCheck — scoped invocation from CONVENTIONS DATA", () => {
 			mockRunner(out(1, "1..2\nnot ok 1 - tests/a.test.ts\nok 2 - other\n"));
 			expect(runRedCheck(d, ["tests/a.test.ts"])).toBe("red");
 			const call = lastRunnerArgv();
-			expect(call?.slice(0, 4)).toEqual(["npm", "exec", "vitest", "run"]);
+			expect(call?.slice(0, 3)).toEqual(["npm", "exec", "vitest"]);
+			expect(call?.[3]).toBe("--"); // v0.3.56 F1: child flags guarded from npm config
 			expect(call).toContain("--reporter=tap");
 			expect(call?.at(-1)).toBe("tests/a.test.ts");
 		} finally {

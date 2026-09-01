@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseFailingNpmTestFiles } from "./scope.ts";
+import { pmExec } from "./conventions.ts";
 
 /**
  * B-6 — baseline comparison for out-of-scope (untouched) test failures.
@@ -128,12 +129,11 @@ function readGoModuleNameLocal(cwd: string): string | null {
 	}
 }
 
-/** Local copy of gates.ts pmExec (avoids an import cycle). */
+/** v0.3.56 F1: delegates to the conventions pmExec (which owns the npm-exec
+ *  `--` guard) — the old hand copy predated the guard and would have silently
+ *  fed child flags to npm config. */
 function pmExecLocal(pm: string, tool: string, args: string[]): string[] {
-	if (pm === "yarn") return [pm, "exec", tool, ...args];
-	if (pm === "bun") return [pm, "x", tool, ...args];
-	if (pm === "deno") return ["deno", "task", tool, ...args];
-	return [pm, "exec", tool, ...args];
+	return pmExec(pm, tool, args);
 }
 
 function shortSha(sha: string): string {

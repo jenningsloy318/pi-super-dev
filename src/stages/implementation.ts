@@ -33,6 +33,7 @@ import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainP
 import { clearBaselineCache } from "../build-runner/baseline.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
 import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../build-runner/runner-discovery.ts";
+import { deriveConventionsRunnerSpec } from "../build-runner/conventions.ts";
 import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../build-runner/coverage-gate.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
@@ -329,12 +330,21 @@ function trackerOutofScopeEdits(tracker: ReturnType<typeof getActiveTracker>, wo
 	}
 }
 
-function restorePaths(cwd: string, paths: string[]): void {
+/** v0.3.56 F4: restore BOTH index and worktree (source HEAD) — the old
+ *  `git checkout -- <path>` left the INDEX untouched, so an agent-STAGED
+ *  change survived RED cleanup (attributQuarantinedViolations already used
+ *  --staged --worktree; this closes the inconsistent restore class).
+ *  Exported as the F9f seam: the ':(top)*' magic-name pin drives it directly. */
+export function restorePaths(cwd: string, paths: string[]): void {
 	for (const path of paths) {
 		// v0.3.55 security review F2: `:(literal)` pathspec guard (magic like
 		// `:(top)*` in an odd filename must not widen checkout/clean).
 		const literal = `:(literal)${path}`;
-		try { execFileSync("git", ["checkout", "--", literal], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
+		// v0.3.56 F4: restore BOTH index and worktree (source HEAD) — the old
+		// `git checkout -- <path>` left the INDEX untouched, so an agent-STAGED
+		// change survived RED cleanup (attributQuarantinedViolations already used
+		// --staged --worktree; this closes the inconsistent restore class).
+		try { execFileSync("git", ["restore", "--staged", "--worktree", "--", literal], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
 		try { execFileSync("git", ["clean", "-fd", "--", literal], { cwd, stdio: "ignore" }); } catch { /* best-effort */ }
 	}
 }
@@ -1320,8 +1330,16 @@ export function discardGreenWork(worktreePath: string, keepTestFiles: Set<string
 		} else {
 			// v0.3.55 security review F2: `:(literal)` — a file literally named
 			// `:(top)*` must not widen this restore past the per-path iteration.
-			const r = spawnSync("git", ["-C", worktreePath, "restore", "--worktree", "--", `:(literal)${path}`], { encoding: "utf8", timeout: 30_000 });
-			if (r.status === 0) restored.push(path);
+			// v0.3.56 F4: `--staged` added — restore --worktree alone leaves an
+			// agent-STAGED change fully alive (worktree is restored FROM the index,
+			// so the staged content stays in both). --staged --worktree reverts to
+			// HEAD; the follow-up clean removes a staged-NEW file left untracked.
+			const literal = `:(literal)${path}`;
+			const r = spawnSync("git", ["-C", worktreePath, "restore", "--staged", "--worktree", "--", literal], { encoding: "utf8", timeout: 30_000 });
+			if (r.status === 0) {
+				spawnSync("git", ["-C", worktreePath, "clean", "-fd", "--", literal], { encoding: "utf8", timeout: 30_000 });
+				restored.push(path);
+			}
 		}
 	}
 	return restored;
@@ -2752,11 +2770,16 @@ export const implementationStage: Stage = {
 				// broken build never pays the coverage re-run cost.
 				let coverageResult: CoverageGateResult | null = null;
 				coverageGap = [];
-				// The gate reads the runner cache DIRECTLY: `runnerSpec` lives in the
-				// RED sub-scope above, and the cache file IS the current validated
-				// runner (discovery rewrites it on every re-validation).
-				const covRunnerSpec = readCachedTestRunner(setup.specDirectory);
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0 && covRunnerSpec) {
+				// v0.3.56 F2: the runner chain is LIVE phase-scoped `runnerSpec` first
+				// (v0.3.53 hoisted it here, so the old "cache DIRECTLY" comment was
+				// stale), then the disk cache, then a conventions-derived spec — RED
+				// that ran via conventions previously left the cache unwritten and the
+				// `&& covRunnerSpec` below silently skipped the gate AND its advisory
+				// (a silent green, P10). Only when NO runner exists at all does the
+				// loud UNMEASURABLE advisory fire instead of silence.
+				const covRunnerSpec = runnerSpec ?? readCachedTestRunner(setup.specDirectory) ?? deriveConventionsRunnerSpec(setup.worktreePath, testFiles);
+				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
+					if (covRunnerSpec) {
 					const phaseProductionFiles = Array.from(new Set([
 						...projectStructured.filesCreated,
 						...projectStructured.filesModified,
@@ -2794,6 +2817,25 @@ export const implementationStage: Stage = {
 								recommendation: "Wire a deterministic coverage recipe into the project's test command (vitest --coverage / node --test --experimental-test-coverage / go test -coverprofile) so the ≥85% lines hard floor becomes enforceable.",
 							}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "phase-coverage" });
 						} catch { /* ledger bookkeeping never blocks */ }
+					}
+					} else {
+					// v0.3.56 F2: no runner exists at all — loud carried debt, never a
+					// silent green (the old code skipped the gate silently here).
+					coverageResult = { status: "unmeasurable", threshold: coverageThreshold(), perFile: [], detail: "no validated or conventions-derived runner for this phase — coverage could not be measured (before v0.3.56 this case skipped the gate SILENTLY)" };
+					ctx.log(`Implementation ${phaseId} coverage-gate UNMEASURABLE — ${coverageResult.detail}`);
+					try {
+						recordConvergenceFindings(state, {
+							detectedAtStage: "implementation",
+							ownerStage: "implementation",
+							severity: "medium",
+							blocking: false,
+							title: `Phase ${phaseId} coverage gate UNMEASURABLE`,
+							detail: coverageResult.detail,
+							evidence: testFiles.slice(0, 3),
+							sourceGate: "phase-coverage",
+							recommendation: "Ensure runner discovery or a conventions row claims this project's tests so the ≥85% lines hard floor becomes enforceable.",
+						}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "phase-coverage" });
+					} catch { /* ledger bookkeeping never blocks */ }
 					}
 				}
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0 && coverageResult?.status !== "below-threshold") {

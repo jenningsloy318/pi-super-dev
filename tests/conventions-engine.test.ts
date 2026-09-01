@@ -73,7 +73,11 @@ describe("npm-vitest — scoped plan at the owning package dir", () => {
 		const plans = conventionPlansFor(root, ["tests/a.test.ts"]);
 		expect(plans).toHaveLength(1);
 		expect(plans[0].conventionId).toBe("npm-vitest");
-		expect(plans[0].argv.slice(0, 4)).toEqual(["npm", "exec", "vitest", "run"]);
+		expect(plans[0].argv.slice(0, 3)).toEqual(["npm", "exec", "vitest"]);
+		// v0.3.56 F1 (class B): the `--` guard after the tool token keeps child
+		// flags out of npm's config parser (unguarded control empirically leaks
+		// npm's own `--version` — see defect-ledger 2026-09-01).
+		expect(plans[0].argv[3]).toBe("--");
 		expect(plans[0].argv).toContain("--reporter=tap");
 		expect(plans[0].argv.at(-1)).toBe("tests/a.test.ts");
 		expect(plans[0].cwd).toBe(root);
