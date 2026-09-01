@@ -43,6 +43,10 @@ function mkCtx(opts: {
 	reviewVerdicts?: string[];
 	reviewContradictions?: Array<Array<{ tests: string; lines?: string; proof: string }>>;
 	reviewThrows?: string;
+	// v0.3.55 security F1: the rejecting Error may carry the structured
+	// quarantine payload (engine-composed, parent-side) — the join consumes it
+	// for attribution while the message string stays display-only.
+	reviewThrowsQuarantine?: { violations: string[]; dir: string };
 	// v0.3.54 (code F2): backend error AND parsed control can coexist
 	// (delegation-backend returns both); the join must not launder a verdict.
 	reviewError?: string;
@@ -68,6 +72,7 @@ function mkCtx(opts: {
 			if (call.agent === "code-reviewer") {
 				counters.review++;
 				if (opts.reviewThrows) return Promise.reject(new Error(opts.reviewThrows));
+				if (opts.reviewThrowsQuarantine) return Promise.reject(Object.assign(new Error("source-read-only boundary violation (quarantined, not restored — concurrent writer): display-only"), { quarantine: opts.reviewThrowsQuarantine }));
 				const verdict = reviewQ.shift() ?? "strong";
 				const contradictions = contradictionQ.shift() ?? [];
 				return { text: "", control: { verdict, summary: "s", contradictions }, ...(opts.reviewError ? { error: opts.reviewError } : {}) };
@@ -77,7 +82,7 @@ function mkCtx(opts: {
 				// v0.3.51 test timing: give a rejecting review time to reject FIRST so
 				// the unawaited-promise gap (review rejects while the implementer still
 				// runs) is actually exercised.
-				if (opts.reviewThrows) await new Promise((res) => setTimeout(res, 30));
+				if (opts.reviewThrows || opts.reviewThrowsQuarantine) await new Promise((res) => setTimeout(res, 30));
 				return { text: "", control: implQ.shift() ?? { filesModified: ["src/x.ts"] } };
 			}
 			if (call.agent === "tdd-coverage-classifier") return { text: "", control: { allCovered: true, coveredScenarios: [], missingScenarios: [], summary: "ok" } };
@@ -168,12 +173,32 @@ describe("v0.3.43 RC2 — parallel RED review joins after the implementer", () =
 			expect(r.implCalls).toBeGreaterThanOrEqual(1);
 			// The re-author vehicle must NOT be armed — the RED stays accepted.
 			expect(r.tddPrompts.some((p) => p.includes("RED REVIEW REJECTED THE SUITE"))).toBe(false);
+			// v0.3.55 security F1: a string-only error carries NO quarantine payload →
+			// attribution must not run (a forged stderr string must never drive
+			// restores) — no red-review-quarantine log line at all.
+			expect(r.logs.some((l) => l.includes("red-review-quarantine:"))).toBe(false);
 		} finally {
 			process.off("unhandledRejection", rec);
 			// Give the microtask queue a beat to surface any straggler rejection.
 			await new Promise((res) => setImmediate(res));
 		}
 		expect(unhandled).toEqual([]);
+	});
+
+	it("v0.3.55 security F1: the structured quarantine payload rides the thrown Error into attribution", async () => {
+		const r = mkCtx({
+			reviewThrowsQuarantine: { violations: ["src/reviewer-only.ts", "src/x.ts"], dir: "/tmp/sd-q-test" },
+			implControls: [{ filesCreated: [], filesModified: ["src/x.ts"], filesDeleted: [] }],
+		});
+		await (implementationStage as Stage).run(mkState(), r.ctx);
+		// The attribution consumed the structured payload (not the message
+		// string): both violation paths are logged by attributQuarantinedViolations
+		// (the git operations fail on the nonexistent harness worktree → kept),
+		// and the claimed src/x.ts is attributed to the implementer.
+		expect(r.logs.some((l) => l.includes("red-review-quarantine:") && l.includes("src/reviewer-only.ts"))).toBe(true);
+		expect(r.logs.some((l) => l.includes("left in place") && l.includes("src/x.ts"))).toBe(true);
+		// The fail-open join still kept the GREEN work.
+		expect(r.logs.some((l) => l.includes("red-review-incomplete"))).toBe(true);
 	});
 
 	it("v0.3.53 F2: after 2 reviewer violations the parallel review is disabled for the phase", async () => {

@@ -503,3 +503,17 @@ export interface RunSummary {
 	/** Sweep-3 G9/AR2-4: honest reasons the run is NOT `success` (empty on success). */
 	statusReasons?: string[];
 }
+
+/** v0.3.55 security review F1: structured quarantine payload for a
+ *  source-read-only boundary violation in quarantine mode (concurrent
+ *  writer). This rides on the thrown Error object as a process-local
+ *  property — the parent process composes it from git-status output, so it
+ *  is the ONLY trusted channel into restore decisions. Error TEXT (stderr
+ *  tails, delegation error strings) is agent-influenced and must never be
+ *  parsed for restore pathspecs. */
+export interface BoundaryQuarantinePayload {
+	/** Repository-relative violation paths, exactly as git status reported them. */
+	violations: string[];
+	/** Absolute quarantine directory holding byte copies of the violated files. */
+	dir: string;
+}

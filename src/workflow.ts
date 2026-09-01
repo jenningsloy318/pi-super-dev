@@ -18,7 +18,7 @@ import { languageDirective, superDevEnv } from "./render/super-dev-dir.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch, splitModelThinking } from "./pi-spawn.ts";
@@ -52,6 +52,7 @@ import type {
 	HelperCall,
 	HelperResult,
 	PipelineState,
+	BoundaryQuarantinePayload,
 	RunOptions,
 	RunStatus,
 	RunSummary,
@@ -63,15 +64,38 @@ import type {
 /** v0.3.35: prepended to EVERY delegation prompt — see realAgent. */
 export const DELEGATION_AUTONOMY_CLAUSE = "## Autonomy (hard constraint)\nYou run AUTONOMOUSLY — there is no human and no supervisor watching, and nobody will answer a question. NEVER call intercom, subagent_supervisor, or subagent_wait, and never wait for a reply. If you are blocked or missing information, complete everything you CAN and state the blocker plainly in your final structured output.";
 
-/** v0.3.54 review fix (code F4 / adv F2+F3): single source of the quarantine
- *  error payload. The join-side parser (attributQuarantinedViolations) is
- *  string-coupled to this format, so both sides must move together — the
- *  regression tests build their fixture errors through THIS function. The
- *  JSON payload survives filenames containing ", " and quarantine dirs
- *  containing spaces (Windows tmpdirs); the legacy comma text stays supported
- *  as a parse fallback. */
+/** v0.3.55 security review F1: single source of the quarantine payload. The
+ *  structured payload is the ONLY trusted channel — it rides on the thrown
+ *  Error as a process-local property (composed in the parent from git-status
+ *  output). This string is DISPLAY-ONLY: it appears in logs and error text,
+ *  both of which are attacker-influenceable channels (a misbehaving agent can
+ *  echo arbitrary text to stderr and land it in review.error), so no parser
+ *  may ever turn it back into restore pathspecs. */
 export function formatBoundaryQuarantineError(violations: string[], quarantineDir: string): string {
 	return `source-read-only boundary violation (quarantined, not restored — concurrent writer): paths=${JSON.stringify(violations)} dir=${JSON.stringify(quarantineDir)}`;
+}
+
+/** v0.3.55 security review F1: the structured payload factory. Tests and the
+ *  throw site build payloads through THIS function so the producer shape is
+ *  pinned in one place. */
+export function boundaryQuarantinePayload(violations: string[], quarantineDir: string): BoundaryQuarantinePayload {
+	return { violations: [...violations], dir: quarantineDir };
+}
+
+/** v0.3.55 security review F5: quarantine dirs accumulate per violating
+ *  delegation and their byte copies are only needed while a run is live.
+ *  Before creating a new dir, best-effort sweep stale siblings (>24h old).
+ *  Never throws — GC failure must not break enforcement. */
+function sweepStaleQuarantineDirs(): void {
+	try {
+		for (const entry of readdirSync(tmpdir())) {
+			if (!entry.startsWith("sd-boundary-")) continue;
+			const full = join(tmpdir(), entry);
+			try {
+				if (Date.now() - statSync(full).mtimeMs > 24 * 3_600_000) rmSync(full, { recursive: true, force: true });
+			} catch { /* a dir created by another process — skip */ }
+		}
+	} catch { /* best-effort */ }
 }
 
 const DEFAULT_MAX_AGENTS = 200;
@@ -178,9 +202,16 @@ function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot,
 		if (quarantineDir) {
 			try {
 				const abs0 = resolve(cwd, relPath);
-				if (existsSync(abs0) && statSync(abs0).isFile()) {
+				// v0.3.55 security review F5: lstat (not stat) — a planted symlink
+				// must not pull its TARGET's bytes into the quarantine dir; the
+				// link itself stays in the worktree as evidence (quarantine mode
+				// mutates nothing).
+				const st = lstatSync(abs0);
+				if (st.isFile()) {
 					const safeName = relPath.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120) || "file";
-					mkdirSync(quarantineDir, { recursive: true });
+					// v0.3.55 security review F5: 0o700 — same-uid agents had worktree
+					// read access anyway; other local users need none.
+					mkdirSync(quarantineDir, { recursive: true, mode: 0o700 });
 					copyFileSync(abs0, join(quarantineDir, `${quarantined.length}-${safeName}`));
 					quarantined.push(relPath);
 				}
@@ -204,8 +235,13 @@ function restoreNewSourceViolations(cwd: string, before: SourceBoundarySnapshot,
 				restored.push(relPath);
 				continue;
 			}
-			let r = spawnSync("git", ["restore", "--staged", "--worktree", "--", relPath], { cwd, encoding: "utf8" });
-			if (r.status !== 0) r = spawnSync("git", ["checkout", "--", relPath], { cwd, encoding: "utf8" });
+			// v0.3.55 security review F2: `--` ends option parsing but NOT pathspec
+			// magic — a file literally named `:(top)*` widens this restore to a
+			// worktree-wide revert. Same `:(literal)` guard fault-classification.ts
+			// already applies to stash pathspecs.
+			const literal = `:(literal)${relPath}`;
+			let r = spawnSync("git", ["restore", "--staged", "--worktree", "--", literal], { cwd, encoding: "utf8" });
+			if (r.status !== 0) r = spawnSync("git", ["checkout", "--", literal], { cwd, encoding: "utf8" });
 			if (r.status === 0) restored.push(relPath);
 			else manual.push(relPath);
 		} catch {
@@ -502,6 +538,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			}
 			const violations = sourceBoundaryViolations(sourceBoundaryBefore, after);
 			if (violations.length === 0) return;
+			sweepStaleQuarantineDirs();
 			const quarantineDir = join(tmpdir(), `sd-boundary-${randomUUID().slice(0, 8)}`);
 			const outcome = restoreNewSourceViolations(agentCwd, sourceBoundaryBefore, after, violations, quarantineDir, boundaryQuarantine ? "quarantine" : "restore");
 			const restoredLine = outcome.restored.length ? ` restored=${outcome.restored.join(", ")}` : "";
@@ -509,7 +546,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			log(`agent ${call.id ?? call.agent}: source-read-only boundary violation paths=${violations.join(", ")}${restoredLine}${manualLine}`);
 			if (boundaryQuarantine) {
 				log(`agent ${call.id ?? call.agent}: boundary QUARANTINE mode (concurrent writer) — nothing restored here; quarantined=${outcome.quarantined.join(", ") || violations.join(", ")} dir=${quarantineDir}`);
-				throw new Error(formatBoundaryQuarantineError(violations, quarantineDir));
+				// v0.3.55 security review F1: attach the structured payload to the
+				// Error object. The join consumes err.quarantine — the string in
+				// .message is never parsed, so an agent cannot forge restores by
+				// echoing payload-shaped text to stderr.
+				const err = new Error(formatBoundaryQuarantineError(violations, quarantineDir)) as Error & { quarantine?: BoundaryQuarantinePayload };
+				err.quarantine = boundaryQuarantinePayload(violations, quarantineDir);
+				throw err;
 			}
 			throw new Error(`source-read-only boundary violation: modified project files outside the spec artifact directory (${violations.join(", ")})`);
 		}

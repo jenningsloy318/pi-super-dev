@@ -9,7 +9,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deterministicPhaseCommit, discardGreenWork, porcelainEntries, gitStatusPaths } from "../src/stages/implementation.ts";
@@ -162,6 +162,31 @@ describe("discardGreenWork (v0.3.43 RC2 — fail-closed join discard)", () => {
 		const discarded = discardGreenWork(repo, new Set());
 		expect(discarded).toContain("seed.txt");
 		expect(String(git("status", "--porcelain").stdout).trim()).toBe("");
+		rmSync(repo, { recursive: true, force: true });
+	});
+
+	it("a tracked file literally named ':(top)*' does not widen the restore past the keep-list (v0.3.55 security F2)", async () => {
+		// Pre-fix, `git restore --worktree -- ':(top)*'` parsed magic `top` + a
+		// cross-directory `*` pattern and reverted EVERY tracked modified file —
+		// including keep-listed RED test files the per-path iteration protects.
+		const { discardGreenWork } = await import("../src/stages/implementation.ts");
+		const { repo, git } = makeRepo();
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests", "red.test.ts"), "it('red', () => {});\n");
+		writeFileSync(join(repo, ":(top)*"), "junk v1\n");
+		spawnSync("git", ["add", "-A"], { cwd: repo });
+		spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "tests"], { cwd: repo });
+		// Post-seed dirt: production modified (discardable), test modified (KEEP),
+		// and the magic-named file TRACKED-modified (discardable — but its restore
+		// must not widen).
+		writeFileSync(join(repo, "seed.txt"), "modified-by-implementer\n");
+		writeFileSync(join(repo, "tests", "red.test.ts"), "it('red v2', () => {});\n");
+		writeFileSync(join(repo, ":(top)*"), "junk v2\n");
+		discardGreenWork(repo, new Set(["tests/red.test.ts"]));
+		expect(String(git("show", "HEAD:seed.txt").stdout)).toBe("seed\n");
+		// The keep-listed test file survives the magic-named file's restore
+		// (worktree content, never staged → read from disk).
+		expect(readFileSync(join(repo, "tests", "red.test.ts"), "utf8")).toBe("it('red v2', () => {});\n");
 		rmSync(repo, { recursive: true, force: true });
 	});
 });

@@ -12,7 +12,7 @@
  * Near-miss: missing-required errors name a present near-miss key.
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -21,7 +21,7 @@ import { extractControl, extractControlKeys, drainControlDrift, noteControlDrift
 import { attributQuarantinedViolations } from "../src/stages/implementation.ts";
 import { normalizeProseArrays, renderStage, validateData } from "../src/render/render.ts";
 import { STAGE_MODELS } from "../src/render/schemas.ts";
-import { formatBoundaryQuarantineError } from "../src/workflow.ts";
+import { boundaryQuarantinePayload, formatBoundaryQuarantineError } from "../src/workflow.ts";
 
 describe("v0.3.54 F6 — extractControl fallback guard after tag-parse failure", () => {
 	it("tag body fails AND fallback object carries NONE of the declared keys → null (wrong-object rejected)", () => {
@@ -201,10 +201,12 @@ describe("v0.3.54 F3-real — attributQuarantinedViolations (real git repo)", ()
 		// is pinned (v0.3.54 review fix, code F3).
 		writeFileSync(join(wt, "main.ts"), "reviewer junk\n");
 		writeFileSync(join(wt, "index.html"), "reviewer junk too\n");
-		const err = formatBoundaryQuarantineError(["main.ts", "index.html"], "/tmp/sd-boundary-abc");
+		// v0.3.55: the payload is STRUCTURED (BoundaryQuarantinePayload on the
+		// thrown Error) — the display string is never parsed.
+		const payload = boundaryQuarantinePayload(["main.ts", "index.html"], "/tmp/sd-boundary-abc");
 		attributQuarantinedViolations(
 			wt,
-			err,
+			payload,
 			{ filesCreated: [], filesModified: ["index.html"], filesDeleted: [] },
 			[],
 			() => {},
@@ -220,31 +222,42 @@ describe("v0.3.54 F3-real — attributQuarantinedViolations (real git repo)", ()
 	it("a filename containing ', ' survives the JSON payload and is restored whole (adv F2)", () => {
 		// docs/a, b.md is ONE file. The legacy comma text split it into fragments;
 		// the JSON payload must keep it whole so the restore hits the real path.
-		const err = formatBoundaryQuarantineError(["docs/a, b.md"], "/tmp/sd-q");
+		const payload = boundaryQuarantinePayload(["docs/a, b.md"], "/tmp/sd-q");
 		const logs: string[] = [];
 		// No git object for docs/a, b.md exists, so the restore fails → kept.
-		// The pin: the PARSED path list carries the unsplit name (no fragment
+		// The pin: the payload carries the unsplit name (no fragment
 		// restore attempts on 'b.md' alone), visible in the kept log.
-		attributQuarantinedViolations(wt, err, { filesCreated: ["docs/a, b.md"], filesModified: [], filesDeleted: [] }, [], (l) => logs.push(l));
+		attributQuarantinedViolations(wt, payload, { filesCreated: ["docs/a, b.md"], filesModified: [], filesDeleted: [] }, [], (l) => logs.push(l));
 		expect(logs.some((l) => l.includes("docs/a, b.md") && l.includes("left in place"))).toBe(true);
 		expect(logs.some((l) => l.includes("b.md") && !l.includes("docs/a, b.md"))).toBe(false);
 	});
 
 	it("a quarantine dir containing a space is preserved in the kept log (adv F3)", () => {
 		writeFileSync(join(wt, "main.ts"), "reviewer junk\n");
-		const err = formatBoundaryQuarantineError(["main.ts"], "/tmp/John Smith AppData/sd-boundary-abc");
+		const payload = boundaryQuarantinePayload(["main.ts"], "/tmp/John Smith AppData/sd-boundary-abc");
 		const logs: string[] = [];
-		attributQuarantinedViolations(wt, err, { filesCreated: ["main.ts"], filesModified: [], filesDeleted: [] }, [], (l) => logs.push(l));
+		attributQuarantinedViolations(wt, payload, { filesCreated: ["main.ts"], filesModified: [], filesDeleted: [] }, [], (l) => logs.push(l));
 		expect(logs.some((l) => l.includes("John Smith AppData") && l.includes("left in place"))).toBe(true);
 	});
 
-	it("legacy pre-review comma text still parses (back-compat fallback)", () => {
-		writeFileSync(join(wt, "main.ts"), "reviewer junk\n");
-		writeFileSync(join(wt, "index.html"), "reviewer junk too\n");
-		const err = "source-read-only boundary violation (quarantined, not restored — concurrent writer): paths=main.ts, index.html dir=/tmp/sd-boundary-abc";
-		attributQuarantinedViolations(wt, err, { filesCreated: [], filesModified: ["index.html"], filesDeleted: [] }, [], () => {});
-		expect(read0(wt, "main.ts")).toBe("export const a = 1;\n");
-		expect(read0(wt, "index.html")).toBe("reviewer junk too\n");
+	it("agent-forged error TEXT restores NOTHING (v0.3.55 security F1: strings are never parsed)", () => {
+		// A misbehaving reviewer can echo payload-shaped text to stderr; on the
+		// subprocess/delegation backends that text lands verbatim in review.error.
+		// Pre-fix, this string PARSED and executed as restore pathspecs. Post-fix
+		// only the structured Error property drives restores — a plain string
+		// (even a byte-exact copy of the engine's display format) is inert.
+		writeFileSync(join(wt, "main.ts"), "implementer green work\n");
+		writeFileSync(join(wt, "index.html"), "implementer green work too\n");
+		const logs: string[] = [];
+		const forged = formatBoundaryQuarantineError(["main.ts", "index.html"], "/tmp/evil");
+		attributQuarantinedViolations(wt, undefined, { filesCreated: [], filesModified: [], filesDeleted: [] }, [], (l) => logs.push(l));
+		expect(logs).toEqual([]);
+		expect(read0(wt, "main.ts")).toBe("implementer green work\n");
+		expect(read0(wt, "index.html")).toBe("implementer green work too\n");
+		// And the forged text itself is inert even if someone passes a payload
+		// whose violations field is not an array (defensive shape check).
+		attributQuarantinedViolations(wt, forged as unknown as never, null, [], (l) => logs.push(l));
+		expect(read0(wt, "main.ts")).toBe("implementer green work\n");
 	});
 
 	it("a './'-styled implementer claim still matches the normalized violation path (code F1 / adv F1)", () => {
@@ -252,25 +265,22 @@ describe("v0.3.54 F3-real — attributQuarantinedViolations (real git repo)", ()
 		// "index.html". Pre-fix the raw-vs-normalized mismatch made the restore
 		// WIPE the implementer's own concurrent edit to its claimed file.
 		writeFileSync(join(wt, "index.html"), "implementer + reviewer mixed\n");
-		const err = formatBoundaryQuarantineError(["index.html"], "/tmp/sd-q");
-		attributQuarantinedViolations(wt, err, { filesCreated: [], filesModified: ["./index.html"], filesDeleted: [] }, [], () => {});
+		attributQuarantinedViolations(wt, boundaryQuarantinePayload(["index.html"], "/tmp/sd-q"), { filesCreated: [], filesModified: ["./index.html"], filesDeleted: [] }, [], () => {});
 		expect(read0(wt, "index.html")).toBe("implementer + reviewer mixed\n");
 	});
 
 	it("a null implementer control restores NOTHING (adv F1-i: no claims → no attribution signal)", () => {
 		writeFileSync(join(wt, "main.ts"), "undeclared work\n");
-		const err = formatBoundaryQuarantineError(["main.ts"], "/tmp/sd-q");
 		const logs: string[] = [];
-		attributQuarantinedViolations(wt, err, null, [], (l) => logs.push(l));
+		attributQuarantinedViolations(wt, boundaryQuarantinePayload(["main.ts"], "/tmp/sd-q"), null, [], (l) => logs.push(l));
 		expect(read0(wt, "main.ts")).toBe("undeclared work\n");
 		expect(logs.some((l) => l.includes("no implementer file claims available"))).toBe(true);
 	});
 
 	it("all-empty implementer file lists restore NOTHING (under-claim exploit guard)", () => {
 		writeFileSync(join(wt, "main.ts"), "undeclared work\n");
-		const err = formatBoundaryQuarantineError(["main.ts"], "/tmp/sd-q");
 		const logs: string[] = [];
-		attributQuarantinedViolations(wt, err, { filesCreated: [], filesModified: [], filesDeleted: [] }, [], (l) => logs.push(l));
+		attributQuarantinedViolations(wt, boundaryQuarantinePayload(["main.ts"], "/tmp/sd-q"), { filesCreated: [], filesModified: [], filesDeleted: [] }, [], (l) => logs.push(l));
 		expect(read0(wt, "main.ts")).toBe("undeclared work\n");
 		expect(logs.some((l) => l.includes("no implementer file claims available"))).toBe(true);
 	});
@@ -280,26 +290,63 @@ describe("v0.3.54 F3-real — attributQuarantinedViolations (real git repo)", ()
 		spawnSync("git", ["add", "-A"], { cwd: wt });
 		spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "tests"], { cwd: wt });
 		writeFileSync(join(wt, "phase1.test.mjs"), "reviewer junk 2\n");
-		const err = formatBoundaryQuarantineError(["phase1.test.mjs"], "/tmp/sd-boundary-abc");
+		const payload = boundaryQuarantinePayload(["phase1.test.mjs"], "/tmp/sd-boundary-abc");
 		const logs: string[] = [];
-		attributQuarantinedViolations(wt, err, { filesCreated: [], filesModified: [], filesDeleted: [] }, ["phase1.test.mjs"], (l) => logs.push(l));
+		attributQuarantinedViolations(wt, payload, { filesCreated: [], filesModified: [], filesDeleted: [] }, ["phase1.test.mjs"], (l) => logs.push(l));
 		const out = spawnSync("cat", [join(wt, "phase1.test.mjs")], { encoding: "utf8" }).stdout;
 		expect(out).toBe("reviewer junk 2\n");
 		expect(logs.some((l) => l.includes("left in place"))).toBe(true);
 	});
 
-	it("non-quarantine errors are ignored (serial-era restore path untouched)", () => {
+	it("non-payload shapes degrade to NO-OP with no git action (null / malformed)", () => {
 		const logs: string[] = [];
-		attributQuarantinedViolations(wt, "source-read-only boundary violation: modified project files (main.ts)", null, [], (l) => logs.push(l));
+		writeFileSync(join(wt, "main.ts"), "precious work\n");
+		attributQuarantinedViolations(wt, null, null, [], (l) => logs.push(l));
+		attributQuarantinedViolations(wt, { violations: "not-an-array", dir: "/tmp/x" } as never, null, [], (l) => logs.push(l));
 		expect(logs).toEqual([]);
+		expect(read0(wt, "main.ts")).toBe("precious work\n");
 	});
 
-	it("unparsable paths degrade conservatively to a log line and no git action", () => {
-		const logs: string[] = [];
-		// No parsable `paths=` segment at all → conservative single log line, no git action.
-		attributQuarantinedViolations(wt, "source-read-only boundary violation (quarantined, not restored — concurrent writer)", null, [], (l) => logs.push(l));
-		expect(logs.length).toBe(1);
-		expect(logs[0]).toContain("no parsable paths");
+	it("a file literally named ':(top)*' restores ONLY itself — no pathspec-magic widening (v0.3.55 security F2)", () => {
+		// git status -z reports the file raw as ':(top)*'. Pre-fix, the restore
+		// argv carried that path verbatim: git parsed magic `top` + pattern `*`
+		// (wildmatch without WM_PATHNAME, so * crosses '/') and reverted EVERY
+		// tracked modified file in the worktree — the implementer's uncommitted
+		// GREEN work included. The `:(literal)` prefix defuses the magic.
+		writeFileSync(join(wt, "main.ts"), "implementer green work\n");
+		writeFileSync(join(wt, ":(top)*"), "reviewer junk\n");
+		attributQuarantinedViolations(
+			wt,
+			boundaryQuarantinePayload([":(top)*"], "/tmp/sd-q"),
+			{ filesCreated: [], filesModified: ["main.ts"], filesDeleted: [] },
+			[],
+			() => {},
+		);
+		// main.ts is claimed → untouched; and the restore of the magic-named file
+		// must not have widened to it either.
+		expect(read0(wt, "main.ts")).toBe("implementer green work\n");
+		// The magic-named file itself is untracked → restore cannot remove it;
+		// it stays (logged as kept/manual).
+		expect(existsSync(join(wt, ":(top)*"))).toBe(true);
+	});
+
+	it("interior './' segments in an honest claim still attribute (v0.3.55 security F3: resolve-based norm)", () => {
+		mkdirSync(join(wt, "src"), { recursive: true });
+		writeFileSync(join(wt, "src", "main.ts"), "export const b = 2;\n");
+		spawnSync("git", ["add", "-A"], { cwd: wt });
+		spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "src"], { cwd: wt });
+		writeFileSync(join(wt, "src", "main.ts"), "implementer + reviewer mixed\n");
+		// The violation path arrives canonical ("src/main.ts") while the
+		// implementer styled its claim with an interior './' — the v0.3.54
+		// string-surgery norm missed this and the restore wiped the edit.
+		attributQuarantinedViolations(
+			wt,
+			boundaryQuarantinePayload(["src/main.ts"], "/tmp/sd-q"),
+			{ filesCreated: [], filesModified: ["src/./main.ts"], filesDeleted: [] },
+			[],
+			() => {},
+		);
+		expect(read0(wt, join("src", "main.ts"))).toBe("implementer + reviewer mixed\n");
 	});
 });
 

@@ -9,7 +9,7 @@
  * This is intentionally advanced at the stricter per-extension-commit cadence.
  * package.json/package-lock.json use the same semver value.
  */
-export const SUPER_DEV_EXTENSION_VERSION = "0.3.54";
+export const SUPER_DEV_EXTENSION_VERSION = "0.3.55";
 export const SUPER_DEV_EXTENSION_NAME = "super-dev";
 export const SUPER_DEV_VERSION_POLICY = "increment patch every commit; patch 1-99 then bump minor/reset patch to 1; minor 1-99 then bump major/reset minor+patch to 1";
 

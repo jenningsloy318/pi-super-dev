@@ -12,7 +12,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { superDevEnv } from "../render/super-dev-dir.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync , rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
+import type { BoundaryQuarantinePayload, ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
 import { classifyJudgeRoute } from "../routing/router.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../tracking.ts";
@@ -331,8 +331,11 @@ function trackerOutofScopeEdits(tracker: ReturnType<typeof getActiveTracker>, wo
 
 function restorePaths(cwd: string, paths: string[]): void {
 	for (const path of paths) {
-		try { execFileSync("git", ["checkout", "--", path], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
-		try { execFileSync("git", ["clean", "-fd", "--", path], { cwd, stdio: "ignore" }); } catch { /* best-effort */ }
+		// v0.3.55 security review F2: `:(literal)` pathspec guard (magic like
+		// `:(top)*` in an odd filename must not widen checkout/clean).
+		const literal = `:(literal)${path}`;
+		try { execFileSync("git", ["checkout", "--", literal], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
+		try { execFileSync("git", ["clean", "-fd", "--", literal], { cwd, stdio: "ignore" }); } catch { /* best-effort */ }
 	}
 }
 
@@ -1206,26 +1209,41 @@ function isInsidePath(child: string, parent: string): boolean {
  * files are always kept (RED-hijack guard). Untracked reviewer-created files
  * cannot be git-restored; they are left in place and the change gate flags
  * them changed-not-claimed (conservative).
+ *
+ * v0.3.55 security review F1: the payload arrives ONLY via the structured
+ * `quarantine` property of the thrown Error (composed parent-side from
+ * git-status output). Error TEXT is never parsed — stderr tails and
+ * delegation error strings are agent-influenceable, and a forged string
+ * could previously weaponize this function into wiping implementer work.
+ * No payload → no restore, ever (conservative; the quarantined bytes and the
+ * ledger finding remain the evidence trail).
  */
 export function attributQuarantinedViolations(
 	worktreePath: string,
-	reviewError: string,
+	payload: BoundaryQuarantinePayload | null | undefined,
 	implControl: unknown,
 	testFiles: string[],
 	log: (line: string) => void,
 ): void {
-	if (!reviewError.includes("quarantined, not restored")) return;
-	const parsed = parseQuarantinePayload(reviewError);
-	if (!parsed) {
-		log("red-review-quarantine: violation error carried no parsable paths — leaving worktree untouched (conservative)");
-		return;
-	}
-	// v0.3.54 review fix (code F1 / adv F1): claims are RAW agent output while
-	// violation paths arrive normalized (`./`-stripped, forward slashes) by the
-	// guard. Comparing raw against normalized loses attribution on styled
-	// claims ("./main.ts", "src\\main.ts") and the restore then wipes the
-	// implementer's own concurrent edit — normalize both sides through one rule.
-	const norm = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "").trim();
+	// v0.3.55 security review F1: only the engine-composed structured payload
+	// drives restores. Anything else (a plain error string, a null, an unknown
+	// shape) restores nothing.
+	if (!payload || !Array.isArray(payload.violations)) return;
+	const parsed = { paths: payload.violations.filter((p): p is string => typeof p === "string" && p.length > 0), dir: typeof payload.dir === "string" ? payload.dir : "" };
+	// v0.3.54 review fix (code F1 / adv F1), v0.3.55 security review F3: claims
+	// are RAW agent output while violation paths arrive normalized by the
+	// guard. Normalization is resolution (relative(root, resolve(root, p))) —
+	// it canonicalizes leading AND interior "./"/"//" segments and Windows
+	// separators; the v0.3.54 string surgery under-normalized interior
+	// segments, so an honest styled claim ("src/./main.ts") failed attribution
+	// and its file got restored.
+	const rootAbsNorm = resolve(worktreePath);
+	const norm = (p: string) => {
+		try {
+			const rel = relative(rootAbsNorm, resolve(rootAbsNorm, p));
+			return rel === "" ? p : rel;
+		} catch { return p; }
+	};
 	const claims = new Set<string>(testFiles.map(norm));
 	let declaredAny = false;
 	if (implControl && typeof implControl === "object" && !Array.isArray(implControl)) {
@@ -1247,16 +1265,17 @@ export function attributQuarantinedViolations(
 	const safe: string[] = [];
 	const kept: string[] = [];
 	const rootAbs = resolve(worktreePath);
-	for (const rel of parsed.paths) {
+	for (const rawRel of parsed.paths) {
+		const rel = norm(rawRel);
 		if (claims.has(norm(rel))) {
 			kept.push(rel);
 			continue;
 		}
-		// Defense-in-depth (P1): the path came from an agent-controlled error
-		// string. `--` already blocks option injection, and git rejects escaping
-		// pathspecs anyway, but a malformed/traversal path is simply never worth
-		// executing a restore for — keep it (manual) instead.
-		if (isAbsolute(rel) || rel.includes("..") || rel.includes("\u0000")) {
+		// Defense-in-depth (P1): the violation path names a worktree file, but a
+		// malformed/traversal one is simply never worth executing a restore for
+		// — keep it (manual) instead. Checked against the RAW path so resolve()
+		// cannot silently canonicalize an escape away.
+		if (isAbsolute(rawRel) || rawRel.includes("..") || rawRel.includes("\u0000")) {
 			kept.push(rel);
 			continue;
 		}
@@ -1266,8 +1285,13 @@ export function attributQuarantinedViolations(
 		}
 		// Not claimed by the implementer and not a phase test file: the only delta
 		// is the reviewer's — safe to revert. Failure keeps the path (manual).
-		let r = spawnSync("git", ["restore", "--staged", "--worktree", "--", rel], { cwd: worktreePath, encoding: "utf8" });
-		if (r.status !== 0) r = spawnSync("git", ["checkout", "--", rel], { cwd: worktreePath, encoding: "utf8" });
+		// v0.3.55 security review F2: `:(literal)` — `--` ends option parsing but
+		// NOT pathspec magic, so a file literally named `:(top)*` would otherwise
+		// widen this restore to a worktree-wide revert (same guard as
+		// fault-classification.ts stash pathspecs).
+		const literalPath = `:(literal)${rel}`;
+		let r = spawnSync("git", ["restore", "--staged", "--worktree", "--", literalPath], { cwd: worktreePath, encoding: "utf8" });
+		if (r.status !== 0) r = spawnSync("git", ["checkout", "--", literalPath], { cwd: worktreePath, encoding: "utf8" });
 		if (r.status === 0) safe.push(rel);
 		else kept.push(rel);
 	}
@@ -1275,29 +1299,12 @@ export function attributQuarantinedViolations(
 	if (kept.length) log(`red-review-quarantine: left in place (implementer-owned or mixed content — quarantined copy preserved${parsed.dir ? ` at ${parsed.dir}` : ""}): ${kept.join(", ")}`);
 }
 
-/** Parse the quarantine error's paths+dir payload. v0.3.54 review fix
- *  (code F4 / adv F2+F3): the producer now JSON-encodes both fields
- *  (formatBoundaryQuarantineError in workflow.ts) so a filename containing
- *  ", " is not mis-split into fragments (one of which could collaterally
- *  git-restore a coincidentally-named modified file) and a quarantine dir
- *  containing a space (Windows tmpdir under a user name with a space) does
- *  not defeat the capture. The legacy comma text form stays supported as a
- *  fallback for in-flight strings produced before this version. */
-function parseQuarantinePayload(reviewError: string): { paths: string[]; dir: string } | null {
-	const j = reviewError.match(/paths=(\[[\s\S]*\]) dir=("(?:[^"\\]|\\.)*")\s*$/);
-	if (j) {
-		try {
-			const paths = JSON.parse(j[1]) as unknown;
-			const dir = JSON.parse(j[2]) as unknown;
-			if (Array.isArray(paths) && paths.every((p) => typeof p === "string")) {
-				return { paths: (paths as string[]).filter(Boolean), dir: typeof dir === "string" ? dir : "" };
-			}
-		} catch { /* malformed JSON → fall through to the legacy text parse */ }
-	}
-	const m = reviewError.match(/paths=([^\n]+?)(?: dir=(\S+))?$/);
-	if (!m) return null;
-	return { paths: m[1].split(",").map((x) => x.trim()).filter(Boolean), dir: m[2] ?? "" };
-}
+/** v0.3.55 security review F1: parseQuarantinePayload deleted. Error text is
+ *  an agent-influenceable channel (stderr tails land verbatim in review.error
+ *  on the subprocess/delegation backends) and must never be parsed into
+ *  restore pathspecs. The structured BoundaryQuarantinePayload on the thrown
+ *  Error — produced by boundaryQuarantinePayload in workflow.ts — is the only
+ *  trusted input. */
 
 export function discardGreenWork(worktreePath: string, keepTestFiles: Set<string>): string[] {
 	// v0.3.45: the -z reader replaces RAW v1-line parsing — v1 C-quotes
@@ -1311,7 +1318,9 @@ export function discardGreenWork(worktreePath: string, keepTestFiles: Set<string
 		if (e.status === "??") {
 			try { rmSync(resolve(worktreePath, path), { force: true }); restored.push(path); } catch { /* best-effort */ }
 		} else {
-			const r = spawnSync("git", ["-C", worktreePath, "restore", "--worktree", "--", path], { encoding: "utf8", timeout: 30_000 });
+			// v0.3.55 security review F2: `:(literal)` — a file literally named
+			// `:(top)*` must not widen this restore past the per-path iteration.
+			const r = spawnSync("git", ["-C", worktreePath, "restore", "--worktree", "--", `:(literal)${path}`], { encoding: "utf8", timeout: 30_000 });
 			if (r.status === 0) restored.push(path);
 		}
 	}
@@ -1360,10 +1369,14 @@ export function deterministicPhaseCommit(
 	if (add.status !== 0) return { status: "fallback", reason: `git add -A failed (exit ${add.status})` };
 	// Unstage the excluded basenames AFTER the sweep (pathspec magic per file —
 	// cheapest precise form; a failed reset is non-fatal, the commit message
-	// names the file set honestly either way).
+	// names the file set honestly either way). v0.3.55 security review F4:
+	// `:(literal)` so an odd filename cannot redirect the reset (residual:
+	// exclusion is by BASENAME anywhere in the tree, so content parked at e.g.
+	// src/.judge.jsonl is excluded from commits by design — flagged by review,
+	// not by git).
 	for (const e of entries) {
 		const base = e.path.split("/").pop() ?? e.path;
-		if (PHASE_COMMIT_EXCLUDED_BASENAMES.has(base)) git("reset", "--", e.path);
+		if (PHASE_COMMIT_EXCLUDED_BASENAMES.has(base)) git("reset", "--", `:(literal)${e.path}`);
 	}
 	const title = `phase ${opts.phaseIndex}/${opts.totalPhases}: ${opts.phaseName}`;
 	const message = [`${title}`, "", `Deterministic super-dev phase commit (v0.3.43+; engine-side, no LLM).`, ``, `Gates: ${opts.gateSummary}`, ``, `[super-dev: deterministic-phase-commit]`].join("\n");
@@ -2470,11 +2483,15 @@ export const implementationStage: Stage = {
 					// 16:29). The store site marks the rejection handled; here it must be
 					// adjudicated as a review error (fail-closed re-author), never allowed
 					// to escape the stage.
-					let review: { control: unknown; error?: string } | null;
+					let review: { control: unknown; error?: string; quarantine?: BoundaryQuarantinePayload } | null;
 					try {
 						review = await redReviewInFlight;
 					} catch (err) {
-						review = { control: null, error: String((err as Error)?.message ?? err) };
+						// v0.3.55 security review F1: the structured quarantine payload
+						// rides the thrown Error (parent-composed, unforgeable); the
+						// message string is display-only and never parsed.
+						const q = (err as { quarantine?: BoundaryQuarantinePayload } | null | undefined)?.quarantine;
+						review = { control: null, error: String((err as Error)?.message ?? err), quarantine: q };
 					}
 					redReviewInFlight = null;
 					const verdict = String((review?.control as { verdict?: unknown } | null)?.verdict ?? "").toLowerCase();
@@ -2499,7 +2516,7 @@ export const implementationStage: Stage = {
 						// phases 05/06/07). Fail OPEN instead: keep the work, degrade to the
 						// deterministic gates, record the finding, count separately; the
 						// launch site stops parallel reviews for this phase at 2 violations.
-						attributQuarantinedViolations(setup.worktreePath, String(review.error), impl?.control, testFiles, (line) => ctx.log(line));
+						attributQuarantinedViolations(setup.worktreePath, review.quarantine, impl?.control, testFiles, (line) => ctx.log(line));
 						phaseReviewViolations++;
 						const reason = String(review.error).slice(0, 300);
 						ctx.log(`Implementation ${phaseId} red-review-incomplete (advisory): ${reason} — GREEN work KEPT (checker failure, not suite evidence); post-RED oracle + deliverable gates remain authoritative${phaseReviewViolations >= 2 ? "; parallel review DISABLED for this phase" : ""}`);
