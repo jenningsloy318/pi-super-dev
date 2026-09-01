@@ -243,11 +243,11 @@ describe("F1 — tdd timeout discards the previous try's testFiles claim", () =>
 // ─── F2 — review-timeout preserves the written file ─────────────────────────
 
 describe("F2 — RED review timeout does NOT delete the written test file", () => {
-	it("review-weak from 'RED review did not complete (…)' SKIPS restoreUnacceptedRedChanges and logs the skip", async () => {
+	it("review death ('RED review did not complete (…)') is a CHECKER failure: work KEPT, no restore, advisory logged", async () => {
 		redSeq("red");
 		// vitest-free observation: restore uses git in the real impl; in this mock
 		// harness worktreePath is fake so git fails silently — the OBSERVABLE is the
-		// skip log line and the ABSENCE of the restore log.
+		// advisory log line and the ABSENCE of the restore log.
 		const { ctx, calls } = mkCtx({
 			reviewResults: [{ control: null, error: "timed out after 480s" }],
 		});
@@ -255,10 +255,13 @@ describe("F2 — RED review timeout does NOT delete the written test file", () =
 		const ctxB = { ...ctx, budget: { ...ctx.budget, check: () => n++ < 12 } };
 		await (implementationStage as Stage).run(mkState(), ctxB as StageContext);
 
-		// v0.3.43 parallel join: a review death surfaces AFTER the concurrent
-		// implementer ran — the file stays preserved (never restored/deleted) and
-		// the honest rejection line names the incomplete review.
-		expect(calls.logs.some((l) => /red-review-rejected: RED review not strong: RED review did not complete \(timed out after 480s\)/.test(l))).toBe(true);
+		// v0.3.53 fail-open join (P5): a reviewer-side death is NOT suite evidence.
+		// The written test file stays preserved (never restored/deleted), no GREEN
+		// work is discarded, and the honest advisory names the incomplete review.
+		// (Pre-0.3.53 this fail-closed discarded the work and re-authored the RED,
+		// re-launching the same misbehaving reviewer — ~5h burned across 3 phases.)
+		expect(calls.logs.some((l) => /red-review-incomplete \(advisory\): timed out after 480s.*GREEN work KEPT/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /red-review-rejected:/.test(l))).toBe(false);
 		expect(calls.logs.some((l) => /RED cleanup: restored unaccepted RED change\(s\)/.test(l))).toBe(false);
 	});
 
@@ -327,7 +330,7 @@ describe("F4 — the retry hint names the wall-clock death and the disk state", 
 		expect(retryPrompt!).toMatch(/Skip re-exploration/);
 	});
 
-	it("after a review timeout (file preserved), the retry prompt reports the preserved state and names the review death", async () => {
+	it("after a review timeout (file preserved), NO re-author fires — the failure rides the ledger as a low finding", async () => {
 		redSeq("red");
 		const { ctx, calls } = mkCtx({
 			reviewResults: [{ control: null, error: "timed out after 480s" }],
@@ -336,11 +339,10 @@ describe("F4 — the retry hint names the wall-clock death and the disk state", 
 		const ctxB = { ...ctx, budget: { ...ctx.budget, check: () => n++ < 12 } };
 		await (implementationStage as Stage).run(mkState(), ctxB as StageContext);
 
-		// v0.3.43: the review death rides the JOIN re-author evidence (the
-		// implementer ran concurrently; its work was discarded).
-		const retryPrompt = calls.tdd.map((c) => c.prompt).find((p) => p.includes("RED REVIEW REJECTED THE SUITE"));
-		expect(retryPrompt).toBeTruthy();
-		expect(retryPrompt!).toMatch(/RED review did not complete \(timed out after 480s\)/);
+		// v0.3.53 fail-open: the review death NEVER re-authors the RED (that loop
+		// is what burned hours); instead the finding is recorded for the ledger and
+		// the deterministic gates decide. No tdd-guide re-author prompt may appear.
+		expect(calls.tdd.map((c) => c.prompt).some((p) => p.includes("RED REVIEW REJECTED THE SUITE"))).toBe(false);
 	});
 
 	it("review fix (code F-1/adv F-2): the disk-state line probes the DISK — a file written before the timeout is named even though the claim was cleared", async () => {

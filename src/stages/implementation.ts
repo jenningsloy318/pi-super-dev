@@ -1480,6 +1480,26 @@ export const implementationStage: Stage = {
 			// the cap the phase stops as no-progress (the §D partial path preserves work).
 			let parallelReviewRejects = 0;
 			const MAX_PARALLEL_REVIEW_REJECTS = 3;
+			// v0.3.53 F2 (P5 — fail-open for checker failures): violations of the
+			// REVIEWER itself (boundary violation / timeout / spawn error) are NOT
+			// suite evidence. Counted separately from suite rejections; after 2 the
+			// parallel review is disabled for the phase and the deterministic gates
+			// (post-RED oracle, deliverable, symbol, coverage) remain authoritative.
+			// Live receipts: run 2026-08-31T16-03-57-978Z phases 05/06/07 burned ~5h
+			// total because 8+ reviewer violations each discarded correct GREEN work
+			// and re-authored the RED.
+			let phaseReviewViolations = 0;
+			// v0.3.53 F1 (P6 — shared capability at common-ancestor scope): the
+			// cached runner + discovery guard were block-scoped inside the fresh-RED
+			// branch, so the post-RED oracle call sites could NOT pass the runner and
+			// silently ran conventions-only. Nested project test dirs
+			// (cosmic-clock-3d/tests/…) match no convention anchor → zero plans →
+			// `unknown` with NO diagnostic → false `tdd-targets-unverified` →
+			// no-progress partial (same run, phases 01/02; the judge reproduced
+			// 13/13 green independently). Declared here so every oracle call site in
+			// the attempt loop reaches the same validated runner.
+			let runnerSpec: TestRunnerSpec | null = readCachedTestRunner(setup.specDirectory);
+			let runnerDiscoveryTried = runnerSpec !== null;
 			let challengeReauthors = 0;
 			let implDefects: TestDefect[] = [];
 			let implTextTail = "";
@@ -1528,7 +1548,7 @@ export const implementationStage: Stage = {
 			if (tracker) tracker.begin("phase", phaseId);
 			for (let attempt = 1; ctx.budget.check(); attempt++) {
 				attemptsRun = attempt;
-				redReviewInFlight = null; // v0.3.43: a stale in-flight review must never join a later attempt
+				redReviewInFlight = null; // v0.3.43: a stale in-flight review must never join a later attempt (the join/paths above always null it first — TS types the reset `never`, F3 verified dead)
 				// v0.2.6 G1 — the phase reads the run-start dirt snapshot captured ONCE at
 				// stage entry (line ~953, persisted across §D iterations per sd26-CR-1);
 				// provenance is RUN-START, not per-phase, so this run's own work (any
@@ -1566,11 +1586,8 @@ export const implementationStage: Stage = {
 					let redHint = "";
 					const redProgressHistory: string[] = [];
 					let redFailClosedUnknown = false; // v0.3.30 F2: unknown evidence retries/fails terminally ONLY when fail-closed (phase requires tests)
-					// v0.3.30 C: cached runner spec from a prior discovery (spec-dir
-					// test-runner.json — harness-owned, boundary-excluded), plus the
-					// one-shot guard for THIS phase's discovery attempt.
-					let runnerSpec: TestRunnerSpec | null = readCachedTestRunner(setup.specDirectory);
-					let runnerDiscoveryTried = runnerSpec !== null;
+					// v0.3.30 C: cached runner spec + discovery guard — HOISTED to attempt
+					// scope (v0.3.53 F1) so the post-RED oracle reaches the same runner.
 					// v0.3.16 review fix (code F-1/adv F-2): remember the last NON-EMPTY
 					// claim across tries so an agent-death retry can still probe whether
 					// the previously-claimed file is on disk (the claim itself is cleared
@@ -1802,7 +1819,10 @@ export const implementationStage: Stage = {
 						// config.agentModels.code-reviewer is set — Plan 1) audits the RED test
 						// cases; a WEAK verdict routes back to tdd-guide via the SAME retry
 						// machinery. Runs every phase, on accepted-but-not-yet-implemented RED.
-						if (!retryHint && redEvidence.status === "red-behavior-failure" && testFiles.length > 0) {
+						// v0.3.53 F2: after 2 reviewer-side violations (boundary/timeout/spawn
+						// failures — NOT suite evidence) the parallel review is disabled for
+						// this phase; the deterministic gates carry the decision (P5).
+						if (!retryHint && redEvidence.status === "red-behavior-failure" && testFiles.length > 0 && phaseReviewViolations < 2) {
 							// v0.3.43 RC2 (pipelining): LAUNCH WITHOUT AWAITING — the review is
 							// source-read-only and cannot conflict with the implementer (which is
 							// forbidden from touching test files). The verdict is adjudicated at
@@ -2331,6 +2351,30 @@ export const implementationStage: Stage = {
 						const summary = String((review?.control as { summary?: unknown } | null)?.summary ?? "") || "test assertions are not bound to the scenario's observable behavior";
 						ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (weak) — ${summary} (advisory; proceeding — the implementer already ran, the post-RED oracle guards)`);
 						redWeaknessAdvisory = `An independent reviewer rated the RED tests as NOT STRONG: ${summary}.`;
+					} else if (!contradictionList.length && review?.error) {
+						// v0.3.53 F2 (P5): the REVIEWER failed (boundary violation, timeout,
+						// spawn error) — a CHECKER failure, not evidence about the suite. The
+						// pre-0.3.53 fail-closed path discarded correct GREEN work and
+						// re-authored the RED, then re-launched the same misbehaving reviewer
+						// (8+ violations, 3 phases partial, ~5h: run 2026-08-31T16-03-57-978Z
+						// phases 05/06/07). Fail OPEN instead: keep the work, degrade to the
+						// deterministic gates, record the finding, count separately; the
+						// launch site stops parallel reviews for this phase at 2 violations.
+						phaseReviewViolations++;
+						const reason = String(review.error).slice(0, 300);
+						ctx.log(`Implementation ${phaseId} red-review-incomplete (advisory): ${reason} — GREEN work KEPT (checker failure, not suite evidence); post-RED oracle + deliverable gates remain authoritative${phaseReviewViolations >= 2 ? "; parallel review DISABLED for this phase" : ""}`);
+						try {
+							recordConvergenceFindings(state, {
+								detectedAtStage: "implementation",
+								ownerStage: "implementation",
+								severity: "low",
+								blocking: false,
+								title: `Phase ${phaseId} RED review did not complete (reviewer-side failure)`,
+								detail: `${reason}. The RED tests were NOT independently reviewed this phase; GREEN acceptance rests on the deterministic oracles. Re-run the review manually if an independent LLM audit is wanted.`,
+								evidence: [reason],
+								sourceGate: "red-review",
+							}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "red-review" });
+						} catch { /* never block the phase on ledger bookkeeping */ }
 					} else {
 						const summary = contradictionList.length > 0
 							? `joint-satisfiability contradiction(s): ${contradictionList.map((c) => c.tests).join("; ")}`
@@ -2518,12 +2562,14 @@ export const implementationStage: Stage = {
 						// carries the real status (green = the edit was the only blocker;
 						// red = real assertions still need production code).
 						announceActivity("Post-RED oracle (restored)", attemptDetail(attempt));
-						const restoredStatus = runRedCheck(setup.worktreePath, acceptedRed.testFiles, redCheckOptions(ctx, phaseId, undefined, setup.defaultBranch));
+						const restoredDiagnostics: RedCheckDiagnostic[] = [];
+						const restoredStatus = runRedCheck(setup.worktreePath, acceptedRed.testFiles, redCheckOptions(ctx, phaseId, restoredDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
 						ctx.log(`Implementation ${phaseId} post-red-oracle: restored tests re-checked → ${restoredStatus} (ran: ${acceptedRed.testFiles.join(",") || "n/a"})`);
 						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")} (RESTORED from confirmed RED; re-check=${restoredStatus})`);
 					} else if (confirmedRedTargets) {
 						announceActivity("Post-RED oracle", attemptDetail(attempt));
-						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, undefined, setup.defaultBranch));
+						const postRedDiagnostics: RedCheckDiagnostic[] = [];
+						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, postRedDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
 						ctx.log(`Implementation ${phaseId} post-red-oracle: ${postRedStatus} (ran: ${testFiles.join(",") || "n/a"})`);
 						if (postRedStatus === "red") tddOracleFailures.push(`tdd-targets-still-red: ${testFiles.join(", ")}`);
 						else if (postRedStatus === "broken") tddOracleFailures.push(`tdd-targets-broken-after-implementation: ${testFiles.join(", ")}`);
