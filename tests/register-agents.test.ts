@@ -164,4 +164,54 @@ describe("registerSuperDevAgents", () => {
 		const dispose = registerSuperDevAgents(silent);
 		expect(typeof dispose).toBe("function");
 	});
+
+	describe("v0.3.59 — skills are a capability on the delegation backend too (cross-backend parity, v0.2.10 W4)", () => {
+		/** Auto-delivering bus: emit() forwards to the simulated owner handler. */
+		function makeAutoBus() {
+			const { bus, requests } = makeOwnerBus();
+			const autoBus: any = bus;
+			autoBus.emit = (channel: string, payload: any) => {
+				autoBus.emitted.push({ channel, payload });
+				autoBus.deliver?.(payload);
+			};
+			return { autoBus, requests };
+		}
+
+		it("every sd-* registration declares inheritSkills:true — pi-subagents defaults it to FALSE (defaultInheritSkills → --no-skills), which silently broke the documented session/subprocess skills parity", () => {
+			vi.stubEnv("SUPER_DEV_NO_SKILLS", "");
+			try {
+				const { autoBus, requests } = makeAutoBus();
+				registerSuperDevAgents(autoBus);
+				expect(requests.length).toBeGreaterThan(15);
+				for (const request of requests) {
+					expect(request.definition.inheritSkills).toBe(true);
+				}
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
+
+		it("SUPER_DEV_NO_SKILLS=1 disables inherited skills for delegation children too — ONE switch governs session, subprocess, and pi-subagents backends", () => {
+			vi.stubEnv("SUPER_DEV_NO_SKILLS", "1");
+			try {
+				const { autoBus, requests } = makeAutoBus();
+				registerSuperDevAgents(autoBus);
+				expect(requests.length).toBeGreaterThan(15);
+				for (const request of requests) {
+					expect(request.definition.inheritSkills).toBe(false);
+				}
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
+
+		it("the registration success log records the skills capability state — run.log visibility for ambient child capabilities (skills=on|off)", () => {
+			const lines: string[] = [];
+			const { autoBus } = makeAutoBus();
+			registerSuperDevAgents(autoBus, (line: string) => lines.push(line));
+			const success = lines.find((l) => l.includes("sd-* agents registered") || (l.includes("registered") && l.includes("pi-subagents")));
+			expect(success).toBeTruthy();
+			expect(success!).toMatch(/skills=(on|off)/);
+		});
+	});
 });

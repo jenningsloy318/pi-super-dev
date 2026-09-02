@@ -636,7 +636,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_NO_VERIFY_REPLAY_GUARD` | — | `1` = disable the Stage 10 replay guard |
 | `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |
 | `SUPER_DEV_NO_RPC_SPAWN` | — | `1` = fall back from same-session RPC spawns to one-shot `--mode json -p` |
-| `SUPER_DEV_NO_SKILLS` | — | `1` = spawn subprocess agents with `--no-skills` (pre-v0.2.10 isolation) |
+| `SUPER_DEV_NO_SKILLS` | — | `1` = disable skill inheritance on ALL backends (subprocess `--no-skills`, pi-subagents `inheritSkills:false`, session host skills withheld for spawned work) — pre-v0.2.10 isolation |
 | `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
 | `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy (`""` = force workspace-wide) |
 | `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |

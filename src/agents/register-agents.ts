@@ -19,6 +19,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
+import { skillsEnabled } from "../pi-spawn.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
 export const RUNTIME_AGENT_REGISTER_EVENT = "pi-subagents:runtime-agent-register:v1";
@@ -119,7 +120,7 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	const request: {
 		version: 1;
 		name: string;
-		definition: { description: string; systemPrompt: string; tools: readonly string[] };
+		definition: { description: string; systemPrompt: string; tools: readonly string[]; inheritSkills: boolean };
 		result?: { ok: true; registration: { dispose(): void } } | { ok: false; error: Error };
 	} = {
 		version: 1,
@@ -128,6 +129,15 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			description: descriptionFor(name),
 			systemPrompt: loadAgentBasePrompt(name),
 			tools: READ_ONLY_AGENTS.has(name) ? READ_ONLY_TOOLS : WRITER_TOOLS,
+			// v0.3.59 — skills are a capability on EVERY backend (v0.2.10 W4 parity).
+			// pi-subagents defaults inheritSkills to FALSE (agents.ts
+			// defaultInheritSkills), which launched every sd-* child with
+			// `--no-skills` — the delegation backend silently broke the documented
+			// session/subprocess skills parity. skillsEnabled() is the ONE switch
+			// (SUPER_DEV_NO_SKILLS=1) governing all three backends; children keep
+			// lazy keyword-matched loading (system-prompt skill list + `read` of
+			// SKILL.md), and the tool allowlist above stays the hard boundary.
+			inheritSkills: skillsEnabled(),
 		},
 	};
 	try {
@@ -169,7 +179,7 @@ export function registerSuperDevAgents(events: DelegationEventBus, log: (line: s
 	} else if (accepted.length < total) {
 		log(`ERROR super-dev: only ${accepted.length}/${total} sd-* agents registered — delegation for the missing names degrades to the session backend per call (see the rejection lines above).`);
 	} else {
-		log(`super-dev: registered ${accepted.length}/${total} sd-* agents with pi-subagents`);
+		log(`super-dev: registered ${accepted.length}/${total} sd-* agents with pi-subagents (skills=${skillsEnabled() ? "on" : "off"} — SUPER_DEV_NO_SKILLS=1 disables)`);
 	}
 	return () => {
 		for (const dispose of accepted) {
