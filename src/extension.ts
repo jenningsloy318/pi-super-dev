@@ -64,16 +64,33 @@ export function parseSuperDevCommandArgs(args: unknown): ParsedSuperDevCommandAr
  *  to ~50KB / ~2000 lines and tell the model where the full output lives).
  *  Guards the headless (print/json/RPC) `content` path; byte-identical below
  *  both bounds. The notice points at the durable run log. */
-export const CANON_MAX_CONTENT_CHARS = 50_000;
+export const CANON_MAX_CONTENT_BYTES = 50_000;
 export const CANON_MAX_CONTENT_LINES = 2_000;
 export function canonTruncate(text: string, logPath?: string): string {
-	const lines = text.split("\n");
-	if (text.length <= CANON_MAX_CONTENT_CHARS && lines.length <= CANON_MAX_CONTENT_LINES) return text;
-	let kept = text.length > CANON_MAX_CONTENT_CHARS ? text.slice(0, CANON_MAX_CONTENT_CHARS) : text;
+	const totalLines = text.split("\n").length;
+	if (Buffer.byteLength(text, "utf8") <= CANON_MAX_CONTENT_BYTES && totalLines <= CANON_MAX_CONTENT_LINES) return text;
+	// v0.3.61: the byte bound is measured in UTF-8 BYTES (canon DEFAULT_MAX_BYTES),
+	// not UTF-16 code units — a 50k-char slice let CJK content through at ~3× the
+	// cap — and the cut walks code points so it never splits a surrogate pair.
+	let kept = text;
+	if (Buffer.byteLength(text, "utf8") > CANON_MAX_CONTENT_BYTES) {
+		let bytes = 0;
+		let end = 0;
+		for (const ch of text) {
+			const w = Buffer.byteLength(ch, "utf8");
+			if (bytes + w > CANON_MAX_CONTENT_BYTES) break;
+			bytes += w;
+			end += ch.length;
+		}
+		kept = text.slice(0, end);
+	}
 	const keptLines = kept.split("\n");
-	if (keptLines.length > CANON_MAX_CONTENT_LINES) keptLines.length = CANON_MAX_CONTENT_LINES;
+	const lineCapped = keptLines.length > CANON_MAX_CONTENT_LINES;
+	if (lineCapped) keptLines.length = CANON_MAX_CONTENT_LINES;
 	kept = keptLines.join("\n");
-	const notice = `[Output truncated: showing ${keptLines.length} of ${lines.length} lines — full output saved to: ${logPath ?? "the run log"}]`;
+	const notice = lineCapped
+		? `[Output truncated: showing ${keptLines.length} of ${totalLines} lines — full output saved to: ${logPath ?? "the run log"}]`
+		: `[Output truncated: kept first ${CANON_MAX_CONTENT_BYTES} bytes (${totalLines} lines) — full output saved to: ${logPath ?? "the run log"}]`;
 	return `${kept}\n${notice}`;
 }
 
@@ -146,7 +163,10 @@ let inFlight = false;
 // re-evaluation; the run's own finally clears it. SUPER_DEV_ALLOW_OVERLAP=1
 // is the mechanical escape hatch (P4: guard + honest refusal, not advice).
 const RUN_GUARD_KEY = "__superDevActiveRunGuard";
-export interface ActiveRunGuard { startedAt: string; runDir?: string }
+/** v0.3.61: `token` is the owning run's identity — a run's finally may only
+ *  release a guard it set itself (under SUPER_DEV_ALLOW_OVERLAP=1 a later
+ *  overlapping run must not delete an earlier run's still-live guard). */
+export interface ActiveRunGuard { startedAt: string; runDir?: string; token?: string }
 function getRunGuard(): ActiveRunGuard | undefined {
 	return (globalThis as Record<string, unknown>)[RUN_GUARD_KEY] as ActiveRunGuard | undefined;
 }
@@ -156,15 +176,20 @@ function getRunGuard(): ActiveRunGuard | undefined {
 export function runGuardRefusal(): string | null {
 	const guard = getRunGuard();
 	if (!guard) return null;
-	if (process.env.SUPER_DEV_ALLOW_OVERLAP === "1") return null;
+	// v0.3.61: via superDevEnv so the config.json env map honors it too (the
+	// v0.3.15 persistent-tunable contract; raw process.env read left GUI sessions
+	// with no working escape hatch — the review P1).
+	if (superDevEnv("SUPER_DEV_ALLOW_OVERLAP") === "1") return null;
 	return `a super-dev run started ${guard.startedAt} is still active${guard.runDir ? ` (run dir: ${guard.runDir})` : ""} — it may be orphaned by a /reload or still finishing. Wait for it, resume it, or set SUPER_DEV_ALLOW_OVERLAP=1 to force a new run.`;
 }
 
 // v0.3.60 R9: the in-flight reflection promise (runReflectionAsync now returns
 // it) plus its run dir, so session_shutdown can NAME a dropped reflection
 // (P10: discards are named) instead of losing it silently.
-let inFlightReflection: Promise<unknown> | undefined;
-let inFlightReflectionRunDir: string | undefined;
+// v0.3.61: a Set/Map of pending reflections (promise → run dir) — the v0.3.60
+// single slot went blind to run A's still-pending reflection once run B
+// overwrote and settled it, so shutdown under-reported drops.
+const pendingReflections = new Map<Promise<unknown>, string>();
 
 /** Bound on queued mid-run inputs so a single specialist spawn cannot be
  *  token-bombed via a huge guidance prepend. Older entries are dropped first
@@ -264,12 +289,29 @@ export function setRunGuard(guard: ActiveRunGuard | undefined): void {
 	else delete (globalThis as Record<string, unknown>)[RUN_GUARD_KEY];
 }
 
-/** v0.3.60 R9: single write path registering the in-flight reflection (and its
- *  origin dir) so session_shutdown can NAME it when a teardown drops it.
- *  Pass (undefined, undefined) to clear. */
+/** v0.3.61: ownership-aware release — a run may only clear a guard it set
+ *  itself. Under SUPER_DEV_ALLOW_OVERLAP=1 an overlapping later run's finally
+ *  must NOT delete an earlier run's still-live guard (review P2). Tokenless
+ *  guards (legacy test fixtures) stay releasable by anyone. */
+export function releaseRunGuard(token: string): void {
+	const guard = getRunGuard();
+	if (!guard?.token || guard.token === token) setRunGuard(undefined);
+}
+
+/** v0.3.60 R9: single write path registering the in-flight reflection so
+ *  session_shutdown can NAME it when a teardown drops it. v0.3.61: a Map of
+ *  pending reflections (promise → run dir), not a single slot — overlapping
+ *  reflections are all reported; each entry SELF-CLEARS when its reflection
+ *  settles, so only genuinely-pending reflections are ever reported as
+ *  dropped (P10: no false alarms). */
 export function noteInFlightReflection(runDir: string | undefined, reflection: Promise<unknown> | undefined): void {
-	inFlightReflectionRunDir = runDir;
-	inFlightReflection = reflection;
+	if (!runDir || !reflection) return;
+	let tracked: Promise<unknown> | undefined;
+	tracked = reflection.finally(() => {
+		if (tracked) pendingReflections.delete(tracked);
+	});
+	pendingReflections.set(tracked, runDir);
+	void tracked.catch(() => { /* the reflection reports its own failures */ });
 }
 
 /** Tool-result shape returned by the foreground tool call. */
@@ -658,9 +700,11 @@ export default function activate(pi: ExtensionAPI): void {
 			const dir = getRunGuard()?.runDir ?? "unknown";
 			honest.push(`a super-dev run is STILL IN FLIGHT (run dir: ${dir}) — the pipeline keeps running headlessly in this process and writes results to its run.log; inspect or resume it via /super-dev with resume:true`);
 		}
-		if (inFlightReflection) {
-			honest.push(`post-run reflection for ${inFlightReflectionRunDir ?? "unknown run dir"} was in flight and is DROPPED by session_shutdown (reason: ${event.reason})`);
+		for (const [promise, dir] of pendingReflections) {
+			honest.push(`post-run reflection for ${dir} was in flight and is DROPPED by session_shutdown (reason: ${event.reason})`);
+			void promise.catch(() => { /* reported, not awaited */ });
 		}
+		pendingReflections.clear();
 		for (const line of honest) {
 			try { pi.appendEntry?.("super-dev-shutdown", { line, reason: event.reason }); } catch { /* best-effort */ }
 			try { console.error(`[super-dev] ${line}`); } catch { /* best-effort */ }
@@ -820,6 +864,9 @@ export default function activate(pi: ExtensionAPI): void {
 				},
 			};
 			const doRun = async (runSignal: AbortSignal | undefined): Promise<ToolRunResult> => {
+				// v0.3.61: token identifying THIS run's guard ownership — declared before
+				// the try so the finally below can always see it.
+				const guardToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 				// AC-29 (SCENARIO-059): serialize runs — a second execute() while a run
 				// is in flight is refused OUTRIGHT (before the try, so the finally below
 				// never runs for a refused call and cannot null the ACTIVE run's
@@ -846,7 +893,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// reflection, audit) resolves from THIS dir even if a later run starts
 				// while this run's async work is still in flight.
 				const runDir = startRun();
-				setRunGuard({ startedAt: localTimestamp(), runDir });
+				setRunGuard({ startedAt: localTimestamp(), runDir, token: guardToken });
 				liveRunLogPath = runLogPathFor(runDir);
 				// Sweep-3 G10: pin THIS run's audit path at capture time.
 				liveAuditPath = join(runDir, "audit.jsonl");
@@ -966,10 +1013,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// tracking when reflections overlap across runs.
 				const reflection = runReflectionAsync(runDir);
 				// Defensive: a non-promise return (legacy/tests) tracks nothing.
-				const tracked = reflection?.finally?.(() => {
-					if (inFlightReflection === tracked) noteInFlightReflection(undefined, undefined);
-				});
-				noteInFlightReflection(runDir, tracked);
+				if (reflection) noteInFlightReflection(runDir, reflection);
 				// Stages for the result's stage-progress section, from the live tracker.
 				const stages = dashboardOrder.map((id) => ({ id, ...(dashboardStages.get(id) ?? { label: id, status: "·" }) }));
 				// `content` is the text fallback (print/json/headless); in TUI, renderResult
@@ -993,8 +1037,9 @@ export default function activate(pi: ExtensionAPI): void {
 				// AC-29: release the serialization guard FIRST so the next run may
 				// start as soon as this one is done.
 				inFlight = false;
-				// v0.3.60 R3: release the cross-instance guard with the same lifecycle.
-				setRunGuard(undefined);
+				// v0.3.60 R3: release the cross-instance guard with the same lifecycle
+				// (v0.3.61: only if THIS run still owns it).
+				releaseRunGuard(guardToken);
 				// D-8: aggregate stats + run retention fire even without reflection
 				// (best-effort — never let bookkeeping break a finished run).
 				// Sweep-3 G10: pin the audit file captured at run START (runDir) —

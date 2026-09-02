@@ -207,7 +207,9 @@ export class RpcDriver {
 	 *  turn into the child's session file — killing the process instead
 	 *  DISCARDS both. Resolves {ok:false} on timeout/rejection; never throws.
 	 *  The id-matched response ack is acceptance, not completion — for controls
-	 *  that is sufficient (the child then exits or idles; no settle wait). */
+	 *  that is sufficient (the child then exits or idles; no settle wait).
+	 *  v0.3.61 floor note: `clear_queue` is absent from the 0.82.x peer floor
+	 *  (the child replies "Unknown command") — callers fail open to abort-only. */
 	sendControl(type: "clear_queue" | "abort", timeoutMs = 4_000): Promise<ControlResult> {
 		if (this.disposed) return Promise.resolve({ ok: false, error: "rpc driver disposed" });
 		const id = `sdctl${++this.nextId}`;

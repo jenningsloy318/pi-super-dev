@@ -648,7 +648,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |
 | `SUPER_DEV_NO_RPC_SPAWN` | — | `1` = fall back from same-session RPC spawns to one-shot `--mode json -p` |
 | `SUPER_DEV_NO_SKILLS` | — | `1` = disable skill inheritance on ALL backends (subprocess `--no-skills`, pi-subagents `inheritSkills:false`, session host skills withheld for spawned work) — pre-v0.2.10 isolation |
-| `SUPER_DEV_ALLOW_OVERLAP` | — | `1` = override the cross-instance run guard (set after a `/reload` orphaned a still-running pipeline) and force a new run |
+| `SUPER_DEV_ALLOW_OVERLAP` | — | `1` = override the cross-instance run guard (set after a `/reload` orphaned a still-running pipeline) and force a new run; also settable via the config.json env map (v0.3.61) |
 | `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
 | `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy (`""` = force workspace-wide) |
 | `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |

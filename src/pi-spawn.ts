@@ -1171,10 +1171,18 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 			onProgress?.event(`subprocess ${label}: aborted by parent signal; terminating child pi`);
 			// v0.3.60 R5 (canon rpc.md): clear_queue BEFORE abort — queued steering /
 			// follow-up work must not survive into the checkpointed session.
-			try { child.stdin?.write(`${JSON.stringify({ type: "clear_queue" })}\n`); } catch { /* ignore */ }
-			try { child.stdin?.write(`${JSON.stringify({ type: "abort" })}\n`); } catch { /* ignore */ }
-			driver.dispose("aborted");
-			finishMain({ text: "", control: null, error: "aborted" });
+			// v0.3.61: the checkpoint is bounded and AWAITED (same 4s+4s budget as
+			// the timeout path) — the previous raw id-less fire-and-forget writes
+			// raced the SIGTERM and the checkpoint was usually discarded by the
+			// kill. Fail-open: a failed checkpoint only costs the log line.
+			void (async () => {
+				if (settledMain) return;
+				const q = await driver.sendControl("clear_queue", 4_000);
+				const a = await driver.sendControl("abort", 4_000);
+				onProgress?.event(`subprocess ${label}: aborted by parent signal — clear_queue=${q.ok ? "ok" : `failed (${q.error ?? "?"})`} abort=${a.ok ? "ok" : `failed (${a.error ?? "?"})`} (checkpoint before kill)`);
+				driver.dispose("aborted");
+				finishMain({ text: "", control: null, error: "aborted" });
+			})();
 		};
 		options.signal?.addEventListener("abort", onAbort, { once: true });
 		if (options.signal?.aborted) onAbort(); // close the registration window
@@ -1185,6 +1193,9 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 			// its session file before terminateChild kills it (killing discards both
 			// queued and running work). Bounded at 4s per command and fail-open: a
 			// failed checkpoint only costs the log line, the kill proceeds anyway.
+			// clear_queue needs a pi that implements it — at the 0.82.x peer floor
+			// the child answers "Unknown command" and the checkpoint fail-opens to
+			// abort-only (both outcomes logged honestly either way).
 			const gracefulCheckpoint = async (why: string): Promise<void> => {
 				if (aborted || settledMain || driver.isDisposed) return;
 				const q = await driver.sendControl("clear_queue", 4_000);

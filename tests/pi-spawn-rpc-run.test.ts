@@ -194,14 +194,20 @@ describe("runPiRpc [hermetic fake child]", () => {
 		cpState.stubber = () => child;
 		child.script = () => { /* never responds */ };
 		let correctiveConsulted = false;
+		const events: string[] = [];
 		const result = await runPiRpc({
 			args: ["pi"], cwd: process.cwd(), label: "t", timeoutMs: 150,
 			task: "Task: x",
+			onProgress: { event: (line: string) => events.push(line), text: () => {} } as never,
 			correctiveFor: () => { correctiveConsulted = true; return "CORRECTIVE"; },
 		});
 		expect(result.error).toContain("timed out");
 		expect(correctiveConsulted).toBe(false);
 		expect(child.prompts).toHaveLength(1);
+		// v0.3.61 behavioral pin: the checkpoint runs and ACKs BEFORE the kill
+		// (previously only source-grepped).
+		expect(events.some((e) => e.includes("turn timed out") && e.includes("clear_queue=ok") && e.includes("abort=ok") && e.includes("(checkpoint before kill)"))).toBe(true);
+		expect(child.kills).toContain("SIGTERM");
 	});
 
 	it("abort mid-turn: rpc abort on stdin, SIGTERM ladder, error=aborted", async () => {
@@ -222,6 +228,31 @@ describe("runPiRpc [hermetic fake child]", () => {
 		expect(result.error).toBe("aborted");
 		expect(child.abortEvents).toBe(1);
 		expect(child.kills).toContain("SIGTERM");
+	});
+
+	it("v0.3.61: parent-abort checkpoints via sendControl and logs the outcome BEFORE the kill", async () => {
+		const child = new FakeChild();
+		cpState.stubber = () => child;
+		child.script = () => { /* in-flight turn: no response */ };
+		const events: string[] = [];
+		const controller = new AbortController();
+		const pending = runPiRpc({
+			args: ["pi"], cwd: process.cwd(), label: "t", timeoutMs: 30_000,
+			signal: controller.signal,
+			task: "Task: x",
+			onProgress: { event: (line: string) => events.push(line), text: () => {} } as never,
+			correctiveFor: () => "CORRECTIVE",
+		});
+		await vi.waitFor(() => expect(child.prompts).toHaveLength(1));
+		controller.abort();
+		const result = await pending;
+		expect(result.error).toBe("aborted");
+		expect(child.abortEvents).toBe(1);
+		expect(child.kills).toContain("SIGTERM");
+		// bounded awaited checkpoint with an honest outcome line, before the kill
+		const ckptIdx = events.findIndex((e) => e.includes("aborted by parent signal —") && e.includes("clear_queue=ok") && e.includes("abort=ok") && e.includes("(checkpoint before kill)"));
+		expect(ckptIdx).toBeGreaterThan(-1);
+		expect(events.findIndex((e) => e.includes("terminating child pi"))).toBeLessThan(ckptIdx);
 	});
 
 	it("F-6: old-pi quick exit (close before any event) → honest error + NO_RPC hint", async () => {

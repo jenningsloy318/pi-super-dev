@@ -250,11 +250,101 @@ describe("R5 wiring: subprocess timeout checkpoints before kill (source contract
 		expect(src.indexOf("const gracefulCheckpoint")).toBeLessThan(src.indexOf('await gracefulCheckpoint("turn timed out")'));
 	});
 
-	it("the parent-abort path writes clear_queue BEFORE abort (Esc ordering)", () => {
+	it("the parent-abort path checkpoints via sendControl, clear_queue BEFORE abort (Esc ordering)", () => {
 		const abortIdx = src.indexOf("const onAbort = () =>");
-		const clearIdx = src.indexOf('JSON.stringify({ type: "clear_queue" })', abortIdx);
-		const abortWriteIdx = src.indexOf('JSON.stringify({ type: "abort" })', abortIdx);
+		const clearIdx = src.indexOf('sendControl("clear_queue"', abortIdx);
+		const abortWriteIdx = src.indexOf('sendControl("abort"', abortIdx);
 		expect(clearIdx).toBeGreaterThan(-1);
 		expect(abortWriteIdx).toBeGreaterThan(clearIdx);
+		// v0.3.61: the abort-path checkpoint is bounded and AWAITED before dispose+
+		// settle (the raw fire-and-forget writes raced the SIGTERM).
+		const disposeIdx = src.indexOf('driver.dispose("aborted")', abortIdx);
+		expect(disposeIdx).toBeGreaterThan(abortWriteIdx);
+	});
+});
+
+describe("v0.3.61 review fixes (r60 lanes)", () => {
+	const fs = require("node:fs");
+	const extSrc = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8");
+	const flush = (): Promise<void> => new Promise<void>((r) => setImmediate(r));
+
+	it("P1: runGuardRefusal reads the hatch through superDevEnv (config.json channel), never raw process.env", () => {
+		expect(extSrc).toContain('superDevEnv("SUPER_DEV_ALLOW_OVERLAP")');
+		expect(extSrc).not.toContain("process.env.SUPER_DEV_ALLOW_OVERLAP");
+	});
+
+	it("P2: releaseRunGuard only releases a guard the run OWNS (token match)", () => {
+		const releaseRunGuard = (t: string): void => (ext as any).releaseRunGuard(t);
+		setRunGuard({ startedAt: "t", runDir: "/tmp/x", token: "run-a" });
+		releaseRunGuard("run-b"); // an overlapping later run must NOT clear it
+		expect(runGuardRefusal()).not.toBeNull();
+		releaseRunGuard("run-a"); // the owner clears it
+		expect(runGuardRefusal()).toBeNull();
+		// legacy tokenless fixtures stay releasable by anyone
+		setRunGuard({ startedAt: "t", runDir: "/tmp/x" });
+		releaseRunGuard("whoever");
+		expect(runGuardRefusal()).toBeNull();
+	});
+
+	it("R9: MULTIPLE pending reflections are all named; a settled one stops being reported", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const note = (d: string, p: Promise<unknown>): void => (ext as any).noteInFlightReflection(d, p);
+		let resolveA!: () => void;
+		const a = new Promise<void>((r) => { resolveA = r; });
+		const b = new Promise<void>(() => { /* never settles */ });
+		note("/tmp/.super-dev/runs/A", a);
+		note("/tmp/.super-dev/runs/B", b);
+		resolveA();
+		await flush(); // let A's finally self-clear microtask run
+
+		const pi = makeMockPi();
+		activate(pi);
+		pi.fire("session_shutdown", { type: "session_shutdown", reason: "reload" });
+		const lines = pi.entries.filter((e: any) => e.type === "super-dev-shutdown").map((e: any) => e.data.line as string);
+		expect(lines.some((l: string) => l.includes("/runs/A") && l.includes("DROPPED"))).toBe(false);
+		expect(lines.some((l: string) => l.includes("/runs/B") && l.includes("DROPPED"))).toBe(true);
+		expect(consoleError).toHaveBeenCalled();
+	});
+
+	it("R9: a settled reflection never false-alarms (self-clear, P10)", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		(ext as any).noteInFlightReflection("/tmp/.super-dev/runs/A", Promise.resolve());
+		await flush();
+		const pi = makeMockPi();
+		activate(pi);
+		pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
+		const lines = pi.entries.filter((e: any) => e.type === "super-dev-shutdown").map((e: any) => e.data.line as string);
+		expect(lines.some((l: string) => l.includes("DROPPED"))).toBe(false);
+	});
+
+	it("R8: the 50KB bound is UTF-8 BYTES — CJK content no longer slips through at ~3x the cap", () => {
+		const text = "汉".repeat(30_000); // 90,000 bytes, 30,000 chars — passed the old char bound
+		const out = canonTruncate(text, "/tmp/log");
+		const kept = out.slice(0, out.lastIndexOf("\n"));
+		expect(Buffer.byteLength(kept, "utf8")).toBeLessThanOrEqual(50_000);
+		expect(Buffer.byteLength(kept, "utf8")).toBeGreaterThan(49_000); // cut is at the byte cap
+		expect(out).toContain("[Output truncated: kept first 50000 bytes (1 lines)");
+		expect(kept).not.toContain("\uFFFD"); // no replacement chars from a mid-codepoint cut
+	});
+
+	it("R8: the byte cut never splits a surrogate pair (astral-plane content)", () => {
+		const text = "x".repeat(24_999) + "𝄞".repeat(12_500); // 24,999 + 50,000 bytes
+		const out = canonTruncate(text);
+		const kept = out.slice(0, out.lastIndexOf("\n"));
+		expect(Buffer.byteLength(kept, "utf8")).toBeLessThanOrEqual(50_000);
+		// no lone surrogates anywhere in the kept text
+		for (const ch of kept) {
+			const cp = ch.codePointAt(0)!;
+			expect(cp >= 0x10000 || cp < 0xD800 || cp > 0xDFFF).toBe(true);
+		}
+	});
+
+	it("R8: the line-cap notice is unchanged (byte-identical below both bounds)", () => {
+		const text = "line1\nline2\nline3";
+		expect(canonTruncate(text, "/tmp/log")).toBe(text);
+		const lines = Array.from({ length: 2500 }, (_, i) => `line-${i}`);
+		const out = canonTruncate(lines.join("\n"), "/tmp/runs/x/run.log");
+		expect(out.split("\n")).toHaveLength(2001);
+		expect(out.split("\n")[2000]).toBe("[Output truncated: showing 2000 of 2500 lines — full output saved to: /tmp/runs/x/run.log]");
 	});
 });
