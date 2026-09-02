@@ -1539,6 +1539,14 @@ export const implementationStage: Stage = {
 					}
 				});
 			};
+			/** v0.3.59 review P1 (class fix): manual step sites attribute their
+			 *  emissions per-chain with the SAME identity scheme as runStep — these
+			 *  sites drive announce/terminal emitStep by hand (custom okIf logic),
+			 *  but their async chains MUST carry the step scope or the pipelined
+			 *  inverse leak persists (implementer lines landing in the RED review's
+			 *  card once the review's terminal event moves the cursor back). */
+			const inStepScope = <T>(seq: number, stepLabel: string, fn: () => Promise<T>): Promise<T> =>
+				runInStepScope({ stageId: `implementation.${phaseId}.step-${pad(seq)}`, stageLabel: `· ${stepLabel}` }, fn);
 			const attemptDetail = (attempt: number, extra?: string) =>
 				[`attempt ${attempt}`, extra].filter(Boolean).join(", ");
 			// §D: skip a phase already green in a prior convergence iteration (don't
@@ -1814,14 +1822,17 @@ export const implementationStage: Stage = {
 						const tddId = retries === 0
 							? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
 							: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
-						announceActivity("TDD RED", redTryDetail);
 						const tddStepSeq = ++stepSeq;
-						emitStep(`TDD RED (${redTryDetail})`, "running", tddStepSeq);
-						const tdd = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint + reauthorEvidence });
+						const tdd = await inStepScope(tddStepSeq, `TDD RED (${redTryDetail})`, async () => {
+							announceActivity("TDD RED", redTryDetail);
+							emitStep(`TDD RED (${redTryDetail})`, "running", tddStepSeq);
+							const r = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint + reauthorEvidence });
+							emitStep(`TDD RED (${redTryDetail})`, r.error ? "failed" : "ok", tddStepSeq);
+							return r;
+						});
 						// Reflect an agent error/timeout in the step glyph: a ✓ TDD RED next to
 						// an errored call misrepresents what happened (R1 fail-closes the phase
 						// regardless, but the dashboard should not show success).
-						emitStep(`TDD RED (${redTryDetail})`, tdd.error ? "failed" : "ok", tddStepSeq);
 						const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
 						// v0.3.16 F1 (RC-T1, run 2026-08-23T02-59-20-670Z): an agent that errored or
 						// timed out produced NOTHING this try — keeping the previous try's claim
@@ -2486,25 +2497,28 @@ export const implementationStage: Stage = {
 				}
 				implParts.push(redImplementContext(redStatus));
 				const implPrompt = implParts.join("\n\n");
-				announceActivity("Implementation", attemptDetail(attempt));
 				const implStepSeq = ++stepSeq;
-				emitStep(`Implementation (${attemptDetail(attempt)})`, "running", implStepSeq);
-				const impl = await ctx.agent({
-					id: `pipeline.implementation.${phaseId}.impl.a${attempt}`,
-					agent: "implementer",
-					prompt: implPrompt,
-					// Fix 1a: the implementer's control contract is declared EXPLICITLY
-					// (parity with verify.ts:430) so the challenge channel never depends
-					// on prose parsing. `testDefects` MUST be declared for the model to
-					// emit it (v0.1.52: the undeclared key made the channel unreachable
-					// while a phantom `lines` key got filled instead).
-					controlKeys: IMPLEMENTER_CONTROL_KEYS,
-					// Fix 1c/1d: `testDefects: []` is the explicit "no proven defect"
-					// value — it must NOT trigger a corrective re-prompt in either
-					// backend. Absence (undefined) still does.
-					allowEmptyArraysFor: ["testDefects"],
+				const impl = await inStepScope(implStepSeq, `Implementation (${attemptDetail(attempt)})`, async () => {
+					announceActivity("Implementation", attemptDetail(attempt));
+					emitStep(`Implementation (${attemptDetail(attempt)})`, "running", implStepSeq);
+					const r = await ctx.agent({
+						id: `pipeline.implementation.${phaseId}.impl.a${attempt}`,
+						agent: "implementer",
+						prompt: implPrompt,
+						// Fix 1a: the implementer's control contract is declared EXPLICITLY
+						// (parity with verify.ts:430) so the challenge channel never depends
+						// on prose parsing. `testDefects` MUST be declared for the model to
+						// emit it (v0.1.52: the undeclared key made the channel unreachable
+						// while a phantom `lines` key got filled instead).
+						controlKeys: IMPLEMENTER_CONTROL_KEYS,
+						// Fix 1c/1d: `testDefects: []` is the explicit "no proven defect"
+						// value — it must NOT trigger a corrective re-prompt in either
+						// backend. Absence (undefined) still does.
+						allowEmptyArraysFor: ["testDefects"],
+					});
+					emitStep(`Implementation (${attemptDetail(attempt)})`, r.error ? "failed" : "ok", implStepSeq);
+					return r;
 				});
-				emitStep(`Implementation (${attemptDetail(attempt)})`, impl.error ? "failed" : "ok", implStepSeq);
 				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
 				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads
 				// it (and back-tolerates the legacy flat filesModified array). The flat

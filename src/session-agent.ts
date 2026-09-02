@@ -39,7 +39,7 @@ import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "./co
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { sanitizeSlug } from "./setup.ts";
 import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, skillsEnabled, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
 import { agentTerminalLine, newNarrationLines } from "./progress-lines.ts";
 import type { AgentAccessMode, AgentProgress, SpawnResult } from "./types.ts";
 
@@ -566,17 +566,21 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(opts.cwd, agentDir);
 	// Keep session-backed specialists on super-dev-owned prompts/resources. The
-	// subprocess backend runs with `--no-skills --no-extensions --no-context-files`
+	// subprocess backend runs with `--no-extensions --no-context-files`
 	// and a temp system prompt built from agents/<name>.md; mirror that here so
 	// ambient packages such as pi-subagents cannot expose tools that discover
 	// ~/.pi/agent/agents or project .pi/agents, and AGENTS.md/CLAUDE.md files are
-	// not appended to the specialist role.
+	// not appended to the specialist role. Skills follow the SAME switch as the
+	// other backends (v0.3.59 parity: SUPER_DEV_NO_SKILLS=1 disables everywhere;
+	// historically this loader hard-coded noSkills:true while pi-spawn.ts:387
+	// claimed the session backend "always inherits host skills" — both sides of
+	// that comment were wrong; this line is now the single source of truth).
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: opts.cwd,
 		agentDir,
 		settingsManager,
 		noExtensions: true,
-		noSkills: true,
+		noSkills: !skillsEnabled(),
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,

@@ -148,6 +148,23 @@ describe("wiring source contract (class-E: the seam cannot silently regress)", (
 		expect(implementationSrc).toContain('import { runInStepScope } from "../step-scope.ts";');
 	});
 
+	it("v0.3.59 review P1 (class fix): ALL concurrency-critical step sites attribute per-chain — runStep wrap + the manual TDD RED and Implementation sites via inStepScope", () => {
+		// The RED review step is wrapped by runStep itself; the manual sites MUST
+		// route their ctx.agent emissions through inStepScope — otherwise the
+		// implementer's unstamped lines land in the RED review's card once the
+		// review's terminal event moves the cursor back (the inverse leak).
+		expect(implementationSrc).toContain("const inStepScope = <T>(seq: number, stepLabel: string, fn: () => Promise<T>): Promise<T> =>");
+		expect(implementationSrc.match(/await inStepScope\(/g)?.length).toBe(2);
+		expect(implementationSrc).toContain("await inStepScope(tddStepSeq, `TDD RED (");
+		expect(implementationSrc).toContain("await inStepScope(implStepSeq, `Implementation (");
+	});
+
+	it("session backend loader follows the SAME skills switch (v0.3.59: noSkills hard-coding removed)", () => {
+		const sessionSrc = readFileSync(new URL("../src/session-agent.ts", import.meta.url), "utf8");
+		expect(sessionSrc).toContain("noSkills: !skillsEnabled()");
+		expect(sessionSrc).toContain('skillsEnabled');
+	});
+
 	it("workflow progress shims attach currentStepScope to log/phase/text", () => {
 		expect(workflowSrc).toContain("progress?.log(msg, currentStepScope())");
 		expect(workflowSrc).toContain("progress.phase(String(label), currentStepScope())");

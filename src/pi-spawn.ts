@@ -384,10 +384,10 @@ export function defaultAgentTimeoutMs(agent: string): number {
 
 // ─── v0.2.10: subprocess-backend spawn resilience ──────────────────────────
 
-/** W4: skills are a CAPABILITY, not ambient noise — the session backend always
- *  inherits host skills, so the subprocess backend keeps parity by default.
- *  `SUPER_DEV_NO_SKILLS=1` restores the pre-v0.2.10 `--no-skills` isolation
- *  for debugging/CI. */
+/** W4: skills are a CAPABILITY, not ambient noise — v0.3.59: ONE switch governs
+ *  all three backends (session loader noSkills, subprocess --no-skills,
+ *  pi-subagents registration inheritSkills). `SUPER_DEV_NO_SKILLS=1` restores
+ *  the pre-v0.2.10 full isolation for debugging/CI. */
 export function skillsEnabled(env: { SUPER_DEV_NO_SKILLS?: string } = {
 	SUPER_DEV_NO_SKILLS: superDevEnv("SUPER_DEV_NO_SKILLS"),
 }): boolean {

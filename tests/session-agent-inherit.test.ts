@@ -181,21 +181,43 @@ describe("session specialist prompt isolation", () => {
 	beforeEach(() => { env.clear(); sdk.reset(); });
 	afterEach(env.restore);
 
-	it("uses the super-dev agent prompt as the session system prompt and disables ambient resources", async () => {
-		await SessionAgent.runAgentViaSession({
-			agent: "spec-writer", prompt: "do the work", cwd: "/tmp",
-		} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);
-		const loader = sdk.loaderOpts();
-		expect(loader).toBeDefined();
-		expect(loader!.systemPrompt).toBe("SYSTEM-PROMPT");
-		expect(loader!.noExtensions).toBe(true);
-		expect(loader!.noSkills).toBe(true);
-		expect(loader!.noPromptTemplates).toBe(true);
-		expect(loader!.noThemes).toBe(true);
-		expect(loader!.noContextFiles).toBe(true);
-		expect((loader!.appendSystemPromptOverride as () => string[])()).toEqual([]);
-		expect((loader!.agentsFilesOverride as () => { agentsFiles: unknown[] })()).toEqual({ agentsFiles: [] });
-		expect(sdk.createOpts()?.resourceLoader).toBeDefined();
+	describe("uses the super-dev agent prompt as the session system prompt and disables ambient resources", () => {
+		it("skills follow the shared switch — ON by default (v0.3.59 parity: this loader hard-coded noSkills:true while the subprocess backend shipped skills)", async () => {
+			const env = saveEnv("SUPER_DEV_NO_SKILLS");
+			try {
+				env.clear();
+				sdk.reset();
+				await SessionAgent.runAgentViaSession({
+					agent: "spec-writer", prompt: "do the work", cwd: "/tmp",
+				} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);
+				const loader = sdk.loaderOpts();
+				expect(loader).toBeDefined();
+				expect(loader!.systemPrompt).toBe("SYSTEM-PROMPT");
+				expect(loader!.noExtensions).toBe(true);
+				expect(loader!.noSkills).toBe(false);
+				expect(loader!.noPromptTemplates).toBe(true);
+				expect(loader!.noThemes).toBe(true);
+				expect(loader!.noContextFiles).toBe(true);
+				expect((loader!.appendSystemPromptOverride as () => string[])()).toEqual([]);
+				expect((loader!.agentsFilesOverride as () => { agentsFiles: unknown[] })()).toEqual({ agentsFiles: [] });
+				expect(sdk.createOpts()?.resourceLoader).toBeDefined();
+			} finally {
+				env.restore();
+			}
+		});
+
+		it("SUPER_DEV_NO_SKILLS=1 restores full skill isolation in the session loader (one switch, three backends)", async () => {
+			vi.stubEnv("SUPER_DEV_NO_SKILLS", "1");
+			try {
+				sdk.reset();
+				await SessionAgent.runAgentViaSession({
+					agent: "spec-writer", prompt: "do the work", cwd: "/tmp",
+				} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);
+				expect(sdk.loaderOpts()!.noSkills).toBe(true);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
 	});
 });
 
