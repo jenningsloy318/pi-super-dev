@@ -40,6 +40,14 @@ interface PendingTurn {
 	acked: boolean;
 }
 
+/** v0.3.60 R5: result of a control command (clear_queue/abort). */
+export interface ControlResult { ok: boolean; data?: unknown; error?: string }
+
+interface PendingControl {
+	resolve: (result: ControlResult) => void;
+	timer: ReturnType<typeof setTimeout>;
+}
+
 export interface RpcDriverDeps {
 	/** Write one NDJSON line (JSON object, no trailing newline needed) to the
 	 *  child's stdin. */
@@ -55,6 +63,8 @@ export class RpcDriver {
 	private lastText = "";
 	private lastModel: string | undefined;
 	private readonly pending = new Map<string, PendingTurn>();
+	/** v0.3.60 R5: in-flight control commands (clear_queue/abort). */
+	private readonly pendingControl = new Map<string, PendingControl>();
 	/** Monotonic count of agent_settled events seen — the authoritative
 	 *  turn-completion signal (response acks arrive before the turn runs). */
 	private settledCount = 0;
@@ -118,6 +128,17 @@ export class RpcDriver {
 			return;
 		}
 		if (type === "response" && typeof event.id === "string") {
+			// v0.3.60 R5: control-command acks (clear_queue/abort) resolve their
+			// waiter first — ids are unique across turns and controls.
+			const control = this.pendingControl.get(event.id);
+			if (control) {
+				this.pendingControl.delete(event.id);
+				clearTimeout(control.timer);
+				control.resolve(event.success === false
+					? { ok: false, error: `rpc control ${event.id} reported failure` }
+					: { ok: true, data: event.data });
+				return;
+			}
 			const pending = this.pending.get(event.id);
 			if (pending) {
 				pending.acked = true;
@@ -180,6 +201,32 @@ export class RpcDriver {
 		});
 	}
 
+	/** v0.3.60 R5 (canon: rpc.md — "To implement interactive Esc behavior, send
+	 *  clear_queue before abort"): graceful control commands. `clear_queue`
+	 *  drops queued steering/follow-up work, `abort` checkpoints the running
+	 *  turn into the child's session file — killing the process instead
+	 *  DISCARDS both. Resolves {ok:false} on timeout/rejection; never throws.
+	 *  The id-matched response ack is acceptance, not completion — for controls
+	 *  that is sufficient (the child then exits or idles; no settle wait). */
+	sendControl(type: "clear_queue" | "abort", timeoutMs = 4_000): Promise<ControlResult> {
+		if (this.disposed) return Promise.resolve({ ok: false, error: "rpc driver disposed" });
+		const id = `sdctl${++this.nextId}`;
+		return new Promise<ControlResult>((resolve) => {
+			const timer = setTimeout(() => {
+				this.pendingControl.delete(id);
+				resolve({ ok: false, error: `rpc control ${type} timed out after ${timeoutMs}ms` });
+			}, timeoutMs);
+			this.pendingControl.set(id, { resolve, timer });
+			try {
+				this.deps.write(JSON.stringify({ id, type }));
+			} catch (error) {
+				this.pendingControl.delete(id);
+				clearTimeout(timer);
+				resolve({ ok: false, error: `rpc write failed: ${error instanceof Error ? error.message : String(error)}` });
+			}
+		});
+	}
+
 	/** Stop accepting/serving turns. In-flight waiters resolve with an error. */
 	dispose(reason = "disposed"): void {
 		if (this.disposed) return;
@@ -188,6 +235,11 @@ export class RpcDriver {
 			this.pending.delete(id);
 			clearTimeout(pending.timer);
 			pending.resolve({ text: this.lastText, model: this.lastModel, error: `rpc driver disposed before response (${reason}; ${id})` });
+		}
+		for (const [id, control] of this.pendingControl) {
+			this.pendingControl.delete(id);
+			clearTimeout(control.timer);
+			control.resolve({ ok: false, error: `rpc driver disposed before control ack (${reason}; ${id})` });
 		}
 	}
 }

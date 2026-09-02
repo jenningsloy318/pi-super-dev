@@ -53,9 +53,15 @@ class FakeChild extends EventEmitter {
 				} catch {
 					continue;
 				}
-				if (ev.type === "abort") {
-					this.abortEvents++;
-					this.kill("SIGTERM");
+				if (ev.type === "clear_queue" || ev.type === "abort") {
+					// v0.3.60 R5 fidelity: real RPC-mode pi ACKs control commands and
+					// KEEPS RUNNING — abort checkpoints the running turn; termination
+					// stays the caller's move (terminateChild SIGTERM ladder). The old
+					// kill-on-abort fake pre-dates the mid-checkpoint abort sender.
+					if (typeof ev.id === "string") {
+						this.stdout.write(`${JSON.stringify({ id: ev.id, type: "response", command: ev.type, success: true })}\n`);
+					}
+					if (ev.type === "abort") this.abortEvents++;
 				} else if (ev.type === "prompt" || ev.type === "follow_up") {
 					const pev = ev as unknown as FakePromptEvent;
 					this.prompts.push(pev);

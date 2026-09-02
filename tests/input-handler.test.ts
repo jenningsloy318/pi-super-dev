@@ -53,10 +53,16 @@ function makeMockPi() {
 			return last;
 		},
 	};
+	// v0.3.60 R1: production registers via the TYPED pi.on("input", ...) —
+	// capture from pi.on while events.emit stays the test driver.
+	const on = vi.fn((type: string, h: (e: any) => any) => {
+		(handlers[type] ??= []).push(h);
+	});
 	const inputCalls = () =>
-		(events.on as any).mock.calls.filter((c: any[]) => c[0] === "input");
+		(on as any).mock.calls.filter((c: any[]) => c[0] === "input");
 	return {
 		events,
+		on,
 		registerTool: vi.fn(),
 		registerCommand: vi.fn(),
 		inputHandler: (): ((e: any) => any) | undefined => {

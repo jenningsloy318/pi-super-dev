@@ -131,6 +131,7 @@ function setupTool() {
 	const toolDefHolder: { def?: { execute: (...args: unknown[]) => Promise<unknown> } } = {};
 	const pi: Record<string, unknown> = {
 		events: { on: vi.fn(() => () => {}) },
+		on: vi.fn(() => () => {}), // v0.3.60 R1: typed pi.on channel
 		registerTool: vi.fn((def: unknown) => { toolDefHolder.def = def as typeof toolDefHolder.def; }),
 		registerCommand: vi.fn(),
 		registerShortcut: vi.fn(),

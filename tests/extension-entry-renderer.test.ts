@@ -117,6 +117,7 @@ function setup(opts: { registerEntryRendererThrows?: boolean } = {}) {
 	const registerCommand: string[] = [];
 	const pi: Record<string, unknown> = {
 		events: { on: vi.fn(() => () => {}) },
+		on: vi.fn(() => () => {}), // v0.3.60 R1: typed pi.on channel
 		registerTool: vi.fn(),
 		registerCommand: vi.fn((name: string) => { registerCommand.push(name); }),
 		registerShortcut: vi.fn(),

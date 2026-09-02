@@ -21,6 +21,7 @@ import type { TranscriptLine, LiveStreamHandle, StageStamp } from "./render/live
 import { stepOccurrenceStamp } from "./render/stage-occurrence.ts";
 import { currentStepScope, type StepScopeInfo } from "./step-scope.ts";
 import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -59,6 +60,23 @@ export function parseSuperDevCommandArgs(args: unknown): ParsedSuperDevCommandAr
 	return { task: String(args ?? "").trim() };
 }
 
+/** v0.3.60 R8 (canon: extensions.md Output Truncation — tools MUST truncate
+ *  to ~50KB / ~2000 lines and tell the model where the full output lives).
+ *  Guards the headless (print/json/RPC) `content` path; byte-identical below
+ *  both bounds. The notice points at the durable run log. */
+export const CANON_MAX_CONTENT_CHARS = 50_000;
+export const CANON_MAX_CONTENT_LINES = 2_000;
+export function canonTruncate(text: string, logPath?: string): string {
+	const lines = text.split("\n");
+	if (text.length <= CANON_MAX_CONTENT_CHARS && lines.length <= CANON_MAX_CONTENT_LINES) return text;
+	let kept = text.length > CANON_MAX_CONTENT_CHARS ? text.slice(0, CANON_MAX_CONTENT_CHARS) : text;
+	const keptLines = kept.split("\n");
+	if (keptLines.length > CANON_MAX_CONTENT_LINES) keptLines.length = CANON_MAX_CONTENT_LINES;
+	kept = keptLines.join("\n");
+	const notice = `[Output truncated: showing ${keptLines.length} of ${lines.length} lines — full output saved to: ${logPath ?? "the run log"}]`;
+	return `${kept}\n${notice}`;
+}
+
 function hasRemovedBackgroundFlag(args: unknown): boolean {
 	return /^--(?:bg|background)(?:\s+|$)/.test(String(args ?? "").trim());
 }
@@ -79,10 +97,16 @@ function buildSuperDevToolInstruction(task: string): string {
  * nulled in the existing execute() `finally` alongside the dashboard-widget
  * teardown, so run teardown and widget teardown stay unified (SCENARIO-002).
  *
- * The module-lifetime `pi.events.on("input", handler)` listener — registered
+ * The module-lifetime `pi.on("input", handler)` listener — registered
  * EXACTLY ONCE in `activate(pi)`, never per-run — reads this singleton to
  * decide {active-run + interactive}→handled / {else}→continue (AC-03), which
  * also prevents listener leaks across runs (AC-01 / SCENARIO-001).
+ * v0.3.60 R1: migrated from the raw `pi.events.on` bus to the TYPED
+ * `pi.on("input", …)` subscription (extensions.md canon) — same semantics,
+ * compile-time InputEvent/InputEventResult contract.
+ * v0.3.60 R7: `parent: <text>` is the mid-run escape hatch to the PARENT
+ * agent (prefix stripped via {action:"transform"}); every other non-slash
+ * interactive input during a run is still captured as specialist guidance.
  *
  * Phase 1 ships ONLY the queue mechanics + guards. ACK surfaces (status pill,
  * dashboard count, transcript LineKind) are added in Phase 2; the
@@ -113,6 +137,34 @@ let activeRun: ActiveRun | null = null;
  *  run is active is REFUSED — the active singleton and the module-global run
  *  dir are never clobbered by a concurrent invocation. */
 let inFlight = false;
+
+// v0.3.60 R3: cross-instance concurrency guard. Module state (activeRun,
+// inFlight) resets when pi re-evaluates this module (/reload, session
+// replacement), but a pipeline promise from the OLD instance keeps running
+// in-process — a fresh instance would then accept a second run that
+// interleaves with it. The guard lives on globalThis so it survives module
+// re-evaluation; the run's own finally clears it. SUPER_DEV_ALLOW_OVERLAP=1
+// is the mechanical escape hatch (P4: guard + honest refusal, not advice).
+const RUN_GUARD_KEY = "__superDevActiveRunGuard";
+export interface ActiveRunGuard { startedAt: string; runDir?: string }
+function getRunGuard(): ActiveRunGuard | undefined {
+	return (globalThis as Record<string, unknown>)[RUN_GUARD_KEY] as ActiveRunGuard | undefined;
+}
+/** Pure overlap check (tests + the execute() refusal path): the honest
+ *  refusal message when the cross-instance guard is held and no escape
+ *  hatch is set, null when a run may start. */
+export function runGuardRefusal(): string | null {
+	const guard = getRunGuard();
+	if (!guard) return null;
+	if (process.env.SUPER_DEV_ALLOW_OVERLAP === "1") return null;
+	return `a super-dev run started ${guard.startedAt} is still active${guard.runDir ? ` (run dir: ${guard.runDir})` : ""} — it may be orphaned by a /reload or still finishing. Wait for it, resume it, or set SUPER_DEV_ALLOW_OVERLAP=1 to force a new run.`;
+}
+
+// v0.3.60 R9: the in-flight reflection promise (runReflectionAsync now returns
+// it) plus its run dir, so session_shutdown can NAME a dropped reflection
+// (P10: discards are named) instead of losing it silently.
+let inFlightReflection: Promise<unknown> | undefined;
+let inFlightReflectionRunDir: string | undefined;
 
 /** Bound on queued mid-run inputs so a single specialist spawn cannot be
  *  token-bombed via a huge guidance prepend. Older entries are dropped first
@@ -197,6 +249,27 @@ export function createActiveRun(ctx?: ExtensionContext, stream?: LiveStreamHandl
  * in the execute() finally (discard — unifies run + widget teardown). */
 export function setActiveRun(run: ActiveRun | null): void {
 	activeRun = run;
+}
+
+/** v0.3.60 R3: single write path for the in-flight serialization guard (doRun
+ *  entry sets true, its finally sets false; tests drive the same seam). */
+export function setInFlight(value: boolean): void {
+	inFlight = value;
+}
+
+/** v0.3.60 R3: single write path for the cross-instance run guard. doRun sets
+ *  it with the fresh run dir after startRun() and clears it in its finally. */
+export function setRunGuard(guard: ActiveRunGuard | undefined): void {
+	if (guard) (globalThis as Record<string, unknown>)[RUN_GUARD_KEY] = guard;
+	else delete (globalThis as Record<string, unknown>)[RUN_GUARD_KEY];
+}
+
+/** v0.3.60 R9: single write path registering the in-flight reflection (and its
+ *  origin dir) so session_shutdown can NAME it when a teardown drops it.
+ *  Pass (undefined, undefined) to clear. */
+export function noteInFlightReflection(runDir: string | undefined, reflection: Promise<unknown> | undefined): void {
+	inFlightReflectionRunDir = runDir;
+	inFlightReflection = reflection;
 }
 
 /** Tool-result shape returned by the foreground tool call. */
@@ -531,15 +604,15 @@ export default function activate(pi: ExtensionAPI): void {
 	// NOT to re-queue it as a parent steer (SCENARIO-004). The whole body is
 	// try/catch-wrapped so any capture failure degrades to a safe no-op and the
 	// run always completes normally (SCENARIO-006 / SCENARIO-023).
-	// NOTE: `EventBus.on(channel, handler)` types the data payload as `unknown`
-	// (generic pub/sub). We contextually accept `unknown` and narrow to the
-	// `InputEvent` shape here — the "input" channel only ever carries an
-	// InputEvent. Any malformed payload falls through to the catch → {continue}.
-	pi.events.on("input", (data) => {
+	// v0.3.60 R1: subscribed via the TYPED `pi.on("input", …)` handler (canon:
+	// extensions.md Events) instead of the raw `pi.events` bus — the event is
+	// compile-time InputEvent and the return the documented InputEventResult,
+	// with the same runtime narrowing guards kept (a malformed payload still
+	// degrades to {continue} via the catch).
+	pi.on("input", (event) => {
 		try {
 			// idle (no run in progress) → pi owns the input entirely.
 			if (activeRun == null) return { action: "continue" };
-			const event = data as InputEvent;
 			// non-interactive sources (rpc/extension/print/json/headless) are never
 			// captured — they flow through pi byte-identical to today.
 			if (event?.source !== "interactive") return { action: "continue" };
@@ -551,6 +624,15 @@ export default function activate(pi: ExtensionAPI): void {
 			// Coerce safely so a missing/blank `text` can never crash the handler.
 			const text = typeof event?.text === "string" ? event.text : "";
 			if (text.trimStart().startsWith("/")) return { action: "continue" };
+			// v0.3.60 R7: `parent: <text>` escapes run-scoped capture and flows to
+			// the PARENT agent with the prefix stripped ({action:"transform"}) —
+			// the user keeps a control channel mid-run without disabling capture.
+			const trimmed = text.trimStart();
+			if (trimmed.startsWith("parent:")) {
+				const toParent = trimmed.slice("parent:".length).trim();
+				if (!toParent) return { action: "continue" };
+				return { action: "transform", text: toParent };
+			}
 			const instruction = activeRun.push(text, normalizeInputImages(event?.images), { source: event?.source, streamingBehavior: event?.streamingBehavior });
 			if (instruction) {
 				try { pi.appendEntry?.("super-dev-instruction", { instruction: instructionForEntry(instruction), queued: activeRun.queue.length }); } catch { /* best-effort */ }
@@ -559,6 +641,34 @@ export default function activate(pi: ExtensionAPI): void {
 		} catch {
 			return { action: "continue" };
 		}
+	});
+
+	// v0.3.60 R3: idempotent session_shutdown handler (canon: extensions.md
+	// Lifecycle — /new, /resume, /fork, /reload and quit tear the extension
+	// instance down and rebind it). The idempotency flag is INSTANCE-local (a
+	// rebound instance must handle its own shutdown); the state it reads
+	// (inFlight, activeRun, the globalThis run guard, the reflection handle)
+	// is module/global scope by design so it observes the OLD run honestly.
+	let shutdownHandled = false;
+	pi.on("session_shutdown", (event) => {
+		if (shutdownHandled) return;
+		shutdownHandled = true;
+		const honest: string[] = [];
+		if (inFlight && activeRun) {
+			const dir = getRunGuard()?.runDir ?? "unknown";
+			honest.push(`a super-dev run is STILL IN FLIGHT (run dir: ${dir}) — the pipeline keeps running headlessly in this process and writes results to its run.log; inspect or resume it via /super-dev with resume:true`);
+		}
+		if (inFlightReflection) {
+			honest.push(`post-run reflection for ${inFlightReflectionRunDir ?? "unknown run dir"} was in flight and is DROPPED by session_shutdown (reason: ${event.reason})`);
+		}
+		for (const line of honest) {
+			try { pi.appendEntry?.("super-dev-shutdown", { line, reason: event.reason }); } catch { /* best-effort */ }
+			try { console.error(`[super-dev] ${line}`); } catch { /* best-effort */ }
+		}
+		// Session-scoped registrations die with the instance (canon) — release the
+		// delegation-bus agent registrations bound at activate time.
+		try { superDevAgentsDispose?.(); } catch { /* best-effort */ }
+		superDevAgentsDispose = undefined;
 	});
 
 	pi.registerTool({
@@ -575,7 +685,9 @@ export default function activate(pi: ExtensionAPI): void {
 			task: Type.String({ description: "The full development task, e.g. 'implement OAuth2 login' or 'fix the crash on large file upload'." }),
 			skipWorktree: Type.Optional(Type.Boolean({ description: "Skip git worktree creation and operate in the current directory. Default: false." })),
 			skipStages: Type.Optional(Type.Array(Type.String(), { description: "Stage output keys to skip (advanced). Default: none." })),
-			backend: Type.Optional(Type.Union([Type.Literal("session"), Type.Literal("subprocess"), Type.Literal("pi-subagents")], { description: "Specialist execution backend. 'pi-subagents' runs specialists through pi's subagent executor (Fleet UI, steering, stop). Default: the config.json backend key, then session." })),
+			// v0.3.60 R2 (canon): StringEnum over Type.Union(Type.Literal) — Google
+			// models fail schema validation on union-of-literals.
+			backend: Type.Optional(StringEnum(["session", "subprocess", "pi-subagents"] as const, { description: "Specialist execution backend. 'pi-subagents' runs specialists through pi's subagent executor (Fleet UI, steering, stop). Default: the config.json backend key, then session." })),
 			model: Type.Optional(Type.String({ description: "Model override for spawned specialist agents in provider/id form." })),
 			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
 			resume: Type.Optional(Type.Boolean({ description: "Resume the most-recent interrupted run from where it left off (memoized replay). Default: false." })),
@@ -715,6 +827,14 @@ export default function activate(pi: ExtensionAPI): void {
 				if (inFlight) {
 					return { content: [{ type: "text", text: "a super-dev run is already active — wait for it to finish (or abort it) before starting another" }], isError: true, details: {} };
 				}
+				// v0.3.60 R3: cross-instance guard — a /reload rebind resets module
+				// state while the old pipeline still runs; the globalThis guard plus
+				// this honest refusal (SUPER_DEV_ALLOW_OVERLAP=1 escape) keeps runs
+				// from interleaving. See runGuardRefusal().
+				const overlapRefusal = runGuardRefusal();
+				if (overlapRefusal) {
+					return { content: [{ type: "text", text: overlapRefusal }], isError: true, details: {} };
+				}
 			try {
 				inFlight = true;
 				// Set the run-state singleton on execute() entry via the exported setter
@@ -726,6 +846,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// reflection, audit) resolves from THIS dir even if a later run starts
 				// while this run's async work is still in flight.
 				const runDir = startRun();
+				setRunGuard({ startedAt: localTimestamp(), runDir });
 				liveRunLogPath = runLogPathFor(runDir);
 				// Sweep-3 G10: pin THIS run's audit path at capture time.
 				liveAuditPath = join(runDir, "audit.jsonl");
@@ -836,7 +957,19 @@ export default function activate(pi: ExtensionAPI): void {
 				// Async reflection ("dreaming") — non-blocking, best-effort. AC-29: the
 				// ORIGINATING run dir is threaded so a late reflection never lands under
 				// a newer run's directory.
-				runReflectionAsync(runDir);
+				// v0.3.60 R9: track the in-flight reflection (and its origin dir) so
+				// session_shutdown can name it if the session is torn down mid-run.
+				// The tracking self-clears when the reflection SETTLES — only a
+				// genuinely-pending reflection is ever reported as dropped (P10:
+				// no false alarms for reflections that finished). The identity guard
+				// stops an old reflection's settle from clearing a NEWER run's
+				// tracking when reflections overlap across runs.
+				const reflection = runReflectionAsync(runDir);
+				// Defensive: a non-promise return (legacy/tests) tracks nothing.
+				const tracked = reflection?.finally?.(() => {
+					if (inFlightReflection === tracked) noteInFlightReflection(undefined, undefined);
+				});
+				noteInFlightReflection(runDir, tracked);
 				// Stages for the result's stage-progress section, from the live tracker.
 				const stages = dashboardOrder.map((id) => ({ id, ...(dashboardStages.get(id) ?? { label: id, status: "·" }) }));
 				// `content` is the text fallback (print/json/headless); in TUI, renderResult
@@ -846,7 +979,10 @@ export default function activate(pi: ExtensionAPI): void {
 				if (escalationChoice) fallback.push(`  Escalation: user chose "${escalationChoice}".`);
 				const isFailed = summary.status === "failed";
 				return {
-					content: [{ type: "text", text: fallback.join("\n") }],
+					// v0.3.60 R8 (canon): tools MUST truncate output — the headless
+					// (print/json/RPC) content path gets the canonical bounds + notice
+					// pointing at the durable run log. Byte-identical below the bounds.
+					content: [{ type: "text", text: canonTruncate(fallback.join("\n"), logPath || undefined) }],
 					isError: isFailed,
 					details: { summary, summaryLines, transcriptTail: stream.transcriptTail(), stages, logPath },
 				};
@@ -857,6 +993,8 @@ export default function activate(pi: ExtensionAPI): void {
 				// AC-29: release the serialization guard FIRST so the next run may
 				// start as soon as this one is done.
 				inFlight = false;
+				// v0.3.60 R3: release the cross-instance guard with the same lifecycle.
+				setRunGuard(undefined);
 				// D-8: aggregate stats + run retention fire even without reflection
 				// (best-effort — never let bookkeeping break a finished run).
 				// Sweep-3 G10: pin the audit file captured at run START (runDir) —

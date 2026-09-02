@@ -67,6 +67,17 @@ Tool options: `skipWorktree`, `skipStages`, `model`, `maxAgents`.
 Super-dev runs in the foreground. Detached/background slash-command flags and
 stop commands are no longer supported.
 
+### Mid-run input
+
+While a run is active, everything you type (except slash commands) is captured
+as mid-run guidance and injected into every subsequent specialist stage. To
+reach the PARENT agent instead, prefix the message with `parent:` — the prefix
+is stripped and the rest is delivered as a normal parent-agent turn:
+
+```text
+parent: how far along is this run?
+```
+
 ## Extension version metadata
 
 The runtime-visible version lives in `src/version.ts` (`SUPER_DEV_EXTENSION_VERSION`)
@@ -637,6 +648,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |
 | `SUPER_DEV_NO_RPC_SPAWN` | — | `1` = fall back from same-session RPC spawns to one-shot `--mode json -p` |
 | `SUPER_DEV_NO_SKILLS` | — | `1` = disable skill inheritance on ALL backends (subprocess `--no-skills`, pi-subagents `inheritSkills:false`, session host skills withheld for spawned work) — pre-v0.2.10 isolation |
+| `SUPER_DEV_ALLOW_OVERLAP` | — | `1` = override the cross-instance run guard (set after a `/reload` orphaned a still-running pipeline) and force a new run |
 | `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
 | `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy (`""` = force workspace-wide) |
 | `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |

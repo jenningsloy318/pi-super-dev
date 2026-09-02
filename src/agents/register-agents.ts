@@ -136,7 +136,11 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			// session/subprocess skills parity. skillsEnabled() is the ONE switch
 			// (SUPER_DEV_NO_SKILLS=1) governing all three backends; children keep
 			// lazy keyword-matched loading (system-prompt skill list + `read` of
-			// SKILL.md), and the tool allowlist above stays the hard boundary.
+			// SKILL.md). v0.3.60 r59-P2-doc: the tool allowlist above bounds the
+			// DEFAULT surface but is NOT a hard boundary — bash stays allowlisted,
+			// so a skill-instructed out-of-role action remains executable; the
+			// BINDING enforcement is the downstream deterministic gates (P4:
+			// prompts and skills are advisory).
 			inheritSkills: skillsEnabled(),
 		},
 	};

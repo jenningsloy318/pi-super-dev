@@ -1169,6 +1169,9 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 		const onAbort = () => {
 			aborted = true;
 			onProgress?.event(`subprocess ${label}: aborted by parent signal; terminating child pi`);
+			// v0.3.60 R5 (canon rpc.md): clear_queue BEFORE abort — queued steering /
+			// follow-up work must not survive into the checkpointed session.
+			try { child.stdin?.write(`${JSON.stringify({ type: "clear_queue" })}\n`); } catch { /* ignore */ }
 			try { child.stdin?.write(`${JSON.stringify({ type: "abort" })}\n`); } catch { /* ignore */ }
 			driver.dispose("aborted");
 			finishMain({ text: "", control: null, error: "aborted" });
@@ -1177,7 +1180,20 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 		if (options.signal?.aborted) onAbort(); // close the registration window
 
 		void (async () => {
+			// v0.3.60 R5 (canon rpc.md): a TIMED-OUT turn must CHECKPOINT, not just
+			// die — clear_queue then abort lets the child persist partial work to
+			// its session file before terminateChild kills it (killing discards both
+			// queued and running work). Bounded at 4s per command and fail-open: a
+			// failed checkpoint only costs the log line, the kill proceeds anyway.
+			const gracefulCheckpoint = async (why: string): Promise<void> => {
+				if (aborted || settledMain || driver.isDisposed) return;
+				const q = await driver.sendControl("clear_queue", 4_000);
+				const a = await driver.sendControl("abort", 4_000);
+				onProgress?.event(`subprocess ${label}: ${why} — clear_queue=${q.ok ? "ok" : `failed (${q.error ?? "?"})`} abort=${a.ok ? "ok" : `failed (${a.error ?? "?"})`} (checkpoint before kill)`);
+			};
 			const turn1 = await driver.send("prompt", options.task, timeoutMs);
+			if (aborted || settledMain) return;
+			if (turn1.error) await gracefulCheckpoint("turn timed out");
 			if (aborted || settledMain) return;
 			const control1 = resolveTurnControl(turn1.text, options.capturePath, options.controlKeys);
 			const first: SpawnResult = { text: turn1.text, control: control1, model: turn1.model, error: turn1.error };
@@ -1201,6 +1217,8 @@ export function runPiRpc(options: RpcRunOptions): Promise<SpawnResult> {
 				// the turn-1 secret verbatim), so the corrective rides a prompt
 				// event. Same session, same memory — only the event type differs.
 				const turn2 = await driver.send("prompt", corrective, remainingMs);
+				if (aborted || settledMain) return;
+				if (turn2.error) await gracefulCheckpoint("corrective turn timed out");
 				if (aborted || settledMain) return;
 				const control2 = resolveTurnControl(turn2.text, options.capturePath, options.controlKeys);
 				finishMain({

@@ -169,3 +169,67 @@ describe("RpcDriver", () => {
 		expect((await second).text).toBe("two");
 	});
 });
+
+// v0.3.60 R5 (canon rpc.md): graceful control commands — clear_queue before
+// abort (Esc semantics); killing the child discards work, checkpointing keeps it.
+describe("RpcDriver.sendControl", () => {
+	it("writes the control event and resolves ok on the id-matched response ack", async () => {
+		const { driver, written } = makeDriver();
+		const pending = driver.sendControl("clear_queue", 1000);
+		const event = JSON.parse(written.at(-1)!) as { id: string; type: string };
+		expect(event.type).toBe("clear_queue");
+		expect(event.id).toMatch(/^sdctl/);
+		driver.ingest(JSON.stringify({ id: event.id, type: "response", command: "clear_queue", success: true, data: { steering: ["x"], followUp: [] } }));
+		const result = await pending;
+		expect(result.ok).toBe(true);
+		expect((result.data as { steering: string[] }).steering).toEqual(["x"]);
+	});
+
+	it("resolves ok:false when the child reports success:false", async () => {
+		const { driver, written } = makeDriver();
+		const pending = driver.sendControl("abort", 1000);
+		const event = JSON.parse(written.at(-1)!) as { id: string };
+		driver.ingest(JSON.stringify({ id: event.id, type: "response", command: "abort", success: false }));
+		const result = await pending;
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("failure");
+	});
+
+	it("resolves ok:false on timeout (fail-open — the caller proceeds to kill)", async () => {
+		const { driver } = makeDriver();
+		const result = await driver.sendControl("abort", 20);
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("timed out");
+	});
+
+	it("resolves ok:false when the write throws (dead stdin)", async () => {
+		const driver = new RpcDriver({ write: () => { throw new Error("EPIPE"); } });
+		const result = await driver.sendControl("clear_queue", 1000);
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("EPIPE");
+	});
+
+	it("resolves ok:false after dispose (no hanging waiters)", async () => {
+		const { driver } = makeDriver();
+		driver.dispose("test");
+		const result = await driver.sendControl("abort", 1000);
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("disposed");
+	});
+
+	it("control acks and turn acks share the id space without cross-completion", async () => {
+		const { driver, written } = makeDriver();
+		const turn = driver.send("prompt", "task", 1000);
+		const control = driver.sendControl("clear_queue", 1000);
+		const turnId = (JSON.parse(written[0]!) as { id: string }).id;
+		const ctlId = (JSON.parse(written[1]!) as { id: string }).id;
+		driver.ingest(JSON.stringify({ id: ctlId, type: "response", command: "clear_queue", success: true }));
+		await control;
+		// The control ack must NOT complete the pending turn…
+		driver.ingest(msgEnd("answer"));
+		driver.ingest(response(turnId));
+		driver.ingest(JSON.stringify({ type: "agent_settled" }));
+		const result = await turn;
+		expect(result.text).toBe("answer");
+	});
+});

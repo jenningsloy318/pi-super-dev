@@ -54,15 +54,18 @@ export function buildReflectionTask(runDir?: string | null): string {
  *  path this module touches is resolved from it AT ENTRY, never re-read from
  *  the module global after an await (a run B starting mid-flight cannot
  *  redirect run A's reflection writes). */
-export function runReflectionAsync(runDir: string | undefined): void {
+export function runReflectionAsync(runDir: string | undefined): Promise<void> {
 	const config = getConfig();
-	if (!config.reflectionEnabled) return;
+	if (!config.reflectionEnabled) return Promise.resolve();
 
 	const auditPath = runDir ? auditPathFor(runDir) : getAuditPath();
-	if (!auditPath || !existsSync(auditPath)) return;
+	if (!auditPath || !existsSync(auditPath)) return Promise.resolve();
 
-	// Fire-and-forget — never blocks the user's result.
-	void runReflection(runDir).catch((err) => { auditAppend({ stage: "reflection", error: String(err instanceof Error ? err.message : err) }, runDir);
+	// Fire-and-forget — never blocks the user's result. v0.3.60 R9: the promise
+	// is now RETURNED so the caller (extension.ts) can track it and
+	// session_shutdown can name it when a session teardown drops it (P10:
+	// discards are named). Callers that ignore the return are unaffected.
+	return runReflection(runDir).catch((err) => { auditAppend({ stage: "reflection", error: String(err instanceof Error ? err.message : err) }, runDir);
 		// Silent failure — reflection is best-effort.
 	});
 }
