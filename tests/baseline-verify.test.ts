@@ -367,3 +367,65 @@ describe("B-6 gate wiring (resolveInScopePassWithBaseline)", () => {
 		expect(r.inScopePass).toBe(false);
 	});
 });
+
+/* v0.3.62 — python subject anchoring (run 2026-09-02T10-18-31-007Z): the     */
+/* failing command ran `cd python && pytest -q`, so subjects are module-      */
+/* relative ("tests/test_x.py") while the file lives at python/tests/ in the  */
+/* baseline checkout. The anchor re-writes subjects so the baseline pytest    */
+/* actually collects them (previously: collection failure ⇒ unproven).        */
+describe("B-6 python subject anchoring", () => {
+	it("module-relative subjects are re-anchored under their common top-level dir and PROVEN preexisting", () => {
+		const repo = mkGitRepo();
+		mkdirSync(join(repo, "python", "tests"), { recursive: true });
+		writeFileSync(
+			join(repo, "python", "tests", "test_preexisting.py"),
+			"def test_census_exists():\n    assert False\n",
+		);
+		commitAll(repo, "init with pre-existing failing python test");
+		cleanups.push(repo);
+		let seenArgv: string[] | null = null;
+		let seenCwd = "";
+		const runner: BaselineRunner = (cwd, argv) => {
+			seenArgv = argv;
+			seenCwd = cwd;
+			return {
+				status: 1,
+				stdout: "FAILED python/tests/test_preexisting.py::test_census_exists - assert False\n1 failed in 0.1s",
+				stderr: "",
+			};
+		};
+		const r = verifyUntouchedFailuresAgainstBaseline({
+			cwd: repo,
+			defaultBranch: "main",
+			language: "python",
+			subjects: ["tests/test_preexisting.py"],
+			runner,
+		});
+		expect(seenArgv).toContain("python/tests/test_preexisting.py");
+		expect(seenArgv).not.toContain("tests/test_preexisting.py");
+		expect(r.status).toBe("preexisting");
+		expect(seenCwd).toBeTruthy();
+	});
+
+	it("subjects that exist at the checkout root are passed through unchanged", () => {
+		const repo = mkGitRepo();
+		mkdirSync(join(repo, "tests"), { recursive: true });
+		writeFileSync(join(repo, "tests", "test_root.py"), "def test_a():\n    assert False\n");
+		commitAll(repo, "init");
+		cleanups.push(repo);
+		let seenArgv: string[] | null = null;
+		const runner: BaselineRunner = (_cwd, argv) => {
+			seenArgv = argv;
+			return { status: 1, stdout: "FAILED tests/test_root.py::test_a - assert False\n1 failed", stderr: "" };
+		};
+		const r = verifyUntouchedFailuresAgainstBaseline({
+			cwd: repo,
+			defaultBranch: "main",
+			language: "python",
+			subjects: ["tests/test_root.py"],
+			runner,
+		});
+		expect(seenArgv).toContain("tests/test_root.py");
+		expect(r.status).toBe("preexisting");
+	});
+});

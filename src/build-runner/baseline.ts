@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { superDevEnv } from "../render/super-dev-dir.ts";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseFailingNpmTestFiles } from "./scope.ts";
@@ -226,14 +226,43 @@ function parseGoFailingPackages(output: string): string[] {
 	return out;
 }
 
-/** Build the baseline argv for the language family, or null when impossible. */
+/** v0.3.62: re-anchor module-relative pytest subjects under their common
+ *  top-level directory in the baseline checkout. Pure + never throws + bounded
+ *  (≤ 100 candidate dirs × subjects stat checks). Returns subjects unchanged
+ *  when they already exist at the root or no single anchor covers them all. */
+function anchorPythonSubjects(tmpCwd: string, subjects: string[]): string[] {
+	try {
+		if (subjects.length === 0) return subjects;
+		const existsAt = (dir: string, s: string) => {
+			try { return existsSync(join(tmpCwd, dir, s)); } catch { return false; }
+		};
+		if (subjects.every((s) => existsAt("", s))) return subjects;
+		let candidates: string[] = [];
+		try {
+			candidates = readdirSync(tmpCwd, { withFileTypes: true })
+				.filter((d) => d.isDirectory() && !d.name.startsWith(".") && d.name !== "node_modules" && d.name !== ".venv" && d.name !== "__pycache__")
+				.map((d) => d.name)
+				.slice(0, 100);
+		} catch { return subjects; }
+		const anchors = candidates.filter((d) => subjects.every((s) => existsAt(d, s)));
+		if (anchors.length !== 1) return subjects; // zero or ambiguous ⇒ unchanged
+		return subjects.map((s) => `${anchors[0]}/${s}`);
+	} catch {
+		return subjects;
+	}
+}
+
+/** Build the baseline argv for the language family, or null when impossible.
+ *  `subjects` (optional) echoes the subject list the argv actually targets —
+ *  set when anchoring rewrote module-relative python subjects — so the caller
+ *  classifies against what really ran, not the raw input. */
 function buildBaselinePlan(
 	tmpCwd: string,
 	featureCwd: string,
 	language: string,
 	pm: string | undefined,
 	subjects: string[],
-): { argv: string[]; label: string } | null {
+): { argv: string[]; label: string; subjects?: string[] } | null {
 	if (language === "rust") {
 		// subjects are crate names — one cargo invocation, repeated -p flags.
 		const argv = ["cargo", "test", "--quiet"];
@@ -252,7 +281,15 @@ function buildBaselinePlan(
 			: existsSync(join(featureCwd, ".venv/Scripts/python.exe"))
 				? join(featureCwd, ".venv/Scripts/python.exe")
 				: "python3";
-		return { argv: [py, "-m", "pytest", "-q", "-p", "no:cacheprovider", ...subjects], label: `pytest ${subjects.join(" ")}` };
+		// v0.3.62 (run 2026-09-02T10-18-31-007Z): the failing command often ran as
+		// `cd <module> && pytest -q`, so pytest subjects are MODULE-relative (e.g.
+		// "tests/test_x.py" living under "python/"). Running them from the checkout
+		// root fails to collect → "unknown" → the honest-but-unproven path. Anchor:
+		// when subjects don't exist at the root, re-anchor them under the single
+		// top-level directory that contains ALL of them (bounded stat scan). No
+		// common anchor ⇒ subjects unchanged (today's behavior, never stricter).
+		const anchored = anchorPythonSubjects(tmpCwd, subjects);
+		return { argv: [py, "-m", "pytest", "-q", "-p", "no:cacheprovider", ...anchored], label: `pytest ${anchored.join(" ")}`, subjects: anchored };
 	}
 	if (language === "frontend" || language === "backend") {
 		// Share the feature worktree's installed deps with the baseline checkout.
@@ -332,7 +369,7 @@ export function verifyUntouchedFailuresAgainstBaseline(input: BaselineVerifyInpu
 				// correctly instead of failing "go.mod unreadable".
 				const runCwd = input.moduleSubdir ? join(tmp, input.moduleSubdir) : tmp;
 				const featCwd = input.moduleSubdir ? join(input.cwd, input.moduleSubdir) : input.cwd;
-				const plan = buildBaselinePlan(runCwd, featCwd, input.language, input.pm, subjects);
+			const plan = buildBaselinePlan(runCwd, featCwd, input.language, input.pm, subjects);
 				if (!plan) {
 					result = unknown(`cannot construct a baseline command for language "${input.language}"`);
 				} else {
@@ -381,7 +418,9 @@ export function verifyUntouchedFailuresAgainstBaseline(input: BaselineVerifyInpu
 								input.language === "python"
 									? parsePytestFailingFiles(out)
 									: parseFailingNpmTestFiles(out);
-							result = classifyFileSubjects(subjects, failing, `${plan.label} at baseline ${shortSha(mergeBase)} (exit ${res.status})`, plan.label.includes("whole suite")); // sweep-3 G40
+							// v0.3.62: classify against the subjects the baseline command
+							// actually ran (anchored), not the raw module-relative input.
+							result = classifyFileSubjects(plan.subjects ?? subjects, failing, `${plan.label} at baseline ${shortSha(mergeBase)} (exit ${res.status})`, plan.label.includes("whole suite")); // sweep-3 G40
 						}
 					}
 				}

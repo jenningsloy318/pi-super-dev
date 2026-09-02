@@ -799,3 +799,108 @@ describe("runDeliverableCheck — options", () => {
 		}
 	});
 });
+
+// === v0.3.62 — string-aware comment stripping (run 2026-09-02T10-18-31-007Z) =
+// The REAL incident: prosperity-contract.test.ts carried `//` line comments
+// mentioning the vitest include glob and `python/tests/*`; the old stripper's
+// block-comment regex ran FIRST and treated the glob's slash-star sequences as
+// comment openers, swallowing the REAL string literals below. The deliverable
+// gate then rejected an honest file with "matched only inside comments" and
+// two attempts (~25 min each) burned re-fixing an already-correct file.
+describe("runDeliverableCheck — string-aware comment stripping (v0.3.62 live-incident regression)", () => {
+	// Assembled so this comment can't contain a literal comment-terminator.
+	const GLOB = "tests/" + "**" + "/*.test.ts";
+
+	/** The incident shape: glob mentions in line comments ABOVE the real literals. */
+	function incidentFile(): string {
+		return [
+			"// xmur3+splitmix32 harness; not collected by the vitest include glob",
+			`// ${GLOB}) and tests/gate-properties.test.ts (one property test`,
+			"// per gate G0-G21 over the real exported oracles, per phase",
+			"// spec23-seeded-property-layer. The phase's python/tests/* property",
+			"// files sit outside this suite's walked pathspec.",
+			"export const TOLERATED_PATHS = [",
+			'\t"tests/support/",',
+			'\t"tests/support/property-harness.ts",',
+			'\t"tests/gate-properties.test.ts",',
+			"];",
+			"",
+		].join("\n");
+	}
+
+	it("PASSES an honest file whose line comments mention the vitest include glob (live incident)", () => {
+		const cwd = vitestTmp();
+		mkdirSync(join(cwd, "tests"), { recursive: true });
+		writeFileSync(join(cwd, "tests", "prosperity-contract.test.ts"), incidentFile());
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireContains: [{ file: "tests/prosperity-contract.test.ts", pattern: "tests/gate-properties\\.test\\.ts" }],
+			});
+			expect(r.pass).toBe(true);
+			expect(r.missing).toEqual([]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("STILL FAILS when the pattern lives only in a real block comment", () => {
+		const cwd = vitestTmp();
+		mkdirSync(join(cwd, "tests"), { recursive: true });
+		// Pattern inside a plain block comment (no comment-terminator inside it).
+		const body = "export const A = 1;\n/* documented target: gate-properties.test.ts (see spec) */\n";
+		writeFileSync(join(cwd, "tests", "x.test.ts"), body);
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireContains: [{ file: "tests/x.test.ts", pattern: "gate-properties\\.test\\.ts" }],
+			});
+			expect(r.pass).toBe(false);
+			expect(r.missing[0]).toContain("matched only inside comments");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("a pattern only in an INLINE comment no longer matches (stricter, matches the documented contract)", () => {
+		const cwd = vitestTmp();
+		mkdirSync(join(cwd, "tests"), { recursive: true });
+		writeFileSync(join(cwd, "tests", "x.test.ts"), 'export const A = "real code"; // tags: tests/gate-properties.test.ts\n');
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireContains: [{ file: "tests/x.test.ts", pattern: "gate-properties\\.test\\.ts" }],
+			});
+			expect(r.pass).toBe(false);
+			expect(r.missing[0]).toContain("matched only inside comments");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("comment markers INSIDE string literals are inert (the exact swallow shape)", () => {
+		const cwd = vitestTmp();
+		mkdirSync(join(cwd, "tests"), { recursive: true });
+		// The string contains a slash-star pair; the old stripper ate from it to EOF.
+		writeFileSync(join(cwd, "tests", "x.test.ts"), 'const glob = "tests/" + "**" + "/*.test.ts";\nexport const TARGET = "gate-properties.test.ts";\n');
+		try {
+			const r = runDeliverableCheck(cwd, {
+				requireContains: [{ file: "tests/x.test.ts", pattern: "TARGET" }],
+			});
+			expect(r.pass).toBe(true);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("a real-code file with a glob-in-comment is NOT symbol-hollow (computeSymbolGate shares the stripper)", async () => {
+		const { computeSymbolGate } = await import("../src/build-runner.ts");
+		const cwd = mkdtempSync(join(tmpdir(), "sd-dcheck-symbol-"));
+		mkdirSync(join(cwd, "tests"), { recursive: true });
+		writeFileSync(join(cwd, "tests", "x.test.ts"), incidentFile());
+		try {
+			const r = computeSymbolGate(cwd, ["tests/x.test.ts"], "frontend");
+			expect(r.pass).toBe(true);
+			expect(r.hollowFiles).toEqual([]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});

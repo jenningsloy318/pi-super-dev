@@ -223,3 +223,52 @@ describe("G44 — RED boundary 'spec' token narrowed to test-layout shapes", () 
 		expect(classifyObviousRedPath("src/authService.ts").category).toBe("ambiguous");
 	});
 });
+
+describe("v0.3.62 — stripCommentsAndBlanks is string-aware (run 2026-09-02T10-18-31-007Z)", () => {
+	const GLOB = "tests/" + "**" + "/*.test.ts";
+
+	it("a slash-star pair inside a // line comment no longer swallows following code", () => {
+		const src = [
+			`// collected by the vitest include glob ${GLOB}) above`,
+			'export const TARGET = "gate-properties.test.ts";',
+		].join("\n");
+		const stripped = stripCommentsAndBlanks(src, "x.test.ts");
+		expect(stripped).toContain("TARGET");
+		expect(stripped).toContain("gate-properties.test.ts");
+		expect(stripped).not.toContain("collected by");
+	});
+
+	it("comment markers inside single/double-quoted strings are inert", () => {
+		const src = `const a = "not // comment";\nconst b = 'not /* either';\nexport const TARGET = 1;`;
+		const stripped = stripCommentsAndBlanks(src, "x.ts");
+		expect(stripped).toContain('"not // comment"');
+		expect(stripped).toContain("'not /* either'");
+		expect(stripped).toContain("TARGET");
+	});
+
+	it("template literals are strings; dollar-brace interpolation is scanned as code", () => {
+		const src = "const t = `x ${/* inner */ 1} y`;\nexport const TARGET = 2;";
+		const stripped = stripCommentsAndBlanks(src, "x.ts");
+		expect(stripped).toContain("TARGET");
+		expect(stripped).not.toContain("inner");
+		expect(stripped).toContain("`x ");
+		expect(stripped).toContain("1} y`");
+	});
+
+	it("inline // and # comments are removed (stricter; matches the documented contract)", () => {
+		expect(stripCommentsAndBlanks("const a = 1; // tag: X", "a.ts")).not.toContain("tag: X");
+		expect(stripCommentsAndBlanks("x = 1  # tag: Y\n", "a.py")).not.toContain("tag: Y");
+		expect(stripCommentsAndBlanks("x = 1  # tag: Y\n", "a.py")).toContain("x = 1");
+	});
+
+	it("non-hash languages keep # and non-comment slashes (rust attribute, division)", () => {
+		expect(stripCommentsAndBlanks("#[derive(Debug)]\nstruct S;\nlet a = b / c;\n", "rs")).toContain("#[derive(Debug)]");
+		expect(stripCommentsAndBlanks("#[derive(Debug)]\nstruct S;\nlet a = b / c;\n", "rs")).toContain("b / c");
+	});
+
+	it("unterminated string consumes to EOF without throwing; empty source stays empty", () => {
+		// String content is kept verbatim (it is not comment text); no crash, no hang.
+		expect(stripCommentsAndBlanks('const a = "unterminated /* x', "a.ts")).toContain('const a = "unterminated /* x');
+		expect(stripCommentsAndBlanks("", "a.ts")).toBe("");
+	});
+});

@@ -1638,13 +1638,72 @@ function hashCommentLanguage(file: string): boolean {
  *  invisible to deliverable matching. */
 const HASH_COMMENT_EXTS = new Set(["py", "pyw", "rb", "sh", "bash", "zsh", "yaml", "yml", "toml", "env", "conf", "ini", "cfg", "r", "pl", "tf", "tfvars"]);
 
+/** v0.3.62 string-aware comment stripper (single pass, no whole-source regex).
+ *  The previous 4-regex chain ran the block-comment regex FIRST and was not
+ *  string-literal aware, so a slash-star sequence inside a `//` line comment —
+ *  e.g. the vitest include glob tests/＊＊/＊.test.ts (fullwidth stars here — the
+ *  real glob contains a star-slash sequence that would end this comment) — opened a fake block comment that
+ *  swallowed REAL code (run 2026-09-02T10-18-31-007Z: the string literals at
+ *  prosperity-contract.test.ts:593-594 vanished, the deliverable gate reported
+ *  "matched only inside comments", and two attempts burned re-fixing an
+ *  already-correct file). The scanner recognizes string literals (single,
+ *  double, backtick with dollar-brace interpolation scanned as code) so
+ *  comment markers inside strings are inert. Behavior notes vs the old chain:
+ *  - FULL-line and INLINE `//`/`#` comments are both removed (the old chain
+ *    kept inline comment text, so a tag placed only in an inline comment
+ *    falsely matched — the RC9 message already told agents to use string
+ *    literals/constants/test titles; behavior now matches that contract).
+ *  - Known limitations (fail direction = over-strip ⇒ honest actionable
+ *    error, never a false green): regex literals containing a slash-star or
+ *    double-slash sequence (e.g. a character class with a slash-star), and
+ *    unquoted shell brace-hash expansions under # languages.
+ *  Template literals are scanned as strings; their dollar-brace interpolations
+ *  are scanned as code (nested braces + nested templates via a mode stack).
+ */
+function stripCodeComments(src: string, stripHash: boolean): string {
+	type Frame = { kind: "code"; braceDepth: number } | { kind: "tpl" };
+	const out: string[] = [];
+	const stack: Frame[] = [{ kind: "code", braceDepth: 0 }];
+	let i = 0;
+	const n = src.length;
+	while (i < n) {
+		const top = stack[stack.length - 1]!;
+		if (top.kind === "tpl") {
+			const ch = src[i]!;
+			const next = i + 1 < n ? src[i + 1]! : "";
+			if (ch === "\\") { out.push(ch, next); i += 2; continue; }
+			if (ch === "`") { out.push(ch); stack.pop(); i += 1; continue; }
+			if (ch === "$" && next === "{") { out.push("${"); stack.push({ kind: "code", braceDepth: 0 }); i += 2; continue; }
+			out.push(ch); i += 1; continue;
+		}
+		const ch = src[i]!;
+		const next = i + 1 < n ? src[i + 1]! : "";
+		if (ch === "/" && next === "/") { i += 2; while (i < n && src[i] !== "\n") i += 1; continue; }
+		if (ch === "/" && next === "*") { const end = src.indexOf("*/", i + 2); i = end === -1 ? n : end + 2; continue; }
+		if (stripHash && ch === "#") { i += 1; while (i < n && src[i] !== "\n") i += 1; continue; }
+		if (ch === "'" || ch === '"') {
+			const quote = ch;
+			out.push(ch); i += 1;
+			while (i < n) {
+				const c = src[i]!;
+				if (c === "\\") { out.push(c, src[i + 1] ?? ""); i += 2; continue; }
+				out.push(c); i += 1;
+				if (c === quote) break;
+			}
+			continue;
+		}
+		if (ch === "`") { out.push(ch); stack.push({ kind: "tpl" }); i += 1; continue; }
+		if (ch === "{") { out.push(ch); top.braceDepth += 1; i += 1; continue; }
+		if (ch === "}" && top.braceDepth === 0 && stack.length > 1) { stack.pop(); out.push(ch); i += 1; continue; }
+		if (ch === "}" && top.braceDepth > 0) { out.push(ch); top.braceDepth -= 1; i += 1; continue; }
+		out.push(ch); i += 1;
+	}
+	return out.join("");
+}
+
 export function stripCommentsAndBlanks(src: string, file = ""): string {
 	const stripHash = file === "" ? true : hashCommentLanguage(file);
-	return src
-		.replace(/\/\*[\s\S]*?\*\//g, "")      // /* block comments */
-		.replace(/^[ \t]*\/\/.*$/gm, "")         // // line comments (incl //! ///)
-		.replace(stripHash ? /^[ \t]*#.*$/gm : /\u0000/g, "") // # comments — ONLY #comment languages (sweep-3 G13)
-		.replace(/^[ \t]*$/gm, "");              // blank lines
+	return stripCodeComments(src, stripHash).replace(/^[ \t]*$/gm, ""); // blank lines
 }
 
 /** Catches the "silent-empty-success": claimed source deliverables that EXIST

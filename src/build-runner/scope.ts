@@ -483,7 +483,8 @@ function touchedHasNpmFailure(touchedSet: Set<string>, failingFile: string, modu
 }
 
 /**
- * Classify npm-family (vitest/jest) error blocks into out-of-scope failures.
+ * Classify npm-family (vitest/jest) AND python (pytest) error blocks into
+ * out-of-scope failures.
  *
  * Phase 5 / Gap 4 — the npm counterpart of {@link classifyOutOfScopeErrors}
  * (cargo). Whereas the cargo classifier partitions blocks by `crates/<pkg>/` +
@@ -491,6 +492,14 @@ function touchedHasNpmFailure(touchedSet: Set<string>, failingFile: string, modu
  * by failing-test-FILE markers (parsed via {@link parseFailingNpmTestFiles})
  * against the RAW touched-file set ({@link touchedFilePaths}): a failing test
  * file is OUT-of-scope iff it is ABSENT from the touched set.
+ *
+ * v0.3.62 (run 2026-09-02T10-18-31-007Z): pytest failure blocks previously
+ * matched NO failing-file marker here (the parser was vitest/jest-only), so a
+ * pre-existing `pytest -q` failure degraded to conservative IN-SCOPE and the
+ * B-6 baseline verifier — which fully supports python subjects — never ran;
+ * every attempt then burned on a failure that predates the phase. Now a block
+ * with no npm markers but python-detected (via {@link detectFailureBlockLanguage})
+ * is classified by its pytest subjects ({@link parseFailingPythonTestFiles}).
  *
  * Mirrors the cargo contract EXACTLY (AC-04):
  *   - unparseable output (no failing-file marker) ⇒ conservative IN-SCOPE
@@ -511,15 +520,22 @@ function touchedHasNpmFailure(touchedSet: Set<string>, failingFile: string, modu
 export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string, baseRef?: string): string[] {
 	try {
 		const safeErrors = Array.isArray(errors) ? errors : [];
-		// Short-circuit: parse the COMBINED output once. If NO failing-file marker
-		// is found anywhere, there is nothing to classify AND no reason to spawn
-		// git — degrade conservatively to in-scope (grants no false green). This
-		// also skips the git spawn when the gate PASSED (errors=[]).
-		const combined = safeErrors
-			.map((e) => (typeof e === "string" ? e : String(e ?? "")))
-			.join("\n");
-		const failingFiles = parseFailingNpmTestFiles(combined);
-		if (failingFiles.length === 0) return [];
+		// Per-block subject parse: npm markers first (existing behavior); a block
+		// with no npm markers but python-detected classifies by pytest subjects.
+		// If NO block yields any failing-file marker, there is nothing to classify
+		// AND no reason to spawn git — degrade conservatively to in-scope (grants
+		// no false green). This also skips the git spawn when the gate PASSED
+		// (errors=[]).
+		// Per-block subject parse: npm markers first (existing behavior); a block
+		// with no npm markers but python-detected classifies by pytest subjects.
+		const blockSubjects = safeErrors.map((e) => {
+			const block = typeof e === "string" ? e : String(e ?? "");
+			const npm = parseFailingNpmTestFiles(block);
+			if (npm.length > 0) return npm;
+			if (detectFailureBlockLanguage(block) === "python") return parseFailingPythonTestFiles(block);
+			return [] as string[];
+		});
+		if (blockSubjects.every((s) => s.length === 0)) return [];
 		// Empty touched set (git error / non-git dir / no diff) ⇒ cannot PROVE any
 		// failure is out-of-scope ⇒ conservative IN-SCOPE.
 		const touched = touchedFilePaths(cwd, baseRef);
@@ -530,9 +546,9 @@ export function classifyOutOfScopeNpmErrors(errors: string[], cwd: string, baseR
 		// referenced failing files are ABSENT from the touched set. Any in-scope
 		// (touched) failing file ⇒ the whole block stays in-scope (no false green).
 		const outOfScopeErrors: string[] = [];
-		for (const err of safeErrors) {
-			const block = typeof err === "string" ? err : String(err ?? "");
-			const blockFiles = parseFailingNpmTestFiles(block);
+		for (let bi = 0; bi < safeErrors.length; bi++) {
+			const block = typeof safeErrors[bi] === "string" ? safeErrors[bi] : String(safeErrors[bi] ?? "");
+			const blockFiles = blockSubjects[bi]!;
 			if (blockFiles.length === 0) continue; // no marker ⇒ in-scope (skip)
 			const modulePrefix = npmErrorModulePrefix(block);
 			let anyInScope = false;

@@ -50,6 +50,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
+	classifyOutOfScopeNpmErrors,
 	parseFailingNpmTestFiles,
 	runBuildGate,
 	type BuildGateResult,
@@ -582,6 +583,100 @@ describe("cargo branch unchanged — crates/<pkg>/ classification still active",
 			expect(r.pass).toBe(false);
 			expect(r.outOfScopeErrors.length).toBeGreaterThanOrEqual(1);
 			expect(r.inScopePass).toBe(true); // cargo path still grants the in-scope pass
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+});
+
+/* ========================================================================== */
+/* v0.3.62 — pytest markers classify (run 2026-09-02T10-18-31-007Z): a        */
+/* pre-existing `pytest -q` failure previously matched NO failing-file marker */
+/* here, degraded to conservative IN-SCOPE, and the B-6 baseline verifier     */
+/* (which fully supports python) never ran — every attempt burned on a        */
+/* failure that predates the phase.                                           */
+/* ========================================================================== */
+describe("classifyOutOfScopeNpmErrors — pytest (python) markers", () => {
+	const PY_BLOCK =
+		"python: pytest -q FAILED (exit 1):\n" +
+		"FAILED tests/test_baseline_census.py::test_census_exists - AssertionError: docs/specifications/20-tool-catalog/baseline-census.md must exist\n" +
+		"1 failed in 0.42s";
+
+	function routeGit(diff: string): void {
+		spawn.mockImplementation((cmd: string) => {
+			if (cmd === "git") return { status: 0, stdout: diff, stderr: "" };
+			return { status: 0, stdout: "", stderr: "" };
+		});
+	}
+
+	beforeEach(() => {
+		spawn.mockReset();
+	});
+
+	it("a pytest block whose subject is untouched (not in the touched set) is OUT-of-scope", () => {
+		const d = npmTmp();
+		try {
+			// touched set: an unrelated untracked file only (subject absent)
+			routeGit("src/other-change.ts\n");
+			const out = classifyOutOfScopeNpmErrors([PY_BLOCK], d, "main");
+			expect(out).toHaveLength(1);
+			expect(out[0]).toContain("test_baseline_census.py");
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("a pytest block whose subject IS touched stays conservative IN-scope", () => {
+		const d = npmTmp();
+		try {
+			routeGit("tests/test_baseline_census.py\n");
+			const out = classifyOutOfScopeNpmErrors([PY_BLOCK], d, "main");
+			expect(out).toHaveLength(0);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("a prose block that merely mentions a .py file (no pytest markers) stays IN-scope (no python over-reach)", () => {
+		const d = npmTmp();
+		try {
+			routeGit("src/other-change.ts\n");
+			const prose = "build helper crashed while reading docs/foo.py for context";
+			const out = classifyOutOfScopeNpmErrors([prose], d, "main");
+			expect(out).toHaveLength(0);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("npm (vitest) blocks still classify exactly as before (no regression from the python union)", () => {
+		const d = npmTmp();
+		try {
+			routeGit("src/other-change.ts\n");
+			const vitestBlock = "npm run test FAILED (exit 1):\n" + VITEST_FAIL_UNTOUCHED;
+			const out = classifyOutOfScopeNpmErrors([vitestBlock], d, "main");
+			expect(out).toHaveLength(1);
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	it("end-to-end: runBuildGate grants the lenient in-scope pass for an out-of-scope pytest failure", () => {
+		const d = npmTmp();
+		try {
+			// Only the `test` script declared ⇒ exactly one command (the test step);
+			// route it to the pytest-shaped failure; git touched set is unrelated.
+			spawn.mockImplementation((cmd: string, args: string[]) => {
+				if (cmd === "git") return { status: 0, stdout: "src/other-change.ts\n", stderr: "" };
+				if (cmd === "npm" && args[0] === "run" && args[1] === "test") {
+					return { status: 1, stdout: PY_BLOCK, stderr: "" };
+				}
+				return { status: 0, stdout: "", stderr: "" };
+			});
+			const r = runBuildGate(d);
+			expect(r.pass).toBe(false);
+			expect(r.outOfScopeErrors.length).toBe(1);
+			expect(r.inScopePass).toBe(true);
 		} finally {
 			rmSync(d, { recursive: true, force: true });
 		}
