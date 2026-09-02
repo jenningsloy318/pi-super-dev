@@ -28,6 +28,7 @@ import { userNotesForAgent } from "../render/user-notes.ts";
 import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } from "../doc-validators.ts";
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type BuildGateResult, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../build-runner.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
+import { runInStepScope } from "../step-scope.ts";
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "../fault-classification.ts";
 import { clearBaselineCache } from "../build-runner/baseline.ts";
@@ -1514,19 +1515,29 @@ export const implementationStage: Stage = {
 				});
 			};
 			/** Announce + run a phase step: emits a running level-3 row, runs `fn`,
-			 *  then marks the row ok/failed by `okIf(result)`. Returns fn's result. */
+			 *  then marks the row ok/failed by `okIf(result)`. Returns fn's result.
+			 *  v0.3.58 pipelining attribution: the ENTIRE step body (announce,
+			 *  lifecycle events, agent calls, delegation child lines) runs inside
+			 *  runInStepScope, so every line emitted by this step's async chain is
+			 *  stamped with THIS step's identity — a concurrently-running step (F3
+			 *  pipelined RED review vs implementer) no longer steals the other's
+			 *  lines via the global stage cursor. The raw id (no occurrence suffix)
+			 *  matches emitStep's id; the extension seam resolves the display id. */
 			const runStep = async <T>(label: string, detail: string | undefined, okIf: (r: T) => boolean, fn: () => Promise<T>): Promise<T> => {
 				const seq = ++stepSeq;
-				announceActivity(label, detail);
-				emitStep(`${label}${detail ? ` (${detail})` : ""}`, "running", seq);
-				try {
-					const r = await fn();
-					emitStep(`${label}${detail ? ` (${detail})` : ""}`, okIf(r) ? "ok" : "failed", seq);
-					return r;
-				} catch (err) {
-					emitStep(`${label}${detail ? ` (${detail})` : ""}`, "failed", seq);
-					throw err;
-				}
+				const stepLabel = `${label}${detail ? ` (${detail})` : ""}`;
+				return runInStepScope({ stageId: `implementation.${phaseId}.step-${pad(seq)}`, stageLabel: `· ${stepLabel}` }, async () => {
+					announceActivity(label, detail);
+					emitStep(stepLabel, "running", seq);
+					try {
+						const r = await fn();
+						emitStep(stepLabel, okIf(r) ? "ok" : "failed", seq);
+						return r;
+					} catch (err) {
+						emitStep(stepLabel, "failed", seq);
+						throw err;
+					}
+				});
 			};
 			const attemptDetail = (attempt: number, extra?: string) =>
 				[`attempt ${attempt}`, extra].filter(Boolean).join(", ");

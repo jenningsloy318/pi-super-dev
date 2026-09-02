@@ -17,7 +17,9 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import type { DashboardTheme } from "./render/dashboard.ts";
 import { createLiveStream } from "./render/live-stream.js";
-import type { TranscriptLine, LiveStreamHandle } from "./render/live-stream.js";
+import type { TranscriptLine, LiveStreamHandle, StageStamp } from "./render/live-stream.js";
+import { stepOccurrenceStamp } from "./render/stage-occurrence.ts";
+import { currentStepScope, type StepScopeInfo } from "./step-scope.ts";
 import { Type } from "typebox";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -618,6 +620,15 @@ export default function activate(pi: ExtensionAPI): void {
 			const activeStageOccurrences = new Map<string, string>();
 			const stageDisplayLabel = (label: string, occurrence: number): string =>
 				occurrence > 1 ? `${label} (attempt ${occurrence})` : label;
+			// v0.3.58 pipelining attribution: resolve a step-scoped emission to its
+			// own dashboard section — only while that step's occurrence row is
+			// actively running; otherwise undefined ⇒ cursor stamping (unchanged
+			// serial-stage behavior, and correct ownership for post-step join lines).
+			const stepStamp = (step: StepScopeInfo | undefined): StageStamp | undefined => {
+				if (!step) return undefined;
+				const activeId = activeStageOccurrences.get(step.stageId);
+				return stepOccurrenceStamp(step, activeId, activeId ? dashboardStages.get(activeId)?.status : undefined);
+			};
 			const resolveStageOccurrence = (id: string, status: string): { displayId: string; occurrence: number } => {
 				const activeId = activeStageOccurrences.get(id);
 				const active = activeId ? dashboardStages.get(activeId) : undefined;
@@ -656,10 +667,10 @@ export default function activate(pi: ExtensionAPI): void {
 				flushLive();
 			};
 			const sink: ProgressSink = {
-				phase: (label) => { stream.sink.phase(label); persistLiveLog(); if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } flushLive(); },
-				log: (message) => { stream.sink.log(message); persistLiveLog(); flushLive(); },
-				text: (partial) => {
-					stream.sink.text(partial);
+				phase: (label, step) => { stream.sink.phase(label, stepStamp(step)); persistLiveLog(); if (ctx?.mode === "tui") { try { ctx?.ui?.setWorkingMessage?.(`super-dev · ${label}`); } catch { /* best-effort */ } } flushLive(); },
+				log: (message, step) => { stream.sink.log(message, stepStamp(step)); persistLiveLog(); flushLive(); },
+				text: (partial, step) => {
+					stream.sink.text(partial, stepStamp(step));
 					const now = Date.now();
 					if (now - lastFlush >= FLUSH_MS) { persistLiveLog(); flushLive(); lastFlush = now; }
 				},

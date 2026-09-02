@@ -51,6 +51,16 @@ export type TranscriptLine = {
 
 type TranscriptEntry = TranscriptLine & { createdAt: string };
 
+/** Explicit per-line stage attribution (v0.3.58 pipelining): when a line is
+ *  emitted from a CONCURRENT step's async chain (F3 pipelined RED review vs
+ *  implementer), the emitter passes its OWN step identity so the line groups
+ *  under the right section instead of leaking into whichever stage last moved
+ *  the global cursor. Undefined ⇒ cursor stamping (the serial-stage default). */
+export type StageStamp = {
+	stageId: string;
+	stageLabel: string;
+};
+
 /** Structured dashboard `stage` event payload — the ONLY source the sink
  *  reads stage identity from (never the human-readable `▶ Stage N` label). */
 export interface StageInfo {
@@ -63,9 +73,9 @@ export interface StageInfo {
 
 /** The minimal sink surface the factory owns (phase / log / text / stage). */
 export interface LiveStreamSink {
-	phase(label: string): void;
-	log(message: string): void;
-	text(partial: string): void;
+	phase(label: string, stamp?: StageStamp): void;
+	log(message: string, stamp?: StageStamp): void;
+	text(partial: string, stamp?: StageStamp): void;
 	/** Phase 2 (AC-07 / SCENARIO-009): mid-run user input, tagged directly at
 	 *  the sink as `{ kind: "user-input", text: "📥 " + text }` so it flows
 	 *  through transcriptTail() → buildResultComponent → renderResult unchanged
@@ -311,18 +321,22 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 
 	const transcript: TranscriptEntry[] = [];
 	let live = "";
+	// The pending live buffer's stamp — captured at text() time (the emitting
+	// chain's step) and applied at finalizeLive() so streamed agent text commits
+	// under ITS step even when the cursor moved while the buffer was open.
+	let liveStamp: StageStamp | undefined;
 
 	// AC-01 / SCENARIO-001: the stage the sink is currently emitting under.
 	// Defaults to the sentinel pre-stage until the first structured `stage`
 	// event arrives (RESOLVED-1: resolved from info.id, never label parsing).
 	let currentStageId = "setup";
 	let currentStageLabel = "pre-stage";
-	const push = (kind: LineKind, text: string): void => {
+	const push = (kind: LineKind, text: string, stamp?: StageStamp): void => {
 		transcript.push({
 			kind,
 			text,
-			stageId: currentStageId,
-			stageLabel: currentStageLabel,
+			stageId: stamp?.stageId ?? currentStageId,
+			stageLabel: stamp?.stageLabel ?? currentStageLabel,
 			createdAt: timestamp(),
 		});
 	};
@@ -345,27 +359,30 @@ export function createLiveStream(opts: CreateLiveStreamOptions = {}): LiveStream
 	 *  Stamps the CURRENT stage tag onto the committed entry (AC-01). */
 	const finalizeLive = (): void => {
 		if (live) {
-			push("thinking", live);
+			push("thinking", live, liveStamp);
 			live = "";
+			liveStamp = undefined;
 		}
 	};
 
 	const sink: LiveStreamSink = {
 		// SCENARIO-008: phase marker carries the ▶ prefix text.
-		phase: (label: string): void => {
+		phase: (label: string, stamp?: StageStamp): void => {
 			finalizeLive();
-			push("phase", `▶ ${label}`);
+			push("phase", `▶ ${label}`, stamp);
 		},
 		// SCENARIO-008: log is classified by the single classifyLine authority;
 		// the RAW message is stored as text (no leading indent — classification
 		// trims leading whitespace itself).
-		log: (message: string): void => {
+		log: (message: string, stamp?: StageStamp): void => {
 			finalizeLive();
-			push(classifyLine(message), message);
+			push(classifyLine(message), message, stamp);
 		},
-		// Live (typing) buffer — NOT committed until finalizeLive().
-		text: (partial: string): void => {
+		// Live (typing) buffer — NOT committed until finalizeLive(). The stamp is
+		// captured NOW (emitting chain's step) and consumed at commit time.
+		text: (partial: string, stamp?: StageStamp): void => {
 			live = partial;
+			liveStamp = stamp;
 		},
 		// Phase 2 (AC-07 / SCENARIO-009): tagged user-input line — same commit
 		// semantics as phase/log (flush any pending live buffer first), then push

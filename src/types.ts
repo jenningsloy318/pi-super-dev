@@ -14,6 +14,7 @@
  */
 
 import type { EventEmitter } from "node:events";
+import type { StepScopeInfo } from "./step-scope.ts";
 
 // ─── Primitive result types ─────────────────────────────────────────────────
 
@@ -142,11 +143,14 @@ export interface Budget {
 }
 
 export interface ProgressSink {
-	phase(label: string): void;
-	log(message: string): void;
+	/** `step` (v0.3.58): the emitting async chain's step scope when the line
+	 *  originates inside a pipelined implementation step — receivers resolve it
+	 *  to the step's own dashboard section instead of the global cursor. */
+	phase(label: string, step?: StepScopeInfo): void;
+	log(message: string, step?: StepScopeInfo): void;
 	/** Live streaming text from the active agent (typing effect). `partial` is the
 	 *  full accumulated text of the current text block so far. */
-	text(partial: string): void;
+	text(partial: string, step?: StepScopeInfo): void;
 	/** Per-stage lifecycle for the workflow dashboard (v1): "running" on enter,
 	 *  a terminal NodeStatus on exit. Optional — headless callers omit it. */
 	stage?(info: StageProgressEvent): void;

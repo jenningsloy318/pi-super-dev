@@ -36,6 +36,7 @@ import { getConfig } from "./render/super-dev-dir.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
+import { currentStepScope } from "./step-scope.ts";
 import { appendRunEvent, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
 import { auditAppend } from "./render/super-dev-dir.ts";
 import { writeCompletionAudit } from "./completion-audit.ts";
@@ -541,7 +542,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			thinkingLevel: perCallThinking,
 			onProgress: {
 				event: (m: string) => log(m),
-				text: (partial: string) => options.progress?.text(partial),
+				text: (partial: string) => options.progress?.text(partial, currentStepScope()),
 			},
 		};
 		const sourceBoundaryBefore = accessMode === "source-read-only" ? captureSourceBoundary(agentCwd, state.setup?.specDirectory) : null;
@@ -833,14 +834,14 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		state,
 		task,
 		options,
-		(msg: string) => progress?.log(msg),
+		(msg: string) => progress?.log(msg, currentStepScope()),
 	);
 
 	// Surface phase banners + stage logs through the progress sink. We re-bind
 	// ctx.log so control nodes' ctx.log(...) reach the caller; phase banners are
 	// emitted by the top-level sequence via a wrapping node (see stages/index.ts).
 	if (progress) {
-		ctx.events.on("phase", (label: unknown) => progress.phase(String(label)));
+		ctx.events.on("phase", (label: unknown) => progress.phase(String(label), currentStepScope()));
 		ctx.events.on("stage", (info: unknown) => progress.stage?.(info as StageProgressEvent));
 	}
 
