@@ -89,7 +89,7 @@ export interface AgentCall {
 	/** Optional per-call thinking override (Phase 2). Highest precedence; when
 	 *  absent the resolved level falls back to SUPER_DEV_THINKING then the role
 	 *  default. Threaded into `common` for both backends. */
-	thinking?: import("./pi-spawn.ts").ThinkingLevel;
+	thinking?: import("./agents/agent-runtime.ts").ThinkingLevel;
 	/** Optional per-call model override ("provider/id"). Highest precedence — wins
 	 *  over config.agentModels and the global --model/SUPER_DEV_MODEL. Rarely set by
 	 *  stages; the usual cross-model policy is declared in ~/.super-dev config. */
@@ -439,20 +439,20 @@ export interface RunOptions {
 	 *  passes it wholesale to createAgentSession; the subprocess backend derives
 	 *  the qualified `provider/id` for `--model`. ADDITIVE — never clobbers `model`
 	 *  or a SUPER_DEV_MODEL env override; wins over the SDK/settings default. */
-	inheritedModelObject?: import("./session-agent.ts").SessionModelOption;
+	inheritedModelObject?: import("./agents/agent-runtime.ts").SessionModelOption;
 	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
 	 *  session (ctx.thinkingLevel). ADDITIVE — never clobbers a per-call override
 	 *  or a SUPER_DEV_THINKING env var, but wins over the role default. */
-	inheritedThinking?: import("./pi-spawn.ts").ThinkingLevel;
+	inheritedThinking?: import("./agents/agent-runtime.ts").ThinkingLevel;
 	maxAgents?: number;
 	maxConcurrency?: number;
 	progress?: ProgressSink;
 	signal?: AbortSignal;
-	/** Specialist execution backend. "session" (default since v0.2.10) = in-process sessions; "subprocess" = raw `pi` spawn;
-	 *  "pi-subagents" (v0.3.25) = structured delegation through pi-subagents' executor
-	 *  (Fleet UI, steering, stop/resume) — falls back to "session" when no event bus
-	 *  is threaded (standalone CLI). Also set via SUPER_DEV_BACKEND env. */
-	backend?: "subprocess" | "session" | "pi-subagents";
+	/** v0.3.64: the specialist backend config surface is GONE — every specialist
+	 *  call routes through pi-subagents structured delegation (the only backend).
+	 *  This field formerly selected session/subprocess/pi-subagents; it was
+	 *  removed with those backends and is ignored if a legacy caller sets it.
+	 */
 	/** v0.3.25: pi's in-process event bus, threaded from extension.execute(). The
 	 *  pi-subagents delegation backend and FleetView visibility are enabled by its
 	 *  presence; without it both are inert (standalone CLI mode). */

@@ -15,16 +15,15 @@
  */
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async (opts: { id?: string }) => ({ text: "ok", control: { id: opts.id } })),
-	summarizeSlug: vi.fn(async () => "x"),
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn(async (opts: { id?: string }) => ({ text: "ok", control: { id: opts.id } })),
 }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async (opts: { id?: string }) => ({ text: "ok", control: { id: opts.id } })),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
+
 vi.mock("../src/render/knowledge.ts", () => ({ knowledgeForAgent: vi.fn(() => "") }));
 
 import { makeContext } from "../src/workflow.ts";
@@ -32,7 +31,7 @@ import { task, parallel } from "../src/nodes.ts";
 import type { AgentResult, PipelineState, RunOptions, Stage } from "../src/types.ts";
 
 const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
-	makeContext(state, "t", { ...options, maxConcurrency: 2 }, () => {});
+	makeContext(state, "t", { events: {} as never, ...options, maxConcurrency: 2 }, () => {});
 
 /** A stage that calls ctx.agent once with the given call id, storing the result. */
 const agentStage = (stageId: string, callId: string): Stage => ({

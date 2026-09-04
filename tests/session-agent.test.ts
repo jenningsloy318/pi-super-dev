@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { missingKeys, deliveryDisciplineFor, sessionToolAccess } from "../src/session-agent.ts";
+import { missingKeys, deliveryDisciplineFor, sessionToolAccess } from "../src/bench/session-agent.ts";
 
 describe("deliveryDisciplineFor", () => {
 	it("gives code-writing agents a code-centric discipline (edits, not a document)", () => {
@@ -150,7 +150,7 @@ describe("SD-04: runAgentViaSession guards abort-listener registration with sync
 	const base = { agent: "implementer", prompt: "x", cwd: "/tmp" };
 
 	it("a signal aborted BEFORE the call returns error=aborted without creating any session", async () => {
-		const { runAgentViaSession } = await import("../src/session-agent.ts");
+		const { runAgentViaSession } = await import("../src/bench/session-agent.ts");
 		sessionHarness.createCalls = 0;
 		sessionHarness.abortOnReload = null;
 		const controller = new AbortController();
@@ -163,7 +163,7 @@ describe("SD-04: runAgentViaSession guards abort-listener registration with sync
 	});
 
 	it("an abort landing DURING session creation terminates the session at registration (the after-check fires)", async () => {
-		const { runAgentViaSession } = await import("../src/session-agent.ts");
+		const { runAgentViaSession } = await import("../src/bench/session-agent.ts");
 		sessionHarness.createCalls = 0;
 		sessionHarness.abortOnReload = null;
 		const controller = new AbortController();
@@ -188,7 +188,7 @@ describe("SD-04: runAgentViaSession guards abort-listener registration with sync
 // pin the parity: same ⇢ narration format, same terminal segments.
 describe("v0.3.28: terminal usage summary + run.log narration (session backend)", () => {
 	it("emits `session <label>: completed` with model/turns/tools/tokens/cache/cost/duration and ⇢ narration lines", async () => {
-		const { runAgentViaSession } = await import("../src/session-agent.ts");
+		const { runAgentViaSession } = await import("../src/bench/session-agent.ts");
 		const events: string[] = [];
 		const controller = new AbortController();
 		const pending = runAgentViaSession({

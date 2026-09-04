@@ -104,7 +104,7 @@ vi.mock("../src/setup.ts", () => ({ sanitizeSlug: vi.fn((s: string) => s) }));
 vi.mock("../src/safety.ts", () => ({ createSafetyExtensionFactory: vi.fn(() => () => ({ name: "safety", activate: () => ({}) })) }));
 vi.mock("../src/render/super-dev-dir.ts", () => ({ getTracesDir: vi.fn(() => "/tmp/traces"), superDevEnv: vi.fn(() => undefined) }));
 
-import { runAgentViaSession } from "../src/session-agent.ts";
+import { runAgentViaSession } from "../src/bench/session-agent.ts";
 
 describe("session soft-deadline wrap-up (W-1/W-2)", () => {
 	beforeEach(() => sdk.reset());

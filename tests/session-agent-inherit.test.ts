@@ -105,7 +105,7 @@ vi.mock("../src/safety.ts", () => ({
 }));
 vi.mock("../src/render/super-dev-dir.ts", () => ({ getTracesDir: vi.fn(() => "/tmp/traces"), superDevEnv: vi.fn((k: string) => process.env[k] || undefined) }));
 
-import * as SessionAgent from "../src/session-agent.ts";
+import * as SessionAgent from "../src/bench/session-agent.ts";
 
 const saveEnv = (...keys: string[]) => {
 	const snapshot: Record<string, string | undefined> = {};
@@ -166,7 +166,7 @@ describe("runAgentViaSession passes resolved model + thinkingLevel to createAgen
 	});
 
 	it("an inherited model object reaches createAgentSession as the `model` option (wholesale) when no explicit override", async () => {
-		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/session-agent.ts").SessionModelOption;
+		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/bench/session-agent.ts").SessionModelOption;
 		await SessionAgent.runAgentViaSession({
 			agent: "spec-writer", prompt: "do the work", cwd: "/tmp", inheritedModelObject: m,
 		} as Parameters<typeof SessionAgent.runAgentViaSession>[0]);

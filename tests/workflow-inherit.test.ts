@@ -8,7 +8,7 @@
  *
  * Decision from reading src/workflow.ts: `realAgent` builds ONE shared `common`
  * options object and dispatches it to either `spawnAgent` (subprocess) or
- * `runAgentViaSession` (session). The additive inheritance DEFAULTS must reach
+ * `runAgentViaDelegation` (session). The additive inheritance DEFAULTS must reach
  * BOTH backends through that single `common` seam — so the test asserts the
  * object handed to the backend carries `inheritedModelObject` / `inheritedThinking`
  * exactly as they arrived on `RunOptions`.
@@ -27,24 +27,19 @@ const captured: {
 	prompt?: string;
 } = {};
 
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async (opts: Record<string, unknown>) => {
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn(async (opts: Record<string, unknown>) => {
 		captured.session = opts;
 		captured.prompt = opts.prompt as string | undefined;
 		return { text: "", control: {} };
 	}),
-	summarizeSlug: vi.fn(async () => "x"),
 }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async (opts: Record<string, unknown>) => {
-		captured.subprocess = opts;
-		captured.prompt = opts.prompt as string | undefined;
-		return { text: "", control: {} };
-	}),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
+
 vi.mock("../src/render/knowledge.ts", () => ({
 	knowledgeForAgent: vi.fn(() => ""),
 }));
@@ -53,7 +48,7 @@ import { makeContext } from "../src/workflow.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
-	makeContext(state, "t", options, () => {});
+	makeContext(state, "t", { events: {} as never, ...options }, () => {});
 
 const BASE_CALL: AgentCall = { id: "pipeline.spec", agent: "spec-writer", prompt: "ORIG PROMPT" };
 
@@ -67,19 +62,20 @@ describe("realAgent threads inherited model/thinking into BOTH backend calls (AC
 	});
 
 	it("SCENARIO-001: options.inheritedModelObject flows into the session backend's common object", async () => {
-		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/session-agent.ts").SessionModelOption;
+		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/agents/agent-runtime.ts").SessionModelOption;
 		await mkCtx({}, { inheritedModelObject: m }).agent(BASE_CALL);
 		expect(captured.session).toBeDefined();
 		expect(captured.session!.inheritedModelObject).toBe(m);
 	});
 
-	it("SCENARIO-006: inherited model AND thinking reach the SUBPROCESS backend through the same common seam", async () => {
-		// Force the subprocess backend explicitly so both paths are covered.
-		const m = { provider: "glm", id: "glm-5.2" } as unknown as import("../src/session-agent.ts").SessionModelOption;
-		await mkCtx({}, { backend: "subprocess", inheritedModelObject: m, inheritedThinking: "high" }).agent(BASE_CALL);
-		expect(captured.subprocess).toBeDefined();
-		expect(captured.subprocess!.inheritedModelObject).toBe(m);
-		expect(captured.subprocess!.inheritedThinking).toBe("high");
+	it("SCENARIO-006: inherited model AND thinking reach the delegation backend TOGETHER through the same common seam", async () => {
+		// v0.3.64: the subprocess backend is gone; the combined-model case pins
+		// the single delegation seam instead.
+		const m = { provider: "glm", id: "glm-5.2" } as unknown as import("../src/agents/agent-runtime.ts").SessionModelOption;
+		await mkCtx({}, { inheritedModelObject: m, inheritedThinking: "high" }).agent(BASE_CALL);
+		expect(captured.session).toBeDefined();
+		expect(captured.session!.inheritedModelObject).toBe(m);
+		expect(captured.session!.inheritedThinking).toBe("high");
 	});
 
 	it("inherited DEFAULTS never clobber the per-call model/thinking override (additive-only)", async () => {

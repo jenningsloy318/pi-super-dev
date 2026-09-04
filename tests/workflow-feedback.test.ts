@@ -7,22 +7,18 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 
 const captured: { prompt?: string } = {};
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async (opts: { prompt?: string }) => {
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn(async (opts: { prompt?: string }) => {
 		captured.prompt = opts.prompt;
 		return { text: "", control: {} };
 	}),
-	summarizeSlug: vi.fn(async () => "x"),
 }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async (opts: { prompt?: string }) => {
-		captured.prompt = opts.prompt;
-		return { text: "", control: {} };
-	}),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
+
 
 import { makeContext } from "../src/workflow.ts";
 import { languageDirective } from "../src/render/super-dev-dir.ts";
@@ -30,7 +26,7 @@ import { DELEGATION_AUTONOMY_CLAUSE } from "../src/workflow.ts";
 import { recordConvergenceFindings } from "../src/convergence-ledger.ts";
 import type { PipelineState } from "../src/types.ts";
 
-const mkCtx = (state: PipelineState) => makeContext(state, "t", {}, () => {});
+const mkCtx = (state: PipelineState) => makeContext(state, "t", { events: {} as never }, () => {});
 
 describe("workflow agent() feedback injection (retry convergence)", () => {
 	beforeEach(() => { delete captured.prompt; });
@@ -69,7 +65,7 @@ describe("workflow agent() feedback injection (retry convergence)", () => {
 		expect(captured.prompt).toBe(`PLAIN\n\n${DELEGATION_AUTONOMY_CLAUSE}\n\n${languageDirective()}`);
 	});
 	it("enforces maxAgents centrally before spawning", async () => {
-		const ctx = makeContext({} as PipelineState, "t", { maxAgents: 0 }, () => {});
+		const ctx = makeContext({} as PipelineState, "t", { events: {} as never, maxAgents: 0 }, () => {});
 		const r = await ctx.agent({ id: "pipeline.too-many", agent: "requirements-clarifier", prompt: "NOPE" });
 		expect(r.error).toMatch(/budget exhausted/);
 		expect(captured.prompt).not.toBe("NOPE");

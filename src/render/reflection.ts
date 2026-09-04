@@ -10,8 +10,7 @@
  * pipeline result is unaffected.
  */
 
-import { runAgentViaSession } from "../session-agent.ts";
-import { loadAgentPrompt } from "../agents.ts";
+import { runAgentViaDelegation, type DelegationEventBus } from "../agents/delegation-backend.ts";
 import {
 	getAuditPath,
 	getLearnedPath,
@@ -54,7 +53,7 @@ export function buildReflectionTask(runDir?: string | null): string {
  *  path this module touches is resolved from it AT ENTRY, never re-read from
  *  the module global after an await (a run B starting mid-flight cannot
  *  redirect run A's reflection writes). */
-export function runReflectionAsync(runDir: string | undefined): Promise<void> {
+export function runReflectionAsync(runDir: string | undefined, events?: DelegationEventBus): Promise<void> {
 	const config = getConfig();
 	if (!config.reflectionEnabled) return Promise.resolve();
 
@@ -65,7 +64,7 @@ export function runReflectionAsync(runDir: string | undefined): Promise<void> {
 	// is now RETURNED so the caller (extension.ts) can track it and
 	// session_shutdown can name it when a session teardown drops it (P10:
 	// discards are named). Callers that ignore the return are unaffected.
-	return runReflection(runDir).catch((err) => { auditAppend({ stage: "reflection", error: String(err instanceof Error ? err.message : err) }, runDir);
+	return runReflection(runDir, events).catch((err) => { auditAppend({ stage: "reflection", error: String(err instanceof Error ? err.message : err) }, runDir);
 		// Silent failure — reflection is best-effort.
 	});
 }
@@ -73,27 +72,40 @@ export function runReflectionAsync(runDir: string | undefined): Promise<void> {
 /** Run the reflection agent synchronously (for testing). AC-29: `runDir` is
  *  the ORIGINATING run dir captured at run start (falls back to the module
  *  global for legacy callers). */
-export async function runReflection(runDir?: string): Promise<void> {
+export async function runReflection(runDir?: string, events?: DelegationEventBus): Promise<void> {
 	// Paths are captured at ENTRY — no getAuditPath()/getReflectionPath() read
 	// after the agent await below can observe a newer run's dir.
 	const superDevDir = getSuperDevDir();
 	const auditPath = runDir ? auditPathFor(runDir) : getAuditPath();
 
 	if (!existsSync(auditPath)) return;
-	const systemPrompt = loadAgentPrompt("reflection");
+	// v0.3.64: reflection runs through the pi-subagents delegation backend (the
+	// sd-reflection registration carries agents/reflection.md as its system
+	// prompt) so it rides the same machinery — and the same Fleet visibility —
+	// as every specialist call. Without an event bus (bench/tests) there is no
+	// delegation owner in-process: SKIP with a named audit row (P10 — the
+	// discard is named, never silent) instead of hanging on an unanswered
+	// request.
+	if (!events) {
+		auditAppend({ stage: "reflection", skipped: "no delegation event bus (extension mode required for reflection)" }, runDir);
+		return;
+	}
 	const task = buildReflectionTask(runDir);
 
-	await runAgentViaSession({
+	const result = await runAgentViaDelegation({
 		agent: "reflection",
 		prompt: task,
 		cwd: superDevDir,
 		timeoutMs: 180_000,
 		controlKeys: [],
-		onProgress: {
-			event: () => {},
-			text: () => {},
-		},
+		events,
+		ownerRunId: `reflection${runDir ? "-" + runDir : ""}`.slice(0, 256).replace(/[\n\r]/g, ""),
+		id: "pipeline.reflection",
 	});
+	if (result.error) {
+		auditAppend({ stage: "reflection", error: result.error }, runDir);
+		// Reflection is best-effort — the run result is already delivered.
+	}
 
 	// Phase 6: cleanup old runs/traces. Sweep-3 G10: updateStats is NO LONGER
 	// called here — extension.ts's run-end block is the SINGLE stats owner

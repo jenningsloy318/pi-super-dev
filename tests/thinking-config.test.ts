@@ -4,7 +4,7 @@
  * These pin the intended contract for the thinking-level feature:
  *  - thinkingForAgent(agent): role-based default level
  *  - resolveThinking(agent, perCall?): per-call → SUPER_DEV_THINKING env → role
- *  - buildSpawnArgs appends "--thinking <resolved>" to the subprocess argv
+ *  - (subprocess argv case deleted with the subprocess backend in v0.3.64)
  *  - applyThinkingLevel(session, level): best-effort session.setThinkingLevel,
  *    tolerant of a missing/throwing method (never fails the run)
  *
@@ -13,8 +13,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { thinkingForAgent, resolveThinking, buildSpawnArgs, type ThinkingLevel } from "../src/pi-spawn.ts";
-import { applyThinkingLevel } from "../src/session-agent.ts";
+import { thinkingForAgent, resolveThinking, type ThinkingLevel } from "../src/agents/agent-runtime.ts";
+import { applyThinkingLevel } from "../src/agents/agent-runtime.ts";
 vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	// v0.3.44 hermetic pin: resolveThinking now reads config.agentThinking
 	// lazily; pin getConfig to DEFAULT_CONFIG so these precedence tests never
@@ -71,25 +71,6 @@ describe("resolveThinking precedence (per-call → env → role)", () => {
 	});
 });
 
-describe("buildSpawnArgs appends --thinking <resolved-level>", () => {
-	const OLD = process.env.SUPER_DEV_THINKING;
-	beforeEach(() => { delete process.env.SUPER_DEV_THINKING; });
-	afterEach(() => {
-		if (OLD === undefined) delete process.env.SUPER_DEV_THINKING;
-		else process.env.SUPER_DEV_THINKING = OLD;
-	});
-
-	it("includes --thinking with the role-resolved level", () => {
-		const args = buildSpawnArgs({ agent: "code-reviewer", prompt: "x", cwd: "/tmp" }, "/tmp/a.md");
-		expect(args).toContain("--thinking");
-		expect(args[args.indexOf("--thinking") + 1]).toBe("high");
-	});
-	it("honors a per-call thinking override in the argv", () => {
-		const args = buildSpawnArgs({ agent: "code-reviewer", prompt: "x", cwd: "/tmp", thinking: "off" }, "/tmp/a.md");
-		expect(args).toContain("--thinking");
-		expect(args[args.indexOf("--thinking") + 1]).toBe("off");
-	});
-});
 
 describe("applyThinkingLevel (session backend tolerance)", () => {
 	it("calls setThinkingLevel with the resolved level on a capable session", () => {

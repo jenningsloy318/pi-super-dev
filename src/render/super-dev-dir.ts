@@ -61,12 +61,6 @@ export interface SuperDevConfig {
 	 *  lazily per call (superDevEnv pattern) so a config edit applies to later
 	 *  agent dispatches even mid-run; already-running agents are unaffected. */
 	agentThinking?: Record<string, string>;
-	/** v0.3.25: specialist execution backend. "session" (default) | "subprocess"
-	 *  | "pi-subagents" (structured delegation through pi-subagents' executor —
-	 *  Fleet UI rows, live steering, stop/resume; degrades to "session" when no
-	 *  in-process event bus is available, e.g. the standalone CLI). The tool
-	 *  parameter and SUPER_DEV_BACKEND env override this. */
-	agentBackend?: "session" | "subprocess" | "pi-subagents";
 	/** v0.3.15: persistent channel for the SUPER_DEV_* tunables (timeouts,
 	 *  budgets, kill-switches, model/backend selectors) so GUI-launched pi
 	 *  sessions — which have no shell env — can still set them. Flat string
@@ -216,6 +210,9 @@ export interface AuditEntry {
 	error?: string;
 	turns?: number;
 	backend?: string;
+	/** P10: a NAMED discard — the stage was skipped for a stated reason
+	 *  (e.g. reflection without a delegation bus), never silently. */
+	skipped?: string;
 }
 
 /** Append a structured audit entry to the current run's audit.jsonl.

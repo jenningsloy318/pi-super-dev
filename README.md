@@ -18,6 +18,19 @@ The design principle throughout is **verify, never trust**: every LLM
 self-report (tests pass, files written, merge done) is re-derived by
 deterministic code before the pipeline believes it.
 
+## Requirements
+
+- **pi** (this extension runs inside a pi session).
+- **pi-subagents** — a HARD requirement since v0.3.64: every specialist call
+  runs through its structured-delegation executor (the same machinery as
+  pi's `subagent` tool), and browser/web-research tools ride per-agent
+  extension registrations. Install with `pi install npm:pi-subagents` and restart
+  pi. Without it, runs fail closed with exactly this instruction.
+- **Restart pi after any pi-subagents upgrade/downgrade**: a live session
+  holding an older in-memory bridge against a newer on-disk package fails
+  every delegated call at startup (version skew; super-dev detects it, fails
+  fast with this remedy, and never hangs).
+
 ## Install
 
 Install it from **npm** or **GitHub** (your choice):
@@ -116,10 +129,8 @@ stages/index.ts ──► the pipeline expressed with control nodes
 │    ├─ gates.ts         language-blind RED/GREEN oracle engine (structured evidence only)
 │    ├─ scope.ts         out-of-scope failure classification (touched files)
 │    └─ baseline.ts      merge-base baseline runs (B-6 regression verification)
-├─ session-agent.ts      session backend: structured output, corrective
-│                        re-prompts, soft-deadline wrap-up before hard timeout
-├─ pi-spawn.ts           subprocess backend: isolated `pi` children (research
-│                        agents get pi-web-access only), partial-output rescue
+├─ agents/agent-runtime.ts  shared agent-execution runtime: model/thinking
+│                        resolution, per-role extension packages, timeouts
 ├─ prompts.ts            prompt builders (control-key contracts are unit-pinned)
 ├─ control.ts            tolerant <control> JSON key extraction
 ├─ helpers.ts            12 deterministic helpers (classify, gates, routing,
@@ -136,92 +147,81 @@ stages/index.ts ──► the pipeline expressed with control nodes
                          docs/references/go-modern-guidelines)
 ```
 
-### Two agent backends
+### The agent backend: pi-subagents delegation (v0.3.64 — the only one)
 
-- **Session backend** (default): specialists run inside the host pi session
-  via the SDK — shared model/provider extensions, structured-output control
-  schemas with corrective re-prompting (a missing/blank control key triggers
-  one bounded re-prompt asking for exactly that key), and a **soft-deadline
-  wrap-up**: at 80% of the role's wall-clock timeout the in-flight prompt is
-  aborted and the agent gets one wrap-up turn ("call structured_output now") in
-  the same session; the hard timeout still rules at 100%. Total wall time is
-  unchanged, but timed-out roles deliver their partial work instead of
-  discarding it.
-- **Subprocess backend** (`SUPER_DEV_BACKEND=subprocess`, forced for
-  `research-agent`): isolated bare `pi` children with `--no-skills
-  --no-extensions --no-context-files` (research agents additionally load only
-  `pi-web-access` + `pi-mcp-adapter`), NDJSON stdout parsing, and partial-output
-  rescue on timeout (`timed out after Xms (used partial output)`).
-- **pi-subagents backend** (v0.3.25, `backend: "pi-subagents"` in config or the
-  tool parameter, or `SUPER_DEV_BACKEND=pi-subagents`): every specialist call
-  is executed by pi-subagents' structured-delegation executor — the SAME
-  machinery as the `subagent` tool. Each call appears in pi's Fleet UI with
-  real turns/tool uses/tokens/output logs, is live-steerable and stoppable,
-  and is attributed to your pi session. The specialists register as first-class
-  `sd-*` agents at extension activation (`sd-judge`, `sd-implementer`, …) with
-  the same `agents/*.md` system prompts and the same read-only/coding tool
-  split as the session backend. Text results flow through the identical
-  `<control>` parser, so stages see byte-identical SpawnResults — including
-  the one bounded corrective re-prompt for missing control keys. Requires the
-  in-process event bus (running inside pi); without it (standalone CLI) the
-  backend silently degrades to `session`. Browser/web-research agents stay on
-  the forced subprocess backend. Caveats: agent registrations are captured at
-  activation — edit `agents/*.md` and run `/reload` (or restart pi) to refresh
-  them; terminal Fleet rows are best-effort and may unregister early if the
-  registry prunes them; delegation is unavailable in headless/rpc pi sessions
-  that expose no event bus (the session fallback applies).
-  **Fail-safe guarantees** (v0.3.26): registration prompts are trimmed to
-  satisfy pi-subagents' strict validator (the v0.3.25 bug where 27 of 29
-  registrations were silently rejected on a trailing newline, leaving only
-  `sd-code-reviewer`/`sd-adversarial-reviewer` resolvable); if the
-  registration handshake finds no pi-subagents owner in the process, the
-  whole backend degrades to `session` with one WARN instead of hanging to the
-  20-minute timeout; and a per-call `Unknown agent` answer degrades that
-  single call to `session` instead of burning convergence rounds. Registration
-  outcomes are summarized at activation (`registered N/29`, ERROR lines for
-  rejections) so a partial registration is visible immediately.
+**pi-subagents is a hard requirement.** Every specialist call is executed by
+pi-subagents' structured-delegation executor — the SAME machinery as the
+`subagent` tool. Install it and restart pi before using super-dev:
+
+```
+pi install npm:pi-subagents
+```
+
+(If super-dev runs without it, every specialist call fails closed with exactly
+this instruction in the error; the run never hangs.)
+
+- Each call appears in pi's Fleet UI with real turns/tool uses/tokens/output
+  logs, is live-steerable and stoppable, and is attributed to your pi session.
+  The specialists register as first-class `sd-*` agents at extension
+  activation (`sd-judge`, `sd-implementer`, …) with the `agents/*.md` system
+  prompts and the read-only/coding tool split.
+- **Browser and web-research roles load their tools via per-agent
+  `extensions`** in the registration (v0.3.64): `research-agent` gets
+  `pi-web-access` + `pi-mcp-adapter` (web tools + MCP gateway),
+  `qa-agent`/`ui-tester` get `pi-browser-cdp-extension` (`browser_execute`).
+  Verified live against pi-subagents 0.64 (spawned CLI children, `-e` args)
+  and 0.65 (in-process children, explicit extension paths) on 2026-09-04 —
+  the delegated child's tool list contains `web_search`, `fetch_content`,
+  `browser_execute`, etc. Declaring extensions disables AMBIENT discovery for
+  that child (the same isolation these roles always had).
+- Text results flow through the identical `<control>` parser, so stages see
+  byte-identical results — including one bounded corrective re-prompt for
+  missing control keys.
+- **Fail-closed infra classes (never silent, never the work's fault):**
+  - *No pi-subagents owner in the process* → the run refuses with the install
+    instruction (activation logs the ERROR too; v0.3.26 originally added the
+    degrade, v0.3.64 makes it an honest hard requirement).
+  - *Version skew* (v0.3.63, observed 0.64→0.65.0 on 2026-09-04): `pi update`
+    swapping the pi-subagents package under a LIVE pi session leaves the older
+    bridge in memory; its children die at startup (~5 s each) with
+    `Failed to load extension "…pi-subagents…"…`. super-dev detects that
+    package-scoped signature, fails the call with the remedy, and arms a
+    STICKY fail-fast: later calls return the same remedy instantly instead of
+    burning 5 s on the dead child. **Restart pi after any pi-subagents
+    upgrade/downgrade.**
+  - *Unknown agent* → the call's error names the re-register remedy (restart
+    pi re-registers the roster; registrations are captured at activation —
+    edit `agents/*.md` and run `/reload` or restart pi to refresh them).
 - **FleetView visibility** (v0.3.25, always-on in extension mode): every
   specialist call also publishes a display-only external run in pi's Fleet UI
   (live `currentAction`, terminal state, preview) through
-  `pi-subagents/external-runs` — even under the default session backend — so
-  the whole pipeline is observable from the Fleet panel. Best-effort by
-  contract: a missing pi-subagents install or a registry error is a silent
-  no-op.
-  **v0.3.63 version-skew degrade**: `pi update` swapping the pi-subagents
-  package under a LIVE pi session leaves the older bridge in memory; its
-  spawned children then die at startup against the newer on-disk package
-  (observed with 0.64→0.65.0 on 2026-09-04: every specialist failed in ~5 s
-  on `Failed to load extension "…pi-subagents…"…`). super-dev detects that
-  package-scoped signature in the delegation error, degrades the call to the
-  session backend, arms a sticky whole-session degrade (later calls skip
-  delegation entirely), and logs the remedy (restart pi so memory and disk
-  agree). Nothing about the v0.3.25 delegation/registration event contracts
-  changed in 0.65 — verified against a scratch 0.65 install end-to-end.
-  **v0.3.27 fixes + viewing notes**: records are now registered with the
-  session FILE path (`getSessionFile() ?? getSessionId()`), mirroring
-  pi-subagents' own fleet filter — the v0.3.25/26 code passed the bare
-  session uuid, which made every external row invisible in every Fleet view
-  (verified by an in-process probe: `snapshotExternalRuns(sessionFile)`
-  returned 0 rows). To actually see the pipeline: open the Fleet view
-  (`Ctrl+Alt+F`) **in the pi session that started the run** — foreground
-  state is per-process. Under the `pi-subagents` backend each call is a real
+  `pi-subagents/external-runs`. Best-effort by contract: a missing registry
+  or registry error is a silent no-op.
+  **Viewing notes** (v0.3.27): records are registered with the session FILE
+  path (`getSessionFile() ?? getSessionId()`), mirroring pi-subagents' own
+  fleet filter. Open the Fleet view (`Ctrl+Alt+F`) **in the pi session that
+  started the run** — foreground state is per-process. Each call is a real
   foreground subagent run (full turns/tools/tokens, live transcript under
-  `<session-dir>/subagent-artifacts/`); the “Async Result” panel lists only
-  async runs and never shows these. Under other backends the external rows
-  are display-only labels by contract.
+  `<session-dir>/subagent-artifacts/`); the "Async Result" panel lists only
+  async runs and never shows these.
 
-**Full-field progress parity (v0.3.28)**: run.log now reads uniformly across
-all three backends. Tool lines `label: → tool args…`, narration lines
-`label: ⇢ <text>` (session-backend narration previously fed only the TUI
-typing effect and never landed in run.log; the subprocess backend logged it
-unprefixed), and a terminal summary per call —
-`<backend> <label>: completed status=completed model=… turns=N tools=N
-tokens=in/out cache=r/w $cost duration=Xs`. The usage data was always
-available (the delegation terminal response carries `usage`; a session's
-assistant messages and the subprocess child's `message_end` events carry
-`{input, output, cacheRead, cacheWrite, cost}` — verified against live
-sessions); before v0.3.28 nobody aggregated it, and the delegation backend
-logged only the bare current tool name (`requirements-clarifier: ls`).
+**History**: v0.2.10–v0.3.x shipped three backends (session = in-process SDK
+sessions, subprocess = isolated `pi` CLI children, pi-subagents = this one).
+v0.3.64 deleted the first two — their shared utilities moved to
+`src/agents/agent-runtime.ts`, and the session executor survives verbatim ONLY
+as the standalone convergence bench harness (`src/bench/session-agent.ts`, dev
+tooling never used by the pipeline). The `agentBackend` config key,
+`SUPER_DEV_BACKEND` env, and the tool's `backend` parameter are gone (the
+parameter is still accepted but ignored for legacy callers). The end-of-run
+reflection agent also delegates (visible in Fleet); without an event bus
+(bench/tests) reflection skips with a named audit row instead of silently
+doing nothing.
+
+**Full-field progress parity (v0.3.28)**: run.log reads uniformly. Tool lines
+`label: → tool args…`, narration lines `label: ⇢ <text>`, and a terminal
+summary per call — `delegation <label>: completed status=completed model=…
+turns=N tools=N tokens=in/out cache=r/w $cost duration=Xs` — aggregated from
+the delegation terminal response's `usage`.
 
 Role timeouts: 480 s default, 1200 s for code-writing roles (`implementer`,
 `tdd-guide`) whose deliverable is real edits to large files.
@@ -545,7 +545,6 @@ set keys — see the next two sections):
 	"traceRetentionDays": 7,
 	"escalation": "informative",
 	"language": "english",
-	"agentBackend": "session",
 	"agentModels": { "...": "..." },
 	"agentThinking": { "...": "..." },
 	"env": { "SUPER_DEV_...": "..." }
@@ -630,8 +629,7 @@ All keys, defaults, and purposes:
 |---|---|---|
 | `SUPER_DEV_MODEL` | — | global model override (per-role `agentModels` wins) |
 | `SUPER_DEV_LANGUAGE` | `english` | output language for every agent-written artifact (beats `config.json` `language`) |
-| `SUPER_DEV_BACKEND` | `session` | agent backend: `session`, `subprocess`, or `pi-subagents` (v0.3.25; the config `agentBackend` key and the tool parameter override) |
-| `SUPER_DEV_THINKING` | — | per-agent thinking level for the session backend |
+| `SUPER_DEV_THINKING` | — | per-agent thinking level override (beats role tiers and inheritance) |
 | `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
 | `SUPER_DEV_MAX_RED_JUDGE_ROUTES` | `3` | routed judge interventions per phase before only `fix-environment` remains |
 | `SUPER_DEV_MAX_CHALLENGE_REAUTHORS` | `2` | implementer-driven RED re-author cap |
@@ -656,8 +654,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_MAX_INLINE_JUMPS` | `4` | cap on inline route-back jumps per journal |
 | `SUPER_DEV_NO_VERIFY_REPLAY_GUARD` | — | `1` = disable the Stage 10 replay guard |
 | `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |
-| `SUPER_DEV_NO_RPC_SPAWN` | — | `1` = fall back from same-session RPC spawns to one-shot `--mode json -p` |
-| `SUPER_DEV_NO_SKILLS` | — | `1` = disable skill inheritance on ALL backends (subprocess `--no-skills`, pi-subagents `inheritSkills:false`, session host skills withheld for spawned work) — pre-v0.2.10 isolation |
+| `SUPER_DEV_NO_SKILLS` | — | `1` = disable skill inheritance for delegated children (registration `inheritSkills:false`) — pre-v0.2.10 isolation |
 | `SUPER_DEV_ALLOW_OVERLAP` | — | `1` = override the cross-instance run guard (set after a `/reload` orphaned a still-running pipeline) and force a new run; also settable via the config.json env map (v0.3.61) |
 | `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
 | `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy (`""` = force workspace-wide) |

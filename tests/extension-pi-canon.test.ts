@@ -1,4 +1,6 @@
 /**
+ * (v0.3.64: the R5 subprocess-timeout-checkpoint source contract was deleted
+ *  with the subprocess backend — pi-spawn.ts is gone.)
  * v0.3.60 pi-canon alignment tests (researchPi R1/R2/R3/R7/R8/R9 + the
  * r59-P2-doc reword). Each test pins one canon adoption at its class level:
  *
@@ -103,15 +105,15 @@ describe("R1: typed pi.on(\"input\") subscription", () => {
 	});
 });
 
-describe("R2: backend param uses StringEnum (enum schema, Google-compatible)", () => {
-	it("backend serializes as {type:string, enum:[...]} with no union/anyOf", () => {
+describe("R2: backend param is a plain deprecated string (v0.3.64: no enum — value ignored)", () => {
+	it("backend serializes as {type:string} with no enum/union and stays optional", () => {
 		const pi = makeMockPi();
 		activate(pi);
 		const tool = registeredTool(pi);
 		expect(tool).toBeDefined();
 		const backend = tool.parameters.properties.backend;
-		expect(backend.enum).toEqual(["session", "subprocess", "pi-subagents"]);
 		expect(backend.type).toBe("string");
+		expect(backend.enum).toBeUndefined();
 		expect(backend.anyOf).toBeUndefined();
 		expect(backend.oneOf).toBeUndefined();
 		// Still optional — absent from required.
@@ -238,30 +240,6 @@ describe("R8: canonical tool-output truncation (content path)", () => {
 	});
 });
 
-describe("R5 wiring: subprocess timeout checkpoints before kill (source contract, class E)", () => {
-	const fs = require("node:fs");
-	const src = fs.readFileSync(new URL("../src/pi-spawn.ts", import.meta.url), "utf8");
-
-	it("the RPC turn-timeout path calls gracefulCheckpoint with clear_queue before finishMain", () => {
-		expect(src).toContain("const gracefulCheckpoint = async (why: string)");
-		expect(src).toContain('await gracefulCheckpoint("turn timed out")');
-		expect(src).toContain('await gracefulCheckpoint("corrective turn timed out")');
-		// checkpoint must be defined before its uses
-		expect(src.indexOf("const gracefulCheckpoint")).toBeLessThan(src.indexOf('await gracefulCheckpoint("turn timed out")'));
-	});
-
-	it("the parent-abort path checkpoints via sendControl, clear_queue BEFORE abort (Esc ordering)", () => {
-		const abortIdx = src.indexOf("const onAbort = () =>");
-		const clearIdx = src.indexOf('sendControl("clear_queue"', abortIdx);
-		const abortWriteIdx = src.indexOf('sendControl("abort"', abortIdx);
-		expect(clearIdx).toBeGreaterThan(-1);
-		expect(abortWriteIdx).toBeGreaterThan(clearIdx);
-		// v0.3.61: the abort-path checkpoint is bounded and AWAITED before dispose+
-		// settle (the raw fire-and-forget writes raced the SIGTERM).
-		const disposeIdx = src.indexOf('driver.dispose("aborted")', abortIdx);
-		expect(disposeIdx).toBeGreaterThan(abortWriteIdx);
-	});
-});
 
 describe("v0.3.61 review fixes (r60 lanes)", () => {
 	const fs = require("node:fs");

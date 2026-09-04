@@ -8,17 +8,16 @@ const backend = vi.hoisted(() => ({
 	run: async (_opts: { cwd: string; prompt?: string; accessMode?: string }) => ({ text: "", control: { ok: true } }),
 }));
 
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn((opts) => backend.run(opts as { cwd: string; prompt?: string; accessMode?: string })),
-	summarizeSlug: vi.fn(async () => "x"),
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn((opts) => backend.run(opts as { cwd: string; prompt?: string; accessMode?: string })),
+}));
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
 
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn((opts) => backend.run(opts as { cwd: string; prompt?: string; accessMode?: string })),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
-}));
+
 
 import { makeContext } from "../src/workflow.ts";
 import { debugWriter, docsWriter } from "../src/stages/writers.ts";
@@ -47,7 +46,7 @@ function makeRepo(): { cwd: string; specDir: string } {
 
 function ctxFor(cwd: string, specDir: string, logs: string[] = []): StageContext {
 	const state = { setup: { worktreePath: cwd, specDirectory: specDir } } as unknown as PipelineState;
-	return makeContext(state, "task", {}, (m) => logs.push(m));
+	return makeContext(state, "task", { events: {} as never }, (m) => logs.push(m));
 }
 
 afterEach(() => {

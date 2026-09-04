@@ -34,7 +34,7 @@ import { runPipelineTask } from "./pipeline.ts";
 import { maxReplanRounds, pendingHumanReplanRequests } from "./replan/replan.ts";
 import { releaseHeldRunLock } from "./setup.ts";
 import { appendRunEvent } from "./runlog.ts";
-import { abbreviatePath, type ThinkingLevel } from "./pi-spawn.ts";
+import { abbreviatePath, type ThinkingLevel } from "./agents/agent-runtime.ts";
 import { setActiveTracker } from "./tracking.ts";
 import { registerSuperDevAgents } from "./agents/register-agents.ts";
 import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
@@ -731,7 +731,7 @@ export default function activate(pi: ExtensionAPI): void {
 			skipStages: Type.Optional(Type.Array(Type.String(), { description: "Stage output keys to skip (advanced). Default: none." })),
 			// v0.3.60 R2 (canon): StringEnum over Type.Union(Type.Literal) — Google
 			// models fail schema validation on union-of-literals.
-			backend: Type.Optional(StringEnum(["session", "subprocess", "pi-subagents"] as const, { description: "Specialist execution backend. 'pi-subagents' runs specialists through pi's subagent executor (Fleet UI, steering, stop). Default: the config.json backend key, then session." })),
+			backend: Type.Optional(Type.String({ description: "DEPRECATED (v0.3.64, ignored): specialists always run through pi-subagents delegation. Kept so legacy callers passing a backend value are not rejected." })),
 			model: Type.Optional(Type.String({ description: "Model override for spawned specialist agents in provider/id form." })),
 			maxAgents: Type.Optional(Type.Number({ description: "Maximum specialist agent spawns. Default: 200." })),
 			resume: Type.Optional(Type.Boolean({ description: "Resume the most-recent interrupted run from where it left off (memoized replay). Default: false." })),
@@ -916,7 +916,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// provider's same-named model (the opencode mis-resolution bug).
 				// try/catch + a ctx guard — an older/non-TUI ctx exposes neither and
 				// degrades byte-identically to today (SCENARIO-002).
-				let inheritedModelObject: import("./session-agent.ts").SessionModelOption | undefined;
+				let inheritedModelObject: import("./agents/agent-runtime.ts").SessionModelOption | undefined;
 				let inheritedThinking: ThinkingLevel | undefined;
 				try {
 					if (ctx?.model?.id && ctx.model.provider) inheritedModelObject = ctx.model;
@@ -938,14 +938,13 @@ export default function activate(pi: ExtensionAPI): void {
 				// realAgent drains this ONCE per specialist spawn; empty while idle/after
 				// drain so non-TUI/idle runs inject nothing (byte-identical baseline).
 					// v0.3.25: thread pi's in-process event bus + session id into the run so
-					// the pi-subagents delegation backend (SUPER_DEV_BACKEND=pi-subagents or
-					// options.backend) and FleetView external-run visibility can operate in
-					// extension mode. Both degrade to inert in standalone CLI mode.
-					// v0.3.25: backend selector — explicit tool param beats the config.json
-					// `agentBackend` key beats the session default. "pi-subagents" activates the
-					// structured-delegation backend (Fleet UI / steering); it degrades to
-					// "session" automatically when no event bus is threaded (CLI mode).
-					backend: (typeof params.backend === "string" ? params.backend : getConfig().agentBackend) as import("./types.ts").RunOptions["backend"],
+					// the pi-subagents delegation backend (the ONLY backend since v0.3.64)
+					// and FleetView external-run visibility can operate in extension mode.
+					// Both degrade to inert in standalone CLI mode.
+					// v0.3.64: the backend selector (tool param / config agentBackend /
+					// SUPER_DEV_BACKEND env) is GONE — params.backend is accepted but
+					// ignored (deprecated), and a legacy agentBackend config key is a
+					// harmless leftover (README: Requirements).
 					events: (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined,
 					sessionId: (() => {
 						try {
@@ -1011,7 +1010,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// no false alarms for reflections that finished). The identity guard
 				// stops an old reflection's settle from clearing a NEWER run's
 				// tracking when reflections overlap across runs.
-				const reflection = runReflectionAsync(runDir);
+				const reflection = runReflectionAsync(runDir, (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined);
 				// Defensive: a non-promise return (legacy/tests) tracks nothing.
 				if (reflection) noteInFlightReflection(runDir, reflection);
 				// Stages for the result's stage-progress section, from the live tracker.

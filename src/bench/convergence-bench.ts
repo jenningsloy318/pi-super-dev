@@ -31,7 +31,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readdirSync } from "node:fs";
-import { runAgentViaSession } from "../session-agent.ts";
+import { runAgentViaSession } from "./session-agent.ts";
 import { runHelper } from "../helpers.ts";
 import { extractControlKeys } from "../control.ts";
 import { specConvergenceNode } from "../stages/spec-convergence.ts";

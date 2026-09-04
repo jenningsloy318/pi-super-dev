@@ -41,7 +41,7 @@ vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	};
 });
 
-import { agentThinkingFromConfig, agentModelThinkingFromConfig, resolveThinking, splitModelThinking, type ThinkingLevel } from "../src/pi-spawn.ts";
+import { agentThinkingFromConfig, agentModelThinkingFromConfig, resolveThinking, splitModelThinking, type ThinkingLevel } from "../src/agents/agent-runtime.ts";
 
 describe("agentThinkingFromConfig (pure lookup)", () => {
 	it("returns the configured level for a listed agent", () => {

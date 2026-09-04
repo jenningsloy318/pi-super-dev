@@ -15,23 +15,22 @@
  */
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async () => ({ text: "ok", control: { ran: true } })),
-	summarizeSlug: vi.fn(async () => "x"),
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn(async () => ({ text: "ok", control: { ran: true } })),
 }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async () => ({ text: "ok", control: { ran: true } })),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
+
 vi.mock("../src/render/knowledge.ts", () => ({ knowledgeForAgent: vi.fn(() => "") }));
 
 import { makeContext } from "../src/workflow.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
-	makeContext(state, "t", options, () => {});
+	makeContext(state, "t", { events: {} as never, ...options }, () => {});
 
 const CALL: AgentCall = { id: "pipeline.x", agent: "spec-writer", prompt: "p" };
 

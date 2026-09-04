@@ -38,11 +38,15 @@ describe("self-contained engine structure", () => {
 		expect(existsSync(join(ROOT, "src", "workflow.ts"))).toBe(true);
 		expect(existsSync(join(ROOT, "src", "stages", "index.ts"))).toBe(true);
 	});
-	it("spawns pi directly (the pi-workflow replacement)", () => {
-		const src = readFileSync(join(ROOT, "src", "pi-spawn.ts"), "utf8");
-		expect(src).toContain('"--mode"');
-		expect(src).toContain('"-p"');
-		expect(src).toContain("spawn");
+	it("runs every specialist through pi-subagents delegation (v0.3.64 single backend)", () => {
+		// The subprocess (pi-spawn.ts) and session (session-agent.ts) backends were
+		// deleted; the engine's only agent-execution seam is the delegation backend.
+		expect(existsSync(join(ROOT, "src", "agents", "delegation-backend.ts"))).toBe(true);
+		expect(existsSync(join(ROOT, "src", "pi-spawn.ts"))).toBe(false);
+		expect(existsSync(join(ROOT, "src", "session-agent.ts"))).toBe(false);
+		expect(existsSync(join(ROOT, "src", "agents", "agent-runtime.ts"))).toBe(true);
+		// The only surviving session caller is the bench harness (dev tooling).
+		expect(existsSync(join(ROOT, "src", "bench", "session-agent.ts"))).toBe(true);
 	});
 	it("has NO pi-workflow workflows directory", () => {
 		expect(existsSync(join(ROOT, "workflows"))).toBe(false);

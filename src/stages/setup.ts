@@ -9,8 +9,8 @@ import { seedRunEpochFromJournal } from "../routing/journal.ts";
 import { runSetup, referencedSpecIdentifier } from "../setup.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { abbreviatePath } from "../pi-spawn.ts";
-import { summarizeSlug } from "../session-agent.ts";
+import { abbreviatePath } from "../agents/agent-runtime.ts";
+import { summarizeSlug } from "../agents/agent-runtime.ts";
 import { ChangeTracker, setActiveTracker } from "../tracking.ts";
 
 export const setupStage: Stage = {

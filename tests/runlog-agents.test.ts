@@ -18,12 +18,9 @@ const { sessionMock } = vi.hoisted(() => ({
 		model: "provider/model-x",
 	})),
 }));
-vi.mock("../src/session-agent.ts", () => ({ runAgentViaSession: sessionMock }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async () => ({ text: "", control: null })),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: sessionMock,
 }));
 
 import { runWorkflow } from "../src/workflow.ts";
@@ -67,7 +64,7 @@ describe("agent.called ledger events (P1.3)", () => {
 				},
 			};
 			const wf: Workflow = { id: "t", root: sequence([task(setupStage(d)), task(agentStage)]) } as unknown as Workflow;
-			await runWorkflow(wf, "t", { maxAgents: 2 });
+			await runWorkflow(wf, "t", { maxAgents: 2, events: {} as never });
 
 			const events = readRunEvents(d).filter((e) => e.type === "agent.called");
 			expect(events.length).toBeGreaterThanOrEqual(2);
@@ -76,7 +73,7 @@ describe("agent.called ledger events (P1.3)", () => {
 			const success = events.find((e) => String(e.data.model) === "provider/model-x");
 			expect(success?.agent).toBe("implementer");
 			expect(success?.stage).toBe("research.writer");
-			expect(success?.data.backend).toBe("session");
+			expect(success?.data.backend).toBe("pi-subagents");
 			expect(success?.data.durationMs).toBeGreaterThanOrEqual(0);
 			const control = success?.data.control as Record<string, unknown>;
 			expect(control.keys).toContain("verdict");

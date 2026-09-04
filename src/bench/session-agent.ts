@@ -1,20 +1,21 @@
 /**
- * In-process specialist execution via the pi SDK (`createAgentSession`).
+ * BENCH-ONLY in-process specialist execution via the pi SDK
+ * (`createAgentSession`).
  *
- * This is the alternative to {@link spawnAgent} (raw `pi` subprocess). It runs a
- * specialist in-process, in-memory, and captures its result via a
- * `structured_output` tool (schema-validated) instead of parsing `<control>`
- * text from subprocess stdout. Same return contract as spawnAgent
- * ({@link SpawnResult}) so the workflow engine is unchanged.
+ * v0.3.64: the specialist PIPELINE runs exclusively through the pi-subagents
+ * delegation backend (src/agents/delegation-backend.ts) — the session and
+ * subprocess backends were removed from the pipeline. This module survives
+ * VERBATIM (modulo import paths) as the convergence BENCH harness's agent
+ * caller (src/bench/convergence-bench.ts): the bench measures convergence
+ * rounds against real model calls and runs standalone (node, no pi extension
+ * session, hence no delegation event bus). It is dev tooling, never imported
+ * by the pipeline — src/ is the only sanctioned consumer set, and nothing
+ * outside src/bench/ may import this file.
  *
- * Why: the subprocess path carried a whole class of bugs (spawn ENOENT,
- * RangeError on stdout buffering, <control> parse fragility, process timeouts).
- * The session path uses the same `@earendil-works/pi-coding-agent` SDK we
- * already peer-depend on — no new dependency — and gets structured output,
- * abort, and host config reuse (auth/model) for free.
- *
- * Select at runtime via `ctx.agent` (see workflow.ts): backend "session" uses
- * this; "subprocess" uses spawnAgent.
+ * It runs a specialist in-process, in-memory, and captures its result via a
+ * `structured_output` tool (schema-validated). Same return contract as the
+ * delegation backend ({@link SpawnResult}) so the bench exercises the same
+ * workflow seam the pipeline uses.
  */
 
 import {
@@ -28,20 +29,20 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { superDevEnv } from "./render/super-dev-dir.ts";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { Type, IsObject, IsOptional, type TSchema } from "typebox";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { getTracesDir } from "./render/super-dev-dir.ts";
-import { loadAgentPrompt } from "./agents.ts";
-import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "./control.ts";
-import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
-import { sanitizeSlug } from "./setup.ts";
-import { createSafetyExtensionFactory } from "./safety.ts";
-import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, skillsEnabled, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "./pi-spawn.ts";
-import { agentTerminalLine, newNarrationLines } from "./progress-lines.ts";
-import type { AgentAccessMode, AgentProgress, SpawnResult } from "./types.ts";
+import { getTracesDir } from "../render/super-dev-dir.ts";
+import { loadAgentPrompt } from "../agents.ts";
+import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
+import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
+import { sanitizeSlug } from "../setup.ts";
+import { createSafetyExtensionFactory } from "../safety.ts";
+import { defaultAgentTimeoutMs, isCodeWritingAgent, resolveExplicitThinking, resolveModel, resolveThinking, skillsEnabled, summarizeToolCall, thinkingForAgent, type ThinkingLevel } from "../agents/agent-runtime.ts";
+import { agentTerminalLine, newNarrationLines } from "../progress-lines.ts";
+import type { AgentAccessMode, AgentProgress, SpawnResult } from "../types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 /** Best-effort apply a thinking level to a live AgentSession (Phase 2). Calls
@@ -572,7 +573,8 @@ export async function runAgentViaSession(opts: SessionAgentOptions): Promise<Spa
 	// ~/.pi/agent/agents or project .pi/agents, and AGENTS.md/CLAUDE.md files are
 	// not appended to the specialist role. Skills follow the SAME switch as the
 	// other backends (v0.3.59 parity: SUPER_DEV_NO_SKILLS=1 disables everywhere;
-	// historically this loader hard-coded noSkills:true while pi-spawn.ts:387
+	// historically this loader hard-coded noSkills:true while the deleted
+// subprocess backend
 	// claimed the session backend "always inherits host skills" — both sides of
 	// that comment were wrong; this line is now the single source of truth).
 	const resourceLoader = new DefaultResourceLoader({

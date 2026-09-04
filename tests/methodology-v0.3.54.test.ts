@@ -362,8 +362,7 @@ describe("v0.3.54 F6 wiring — production extractControl call sites pass expect
 		// wrong-object-acceptance hole; this invariant fails the suite at commit time.
 		const { readFile } = await import("node:fs/promises");
 		const files = [
-			"src/session-agent.ts",
-			"src/pi-spawn.ts",
+			"src/bench/session-agent.ts",
 			"src/agents/delegation-backend.ts",
 			"src/resume.ts",
 		];
@@ -387,8 +386,9 @@ describe("v0.3.54 F6 wiring — production extractControl call sites pass expect
 				expect(hasComma, `${rel}:${line} must pass expectedKeys to extractControl (got: extractControl(${args}))`).toBe(true);
 			}
 		}
-		// sanity: the invariant actually saw the six production sites
-		expect(checked).toBeGreaterThanOrEqual(6);
+		// sanity: the invariant actually saw the production sites (4 since
+		// v0.3.64: the subprocess backend's two sites were deleted with it)
+		expect(checked).toBeGreaterThanOrEqual(4);
 	});
 });
 

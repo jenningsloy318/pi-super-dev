@@ -89,7 +89,7 @@ vi.mock("../src/setup.ts", () => ({ sanitizeSlug: vi.fn((s: string) => s) }));
 vi.mock("../src/safety.ts", () => ({ createSafetyExtensionFactory: vi.fn(() => () => ({ name: "safety", activate: () => ({}) })) }));
 vi.mock("../src/render/super-dev-dir.ts", () => ({ getTracesDir: vi.fn(() => "/tmp/traces"), superDevEnv: vi.fn(() => undefined) }));
 
-import { runAgentViaSession } from "../src/session-agent.ts";
+import { runAgentViaSession } from "../src/bench/session-agent.ts";
 
 describe("runAgentViaSession no-output corrective prompt", () => {
 	beforeEach(() => sdk.reset());

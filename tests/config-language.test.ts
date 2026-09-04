@@ -21,20 +21,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const captured: { session?: Record<string, unknown>; prompt?: string } = {};
 
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async (opts: Record<string, unknown>) => {
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn(async (opts: Record<string, unknown>) => {
 		captured.session = opts;
 		captured.prompt = opts.prompt as string | undefined;
 		return { text: "", control: {} };
 	}),
-	summarizeSlug: vi.fn(async () => "x"),
 }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async () => ({ text: "", control: {} })),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
+
 vi.mock("../src/render/knowledge.ts", () => ({
 	knowledgeForAgent: vi.fn(() => ""),
 }));
@@ -114,10 +113,11 @@ describe("configured output language", () => {
 
 	it("SCENARIO-L5: realAgent appends the directive as the LAST section of every prompt", async () => {
 		const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
-			makeContext(state, "t", options, () => {});
+			makeContext(state, "t", { events: {} as never, ...options }, () => {});
 		const call: AgentCall = { id: "pipeline.spec", agent: "spec-writer", prompt: "ORIG PROMPT\nOutput <control> JSON with: title." };
-		// force the session backend so a real config.json env map can't flip it
-		await mkCtx({} as PipelineState, { backend: "session" }).agent(call);
+		// v0.3.64: delegation is the only backend; the env/config backend
+		// selectors are gone, so no forcing is needed.
+		await mkCtx({} as PipelineState).agent(call);
 		expect(captured.prompt).toBeDefined();
 		expect(captured.prompt!.startsWith("ORIG PROMPT")).toBe(true);
 		// control-key extraction still works off the original prompt text

@@ -23,7 +23,7 @@ import {
 	strictControlSchema,
 	missingKeys,
 	type Capture,
-} from "../src/session-agent.ts";
+} from "../src/bench/session-agent.ts";
 import {
 	CodeReviewData,
 	SpecReviewData,

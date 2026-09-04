@@ -56,8 +56,9 @@ vi.mock("../src/workflow.ts", () => ({ runWorkflow: vi.fn(() => ({})) }));
 vi.mock("../src/nodes.ts", () => ({}));
 vi.mock("../src/stages/index.ts", () => ({ SUPER_DEV_WORKFLOW: {} }));
 
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn((opts: { prompt: string }) =>
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn((opts: { prompt: string }) =>
 		new Promise((resolve, reject) => {
 			agentGate.prompt = opts.prompt;
 			agentGate.resolveAgent = resolve;
@@ -236,7 +237,7 @@ describe("AC-29 (SCENARIO-060): a late reflection writes to the ORIGINATING run'
 		mkdirSync(runA, { recursive: true });
 		writeFileSync(auditPathFor(runA), JSON.stringify({ stage: "requirements", gate: { pass: false, errors: ["x"] } }) + "\n");
 
-		runReflectionAsync(runA); // gated reflection agent — still in flight
+		runReflectionAsync(runA, {} as never); // gated reflection agent — still in flight (bus threaded: v0.3.64 reflection delegates)
 		await until(() => agentGate.prompt.length > 0);
 		// The task's audit path was resolved from run A AT ENTRY.
 		expect(agentGate.prompt).toContain(auditPathFor(runA));

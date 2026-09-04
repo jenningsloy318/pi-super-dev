@@ -16,7 +16,7 @@ import {
 	detectServices,
 	withServiceDeps,
 } from "../src/stages/lifecycle.ts";
-import { SIGTERM_GRACE_MS } from "../src/pi-spawn.ts";
+import { SIGTERM_GRACE_MS } from "../src/agents/agent-runtime.ts";
 import { createServer } from "node:net";
 import type { Node, PipelineState, ServiceHandle } from "../src/types.ts";
 

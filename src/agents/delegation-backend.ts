@@ -29,7 +29,7 @@
 
 import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
 import { armDelegationWatchdog } from "../watchdog.ts";
-import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "../pi-spawn.ts";
+import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "./agent-runtime.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
 import type { AgentProgress, SpawnResult } from "../types.ts";
 
@@ -204,7 +204,7 @@ export interface DelegationAgentOptions {
 	allowEmptyArraysFor?: string[];
 	/** Inherited main-session defaults (SCENARIO-001 parity): applied BELOW an
 	 *  explicit model/thinking param, exactly like the other two backends. */
-	inheritedModelObject?: import("../session-agent.ts").SessionModelOption;
+	inheritedModelObject?: import("./agent-runtime.ts").SessionModelOption;
 	inheritedThinking?: string;
 	onProgress?: AgentProgress;
 	/** pi's in-process event bus (RunOptions.events, threaded from the
@@ -260,8 +260,8 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 	// main-session default > (thinking only) role default.
 	const model = opts.model ?? resolveModel(undefined) ?? (opts.inheritedModelObject ? `${opts.inheritedModelObject.provider}/${opts.inheritedModelObject.id}` : undefined);
 	if (model) request.model = model;
-	const perCallThinking = (opts.thinking ?? opts.thinkingLevel) as import("../pi-spawn.ts").ThinkingLevel | undefined;
-	const thinking = resolveThinking(opts.agent, perCallThinking, opts.inheritedThinking as import("../pi-spawn.ts").ThinkingLevel | undefined);
+	const perCallThinking = (opts.thinking ?? opts.thinkingLevel) as import("./agent-runtime.ts").ThinkingLevel | undefined;
+	const thinking = resolveThinking(opts.agent, perCallThinking, opts.inheritedThinking as import("./agent-runtime.ts").ThinkingLevel | undefined);
 	if (thinking) request.thinking = thinking;
 	if (timeoutMs) request.timeoutMs = timeoutMs;
 

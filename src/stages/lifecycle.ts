@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Node, NodeResult, PipelineState, ServiceHandle, ServiceMap, Stage, StageContext } from "../types.ts";
 import { checkBashCommand } from "../safety.ts";
-import { SIGTERM_GRACE_MS } from "../pi-spawn.ts";
+import { SIGTERM_GRACE_MS } from "../agents/agent-runtime.ts";
 
 /** How to start one service. `portEnv` is the env-var name that receives the
  *  chosen free port (e.g. "PORT"); `readyUrl` is polled (defaults to the base). */

@@ -21,10 +21,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { spawnAgent, isBrowserAgent, needsWebResearch, splitModelThinking } from "./pi-spawn.ts";
+import { splitModelThinking } from "./agents/agent-runtime.ts";
 import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
-import { runAgentViaSession } from "./session-agent.ts";
+
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
 import { runHelper } from "./helpers.ts";
 import { toBool } from "./doc-validators.ts";
@@ -57,6 +57,7 @@ import type {
 	RunOptions,
 	RunStatus,
 	RunSummary,
+	SpawnResult,
 	StageContext,
 	StageProgressEvent,
 	Workflow,
@@ -321,9 +322,16 @@ export function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
  *  gate attempt (which burned the budget when a model 429'd on every attempt). */
 const TRANSIENT_RE = /\b(429|rate.?limit|overload|too many requests|service unavailable|503|502|520|521|522|524|ECONNRESET|ETIMEDOUT|socket hang up)\b/i;
 /** v0.3.26: pi-subagents' executor answers unresolvable agent names with
- *  "Unknown agent: <name>". That error is a backend capability gap, never a
- *  task failure — realAgent degrades the call to the session backend. */
+ *  "Unknown agent: <name>". That error is a registration gap, never a task
+ *  failure — realAgent surfaces it as the call's error with the re-register
+ *  remedy named (no fallback backend since v0.3.64). */
 const UNKNOWN_AGENT_ERROR_RE = /unknown agent/i;
+
+/** v0.3.64: actionable per-call error when no pi-subagents owner is in the
+ *  process (hard requirement — no fallback backend). */
+const DELEGATION_OWNER_ABSENT_ERROR = "pi-subagents is not active in this session (no delegation owner answered the registration handshake). Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi — super-dev v0.3.64+ requires it.";
+/** v0.3.64: actionable per-call error for the sticky version-skew class. */
+const DELEGATION_VERSION_SKEW_ERROR = "pi-subagents version skew: the package changed under this live pi session (pi update mid-session), so delegated children die at startup. Restart pi so the in-memory backend matches the on-disk package, then re-run.";
 function isTransientAgentError(error?: string): boolean {
 	return !!error && TRANSIENT_RE.test(error);
 }
@@ -409,7 +417,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	// runWorkflow subscribes ("phase"/"stage") to route into the progress sink.
 	const events = new EventEmitter();
 
-	// v0.3.26: one-shot WARN for the pi-subagents→session whole-backend degrade.
+	// v0.3.26/v0.3.64: one-shot ERROR log for a missing pi-subagents owner.
 	let ownerWarned = false;
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
@@ -484,13 +492,14 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		const perCallThinking = call.thinking ?? splitModelThinking(call.model).thinking;
 		const thinkingLabel = perCallThinking ?? options.inheritedThinking ?? superDevEnv("SUPER_DEV_THINKING") ?? "role-default";
 		const accessMode = call.accessMode ?? "write";
-		const forcedBackend = isBrowserAgent(call.agent) || needsWebResearch(call.agent)
-			? "subprocess"
-			: (options.backend ?? (superDevEnv("SUPER_DEV_BACKEND") as "session" | "subprocess" | "pi-subagents" | undefined) ?? "session");
-		// v0.3.25: the pi-subagents delegation backend requires the in-process event
-		// bus (extension mode). Without it (standalone CLI) degrade to the session
-		// backend — an inert bus would hang every call on an unanswered request.
-		const backend = forcedBackend === "pi-subagents" && !options.events ? "session" : forcedBackend;
+		// v0.3.64: the pi-subagents delegation backend is the ONLY specialist
+		// backend — browser/web-research roles load their extension tools via the
+		// sd-* registration's per-agent `extensions` (agent-runtime.extensionsForAgent,
+		// verified live on pi-subagents 0.64 and 0.65 on 2026-09-04), so the old
+		// forced-subprocess routing and the session/subprocess backends are gone.
+		// options.events (the in-process bus) is a hard requirement: without it a
+		// delegation request would hang on an unanswered event — the run-level gate
+		// in extension.ts refuses to start, and this seam degrades defensively.
 		const inheritedModel = options.inheritedModelObject
 			? `${options.inheritedModelObject.provider}/${options.inheritedModelObject.id}`
 			: undefined;
@@ -582,67 +591,63 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			}
 			throw new Error(`source-read-only boundary violation: modified project files outside the spec artifact directory (${violations.join(", ")})`);
 		}
-		// Backend selectable. Default is 'session' (in-process createAgentSession):
-		// same SDK we peer-depend on, structured output via a schema, no spawn/
-		// stdout-buffering/<control>-parse fragility. The earlier failure (requirements
-		// gate) was NOT a session-backend defect — it was an incomplete control
-		// object caused by a permissive structured_output schema; fixed in
-		// session-agent.ts (per-stage schema + corrective re-prompt). 'subprocess'
-		// remains available via SUPER_DEV_BACKEND=subprocess.
-		// Browser agents (ui-tester, qa-agent) run via the SUBPROCESS backend even when
-		// the default is session — only the subprocess path loads pi-browser-cdp-extension
-		// (so they get the `browser_execute` tool: CDP with auto-discovery). The session
-		// backend's createCodingTools doesn't expose browser tooling.
-		// Web-research agents are ALSO forced onto the subprocess backend: they need
-		// pi's web tools (pi-web-access), which load via extension discovery in an
-		// ISOLATED process, never in the parent's in-process session (the session
-		// backend runs noExtensions + createCodingTools only, so it has no web tools).
-		// v0.3.25: backend "pi-subagents" routes the call through pi-subagents'
-		// structured-delegation executor — the same machinery as the `subagent` tool —
-		// so every specialist call appears in pi's Fleet UI (turns/tools/tokens/output
-		// logs) and is steerable/stoppable like any pi subagent. Requires
-		// options.events (extension mode); the selection above already degraded to
-		// "session" without it.
-		const exec = backend === "pi-subagents"
-			? async () => {
-				// v0.3.26 capability gate: if activate()'s registration handshake
-				// found no pi-subagents owner in this process, delegation requests
-				// would hang to the 20-minute timeout backstop. Degrade the whole
-				// backend to session instead (config stays untouched).
-				if (delegationOwnerPresent() === false && !ownerWarned) {
-					ownerWarned = true;
-					log("WARN pi-subagents backend requested but pi-subagents is not active in this session — degrading every agent call to the session backend. Install the pi-subagents pi package or unset agentBackend in ~/.super-dev/config.json.");
-				}
-				if (delegationOwnerPresent() === false) return runAgentViaSession(common);
-				// v0.3.63: sticky whole-backend degrade for the pi-subagents version-
-				// skew class (isDelegationRuntimeExtensionFailure in delegation-backend.ts
-				// for the full receipt): `pi update` swapping the package under a live
-				// session leaves an N-1 bridge in memory whose spawned children die at
-				// startup against the on-disk package. Once seen, it cannot self-heal in
-				// this process — skip delegation entirely so no later call burns its
-				// ~5s startup failure (2026-09-04 incident: every agent of two stages).
-				if (delegationBackendDegraded()) return runAgentViaSession(common);
-				const delegated = await runAgentViaDelegation({ ...common, events: options.events!, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state) });
-				// v0.3.63: the version-skew signature (pi-subagents' own runtime
-				// extension failing to load in the child) is an executor infra failure,
-				// never a task failure — P5: degrade, keep the work going, name the remedy.
-				if (delegated.error && isDelegationRuntimeExtensionFailure(delegated.error)) {
-					markDelegationBackendDegraded();
-					log(`WARN pi-subagents delegation infra failure (${delegated.error}) — the pi-subagents package changed under this live pi session (pi update mid-session), so the in-memory backend and the on-disk package disagree. Degrading every agent call in this pi session to the session backend. Remedy: restart pi (or downgrade/upgrade pi-subagents back to the version this session loaded) and re-run.`);
-					return runAgentViaSession(common);
-				}
-				// v0.3.26: an unresolvable agent name must not burn convergence
-				// rounds — run 2026-08-28T15-50-08 lost all 8 requirements rounds
-				// to instant "Unknown agent" errors after 30/32 registrations were
-				// rejected on trailing whitespace. Degrade that single call to the
-					// session backend, which needs no registration.
-				if (delegated.error && UNKNOWN_AGENT_ERROR_RE.test(delegated.error)) {
-					log(`WARN agent ${call.id ?? call.agent}: delegation rejected (${delegated.error}) — degrading to session backend`);
-					return runAgentViaSession(common);
-				}
-				return delegated;
+		// v0.3.25: every specialist call routes through pi-subagents' structured-
+		// delegation executor — the same machinery as the `subagent` tool — so each
+		// one appears in pi's Fleet UI (turns/tools/tokens/output logs) and is
+		// steerable/stoppable like any pi subagent. Since v0.3.64 this is the ONLY
+		// backend: pi-subagents is a hard requirement (README), browser/web-research
+		// roles load extension tools via the registration's per-agent `extensions`,
+		// and there is no session/subprocess fallback. Two infra failure classes
+		// (P5: never the work's fault) fail CLOSED with the remedy named:
+		//   1. owner absent (pi-subagents not active in this process) — extension.ts
+		//      refuses to start the run; this seam reports the actionable error per
+		//      call in case registration was lost mid-session.
+		//   2. version skew (v0.3.63 incident class: `pi update` swapped the package
+		//      under a live session) — sticky: once seen, later calls fail FAST with
+		//      the same remedy instead of burning ~5s each on the dead child.
+		const exec = async (): Promise<SpawnResult> => {
+			if (!options.events) {
+				return { text: "", control: null, error: "pi-subagents delegation requires the in-process event bus (extension mode) — run super-dev through the super_dev tool in a pi session, not the standalone CLI." };
 			}
-			: backend === "session" ? () => runAgentViaSession(common) : () => spawnAgent(common);
+			if (delegationOwnerPresent() === false && !ownerWarned) {
+				ownerWarned = true;
+				log("ERROR pi-subagents is not active in this session — every specialist call will fail. Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi. super-dev v0.3.64+ requires pi-subagents (README: Requirements).");
+			}
+			if (delegationOwnerPresent() === false) {
+				return { text: "", control: null, error: DELEGATION_OWNER_ABSENT_ERROR };
+			}
+			// v0.3.63 / v0.3.64: sticky fail-fast for the version-skew class
+			// (isDelegationRuntimeExtensionFailure in delegation-backend.ts for the
+			// full receipt): `pi update` swapping the package under a live session
+			// leaves an N-1 bridge in memory whose children die at startup against the
+			// on-disk package. It cannot self-heal in this process — fail every later
+			// call instantly with the remedy instead of burning ~5s on the dead child
+			// (2026-09-04 incident: every agent of two stages).
+			if (delegationBackendDegraded()) {
+				return { text: "", control: null, error: DELEGATION_VERSION_SKEW_ERROR };
+			}
+			const delegated = await runAgentViaDelegation({ ...common, events: options.events, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state) });
+			// v0.3.63: the version-skew signature (pi-subagents' own runtime
+			// extension failing to load in the child) is an executor infra failure,
+			// never a task failure — P5: fail closed naming the remedy (there is no
+			// fallback backend since v0.3.64); the sticky flag above makes later calls
+			// fail fast.
+			if (delegated.error && isDelegationRuntimeExtensionFailure(delegated.error)) {
+				markDelegationBackendDegraded();
+				log(`ERROR pi-subagents delegation infra failure (${delegated.error}) — the pi-subagents package changed under this live pi session (pi update mid-session), so the in-memory backend and the on-disk package disagree. Every later agent call in this pi session will fail fast. Remedy: restart pi (so memory matches the on-disk package) and re-run.`);
+				return { text: delegated.text, control: null, error: DELEGATION_VERSION_SKEW_ERROR };
+			}
+			// v0.3.26 → v0.3.64: an unresolvable agent name surfaces as the call's
+			// error (run 2026-08-28T15-50-08 lost all 8 requirements rounds to instant
+			// "Unknown agent" rejections; the old session-backend degrade no longer
+			// exists, but the registration seam trims/validates so this class is
+			// reduced to genuine registration loss, and the error text names the
+			// remedy for the operator).
+			if (delegated.error && UNKNOWN_AGENT_ERROR_RE.test(delegated.error)) {
+				log(`ERROR agent ${call.id ?? call.agent}: delegation rejected (${delegated.error}) — the sd-* registration is missing for this role; restart pi so activation re-registers (registration summary appears at super-dev activation).`);
+			}
+			return delegated;
+		};
 		const label = call.id ?? call.agent;
 		const started = Date.now();
 		let boundaryChecked = false;
@@ -668,7 +673,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				preview: result?.error ?? result?.text?.slice(0, 160),
 			});
 		};
-		log(`agent ${label}: start agent=${call.agent} backend=${backend} access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${common.model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
+		log(`agent ${label}: start agent=${call.agent} backend=pi-subagents access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${common.model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
 		try {
 			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
 			fleetDone(result);
@@ -689,7 +694,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				agent: call.agent,
 				stage: stageKey || call.agent,
 				type: "agent.called",
-				data: { agent: call.agent, model: result.model ?? common.model ?? null, backend, durationMs: elapsed, control: ledgerControlSummary(result.control), error: result.error },
+				data: { agent: call.agent, model: result.model ?? common.model ?? null, backend: "pi-subagents", durationMs: elapsed, control: ledgerControlSummary(result.control), error: result.error },
 			});
 			return result;
 		} catch (err) {
@@ -708,7 +713,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				agent: call.agent,
 				stage: stageKey || call.agent,
 				type: "agent.called",
-				data: { agent: call.agent, model: common.model ?? null, backend, durationMs: elapsed, error: message },
+				data: { agent: call.agent, model: common.model ?? null, backend: "pi-subagents", durationMs: elapsed, error: message },
 			});
 			throw finalErr;
 		}

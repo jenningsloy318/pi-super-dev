@@ -1,48 +1,38 @@
 /**
- * v0.3.25 — backend selection for the pi-subagents delegation backend (L2)
- * and FleetView visibility wrapping (L1) in realAgent.
+ * v0.3.64 — delegation-ONLY specialist execution (L2) and FleetView visibility
+ * wrapping (L1) in realAgent.
  *
- * Contract under test:
- *  - `backend: "pi-subagents"` + an event bus on RunOptions routes the call
- *    through runAgentViaDelegation (a structured-delegation request appears
- *    on the bus, and its terminal response becomes the agent result).
- *  - `backend: "pi-subagents"` WITHOUT an event bus (standalone CLI) is a
- *    graceful fallback to the session backend — never a crash.
- *  - browser/web-research agents keep their forced subprocess routing even
- *    under the pi-subagents backend.
- *  - regardless of backend, an agent call publishes a FleetView external run
- *    (register + terminal update) when visibility inputs are available, and
- *    never when they are not.
+ * The session and subprocess backends were deleted in v0.3.64 (pi-subagents is
+ * a hard requirement). Contract under test:
+ *  - an event bus on RunOptions routes EVERY call through
+ *    runAgentViaDelegation (a structured-delegation request appears on the
+ *    bus, and its terminal response becomes the agent result) — including
+ *    browser and web-research roles, whose extension tools now ride the sd-*
+ *    registration's per-agent `extensions` (verified live against
+ *    pi-subagents 0.64 and 0.65 on 2026-09-04).
+ *  - NO event bus (standalone CLI) fails CLOSED with an actionable per-call
+ *    error naming extension mode — never a crash, never a silent fallback.
+ *  - owner absent (no pi-subagents in the process) fails CLOSED with the
+ *    install remedy; no delegation request is ever emitted (20-min hang
+ *    prevented, v0.3.26 origin).
+ *  - the version-skew class (v0.3.63: `pi update` swapped the package under a
+ *    live session) fails CLOSED with the restart remedy AND is sticky: later
+ *    calls fail fast without emitting a request (2026-09-04 incident: every
+ *    agent of two stages died in ~5s each).
+ *  - an "Unknown agent" answer surfaces as the call's error (delegation
+ *    attempted once — NOT sticky; the registration seam re-registers on pi
+ *    restart).
+ *  - regardless of execution path, an agent call publishes a FleetView
+ *    external run (register + terminal update) when visibility inputs are
+ *    available, and never when they are not.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 
 const captured: {
-	session?: Record<string, unknown>;
-	subprocess?: Record<string, unknown>;
 	delegationRequests: any[];
 } = { delegationRequests: [] };
 
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async (opts: Record<string, unknown>) => {
-		captured.session = opts;
-		return { text: 'ok <control>{"a":1}</control>', control: { a: 1 } };
-	}),
-	summarizeSlug: vi.fn(async () => "x"),
-}));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async (opts: Record<string, unknown>) => {
-		captured.subprocess = opts;
-		return { text: "ok", control: {} };
-	}),
-	isBrowserAgent: vi.fn((agent: string) => agent === "ui-tester"),
-	needsWebResearch: vi.fn((agent: string) => agent === "research-agent"),
-	// delegation-backend imports these — provide honest stubs (review-2 P1).
-	defaultAgentTimeoutMs: vi.fn(() => 1_200_000),
-	resolveModel: vi.fn(() => undefined),
-	resolveThinking: vi.fn(() => undefined),
-}));
 vi.mock("../src/render/knowledge.ts", () => ({
 	knowledgeForAgent: vi.fn(() => ""),
 }));
@@ -63,7 +53,7 @@ vi.mock("../src/agents/fleet-visibility.ts", () => ({
 }));
 
 /** v0.3.26 owner-presence probe: controllable per test. Default `null`
- *  (never probed) must NOT degrade — only a definite `false` does. */
+ *  (never probed) must NOT fail — only a definite `false` does. */
 const ownerProbe = vi.hoisted(() => ({ present: null as boolean | null }));
 vi.mock("../src/agents/register-agents.ts", () => ({
 	delegationOwnerPresent: vi.fn(() => ownerProbe.present),
@@ -78,7 +68,7 @@ const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
 
 const CALL: AgentCall = { id: "pipeline.judge.a1", agent: "judge", prompt: "ORIG PROMPT\n\nOutput <control> JSON with: route." };
 
-/** A fake pi EventBus that ALSO plays the pi-subagents owner: every
+/** A fake pi EventEmitter that ALSO plays the pi-subagents owner: every
  *  delegation request is answered with a terminal response (result in the
  *  REAL { kind: "text", text } envelope shape — review-2 P0). */
 function ownerBus(resultText = 'done <control>{"route":"escalate-now"}</control>') {
@@ -112,116 +102,95 @@ function failingOwnerBus(error: string) {
 	return { bus };
 }
 
-describe("backend selection: pi-subagents delegation", () => {
+describe("delegation-only specialist execution (v0.3.64)", () => {
 	beforeEach(() => {
-		// v0.3.63: the version-skew degrade is sticky module state — reset it so
-		// tests are order-independent.
+		// v0.3.63: the version-skew fail-fast is sticky module state — reset it
+		// so tests are order-independent.
 		resetDelegationBackendDegradeForTests();
+		ownerProbe.present = null;
 	});
-	it("routes through the delegation bridge when backend=pi-subagents and an event bus is present", async () => {
+
+	it("routes every specialist call through the delegation bridge when an event bus is present", async () => {
 		captured.delegationRequests = [];
 		const { bus } = ownerBus();
-		const result = await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, {
-			backend: "pi-subagents",
-			events: bus,
-		} as RunOptions).agent(CALL);
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { events: bus } as RunOptions).agent(CALL);
 		expect(captured.delegationRequests.length).toBeGreaterThanOrEqual(1);
 		expect(captured.delegationRequests[0].agent).toBe("sd-judge");
 		expect(captured.delegationRequests[0].task).toContain("ORIG PROMPT");
 		expect(captured.delegationRequests[0].ownerRunId).toBeTruthy();
 		expect(result.control).toEqual({ route: "escalate-now" });
 		expect(result.model).toBe("fake/model-1");
-		expect(captured.session).toBeUndefined(); // did NOT fall back
 	});
 
-	it("falls back to the session backend without an event bus (standalone CLI) — no crash, real result", async () => {
-		delete captured.session;
-		const result = await mkCtx({}, { backend: "pi-subagents" } as RunOptions).agent(CALL);
-		expect(captured.session).toBeDefined();
-		expect(result.control).toEqual({ a: 1 });
+	it("fails CLOSED without an event bus (standalone CLI) — actionable error, never a crash", async () => {
+		captured.delegationRequests = [];
+		const result = await mkCtx({}, {} as RunOptions).agent(CALL);
+		expect(captured.delegationRequests).toHaveLength(0);
+		expect(result.error).toContain("extension mode");
+		expect(result.control).toBeNull();
 	});
 
-	it("browser and web-research agents stay on the forced subprocess backend even under pi-subagents", async () => {
-		delete captured.subprocess;
+	it("browser and web-research agents DELEGATE like every other role — their extension tools ride the registration's per-agent extensions (v0.3.64; verified live on 0.64 and 0.65, 2026-09-04)", async () => {
+		captured.delegationRequests = [];
 		const { bus } = ownerBus();
-		await mkCtx({}, { backend: "pi-subagents", events: bus } as RunOptions).agent({ ...CALL, agent: "ui-tester" });
-		expect(captured.subprocess).toBeDefined();
-		expect(captured.delegationRequests.filter((r: any) => r.agent === "sd-ui-tester")).toHaveLength(0);
+		await mkCtx({}, { events: bus } as RunOptions).agent({ ...CALL, agent: "ui-tester" });
+		await mkCtx({}, { events: bus } as RunOptions).agent({ ...CALL, agent: "research-agent" });
+		expect(captured.delegationRequests.filter((r: any) => r.agent === "sd-ui-tester")).toHaveLength(1);
+		expect(captured.delegationRequests.filter((r: any) => r.agent === "sd-research-agent")).toHaveLength(1);
 	});
 
-	it("SUPER_DEV_BACKEND=pi-subagents selects the delegation backend via env", async () => {
-		captured.delegationRequests = [];
-		process.env.SUPER_DEV_BACKEND = "pi-subagents";
-		try {
-			const { bus } = ownerBus();
-			await mkCtx({}, { events: bus } as RunOptions).agent(CALL);
-			expect(captured.delegationRequests.length).toBeGreaterThanOrEqual(1);
-		} finally {
-			delete process.env.SUPER_DEV_BACKEND;
-		}
-	});
-
-	it("degrades to the session backend when delegation answers 'Unknown agent' — must not burn convergence rounds (run 2026-08-28T15-50-08: 8 requirements rounds lost in ~2.5s)", async () => {
-		ownerProbe.present = null; // probe unknown → delegation still attempted
-		captured.delegationRequests = [];
-		delete captured.session;
-		const { bus } = failingOwnerBus("Unknown agent: sd-task-classifier");
-		const result = await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
-		expect(captured.delegationRequests.length).toBeGreaterThanOrEqual(1); // delegation WAS tried
-		expect(captured.session).toBeDefined(); // ...then degraded to session
-		expect(result.control).toEqual({ a: 1 }); // session result surfaced, no error
-	});
-
-	it("degrades EVERY call to session without emitting a request when the registration handshake found no pi-subagents owner (20-min hang prevented)", async () => {
+	it("fails CLOSED with the install remedy when the registration handshake found no pi-subagents owner (20-min hang prevented)", async () => {
 		ownerProbe.present = false;
 		captured.delegationRequests = [];
-		delete captured.session;
 		const { bus } = ownerBus();
-		const result = await mkCtx({ setup: { specIdentifier: "spec-t3" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t3" } as any }, { events: bus } as RunOptions).agent(CALL);
 		expect(captured.delegationRequests).toHaveLength(0); // never even asked
-		expect(captured.session).toBeDefined();
-		expect(result.control).toEqual({ a: 1 });
-		ownerProbe.present = null;
+		expect(result.error).toContain("pi install npm:pi-subagents");
+		expect(result.control).toBeNull();
 	});
 
-	it("other delegation errors do NOT trigger the session fallback (real failures stay visible)", async () => {
+	it("an 'Unknown agent' answer surfaces as the call's error (no fallback backend since v0.3.64) and is NOT sticky (run 2026-08-28T15-50-08 origin)", async () => {
 		captured.delegationRequests = [];
-		delete captured.session;
+		const { bus } = failingOwnerBus("Unknown agent: sd-task-classifier");
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests.length).toBeGreaterThanOrEqual(1); // delegation WAS tried
+		expect(result.error).toContain("Unknown agent");
+		// Not sticky: a later call attempts delegation again (a restart may have
+		// re-registered the roster).
+		captured.delegationRequests = [];
+		await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("other delegation errors surface as the call's error (real failures stay visible)", async () => {
+		captured.delegationRequests = [];
 		const { bus } = failingOwnerBus("spawn crashed: oom");
-		const result = await mkCtx({ setup: { specIdentifier: "spec-t2" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
-		expect(captured.session).toBeUndefined();
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t2" } as any }, { events: bus } as RunOptions).agent(CALL);
 		expect(result.error).toContain("oom");
 	});
 
-	it("a version-skew runtime-extension failure degrades to session AND is sticky for the process (2026-09-04 incident: every agent of two stages died in ~5s)", async () => {
-		ownerProbe.present = null;
+	it("a version-skew runtime-extension failure fails CLOSED with the restart remedy AND is sticky (2026-09-04 incident: every agent of two stages died in ~5s)", async () => {
 		captured.delegationRequests = [];
-		delete captured.session;
 		// Byte-identical shape to the 2026-09-04 14:57 run.log error: an in-memory
 		// 0.64 bridge spawned `pi` CLI children with -e pointing at the on-disk
 		// 0.65 subagent-prompt-runtime.ts whose activate signature gained a config.
 		const skewError = 'Failed to load extension "/home/jenningsl/.pi/agent/npm/node_modules/pi-subagents/src/runs/shared/subagent-prompt-runtime.ts": Failed to load extension: Cannot read properties of undefined (reading \'runtimeAcknowledgements\')';
 		const { bus } = failingOwnerBus(skewError);
-		// Call 1: delegation attempted once, degrades to session, work continues.
-		const first = await mkCtx({ setup: { specIdentifier: "spec-skew" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		// Call 1: delegation attempted once, fails with the named remedy.
+		const first = await mkCtx({ setup: { specIdentifier: "spec-skew" } as any }, { events: bus } as RunOptions).agent(CALL);
 		expect(captured.delegationRequests).toHaveLength(1);
-		expect(captured.session).toBeDefined();
-		expect(first.control).toEqual({ a: 1 });
+		expect(first.error).toContain("Restart pi");
 		// Call 2: sticky — no second delegation request (no per-call 5s burn).
 		captured.delegationRequests = [];
-		delete captured.session;
-		const second = await mkCtx({ setup: { specIdentifier: "spec-skew" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		const second = await mkCtx({ setup: { specIdentifier: "spec-skew" } as any }, { events: bus } as RunOptions).agent(CALL);
 		expect(captured.delegationRequests).toHaveLength(0);
-		expect(captured.session).toBeDefined();
-		expect(second.control).toEqual({ a: 1 });
+		expect(second.error).toContain("Restart pi");
 	});
 
-	it("an extension-load failure OUTSIDE pi-subagents' package is NOT the version-skew class (no degrade, error stays visible)", async () => {
+	it("an extension-load failure OUTSIDE pi-subagents' package is NOT the version-skew class (error stays visible, not sticky)", async () => {
 		captured.delegationRequests = [];
-		delete captured.session;
 		const { bus } = failingOwnerBus('Failed to load extension "/tmp/repro-cwd/other-extension.js": Failed to load extension: boom');
-		const result = await mkCtx({ setup: { specIdentifier: "spec-t4" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
-		expect(captured.session).toBeUndefined();
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t4" } as any }, { events: bus } as RunOptions).agent(CALL);
 		expect(result.error).toContain("other-extension.js");
 	});
 });
@@ -247,7 +216,8 @@ describe("delegation version-skew classifier (v0.3.63)", () => {
 describe("FleetView visibility wrap (v0.3.25 L1)", () => {
 		it("registers an external run and records the terminal state for every agent call (sessionId present)", async () => {
 			fleet.begun = []; fleet.updated = []; fleet.finished = [];
-			const result = await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { sessionId: "sess-1" } as RunOptions).agent(CALL);
+			const { bus } = ownerBus('ok <control>{"a":1}</control>');
+			const result = await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { sessionId: "sess-1", events: bus } as RunOptions).agent(CALL);
 			expect(result.control).toEqual({ a: 1 });
 			expect(fleet.begun).toHaveLength(1);
 			expect(fleet.begun[0].source).toBe("super-dev");
@@ -258,26 +228,10 @@ describe("FleetView visibility wrap (v0.3.25 L1)", () => {
 			expect(fleet.finished[0].state).toBe("completed");
 			expect(String(fleet.finished[0].preview)).toContain('"a":1');
 		});
-
-		it("stays completely silent without a sessionId (CLI mode — no visibility inputs)", async () => {
-			fleet.begun = []; fleet.updated = []; fleet.finished = [];
-			await mkCtx({}, {} as RunOptions).agent(CALL);
-			expect(fleet.begun).toHaveLength(0);
-			expect(fleet.finished).toHaveLength(0);
-		});
-
 		it("records the terminal row as failed with the error preview when the backend errors", async () => {
 			fleet.begun = []; fleet.updated = []; fleet.finished = [];
-			const { bus } = ownerBus();
-			bus.on("prompt-template:subagent:request", () => {
-				throw new Error("owner exploded");
-			});
-			// remove the default owner handler? EventEmitter keeps both listeners;
-			// instead use a bus that never answers and a tiny timeout via a failing
-			// agent: simplest — mock session backend to error.
-			const { runAgentViaSession } = await import("../src/session-agent.ts");
-			(runAgentViaSession as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({ text: "", control: null, error: "child crashed" }));
-			await mkCtx({}, { sessionId: "sess-2" } as RunOptions).agent(CALL);
+			const { bus } = failingOwnerBus("child crashed");
+			await mkCtx({ setup: { specIdentifier: "spec-t1" } as any }, { sessionId: "sess-2", events: bus } as RunOptions).agent(CALL);
 			expect(fleet.finished).toHaveLength(1);
 			expect(fleet.finished[0].state).toBe("failed");
 			expect(String(fleet.finished[0].preview)).toContain("child crashed");

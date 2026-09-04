@@ -16,22 +16,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const captured: { prompt?: string } = {};
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async (opts: { prompt?: string }) => {
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn(async (opts: { prompt?: string }) => {
 		captured.prompt = opts.prompt;
 		return { text: "", control: {} };
 	}),
-	summarizeSlug: vi.fn(async () => "x"),
 }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async (opts: { prompt?: string }) => {
-		captured.prompt = opts.prompt;
-		return { text: "", control: {} };
-	}),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
+
 const KNOWLEDGE_BODY = "KNOWLEDGE-FROM-PRIOR-STAGE";
 const KNOWLEDGE_MARKER = "## Prior-stage data (auto-injected)\nKNOWLEDGE-FROM-PRIOR-STAGE";
 vi.mock("../src/render/knowledge.ts", () => ({
@@ -71,7 +67,7 @@ function makeProviderSpy(initial: string[] = []) {
 }
 
 const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
-	makeContext(state, "t", options, () => {});
+	makeContext(state, "t", { events: {} as never, ...options }, () => {});
 
 const BASE_CALL: AgentCall = { id: "pipeline.spec", agent: "spec-writer", prompt: "BASE PROMPT" };
 

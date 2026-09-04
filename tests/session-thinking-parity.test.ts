@@ -65,7 +65,7 @@ vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	};
 });
 
-import * as SessionAgent from "../src/session-agent.ts";
+import * as SessionAgent from "../src/bench/session-agent.ts";
 
 const saveEnv = (...keys: string[]) => {
 	const snapshot: Record<string, string | undefined> = {};

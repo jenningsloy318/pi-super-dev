@@ -9,30 +9,28 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 
 // A queue of backend responses, drained in order. Each test sets its own.
 let responses: Array<{ error?: string; control?: Record<string, unknown> | null; text?: string }> = [];
-vi.mock("../src/session-agent.ts", () => ({
-	runAgentViaSession: vi.fn(async () => responses.shift() ?? { text: "ok", control: {} }),
-	summarizeSlug: vi.fn(async () => "x"),
+vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
+	runAgentViaDelegation: vi.fn(async () => responses.shift() ?? { text: "ok", control: {} }),
 }));
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
-	spawnAgent: vi.fn(async () => ({ text: "ok", control: {} })),
-	isBrowserAgent: vi.fn(() => false),
-	needsWebResearch: vi.fn(() => false),
+vi.mock("../src/agents/register-agents.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/register-agents.ts")>(),
+	delegationOwnerPresent: vi.fn(() => true),
 }));
 vi.mock("../src/render/knowledge.ts", () => ({ knowledgeForAgent: vi.fn(() => "") }));
 
 import { makeContext } from "../src/workflow.ts";
-import { runAgentViaSession } from "../src/session-agent.ts";
+import { runAgentViaDelegation } from "../src/agents/delegation-backend.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const CALL: AgentCall = { id: "pipeline.x", agent: "spec-writer", prompt: "p" };
 const captured: string[] = [];
 const mkCtx = (o: RunOptions = {}) =>
-	makeContext({} as PipelineState, "t", { ...o, progress: { phase() {}, log: () => {}, text() {} } }, (m) => captured.push(m));
-const calls = () => vi.mocked(runAgentViaSession).mock.calls.length;
+	makeContext({} as PipelineState, "t", { events: {} as never, ...o, progress: { phase() {}, log: () => {}, text() {} } }, (m) => captured.push(m));
+const calls = () => vi.mocked(runAgentViaDelegation).mock.calls.length;
 
 describe("transient-error retry in realAgent (429 / overload)", () => {
-	beforeEach(() => { responses = []; captured.length = 0; vi.mocked(runAgentViaSession).mockClear(); });
+	beforeEach(() => { responses = []; captured.length = 0; vi.mocked(runAgentViaDelegation).mockClear(); });
 	afterAll(() => { delete process.env.SUPER_DEV_TRANSIENT_RETRY_MS; });
 
 	it("retries a 429 transient error with backoff and succeeds", async () => {

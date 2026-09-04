@@ -16,8 +16,8 @@ vi.mock("../src/workflow.ts", () => ({ runWorkflow: vi.fn(() => ({})) }));
 vi.mock("../src/nodes.ts", () => ({}));
 vi.mock("../src/stages/index.ts", () => ({ SUPER_DEV_WORKFLOW: {} }));
 
-vi.mock("../src/pi-spawn.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/pi-spawn.ts")>(),
+vi.mock("../src/agents/agent-runtime.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/agent-runtime.ts")>(),
 	abbreviatePath: vi.fn((p: string) => p),
 	spawnAgent: vi.fn(async () => ({ text: "", control: null })),
 }));

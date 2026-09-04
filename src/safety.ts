@@ -9,8 +9,11 @@
  *     suppresses ambient global-extension discovery — see verification doc C9 —
  *     while inline factories still load). This gives HARD, uniform interception
  *     of every tool the child calls, bound to that child session.
- *  2. Subprocess backend: `safetyPreamble()` is prepended to the system prompt —
- *     a SOFT guardrail (defense-in-depth) for `SUPER_DEV_BACKEND=subprocess`.
+ *  2. v0.3.64: the subprocess backend is DELETED — `safetyPreamble()` now has
+ *     no pipeline consumer (the bench harness keeps the module alive).
+ *     Delegated children rely on the registration tool allowlists
+ *     (READ_ONLY_TOOLS / WRITER_TOOLS) plus the downstream deterministic
+ *     gates, not on this soft preamble.
  *
  * The denylist + protected-file patterns are ported verbatim from the original
  * plugin's battle-tested hook scripts. Protected-file logic differs in one

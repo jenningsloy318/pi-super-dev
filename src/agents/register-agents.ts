@@ -19,7 +19,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { skillsEnabled } from "../pi-spawn.ts";
+import { extensionsForAgent, skillsEnabled } from "./agent-runtime.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
 export const RUNTIME_AGENT_REGISTER_EVENT = "pi-subagents:runtime-agent-register:v1";
@@ -107,7 +107,7 @@ let ownerPresentSeen: boolean | null = null;
  *  activate() time. `null` = never probed (tests, CLI, or a different
  *  module instance) — callers must treat unknown as "proceed", only a
  *  definite `false` degrades. This is the capability check for the
- *  `agentBackend: "pi-subagents"` config: without an owner listening,
+ *  every specialist call (pi-subagents is required since v0.3.64): without an owner listening,
  *  every delegation request would hang to its timeout backstop. */
 export function delegationOwnerPresent(): boolean | null {
 	return ownerPresentSeen;
@@ -120,7 +120,7 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	const request: {
 		version: 1;
 		name: string;
-		definition: { description: string; systemPrompt: string; tools: readonly string[]; inheritSkills: boolean };
+		definition: { description: string; systemPrompt: string; tools: readonly string[]; inheritSkills: boolean; extensions?: string[] };
 		result?: { ok: true; registration: { dispose(): void } } | { ok: false; error: Error };
 	} = {
 		version: 1,
@@ -142,6 +142,17 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			// BINDING enforcement is the downstream deterministic gates (P4:
 			// prompts and skills are advisory).
 			inheritSkills: skillsEnabled(),
+			// v0.3.64 — per-agent extension entries for roles that need
+			// extension-provided tools: research-agent (pi-web-access web tools +
+			// pi-mcp-adapter MCP gateway) and qa-agent/ui-tester
+			// (pi-browser-cdp-extension `browser_execute`). Verified live on
+			// pi-subagents 0.64 (-e on the spawned CLI child) AND 0.65 (in-process
+			// extensionPaths) on 2026-09-04: the child's tool list contains
+			// web_search/fetch_content/browser_execute etc. Declaring `extensions`
+			// disables AMBIENT discovery for that child — the same isolation these
+			// roles always had on the deleted subprocess backend; missing packages
+			// degrade to an empty list (agent loses the tools, run continues).
+			...(extensionsForAgent(name).length > 0 ? { extensions: extensionsForAgent(name) } : {}),
 		},
 	};
 	try {
@@ -179,7 +190,7 @@ export function registerSuperDevAgents(events: DelegationEventBus, log: (line: s
 	if (answered === 0) {
 		// No pi-subagents owner in this process: the delegation backend would
 		// hang per call, so say exactly what the user should do (v0.3.26).
-		log("WARN super-dev: pi-subagents is not active in this session — the 'pi-subagents' agentBackend would degrade to 'session'. Install pi-subagents (the pi package, not an npm dep) or remove agentBackend from ~/.super-dev/config.json.");
+		log("ERROR super-dev: pi-subagents is not active in this session — every specialist call will fail until it is installed. super-dev v0.3.64+ REQUIRES pi-subagents (a hard requirement — see README: Requirements). Install it with: pi install npm:pi-subagents — then restart pi.");
 	} else if (accepted.length < total) {
 		log(`ERROR super-dev: only ${accepted.length}/${total} sd-* agents registered — delegation for the missing names degrades to the session backend per call (see the rejection lines above).`);
 	} else {

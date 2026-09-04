@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dedupeSlugIndex, runSetup } from "../src/setup.ts";
-import { taskFilePaths, taskFileExcerpts } from "../src/session-agent.ts";
+import { taskFilePaths, taskFileExcerpts } from "../src/agents/agent-runtime.ts";
 
 const TEMPLATE = (n: string, slug: string) =>
 	`by referencing design docs/research/pi-omisis-master-design.md, implement docs/requirements/${n}-${slug}.md`;
