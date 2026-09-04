@@ -1,4 +1,4 @@
-import { FatalAbort, gateValidator, task } from "../nodes.ts";
+import { AGENT_ERROR_FATAL_CONSECUTIVE, agentErrorTextsSince, FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
@@ -429,6 +429,14 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 			// rounds run no reviewer and must not consume the reviewer's free
 			// early passes.
 			let reviewRound = 0;
+			// v0.3.65 (incident 2026-09-04T13-45-10, P5 class fix): consecutive
+			// agent-error rounds per role. A dead writer or reviewer runtime must
+			// abort with the infra error NAMED — never masquerade as artifact
+			// rejections spinning rounds to the cap. Only FRESH rounds count
+			// (round > priorRounds, the cap gate's convention): replayed cache hits
+			// carry no new evidence and a fixed runtime must be allowed to recover.
+			let consecutiveWriterAgentErrors = 0;
+			let consecutiveReviewAgentErrors = 0;
 			while (ctx.budget.check()) {
 				round++;
 				if (ctx.signal?.aborted) return { status: "cancelled" as const };
@@ -593,6 +601,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					if (round1Lines.length > 0) setArtifactFeedback(options, state, round1Lines);
 				}
 
+				const resultsBeforeWriter = ctx.results.length;
 				const stageResult = await stageTask.run(state, ctx);
 				if (stageResult.status === "cancelled") return stageResult;
 				if (stageResult.status === "failed") {
@@ -608,6 +617,31 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					if (isNonRetryableAgentError(stageResult.error)) throw new FatalAbort(nonRetryableAgentSummary(stageResult.error));
 					continue;
 				}
+				// v0.3.65: G21 marks WRITER agent errors as ok + empty control + a
+				// cause:"agent-error" row. Without this check the empty control fell
+				// through to the validators — the generic validation messages masked
+				// the real infra cause and spun rounds (incident 2026-09-04T13-45-10:
+				// every design/designReview child died <250 ms on version skew).
+				const writerAgentErrors = agentErrorTextsSince(ctx, resultsBeforeWriter, options.stage.id);
+				if (writerAgentErrors.length > 0) {
+					const freshWriterError = round > priorRounds;
+					const writerAgentError = writerAgentErrors[writerAgentErrors.length - 1];
+					if (isNonRetryableAgentError(writerAgentError)) throw new FatalAbort(nonRetryableAgentSummary(writerAgentError));
+					if (freshWriterError) consecutiveWriterAgentErrors++;
+					if (consecutiveWriterAgentErrors >= AGENT_ERROR_FATAL_CONSECUTIVE) {
+						const msg = `${options.feedbackKey} convergence: writer agent errored ${consecutiveWriterAgentErrors} consecutive round(s) — infra failure, not an artifact defect (last error: ${writerAgentError})`;
+						ctx.log(msg);
+						throw new FatalAbort(msg);
+					}
+					lastErrors = [`${options.feedbackKey} writer agent errored: ${writerAgentError}`];
+					recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-agent`);
+					setArtifactFeedback(options, state, lastErrors);
+					ctx.log(`${options.feedbackKey} convergence: ✗ writer agent errored round ${round}${freshWriterError ? ` (${consecutiveWriterAgentErrors}/${AGENT_ERROR_FATAL_CONSECUTIVE} consecutive)` : " (replayed — not counted)"} — ${writerAgentError}`);
+					prevOwnOpen = Number.POSITIVE_INFINITY;
+					lastOwnOpen = Number.POSITIVE_INFINITY;
+					continue;
+				}
+				consecutiveWriterAgentErrors = 0;
 
 				// Stage produced no artifact by design (e.g. design skipped for a bug
 				// fix): nothing to validate or review — converge immediately.
@@ -673,6 +707,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				// the review). Absent ⇒ deterministic-only.
 				if (options.review && reviewTask) {
 					const review = options.review;
+					const resultsBeforeReview = ctx.results.length;
 					const reviewResult = await reviewTask.run(state, ctx);
 					if (reviewResult.status === "cancelled") return reviewResult;
 					if (reviewResult.status === "failed") {
@@ -685,6 +720,30 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						if (isNonRetryableAgentError(reviewResult.error)) throw new FatalAbort(nonRetryableAgentSummary(reviewResult.error));
 						continue;
 					}
+					// v0.3.65: the REVIEW agent itself errored (G21 row) — a dead reviewer
+					// previously read as an empty control → "review rejected" → writer
+					// rework rounds against a corpse (incident 2026-09-04T13-45-10: 16
+					// fake rejections). Honest label, bounded retries, FatalAbort with
+					// the infra error named at the threshold. Only FRESH rounds count.
+					const reviewAgentErrors = agentErrorTextsSince(ctx, resultsBeforeReview, options.review.stage.id);
+					if (reviewAgentErrors.length > 0) {
+						const freshReviewError = round > priorRounds;
+						const reviewAgentError = reviewAgentErrors[reviewAgentErrors.length - 1];
+						if (isNonRetryableAgentError(reviewAgentError)) throw new FatalAbort(nonRetryableAgentSummary(reviewAgentError));
+						if (freshReviewError) consecutiveReviewAgentErrors++;
+						if (consecutiveReviewAgentErrors >= AGENT_ERROR_FATAL_CONSECUTIVE) {
+							const msg = `${options.feedbackKey} convergence: review agent errored ${consecutiveReviewAgentErrors} consecutive round(s) — infra failure, not an artifact defect (last error: ${reviewAgentError})`;
+							ctx.log(msg);
+							throw new FatalAbort(msg);
+						}
+						lastErrors = [`${options.feedbackKey} review agent errored: ${reviewAgentError}`];
+						setReviewFeedback(options, state, `${options.feedbackKey} review`, lastErrors);
+						ctx.log(`${options.feedbackKey} convergence: ✗ review agent errored round ${round}${freshReviewError ? ` (${consecutiveReviewAgentErrors}/${AGENT_ERROR_FATAL_CONSECUTIVE} consecutive)` : " (replayed — not counted)"} — ${reviewAgentError}`);
+						prevOwnOpen = Number.POSITIVE_INFINITY;
+						lastOwnOpen = Number.POSITIVE_INFINITY;
+						continue;
+					}
+					consecutiveReviewAgentErrors = 0;
 					const reviewControl = (state as Record<string, unknown>)[review.reviewStateKey] as ControlObj | undefined;
 					// The reviewer's verification of prior findings also updates the ledger
 					// (a finding it confirms resolved is marked, so it stops blocking).

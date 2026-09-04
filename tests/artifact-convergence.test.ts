@@ -839,3 +839,157 @@ describe("M5 — upstream-owned routing is decision-independent", () => {
 		}
 	});
 });
+
+// ─── v0.3.65 (incident 2026-09-04T13-45-10): agent-error rounds must never ───
+// masquerade as verdicts. A dead writer/reviewer runtime (delegation failure,
+// version-skew extension crash, missing model) records a G21 cause:"agent-error"
+// row; the convergence loops label it honestly, tolerate up to
+// AGENT_ERROR_FATAL_CONSECUTIVE-1 transient FRESH rounds, and FatalAbort with
+// the infra error NAMED — never "review rejected", never spinning to the cap.
+// Replayed rounds (round ≤ priorRounds) never count toward the fatal.
+
+import { AGENT_ERROR_FATAL_CONSECUTIVE } from "../src/nodes.ts";
+
+/** The incident's verbatim error class: pi-subagents version skew killed every
+ *  child with a <250 ms extension-load crash that previously read as an empty
+ *  review control → "review rejected". */
+const SKEW_ERROR = 'Failed to load extension ".../pi-subagents/src/runs/shared/subagent-prompt-runtime.ts": Failed to load extension: Cannot read properties of undefined (reading \'runtimeAcknowledgements\')';
+
+/** Per-call script entry: a string is an AGENT ERROR return (no control); a
+ *  ControlObj is a normal control return. */
+type PlanEntry = string | ControlObj;
+
+function agentErrorCtx(
+	state: PipelineState,
+	writerControl: ControlObj,
+	opts: { reviewerPlan?: PlanEntry[]; writerPlan?: PlanEntry[] } = {},
+): { ctx: StageContext; logs: string[]; writerCalls: () => number; reviewCalls: () => number } {
+	const logs: string[] = [];
+	let writerCalls = 0;
+	let reviewCalls = 0;
+	let checks = 0;
+	const approve: ControlObj = { verdict: "Approved", summary: "approved", findings: [] } as ControlObj;
+	return {
+		logs,
+		writerCalls: () => writerCalls,
+		reviewCalls: () => reviewCalls,
+		ctx: {
+			task: "implement feature",
+			options: {},
+			state,
+			budget: { count: 0, check: () => checks++ < 400, spent() { this.count++; return true; } },
+			log(message) { logs.push(message); },
+			phase() {},
+			events: new EventEmitter(),
+			results: [],
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "judge") return { text: "", control: {} as ControlObj };
+				const key = (call.id ?? "").replace(/^pipeline\./, "");
+				const isReview = key === "requirementsReview";
+				const plan = isReview ? opts.reviewerPlan : opts.writerPlan;
+				const calls = isReview ? reviewCalls++ : writerCalls++;
+				const fallback: PlanEntry = isReview ? approve : writerControl;
+				const entry = plan ? plan[Math.min(calls, plan.length - 1)] : fallback;
+				if (typeof entry === "string") return { text: "", control: null, error: entry };
+				return { text: "", control: entry };
+			},
+			async helper(call: HelperCall) { return runHelper(call); },
+			async parallel(calls) { return Promise.all(calls.map((call) => call())); },
+		},
+	};
+}
+
+describe("v0.3.65 — agent-error rounds never masquerade as verdicts (incident 2026-09-04T13-45-10)", () => {
+	const savedJudge = process.env.SUPER_DEV_DISABLE_JUDGE;
+	beforeEach(() => { process.env.SUPER_DEV_DISABLE_JUDGE = "1"; });
+	afterEach(() => {
+		if (savedJudge === undefined) delete process.env.SUPER_DEV_DISABLE_JUDGE;
+		else process.env.SUPER_DEV_DISABLE_JUDGE = savedJudge;
+	});
+
+	it("3 consecutive REVIEW agent errors FatalAbort naming the infra error — never 'review rejected', never the round cap", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const harness = agentErrorCtx(state, requirementsControl([]), { reviewerPlan: [SKEW_ERROR, SKEW_ERROR, SKEW_ERROR] });
+		let caught: unknown;
+		try { await requirementsConvergenceNode.run(state, harness.ctx); } catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		const message = String((caught as Error).message);
+		expect(message).toContain("review agent errored 3 consecutive");
+		expect(message).toContain("infra failure, not an artifact defect");
+		expect(message).toContain("runtimeAcknowledgements");
+		// Bounded: exactly 3 review rounds, not 8 (cap) / 24 (extended cap).
+		expect(harness.reviewCalls()).toBe(AGENT_ERROR_FATAL_CONSECUTIVE);
+		expect(harness.logs.some((l) => l.includes("review agent errored round 2 (2/3 consecutive)"))).toBe(true);
+		// The pre-fix masquerade — a dead reviewer logged as a VERDICT rejection — is gone.
+		expect(harness.logs.some((l) => l.includes("review rejected"))).toBe(false);
+	});
+
+	it("interleaved review errors (never 3 consecutive) converge — the counter resets on every clean review round", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const harness = agentErrorCtx(state, requirementsControl([]), {
+			reviewerPlan: [
+				SKEW_ERROR,
+				rejectingReviewControl(["AE-R1"], []),
+				SKEW_ERROR,
+				rejectingReviewControl(["AE-R2"], ["AE-R1"]),
+				SKEW_ERROR,
+				{ verdict: "Approved", summary: "approved", findings: [] } as ControlObj,
+			],
+		});
+		const result = await requirementsConvergenceNode.run(state, harness.ctx);
+		expect(result.status).toBe("ok");
+		expect(result.attempts).toBe(6);
+		expect(harness.reviewCalls()).toBe(6);
+	});
+
+	it("a NON-RETRYABLE review agent error aborts immediately on round 1 with the environment summary", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const harness = agentErrorCtx(state, requirementsControl([]), { reviewerPlan: ["spawn pi ENOENT"] });
+		let caught: unknown;
+		try { await requirementsConvergenceNode.run(state, harness.ctx); } catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		expect(String((caught as Error).message)).toContain("non-retryable agent environment failure");
+		expect(harness.reviewCalls()).toBe(1);
+	});
+
+	it("3 consecutive WRITER agent errors FatalAbort naming the infra error — not masked as validation failures", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const harness = agentErrorCtx(state, requirementsControl([]), { writerPlan: [SKEW_ERROR, SKEW_ERROR, SKEW_ERROR] });
+		let caught: unknown;
+		try { await requirementsConvergenceNode.run(state, harness.ctx); } catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		const message = String((caught as Error).message);
+		expect(message).toContain("writer agent errored 3 consecutive");
+		expect(message).toContain("infra failure, not an artifact defect");
+		expect(harness.writerCalls()).toBe(AGENT_ERROR_FATAL_CONSECUTIVE);
+		// The pre-fix masquerade — the empty control fell to the validators.
+		expect(harness.logs.some((l) => l.includes("no artifact produced"))).toBe(false);
+		expect(harness.logs.some((l) => l.includes("review rejected"))).toBe(false);
+	});
+
+	it("replayed rounds (round ≤ priorRounds) never count toward the fatal — a fixed runtime recovers on resume", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		// 5 recorded writer rounds ⇒ rounds 1–5 are replay-indexed; only rounds
+		// 6,7,8 are FRESH error rounds and the third one fatal-aborts.
+		seedStageRounds(s.specDirectory, [["pipeline.requirements", 5]]);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const harness = agentErrorCtx(state, requirementsControl([]), { reviewerPlan: Array.from({ length: 20 }, () => SKEW_ERROR) });
+		let caught: unknown;
+		try { await requirementsConvergenceNode.run(state, harness.ctx); } catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		const message = String((caught as Error).message);
+		expect(message).toContain("review agent errored 3 consecutive");
+		// Rounds 1–5 replayed (not counted), 6–8 fresh: the 8th round fatals.
+		expect(harness.reviewCalls()).toBe(8);
+		expect(harness.logs.some((l) => l.includes("replayed — not counted"))).toBe(true);
+	});
+});

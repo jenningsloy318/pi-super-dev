@@ -257,6 +257,14 @@ export interface StageResult {
 	label: string;
 	status: NodeStatus;
 	error?: string;
+	/** v0.3.65: `"agent-error"` marks an INFRA row pushed by writerTask's G21
+	 *  path (the writer/reviewer AGENT errored; the stage deliberately returned
+	 *  ok + empty control so convergence retry feedback runs). Convergence loops
+	 *  distinguish these from verdicts/rejections via `agentErrorTextsSince` —
+	 *  incident 2026-09-04T13-45-10 burned 16 design rounds as fake "review
+	 *  rejected" verdicts because a dead reviewer was indistinguishable from a
+	 *  rejecting one. Render-rejected rows carry NO cause. */
+	cause?: "agent-error";
 }
 
 /**

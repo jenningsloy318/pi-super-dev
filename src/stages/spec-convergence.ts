@@ -1,4 +1,4 @@
-import { FatalAbort, gateValidator, task } from "../nodes.ts";
+import { AGENT_ERROR_FATAL_CONSECUTIVE, agentErrorTextsSince, FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
 import { enforceReviewerConvergenceDuty, reviewBlockingVerdictFindings } from "../review-findings.ts";
@@ -188,6 +188,12 @@ export const specConvergenceNode: Node = {
 		// G1 (adversarial G1-ROUND-COUNTER-CONFLATION): the duty threshold
 		// counts REVIEW passes, not loop iterations.
 		let reviewRound = 0;
+		// v0.3.65 (incident 2026-09-04T13-45-10, P5 class fix — mirrors
+		// artifact-convergence): consecutive FRESH agent-error rounds per role;
+		// a dead spec writer/reviewer runtime aborts with the infra error named
+		// instead of masquerading as rejections. Replay rounds never count.
+		let consecutiveWriterAgentErrors = 0;
+		let consecutiveReviewAgentErrors = 0;
 		while (ctx.budget.check()) {
 			round++;
 			if (ctx.signal?.aborted) return { status: "cancelled" as const };
@@ -296,6 +302,7 @@ export const specConvergenceNode: Node = {
 				if (round1Lines.length > 0) setSpecFeedback(state, "prior-run-ledger+replan", round1Lines);
 			}
 
+			const resultsBeforeSpec = ctx.results.length;
 			const specResult = await specTask.run(state, ctx);
 			if (specResult.status === "cancelled") return specResult;
 			if (specResult.status === "failed") {
@@ -310,6 +317,29 @@ export const specConvergenceNode: Node = {
 				if (isNonRetryableAgentError(specResult.error)) throw new FatalAbort(nonRetryableAgentSummary(specResult.error));
 				continue;
 			}
+			// v0.3.65: G21 marks spec-writer AGENT errors as ok + empty control + a
+			// cause:"agent-error" row — the empty control must not fall through to
+			// the trace gate, whose structural messages would mask the infra cause.
+			const specAgentErrors = agentErrorTextsSince(ctx, resultsBeforeSpec, "spec");
+			if (specAgentErrors.length > 0) {
+				const freshSpecError = round > priorRounds;
+				const specAgentError = specAgentErrors[specAgentErrors.length - 1];
+				if (isNonRetryableAgentError(specAgentError)) throw new FatalAbort(nonRetryableAgentSummary(specAgentError));
+				if (freshSpecError) consecutiveWriterAgentErrors++;
+				if (consecutiveWriterAgentErrors >= AGENT_ERROR_FATAL_CONSECUTIVE) {
+					const msg = `spec convergence: writer agent errored ${consecutiveWriterAgentErrors} consecutive round(s) — infra failure, not an artifact defect (last error: ${specAgentError})`;
+					ctx.log(msg);
+					throw new FatalAbort(msg);
+				}
+				lastErrors = [`spec writer agent errored: ${specAgentError}`];
+				recordSpecWriterFailure(state, "spec writer agent", specAgentError);
+				setSpecFeedback(state, "spec writer agent", lastErrors);
+				ctx.log(`spec convergence: ✗ writer agent errored round ${round}${freshSpecError ? ` (${consecutiveWriterAgentErrors}/${AGENT_ERROR_FATAL_CONSECUTIVE} consecutive)` : " (replayed — not counted)"} — ${specAgentError}`);
+				prevOwnOpen = Number.POSITIVE_INFINITY;
+				lastOwnOpen = Number.POSITIVE_INFINITY;
+				continue;
+			}
+			consecutiveWriterAgentErrors = 0;
 			const addressed = markConvergenceFindingsAddressedFromResponses(state, (state.spec as ControlObj | undefined)?.reviewResponses);
 			if (addressed > 0) ctx.log(`spec convergence: spec response matrix addressed ${addressed} prior finding(s)`);
 
@@ -342,6 +372,7 @@ export const specConvergenceNode: Node = {
 			}
 			ctx.log(`spec convergence: trace gate passed round ${round}`);
 
+			const resultsBeforeReview = ctx.results.length;
 			const reviewResult = await specReviewTask.run(state, ctx);
 			if (reviewResult.status === "cancelled") return reviewResult;
 			if (reviewResult.status === "failed") {
@@ -355,6 +386,29 @@ export const specConvergenceNode: Node = {
 				if (isNonRetryableAgentError(reviewResult.error)) throw new FatalAbort(nonRetryableAgentSummary(reviewResult.error));
 				continue;
 			}
+			// v0.3.65: the spec REVIEW agent itself errored (G21 row) — a dead
+			// reviewer previously read as an empty control and fell to the verdict
+			// gate, spinning spec rounds (incident 2026-09-04T13-45-10 class).
+			const reviewAgentErrors = agentErrorTextsSince(ctx, resultsBeforeReview, "specReview");
+			if (reviewAgentErrors.length > 0) {
+				const freshReviewError = round > priorRounds;
+				const reviewAgentError = reviewAgentErrors[reviewAgentErrors.length - 1];
+				if (isNonRetryableAgentError(reviewAgentError)) throw new FatalAbort(nonRetryableAgentSummary(reviewAgentError));
+				if (freshReviewError) consecutiveReviewAgentErrors++;
+				if (consecutiveReviewAgentErrors >= AGENT_ERROR_FATAL_CONSECUTIVE) {
+					const msg = `spec convergence: review agent errored ${consecutiveReviewAgentErrors} consecutive round(s) — infra failure, not an artifact defect (last error: ${reviewAgentError})`;
+					ctx.log(msg);
+					throw new FatalAbort(msg);
+				}
+				lastErrors = [`spec review agent errored: ${reviewAgentError}`];
+				recordSpecWriterFailure(state, "spec review agent", reviewAgentError);
+				setSpecFeedback(state, "spec review agent", lastErrors);
+				ctx.log(`spec convergence: ✗ review agent errored round ${round}${freshReviewError ? ` (${consecutiveReviewAgentErrors}/${AGENT_ERROR_FATAL_CONSECUTIVE} consecutive)` : " (replayed — not counted)"} — ${reviewAgentError}`);
+				prevOwnOpen = Number.POSITIVE_INFINITY;
+				lastOwnOpen = Number.POSITIVE_INFINITY;
+				continue;
+			}
+			consecutiveReviewAgentErrors = 0;
 
 			const review = await validateSpecReview(state, ctx);
 			// Review-finding fix (adversarial F7-GATE-BYPASS): the gate tests the

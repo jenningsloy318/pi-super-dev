@@ -383,6 +383,19 @@ research, design) and the spec loop run under `MAX_CONVERGENCE_ROUNDS = 8` —
 a liveness floor that FatalAborts exactly like budget exhaustion, one round
 before which the judge may diagnose (below).
 
+**Agent-error rounds never masquerade as verdicts (v0.3.65).** A writer or
+reviewer AGENT error (delegation failure, version-skew extension crash,
+missing model) records a G21 `cause:"agent-error"` row and is labeled honestly
+(`✗ review agent errored round N (k/3 consecutive)`) — never counted as a
+"review rejected" verdict or masked behind validation messages. Two transient
+rounds retry (G21's original tolerance); the third consecutive FRESH round
+FatalAborts with the infra error named (`… infra failure, not an artifact
+defect (last error: …)`), so a dead runtime burns 3 fast rounds instead of
+spinning the full cap (incident 2026-09-04T13-45-10 burned 16 of 18 design
+rounds as fake rejections). Non-retryable environment errors
+(`isNonRetryableAgentError`) abort immediately; replayed resume rounds never
+count, so a fixed runtime recovers.
+
 **Merge verification (Stage 14B).** The merge agent *performs* the merge
 (instructed to merge from the main checkout — inside a linked worktree it
 structurally cannot advance the checked-out default branch), but the run only

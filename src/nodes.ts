@@ -124,6 +124,29 @@ export function isFatalAbort(err: unknown): boolean {
 	return err instanceof FatalAbort || (err instanceof Error && (err as { fatal?: boolean }).fatal === true);
 }
 
+/** v0.3.65: how many CONSECUTIVE agent-error rounds a convergence loop tolerates
+ *  before FatalAborting with the infra error named. Two transient blips retry
+ *  (G21's original tolerance); a third consecutive agent error means the
+ *  writer/reviewer runtime is dead (version skew, failed extension, missing
+ *  model) and further rounds only burn budget — incident 2026-09-04T13-45-10
+ *  spun 16 of 18 design rounds (each <250 ms) as fake "review rejected"
+ *  verdicts before a human noticed. */
+export const AGENT_ERROR_FATAL_CONSECUTIVE = 3;
+
+/** v0.3.65 (companion to writerTask's G21 `cause:"agent-error"` row): the
+ *  agent-error texts recorded for `stageId` among ctx.results rows appended
+ *  since `snapshot` (take the snapshot immediately before the stage's .run()).
+ *  Empty when the stage ran clean — a verdict, a rejection, or a render
+ *  failure never appears here, so "the runtime died" is separable from "the
+ *  artifact was rejected" at every convergence decision point. */
+export function agentErrorTextsSince(ctx: StageContext, snapshot: number, stageId: string): string[] {
+	const errors: string[] = [];
+	for (const row of ctx.results.slice(snapshot)) {
+		if (row.id === stageId && row.status === "failed" && row.cause === "agent-error" && row.error) errors.push(row.error);
+	}
+	return errors;
+}
+
 /** Run `fn` inside a structural scope marker (BUG-1). `parallel`/`map` call this
  *  per branch/iteration so concurrent branches get distinct, order-independent
  *  scope paths for resume cache keys. Falls back to running `fn` directly when
@@ -819,7 +842,13 @@ export function writerTask(spec: {
 			// The stage-lifecycle event pair stays open→failed so the dashboard
 			// and run log show the infra error immediately.
 			if (result.error && !result.control) {
-				ctx.results.push({ id: spec.id, label: spec.id, status: "failed", error: result.error.slice(0, 300) });
+				// v0.3.65: `cause` marks this row as an AGENT-ERROR row specifically
+				// (distinct from render-rejected rows) so convergence loops can tell
+				// "the writer/reviewer runtime died" from "the artifact was rejected"
+				// via agentErrorTextsSince — the version-skew incident
+				// (2026-09-04T13-45-10) burned 16 of 18 design rounds as fake
+				// "review rejected" verdicts because that distinction was invisible.
+				ctx.results.push({ id: spec.id, label: spec.id, status: "failed", error: result.error.slice(0, 300), cause: "agent-error" });
 				ctx.events.emit("stage", { id: spec.id, label: spec.id, status: "failed", error: result.error.slice(0, 300) });
 			}
 			// Render pipeline outcome (v0.3.34 restructure): renderErrors survive

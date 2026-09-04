@@ -769,3 +769,68 @@ describe("spec carried-exit debt delivery (review-2 findings 1-4)", () => {
 		expect(pendingReplanRequests(s.specDirectory, "bdd").length).toBe(0);
 	});
 });
+
+// ─── v0.3.65 (incident 2026-09-04T13-45-10, mirrors artifact-convergence): a
+// dead spec writer/reviewer runtime (G21 cause:"agent-error" row) aborts with
+// the infra error NAMED after 3 consecutive FRESH rounds — never falls through
+// to the trace/verdict gates as a fake rejection. ─────────────────────────────
+
+import { AGENT_ERROR_FATAL_CONSECUTIVE } from "../src/nodes.ts";
+
+describe("v0.3.65 — spec loop agent-error rounds never masquerade as verdicts", () => {
+	it("3 consecutive spec-review agent errors FatalAbort naming the infra error (bounded, honest label)", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const logs: string[] = [];
+		let reviewCalls = 0;
+		let specCalls = 0;
+		const skew = 'Failed to load extension ".../pi-subagents/src/runs/shared/subagent-prompt-runtime.ts": Cannot read properties of undefined (reading \'runtimeAcknowledgements\')';
+		const c: StageContext = {
+			...ctx(state, [specControl(["SCENARIO-001", "SCENARIO-002"])], [reviewControl("Approved")], []),
+			log(message) { logs.push(message); },
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "spec-reviewer") { reviewCalls++; return { text: "", control: null, error: skew }; }
+				if (call.agent === "spec-writer") { specCalls++; return { text: "", control: specControl(["SCENARIO-001", "SCENARIO-002"]) }; }
+				return { text: "", control: {} as ControlObj };
+			},
+		};
+		let caught: unknown;
+		try { await specConvergenceNode.run(state, c); } catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		const message = String((caught as Error).message);
+		expect(message).toContain("spec convergence: review agent errored 3 consecutive");
+		expect(message).toContain("infra failure, not an artifact defect");
+		expect(message).toContain("runtimeAcknowledgements");
+		expect(reviewCalls).toBe(AGENT_ERROR_FATAL_CONSECUTIVE);
+		expect(logs.some((l) => l.includes("review agent errored round 2 (2/3 consecutive)"))).toBe(true);
+		// The pre-fix masquerade — the dead reviewer read as a verdict verdict-gate failure.
+		expect(logs.some((l) => l.includes("review gate failed") || l.includes("review rejected"))).toBe(false);
+		expect(specCalls).toBe(3);
+	});
+
+	it("3 consecutive spec-writer agent errors FatalAbort naming the infra error (not masked by the trace gate)", async () => {
+		const s = setup(dir);
+		seedDocs(s);
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const logs: string[] = [];
+		let specCalls = 0;
+		const skew = 'Failed to load extension ".../pi-subagents/src/runs/shared/subagent-prompt-runtime.ts": Cannot read properties of undefined (reading \'runtimeAcknowledgements\')';
+		const c: StageContext = {
+			...ctx(state, [specControl(["SCENARIO-001", "SCENARIO-002"])], [reviewControl("Approved")], []),
+			log(message) { logs.push(message); },
+			async agent(call: AgentCall): Promise<AgentResult> {
+				if (call.agent === "spec-writer") { specCalls++; return { text: "", control: null, error: skew }; }
+				return { text: "", control: {} as ControlObj };
+			},
+		};
+		let caught: unknown;
+		try { await specConvergenceNode.run(state, c); } catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		const message = String((caught as Error).message);
+		expect(message).toContain("spec convergence: writer agent errored 3 consecutive");
+		expect(message).toContain("infra failure, not an artifact defect");
+		expect(specCalls).toBe(AGENT_ERROR_FATAL_CONSECUTIVE);
+		expect(logs.some((l) => l.includes("trace gate failed"))).toBe(false);
+	});
+});
