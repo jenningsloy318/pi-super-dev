@@ -187,6 +187,16 @@ stages/index.ts ──► the pipeline expressed with control nodes
   the whole pipeline is observable from the Fleet panel. Best-effort by
   contract: a missing pi-subagents install or a registry error is a silent
   no-op.
+  **v0.3.63 version-skew degrade**: `pi update` swapping the pi-subagents
+  package under a LIVE pi session leaves the older bridge in memory; its
+  spawned children then die at startup against the newer on-disk package
+  (observed with 0.64→0.65.0 on 2026-09-04: every specialist failed in ~5 s
+  on `Failed to load extension "…pi-subagents…"…`). super-dev detects that
+  package-scoped signature in the delegation error, degrades the call to the
+  session backend, arms a sticky whole-session degrade (later calls skip
+  delegation entirely), and logs the remedy (restart pi so memory and disk
+  agree). Nothing about the v0.3.25 delegation/registration event contracts
+  changed in 0.65 — verified against a scratch 0.65 install end-to-end.
   **v0.3.27 fixes + viewing notes**: records are now registered with the
   session FILE path (`getSessionFile() ?? getSessionId()`), mirroring
   pi-subagents' own fleet filter — the v0.3.25/26 code passed the bare

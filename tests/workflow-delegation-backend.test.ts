@@ -14,7 +14,7 @@
  *    (register + terminal update) when visibility inputs are available, and
  *    never when they are not.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 
 const captured: {
@@ -70,6 +70,7 @@ vi.mock("../src/agents/register-agents.ts", () => ({
 }));
 
 import { makeContext } from "../src/workflow.ts";
+import { isDelegationRuntimeExtensionFailure, resetDelegationBackendDegradeForTests } from "../src/agents/delegation-backend.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
@@ -112,6 +113,11 @@ function failingOwnerBus(error: string) {
 }
 
 describe("backend selection: pi-subagents delegation", () => {
+	beforeEach(() => {
+		// v0.3.63: the version-skew degrade is sticky module state — reset it so
+		// tests are order-independent.
+		resetDelegationBackendDegradeForTests();
+	});
 	it("routes through the delegation bridge when backend=pi-subagents and an event bus is present", async () => {
 		captured.delegationRequests = [];
 		const { bus } = ownerBus();
@@ -185,6 +191,56 @@ describe("backend selection: pi-subagents delegation", () => {
 		const result = await mkCtx({ setup: { specIdentifier: "spec-t2" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
 		expect(captured.session).toBeUndefined();
 		expect(result.error).toContain("oom");
+	});
+
+	it("a version-skew runtime-extension failure degrades to session AND is sticky for the process (2026-09-04 incident: every agent of two stages died in ~5s)", async () => {
+		ownerProbe.present = null;
+		captured.delegationRequests = [];
+		delete captured.session;
+		// Byte-identical shape to the 2026-09-04 14:57 run.log error: an in-memory
+		// 0.64 bridge spawned `pi` CLI children with -e pointing at the on-disk
+		// 0.65 subagent-prompt-runtime.ts whose activate signature gained a config.
+		const skewError = 'Failed to load extension "/home/jenningsl/.pi/agent/npm/node_modules/pi-subagents/src/runs/shared/subagent-prompt-runtime.ts": Failed to load extension: Cannot read properties of undefined (reading \'runtimeAcknowledgements\')';
+		const { bus } = failingOwnerBus(skewError);
+		// Call 1: delegation attempted once, degrades to session, work continues.
+		const first = await mkCtx({ setup: { specIdentifier: "spec-skew" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests).toHaveLength(1);
+		expect(captured.session).toBeDefined();
+		expect(first.control).toEqual({ a: 1 });
+		// Call 2: sticky — no second delegation request (no per-call 5s burn).
+		captured.delegationRequests = [];
+		delete captured.session;
+		const second = await mkCtx({ setup: { specIdentifier: "spec-skew" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests).toHaveLength(0);
+		expect(captured.session).toBeDefined();
+		expect(second.control).toEqual({ a: 1 });
+	});
+
+	it("an extension-load failure OUTSIDE pi-subagents' package is NOT the version-skew class (no degrade, error stays visible)", async () => {
+		captured.delegationRequests = [];
+		delete captured.session;
+		const { bus } = failingOwnerBus('Failed to load extension "/tmp/repro-cwd/other-extension.js": Failed to load extension: boom');
+		const result = await mkCtx({ setup: { specIdentifier: "spec-t4" } as any }, { backend: "pi-subagents", events: bus } as RunOptions).agent(CALL);
+		expect(captured.session).toBeUndefined();
+		expect(result.error).toContain("other-extension.js");
+	});
+});
+
+describe("delegation version-skew classifier (v0.3.63)", () => {
+	it("matches the production byte shape (pi CLI -e startup failure inside pi-subagents' own files)", () => {
+		expect(isDelegationRuntimeExtensionFailure('Error: Failed to load extension "/home/jenningsl/.pi/agent/npm/node_modules/pi-subagents/src/runs/shared/subagent-prompt-runtime.ts": Failed to load extension: Cannot read properties of undefined (reading \'runtimeAcknowledgements\')')).toBe(true);
+	});
+	it("matches any pi-subagents-internal extension path, not just prompt-runtime", () => {
+		expect(isDelegationRuntimeExtensionFailure('Failed to load extension "/x/y/pi-subagents/src/runs/shared/fast-mode-extension.ts": anything')).toBe(true);
+	});
+	it("rejects non-pi-subagents extension failures", () => {
+		expect(isDelegationRuntimeExtensionFailure('Failed to load extension "/tmp/foo.ts": boom')).toBe(false);
+	});
+	it("rejects ordinary errors and empty input", () => {
+		expect(isDelegationRuntimeExtensionFailure("spawn crashed: oom")).toBe(false);
+		expect(isDelegationRuntimeExtensionFailure("Unknown agent: sd-x")).toBe(false);
+		expect(isDelegationRuntimeExtensionFailure(undefined)).toBe(false);
+		expect(isDelegationRuntimeExtensionFailure("")).toBe(false);
 	});
 });
 

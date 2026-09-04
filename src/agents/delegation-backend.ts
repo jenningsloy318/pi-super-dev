@@ -122,6 +122,53 @@ export interface DelegationUpdatePayload {
 	tokens?: number;
 }
 
+/** pi-subagents' OWN runtime extensions failing to load in a spawned child.
+ * Class, not one incident: pi's CLI loader calls a file-loaded extension's
+ * default export with exactly one argument, so any pi-subagents-internal
+ * runtime-extension file whose activate signature carries a config object
+ * becomes unloadable as a `-e` path. Receipt (2026-09-04, pi-omisis spec-24
+ * run 14:56): pi-subagents 0.65.0 changed
+ * subagent-prompt-runtime.ts from `registerSubagentPromptRuntime(pi)` (env-
+ * driven, 0.64 line 689) to `registerSubagentPromptRuntime(pi, config)` whose
+ * FIRST statement reads `config.runtimeAcknowledgements` (0.65 line 445). A
+ * live parent session with 0.64's bridge in MEMORY kept spawning `pi` CLI
+ * children with `-e <...>/pi-subagents/src/runs/shared/subagent-prompt-runtime.ts`
+ * (0.64 pi-args.ts:579, unfiltered) against the on-disk 0.65 file - every
+ * child died at startup (~5s) with:
+ *   Failed to load extension "<...>pi-subagents<...>": Cannot read properties of
+ *   undefined (reading 'runtimeAcknowledgements')
+ * (byte-identical reproduction: `pi -p "Say OK" -e <0.65 prompt-runtime.ts>`.)
+ * The signature is package-scoped - a load failure INSIDE pi-subagents' own
+ * files means the in-memory owner and the on-disk package disagree (version
+ * skew after `pi update` mid-session, or a broken install). Neither can be
+ * fixed by retrying within this process, so the caller degrades the whole
+ * backend for the session (see workflow.ts) - P5: an executor infra failure
+ * never punishes the work. */
+const DELEGATION_RUNTIME_EXTENSION_FAILURE_RE = /Failed to load extension "[^"]*pi-subagents[^"]*"/;
+
+/** True when a delegation error shows pi-subagents' own runtime extension
+ * failing to load in the spawned child (version-skew class above). */
+export function isDelegationRuntimeExtensionFailure(error: string | undefined): boolean {
+	return !!error && DELEGATION_RUNTIME_EXTENSION_FAILURE_RE.test(error);
+}
+
+/** Sticky whole-backend degrade state for the version-skew class. The
+ * in-memory pi-subagents bridge cannot change within this process, so once
+ * the signature is seen, every later pi-subagents call in ANY run of this
+ * process goes straight to the session backend (no per-call 5s burn - the
+ * 2026-09-04 incident lost every agent of two stages to it). Reset hook
+ * exists for tests only. */
+let delegationRuntimeExtensionFailureSeen = false;
+export function delegationBackendDegraded(): boolean {
+	return delegationRuntimeExtensionFailureSeen;
+}
+export function markDelegationBackendDegraded(): void {
+	delegationRuntimeExtensionFailureSeen = true;
+}
+export function resetDelegationBackendDegradeForTests(): void {
+	delegationRuntimeExtensionFailureSeen = false;
+}
+
 /** v0.3.28: the terminal summary line — turns/tools/tokens/cache/cost/duration
  *  from SubagentDelegationUsage, via the SHARED formatter so all three
  *  backends emit identical segment formats in run.log. */

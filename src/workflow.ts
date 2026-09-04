@@ -22,7 +22,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSy
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnAgent, isBrowserAgent, needsWebResearch, splitModelThinking } from "./pi-spawn.ts";
-import { runAgentViaDelegation } from "./agents/delegation-backend.ts";
+import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 import { runAgentViaSession } from "./session-agent.ts";
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
@@ -614,7 +614,23 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 					log("WARN pi-subagents backend requested but pi-subagents is not active in this session — degrading every agent call to the session backend. Install the pi-subagents pi package or unset agentBackend in ~/.super-dev/config.json.");
 				}
 				if (delegationOwnerPresent() === false) return runAgentViaSession(common);
+				// v0.3.63: sticky whole-backend degrade for the pi-subagents version-
+				// skew class (isDelegationRuntimeExtensionFailure in delegation-backend.ts
+				// for the full receipt): `pi update` swapping the package under a live
+				// session leaves an N-1 bridge in memory whose spawned children die at
+				// startup against the on-disk package. Once seen, it cannot self-heal in
+				// this process — skip delegation entirely so no later call burns its
+				// ~5s startup failure (2026-09-04 incident: every agent of two stages).
+				if (delegationBackendDegraded()) return runAgentViaSession(common);
 				const delegated = await runAgentViaDelegation({ ...common, events: options.events!, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state) });
+				// v0.3.63: the version-skew signature (pi-subagents' own runtime
+				// extension failing to load in the child) is an executor infra failure,
+				// never a task failure — P5: degrade, keep the work going, name the remedy.
+				if (delegated.error && isDelegationRuntimeExtensionFailure(delegated.error)) {
+					markDelegationBackendDegraded();
+					log(`WARN pi-subagents delegation infra failure (${delegated.error}) — the pi-subagents package changed under this live pi session (pi update mid-session), so the in-memory backend and the on-disk package disagree. Degrading every agent call in this pi session to the session backend. Remedy: restart pi (or downgrade/upgrade pi-subagents back to the version this session loaded) and re-run.`);
+					return runAgentViaSession(common);
+				}
 				// v0.3.26: an unresolvable agent name must not burn convergence
 				// rounds — run 2026-08-28T15-50-08 lost all 8 requirements rounds
 				// to instant "Unknown agent" errors after 30/32 registrations were
