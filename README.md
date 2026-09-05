@@ -412,6 +412,24 @@ cannot masquerade as satisfied, and the Already-satisfied verification node
 re-runs the build gate + deliverable check deterministically before accepting.
 The resume no-op fast path inherits the same clause coverage.
 
+**No-op completions, honest unknown reasons, and REPLAN wind-down (v0.3.67).**
+Three coupled classes from the same incident's second half: (1) pi-subagents'
+child-acceptance layer rejects an implementation-intent child that completes
+WITHOUT file edits — correct enforcement (self-report is never evidence), but in
+an already-satisfied phase a verification-only completion is the RIGHT outcome;
+the rejection now routes through the deterministic live deliverable re-check →
+Already-satisfied verification (machine decides, fail-closed otherwise) instead
+of looping `red-unverified` (21 rejected tdd calls burned hours). (2) When the
+RED oracle is unknown because the AGENT died or was no-edit-rejected, the retry
+reason/hint now LEAD with that true cause — the old canned "no supported test
+runner was available" asserted a false environment defect that sent agents
+re-verifying runners and judges reading harness source. (3) A REPLAN round
+routed mid-run now WINDS THE PASS DOWN: remaining phases are deferred (named
+log), the §D loop stops re-attempting, and Stage 10 skips with a named notice —
+no more executing a superseded spec for hours before the restart (research
+basis: Fox et al. ICAPS-06 plan stability; Nav2 replan-immediately-on-
+invalidation; CI cancel-in-progress).
+
 **Merge verification (Stage 14B).** The merge agent *performs* the merge
 (instructed to merge from the main checkout — inside a linked worktree it
 structurally cannot advance the checked-out default branch), but the run only

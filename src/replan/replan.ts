@@ -311,6 +311,14 @@ function runStartedAt(specDir: string, runId: string): string {
 	}
 }
 
+/** F9 (v0.3.67): a REPLAN round routed mid-run sets the `__replan` marker —
+ * the current pass must WIND DOWN (remaining phases, §D re-entry, Stage 10)
+ * instead of executing a superseded plan until workflow end (incident
+ * 2026-09-04T14-45-04-784Z burned ~7.5h between marker and restart). */
+export function replanPending(state: PipelineState): boolean {
+	return Boolean((state as Record<string, unknown>).__replan);
+}
+
 /**
  * Attempt to route the blocked-on-decisions residue back to its owning stages
  * and mark the run for a replan restart. Returns true when the run should end

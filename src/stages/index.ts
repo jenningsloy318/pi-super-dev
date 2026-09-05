@@ -32,6 +32,7 @@ import { implementationStage } from "./implementation.ts";
 import { verificationConvergenceNode, reviewApproved } from "./verify.ts";
 import { specConvergenceNode } from "./spec-convergence.ts";
 import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence.ts";
+import { replanPending } from "../replan/replan.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
 
@@ -118,6 +119,36 @@ const implAllGreen = (s: PipelineState) =>
 const implConvergenceBlocked = (s: PipelineState) =>
 	((s.implementation as { convergenceBlocked?: boolean } | undefined)?.convergenceBlocked === true);
 
+/** F9-C (v0.3.67, incident 2026-09-04T14-45-04-784Z): once a REPLAN round is
+ * routed the spec artifacts are INVALIDATED — re-attempting Stage 9 against
+ * them can only end in no-progress bounds (the incident burned attempts 5-9,
+ * ~4h, on phases a judge had already proven unsatisfiable). Research basis:
+ * Fox et al. ICAPS-06 (plan stability — never keep executing a dead plan),
+ * Nav2 #1395 (replan immediately on invalidation), GitHub Actions
+ * cancel-in-progress (cancel superseded runs; verification stages are safe to
+ * cancel, state-mutating work is not — hence the in-flight phase still breaks
+ * naturally and the worktree partial-preserve is untouched). */
+export const shouldIterateImplementation = (s: PipelineState, c: { budget: { check(): boolean } }) =>
+	!implAllGreen(s) && !implConvergenceBlocked(s) && !replanPending(s) && c.budget.check();
+
+/** F9-C: Stage 10 reviews against the CURRENT spec contract; when that
+ * contract is invalidated by a pending REPLAN the review is superseded — the
+ * restart re-verifies under the revised artifacts. Skipped with a NAMED
+ * notice (P10), never silently. */
+export const shouldRunVerification = (s: PipelineState) => hasImplementation(s) && !replanPending(s);
+
+/** F9-C: the named skip notice for Stage 10 (P10 — a skipped verification must
+ * be visible in the run log, not a silent gap). Exported for wind-down tests. */
+export const verificationSkippedReplanStage: Stage = {
+	id: "verificationSkippedReplan",
+	label: "Stage 10 — Verification (skipped: REPLAN pending)",
+	async run(input: PipelineState, ctx: { log(message: string): void }) {
+		const marker = (input as Record<string, unknown>).__replan as { rounds?: number; owners?: string[] } | undefined;
+		ctx.log(`Stage 10 skipped — REPLAN round ${marker?.rounds ?? "?"} pending (${(marker?.owners ?? []).join(", ") || "owners unknown"}): the spec artifacts are invalidated; verification re-runs under the revised spec after restart`);
+		return input;
+	},
+};
+
 // ─── Verify (Stage 10): fresh-evidence convergence loop ─────────────────────
 // Extracted to src/stages/verify.ts. Each attempt runs fresh review + build
 // evidence before integration. Any fix invalidates downstream evidence and the
@@ -153,13 +184,16 @@ export const PIPELINE_CHILDREN: Node[] = [
 	// green-state carry in implementation.ts skips already-green phases each
 	// iteration and seeds failed phases with prior reasons.
 	loop(
-		{ while: (s, c) => !implAllGreen(s) && !implConvergenceBlocked(s) && c.budget.check() },
+		{ while: (s, c) => shouldIterateImplementation(s, c as unknown as { budget: { check(): boolean } }) },
 		task(implementationStage),
 	),
 	// Verify only runs when implementation produced all phases. The convergence
 	// node owns review/build/integration freshness; a fix is never terminal
 	// evidence and always forces the next attempt to restart at review.
-	branch(hasImplementation, { yes: verificationConvergenceNode }),
+	// F9-C: a pending REPLAN skips verification with a named notice — reviewing
+	// against an invalidated spec only burns reviewer budget (incident: 3 full
+	// review cycles, ~2h, discarded by the 18:56 restart).
+	branch(shouldRunVerification, { yes: verificationConvergenceNode, no: task(verificationSkippedReplanStage) }),
 	// Downstream write-capable close-out stages run only after positive Stage 10
 	// verification. A failed/blocking verification in this tolerant sequence must
 	// not be followed by docs/cleanup/merge mutations.

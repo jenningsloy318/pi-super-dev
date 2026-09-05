@@ -21,7 +21,8 @@ import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
 import { firstCitedTestFile, runJudge } from "./judge.ts";
-import { triggerReplanForFindings } from "../replan/replan.ts";
+import { triggerReplanForFindings, replanPending } from "../replan/replan.ts";
+import { isNoEditCompletion } from "../agent-errors.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
@@ -420,7 +421,17 @@ export function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	// broken-test and this template claimed "tests did not compile/collect"
 	// while the agent's own gradle run showed 127 tests ran and 122 FAILED —
 	// a lie that misdirected retries and polluted judge inputs.
-	if (e.status === "unknown-no-runner") return [`red-unverified: no supported test runner was available — the RED oracle executed nothing, so the tests were NOT observed failing (nor passing); the harness could not observe them at all${detail ? `; ${detail}` : ""}`];
+	// F9-B (v0.3.67, incident 2026-09-04T14-45-04-784Z): when R1 overrode the
+	// reason with the TRUE cause (agent aborted / no-edit rejection / no test
+	// files), LEAD with it — the canned "no supported test runner was available"
+	// asserted a false environment defect that sent tdd-guide re-verifying
+	// runners and the judge reading harness source for hours.
+	if (e.status === "unknown-no-runner") {
+		if (e.reason && e.reason !== "No RED test targets or runner were available") {
+			return [`red-unverified: ${e.reason}${detail ? `; ${detail}` : ""}`];
+		}
+		return [`red-unverified: no supported test runner was available — the RED oracle executed nothing, so the tests were NOT observed failing (nor passing); the harness could not observe them at all${detail ? `; ${detail}` : ""}`];
+	}
 	if (e.status === "unknown-unclassified") return [`red-unverified: the RED oracle could not classify the runner output${e.reason ? ` — ${e.reason}` : ""}${detail ? `; ${detail}` : ""}`];
 	return [];
 }
@@ -489,10 +500,14 @@ export function redGenerationRetryHint(e: RedEvidence, opts?: { failClosed?: boo
 	// tests, unknown still falls through to the implementer (the documented
 	// "proceed without stalling" P3 contract; retrying there is a regression).
 	if ((e.status === "unknown-no-runner" || e.status === "unknown-unclassified") && opts?.failClosed) {
+		// F9-B: mirror the failure-reasons honesty — when R1 overrode the reason
+		// with the true cause, the observed field names THAT cause; the runner
+		// guidance survives only for genuine no-runner evidence.
+		const overriddenReason = e.status === "unknown-no-runner" && e.reason && e.reason !== "No RED test targets or runner were available" ? e.reason : null;
 		return `\n\n${implementationRetrySection("RED oracle could not verify the tests", {
 			gate: "red-oracle",
 			location: "TDD RED test execution",
-			observed: e.status === "unknown-no-runner" ? "no supported test runner was available — the oracle executed nothing" : "the runner output could not be classified",
+			observed: e.status === "unknown-no-runner" ? (overriddenReason ?? "no supported test runner was available — the oracle executed nothing") : "the runner output could not be classified",
 			expected: "a runnable, recognized test command executes the tests and they FAIL for the right reason",
 			nextAction: "Ensure this project has a runnable test command (Gradle: ./gradlew test / testDebugUnitTest; Maven: mvn test; npm test; pytest; cargo test; go test) with its toolchain installed, and run the scoped test ONCE yourself to confirm it FAILS for the right reason. Do NOT modify production code to work around a verification limitation, and do NOT search, read, or modify anything outside this worktree — if the stack is unsupported by the harness, state that limitation in your result and stop.",
 		})}` + redDiagnosticsPrompt(e.diagnostics);
@@ -1475,6 +1490,14 @@ export const implementationStage: Stage = {
 		const filesModified: string[] = [];
 
 		for (const [idx, phase] of phases.entries()) {
+			// F9-C (v0.3.67): once a REPLAN round is routed, the spec artifacts are
+			// invalidated — remaining phases are DEFERRED to the post-restart pass
+			// (named, P10) instead of executing a superseded plan. The phase that
+			// routed already broke naturally; partial-preserve is untouched.
+			if (replanPending(state)) {
+				ctx.log(`Implementation: REPLAN pending — deferring remaining phase(s) (${phases.length - idx} of ${phases.length}) to the post-restart pass; the current spec artifacts are invalidated`);
+				break;
+			}
 			const phaseId = `phase-${pad(idx + 1)}`;
 			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
 			const expectedScenarios = expectedScenariosForPhase(phase, state.spec ?? null, state.bdd ?? null);
@@ -1931,7 +1954,31 @@ export const implementationStage: Stage = {
 								// coercion to broken-test made the retry log claim "tests did not
 								// compile/collect" even when 127 tests had run and 122 failed
 								// (run 2026-08-28T16-09-12-785Z tries 2-3).
-								redEvidence = { ...redEvidence, reason: `RED not confirmed: ${why}` };
+							redEvidence = { ...redEvidence, reason: `RED not confirmed: ${why}` };
+							}
+							// F9-A (v0.3.67, incident 2026-09-04T14-45-04-784Z): pi-subagents'
+							// child-acceptance layer rejects an implementation-intent child that
+							// completes WITHOUT file edits (MISSING_IMPLEMENTATION_MUTATION_MESSAGE,
+							// LLM intent arbiter) — correct P4 enforcement: self-report is never
+							// evidence. But in an already-satisfied phase a verification-only
+							// completion is the CORRECT outcome (the incident's tdd-guide verified
+							// both suites green on disk and edited nothing; 21 rejections, hours of
+							// red-unverified retries). Route on the deterministic signal instead:
+							// no-edit rejection + LIVE deliverable re-check satisfied ⇒ classify
+							// green-already-satisfied; the Already-satisfied verification node
+							// re-runs build gate + deliverable check before anything is accepted
+							// (A1: the machine decides, never the child's own summary). Fail-closed:
+							// deliverables NOT satisfied keeps today's bounded retry (with the
+							// honest reason above). Precedent: no-op-is-success (Ansible changed=0,
+							// Terraform no-op plan, git "Already up to date").
+							if (tdd.error && isNoEditCompletion(tdd.error) && phaseDeliverables
+								&& (baselineDeliverablesSatisfied || deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables, setup.defaultBranch))) {
+								redEvidence = {
+									...redEvidence,
+									status: "green-already-satisfied",
+									reason: "TDD agent completed without edits (reports the phase observable already landed); live deliverable re-check satisfied — routing to already-satisfied verification",
+								};
+								ctx.log(`Implementation ${phaseId} RED no-edit completion + live deliverable re-check satisfied — routing to already-satisfied verification`);
 							}
 						}
 						// v0.3.30 Layer C: the registry has no runner for this stack —
@@ -2134,7 +2181,11 @@ export const implementationStage: Stage = {
 								retryHint = timeoutHint + stockHint;
 							}
 						}
-						if (retryHint) {
+						// F9-A: green-already-satisfied is a MACHINE decision (live
+						// deliverable re-check passed) — an agent-death retry hint must not
+						// override it back into the retry loop; the Already-satisfied
+						// verification node adjudicates deterministically.
+						if (retryHint && redEvidence.status !== "green-already-satisfied") {
 							const signature = redEvidenceSignature(redEvidence);
 							// Cycle/oscillation detection (RC-3): the previous check only
 							// compared the IMMEDIATELY-previous signature, so an A→B→A→B

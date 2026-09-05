@@ -82,3 +82,42 @@ describe("v0.3.30 F2 — redGenerationRetryHint for unknown evidence", () => {
 		expect(redGenerationRetryHint(evidence({ status: "unknown-unclassified" }))).toBeNull();
 	});
 });
+
+describe("v0.3.67 F9-B — an overridden reason is the evidence, never the canned runner text", () => {
+	// Incident 2026-09-04T14-45-04-784Z: R1 set reason "RED not confirmed: the
+	// TDD agent did not complete (Subagent completed without making edits…)"
+	// but both formatters printed the canned "no supported test runner was
+	// available" — asserting a false environment defect that sent tdd-guide
+	// re-verifying runners and the judge reading harness source.
+	it("failure reasons LEAD with the overridden reason (agent did not complete)", () => {
+		const e = evidence({
+			status: "unknown-no-runner",
+			reason: "RED not confirmed: the TDD agent did not complete (Subagent completed without making edits for an implementation task.)",
+		});
+		const text = redEvidenceFailureReasons(e).join("; ");
+		expect(text).toContain("did not complete");
+		expect(text).not.toMatch(/no supported test runner was available/i);
+	});
+
+	it("failure reasons keep the canned template for a GENUINE no-runner default", () => {
+		const e = evidence({ status: "unknown-no-runner", reason: "No RED test targets or runner were available" });
+		const text = redEvidenceFailureReasons(e).join("; ");
+		expect(text).toMatch(/no supported test runner was available/i);
+	});
+
+	it("retry hint observed-field names the overridden cause, not a phantom runner", () => {
+		const e = evidence({
+			status: "unknown-no-runner",
+			reason: "RED not confirmed: the TDD agent did not complete (agent tdd-guide aborted by parent signal)",
+		});
+		const hint = redGenerationRetryHint(e, { failClosed: true }) ?? "";
+		expect(hint).toContain("did not complete");
+		expect(hint).not.toMatch(/no supported test runner was available/i);
+	});
+
+	it("retry hint keeps the runner guidance for the genuine default", () => {
+		const e = evidence({ status: "unknown-no-runner", reason: "No RED test targets or runner were available" });
+		const hint = redGenerationRetryHint(e, { failClosed: true }) ?? "";
+		expect(hint).toMatch(/no supported test runner was available/i);
+	});
+});

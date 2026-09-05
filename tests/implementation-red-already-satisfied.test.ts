@@ -92,7 +92,7 @@ function mkState(): PipelineState {
 	} as unknown as PipelineState;
 }
 
-function mkCtx(opts: { budgetCheck?: () => boolean } = {}): { ctx: StageContext; logs: string[]; tdd: number; impl: number } {
+function mkCtx(opts: { budgetCheck?: () => boolean; tddError?: string } = {}): { ctx: StageContext; logs: string[]; calls: { tdd: number; impl: number } } {
 	const logs: string[] = [];
 	const calls = { tdd: 0, impl: 0 };
 	const ctx: StageContext = {
@@ -105,6 +105,10 @@ function mkCtx(opts: { budgetCheck?: () => boolean } = {}): { ctx: StageContext;
 		async agent(call: AgentCall): Promise<AgentResult> {
 			if (call.agent === "tdd-guide") {
 				calls.tdd++;
+				// F9-A: a no-edit rejection carries an honest verification-only
+				// completion in its TEXT but pi-subagents' acceptance layer rejects
+				// the call — control=null, error set (the incident's 21 rejections).
+				if (opts.tddError) return { text: "", control: null, error: opts.tddError };
 				return { text: "", control: { testFiles: ["tests/omisis-script-registry.test.ts", "python/tests/test_roles_determinism.py"] } };
 			}
 			if (call.agent === "implementer") {
@@ -137,13 +141,17 @@ function mkCtx(opts: { budgetCheck?: () => boolean } = {}): { ctx: StageContext;
 		events: new EventEmitter(),
 		results: [],
 	};
-	return { ctx, logs, ...calls };
+	return { ctx, logs, calls };
 }
 
 beforeEach(() => {
 	redCheck.mockReset();
 	dam.mockReset();
-	redCheck.mockImplementation((_cwd: string, _targets: string[], opts?: { onResult?: (diagnostic: unknown) => void }) => {
+	redCheck.mockImplementation((_cwd: string, targets: string[], opts?: { onResult?: (diagnostic: unknown) => void }) => {
+		// Empty targets = the tdd claim was discarded (agent error/no-edit
+		// rejection) — the oracle executed nothing and reports unknown, exactly
+		// like the real runner.
+		if (!targets.length) return "unknown";
 		opts?.onResult?.({
 			plan: { cwd: "/tmp/sd-red-already", argv: ["npm", "exec", "vitest", "--", "run", "tests/omisis-script-registry.test.ts"] },
 			language: "backend",
@@ -231,5 +239,39 @@ describe("F8 — classification order pin (pollution can never masquerade as sat
 			alreadySatisfied: true,
 		});
 		expect(evidence.status).toBe("green-already-satisfied");
+	});
+});
+
+describe("F9-A — no-edit rejection routes on the live deliverable re-check (no red-unverified livelock)", () => {
+	const NO_EDIT = "Subagent completed without making edits for an implementation task.";
+
+	it("incident class: no-edit rejection + contract satisfied live → converge via already-satisfied, no red-unverified retry", async () => {
+		// Entry baseline false (deliverables land after entry); the live
+		// re-check at oracle time is the only satisfiable signal.
+		const q = [false, true];
+		dam.mockImplementation(() => q.shift() ?? false);
+
+		const { ctx, logs, calls } = mkCtx({ tddError: NO_EDIT });
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+
+		expect(res.phasesCompleted).toBe(1);
+		expect(logs.some((l) => /no-edit completion/.test(l) && /already-satisfied/.test(l))).toBe(true);
+		expect(logs.some((l) => /RED already-satisfied: build=true, deliverables=true/.test(l))).toBe(true);
+		expect(logs.some((l) => /red-unverified/.test(l))).toBe(false);
+		// One tdd call — no retry loop on the rejection.
+		expect(calls.tdd).toBe(1);
+	});
+
+	it("fail-closed: no-edit rejection + contract NOT satisfied → bounded retries, never already-satisfied", async () => {
+		dam.mockImplementation(() => false);
+		let n = 0;
+		const { ctx, logs } = mkCtx({ budgetCheck: () => n++ < 8, tddError: NO_EDIT });
+
+		const res = (await (implementationStage as Stage).run(mkState(), ctx)) as ControlObj;
+
+		expect(res.phasesCompleted).toBe(0);
+		expect(logs.some((l) => /already-satisfied/.test(l))).toBe(false);
+		// The honest cause reaches the retry log (F9-B interplay).
+		expect(logs.some((l) => /red-unverified/.test(l) && /without making edits/.test(l))).toBe(true);
 	});
 });
