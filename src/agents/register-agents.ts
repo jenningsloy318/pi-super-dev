@@ -196,7 +196,7 @@ export function registerSuperDevAgents(events: DelegationEventBus, log: (line: s
 		// hang per call, so say exactly what the user should do (v0.3.26).
 		log("ERROR super-dev: pi-subagents is not active in this session — every specialist call will fail until it is installed. super-dev v0.3.64+ REQUIRES pi-subagents (a hard requirement — see README: Requirements). Install it with: pi install npm:pi-subagents — then restart pi.");
 	} else if (accepted.length < total) {
-		log(`ERROR super-dev: only ${accepted.length}/${total} sd-* agents registered — delegation for the missing names degrades to the session backend per call (see the rejection lines above).`);
+		log(`ERROR super-dev: only ${accepted.length}/${total} sd-* agents registered — delegation for the missing names will fail with \`Unknown agent\` per call until they register (see the rejection lines above; fix the registration error and restart pi).`);
 	} else {
 		log(`super-dev: registered ${accepted.length}/${total} sd-* agents with pi-subagents (skills=${skillsEnabled() ? "on" : "off"} — SUPER_DEV_NO_SKILLS=1 disables)`);
 	}

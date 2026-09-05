@@ -587,6 +587,10 @@ figure), so usage is a first-class governance surface, not a log decoration:
   machinery winds the run down deterministically (FatalAbort after 3
   consecutive) with zero further agent spend while close-out (summary, audit,
   metrics) still runs — resume-safe (raise or unset the fuse, resume).
+  (v0.3.72 review fixes: corrective rounds and transient retries sum EVERY
+  attempt's usage — the fuse can no longer under-count spend; a set-but-
+  unparseable fuse value WARNs loudly once per variable instead of silently
+  disarming.)
 - **Harvest (`run-metrics.jsonl`)**: at run end ONE deterministic JSON row per
   run lands in `<specDir>/run-metrics.jsonl` (status, agentsSpawned, wallMs,
   stage-status histogram, `agentErrorRounds`, `fatalAborts`, usage totals,
@@ -629,6 +633,8 @@ enforce-when-schema; plan: docs/plans/2026-09-05-v0.3.68-hardening-plan.md §5):
   text mode (schema rides the prompt, engine validation unchanged) — an owner
   that rejects the structured fields (in-memory 0.64 bridge after `pi update`),
   and 3 consecutive `structured_output_failed` terminals. Each WARNs once.
+  (v0.3.72: the invalid_request matcher must NAME the unsupported delegation
+  field — an error merely containing the word "structured" no longer degrades.)
 - **Escape hatch**: `SUPER_DEV_STRUCTURED=0` opts out entirely (default ON).
 - **Known upstream gap (watched)**: pi-subagents 0.65.x background/async children
   require `@earendil-works/pi-server`/`pi-client` resolvable from the pi package

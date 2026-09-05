@@ -6,7 +6,7 @@
  * the stage budget and hides the real setup problem.
  */
 
-const NON_RETRYABLE_AGENT_RE = /\b(?:spawn\s+\S+\s+ENOENT|failed\s+to\s+spawn\s+pi|ENOENT|EACCES|EPERM|permission\s+denied|command\s+not\s+found|no\s+such\s+file\s+or\s+directory)\b/i;
+const NON_RETRYABLE_AGENT_RE = /\b(?:spawn\s+\S+\s+ENOENT|failed\s+to\s+spawn\s+pi|ENOENT|EACCES|EPERM|permission\s+denied|command\s+not\s+found|no\s+such\s+file\s+or\s+directory|unknown\s+subagent\s+model|model\s+\S+\s+not\s+found|no\s+such\s+model)\b/i;
 
 export function isNonRetryableAgentError(error?: string): boolean {
 	return !!error && NON_RETRYABLE_AGENT_RE.test(error);

@@ -193,6 +193,18 @@ describe("delegation-only specialist execution (v0.3.64)", () => {
 		const result = await mkCtx({ setup: { specIdentifier: "spec-t4" } as any }, { events: bus } as RunOptions).agent(CALL);
 		expect(result.error).toContain("other-extension.js");
 	});
+
+	it("the module-resolution skew shape (Cannot find module …/pi-subagents…) is sticky fail-closed too (2026-09-05 background-runner crash)", async () => {
+		captured.delegationRequests = [];
+		const { bus } = failingOwnerBus("Error: Cannot find module '/home/jenningsl/.pi/agent/npm/node_modules/pi-subagents/src/watchdog/register-main'");
+		const first = await mkCtx({ setup: { specIdentifier: "spec-skew2" } as any }, { events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests).toHaveLength(1);
+		expect(first.error).toContain("Restart pi");
+		captured.delegationRequests = [];
+		const second = await mkCtx({ setup: { specIdentifier: "spec-skew2" } as any }, { events: bus } as RunOptions).agent(CALL);
+		expect(captured.delegationRequests).toHaveLength(0); // sticky — no per-call burn
+		expect(second.error).toContain("Restart pi");
+	});
 });
 
 describe("delegation version-skew classifier (v0.3.63)", () => {
@@ -211,9 +223,26 @@ describe("delegation version-skew classifier (v0.3.63)", () => {
 		expect(isDelegationRuntimeExtensionFailure(undefined)).toBe(false);
 		expect(isDelegationRuntimeExtensionFailure("")).toBe(false);
 	});
+	// v0.3.72 M2 (review ADV-F2): the second observed skew shape — pi-subagents'
+	// own import chain failing module resolution (0.65 detached runner:
+	// Cannot find module …/pi-subagents/src/watchdog/register-main). Same class:
+	// neither is retryable in-process, both demand a restart/reinstall.
+	it("matches the module-resolution shape (2026-09-05 background-runner crash)", () => {
+		expect(isDelegationRuntimeExtensionFailure("Error: Cannot find module '/home/jenningsl/.pi/agent/npm/node_modules/pi-subagents/src/watchdog/register-main'")).toBe(true);
+		expect(isDelegationRuntimeExtensionFailure("Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/x/pi-subagents/src/runs/background/subagent-runner' imported from /y/child-launch.ts")).toBe(true);
+	});
+	it("rejects module-resolution failures OUTSIDE pi-subagents' package", () => {
+		expect(isDelegationRuntimeExtensionFailure("Error: Cannot find module 'left-pad'")).toBe(false);
+		expect(isDelegationRuntimeExtensionFailure("Error: Cannot find module '/tmp/repro-cwd/other.js'")).toBe(false);
+	});
 });
 
 describe("FleetView visibility wrap (v0.3.25 L1)", () => {
+	beforeEach(() => {
+		// v0.3.72: sticky module state must not leak across describes (the skew
+		// tests above mark the backend degraded for the process).
+		resetDelegationBackendDegradeForTests();
+	});
 		it("registers an external run and records the terminal state for every agent call (sessionId present)", async () => {
 			fleet.begun = []; fleet.updated = []; fleet.finished = [];
 			const { bus } = ownerBus('ok <control>{"a":1}</control>');

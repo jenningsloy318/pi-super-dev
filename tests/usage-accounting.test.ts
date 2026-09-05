@@ -31,6 +31,7 @@ vi.mock("../src/agents/fleet-visibility.ts", () => ({
 vi.mock("../src/agents/register-agents.ts", () => ({ delegationOwnerPresent: vi.fn(() => null) }));
 
 import { makeContext, summarizeUsage } from "../src/workflow.ts";
+import { mergeUsage } from "../src/types.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const mkCtx = (state: PipelineState, options: RunOptions = {}) => makeContext(state, "t", options, () => {});
@@ -140,6 +141,106 @@ describe("v0.3.68 F10-1 — usage accounting", () => {
 		const r = await ctx.agent(CALL);
 		expect(r.usage).toBeUndefined();
 		expect(ctx.usage!.totals.calls).toBe(0); // nothing counted, nothing invented
+	});
+});
+
+describe("v0.3.72 M1 — usage accounting across corrective and transient retries (review F1/ADV-F1)", () => {
+	let restore: () => void;
+	beforeEach(() => { restore = saveEnv(["SUPER_DEV_MAX_RUN_COST", "SUPER_DEV_MAX_RUN_TOKENS", "SUPER_DEV_TRANSIENT_RETRY_MS"]); });
+	afterEach(() => restore());
+
+	it("mergeUsage sums per-field, keeps absent fields absent, undefined+undefined stays undefined (P10)", () => {
+		expect(mergeUsage(undefined, undefined)).toBeUndefined();
+		expect(mergeUsage({ input: 5 }, undefined)).toEqual({ input: 5 });
+		expect(mergeUsage({ input: 1000, output: 50, cost: 0.01, turns: 2 }, { input: 500, output: 25, cost: 0.005, turns: 1 }))
+			.toEqual({ input: 1500, output: 75, cost: 0.015, turns: 3 });
+		// one-sided fields survive untouched; NaN never propagates
+		expect(mergeUsage({ input: 10 }, { output: 4, input: Number.NaN } as any)).toEqual({ input: 10, output: 4 });
+	});
+
+	it("corrective round returns the SUM of both attempts' usage — first-attempt spend is real", async () => {
+		let n = 0;
+		const bus = new EventEmitter() as any;
+		bus.on("prompt-template:subagent:request", (req: any) => {
+			n += 1;
+			queueMicrotask(() => bus.emit("prompt-template:subagent:response", {
+				requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+				status: "completed",
+				result: { kind: "text", text: n === 1 ? "no control at all" : 'ok <control>{"route":"continue"}</control>' },
+				model: "m",
+				usage: n === 1 ? { input: 1000, output: 50, cost: 0.01, turns: 2 } : { input: 500, output: 25, cost: 0.005, turns: 1 },
+			}));
+		});
+		const ctx = mkCtx({ setup: { specIdentifier: "m1a" } as any }, { events: bus } as RunOptions);
+		const r = await ctx.agent({ ...CALL, id: "pipeline.judge.m1a", controlKeys: ["route"] });
+		expect(r.error).toBeUndefined();
+		expect(n).toBe(2); // the corrective round fired
+		expect(r.usage!.input).toBe(1500);
+		expect(r.usage!.output).toBe(75);
+		expect(r.usage!.turns).toBe(3);
+		expect(r.usage!.cost).toBeCloseTo(0.015);
+		expect(ctx.usage!.totals.input).toBe(1500); // accumulator sees the merged block
+	});
+
+	it("non-completed terminals thread the response's usage — failed calls are still spend", async () => {
+		const bus = new EventEmitter() as any;
+		bus.on("prompt-template:subagent:request", (req: any) => {
+			queueMicrotask(() => bus.emit("prompt-template:subagent:response", {
+				requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+				status: "failed", error: "child crashed", model: "m",
+				usage: { input: 700, output: 10, cost: 0.002 },
+			}));
+		});
+		const ctx = mkCtx({ setup: { specIdentifier: "m1b" } as any }, { events: bus } as RunOptions);
+		const r = await ctx.agent(CALL);
+		expect(r.error).toContain("delegation ended with status failed");
+		expect(r.usage!.input).toBe(700);
+		expect(ctx.usage!.totals.input).toBe(700);
+	});
+
+	it("transient-retry merges every attempt's usage into the one LOGICAL call", async () => {
+		process.env.SUPER_DEV_TRANSIENT_RETRY_MS = "0";
+		let n = 0;
+		const bus = new EventEmitter() as any;
+		bus.on("prompt-template:subagent:request", (req: any) => {
+			n += 1;
+			queueMicrotask(() => bus.emit("prompt-template:subagent:response", n === 1
+				? { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+					status: "failed", error: "429 Too Many Requests", model: "m", usage: { input: 300, output: 5, cost: 0.001 } }
+				: { requestId: req.requestId, ownerRunId: req.ownerRunId, nodeId: req.nodeId,
+					status: "completed", result: { kind: "text", text: 'ok <control>{"route":"continue"}</control>' }, model: "m", usage: { input: 900, output: 45, cost: 0.009, turns: 2 } }));
+		});
+		const ctx = mkCtx({ setup: { specIdentifier: "m1c" } as any }, { events: bus } as RunOptions);
+		const r = await ctx.agent(CALL);
+		expect(r.error).toBeUndefined();
+		expect(n).toBe(2); // one transient retry
+		expect(r.usage!.input).toBe(1200);
+		expect(r.usage!.cost).toBeCloseTo(0.01);
+		expect(ctx.usage!.totals.calls).toBe(1); // one logical call
+		expect(ctx.usage!.totals.input).toBe(1200);
+	});
+
+	it("M3: a set-but-unparseable fuse env WARNs loudly (once) instead of silently disarming — calls proceed unlimited (review F3/ADV-F3)", async () => {
+		process.env.SUPER_DEV_MAX_RUN_COST = "50 USD"; // meant $50 — unparseable
+		const logs: string[] = [];
+		const bus = usageOwnerBus({ input: 10, output: 1, cost: 100 }); // cost 100 > intended 50
+		const ctx = makeContext({ setup: { specIdentifier: "m3a" } as any }, "t", { events: bus } as RunOptions, (m: string) => logs.push(m));
+		const r1 = await ctx.agent(CALL);
+		expect(r1.error).toBeUndefined(); // unparseable ≠ trip (loud unlimited, not silent fake-limit)
+		expect(logs.some((l) => l.includes("SUPER_DEV_MAX_RUN_COST") && l.includes("not a number"))).toBe(true);
+		logs.length = 0;
+		await ctx.agent({ ...CALL, id: "pipeline.judge.m3b" });
+		expect(logs.some((l) => l.includes("not a number"))).toBe(false); // WARN once, not per call
+	});
+
+	it("M3: same for SUPER_DEV_MAX_RUN_TOKENS", async () => {
+		process.env.SUPER_DEV_MAX_RUN_TOKENS = "250k";
+		const logs: string[] = [];
+		const bus = usageOwnerBus({ input: 100, output: 40, cost: 0 });
+		const ctx = makeContext({ setup: { specIdentifier: "m3b" } as any }, "t", { events: bus } as RunOptions, (m: string) => logs.push(m));
+		const r = await ctx.agent(CALL);
+		expect(r.error).toBeUndefined();
+		expect(logs.some((l) => l.includes("SUPER_DEV_MAX_RUN_TOKENS") && l.includes("not a number"))).toBe(true);
 	});
 });
 

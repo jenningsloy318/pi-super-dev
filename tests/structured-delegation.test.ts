@@ -26,7 +26,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { runAgentViaDelegation, resetStructuredModeForTests } from "../src/agents/delegation-backend.ts";
-import { schemaViolationErrors, structuredModeEnabled } from "../src/agents/structured-output.ts";
+import { schemaViolationErrors, structuredModeEnabled, isStructuredUnsupportedRejection } from "../src/agents/structured-output.ts";
 
 const VERDICT_SCHEMA = {
 	type: "object",
@@ -113,6 +113,20 @@ describe("v0.3.70 W3 — structured responses", () => {
 		expect(out.control).toBeNull();
 		expect(out.error).toMatch(/schema violation/i);
 		expect(out.error).toContain("verdict");
+	});
+});
+
+describe("v0.3.72 N2 — STRUCTURED_UNSUPPORTED_RE must NAME the delegation field, not any 'structured' word (review ADV-N2)", () => {
+	beforeEach(() => resetStructuredModeForTests());
+	it("real 0.64 owner rejections still degrade (skew-incident byte shapes)", () => {
+		expect(isStructuredUnsupportedRejection("Unsupported delegation field: result")).toBe(true);
+		expect(isStructuredUnsupportedRejection("Unsupported delegation field: result.kind=structured")).toBe(true);
+		expect(isStructuredUnsupportedRejection("Unsupported delegation field: schema")).toBe(true);
+	});
+	it("errors merely CONTAINING 'structured' do not permanently degrade structured mode", () => {
+		expect(isStructuredUnsupportedRejection("structured output temporarily unavailable")).toBe(false);
+		expect(isStructuredUnsupportedRejection("model rejected the structured call")).toBe(false);
+		expect(isStructuredUnsupportedRejection(undefined)).toBe(false);
 	});
 });
 

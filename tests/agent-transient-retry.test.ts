@@ -21,6 +21,7 @@ vi.mock("../src/render/knowledge.ts", () => ({ knowledgeForAgent: vi.fn(() => ""
 
 import { makeContext } from "../src/workflow.ts";
 import { runAgentViaDelegation } from "../src/agents/delegation-backend.ts";
+import { isNonRetryableAgentError } from "../src/agent-errors.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const CALL: AgentCall = { id: "pipeline.x", agent: "spec-writer", prompt: "p" };
@@ -69,5 +70,18 @@ describe("transient-error retry in realAgent (429 / overload)", () => {
 		const r = await mkCtx().agent(CALL);
 		expect(r.error).toMatch(/429/);
 		expect(calls()).toBe(3); // 1 initial + 2 retries
+	});
+});
+
+describe("v0.3.72 N1 — model-not-found is non-retryable (review ADV-N1)", () => {
+	it("model-resolution failures fail fast instead of burning 3 rounds per loop (2026-09-04/05 incident shapes)", () => {
+		expect(isNonRetryableAgentError("Unknown subagent model zai-coding-cn/glm-does-not-exist")).toBe(true);
+		expect(isNonRetryableAgentError("Model zai-coding-cn/glm-5.2:high not found")).toBe(true);
+		expect(isNonRetryableAgentError("Requested subagent model zai-coding-cn/glm-5.2 is excluded and cannot be replaced by a fallback (reason: Model zai-coding-cn/glm-5.2:high not found; expires: 2026-09-05T11:44:04.574Z)")).toBe(true);
+	});
+	it("ordinary agent errors stay retryable", () => {
+		expect(isNonRetryableAgentError("tdd guide returned garbage output")).toBe(false);
+		expect(isNonRetryableAgentError("reviewer produced no control object")).toBe(false);
+		expect(isNonRetryableAgentError(undefined)).toBe(false);
 	});
 });

@@ -73,6 +73,30 @@ export interface UsageAccumulator {
 
 export type RunUsage = UsageAccumulator;
 
+/** v0.3.72 M1 (review F1/ADV-F1): sum two usage blocks per-field — corrective
+ * rounds and transient retries burn real tokens on EVERY attempt, so the
+ * honest per-call block is the sum, not the last response's. Absent fields
+ * stay absent (P10 no-fabrication); NaN never propagates (one-sided wins);
+ * undefined + undefined -> undefined. */
+export function mergeUsage(a: AgentUsage | undefined, b: AgentUsage | undefined): AgentUsage | undefined {
+	if (a == null && b == null) return undefined;
+	if (a == null) return b;
+	if (b == null) return a;
+	const finite = (x: unknown): number | undefined => (typeof x === "number" && Number.isFinite(x) ? x : undefined);
+	const add = (x: unknown, y: unknown): number | undefined => {
+		const fx = finite(x);
+		const fy = finite(y);
+		if (fx != null && fy != null) return fx + fy;
+		return fx ?? fy;
+	};
+	const out: AgentUsage = {};
+	for (const k of ["turns", "toolCalls", "input", "output", "cacheRead", "cacheWrite", "cost", "durationMs"] as const) {
+		const v = add((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]);
+		if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+	}
+	return out;
+}
+
 export interface AgentCall {
 	id: string;
 	agent: string;

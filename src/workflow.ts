@@ -30,6 +30,7 @@ import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from 
 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
 import { runHelper } from "./helpers.ts";
+import { mergeUsage } from "./types.ts";
 import { toBool } from "./doc-validators.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
 import { drainControlDrift, extractControlKeys } from "./control.ts";
@@ -350,21 +351,27 @@ function transientRetryMs(): number[] {
 
 /** Run an agent backend call, retrying transient errors with exponential backoff.
  *  One logical agent call = one budget unit (budget.spent is called once by
- *  realAgent; retries are internal). */
-async function runWithTransientRetry<T extends { error?: string }>(
+ *  realAgent; retries are internal).
+ *  v0.3.72 M1 (review F1/ADV-F1): every transient attempt burns real tokens,
+ *  so the returned result carries the SUM of all attempts' usage — the last
+ *  attempt's block alone under-counts the fuse input. */
+async function runWithTransientRetry<T extends { error?: string; usage?: AgentUsage }>(
 	exec: () => Promise<T>, signal: AbortSignal | undefined, log: (m: string) => void,
 ): Promise<T> {
 	const delays = transientRetryMs();
 	let last: T;
+	let total: AgentUsage | undefined;
+	const done = (): T => (total == null ? last : { ...last, usage: total });
 	for (let attempt = 0; ; attempt++) {
 		last = await exec();
-		if (isNonRetryableAgentError(last.error)) return last;
-		if (!isTransientAgentError(last.error)) return last;
-		if (attempt >= delays.length) return last; // exhausted -> surface the transient error
+		total = mergeUsage(total, last.usage);
+		if (isNonRetryableAgentError(last.error)) return done();
+		if (!isTransientAgentError(last.error)) return done();
+		if (attempt >= delays.length) return done(); // exhausted -> surface the transient error
 		const delay = delays[attempt];
 		log(`agent transient error (429/overload) — retrying in ${delay}ms (attempt ${attempt + 1}/${delays.length}): ${last.error}`);
 		await sleepMs(delay, signal);
-		if (signal?.aborted) return last;
+		if (signal?.aborted) return done();
 	}
 }
 
@@ -468,18 +475,35 @@ export function summarizeUsage(acc: { totals: UsageTotalsView; byAgent?: unknown
  * so a tripped fuse winds the run down with zero further agent spend and
  * close-out (summary/audit/metrics) still runs — the reasons 方案 A beat a
  * hard abort (plan §6.1). */
-function usageFuseError(acc: UsageAccumulator): string | null {
+let fuseCostWarned = false;
+let fuseTokensWarned = false;
+function usageFuseError(acc: UsageAccumulator, log: (m: string) => void): string | null {
 	const maxCost = superDevEnv("SUPER_DEV_MAX_RUN_COST");
 	if (maxCost) {
 		const cap = Number(maxCost);
-		if (Number.isFinite(cap) && acc.totals.cost >= cap) {
+		if (!Number.isFinite(cap)) {
+			// v0.3.72 M3 (review F3/ADV-F3): a set-but-unparseable safety control
+			// must never disarm silently. Loud WARN once per variable (repo
+			// convention: loud fallback, e.g. MAX_RED_RETRIES), calls proceed
+			// unlimited — NOT a fake silent limit and NOT a run-killing trip for
+			// an operator typo.
+			if (!fuseCostWarned) {
+				fuseCostWarned = true;
+				log(`WARN usage fuse DISABLED: SUPER_DEV_MAX_RUN_COST="${maxCost}" is not a number — set a numeric USD cap (e.g. SUPER_DEV_MAX_RUN_COST=50) or unset it.`);
+			}
+		} else if (acc.totals.cost >= cap) {
 			return `usage fuse tripped: SUPER_DEV_MAX_RUN_COST spent $${acc.totals.cost.toFixed(4)} >= limit $${cap} — this call was NOT launched. Raise SUPER_DEV_MAX_RUN_COST (or unset it) and resume; already-committed work is safe.`;
 		}
 	}
 	const maxTokens = superDevEnv("SUPER_DEV_MAX_RUN_TOKENS");
 	if (maxTokens) {
 		const cap = Number(maxTokens);
-		if (Number.isFinite(cap) && (acc.totals.input + acc.totals.output) >= cap) {
+		if (!Number.isFinite(cap)) {
+			if (!fuseTokensWarned) {
+				fuseTokensWarned = true;
+				log(`WARN usage fuse DISABLED: SUPER_DEV_MAX_RUN_TOKENS="${maxTokens}" is not a number — set a numeric token cap (e.g. SUPER_DEV_MAX_RUN_TOKENS=250000) or unset it.`);
+			}
+		} else if (acc.totals.input + acc.totals.output >= cap) {
 			return `usage fuse tripped: SUPER_DEV_MAX_RUN_TOKENS spent ${acc.totals.input + acc.totals.output} tokens (in ${acc.totals.input}/out ${acc.totals.output}) >= limit ${cap} — this call was NOT launched. Raise SUPER_DEV_MAX_RUN_TOKENS (or unset it) and resume; already-committed work is safe.`;
 		}
 	}
@@ -525,7 +549,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// spawn budget above. The call is not launched; the honest error names the
 		// fuse and the numbers; consecutive fuse rows FatalAbort via v0.3.65
 		// (deterministic wind-down, no hard abort — plan §6.1).
-		const fuseError = usageFuseError(usage);
+		const fuseError = usageFuseError(usage, log);
 		if (fuseError) {
 			log(`agent ${call.id ?? call.agent}: ${fuseError}`);
 			appendRunEvent(state.setup?.specDirectory, {

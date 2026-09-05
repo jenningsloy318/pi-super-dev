@@ -37,6 +37,7 @@ export { resetStructuredModeForTests }; // test isolation (mirrors the skew degr
 import { armDelegationWatchdog } from "../watchdog.ts";
 import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "./agent-runtime.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
+import { mergeUsage } from "../types.ts";
 import type { AgentProgress, SpawnResult } from "../types.ts";
 
 /** The minimal structural slice of pi's EventBus this backend needs. */
@@ -152,8 +153,13 @@ export interface DelegationUpdatePayload {
  * skew after `pi update` mid-session, or a broken install). Neither can be
  * fixed by retrying within this process, so the caller degrades the whole
  * backend for the session (see workflow.ts) - P5: an executor infra failure
- * never punishes the work. */
-const DELEGATION_RUNTIME_EXTENSION_FAILURE_RE = /Failed to load extension "[^"]*pi-subagents[^"]*"/;
+ * never punishes the work.
+ * v0.3.72 M2 (review ADV-F2): shape B — pi-subagents' own import chain failing
+ * MODULE resolution (`Cannot find module '…/pi-subagents/…'`, observed live
+ * 2026-09-05: the 0.65 detached runner watchdog chain). Same class: a restart
+ * or reinstall is the only remedy; per-call retries just burn child startups.
+ * The path must name pi-subagents so unrelated module errors stay non-sticky. */
+const DELEGATION_RUNTIME_EXTENSION_FAILURE_RE = /Failed to load extension "[^"]*pi-subagents[^"]*"|Cannot find module ['"][^'"]*pi-subagents/;
 
 /** True when a delegation error shows pi-subagents' own runtime extension
  * failing to load in the spawned child (version-skew class above). */
@@ -164,9 +170,9 @@ export function isDelegationRuntimeExtensionFailure(error: string | undefined): 
 /** Sticky whole-backend degrade state for the version-skew class. The
  * in-memory pi-subagents bridge cannot change within this process, so once
  * the signature is seen, every later pi-subagents call in ANY run of this
- * process goes straight to the session backend (no per-call 5s burn - the
- * 2026-09-04 incident lost every agent of two stages to it). Reset hook
- * exists for tests only. */
+ * process fails fast with DELEGATION_VERSION_SKEW_ERROR and the restart
+ * remedy (no per-call 5s burn - the 2026-09-04 incident lost every agent of
+ * two stages to it). Reset hook exists for tests only. */
 let delegationRuntimeExtensionFailureSeen = false;
 export function delegationBackendDegraded(): boolean {
 	return delegationRuntimeExtensionFailureSeen;
@@ -426,7 +432,7 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 		opts.onProgress?.event?.(`delegation ${opts.agent}: WARN structured result unsupported by this pi-subagents owner — degrading to text mode for the rest of this pi session (restart pi after upgrading pi-subagents to restore structured output)`);
 		first = await attempt(opts, task0, backstopMs, false);
 	}
-	if (first.error) return { text: "", control: null, model: undefined, error: first.error };
+	if (first.error) return { text: "", control: null, model: undefined, usage: first.response?.usage, error: first.error };
 	const response = first.response!;
 	// Any non-completed terminal state (failed/stopped/duplicate_node/…) is an
 	// agent error — never a silent empty success. The status is ALWAYS part of
@@ -442,7 +448,7 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 				opts.onProgress?.event?.(`delegation ${opts.agent}: WARN structured_output_failed 3 consecutive call(s) — degrading to text mode for the rest of this pi session`);
 			}
 		}
-		return { text: "", control: null, model: response.model, error: response.error?.trim() ? `delegation ended with status ${response.status}: ${response.error.trim()}` : `delegation ended with status ${response.status}` };
+		return { text: "", control: null, model: response.model, usage: response.usage, error: response.error?.trim() ? `delegation ended with status ${response.status}: ${response.error.trim()}` : `delegation ended with status ${response.status}` };
 	}
 	if (useStructured) recordStructuredSuccess();
 	// v0.3.70 W3: a structured result IS the control candidate (the child
@@ -477,10 +483,10 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 		// the previous attempt settled). The corrective task names BOTH the
 		// missing keys and the exact schema violations (validate→repair).
 		const second = await attempt(opts, correctiveTask(task0, missing, violations, useStructured), backstopMs, useStructured);
-		if (second.error) return { text, control, model: response.model, usage: second.response?.usage, error: `delegation retry after validation failure (missing: ${missing.join(", ") || "—"}; violations: ${violations.length}): ${second.error}` };
+		if (second.error) return { text, control, model: response.model, usage: mergeUsage(response.usage, second.response?.usage), error: `delegation retry after validation failure (missing: ${missing.join(", ") || "—"}; violations: ${violations.length}): ${second.error}` };
 		const response2 = second.response!;
 		if (response2.status !== "completed") {
-			return { text, control, model: response.model, error: `delegation retry ended with status ${response2.status}${response2.error ? `: ${response2.error}` : ""}` };
+			return { text, control, model: response.model, usage: mergeUsage(response.usage, response2.usage), error: `delegation retry ended with status ${response2.status}${response2.error ? `: ${response2.error}` : ""}` };
 		}
 		if (useStructured) recordStructuredSuccess();
 		const envelope2 = response2.result as { kind?: unknown; value?: unknown } | undefined;
@@ -495,9 +501,9 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 			// wrong-typed control handed to the stage.
 			const violations2 = opts.schema != null ? schemaViolationErrors(opts.schema, control2) : [];
 			if (violations2.length > 0) {
-				return { text: text2, control: null, model: response2.model ?? response.model, usage: second.response?.usage, error: `delegation retry still has schema violations (${violations2.join("; ")})` };
+				return { text: text2, control: null, model: response2.model ?? response.model, usage: mergeUsage(response.usage, response2.usage), error: `delegation retry still has schema violations (${violations2.join("; ")})` };
 			}
-			return { text: text2, control: control2, model: response2.model ?? response.model, usage: second.response?.usage };
+			return { text: text2, control: control2, model: response2.model ?? response.model, usage: mergeUsage(response.usage, response2.usage) };
 		}
 		// v0.3.48 honest diagnosis: distinguish UNPARSEABLE control JSON (a
 		// `<control>` block exists but strict parse failed — the unescaped-quote
@@ -505,7 +511,7 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 		// old wording ("still missing control keys") pointed debuggers at the
 		// MODEL omitting keys when the real defect was in the payload's quoting.
 		const hadTag = /<control>[\s\S]*<\/control>/i.test(text2);
-		return { text: text2, control: null, model: response2.model ?? response.model, usage: second.response?.usage, error: hadTag
+		return { text: text2, control: null, model: response2.model ?? response.model, usage: mergeUsage(response.usage, response2.usage), error: hadTag
 			? `delegation retry produced an UNPARSEABLE control block (originally missing: ${missing.join(", ")}) — the <control> JSON failed to parse; report this payload for corpus capture`
 			: `delegation retry produced no control object at all (originally missing: ${missing.join(", ")})` };
 	}

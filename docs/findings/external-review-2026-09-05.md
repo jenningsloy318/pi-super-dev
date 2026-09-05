@@ -115,3 +115,21 @@ in session memory. **Plan (documented):** testing-strategy.md recipe section.
 - Anthropic structured note-taking / memory tool — our convergence ledger +
   workspace-as-memory cover the run-local case; cross-run memory is out of
   scope for this wave.
+
+## 2026-09-05 双审查员复审裁决（ten-commit range c13824f3^..HEAD）
+
+sd-code-reviewer + sd-adversarial-reviewer（fresh-context 前台子代理）+ 本机对抗核查合并裁决：
+**CONTEST → 修复后可推**。v0.3.72 落地以下类级修复：
+
+| # | 发现 | 裁决/修复 |
+|---|------|----------|
+| M1 | corrective/瞬态重试丢弃前几次 usage（fuse 少计） | **修**：`mergeUsage`（types.ts）逐字段求和；delegation-backend 所有 corrective/失败终端 return 求和；`runWithTransientRetry` 合并全部尝试 |
+| M2 | 版本偏斜 shape B（`Cannot find module '…/pi-subagents/…'`）逃过 sticky degrade | **修**：`DELEGATION_RUNTIME_EXTENSION_FAILURE_RE` 增加模块解析形态（路径必须含 pi-subagents，不误伤） |
+| M3 | fuse env 非数值 → NaN 静默失效 | **修**：按变量一次性 WARN（`WARN usage fuse DISABLED … is not a number`），loud-unlimited 而非假上限 |
+| M4 | register-agents 部分注册文案仍说 "degrades to the session backend" | **修**：改为 Unknown agent per-call 失败 + 修复指引 |
+| M5 | deliverablesAlreadyMet notContains-only 空虚满足 | **CLEAR（带证据）**：pre-implement 跳过仅 resume-gated（implementation.ts:1739）；green-already-satisfied 仅在 RED oracle 跑绿时触发（:388）；验证节点确定性复跑 build+deliverables（:2374-2386）；polluted-red 先分类（:385）。notContains 的"缺失即满足"是文档化语法语义（gates.ts:1799），同类契约 oracle 在实现后同样通过 |
+| N1 | model-not-found 不在 NON_RETRYABLE（白烧 3 轮） | **修**：`unknown subagent model / model X not found / no such model` 入 NON_RETRYABLE_AGENT_RE → 即刻 FatalAbort |
+| N2 | STRUCTURED_UNSUPPORTED_RE 裸词 "structured" 太宽 | **修**：必须命名 delegation field（`unsupported delegation field: … result|schema|outputschema`） |
+| N3 | sigma-band MAD=0 恰 3σ / pooled 基线 / prediction 3 样本定案 | **记录**：advisory-only（从不 gate），已知噪声，不动 |
+
+审查员明确 CLEARED：sigma 自基线排除（sigma-bands.ts:131-134）、__replan 崩溃窗口（per-run in-memory + resume 只存 AgentResult + 失败进程以命名 skip 退场）、降级后 text 路径字节一致、结构化双层校验均运行、计数器重置/回放守卫正确。套件 3251 passed + 1 skipped，coverage 92.75%/81%/94.96% 过门。

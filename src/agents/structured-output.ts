@@ -43,7 +43,10 @@ export const STRUCTURED_FAILURE_DEGRADE_THRESHOLD = 3;
 /** An owner that rejects the structured result fields it doesn't understand
  *  (e.g. an in-memory 0.64 bridge after `pi update` swapped the package).
  *  Only consulted for requests WE sent as structured. */
-const STRUCTURED_UNSUPPORTED_RE = /(unsupported delegation field: result|result\.kind|structured|outputSchema)/i;
+// v0.3.72 N2 (review ADV-N2): the reject must NAME the unsupported delegation
+// field — a bare `structured` alternative matched any invalid_request that
+// happened to contain the word and permanently degraded fidelity for nothing.
+const STRUCTURED_UNSUPPORTED_RE = /unsupported delegation field: [^\n]*\b(?:result|schema|outputschema)\b/i;
 
 /** True when an invalid_request error names the structured fields. */
 export function isStructuredUnsupportedRejection(error: string | undefined): boolean {
