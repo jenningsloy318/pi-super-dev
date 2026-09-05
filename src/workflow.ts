@@ -22,6 +22,9 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSy
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { splitModelThinking } from "./agents/agent-runtime.ts";
+import { buildRunMetricsRow, appendRunMetrics, checkSigmaBands } from "./evolution/sigma-bands.ts";
+import { checkPredictionsFromLedger } from "./evolution/predictions.ts";
+export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evolution/sigma-bands.ts";
 import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
@@ -483,55 +486,6 @@ function usageFuseError(acc: UsageAccumulator): string | null {
 	return null;
 }
 
-/** v0.3.68 F10-2: one deterministic JSON row per run — the closing-the-loop
- * harvest (SDLC playbook): trend watching and σ-bands become jq over the file
- * instead of hand-mining 4k-line prose logs. */
-export interface RunMetricsRow {
-	runId: string;
-	status: string;
-	agentsSpawned: number;
-	wallMs: number;
-	stages: Record<string, number>;
-	agentErrorRounds: number;
-	fatalAborts: number;
-	usage: { calls: number; input: number; output: number; cost: number };
-	ts: number;
-}
-
-export function buildRunMetricsRow(input: { runId: string; status: string; agentsSpawned: number; wallMs: number; results: Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>; usage?: { totals?: Partial<{ calls: number; input: number; output: number; cost: number }>; byAgent?: unknown }; ts: number }): RunMetricsRow {
-	const stages: Record<string, number> = {};
-	let agentErrorRounds = 0;
-	let fatalAborts = 0;
-	for (const row of input.results) {
-		if (row.status) stages[row.status] = (stages[row.status] ?? 0) + 1;
-		if (row.cause === "agent-error") agentErrorRounds += 1;
-		if (typeof row.error === "string" && row.error.includes("FatalAbort")) fatalAborts += 1;
-	}
-	return {
-		runId: input.runId,
-		status: input.status,
-		agentsSpawned: input.agentsSpawned,
-		wallMs: input.wallMs,
-		stages,
-		agentErrorRounds,
-		fatalAborts,
-		usage: {
-			calls: input.usage?.totals?.calls ?? 0,
-			input: input.usage?.totals?.input ?? 0,
-			output: input.usage?.totals?.output ?? 0,
-			cost: input.usage?.totals?.cost ?? 0,
-		},
-		ts: input.ts,
-	};
-}
-
-/** Never throws (metrics are best-effort observability, not a gate). */
-export function appendRunMetrics(specDir: string | undefined, row: RunMetricsRow): void {
-	if (!specDir) return;
-	try {
-		appendFileSync(`${specDir}/run-metrics.jsonl`, JSON.stringify(row) + "\n", "utf8");
-	} catch { /* best-effort observability (P5: never punishes the run) */ }
-}
 
 function makeContext(state: PipelineState, task: string, options: RunOptions, log: (m: string) => void): StageContext {
 	const budget = makeBudget(options.maxAgents ?? DEFAULT_MAX_AGENTS);
@@ -1182,6 +1136,13 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		usage: ctx.usage,
 		ts: Date.now(),
 	}));
+
+	// v0.3.69 E1: σ-band drift detection over the global metrics ledger —
+	// deterministic, zero-LLM, best-effort (never gates, never throws).
+	checkSigmaBands((m) => progress?.log(m));
+	// v0.3.69 E5: prediction ledger — verify finding predictions against the
+	// accumulated metrics (decision observability; never throws).
+	checkPredictionsFromLedger((m) => progress?.log(m));
 
 	return {
 		workflowId: workflow.id,

@@ -50,6 +50,9 @@ export const READ_ONLY_AGENTS = new Set([
 	"tdd-coverage-classifier",
 	"reflection",
 	"replan-lead",
+	// v0.3.69 E2: incident diagnostician — read-only; the ENGINE writes its
+	// inbox draft from the returned control (P4: the boundary is mechanical).
+	"post-mortem",
 	// Review-2 P1: the four design-stage specialists (routeDesigner,
 	// helpers.ts:57-67) — analytical design roles; they emit controls, the
 	// stage renders the artifact.
@@ -62,7 +65,7 @@ export const READ_ONLY_AGENTS = new Set([
 /** The agents that must NOT be delegated (browser/web-research roles forced
  *  onto the subprocess backend) are still registered for future use — the
  *  backend-selection rule, not the registration, gates them. */
-const REGISTERED_AGENTS = [
+export const REGISTERED_AGENTS = [
 	"task-classifier",
 	"requirements-clarifier",
 	"requirements-reviewer",
@@ -92,6 +95,7 @@ const REGISTERED_AGENTS = [
 	"orchestrator",
 	"reflection",
 	"replan-lead",
+	"post-mortem",
 	"prototype-runner",
 	"api-tester",
 	"ui-tester",

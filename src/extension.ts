@@ -25,7 +25,9 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { ensureSuperDevDirs, startRun, runLogPathFor, getConfig } from "./render/super-dev-dir.ts";
+import { ensureSuperDevDirs, startRun, runLogPathFor, getConfig, auditAppend } from "./render/super-dev-dir.ts";
+import { shouldAutoPostMortem, runPostMortem } from "./evolution/post-mortem.ts";
+import { readLastMetricsRow } from "./evolution/sigma-bands.ts";
 import { runReflectionAsync } from "./render/reflection.ts";
 import { updateStats, cleanupOldRuns } from "./render/cleanup.ts";
 import { writeEscalationReport } from "./render/escalation-report.ts";
@@ -1013,6 +1015,34 @@ export default function activate(pi: ExtensionAPI): void {
 				const reflection = runReflectionAsync(runDir, (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined);
 				// Defensive: a non-promise return (legacy/tests) tracks nothing.
 				if (reflection) noteInFlightReflection(runDir, reflection);
+				// v0.3.69 E2: auto post-mortem — read-only agent drafts a finding to
+				// docs/findings/inbox/ ONLY when config postMortem==="auto" and the
+				// run was not a success (manual default; the Decide gate stays human).
+				try {
+					if (shouldAutoPostMortem(summary.status, getConfig().postMortem)) {
+						const bus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
+						const frame = readLastMetricsRow(summary.specDirectory);
+						if (bus && frame) {
+							void runPostMortem({
+								events: bus,
+								runId: frame.runId,
+								status: summary.status,
+								metricsRow: frame,
+								artifactPaths: {
+									runLog: logPath,
+									eventsJsonl: summary.specDirectory ? `${summary.specDirectory}/events.jsonl` : undefined,
+									specDir: summary.specDirectory || undefined,
+								},
+							}).then((out) => {
+								auditAppend(out.draftPath
+									? { stage: "post-mortem", control: { event: "finding-draft", path: out.draftPath } }
+									: { stage: "post-mortem", error: out.error ?? "no draft" }, runDir);
+							}).catch(() => { /* best-effort (P5) */ });
+						} else {
+							auditAppend({ stage: "post-mortem", skipped: bus ? "no metrics row (frame absent)" : "no delegation bus" }, runDir);
+						}
+					}
+				} catch { /* best-effort (P5) */ }
 				// Stages for the result's stage-progress section, from the live tracker.
 				const stages = dashboardOrder.map((id) => ({ id, ...(dashboardStages.get(id) ?? { label: id, status: "·" }) }));
 				// `content` is the text fallback (print/json/headless); in TUI, renderResult

@@ -594,6 +594,25 @@ figure), so usage is a first-class governance surface, not a log decoration:
   the closing-the-loop feed the σ-band monitor (v0.3.69) reads instead of
   hand-mining multi-thousand-line prose run logs.
 
+## The auto-continuous evolution loop (v0.3.69)
+
+The harness's fix lifecycle (findings → class-level tests → version) has
+always been human-governed; v0.3.69 automates the MEASURE–DETECT–DIAGNOSE half
+so degradation is caught by machinery, not by whoever next reads a 4k-line
+run log (plan: docs/plans/2026-09-05-v0.3.68-hardening-plan.md §9):
+
+| Aspect | Mechanism |
+|---|---|
+| Measure | every run appends one JSON row to `<specDir>/run-metrics.jsonl` AND the global `<super-dev-dir>/run-metrics.jsonl` (W2 v0.3.68 + E1) |
+| Detect | **E1 σ-band monitor** — median+MAD robust bands per metric at close-out; ≥8 prior runs before banding; 1σ logged / 2σ post-mortem flag / 3σ outlier surfaced; zero LLM |
+| Diagnose | **E2 post-mortem agent** — read-only `sd-post-mortem` reads run artifacts (paths in, JIT reading), matches the P1–P10 escape classes, returns a STRUCTURED draft; the ENGINE (never the agent) validates + writes it to `docs/findings/inbox/`. Auto-invoked only when `postMortem: "auto"` in `~/.super-dev/config.json` and the run was not a success (default manual) |
+| Decide | **E3 triage** — `npm run triage` (zero-LLM): list drafts, approve → moves to `docs/findings/` with an approved status header; the fix lifecycle takes over. The human gate is non-negotiable |
+| Prove | **E4 evals** — `npm run evals` runs the incident-pinned behavioral suites (`v0.3.*` test names); run it after ANY model/config change (`agentModels`, `agentThinking`) before trusting a long run. **E5 prediction ledger** — findings carry `prediction: <metric> <direction>`; the close-out checker compares recent-vs-baseline medians (n≥3 each) and appends supported/refuted verdicts (never overwriting) |
+
+Governance guardrails (Arize tiers): drafts land in inbox only; persistent
+changes always flow through the human fix lifecycle; the post-mortem agent is
+read-only; no agent may edit gates, methodology, or evals; rollback = git.
+
 ## Configuration
 
 Super-dev stores user-level runtime data under `~/.super-dev/`:

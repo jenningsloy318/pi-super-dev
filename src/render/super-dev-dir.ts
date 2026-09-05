@@ -71,6 +71,8 @@ export interface SuperDevConfig {
 	 *  Bootstrap-excluded on purpose: SUPER_DEV_DIR (config.json lives there),
 	 *  and the subprocess IPC / release-tooling plumbing vars. */
 	env?: Record<string, string>;
+	/** v0.3.69 E2: auto post-mortem on non-success runs ("auto" | "manual", default manual). */
+	postMortem?: "auto" | "manual";
 }
 
 export const DEFAULT_CONFIG: SuperDevConfig = {

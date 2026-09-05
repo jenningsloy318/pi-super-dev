@@ -7,11 +7,25 @@
  * at run end, ONE JSON row per run lands in <specDir>/run-metrics.jsonl with
  * machine-checkable health counters. Never throws; no spec dir → no row.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterAll } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// v0.3.69 E1: appendRunMetrics also writes the GLOBAL ledger — isolate it.
+vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
+	const mod = await importOriginal<typeof import("../src/render/super-dev-dir.ts")>();
+	const { mkdtempSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "sd-rm-global-"));
+	return { ...mod, getSuperDevDir: () => dir };
+});
+
 import { buildRunMetricsRow, appendRunMetrics } from "../src/workflow.ts";
+import { getSuperDevDir } from "../src/render/super-dev-dir.ts";
+
+afterAll(() => rmSync(getSuperDevDir(), { recursive: true, force: true }));
 
 const ts = () => Date.now();
 
