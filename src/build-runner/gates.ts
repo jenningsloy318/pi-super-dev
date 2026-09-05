@@ -1905,28 +1905,46 @@ export function runDeliverableCheck(
  */
 export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableContract, baseRef?: string): boolean {
 	try {
+		// F8 (v0.3.66, incident 2026-09-04T14-45-04-784Z phase 5): the
+		// already-satisfied decision must evaluate EVERY clause kind the contract
+		// grammar declares — requireFiles, requireContains, requireNotContains,
+		// requireScenarios — not only requireFiles. The old
+		// `requireFiles.length === 0 → false` guard predated the contains/scenarios
+		// clauses, so contains-only contracts were permanently un-satisfiable HERE
+		// while sibling runDeliverableCheck passed them — two grammars for one
+		// contract (class D). Fail-closed is preserved for the one shape that
+		// genuinely cannot be judged: a contract with NO checkable clause at all
+		// (empty contracts must never count as "already satisfied").
 		const files = deliverables.requireFiles;
-		if (!Array.isArray(files) || files.length === 0) return false;
-		for (const p of files) {
-			const abs = resolveInsideCwd(cwd, p);
-			if (abs === null || !existsSync(abs)) return false;
+		const contains = deliverables.requireContains ?? [];
+		const notContains = deliverables.requireNotContains ?? [];
+		const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
+		const hasCheckableClause = (Array.isArray(files) && files.length > 0)
+			|| contains.length > 0
+			|| notContains.length > 0
+			|| scenarios.length > 0;
+		if (!hasCheckableClause) return false;
+		if (Array.isArray(files)) {
+			for (const p of files) {
+				const abs = resolveInsideCwd(cwd, p);
+				if (abs === null || !existsSync(abs)) return false;
+			}
 		}
-		for (const entry of deliverables.requireContains ?? []) {
+		for (const entry of contains) {
 			const rd = readForDeliverable(cwd, entry.file);
 			if (!rd.ok || !tolerantMatch(entry.pattern, deliverableMatchText(entry.file, rd.text))) return false;
 		}
-		for (const entry of deliverables.requireNotContains ?? []) {
+		for (const entry of notContains) {
 			const rd = readForDeliverable(cwd, entry.file);
 			if (rd.ok && tolerantMatch(entry.pattern, deliverableMatchText(entry.file, rd.text))) return false;
 		}
-			// requireScenarios: every declared SCENARIO-NNN tag must appear in a
-			// candidate test file (same stable-tag match as runDeliverableCheck).
-			const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
-			if (scenarios.length > 0) {
-				const tagRes = scenarios.map((tag) => new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i"));
-				const { text } = collectTestFileContents(cwd, deliverables, (t) => tagRes.every((re) => re.test(t)), baseRef); // sweep-3 CR-R2-7
-				if (!tagRes.every((re) => re.test(text))) return false;
-			}
+		// requireScenarios: every declared SCENARIO-NNN tag must appear in a
+		// candidate test file (same stable-tag match as runDeliverableCheck).
+		if (scenarios.length > 0) {
+			const tagRes = scenarios.map((tag) => new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i"));
+			const { text } = collectTestFileContents(cwd, deliverables, (t) => tagRes.every((re) => re.test(t)), baseRef); // sweep-3 CR-R2-7
+			if (!tagRes.every((re) => re.test(text))) return false;
+		}
 		return true;
 	} catch {
 		return false;

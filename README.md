@@ -396,6 +396,22 @@ rounds as fake rejections). Non-retryable environment errors
 (`isNonRetryableAgentError`) abort immediately; replayed resume rounds never
 count, so a fixed runtime recovers.
 
+**Already-satisfied is reachable for every contract shape (v0.3.66).** The RED
+loop's already-satisfied escape now evaluates every deliverable-contract clause
+kind (`requireFiles`, `requireContains`, `requireNotContains`, `requireScenarios`)
+and re-checks the contract LIVE at oracle time when the RED oracle is green but
+the attempt-entry baseline was false. Previously a contract without
+`requireFiles` (contains/scenarios-only — incident 2026-09-04T14-45-04-784Z
+phase 5, whose entire contract was verifiably satisfied on disk by sibling
+commits) could NEVER classify `green-already-satisfied`: every green oracle was
+misrouted to `red-not-confirmed` retries → RED cleanup erased the authored
+test-file deliverables → re-entry recomputed the same false baseline — 16 spins,
+~3.5h, one no-progress escalation on a satisfiable phase. Classification order
+is unchanged: `polluted-red` still wins first, so a RED-phase production edit
+cannot masquerade as satisfied, and the Already-satisfied verification node
+re-runs the build gate + deliverable check deterministically before accepting.
+The resume no-op fast path inherits the same clause coverage.
+
 **Merge verification (Stage 14B).** The merge agent *performs* the merge
 (instructed to merge from the main checkout — inside a linked worktree it
 structurally cannot advance the checked-out default branch), but the run only

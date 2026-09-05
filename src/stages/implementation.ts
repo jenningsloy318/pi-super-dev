@@ -1887,7 +1887,24 @@ export const implementationStage: Stage = {
 						// v0.2.8 G4: re-admit judge-approved scaffolding before classifying.
 						if (redScaffoldApproved.size) boundary = approveScaffoldPaths(boundary, redScaffoldApproved);
 						ctx.log(`Implementation ${phaseId} RED boundary: ${boundarySummary(boundary)}`);
-						redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: baselineDeliverablesSatisfied, diagnostics: redDiagnostics });
+						// F8 (v0.3.66, incident 2026-09-04T14-45-04-784Z phase 5): the baseline was
+					// snapshotted at attempt ENTRY; deliverables can land between entry and
+					// oracle (sibling-phase commits, RED-authored test-file deliverables) —
+					// the incident burned 3.5h in red-not-confirmed retries with every clause
+					// satisfied on disk. Re-check the contract LIVE at oracle time, but only
+					// when it can change the classification (oracle green, baseline false):
+					// polluted-red is classified FIRST in classifyRedEvidence, so a RED-phase
+					// production edit still cannot masquerade as already-satisfied, and the
+					// Already-satisfied verification node re-runs build gate + deliverable
+					// check deterministically before anything is accepted.
+					const alreadySatisfiedNow = baselineDeliverablesSatisfied
+						|| (redStatus === "green" && phaseDeliverables
+							? deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables, setup.defaultBranch)
+							: false);
+					if (!baselineDeliverablesSatisfied && alreadySatisfiedNow) {
+						ctx.log(`Implementation ${phaseId} RED oracle-time deliverable re-check: satisfied (baseline was not) — routing to already-satisfied verification`);
+					}
+					redEvidence = classifyRedEvidence({ phaseId, attempt, redStatus, testFiles, changedFiles: redChangedFiles, boundary, redRetries: retries, alreadySatisfied: alreadySatisfiedNow, diagnostics: redDiagnostics });
 						// R1 — FAIL CLOSED on an unclassifiable/absent RED when the phase is
 						// SUPPOSED to have tests. `unknown-*` produces no failure reason and no
 						// retry hint, so without this the implementer proceeds with NO confirmed
