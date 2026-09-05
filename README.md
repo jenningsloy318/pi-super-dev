@@ -481,6 +481,7 @@ deadlock boundaries **without** weakening any guarantee:
 | Stage 9/10 per-attempt fix loops | budget + recurring-signature no-progress (any earlier attempt) |
 | Stage 10 review loop | approval (verdict AND build green) + stagnation (identical non-empty findings signature) + **dead-state breaks**: no actionable findings with a green gate (or absent gate after one full round) breaks for HITL |
 | Global agent budget | `maxAgents` (default per run options) |
+| Global cost/token fuse | `SUPER_DEV_MAX_RUN_COST` / `SUPER_DEV_MAX_RUN_TOKENS` — per-call fail-closed (v0.3.68; see below) |
 
 The escalation ladder is three layers: **Layer 0** deterministic fast paths
 and gates → **Layer 1** the judge (above) → **Layer 2** HITL (`escalation:
@@ -567,6 +568,31 @@ land), the RED evidence signature excludes harness bookkeeping so oscillation
 detection actually fires, RED cleanup never `git clean`s harness files, and
 the post-cap judge floor keeps both late recovery routes
 (`fix-environment` + `allow-scaffold`).
+
+## Usage governance & run metrics (v0.3.68)
+
+Multi-agent runs spend ~15× a chat session's tokens (Anthropic's production
+figure), so usage is a first-class governance surface, not a log decoration:
+
+- **Accounting**: every delegated call's terminal usage block (turns, tool
+  calls, input/output/cache tokens, cost, duration) is threaded from the
+  pi-subagents response into the run-scoped accumulator (`ctx.usage` — totals
+  + per-agent `sd-*` split) and lands in the **RunSummary `usage` block**.
+  Absent usage is never fabricated (P10).
+- **Fuses (fail-closed, 方案 A)**: `SUPER_DEV_MAX_RUN_COST` (USD) and
+  `SUPER_DEV_MAX_RUN_TOKENS` (input+output) are checked BEFORE each call
+  launches. The call that lands at/over the cap still completes and is counted
+  honestly — the NEXT call fails closed naming the fuse and the spent/limit
+  numbers. Tripped-fuse rows are `cause:"agent-error"` rows, so the v0.3.65
+  machinery winds the run down deterministically (FatalAbort after 3
+  consecutive) with zero further agent spend while close-out (summary, audit,
+  metrics) still runs — resume-safe (raise or unset the fuse, resume).
+- **Harvest (`run-metrics.jsonl`)**: at run end ONE deterministic JSON row per
+  run lands in `<specDir>/run-metrics.jsonl` (status, agentsSpawned, wallMs,
+  stage-status histogram, `agentErrorRounds`, `fatalAborts`, usage totals,
+  timestamp). Best-effort observability: never throws, never gates. This is
+  the closing-the-loop feed the σ-band monitor (v0.3.69) reads instead of
+  hand-mining multi-thousand-line prose run logs.
 
 ## Configuration
 
@@ -681,6 +707,8 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_MAX_RED_JUDGE_ROUTES` | `3` | routed judge interventions per phase before only `fix-environment` remains |
 | `SUPER_DEV_MAX_CHALLENGE_REAUTHORS` | `2` | implementer-driven RED re-author cap |
 | `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
+| `SUPER_DEV_MAX_RUN_COST` | — | run-wide cost fuse in USD (fail-closed pre-call; see Usage governance) |
+| `SUPER_DEV_MAX_RUN_TOKENS` | — | run-wide token fuse, input+output (fail-closed pre-call; see Usage governance) |
 | `SUPER_DEV_JUDGE_TIMEOUT_MS` | `480000` | judge wall-clock budget per call (retry-on-timeout consumes the 2nd signature slot) |
 | `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |

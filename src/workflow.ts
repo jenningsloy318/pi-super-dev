@@ -18,11 +18,11 @@ import { languageDirective, superDevEnv } from "./render/super-dev-dir.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { splitModelThinking } from "./agents/agent-runtime.ts";
-import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded } from "./agents/delegation-backend.ts";
+import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
@@ -57,7 +57,7 @@ import type {
 	RunOptions,
 	RunStatus,
 	RunSummary,
-	SpawnResult,
+	SpawnResult, UsageAccumulator, AgentUsage,
 	StageContext,
 	StageProgressEvent,
 	Workflow,
@@ -404,6 +404,135 @@ function ledgerControlSummary(control: unknown): Record<string, unknown> | null 
 	return out;
 }
 
+/** v0.3.68 F10-1: fresh run-scoped usage accumulator (Anthropic: multi-agent
+ * ≈ 15× chat tokens — totals + per-agent splits are the governance surface). */
+function freshUsage(): UsageAccumulator {
+	return {
+		totals: { calls: 0, turns: 0, toolCalls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, durationMs: 0 },
+		byAgent: {},
+	};
+}
+
+function accumulateUsage(acc: UsageAccumulator, agent: string, u: AgentUsage | undefined): void {
+	if (!u) return; // absent usage is never fabricated (P10)
+	acc.totals.calls += 1;
+	for (const k of ["turns", "toolCalls", "input", "output", "cacheRead", "cacheWrite", "cost", "durationMs"] as const) {
+		const v = u[k];
+		if (typeof v === "number" && Number.isFinite(v)) acc.totals[k] += v;
+	}
+	const per = acc.byAgent[agent] ?? { calls: 0, turns: 0, toolCalls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, durationMs: 0 };
+	per.calls += 1;
+	for (const k of ["turns", "toolCalls", "input", "output", "cacheRead", "cacheWrite", "cost", "durationMs"] as const) {
+		const v = u[k];
+		if (typeof v === "number" && Number.isFinite(v)) per[k] += v;
+	}
+	acc.byAgent[agent] = per;
+}
+
+/** Structural subset of UsageAccumulator totals (summaries stay
+ *  constructible from partial accumulators in tests/tools). */
+export interface UsageTotalsView {
+	calls: number;
+	turns?: number;
+	toolCalls?: number;
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: number;
+	durationMs?: number;
+}
+
+/** v0.3.68 F10-1: deterministic one-line usage summary (P10 — null when no
+ * usage was ever seen; no fabricated zeros). */
+export function summarizeUsage(acc: { totals: UsageTotalsView; byAgent?: unknown }): string | null {
+	if (acc.totals.calls === 0) return null;
+	const parts = [`calls=${acc.totals.calls}`];
+	if (acc.totals.input) parts.push(`input=${acc.totals.input}`);
+	if (acc.totals.output) parts.push(`output=${acc.totals.output}`);
+	if (acc.totals.turns) parts.push(`turns=${acc.totals.turns}`);
+	if (acc.totals.toolCalls) parts.push(`tools=${acc.totals.toolCalls}`);
+	if (acc.totals.cost) parts.push(`cost=${Number(acc.totals.cost.toFixed(4))}`);
+	return parts.join(" ");
+}
+
+/** v0.3.68 F10-1 (plan D6 方案 A): per-call fail-closed cost/token fuse.
+ * Checked BEFORE a call launches; the call that LANDS at/over the cap still
+ * completes and is counted honestly — the NEXT call fails closed naming the
+ * fuse and the spent/limit numbers (mirrors the spawn-budget fuse). The
+ * error rows then flow through the EXISTING deterministic wind-down: v0.3.65
+ * marks them cause:"agent-error" and FatalAborts after 3 consecutive rounds,
+ * so a tripped fuse winds the run down with zero further agent spend and
+ * close-out (summary/audit/metrics) still runs — the reasons 方案 A beat a
+ * hard abort (plan §6.1). */
+function usageFuseError(acc: UsageAccumulator): string | null {
+	const maxCost = superDevEnv("SUPER_DEV_MAX_RUN_COST");
+	if (maxCost) {
+		const cap = Number(maxCost);
+		if (Number.isFinite(cap) && acc.totals.cost >= cap) {
+			return `usage fuse tripped: SUPER_DEV_MAX_RUN_COST spent $${acc.totals.cost.toFixed(4)} >= limit $${cap} — this call was NOT launched. Raise SUPER_DEV_MAX_RUN_COST (or unset it) and resume; already-committed work is safe.`;
+		}
+	}
+	const maxTokens = superDevEnv("SUPER_DEV_MAX_RUN_TOKENS");
+	if (maxTokens) {
+		const cap = Number(maxTokens);
+		if (Number.isFinite(cap) && (acc.totals.input + acc.totals.output) >= cap) {
+			return `usage fuse tripped: SUPER_DEV_MAX_RUN_TOKENS spent ${acc.totals.input + acc.totals.output} tokens (in ${acc.totals.input}/out ${acc.totals.output}) >= limit ${cap} — this call was NOT launched. Raise SUPER_DEV_MAX_RUN_TOKENS (or unset it) and resume; already-committed work is safe.`;
+		}
+	}
+	return null;
+}
+
+/** v0.3.68 F10-2: one deterministic JSON row per run — the closing-the-loop
+ * harvest (SDLC playbook): trend watching and σ-bands become jq over the file
+ * instead of hand-mining 4k-line prose logs. */
+export interface RunMetricsRow {
+	runId: string;
+	status: string;
+	agentsSpawned: number;
+	wallMs: number;
+	stages: Record<string, number>;
+	agentErrorRounds: number;
+	fatalAborts: number;
+	usage: { calls: number; input: number; output: number; cost: number };
+	ts: number;
+}
+
+export function buildRunMetricsRow(input: { runId: string; status: string; agentsSpawned: number; wallMs: number; results: Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>; usage?: { totals?: Partial<{ calls: number; input: number; output: number; cost: number }>; byAgent?: unknown }; ts: number }): RunMetricsRow {
+	const stages: Record<string, number> = {};
+	let agentErrorRounds = 0;
+	let fatalAborts = 0;
+	for (const row of input.results) {
+		if (row.status) stages[row.status] = (stages[row.status] ?? 0) + 1;
+		if (row.cause === "agent-error") agentErrorRounds += 1;
+		if (typeof row.error === "string" && row.error.includes("FatalAbort")) fatalAborts += 1;
+	}
+	return {
+		runId: input.runId,
+		status: input.status,
+		agentsSpawned: input.agentsSpawned,
+		wallMs: input.wallMs,
+		stages,
+		agentErrorRounds,
+		fatalAborts,
+		usage: {
+			calls: input.usage?.totals?.calls ?? 0,
+			input: input.usage?.totals?.input ?? 0,
+			output: input.usage?.totals?.output ?? 0,
+			cost: input.usage?.totals?.cost ?? 0,
+		},
+		ts: input.ts,
+	};
+}
+
+/** Never throws (metrics are best-effort observability, not a gate). */
+export function appendRunMetrics(specDir: string | undefined, row: RunMetricsRow): void {
+	if (!specDir) return;
+	try {
+		appendFileSync(`${specDir}/run-metrics.jsonl`, JSON.stringify(row) + "\n", "utf8");
+	} catch { /* best-effort observability (P5: never punishes the run) */ }
+}
+
 function makeContext(state: PipelineState, task: string, options: RunOptions, log: (m: string) => void): StageContext {
 	const budget = makeBudget(options.maxAgents ?? DEFAULT_MAX_AGENTS);
 	const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
@@ -419,6 +548,10 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 
 	// v0.3.26/v0.3.64: one-shot ERROR log for a missing pi-subagents owner.
 	let ownerWarned = false;
+	// v0.3.68 F10-1: run-scoped usage accumulator — the single mutable record
+	// every successful agent call lands in (per-agent + totals), the RunSummary
+	// usage block reads, and the SUPER_DEV_MAX_RUN_COST/TOKENS fuses check.
+	const usage = freshUsage();
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
 		// BUG-4: atomic reservation — bail BEFORE doing any work when the cap is hit,
@@ -433,6 +566,22 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: "budget exhausted (maxAgents reached)" },
 			});
 			return { text: "", control: null, error: "budget exhausted (maxAgents reached)" };
+		}
+		// v0.3.68 F10-1 (D6 方案 A): cost/token fuse — same pre-call shape as the
+		// spawn budget above. The call is not launched; the honest error names the
+		// fuse and the numbers; consecutive fuse rows FatalAbort via v0.3.65
+		// (deterministic wind-down, no hard abort — plan §6.1).
+		const fuseError = usageFuseError(usage);
+		if (fuseError) {
+			log(`agent ${call.id ?? call.agent}: ${fuseError}`);
+			appendRunEvent(state.setup?.specDirectory, {
+				runId: ledgerRunId(state),
+				agent: call.agent,
+				stage: (call.id ?? "").replace(/^pipeline\./, ""),
+				type: "agent.called",
+				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: fuseError },
+			});
+			return { text: "", control: null, error: fuseError };
 		}
 		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
 		// First-principles retry convergence: if a gate rejected a prior attempt,
@@ -677,6 +826,10 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		try {
 			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
 			fleetDone(result);
+			// v0.3.68 F10-1: accumulate the per-call usage block (absent usage never
+			// fabricates — accumulateUsage no-ops). Keyed by the DELEGATION agent
+			// name (sd-*) so the split matches FleetView/registration identities.
+			accumulateUsage(usage, delegationAgentName(call.agent), result.usage);
 			// v0.3.54 review fix (adv F5): capture-side drift telemetry (F6 fallback
 			// acceptances, parse warnings) is emitted during RESULT parsing inside
 			// exec — after this call's prompt-time drain ran. Drain again here so
@@ -742,7 +895,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		return results;
 	}
 
-	return { task, options, state, agent, helper, parallel, budget, log, phase: (label: string) => events.emit("phase", label), withScope: <T>(marker: string, fn: () => Promise<T>): Promise<T> => { const parent = scopeAls.getStore() ?? []; return scopeAls.run([...parent, marker], fn); }, events, signal, results: [] };
+	return { task, options, state, agent, helper, parallel, budget, usage, log, phase: (label: string) => events.emit("phase", label), withScope: <T>(marker: string, fn: () => Promise<T>): Promise<T> => { const parent = scopeAls.getStore() ?? []; return scopeAls.run([...parent, marker], fn); }, events, signal, results: [] };
 }
 
 /** Run a workflow for a task. */
@@ -893,6 +1046,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// dashboard-only noise (same rule as the tracker above); "step" rows (TDD RED,
 	// RED review…) are real transitions and are recorded with their kind.
 	const runId = randomUUID();
+	const runStartedAt = Date.now();
 	(state as Record<string, unknown>).__runId = runId;
 	const pendingLedgerEvents: RunEventInput[] = [runStartedEvent(runId, task, SUPER_DEV_EXTENSION_VERSION)];
 	const ledgerEvent = (evt: RunEventInput) => {
@@ -1015,6 +1169,20 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// first (a run that never produced a spec dir writes nothing anywhere).
 	ledgerEvent({ runId, type: "run.completed", data: { status, reason: abortError, specIdentifier: state.setup?.specIdentifier ?? "" } });
 
+	// v0.3.68 F10-2: the closing-the-loop harvest — ONE deterministic JSON row
+	// per run in <specDir>/run-metrics.jsonl (never throws; no spec dir → no
+	// row). Leading/lagging counters the σ-band monitor (v0.3.69 E1) reads
+	// instead of hand-mining 4k-line prose logs.
+	appendRunMetrics(state.setup?.specDirectory, buildRunMetricsRow({
+		runId,
+		status,
+		agentsSpawned: ctx.budget.count,
+		wallMs: Date.now() - runStartedAt,
+		results: ctx.results as Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>,
+		usage: ctx.usage,
+		ts: Date.now(),
+	}));
+
 	return {
 		workflowId: workflow.id,
 		specIdentifier: state.setup?.specIdentifier ?? "",
@@ -1026,6 +1194,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		failedStages,
 		statusReasons,
 		error: abortError,
+		usage: ctx.usage,
 	};
 }
 

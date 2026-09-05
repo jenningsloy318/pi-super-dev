@@ -45,7 +45,33 @@ export interface SpawnResult {
 	control: ControlObj | null;
 	model?: string;
 	error?: string;
+	/** v0.3.68 F10-1: the delegation terminal usage block (turns/toolCalls/
+	 *  input/output/cache/cost/durationMs). Absent when the owner reported no
+	 *  usage — never fabricated (P10). */
+	usage?: AgentUsage;
 }
+
+/** v0.3.68 F10-1: per-call usage from pi-subagents' SubagentDelegationUsage
+ * (structural slice, declared locally per the no-runtime-import rule). */
+export interface AgentUsage {
+	turns?: number;
+	toolCalls?: number;
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: number;
+	durationMs?: number;
+}
+
+/** v0.3.68 F10-1: run-scoped usage accumulator (Anthropic: multi-agent ≈ 15×
+ * chat tokens — totals and per-agent splits are the governance surface). */
+export interface UsageAccumulator {
+	totals: { calls: number; turns: number; toolCalls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; durationMs: number };
+	byAgent: Record<string, { calls: number; turns: number; toolCalls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; durationMs: number }>;
+}
+
+export type RunUsage = UsageAccumulator;
 
 export interface AgentCall {
 	id: string;
@@ -286,6 +312,10 @@ export interface StageContext {
 	 */
 	parallel(calls: Array<() => Promise<AgentResult>>): Promise<AgentResult[]>;
 	budget: Budget;
+	/** v0.3.68 F10-1: run-scoped usage accumulator (mutable record shared with
+	 * the RunSummary; absent usage stays zeroed — never fabricated). Optional —
+	 * bare test contexts omit it; makeContext ALWAYS provides it. */
+	usage?: UsageAccumulator;
 	log(message: string): void;
 	/** Announce a sub-phase of the current stage (pi-native): routes through the
 	 *  progress sink's `phase()` so it surfaces as the dashboard subtitle, the
@@ -514,6 +544,8 @@ export interface RunSummary {
 	error?: string;
 	/** Sweep-3 G9/AR2-4: honest reasons the run is NOT `success` (empty on success). */
 	statusReasons?: string[];
+	/** v0.3.68 F10-1: run-scoped usage totals + per-agent split (governance). */
+	usage?: RunUsage;
 }
 
 /** v0.3.55 security review F1: structured quarantine payload for a
