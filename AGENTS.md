@@ -1,5 +1,20 @@
 # Repository Instructions
 
+## Session start — update watch (FIRST thing, every pi session)
+
+Before any other work, run the update watch:
+1. **Version-drift check** (the version-skew incident class, see v0.3.63): compare the
+   on-disk pi-subagents version (`node -e "console.log(require(process.env.HOME + '/.pi/agent/npm/node_modules/pi-subagents/package.json').version)"`)
+   against the version this running pi session loaded in memory. If they differ, tell
+   the user to restart pi BEFORE launching any delegated run — an in-memory 0.64 owner
+   spawning children against on-disk 0.65+ kills every child (observed three times,
+   2026-09-04/05).
+2. **Read `docs/upstream-watch.md`**: re-check every open watch item against the
+   currently installed versions; strike items upstream has fixed; append newly
+   discovered upstream gaps (e.g. the pi 0.85.1 background-children pi-server gap).
+3. **New releases**: `npm view pi-subagents version` and the pi changelog — flag any
+   release touching the contract surface (C1-C6 in upstream-watch.md).
+
 ## Engineering methodology (BINDING — read before any fix or feature)
 
 The full methodology lives in `docs/methodology/`: 00-principles.md (constitution),

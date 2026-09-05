@@ -630,6 +630,11 @@ enforce-when-schema; plan: docs/plans/2026-09-05-v0.3.68-hardening-plan.md §5):
   that rejects the structured fields (in-memory 0.64 bridge after `pi update`),
   and 3 consecutive `structured_output_failed` terminals. Each WARNs once.
 - **Escape hatch**: `SUPER_DEV_STRUCTURED=0` opts out entirely (default ON).
+- **Known upstream gap (watched)**: pi-subagents 0.65.x background/async children
+  require `@earendil-works/pi-server`/`pi-client` resolvable from the pi package
+  root, which pi 0.85.1 hosts lack — interactive `async` subagent fan-out fails.
+  pi-super-dev's pipeline children are foreground/in-process and unaffected
+  (see `docs/upstream-watch.md`, 2026-09-05 entry).
   The flag is scheduled for removal two versions after the mode stabilizes.
 - **Coverage audit (§5.2.5)**: every `controlKeys` call site now carries a
   schema — judge (`route` enum: a free-text route is now a correctable

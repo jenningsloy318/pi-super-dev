@@ -68,6 +68,23 @@ If a file reports DIFF, act per contract:
 
 ## Drift log
 
+- **2026-09-05** — OPEN WATCH: **pi-subagents 0.65.1 × pi 0.85.1 background children
+  broken upstream.** Background/async children require `@earendil-works/pi-server`
+  (+`/unix`) and `@earendil-works/pi-client/unix` resolvable from the **pi package
+  root** (`resolveHostPeerAliases`, `runs/background/runner-aliases.ts:123` — walks
+  only the pi install tree). pi 0.85.1 declares neither as a dependency and does not
+  ship them; pi-subagents' band-aid (`findHostPeerPackageDir` from the extension
+  root) applies to **exactly pi 0.85.0 only** ("Pi 0.85.0 omitted this runtime
+  dependency. Never extend this exact version contract"); `pi-client` is installed
+  nowhere on this machine. Impact on us: **NONE for the pipeline** — every
+  pi-super-dev delegation is foreground/in-process (v0.4.0 single backend), verified
+  live. Only interactive `async` subagent fan-out in pi sessions fails (detached
+  runner crash: `Cannot find module .../watchdog/register-main` chain). Workaround if
+  async spawns are needed locally: symlink `~/.pi/agent/npm/node_modules/@earendil-works/pi-server`
+  (0.85.0, exports `./unix` ✓) and an installed `@earendil-works/pi-client` into the
+  mise pi tree's `node_modules/@earendil-works/`. Remove this item when pi-subagents
+  extends the resolution to 0.85.x hosts or pi ships the packages.
+
 - **2026-08-29** — checked after "pi-subagents updated today" report. No new npm
   release (0.58.0 remains latest, published 2026-08-27T04:57Z). Main gained 10
   unreleased commits (through `1f2abe1`): turnBudget/defaultTurnBudget removals
