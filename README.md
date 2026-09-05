@@ -594,6 +594,20 @@ figure), so usage is a first-class governance surface, not a log decoration:
   the closing-the-loop feed the σ-band monitor (v0.3.69) reads instead of
   hand-mining multi-thousand-line prose run logs.
 
+## Review finding discipline & plan Risks/Proof (v0.3.71)
+
+Review outputs feed writer re-prompt rounds, so verbose low-signal findings
+inflate every downstream round (SDLC REVIEW.md play: "cap the nits"). Both
+reviewer prompts (`code-reviewer`, `adversarial-reviewer`) now carry a
+**Finding Discipline** section: Important-vs-Nit definitions, at most 3 nits
+(nits suppressed entirely when blocking findings exist), a do-not-report list
+(lint-covered, unevidenced hypotheticals, tests for unchanged behavior, TODOs
+unless risk-related, code restatement), and file:line + severity + one-line
+fix output discipline. Plans gain per-phase **Risks** (concrete failure
+modes) and **Proof** (which gate/test command/deliverable clause proves
+completion) — optional fields, bounded to 3 one-liners, never padded; old
+specs and resume replays stay valid.
+
 ## Structured delegation (v0.3.70)
 
 Every stage call carries a TypeBox schema (`STAGE_MODELS`), and since v0.3.70

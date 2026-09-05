@@ -13,6 +13,18 @@
 {% if phase.scenarioRefs %}
 Scenario refs: {{ phase.scenarioRefs | join(", ") }}
 {% endif %}
+{% if phase.risks %}
+### Risks
+{% for r in phase.risks %}
+- {{ r }}
+{% endfor %}
+{% endif %}
+{% if phase.proof %}
+### Proof (how completion is proven)
+{% for pr in phase.proof %}
+- {{ pr }}
+{% endfor %}
+{% endif %}
 {% if phase.deliverables %}
 ### Test deliverables (enforced contract)
 {% if phase.deliverables.requireScenarios %}

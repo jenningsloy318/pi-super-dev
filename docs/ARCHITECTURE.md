@@ -1,6 +1,6 @@
 # Architecture (generated)
 
-> Generated from `src/graph/edges.ts` + `src/team/raci.ts` at v0.3.70 — do not edit by hand; run `npm run arch:doc`.
+> Generated from `src/graph/edges.ts` + `src/team/raci.ts` at v0.3.71 — do not edit by hand; run `npm run arch:doc`.
 
 ## Stage table (RACI over the skeleton)
 

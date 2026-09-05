@@ -396,6 +396,13 @@ export const SpecPhase = Type.Object({
 	description: Type.String(),
 	scenarioRefs: Type.Optional(Type.Array(Type.String())),
 	deliverables: Type.Optional(PhaseDeliverables),
+	// v0.3.71 F10-7 (plan.md play): per-phase Risks (what can go wrong —
+	// concrete failure modes: concurrency, data loss, breaking contracts,
+	// known escape classes) and Proof (how completion is PROVEN — which
+	// deterministic gate / test command / deliverable clause proves it).
+	// Optional: old specs and resume replays stay valid without them.
+	risks: Type.Optional(Type.Array(Type.String())),
+	proof: Type.Optional(Type.Array(Type.String())),
 });
 export type SpecPhase = Static<typeof SpecPhase>;
 

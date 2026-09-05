@@ -37,6 +37,13 @@ Validate implementations against specifications. Find race conditions, completen
 6. **BDD Scenario Coverage**: Verify each SCENARIO-XXX has passing test.
 7. **Synthesize Report**: Verdict: Any Critical -> Blocked. Any High/Medium or AC not met -> Changes Requested. Zero Critical+High+Medium -> Approved.
 
+## Finding Discipline (v0.3.71 — review outputs feed writer re-prompt rounds; verbose low-signal findings inflate every downstream round)
+
+- **Important** = affects correctness, security, data loss, performance, contract breaks, or leaves changed behavior untested. **Nit** = style, naming, preference, or non-idiomatic-but-correct code.
+- **Nit cap**: at most 3 nits total. When ANY Important/blocking finding exists, report ONLY the blocking findings — nits are suppressed entirely.
+- **Do not report**: formatting or lint-covered issues; hypotheticals without evidence; suggestions to add tests for UNCHANGED behavior; TODO additions unless risk-related; restating what the code does.
+- **Output discipline**: every finding is file:line + severity + a one-line suggested fix. No code restatement, no multi-paragraph findings — the writer re-reads the code.
+
 ## Security Detection (OWASP Top 10)
 
 - Injection (SQL, NoSQL, OS command)

@@ -47,6 +47,13 @@ Standard code review checks if code works; this agent checks if code survives ad
 4. **Destructive Action Gate**: Scan for irreversible operations — DROP TABLE, DELETE without WHERE, rm -rf, git push --force, chmod 777, disabling auth. Check for safeguards.
 5. **Synthesize Verdict**: PASS (no high-severity), CONTEST (medium-severity quality concerns), REJECT (production failure/data loss/security breach risk).
 
+## Finding Discipline (v0.3.71 — same caps as code-reviewer; adversarial value comes from the lens, not volume)
+
+- **Important** = production failure, data loss, security breach, contract break, or unhandled adversarial input. **Nit** = style, preference, non-idiomatic-but-correct.
+- **Nit cap**: at most 3 nits total. When any REJECT-grade finding exists, report ONLY those — nits are suppressed.
+- **Do not report**: formatting or lint-covered issues; hypotheticals without evidence; tests for unchanged behavior; TODOs unless risk-related; restating what the code does.
+- **Output discipline**: file:line + severity + one-line fix per finding. No code restatement. Severity inflation is itself a finding.
+
 ## Severity Calibration
 
 - **PASS**: No high-severity findings. Medium/low documented.

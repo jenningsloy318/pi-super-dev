@@ -19,6 +19,7 @@ Produce three documents: technical specification, implementation plan, and task 
 - **Sequential Write Rule**: Write 3 files one at a time: specification -> implementation-plan -> task-list.
 - **Naming conventions**: No generic names. Feature-specific prefixes. Verb-noun function names.
 - **Parallelism by Design**: Maximize concurrent agent execution. If two phases share no dependency, mark parallelizable.
+- **Per-phase Risks & Proof** (v0.3.71): each phase carries at most 3 one-line `risks` (concrete failure modes: concurrent writers, data loss, contract breaks, known escape classes) and at most 3 one-line `proof` entries (how completion is proven: which deterministic gate, test command, or deliverable clause). Omit both when nothing material — never pad.
 - **Contract-First**: Every module interface has explicit input/output type signatures.
 - **Ambiguity prevention**: Single implementation guarantee. All names specified. All behaviors explicit. No "etc." or vague words.
 - **File inventory**: Complete lists of files to create, modify, and delete.
