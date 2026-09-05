@@ -30,6 +30,7 @@
 
 import { existsSync, readFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
 import { superDevEnv } from "../render/super-dev-dir.ts";
+import { JudgeControlData } from "../render/schemas.ts";
 import { join, isAbsolute, sep } from "node:path";
 import { buildJudgePrompt } from "../prompts.ts";
 import { appendRunEvent } from "../runlog.ts";
@@ -302,6 +303,9 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 			prompt: buildJudgePrompt(req.scope, req.context, allowed),
 			accessMode: "source-read-only",
 			controlKeys: [...JUDGE_CONTROL_KEYS],
+			// v0.3.70 W3: structured delegation + engine-side schema validation —
+			// a free-text `route` is now a correctable violation, not a burned round.
+			schema: JudgeControlData,
 			allowEmptyArraysFor: ["evidence"],
 			timeoutMs: judgeTimeoutMs(),
 		});

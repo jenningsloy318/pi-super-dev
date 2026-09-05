@@ -14,6 +14,50 @@ const Priority = Type.String({ description: "priority: high, medium, low, critic
 
 // ─── BDD scenarios ───────────────────────────────────────────────────────────
 
+// ─── Control schemas (v0.3.70 W3: stages that carry controlKeys but had no
+// schema — these complete the structured-delegation coverage audit §5.2.5;
+// plain-data TypeBox only, engine-side validated via typebox/value) ─────────
+
+/** Judge verdict control — `route` is the enum the router switches on (a
+ *  free-text route silently falls to escalate-now; the enum makes a wrong
+ *  route a correctable schema violation instead of a burned round). */
+export const JudgeControlData = Type.Object({
+	diagnosis: Type.String({ description: "one-paragraph root-cause diagnosis" }),
+	// Source of truth is stages/judge.ts JUDGE_ROUTES; inlined as literals to
+	// avoid a schemas→judge import cycle. P6: a dynamic cross-check test pins
+	// the two sets equal (tests/structured-delegation.test.ts).
+	route: Type.Union([
+		Type.Literal("re-author-tests"), Type.Literal("challenge-test"),
+		Type.Literal("fix-environment"), Type.Literal("implementer-retry"),
+		Type.Literal("replan-upstream"), Type.Literal("allow-scaffold"),
+		Type.Literal("continue"), Type.Literal("escalate-now"),
+	], { description: "one of the JUDGE_ROUTES values (stages/judge.ts)" }),
+	confidence: Type.Number({ minimum: 0, maximum: 1 }),
+	evidence: Type.Array(Type.String(), { minItems: 1, description: "file:line or quoted-log evidence" }),
+});
+
+/** tdd-coverage-classifier control. */
+export const TddCoverageControlData = Type.Object({
+	allCovered: Type.Boolean(),
+	coveredScenarios: Type.Array(Type.String()),
+	missingScenarios: Type.Array(Type.String()),
+	summary: Type.String(),
+});
+
+/** red-boundary-classifier / verify file-classifier control. */
+export const FileClassifyControlData = Type.Object({
+	classifications: Type.Array(Type.Object({
+		path: Type.String(),
+		category: Type.String({ description: "test | production | config | tooling | ambiguous" }),
+		allowed: Type.Boolean(),
+		source: Type.String({ description: "deterministic | agent" }),
+		confidence: Type.Number({ minimum: 0, maximum: 1 }),
+	})),
+	forbiddenFiles: Type.Array(Type.String()),
+	ambiguousFiles: Type.Array(Type.String()),
+	allAllowed: Type.Boolean(),
+});
+
 export const BddScenario = Type.Object({
 	id: Type.String({ description: "zero-padded, e.g. '001'" }),
 	title: Type.String(),

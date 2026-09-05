@@ -24,7 +24,7 @@ import { firstCitedTestFile, runJudge } from "./judge.ts";
 import { triggerReplanForFindings, replanPending } from "../replan/replan.ts";
 import { isNoEditCompletion } from "../agent-errors.ts";
 import { renderAndWrite } from "../render/render.ts";
-import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../render/schemas.ts";
+import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA, TddCoverageControlData, FileClassifyControlData } from "../render/schemas.ts";
 import { userNotesForAgent } from "../render/user-notes.ts";
 import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } from "../doc-validators.ts";
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type BuildGateResult, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../build-runner.ts";
@@ -574,6 +574,8 @@ async function resolveTddScenarioCoverage(args: { ctx: StageContext; cwd: string
 			agent: "tdd-coverage-classifier",
 			accessMode: "source-read-only",
 			controlKeys: ["allCovered", "coveredScenarios", "missingScenarios", "summary"],
+			// v0.3.70 W3: schema-validated control (structured delegation).
+			schema: TddCoverageControlData,
 			prompt: buildTddCoveragePrompt({
 				phaseName: args.phaseName,
 				phaseDescription,
@@ -631,6 +633,8 @@ export async function resolveRedBoundary(args: { ctx: StageContext; phaseId: str
 			agent: "red-boundary-classifier",
 			accessMode: "source-read-only",
 			controlKeys: ["classifications", "forbiddenFiles", "ambiguousFiles", "allAllowed"],
+			// v0.3.70 W3: schema-validated control (structured delegation).
+			schema: FileClassifyControlData,
 			prompt: buildRedBoundaryPrompt({
 				changedFiles: ambiguous,
 				testFiles: args.testFiles,

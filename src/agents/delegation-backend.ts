@@ -28,6 +28,12 @@
  */
 
 import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
+import {
+	structuredModeDegraded, structuredModeEnabled, isStructuredUnsupportedRejection,
+	markStructuredUnsupported, recordStructuredFailure, recordStructuredSuccess,
+	schemaViolationErrors, resetStructuredModeForTests,
+} from "./structured-output.ts";
+export { resetStructuredModeForTests }; // test isolation (mirrors the skew degrade)
 import { armDelegationWatchdog } from "../watchdog.ts";
 import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "./agent-runtime.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
@@ -72,7 +78,10 @@ export interface DelegationRequestPayload {
 	model?: string;
 	thinking?: string;
 	timeoutMs?: number;
-	result: { kind: "text" };
+	/** v0.3.70 W3: structured mode — the child gains a structured_output tool
+	 *  validated at call time (pi-subagents 0.65); text mode is the legacy
+	 *  prose contract (prompt-embedded schema + <control> parsing). */
+	result: { kind: "text" } | { kind: "structured"; schema: unknown };
 }
 
 interface DelegationTerminalResponse {
@@ -202,6 +211,11 @@ export interface DelegationAgentOptions {
 	/** Optional-by-contract keys whose empty-array value counts as present
 	 *  (same semantics as the session backend's corrective check). */
 	allowEmptyArraysFor?: string[];
+	/** v0.3.70 W3: the call's JSON schema (TypeBox STAGE_MODELS object). When
+	 *  present (and structured mode is not degraded/opted out) the request
+	 *  carries result:{kind:"structured",schema}; engine-side validation runs
+	 *  regardless of the wire mode. */
+	schema?: unknown;
 	/** Inherited main-session defaults (SCENARIO-001 parity): applied BELOW an
 	 *  explicit model/thinking param, exactly like the other two backends. */
 	inheritedModelObject?: import("./agent-runtime.ts").SessionModelOption;
@@ -235,7 +249,7 @@ function textOf(value: unknown): string {
 
 /** One delegation attempt: emit the request, await the terminal response for
  *  exactly this requestId, forward progress, honor cancel/timeout. */
-function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number | undefined): Promise<{ response: DelegationTerminalResponse | null; error?: string }> {
+function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number | undefined, structured: boolean): Promise<{ response: DelegationTerminalResponse | null; error?: string }> {
 	const { events } = opts;
 	// Review-2 P1 (SD-04 parity): an already-aborted signal NEVER fires
 	// "abort" listeners — bail synchronously BEFORE emitting an uncancellable
@@ -253,7 +267,9 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 		task,
 		context: "fresh",
 		cwd: opts.cwd,
-		result: { kind: "text" },
+		result: structured && opts.schema != null
+			? { kind: "structured", schema: structuredClone(opts.schema) }
+			: { kind: "text" },
 	};
 	// Review-2 P2: model/thinking resolution mirrors the other backends —
 	// explicit param > SUPER_DEV_MODEL/SUPER_DEV_THINKING env > inherited
@@ -371,10 +387,18 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 	});
 }
 
-/** The corrective suffix appended when a text result is missing required
- *  control keys — mirrors the session backend's corrective re-prompt. */
-function correctiveTask(prompt: string, missing: string[]): string {
-	return `${prompt}\n\n## Required output correction\nYour previous response was missing the required control key(s): ${missing.join(", ")}. Re-answer and end your reply with the complete <control> JSON block containing every required key.`;
+/** The corrective suffix appended when the result fails validation — missing
+ *  required control keys (legacy check) and/or schema violations (v0.3.70 W3:
+ *  detailed JSON-pointer violations from TypeBox Value.Errors — the industry
+ *  validate→repair pattern: specific error feedback, bounded to one retry). */
+function correctiveTask(prompt: string, missing: string[], violations: string[], structured: boolean): string {
+	const problems: string[] = [];
+	if (missing.length > 0) problems.push(`- Missing required control key(s): ${missing.join(", ")}`);
+	for (const v of violations) problems.push(`- Schema violation: ${v}`);
+	const channel = structured
+		? "Re-answer and finish by calling the structured_output tool with the corrected value."
+		: "Re-answer and end your reply with the complete <control> JSON block containing every required key with valid values.";
+	return `${prompt}\n\n## Required output correction\nYour previous response failed validation:\n${problems.join("\n")}\n${channel}`;
 }
 
 /** The backend entry: same signature family as runAgentViaSession/spawnAgent
@@ -387,19 +411,53 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 	// reflection.ts sets call.timeoutMs), so a request without timeoutMs must
 	// still never hang forever when pi-subagents is absent/unresponsive.
 	const backstopMs = opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent);
-	const first = await attempt(opts, task0, backstopMs);
+	// v0.3.70 W3: structured mode is active when the call carries a schema,
+	// the escape hatch is unset, and no sticky degrade has fired (Option C).
+	let useStructured = opts.schema != null && structuredModeEnabled() && !structuredModeDegraded();
+	let first = await attempt(opts, task0, backstopMs, useStructured);
+	// Compat degrade #1 (never fatal, P4): an owner that rejects the
+	// structured result fields (e.g. an in-memory 0.64 bridge after
+	// `pi update` swapped the on-disk package) answers invalid_request —
+	// degrade sticky for the process, WARN once, and retry THIS call in text
+	// mode so the schema keeps riding the prompt exactly as before v0.3.70.
+	if (first.error && useStructured && isStructuredUnsupportedRejection(first.error)) {
+		markStructuredUnsupported();
+		useStructured = false;
+		opts.onProgress?.event?.(`delegation ${opts.agent}: WARN structured result unsupported by this pi-subagents owner — degrading to text mode for the rest of this pi session (restart pi after upgrading pi-subagents to restore structured output)`);
+		first = await attempt(opts, task0, backstopMs, false);
+	}
 	if (first.error) return { text: "", control: null, model: undefined, error: first.error };
 	const response = first.response!;
 	// Any non-completed terminal state (failed/stopped/duplicate_node/…) is an
-	// agent error — never a silent empty success.
+	// agent error — never a silent empty success. The status is ALWAYS part of
+	// the error text (v0.3.70 W3: the structured_output_failed class must be
+	// nameable in retry feedback — P10, same honesty rule as F9-B).
 	if (response.status !== "completed") {
-		return { text: "", control: null, model: response.model, error: response.error?.trim() || `delegation ended with status ${response.status}` };
+		if (useStructured && response.status === "structured_output_failed") {
+			// Compat degrade #2 (never fatal): models that never call the
+			// structured_output tool would burn every call — 3 consecutive
+			// terminals sticky-degrade to text mode (engine-side schema
+			// validation and corrective feedback stay active either way).
+			if (recordStructuredFailure()) {
+				opts.onProgress?.event?.(`delegation ${opts.agent}: WARN structured_output_failed 3 consecutive call(s) — degrading to text mode for the rest of this pi session`);
+			}
+		}
+		return { text: "", control: null, model: response.model, error: response.error?.trim() ? `delegation ended with status ${response.status}: ${response.error.trim()}` : `delegation ended with status ${response.status}` };
 	}
-	const text = textOf(response.result);
+	if (useStructured) recordStructuredSuccess();
+	// v0.3.70 W3: a structured result IS the control candidate (the child
+	// validated it against the schema at call time upstream) — but the engine
+	// re-validates below regardless of wire mode (P5: our gates stay
+	// authoritative; upstream validation is a filter, not the oracle).
+	const envelope = response.result as { kind?: unknown; value?: unknown } | undefined;
+	const structuredNow = useStructured && envelope?.kind === "structured" && envelope.value != null && typeof envelope.value === "object" && !Array.isArray(envelope.value);
+	const text = structuredNow ? safeJsonText(envelope!.value) : textOf(response.result);
+	const control = structuredNow
+		? (envelope!.value as Record<string, unknown>)
+		: extractControl(text, opts.controlKeys);
 	// v0.3.54 (F6 wiring): declared keys guard the fallback paths — a fenced or
 	// trailing JSON blob that is NOT this call's control is rejected, not silently
 	// accepted as a verdict.
-	const control = extractControl(text, opts.controlKeys);
 	// Review-2 P1: the corrective check must honor allowEmptyArraysFor AND the
 	// built-in file-list allow-set — a legitimately empty `filesCreated: []`
 	// must NOT trigger a spurious full second run (session-agent parity).
@@ -410,18 +468,37 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 	const missing = opts.controlKeys && opts.controlKeys.length > 0 && control != null
 		? missingControlKeys(control, opts.controlKeys, { allowEmptyArraysFor: emptyArrayOk })
 		: (control == null && opts.controlKeys && opts.controlKeys.length > 0 ? [...opts.controlKeys] : []);
-	if (missing.length > 0) {
+	// v0.3.70 W3: engine-side schema validation — wrong-TYPED fields now fail
+	// with detailed JSON-pointer violations instead of silently passing the
+	// missing-key check (F10-6's corrective-round waste).
+	const violations = control != null && opts.schema != null ? schemaViolationErrors(opts.schema, control) : [];
+	if (missing.length > 0 || violations.length > 0) {
 		// One corrective attempt: same logical node, new requestId (legal once
-		// the previous attempt settled).
-		const second = await attempt(opts, correctiveTask(task0, missing), backstopMs);
-		if (second.error) return { text, control, model: response.model, usage: second.response?.usage, error: `delegation retry after missing control keys (${missing.join(", ")}): ${second.error}` };
+		// the previous attempt settled). The corrective task names BOTH the
+		// missing keys and the exact schema violations (validate→repair).
+		const second = await attempt(opts, correctiveTask(task0, missing, violations, useStructured), backstopMs, useStructured);
+		if (second.error) return { text, control, model: response.model, usage: second.response?.usage, error: `delegation retry after validation failure (missing: ${missing.join(", ") || "—"}; violations: ${violations.length}): ${second.error}` };
 		const response2 = second.response!;
 		if (response2.status !== "completed") {
 			return { text, control, model: response.model, error: `delegation retry ended with status ${response2.status}${response2.error ? `: ${response2.error}` : ""}` };
 		}
-		const text2 = textOf(response2.result);
-		const control2 = extractControl(text2, opts.controlKeys);
-		if (control2 != null) return { text: text2, control: control2, model: response2.model ?? response.model, usage: second.response?.usage };
+		if (useStructured) recordStructuredSuccess();
+		const envelope2 = response2.result as { kind?: unknown; value?: unknown } | undefined;
+		const structured2 = useStructured && envelope2?.kind === "structured" && envelope2.value != null && typeof envelope2.value === "object" && !Array.isArray(envelope2.value);
+		const text2 = structured2 ? safeJsonText(envelope2!.value) : textOf(response2.result);
+		const control2 = structured2
+			? (envelope2!.value as Record<string, unknown>)
+			: extractControl(text2, opts.controlKeys);
+		if (control2 != null) {
+			// v0.3.70 W3 (P10): a retried control that STILL violates the schema is
+			// an honest error naming the exact violations — never a silent
+			// wrong-typed control handed to the stage.
+			const violations2 = opts.schema != null ? schemaViolationErrors(opts.schema, control2) : [];
+			if (violations2.length > 0) {
+				return { text: text2, control: null, model: response2.model ?? response.model, usage: second.response?.usage, error: `delegation retry still has schema violations (${violations2.join("; ")})` };
+			}
+			return { text: text2, control: control2, model: response2.model ?? response.model, usage: second.response?.usage };
+		}
 		// v0.3.48 honest diagnosis: distinguish UNPARSEABLE control JSON (a
 		// `<control>` block exists but strict parse failed — the unescaped-quote
 		// class, now repaired in control.ts) from a genuinely absent block. The
@@ -433,4 +510,9 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 			: `delegation retry produced no control object at all (originally missing: ${missing.join(", ")})` };
 	}
 	return { text, control, model: response.model, usage: response.usage };
+}
+
+/** Pretty, crash-safe JSON rendering for structured values (SpawnResult.text). */
+function safeJsonText(value: unknown): string {
+	try { return JSON.stringify(value, null, 2) ?? String(value); } catch { return String(value); }
 }

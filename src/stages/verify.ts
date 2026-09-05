@@ -30,7 +30,7 @@ import { countStageRounds } from "../resume.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
 import { renderAndWrite } from "../render/render.ts";
-import { STAGE_MODELS } from "../render/schemas.ts";
+import { STAGE_MODELS, FileClassifyControlData } from "../render/schemas.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
@@ -505,6 +505,8 @@ async function resolveIntegrationWriteBoundary(args: { ctx: StageContext; state:
 			agent: "red-boundary-classifier",
 			accessMode: "source-read-only",
 			controlKeys: ["classifications", "forbiddenFiles", "ambiguousFiles", "allAllowed"],
+			// v0.3.70 W3: schema-validated control (structured delegation).
+			schema: FileClassifyControlData,
 			prompt: buildRedBoundaryPrompt({
 				changedFiles: ambiguous,
 				testFiles: [],

@@ -594,6 +594,35 @@ figure), so usage is a first-class governance surface, not a log decoration:
   the closing-the-loop feed the σ-band monitor (v0.3.69) reads instead of
   hand-mining multi-thousand-line prose run logs.
 
+## Structured delegation (v0.3.70)
+
+Every stage call carries a TypeBox schema (`STAGE_MODELS`), and since v0.3.70
+the delegation backend honors it (decision D7 Option C — industry converged on
+enforce-when-schema; plan: docs/plans/2026-09-05-v0.3.68-hardening-plan.md §5):
+
+- **Wire**: schema-carrying calls send `result:{kind:"structured",schema}` —
+  the child gains a `structured_output` tool validated AT CALL TIME in its own
+  conversation (pi-subagents 0.65), so an invalid value is repaired in-turn
+  without burning a delegation round. Verified live: a real zai glm-5.3 child
+  called `structured_output` (1 turn, 1 tool) and the value arrived validated.
+- **Engine stays authoritative (P5)**: whatever arrives — structured value or
+  parsed `<control>` prose — is re-validated with TypeBox `Value.Errors`
+  (`typebox/value`, aliased by pi's extension loader). The corrective re-prompt
+  now names the exact JSON-pointer violations (`/verdict: must be equal to one
+  of the allowed values`) instead of only missing-key names — the industry
+  validate→repair pattern; still bounded to one corrective round.
+- **Never fatal (P4)**: two automatic sticky per-process degrades fall back to
+  text mode (schema rides the prompt, engine validation unchanged) — an owner
+  that rejects the structured fields (in-memory 0.64 bridge after `pi update`),
+  and 3 consecutive `structured_output_failed` terminals. Each WARNs once.
+- **Escape hatch**: `SUPER_DEV_STRUCTURED=0` opts out entirely (default ON).
+  The flag is scheduled for removal two versions after the mode stabilizes.
+- **Coverage audit (§5.2.5)**: every `controlKeys` call site now carries a
+  schema — judge (`route` enum: a free-text route is now a correctable
+  violation, not a silently misrouted one), tdd-coverage-classifier,
+  red-boundary/file classifiers. P6 dynamic cross-check pins the judge route
+  union against `stages/judge.ts JUDGE_ROUTES`.
+
 ## The auto-continuous evolution loop (v0.3.69)
 
 The harness's fix lifecycle (findings → class-level tests → version) has
