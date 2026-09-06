@@ -1,4 +1,5 @@
 import { isInternalRuntimeClaim } from "./tracking.ts";
+import { harnessBasenames } from "./harness-paths.ts";
 
 export type RedBoundaryCategory = "test" | "support" | "runtime" | "substrate" | "scaffold" | "production" | "ambiguous";
 export type RedBoundarySource = "deterministic" | "agent" | "fallback";
@@ -20,18 +21,39 @@ export interface RedBoundaryResult {
 }
 
 const MIN_AGENT_CONFIDENCE = 0.7;
-const RUNTIME_EVIDENCE_BASENAMES = new Set([
-	"implementation-evidence.jsonl",
-	"change-tracker.jsonl",
-	".resume-cache.jsonl",
-	".user-notes.json",
-	".judge.jsonl",
-	"test-runner.json",
-	"stagnation-report.md",
-	"escalation-report.md",
-	"api-test-report.md",
-	"ui-test-report.md",
-]);
+// v0.3.73 M6 (run 2026-09-05T23-09-55-596Z) first centralized these lists;
+// v0.3.74 P1-a collapsed them into the SINGLE canonical registry
+// (src/harness-paths.ts) after the four-parallel-lists drift let a
+// mid-RED events.jsonl append fire as red-polluted twice. The any-path set:
+// run-owned evidence/scratch whose basename is exempt from the RED
+// write-boundary WHEREVER it appears.
+const RUNTIME_EVIDENCE_BASENAMES = harnessBasenames("redBoundaryAnywhere");
+
+/** v0.3.73 M6 + v0.3.74 P1-a: run bookkeeping the harness appends to the
+ *  SPEC DIRECTORY mid-RED (events.jsonl fired twice as red-polluted retries
+ *  in the incident run). Unlike the any-path set above, these names are
+ *  SPEC-SCOPED: a repo file with the same basename OUTSIDE the spec docs
+ *  tree (e.g. src/events.jsonl written by an integration tester) is still
+ *  production (position-aware, mirroring tracking.ts isHarnessBookkeepingPath
+ *  — the verify write-boundary test pins this). */
+const SPEC_SCOPED_RUNTIME_EVIDENCE_BASENAMES = harnessBasenames("redBoundarySpecScoped");
+
+/** True when the path names a harness bookkeeping file INSIDE the spec docs
+ *  tree (docs/specifications/<spec>/<basename>). v0.3.73 dual review
+ *  (CR-73-03 / AR-73-02): anchored on the `docs/specifications/` PREFIX —
+ *  byte-parallel to isHarnessBookkeepingPath (tracking.ts) — not on any path
+ *  SEGMENT named "specifications": a production tree like
+ *  src/specifications/events.jsonl or vendor/specifications/routing-epoch.json
+ *  must stay ambiguous for agent classification, because deterministic
+ *  runtime/allowed verdicts here bypass the classifier AND the phase commit
+ *  excludes only .judge.jsonl/test-runner.json — a mis-anchored exemption would
+ *  let RED agents write cross-run resume state (routing/journal/epoch) that
+ *  walker.ts/journal.ts/setup.ts later TRUST. */
+export function isSpecScopedRuntimeEvidencePath(path: string): boolean {
+	const normalized = normalizePath(path);
+	const base = normalized.split("/").pop() ?? "";
+	return SPEC_SCOPED_RUNTIME_EVIDENCE_BASENAMES.has(base) && normalized.startsWith("docs/specifications/");
+}
 
 const normalizePath = (path: string): string =>
 	String(path ?? "").trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/");
@@ -121,6 +143,9 @@ function decision(path: string, category: RedBoundaryCategory, allowed: boolean,
 export function classifyObviousRedPath(path: string): RedBoundaryClassification {
 	const normalized = normalizePath(path);
 	if (!normalized) return decision(path, "ambiguous", false, 0, "deterministic", "empty path");
+	if (isSpecScopedRuntimeEvidencePath(normalized)) {
+		return decision(normalized, "runtime", true, 1, "deterministic", "harness bookkeeping inside the spec docs tree");
+	}
 	if (isInternalRuntimeClaim(normalized) || isRuntimeEvidencePath(normalized)) {
 		return decision(normalized, "runtime", true, 1, "deterministic", "known super-dev runtime artifact");
 	}

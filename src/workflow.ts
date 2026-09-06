@@ -815,7 +815,21 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// call's; without it the last call's drift is dropped entirely.
 			for (const drift of drainControlDrift()) log(`agent ${label}: ${drift} (at result)`);
 			boundaryChecked = true;
-			enforceSourceBoundary();
+			try {
+				enforceSourceBoundary();
+			} catch (boundaryErr) {
+				// v0.3.73 M1 (run 2026-09-05T23-09-55-596Z): the delegation SUCCEEDED
+				// and may carry a fully-formed control; a concurrent-writer quarantine
+				// must not silently kill that verdict. Attach it to the error — the
+				// join salvages it when attributeQuarantinePaths fully attributes
+				// every violated path to the concurrent implementer (six quarantines,
+				// 54 min of reviewer time discarded that way in the incident run).
+				if (result.control != null && boundaryErr instanceof Error && (boundaryErr as { quarantine?: unknown }).quarantine) {
+					(boundaryErr as Error & { salvagedControl?: unknown }).salvagedControl = result.control;
+					log(`agent ${label}: boundary quarantine carried a formed control — join will attempt salvage`);
+				}
+				throw boundaryErr;
+			}
 			const elapsed = Date.now() - started;
 			log(`agent ${label}: end elapsed=${elapsed}ms control=${result.control ? "yes" : "no"} model=${result.model ?? "unknown"}${result.error ? ` error=${result.error}` : ""}`);
 			// P1.3: every completed agent call lands in the event ledger (bounded

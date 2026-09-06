@@ -26,3 +26,12 @@ vi.mock("../../src/render/super-dev-dir.ts", async (importOriginal) => {
 		}),
 	};
 });
+
+// v0.3.73 M5: global metrics-ledger hermeticity. Suites that drive runWorkflow
+// to close-out (workflow.test, runlog-*, team-raci, cleanup-sensitive-scan)
+// append a run-metrics row to the REAL ~/.super-dev/run-metrics.jsonl unless
+// the global write is guarded — the σ-band baselines then accumulate 0-cost
+// test rows and every real run trips fake 3σ bands. Metrics-asserting suites
+// (run-metrics.test, sigma-bands.test) delete this var locally; they mock
+// getSuperDevDir so their writes stay in tmp dirs either way.
+process.env.SUPER_DEV_NO_GLOBAL_METRICS = "1";

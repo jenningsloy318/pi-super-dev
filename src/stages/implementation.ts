@@ -9,10 +9,14 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { harnessBasenames } from "../harness-paths.ts";
 import { superDevEnv } from "../render/super-dev-dir.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync , rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { BoundaryQuarantinePayload, ControlObj, PipelineState, Stage, StageContext } from "../types.ts";
+
+// v0.3.73 M1: re-exported for the salvage seam + tests.
+export type { BoundaryQuarantinePayload } from "../types.ts";
 import { classifyJudgeRoute } from "../routing/router.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../tracking.ts";
@@ -1248,6 +1252,62 @@ function isInsidePath(child: string, parent: string): boolean {
  * No payload → no restore, ever (conservative; the quarantined bytes and the
  * ledger finding remain the evidence trail).
  */
+/** v0.3.73 M1 (run 2026-09-05T23-09-55-596Z): the PURE half of quarantine
+ *  attribution — classify every violation path as implementer-claimed (the
+ *  concurrent writer's declared files ∪ phase test files) or unclaimed, without
+ *  touching the worktree. The join uses this to decide whether a discarded
+ *  red-review verdict can be SALVAGED: when declaredAny ∧ zero unclaimed, the
+ *  reviewer demonstrably wrote nothing and every delta is the concurrent
+ *  writer's — the formed verdict is evidence about the suite, not a violation.
+ *  Path normalization semantics are verbatim v0.3.55 F3 (see below). */
+export function attributeQuarantinePaths(
+	worktreePath: string,
+	payload: BoundaryQuarantinePayload | null | undefined,
+	implControl: unknown,
+	testFiles: string[],
+	opts?: { testFilesAsClaims?: boolean },
+): { declaredAny: boolean; claimed: string[]; unclaimed: string[] } {
+	if (!payload || !Array.isArray(payload.violations)) return { declaredAny: false, claimed: [], unclaimed: [] };
+	const paths = payload.violations.filter((p): p is string => typeof p === "string" && p.length > 0);
+	const rootAbsNorm = resolve(worktreePath);
+	const norm = (p: string) => {
+		try {
+			const rel = relative(rootAbsNorm, resolve(rootAbsNorm, p));
+			return rel === "" ? p : rel;
+		} catch { return p; }
+	};
+	// v0.3.73 dual review AR-73-01: testFiles claim membership UNCONDITIONALLY —
+	// sound for the pre-existing RESTORE semantics (v0.3.55 F3: a test-file delta
+	// must never be git-reverted as a reviewer violation), but NOT sound evidence
+	// that the reviewer wrote nothing. The M1 SALVAGE gate therefore runs with
+	// testFilesAsClaims=false: attribution there must rest on implementer-DECLARED
+	// claims only. Default stays true so restore callers are unchanged.
+	const claims = new Set<string>();
+	if (opts?.testFilesAsClaims !== false) for (const t of testFiles) claims.add(norm(t));
+	// declaredAny is the IMPLEMENTER-claim signal only (v0.3.54 adv F1-i): with
+	// no implementer-declared files there is no attribution signal — both the
+	// restore path and the M1 salvage decision fail closed. Phase test files
+	// join the claims set but never set this flag.
+	let declaredAny = false;
+	if (implControl && typeof implControl === "object" && !Array.isArray(implControl)) {
+		const rec = implControl as Record<string, unknown>;
+		for (const key of ["filesCreated", "filesModified", "filesDeleted"]) {
+			const list = rec[key];
+			if (Array.isArray(list)) {
+				for (const f of list) if (typeof f === "string" && f) { claims.add(norm(f)); declaredAny = true; }
+			}
+		}
+	}
+	const claimed: string[] = [];
+	const unclaimed: string[] = [];
+	for (const rawRel of paths) {
+		const rel = norm(rawRel);
+		if (claims.has(rel)) claimed.push(rel);
+		else unclaimed.push(rel);
+	}
+	return { declaredAny, claimed, unclaimed };
+}
+
 export function attributQuarantinedViolations(
 	worktreePath: string,
 	payload: BoundaryQuarantinePayload | null | undefined,
@@ -1260,31 +1320,12 @@ export function attributQuarantinedViolations(
 	// shape) restores nothing.
 	if (!payload || !Array.isArray(payload.violations)) return;
 	const parsed = { paths: payload.violations.filter((p): p is string => typeof p === "string" && p.length > 0), dir: typeof payload.dir === "string" ? payload.dir : "" };
-	// v0.3.54 review fix (code F1 / adv F1), v0.3.55 security review F3: claims
-	// are RAW agent output while violation paths arrive normalized by the
-	// guard. Normalization is resolution (relative(root, resolve(root, p))) —
-	// it canonicalizes leading AND interior "./"/"//" segments and Windows
-	// separators; the v0.3.54 string surgery under-normalized interior
-	// segments, so an honest styled claim ("src/./main.ts") failed attribution
-	// and its file got restored.
-	const rootAbsNorm = resolve(worktreePath);
-	const norm = (p: string) => {
-		try {
-			const rel = relative(rootAbsNorm, resolve(rootAbsNorm, p));
-			return rel === "" ? p : rel;
-		} catch { return p; }
-	};
-	const claims = new Set<string>(testFiles.map(norm));
-	let declaredAny = false;
-	if (implControl && typeof implControl === "object" && !Array.isArray(implControl)) {
-		const rec = implControl as Record<string, unknown>;
-		for (const key of ["filesCreated", "filesModified", "filesDeleted"]) {
-			const list = rec[key];
-			if (Array.isArray(list)) {
-				for (const f of list) if (typeof f === "string" && f) { claims.add(norm(f)); declaredAny = true; }
-			}
-		}
-	}
+	// v0.3.73 M1: attribution (claims ∪ normalization) lives in the pure
+	// classifier above; this function keeps ONLY the restore/keep side effects
+	// and their logs.
+	const attribution = attributeQuarantinePaths(worktreePath, payload, implControl, testFiles);
+	const claims = new Set([...attribution.claimed]);
+	const declaredAny = attribution.declaredAny;
 	if (!declaredAny) {
 		// v0.3.54 review fix (adv F1-i): with no implementer-declared files there
 		// is no attribution signal at all — restoring anything would wipe
@@ -1295,6 +1336,13 @@ export function attributQuarantinedViolations(
 	const safe: string[] = [];
 	const kept: string[] = [];
 	const rootAbs = resolve(worktreePath);
+	const rootAbsNorm = resolve(worktreePath);
+	const norm = (p: string) => {
+		try {
+			const rel = relative(rootAbsNorm, resolve(rootAbsNorm, p));
+			return rel === "" ? p : rel;
+		} catch { return p; }
+	};
 	for (const rawRel of parsed.paths) {
 		const rel = norm(rawRel);
 		if (claims.has(norm(rel))) {
@@ -1368,7 +1416,9 @@ export function discardGreenWork(worktreePath: string, keepTestFiles: Set<string
 /** v0.3.43: basenames that must NEVER ride a phase commit (the spec-18+
  *  convention the LLM committer followed: runtime judge state + the cached
  *  runner spec are per-attempt scratch, not durable phase evidence). */
-const PHASE_COMMIT_EXCLUDED_BASENAMES = new Set([".judge.jsonl", "test-runner.json"]);
+// v0.3.74 dual review F3: derived from the canonical registry (role
+// `phaseCommitExcluded`) — was a sixth parallel basename literal.
+const PHASE_COMMIT_EXCLUDED_BASENAMES = harnessBasenames("phaseCommitExcluded");
 
 /** v0.3.43 throughput fix (RC4 — LLM doing deterministic work): the per-phase
  *  commit step ran an `orchestrator` agent whose ENTIRE job was `git add -A &&
@@ -1850,6 +1900,11 @@ export const implementationStage: Stage = {
 							? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
 							: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
 						const tddStepSeq = ++stepSeq;
+						// v0.3.73 M7 (dual review AR-73-05): the RED authoring window gets the
+						// same HEAD-drift advisory as the implementer - the incident's 5d4790d
+						// (implementation landed BEFORE its RED was authored) was exactly a
+						// non-implementer-window self-commit shape.
+						const headBeforeTdd = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
 						const tdd = await inStepScope(tddStepSeq, `TDD RED (${redTryDetail})`, async () => {
 							announceActivity("TDD RED", redTryDetail);
 							emitStep(`TDD RED (${redTryDetail})`, "running", tddStepSeq);
@@ -1857,6 +1912,22 @@ export const implementationStage: Stage = {
 							emitStep(`TDD RED (${redTryDetail})`, r.error ? "failed" : "ok", tddStepSeq);
 							return r;
 						});
+						try {
+							const headAfterTdd = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
+							if (headBeforeTdd && headAfterTdd && headBeforeTdd !== headAfterTdd) {
+								ctx.log(`Implementation ${phaseId} advisory: tdd-guide self-commit detected (HEAD ${headBeforeTdd.slice(0, 8)} -> ${headAfterTdd.slice(0, 8)} during the RED call) - commits are engine-owned; a pre-landed implementation routes through the already-satisfied verification`);
+								recordConvergenceFindings(state, {
+									detectedAtStage: "implementation",
+									ownerStage: "implementation",
+									severity: "low",
+									blocking: false,
+									title: `Phase ${phaseId} tdd-guide self-commit (HEAD moved mid-call)`,
+									detail: `HEAD moved ${headBeforeTdd.slice(0, 8)} -> ${headAfterTdd.slice(0, 8)} during the tdd-guide RED call. Commits are engine-owned; self-commits pre-land unverified work and cost RED cycles.`,
+									evidence: [headAfterTdd],
+									sourceGate: "self-commit",
+								}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "self-commit" });
+							}
+						} catch { /* advisory detection only - never blocks the phase */ }
 						// Reflect an agent error/timeout in the step glyph: a ✓ TDD RED next to
 						// an errored call misrepresents what happened (R1 fail-closes the phase
 						// regardless, but the dashboard should not show success).
@@ -2570,6 +2641,12 @@ export const implementationStage: Stage = {
 				implParts.push(redImplementContext(redStatus));
 				const implPrompt = implParts.join("\n\n");
 				const implStepSeq = ++stepSeq;
+				// v0.3.73 M7 (run 2026-09-05T23-09-55-596Z: 2e92da3/5d4790d): detect a
+				// mid-phase implementer self-commit — HEAD moved across the call window.
+				// Advisory (P10 honest log + low finding): the deterministic commit and
+				// the v0.3.66/67 already-satisfied escapes keep the run safe, but a
+				// self-commit pre-lands unverified work and costs a RED cycle.
+				const headBeforeImpl = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
 				const impl = await inStepScope(implStepSeq, `Implementation (${attemptDetail(attempt)})`, async () => {
 					announceActivity("Implementation", attemptDetail(attempt));
 					emitStep(`Implementation (${attemptDetail(attempt)})`, "running", implStepSeq);
@@ -2597,6 +2674,22 @@ export const implementationStage: Stage = {
 				// summary list derives from filesCreated ∪ filesModified — deleted is
 				// EXCLUDED (a deleted file is not a "modified" display entry). dedupe via
 				// the existing `filesModified.includes` guard (first-seen order preserved).
+				try {
+					const headAfterImpl = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
+					if (headBeforeImpl && headAfterImpl && headBeforeImpl !== headAfterImpl) {
+						ctx.log(`Implementation ${phaseId} advisory: implementer self-commit detected (HEAD ${headBeforeImpl.slice(0, 8)} → ${headAfterImpl.slice(0, 8)} during the call) — commits are engine-owned; the deterministic commit still runs after the gates, and a pre-landed implementation routes through the already-satisfied verification`);
+						recordConvergenceFindings(state, {
+							detectedAtStage: "implementation",
+							ownerStage: "implementation",
+							severity: "low",
+							blocking: false,
+							title: `Phase ${phaseId} implementer self-commit (HEAD moved mid-call)`,
+							detail: `HEAD moved ${headBeforeImpl.slice(0, 8)} → ${headAfterImpl.slice(0, 8)} during the implementer call. Commits are engine-owned; self-commits pre-land unverified work and cost RED cycles.`,
+							evidence: [headAfterImpl],
+							sourceGate: "self-commit",
+						}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "self-commit" });
+					}
+				} catch { /* advisory detection only — never blocks the phase */ }
 				const structured = parseStructuredChanges(impl.control);
 				// Capture the implementer's diagnosis for the evidence-carrying RED
 				// re-author (unsatisfiable-test loop). `testDefects` is the structured,
@@ -2634,7 +2727,7 @@ export const implementationStage: Stage = {
 					// 16:29). The store site marks the rejection handled; here it must be
 					// adjudicated as a review error (fail-closed re-author), never allowed
 					// to escape the stage.
-					let review: { control: unknown; error?: string; quarantine?: BoundaryQuarantinePayload } | null;
+					let review: { control: unknown; error?: string; quarantine?: BoundaryQuarantinePayload; salvagedControl?: Record<string, unknown> | null } | null;
 					try {
 						review = await redReviewInFlight;
 					} catch (err) {
@@ -2642,9 +2735,29 @@ export const implementationStage: Stage = {
 						// rides the thrown Error (parent-composed, unforgeable); the
 						// message string is display-only and never parsed.
 						const q = (err as { quarantine?: BoundaryQuarantinePayload } | null | undefined)?.quarantine;
-						review = { control: null, error: String((err as Error)?.message ?? err), quarantine: q };
+						// v0.3.73 M1: the boundary throw may carry the delegation's
+						// fully-formed control (attached parent-side) — keep it reachable.
+						const salvaged = ((err as { salvagedControl?: unknown } | undefined)?.salvagedControl ?? null) as Record<string, unknown> | null;
+						review = { control: null, error: String((err as Error)?.message ?? err), quarantine: q, salvagedControl: salvaged && typeof salvaged === "object" ? salvaged : null };
 					}
 					redReviewInFlight = null;
+
+					// v0.3.73 M1 (run 2026-09-05T23-09-55-596Z — six quarantines, 54 min):
+					// when EVERY violating path is covered by the concurrent implementer's
+					// DECLARED file claims, the violations attribute to the writer lane and
+					// the formed verdict is valid evidence about the suite. Salvage it
+					// instead of discarding; adjudication proceeds normally. (Dual review
+					// AR-73-01: phase test files are EXCLUDED from this predicate — they
+					// claim unconditionally and cannot establish that the reviewer wrote
+					// nothing; a reviewer-written test file stays unclaimed → no salvage,
+					// the v0.3.53 fail-open path keeps the work.)
+					if (review?.error && !(review.control as { verdict?: unknown } | null)?.verdict && review.salvagedControl && review.quarantine) {
+						const attribution = attributeQuarantinePaths(setup.worktreePath, review.quarantine, impl?.control, testFiles, { testFilesAsClaims: false });
+						if (attribution.declaredAny && attribution.unclaimed.length === 0 && review.salvagedControl.verdict !== undefined) {
+							review = { control: review.salvagedControl, error: undefined };
+							ctx.log(`Implementation ${phaseId} red-review verdict salvaged (boundary violations fully covered by the implementer's declared claims: ${attribution.claimed.join(", ")}) — adjudicating normally`);
+						}
+					}
 					const verdict = String((review?.control as { verdict?: unknown } | null)?.verdict ?? "").toLowerCase();
 					const contradictionList = parseRedContradictions((review?.control ?? null) as Parameters<typeof parseRedContradictions>[0]);
 					if (verdict === "strong" && contradictionList.length === 0) {

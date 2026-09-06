@@ -7,7 +7,7 @@
  * at run end, ONE JSON row per run lands in <specDir>/run-metrics.jsonl with
  * machine-checkable health counters. Never throws; no spec dir → no row.
  */
-import { describe, it, expect, vi, afterAll } from "vitest";
+import { describe, it, expect, vi, afterAll, beforeAll } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +25,11 @@ vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 import { buildRunMetricsRow, appendRunMetrics } from "../src/workflow.ts";
 import { getSuperDevDir } from "../src/render/super-dev-dir.ts";
 
+// v0.3.73 M5: the suite-level hermeticity setup disables the global append;
+// these tests ASSERT the global ledger write, so opt back in (getSuperDevDir
+// is mocked to a tmp dir — writes stay hermetic).
+beforeAll(() => { delete process.env.SUPER_DEV_NO_GLOBAL_METRICS; });
+afterAll(() => { process.env.SUPER_DEV_NO_GLOBAL_METRICS = "1"; });
 afterAll(() => rmSync(getSuperDevDir(), { recursive: true, force: true }));
 
 const ts = () => Date.now();

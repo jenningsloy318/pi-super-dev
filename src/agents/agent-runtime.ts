@@ -18,6 +18,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { getConfig, superDevEnv } from "../render/super-dev-dir.ts";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { sanitizeSlug } from "../setup.ts";
 import {
 	createAgentSession,
@@ -151,6 +153,38 @@ export function browserExtensions(): string[] {
  *  RuntimeAgentDefinition): the delegated child loads exactly these — 0.64 via
  *  `-e` on the spawned `pi` CLI child, 0.65 via in-process extensionPaths
  *  (verified live on both, 2026-09-04). */
+/**
+ * v0.3.74 P2-e: the two writer agents that had the self-commit incidents
+ * (run 2026-09-05T23-09-55-596Z: implementer commits 2e92da3 / 5d4790d) carry
+ * the commit-guard child extension — a pi `tool_call` hook that BLOCKS
+ * commit-class git invocations at the tool layer (mechanical prevention; the
+ * v0.3.73 HEAD-drift detector stays as the fail-open detective net).
+ *
+ * v0.3.74 dual review F1/F2: the guard rides `subagentOnlyExtensions`, NOT
+ * `extensions` — pi-subagents disables AMBIENT extension discovery for a child
+ * whenever `input.extensions !== undefined` (child-tool-plan.ts:403), which
+ * would silently strip the user's MCP/tools from exactly these two agents
+ * (against the user's "subagents same as pi itself" decision). The
+ * child-only field loads the guard without touching ambient discovery. The
+ * path is existsSync-verified with a WARN-once degrade to absent (fail-open,
+ * same posture as a missing extension package).
+ */
+const COMMIT_GUARD_AGENTS = new Set(["implementer", "tdd-guide"]);
+let commitGuardPathWarned = false;
+export function commitGuardExtensionPath(agent: string): string | null {
+	if (!COMMIT_GUARD_AGENTS.has(agent)) return null;
+	if (superDevEnv("SUPER_DEV_NO_COMMIT_GUARD") === "1") return null;
+	const path = fileURLToPath(new URL("../child-guards/commit-guard.ts", import.meta.url));
+	if (!existsSync(path)) {
+		if (!commitGuardPathWarned) {
+			commitGuardPathWarned = true;
+			console.warn(`[super-dev] commit guard not found at ${path} — implementer/tdd-guide run unguarded (v0.3.73 HEAD-drift detector remains; this warning appears once per process)`);
+		}
+		return null;
+	}
+	return path;
+}
+
 export function extensionsForAgent(agent: string): string[] {
 	const packages = [
 		...(needsWebResearch(agent) ? RESEARCH_EXTENSION_PACKAGES : []),
@@ -373,6 +407,24 @@ const DEFAULT_SPAWN_TIMEOUT_MS = 1_200_000;
  *  CC phase-03 implementer on glm-5.3:max thinking), each costing the full
  *  window plus a recovery round. */
 const CODE_WRITING_TIMEOUT_MS = 1_800_000;
+/** v0.3.73 M4 (run 2026-09-05T23-09-55-596Z): reviewer roles need the same
+ * headroom as code writers — seven exact-20:00 delegation timeouts in one
+ * healthy run (spec-reviewer ×3, verify code-review ×2, adversarial ×1,
+ * tests-review ×1) while completions ran 11–19.5 min. 20 min has zero margin
+ * for review roles; 30 min matches the observed worst case (19m29s) plus ~50%
+ * headroom. */
+const REVIEW_TIMEOUT_MS = 1_800_000;
+
+/** v0.3.73 M4: analytical review roles whose deliverable is a verdict over a
+ * large artifact. Mirrors READ_ONLY_AGENTS' reviewer subset. */
+const REVIEW_TIMEOUT_AGENTS = new Set([
+	"code-reviewer",
+	"adversarial-reviewer",
+	"spec-reviewer",
+	"requirements-reviewer",
+	"bdd-reviewer",
+	"design-reviewer",
+]);
 
 /** AC-23 (SCENARIO-049): SIGTERM → SIGKILL watchdog. A child that registered a
  *  SIGTERM handler and never exits (or whose grandchildren hold the stdio
@@ -382,8 +434,36 @@ export const SIGTERM_GRACE_MS = 10_000;
 
 /** The default wall-clock cap for an agent, by role. Overridable per-call via
  *  AgentCall.timeoutMs (threaded through `common` in workflow.ts). */
+/**
+ * v0.3.74 P1-c (M4 design gap, run 2026-09-05T23-09-55-596Z: 7 reviewer
+ * delegations died at exactly 20:00 because the tiers were hardcoded constants
+ * with no operator knob — recalibrating for a slower model required a code
+ * change and an extension reload). Each tier reads its env key per call
+ * (superDevEnv reads process.env directly, so edits apply to new calls without
+ * a restart, matching the fuse precedent). A positive finite number overrides
+ * the tier constant; garbage is rejected LOUDLY (one WARN per variable per
+ * process, v0.3.72 M3 loud-fallback convention) and the run proceeds on the
+ * tier default.
+ */
+const timeoutWarned: Record<"code" | "review" | "default", boolean> = { code: false, review: false, default: false };
+function timeoutTierMs(kind: "code" | "review" | "default", envKey: string, fallback: number): number {
+	const raw = superDevEnv(envKey);
+	if (raw === undefined || raw === "") return fallback;
+	const n = Number(raw);
+	// v0.3.74 dual review F6: a sub-second value is a unit mistake (seconds
+	// typed as ms), never an intentional agent timeout — treat it as garbage.
+	if (Number.isFinite(n) && n >= 1_000) return n;
+	if (!timeoutWarned[kind]) {
+		timeoutWarned[kind] = true;
+		console.warn(`[super-dev] ${envKey}=${JSON.stringify(raw)} is not a positive number of milliseconds — keeping the tier default ${fallback}ms (set e.g. ${envKey}=1800000; this warning appears once per variable per process)`);
+	}
+	return fallback;
+}
+
 export function defaultAgentTimeoutMs(agent: string): number {
-	return isCodeWritingAgent(agent) ? CODE_WRITING_TIMEOUT_MS : DEFAULT_SPAWN_TIMEOUT_MS;
+	if (isCodeWritingAgent(agent)) return timeoutTierMs("code", "SUPER_DEV_CODE_TIMEOUT_MS", CODE_WRITING_TIMEOUT_MS);
+	if (REVIEW_TIMEOUT_AGENTS.has(agent)) return timeoutTierMs("review", "SUPER_DEV_REVIEW_TIMEOUT_MS", REVIEW_TIMEOUT_MS);
+	return timeoutTierMs("default", "SUPER_DEV_DEFAULT_TIMEOUT_MS", DEFAULT_SPAWN_TIMEOUT_MS);
 }
 
 /** W4 (v0.2.10): skills are a CAPABILITY, not ambient noise — v0.3.59: ONE

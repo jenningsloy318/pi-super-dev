@@ -34,7 +34,7 @@ import { STAGE_MODELS, FileClassifyControlData } from "../render/schemas.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
-import { persistConvergenceLedger, getConvergenceLedger, recordConvergenceFindings, recordReviewFindingsFromControl, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
+import { persistConvergenceLedger, getConvergenceLedger, recordConvergenceFindings, recordReviewFindingsFromControl, closeAgentFailedFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 import { inferReviewFindingStatus, reviewFindingBlocks, reviewFindingSeverity } from "../review-findings.ts";
 import type { ControlObj, Node, NodeResult, PipelineState, Stage, StageContext } from "../types.ts";
 
@@ -738,6 +738,10 @@ export const reviewStep = parallel(
 					: validReviewControl(r.control)
 						? r.control
 						: failedReviewControl("codeReview", "code-reviewer produced no valid structured review verdict");
+				// v0.3.73 M3: a valid control closes any codeReview-agent-failed row a
+				// prior round's failedReviewControl opened (run 2026-09-05T23-09-55-596Z
+				// audit listed the row open·blocking even after round 5 APPROVED).
+				if (!r.error && validReviewControl(r.control)) closeAgentFailedFindings(s, "codeReview", "review recovered after agent failure");
 				renderAndWrite(s.setup!, (m) => ctx.log(m), "codeReview", control);
 				return control;
 			},
@@ -753,6 +757,7 @@ export const reviewStep = parallel(
 					: validReviewControl(r.control)
 						? r.control
 						: failedReviewControl("adversarialReview", "adversarial-reviewer produced no valid structured review verdict");
+				if (!r.error && validReviewControl(r.control)) closeAgentFailedFindings(s, "adversarialReview", "review recovered after agent failure");
 				renderAndWrite(s.setup!, (m) => ctx.log(m), "adversarialReview", control);
 				return control;
 			},
@@ -767,11 +772,19 @@ export const reviewStep = parallel(
 				if (!specDeclaresTestDeliverables(s.spec)) return undefined;
 				if (!ctx.budget.check()) return failedReviewControl("testsReview", "Agent budget exhausted before tests review");
 				const r = await ctx.agent({ id: "pipeline.verify.tests-review", agent: "code-reviewer", accessMode: "source-read-only", prompt: buildTestsReviewPrompt(setupOf(s), s.classify ?? null, ctx.task, s.spec ?? null, s.implementation ?? {}), schema: STAGE_MODELS["codeReview"]?.schema });
-				return r.error
+				const control = r.error
 					? failedReviewControl("testsReview", `tests-reviewer failed: ${r.error}`)
 					: validReviewControl(r.control)
 						? r.control
 						: failedReviewControl("testsReview", "tests-reviewer produced no valid structured review verdict");
+				// v0.3.73 M2 (run 2026-09-05T23-09-55-596Z): render the artifact exactly
+				// like code/adversarial review — five completions wrote nothing because
+				// this call was missing.
+				// v0.3.73 M3: a VALID control closes any agent-failed row a prior round
+				// left open — the ledger merge never closes rows a success omits.
+				if (!r.error && validReviewControl(r.control)) closeAgentFailedFindings(s, "testsReview", "review recovered after agent failure");
+				renderAndWrite(s.setup!, (m) => ctx.log(m), "testsReview", control);
+				return control;
 			},
 		}),
 	],

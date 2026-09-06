@@ -22,7 +22,9 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UsageAccumulator } from "../types.ts";
-import { getSuperDevDir } from "../render/super-dev-dir.ts";
+import { getSuperDevDir, superDevEnv } from "../render/super-dev-dir.ts";
+
+let warnedGlobalMetricsOff = false;
 
 // ── W2 v0.3.68 (moved verbatim from workflow.ts) ────────────────────────────
 
@@ -76,6 +78,25 @@ export function appendRunMetrics(specDir: string | undefined, row: RunMetricsRow
 		try {
 			appendFileSync(join(specDir, "run-metrics.jsonl"), line, "utf8");
 		} catch { /* best-effort observability (P5: never punishes the run) */ }
+	}
+	// v0.3.73 M5 (run 2026-09-05T23-09-55-596Z): the global append is env-guarded
+	// so TEST suites that drive runWorkflow to close-out without mocking
+	// getSuperDevDir stop polluting the real user ledger (481 junk rows →
+	// median-0 σ-band baselines → fake 3σ on every real run). The per-specDir
+	// write above is hermetic (tmp dirs) and stays unguarded. Vitest sets the
+	// guard globally (tests/setup/config-env-hermeticity.ts); production leaves
+	// it unset.
+	// v0.3.73 dual review AR-73-04: resolution goes through the canonical
+	// superDevEnv seam (process.env > config.json env map) so a deliberate
+	// persistent disable is possible via config — and if the variable IS set
+	// outside vitest (shell rc / wrapper leak) it WARNs once instead of failing
+	// silent on every future run.
+	if (superDevEnv("SUPER_DEV_NO_GLOBAL_METRICS") === "1") {
+		if (!process.env.VITEST && !warnedGlobalMetricsOff) {
+			warnedGlobalMetricsOff = true;
+			console.warn("[super-dev] SUPER_DEV_NO_GLOBAL_METRICS=1 is active outside tests — the global run-metrics ledger will not be written (unset it or remove it from config.json env)");
+		}
+		return;
 	}
 	try {
 		appendFileSync(join(getSuperDevDir(), "run-metrics.jsonl"), line, "utf8");

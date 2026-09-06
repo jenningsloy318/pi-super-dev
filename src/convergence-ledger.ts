@@ -580,6 +580,40 @@ export function recordReviewFindingsFromControl(
 	);
 }
 
+/**
+ * v0.3.73 M3 (run 2026-09-05T23-09-55-596Z): close-on-success. The ledger merge
+ * (recordConvergenceFindings) only updates rows it RECEIVES — a later verify
+ * round whose review control is valid omits the `${kind}-agent-failed` finding
+ * a prior round's failedReviewControl opened, so the row stayed open·blocking
+ * in the completion audit even after the review completed successfully (the
+ * run's audit surfaced codeReview-agent-failed open at HEAD while round 5 had
+ * APPROVED). This closes those rows deterministically: status=verified, with a
+ * closure note naming the succeeding round. Idempotent; no rows → no-op.
+ */
+export function closeAgentFailedFindings(
+	state: PipelineState,
+	kind: "codeReview" | "adversarialReview" | "testsReview",
+	closureNote: string,
+): void {
+	const store = ledger(state);
+	let changed = false;
+	for (const finding of store.findings) {
+		if (finding.id === `${kind}-agent-failed` && finding.status !== "verified") {
+			finding.status = "verified";
+			finding.blocking = false;
+			finding.downgradeReason = `convergence-duty (closed on success: ${closureNote})`;
+			finding.lastSeenAt = localTimestamp();
+			changed = true;
+		}
+	}
+	// v0.3.73 dual review CR-73-01: self-sufficient persistence — without this,
+	// a run dying between the closure and the next recordConvergenceFindings
+	// persist resurrects the open·blocking phantom on resume (priorFindingsForInjection
+	// re-injects from the on-disk ledger). persistConvergenceLedger no-ops without
+	// a specDirectory/.task anchor, so bare test states are unaffected.
+	if (changed) persistConvergenceLedger(state);
+}
+
 export function convergenceRetryFeedback(
 	state: PipelineState,
 	args: { stage: string; currentStage?: ConvergenceOwnerStage; attempt?: number; gate: string; maxItems?: number },

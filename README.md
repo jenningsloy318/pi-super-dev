@@ -587,6 +587,25 @@ figure), so usage is a first-class governance surface, not a log decoration:
   machinery winds the run down deterministically (FatalAbort after 3
   consecutive) with zero further agent spend while close-out (summary, audit,
   metrics) still runs — resume-safe (raise or unset the fuse, resume).
+  (v0.3.73 run-audit fixes: quarantined red-review verdicts are salvaged when
+  every violated path attributes to the concurrent implementer; tests-review
+  artifacts render; agent-failed findings close on later success; reviewers
+  get the 30-min timeout tier; the global run-metrics ledger is test-hermetic;
+  spec-dir bookkeeping no longer trips red-polluted; self-commit prohibition.)
+  (v0.3.74 design wave over those root classes: the harness-file basenames
+  live in ONE canonical registry (`src/harness-paths.ts`) instead of four
+  parallel Set literals; the `task()` auto-render net guarantees every
+  control-bearing stage leaves an artifact even when its manual render call
+  is forgotten; the three timeout tiers are operator-tunable via
+  `SUPER_DEV_CODE/REVIEW/DEFAULT_TIMEOUT_MS` (no reload needed — read per
+  call; sub-second values are rejected as unit mistakes); and the two writer
+  agents carry a commit-guard child extension that BLOCKS commit-class git
+  invocations (commit/merge/rebase/cherry-pick/stash/revert/pull/push/am;
+  read-only forms like `git merge-base` and `git stash list` pass) at the pi
+  tool_call layer — registered via `subagentOnlyExtensions` so the child's
+  AMBIENT extension discovery (user MCP tools) stays intact
+  (`SUPER_DEV_NO_COMMIT_GUARD=1` to disable; the v0.3.73 HEAD-drift detector
+  stays as the fail-open detective net).)
   (v0.3.72 review fixes: corrective rounds and transient retries sum EVERY
   attempt's usage — the fuse can no longer under-count spend; a set-but-
   unparseable fuse value WARNs loudly once per variable instead of silently

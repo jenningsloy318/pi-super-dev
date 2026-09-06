@@ -42,6 +42,7 @@ import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { dedupePreservingOrder, resolveTimeoutMs } from "./build-runner.ts";
+import { harnessBasenames } from "./harness-paths.ts";
 
 /** Bracketing granularity: a pipeline `stage` or an implementation `phase`. */
 export type TrackerUnit = "stage" | "phase";
@@ -152,7 +153,9 @@ function normalizeTrackerPath(p: string): string {
 	return s;
 }
 
-const INTERNAL_RUNTIME_CLAIM_BASENAMES = new Set([".resume-cache.jsonl", ".run-lock"]);
+// v0.3.74 P1-a: both sets derive from the single canonical registry
+// (src/harness-paths.ts) — the four-parallel-lists drift ended here.
+const INTERNAL_RUNTIME_CLAIM_BASENAMES = harnessBasenames("internalRuntimeClaim");
 
 /** super-dev's OWN bookkeeping artifacts (run 2026-08-27T12-33-43-088Z: the
  *  changed-not-claimed advisory fired 3x/run listing ~23 files that were
@@ -161,15 +164,7 @@ const INTERNAL_RUNTIME_CLAIM_BASENAMES = new Set([".resume-cache.jsonl", ".run-l
  *  ONLY; `claimedNotChanged` (the false-green killer) stays strict over them.
  *  Recognized wherever they live — most sit inside the in-worktree spec dir
  *  (docs/specifications/<spec>/). */
-const HARNESS_BOOKKEEPING_BASENAMES = new Set([
-	".knowledge.json",
-	".user-notes.json",
-	".judge.jsonl",
-	"events.jsonl",
-	"change-tracker.jsonl",
-	"implementation-evidence.jsonl",
-	"escalation-report.md",
-]);
+const HARNESS_BOOKKEEPING_BASENAMES = harnessBasenames("trackerAdvisoryNoise");
 
 export function isHarnessBookkeepingPath(p: string): boolean {
 	const normalized = normalizeTrackerPath(p);

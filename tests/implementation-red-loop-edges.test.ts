@@ -134,7 +134,12 @@ function mkCtx(opts: {
 	implControls?: ControlObj[];
 	implText?: string;
 	redReviewVerdict?: string;
-} = {}): { ctx: StageContext; tddCalls: AgentCall[]; boundaryCalls: AgentCall[]; coverageCalls: AgentCall[]; implCalls: AgentCall[]; logs: string[] } {
+	/** v0.3.74 P1-d (M1 behavioral): when provided, every code-reviewer call
+	 *  REJECTS with this Error — the pipelined red-review quarantine shape
+	 *  (attach .quarantine/.salvagedControl exactly like workflow.ts
+	 *  realAgent does when enforceSourceBoundary throws after a result). */
+	reviewReject?: (call: AgentCall, index: number) => Error;
+} = {}): { ctx: StageContext; tddCalls: AgentCall[]; boundaryCalls: AgentCall[]; coverageCalls: AgentCall[]; implCalls: AgentCall[]; reviewCalls: AgentCall[]; logs: string[] } {
 	const queue = [...(opts.tddControls ?? [DEFAULT_TDD_CONTROL])];
 	const boundaryQueue = [...(opts.boundaryControls ?? [])];
 	const coverageQueue = [...(opts.coverageControls ?? [{ allCovered: true, coveredScenarios: [], missingScenarios: [], summary: "all covered" }])];
@@ -143,6 +148,7 @@ function mkCtx(opts: {
 	const boundaryCalls: AgentCall[] = [];
 	const coverageCalls: AgentCall[] = [];
 	const implCalls: AgentCall[] = [];
+	const reviewCalls: AgentCall[] = [];
 	const logs: string[] = [];
 	const ctx: StageContext = {
 		task: "",
@@ -176,6 +182,8 @@ function mkCtx(opts: {
 				return { text: opts.implText ?? "", control: next };
 			}
 			if (call.agent === "code-reviewer") {
+				reviewCalls.push(call);
+				if (opts.reviewReject) throw opts.reviewReject(call, reviewCalls.length);
 				// RED test-quality review (R2): default to STRONG so accepted RED
 				// proceeds — these edge tests exercise the RED-oracle/boundary/coverage
 				// paths, not the review gate. Overridable via opts.redReviewVerdict.
@@ -192,7 +200,7 @@ function mkCtx(opts: {
 		events: new EventEmitter(),
 		results: [],
 	};
-	return { ctx, tddCalls, boundaryCalls, coverageCalls, implCalls, logs };
+	return { ctx, tddCalls, boundaryCalls, coverageCalls, implCalls, reviewCalls, logs };
 }
 
 beforeEach(() => {
@@ -899,5 +907,143 @@ describe("P3 edges — implementer challenge of an unsatisfiable RED test", () =
 		// No challenge: RED authored once (reused across attempts); no challenge log.
 		expect(logs.some((l) => /implementer challenge/.test(l))).toBe(false);
 		expect(tddCalls).toHaveLength(1);
+	});
+});
+
+// ─── v0.3.74 P1-d — behavioral pins for the M1/M7 mitigations ────────────────
+
+function armTmpRepo(prefix: string): string {
+	const dir = mkdtempSync(join(tmpdir(), prefix));
+	execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+	execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+	execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+	writeFileSync(join(dir, "README.md"), "baseline\n");
+	execFileSync("git", ["add", "."], { cwd: dir });
+	execFileSync("git", ["commit", "-m", "baseline"], { cwd: dir, stdio: "ignore" });
+	return dir;
+}
+
+describe("v0.3.74 M1 (behavioral) — quarantined red-review verdict is salvaged when the implementer claims every violated path", () => {
+	it("salvages a strong verdict and completes the phase instead of discarding 15+ minutes of review work", async () => {
+		const dir = armTmpRepo("sd-m1-salvage-");
+		try {
+			redCheck.mockImplementation(() => "red");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "m1-salvage");
+			const { ctx, implCalls, logs } = mkCtx({
+				tddControls: [{ testFiles: ["tests/feature.test.ts"] }],
+				implControls: [{
+					filesCreated: ["src/feature.ts"],
+					filesModified: ["src/util.ts"],
+					testsPassCount: 3,
+					testDefects: [],
+					summary: "implemented",
+				}],
+				reviewReject: () => {
+					// Exactly the Error realAgent throws when enforceSourceBoundary fires
+					// after the delegation result exists: quarantine payload + salvaged
+					// control ride the Error object (parent-composed, unforgeable).
+					const err = new Error("source-read-only boundary violation (quarantined)");
+					(err as { quarantine?: unknown }).quarantine = {
+						violations: ["src/feature.ts", "src/util.ts"],
+						dir: join(dir, ".quarantine"),
+					};
+					(err as { salvagedControl?: unknown }).salvagedControl = {
+						verdict: "strong",
+						contradictions: [],
+						summary: "RED is genuine and jointly satisfiable",
+					};
+					return err;
+				},
+			});
+
+			const res = (await (implementationStage as Stage).run(state, ctx)) as ControlObj;
+
+			// The salvage fired with an honest attribution log…
+			expect(logs.some((l) => /red-review verdict salvaged \(boundary violations fully covered by the implementer's declared claims: src\/feature\.ts, src\/util\.ts\)/.test(l))).toBe(true);
+			// …the phase completed green (single implementer round, verdict adjudicated)…
+			expect(res.allGreen).toBe(true);
+			expect(implCalls).toHaveLength(1);
+			// …and the pre-fix fail-open path never ran (no reviewer-failure finding).
+			expect(logs.some((l) => /RED review did not complete/i.test(l))).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does NOT salvage when a violated path is outside the implementer's claims (fail-open preserved)", async () => {
+		const dir = armTmpRepo("sd-m1-nosalvage-");
+		try {
+			redCheck.mockImplementation(() => "red");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "m1-nosalvage");
+			const { ctx, logs } = mkCtx({
+				tddControls: [{ testFiles: ["tests/feature.test.ts"] }],
+				implControls: [{
+					filesCreated: ["src/feature.ts"],
+					testsPassCount: 3,
+					testDefects: [],
+					summary: "implemented",
+				}],
+				reviewReject: () => {
+					const err = new Error("source-read-only boundary violation (quarantined)");
+					// src/util.ts is NOT claimed by the implementer → attribution
+					// cannot establish innocence → no salvage.
+					(err as { quarantine?: unknown }).quarantine = {
+						violations: ["src/feature.ts", "src/util.ts"],
+						dir: join(dir, ".quarantine"),
+					};
+					(err as { salvagedControl?: unknown }).salvagedControl = { verdict: "strong", contradictions: [], summary: "…" };
+					return err;
+				},
+			});
+
+			await (implementationStage as Stage).run(state, ctx);
+
+			expect(logs.some((l) => /red-review verdict salvaged/.test(l))).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("v0.3.74 M7 (behavioral) — implementer self-commit detector", () => {
+	it("advises honestly and records the finding when HEAD moves during the implementer call, without blocking the phase", async () => {
+		const dir = armTmpRepo("sd-m7-selfcommit-");
+		try {
+			redCheck.mockImplementation(() => "red");
+			const state = mkState();
+			state.setup!.worktreePath = dir;
+			state.setup!.specDirectory = join(dir, "docs", "specifications", "m7-selfcommit");
+			const h = mkCtx({
+				tddControls: [{ testFiles: ["tests/feature.test.ts"] }],
+				implControls: [{
+					filesCreated: ["src/feature.ts"],
+					testsPassCount: 3,
+					testDefects: [],
+					summary: "implemented",
+				}],
+				onImplCall: () => {
+					// The 2e92da3 incident shape: the implementer commits GREEN work
+					// itself mid-call (thousands-of-words message elided).
+					mkdirSync(join(dir, "src"), { recursive: true });
+					writeFileSync(join(dir, "src", "feature.ts"), "export const x = 1;\n");
+					execFileSync("git", ["add", "."], { cwd: dir });
+					execFileSync("git", ["commit", "-m", "feat: phase done (self-commit)"], { cwd: dir, stdio: "ignore" });
+				},
+			});
+			const logs = h.logs;
+
+			const res = (await (implementationStage as Stage).run(state, h.ctx)) as ControlObj;
+
+			expect(logs.some((l) => /implementer self-commit detected \(HEAD [0-9a-f]{8} → [0-9a-f]{8} during the call\)/.test(l))).toBe(true);
+			// Advisory only: the phase still completes green (deterministic commit +
+			// already-satisfied escapes own correctness).
+			expect(res.allGreen).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

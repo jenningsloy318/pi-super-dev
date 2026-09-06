@@ -52,3 +52,11 @@ Read requirements, BDD scenarios, specification, implementation plan, and task l
 - Overly broad assertions
 - Writing all tests before any implementation
 - Batching multiple features into single commit
+
+## Commits are engine-owned (v0.3.73)
+
+NEVER run `git commit` (or branch/merge/stash). The pipeline's deterministic
+commit step is the ONLY committer. A mid-phase self-commit pre-lands
+implementation the RED oracle then has to route around (run
+2026-09-05T23-09-55-596Z phase-5: commit 5d4790d landed production before its
+RED was authored). Leave every edit — tests included — in the working tree.

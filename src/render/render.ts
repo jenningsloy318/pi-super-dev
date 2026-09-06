@@ -530,6 +530,10 @@ export function renderAndWrite(
 	onRenderErrors?: (errors: string[]) => void,
 ): string | null {
 	const model = STAGE_MODELS[stageId];
+	// v0.3.74 P1-b: attempt-level mark at ENTRY — even a rejected control
+	// counts as "this stage rendered this run", so the task() auto-render net
+	// never double-fires (and a failed validation attempt still suppresses it).
+	(setup.renderedStageDocs ??= new Set<string>()).add(stageId);
 	if (!model || !control) return null;
 	// Reserve the EXACT doc path(s) up front and log them, so every render (any
 	// stage, any retry) writes to a deterministic, stream-visible NN-<slug>.md.

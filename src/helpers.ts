@@ -5,6 +5,7 @@
  */
 
 import type { ControlObj, HelperCall, HelperResult, SetupControl } from "./types.ts";
+import { harnessBasenames } from "./harness-paths.ts";
 import { spawnSync } from "node:child_process";
 // H6 (AC-07): the cleanup env blocklist derives from the copier's own
 // predicate. No import cycle: setup.ts does not import helpers.ts
@@ -540,18 +541,12 @@ export function commitWorktreeChanges(
  *  as "uncommitted changes that would not ship" because the harness appends
  *  to these ledgers after the merge agent's final commit — deterministically,
  *  every run. Both checks exempt these files up front. */
-export const HARNESS_BOOKKEEPING_FILES = new Set([
-	"events.jsonl",
-	"change-tracker.jsonl",
-	"implementation-evidence.jsonl",
-	".resume-cache.jsonl",
-	".judge.jsonl",
-	".knowledge.json",
-	".run-lock", // AC-30: the spec-dir run lock — harness self-write, never agent work
-	".convergence-ledger.json", // v0.3.3 L1: persisted ledger — harness state, never agent work
-	"completion-audit.md", // v0.3.3 V2: per-run operator record — never swept into track commits
-	"test-runner.json", // v0.3.30 C: cached agent-proposed runner spec — harness-owned cache, never agent work
-]);
+// v0.3.74 dual review F3: derived from the single canonical registry
+// (src/harness-paths.ts, role `specDirBookkeeping`) — this was a FIFTH parallel
+// basename literal outside it (names: the spec-dir run lock AC-30, the
+// persisted convergence ledger v0.3.3 L1, the completion audit v0.3.3 V2, the
+// cached runner spec v0.3.30 C — harness self-writes, never agent work).
+export const HARNESS_BOOKKEEPING_FILES = harnessBasenames("specDirBookkeeping");
 
 /** True when `path` is a harness bookkeeping file inside the run's spec
  *  directory (the only place the harness writes them). A same-named file an

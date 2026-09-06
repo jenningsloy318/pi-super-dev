@@ -256,6 +256,28 @@ export function task(stage: Stage): Node {
 					return { status: "cancelled" };
 				}
 				if (result !== undefined && result !== null) state[stage.id] = result;
+				// v0.3.74 P1-b — auto-render net (M2 class, run 2026-09-05T23-09-55-596Z):
+				// renderAndWrite is a MANUAL convention at ~10 call sites and the
+				// tests-review stage simply forgot it — five review completions wrote no
+				// artifact. When this stage has a render model, setup exists, the doc was
+				// NEVER rendered this run, and the result is a non-empty object, render it
+				// here. Manual per-round renders stay authoritative (the mark is run-scoped,
+				// so the net fires at most once per stage id per run); renderAndWrite
+				// refuses to write invalid controls, so garbage results are harmless.
+				try {
+					if (
+						state.setup &&
+						STAGE_MODELS[stage.id] &&
+						result !== undefined && result !== null && typeof result === "object" && !Array.isArray(result) &&
+						Object.keys(result as Record<string, unknown>).length > 0 &&
+						!(state.setup.renderedStageDocs ??= new Set<string>()).has(stage.id)
+					) {
+						ctx.log(`task "${stage.id}": artifact not rendered — auto-render net`);
+						renderAndWrite(state.setup, (m) => ctx.log(m), stage.id, result as Record<string, unknown>);
+					}
+				} catch {
+					// The net must never fail a stage that otherwise succeeded.
+				}
 				// Sweep-3 round-2 CR-R2-3/CRR2-2: a stage that recorded an INFRA
 				// failed row mid-run (writerTask's G21 honest marker) must not have
 				// it masked by this same-id ok row — G3's last-status semantics

@@ -363,6 +363,11 @@ export const STAGE_MODELS: Record<string, StageModel> = {
 	bddReview: { slug: "bdd-review", schema: BddReviewData, template: "bdd-review.md.njk" },
 	designReview: { slug: "design-review", schema: DesignReviewData, template: "design-review.md.njk" },
 	codeReview: { slug: "code-review", schema: CodeReviewData, template: "code-review.md.njk" },
+	// v0.3.73 M2 (run 2026-09-05T23-09-55-596Z): tests-review completed 5 times
+	// but its artifact was never written — the stage had no render model, so
+	// the tests-reviewer's own finding "no tests-review artifact exists" was
+	// literally true. Same schema/template shape as codeReview (same role).
+	testsReview: { slug: "tests-review", schema: CodeReviewData, template: "code-review.md.njk" },
 	adversarialReview: { slug: "adversarial-review", schema: AdversarialReviewData, template: "adversarial-review.md.njk" },
 	implementationSummary: { slug: "implementation-summary", schema: ImplementationSummaryData, template: "implementation-summary.md.njk" },
 	debug: { slug: "debug-analysis", schema: DebugData, template: "debug-analysis.md.njk" },

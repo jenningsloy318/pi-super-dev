@@ -247,6 +247,12 @@ export interface SetupControl {
 	/** G2: true when setup re-entered an existing resumable track (task
 	 * similarity match) instead of allocating a fresh spec id. */
 	reusedTrack?: boolean;
+	/** v0.3.74 P1-b: stage ids whose artifact doc renderAndWrite has been
+	 *  invoked for this run (attempt-level — marked at entry, even when the
+	 *  control fails validation and nothing is written). The task() wrapper's
+	 *  auto-render net consumes it so a stage that forgets its manual render
+	 *  still leaves an artifact (M2: five tests-review completions wrote none). */
+	renderedStageDocs?: Set<string>;
 }
 
 export interface Classification {

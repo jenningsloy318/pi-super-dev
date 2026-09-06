@@ -19,7 +19,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { extensionsForAgent, skillsEnabled } from "./agent-runtime.ts";
+import { commitGuardExtensionPath, extensionsForAgent, skillsEnabled } from "./agent-runtime.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
 export const RUNTIME_AGENT_REGISTER_EVENT = "pi-subagents:runtime-agent-register:v1";
@@ -124,7 +124,7 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	const request: {
 		version: 1;
 		name: string;
-		definition: { description: string; systemPrompt: string; tools: readonly string[]; inheritSkills: boolean; extensions?: string[] };
+		definition: { description: string; systemPrompt: string; tools: readonly string[]; inheritSkills: boolean; extensions?: string[]; subagentOnlyExtensions?: string[] };
 		result?: { ok: true; registration: { dispose(): void } } | { ok: false; error: Error };
 	} = {
 		version: 1,
@@ -157,6 +157,10 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			// roles always had on the deleted subprocess backend; missing packages
 			// degrade to an empty list (agent loses the tools, run continues).
 			...(extensionsForAgent(name).length > 0 ? { extensions: extensionsForAgent(name) } : {}),
+		// v0.3.74 dual review F2: the commit guard rides subagentOnlyExtensions —
+		// child-only loading that does NOT disable the child's ambient extension
+		// discovery (unlike `extensions`, per child-tool-plan.ts:403).
+		...(commitGuardExtensionPath(name) ? { subagentOnlyExtensions: [commitGuardExtensionPath(name)!] } : {}),
 		},
 	};
 	try {

@@ -45,3 +45,12 @@ For non-visual phases (backend, library, CLI): skip visual verification.
 ## Collaboration
 
 Runs as Step 9.2 in sequential TDD workflow: tdd-guide (9.1) -> implementer (9.2) -> qa-agent (9.3). Receives test files and makes them pass.
+
+## Commits are engine-owned (v0.3.73)
+
+NEVER run `git commit` (or branch/merge/stash). The pipeline's deterministic
+commit step is the ONLY committer — it commits after the build gate and the
+deliverable check pass. A mid-phase self-commit lands unverified work, makes
+the RED oracle see a pre-landed implementation, and forces a RED re-author
+cycle (run 2026-09-05T23-09-55-596Z: commits 2e92da3/5d4790d cost one full
+phase cycle each). Leave your work in the working tree.
