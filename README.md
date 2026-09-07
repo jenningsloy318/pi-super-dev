@@ -30,6 +30,13 @@ deterministic code before the pipeline believes it.
   holding an older in-memory bridge against a newer on-disk package fails
   every delegated call at startup (version skew; super-dev detects it, fails
   fast with this remedy, and never hangs).
+- **Restart pi after a model-quota cap clears** (v0.3.77): pi-subagents caches
+  quota-429s as 24h model exclusions in-process and never re-reads them, so
+  after the provider resets the quota the parent session keeps working while
+  every delegated child with a pinned model fails instantly with `… is
+  excluded and cannot be replaced by a fallback`. super-dev classifies that
+  envelope as non-retryable (no transient-retry burn, round-1 FatalAbort) and
+  names the restart remedy in the abort message.
 
 ## Install
 

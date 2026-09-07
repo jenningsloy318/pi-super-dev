@@ -21,7 +21,7 @@ vi.mock("../src/render/knowledge.ts", () => ({ knowledgeForAgent: vi.fn(() => ""
 
 import { makeContext } from "../src/workflow.ts";
 import { runAgentViaDelegation } from "../src/agents/delegation-backend.ts";
-import { isNonRetryableAgentError } from "../src/agent-errors.ts";
+import { isNonRetryableAgentError, isModelExclusionHit, nonRetryableAgentSummary } from "../src/agent-errors.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const CALL: AgentCall = { id: "pipeline.x", agent: "spec-writer", prompt: "p" };
@@ -83,5 +83,68 @@ describe("v0.3.72 N1 — model-not-found is non-retryable (review ADV-N1)", () =
 		expect(isNonRetryableAgentError("tdd guide returned garbage output")).toBe(false);
 		expect(isNonRetryableAgentError("reviewer produced no control object")).toBe(false);
 		expect(isNonRetryableAgentError(undefined)).toBe(false);
+	});
+});
+describe("v0.3.77 — model-exclusion envelope is non-retryable (incident 2026-09-07T14-10-39-259Z)", () => {
+beforeEach(() => { responses = []; captured.length = 0; vi.mocked(runAgentViaDelegation).mockClear(); });
+afterAll(() => { delete process.env.SUPER_DEV_TRANSIENT_RETRY_MS; });
+
+const EXCLUSION_429 = 'delegation ended with status failed: Requested subagent model \'zai-coding-cn/glm-5.3\' is excluded and cannot be replaced by a fallback (reason: 429: {"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-09-07 19:05:39 重置。"}; expires: 2026-09-08T07:11:49.165Z)';
+
+it("classifies the exclusion ENVELOPE as non-retryable regardless of the cached reason (429-quota shape escapes model-not-found)", () => {
+	expect(isNonRetryableAgentError(EXCLUSION_429)).toBe(true);
+	expect(isModelExclusionHit(EXCLUSION_429)).toBe(true);
+});
+
+it("model-not-found exclusion shape stays non-retryable (regression pin)", () => {
+	expect(isNonRetryableAgentError("Requested subagent model zai-coding-cn/glm-5.2 is excluded and cannot be replaced by a fallback (reason: Model zai-coding-cn/glm-5.2:high not found; expires: 2026-09-05T11:44:04.574Z)")).toBe(true);
+});
+
+it("does NOT transient-retry a cached exclusion even though the reason contains 429 — the throw is a process-local cache hit, retrying can never succeed", async () => {
+	process.env.SUPER_DEV_TRANSIENT_RETRY_MS = "1,1,1,1";
+	responses = [{ error: EXCLUSION_429 }];
+	const r = await mkCtx().agent(CALL);
+	expect(calls()).toBe(1); // pre-fix: transient backoff retried the cache hit (production incident log line 26 burned 4x30s; in-harness the drained mock queue ends it at 2)
+	expect(r.error ?? "").toMatch(/is excluded and cannot be replaced/);
+	expect(captured.some((m) => /transient error/.test(m))).toBe(false);
+});
+
+it("nonRetryableAgentSummary names the restart remedy for exclusion hits", () => {
+	const s = nonRetryableAgentSummary(EXCLUSION_429);
+	expect(s).toContain("non-retryable agent environment failure");
+	expect(s).toMatch(/restart pi/i);
+	expect(s).toMatch(/model-exclusion/i);
+});
+
+it("ordinary errors keep the bare summary (remedy text only on exclusion hits)", () => {
+	expect(nonRetryableAgentSummary("spawn pi ENOENT")).toBe("non-retryable agent environment failure: spawn pi ENOENT");
+	expect(isModelExclusionHit("429 rate limit (live API, retryable)")).toBe(false);
+});
+});
+
+describe("v0.3.77 reviews code-F2 — sibling envelope: ALL candidates excluded (no usable subagent models remain)", () => {
+	beforeEach(() => { responses = []; captured.length = 0; vi.mocked(runAgentViaDelegation).mockClear(); });
+	afterAll(() => { delete process.env.SUPER_DEV_TRANSIENT_RETRY_MS; });
+
+	const EXHAUSTED = 'delegation ended with status failed: No usable subagent models remain after registry, scope, and cached-exclusion filtering. (excluded: zai-coding-cn/glm-5.3 reason: 429: {"code":"1308","message":"quota"}; zai-coding-cn/glm-5.3-flash reason: 429 rate limit)';
+
+	it("classifies the all-candidates-excluded envelope as non-retryable (same never-reloaded registry)", () => {
+		expect(isNonRetryableAgentError(EXHAUSTED)).toBe(true);
+	});
+
+	it("does not transient-retry it — exactly 1 call, no backoff, despite the embedded 429 reasons", async () => {
+		process.env.SUPER_DEV_TRANSIENT_RETRY_MS = "1,1,1,1";
+		responses = [{ error: EXHAUSTED }];
+		const r = await mkCtx().agent(CALL);
+		expect(calls()).toBe(1);
+		expect(r.error ?? "").toMatch(/No usable subagent models remain/);
+		expect(captured.some((m) => /transient error/.test(m))).toBe(false);
+	});
+
+	it("summary names the restart remedy and the auth/billing caveat (reviews adv-F2)", () => {
+		const s = nonRetryableAgentSummary(EXHAUSTED);
+		expect(s).toMatch(/restart pi/i);
+		expect(s).toMatch(/model-exclusion/i);
+		expect(s).toMatch(/auth\/billing/i);
 	});
 });
