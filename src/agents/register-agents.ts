@@ -19,7 +19,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { commitGuardExtensionPath, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
+import { commitGuardExtensionPath, configExtensionEntriesForAgent, configExtensionToolsForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
 import { getConfig } from "../render/super-dev-dir.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
@@ -137,7 +137,14 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 		definition: {
 			description: descriptionFor(name),
 			systemPrompt: loadAgentBasePrompt(name),
-			tools: READ_ONLY_AGENTS.has(name) ? READ_ONLY_TOOLS : WRITER_TOOLS,
+			// v0.3.78 review fix (adv F1): pi-coding-agent maps `tools` to
+			// allowedToolNames and drops extension-registered tools not in it —
+			// config-declared extension tool names merge onto the role allowlist
+			// (scope + malformed guards live in configExtensionToolsForAgent).
+			tools: [...new Set([
+				...(READ_ONLY_AGENTS.has(name) ? READ_ONLY_TOOLS : WRITER_TOOLS),
+				...configExtensionToolsForAgent(name, { warn: log }),
+			])],
 			// v0.3.59 — skills are a capability on EVERY backend (v0.2.10 W4 parity).
 			// pi-subagents defaults inheritSkills to FALSE (agents.ts
 			// defaultInheritSkills), which launched every sd-* child with
@@ -186,7 +193,20 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 		// v0.3.74 dual review F2: the commit guard rides subagentOnlyExtensions —
 		// child-only loading that does NOT disable the child's ambient extension
 		// discovery (unlike `extensions`, per child-tool-plan.ts:403).
-		...(commitGuardExtensionPath(name) ? { subagentOnlyExtensions: [commitGuardExtensionPath(name)!] } : {}),
+		// v0.3.78 — config-driven commonExtensions (every capability agent) and
+		// agentExtensions[role] merge onto the SAME additive channel, UNIONed with
+		// the guard and never replacing it. Scope (mechanical classifiers
+		// excluded from common; explicit agentExtensions honored for any role),
+		// npm: normalization, and missing-package WARN+skip semantics live in
+		// agent-runtime.configExtensionEntriesForAgent; the warn sink is this
+		// registration log. Registration reads config once at activate — restart
+		// pi after edits (same as agentSkills).
+		...(() => {
+			const guard = commitGuardExtensionPath(name);
+			const configEntries = configExtensionEntriesForAgent(name, { warn: log });
+			const merged = [...(guard ? [guard] : []), ...configEntries];
+			return merged.length > 0 ? { subagentOnlyExtensions: merged } : {};
+		})(),
 		},
 	};
 	try {

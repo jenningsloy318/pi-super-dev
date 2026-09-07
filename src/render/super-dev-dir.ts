@@ -76,6 +76,38 @@ export interface SuperDevConfig {
 	 * the env map below; resolved once per session) is the opt-OUT of
 	 * curation that sits between them. */
 	agentSkills?: Record<string, false | string[]>;
+	/** v0.3.78: extension packages EVERY capability agent loads as a delegated
+	 *  child, riding the additive subagentOnlyExtensions registration channel
+	 *  (the same one the implementer/tdd-guide commit guard uses — nothing
+	 *  ambient is disabled). Package names resolve to entry paths ONCE at
+	 *  activation, so EDITS REQUIRE A pi RESTART (same semantics as
+	 *  agentSkills). The `npm:` prefix is optional. Mechanical one-shot
+	 *  classifiers (MECHANICAL_CLASSIFIER_ROLES) are excluded — a single tiny
+	 *  call gains nothing from per-child context bundles/tool cards. Typical
+	 *  set: nowledge-mem-pi (auto transcript sync), pi-lsp (lsp_* tools),
+	 *  pi-blackhole (recall + compaction). Missing packages WARN once and are
+	 *  skipped. Extension loading never touches skills: capability agents keep
+	 *  ambient on-demand skill cards. */
+	commonExtensions?: string[];
+	/** v0.3.78: per-role extension additions MERGED with the hardcoded role
+	 *  sets (research web / browser packages) and commonExtensions — never
+	 *  replacing them. Explicit config is honored for ANY role, mechanical
+	 *  classifiers included (explicit beats scope defaults). Same resolution,
+	 *  restart, and missing-package semantics as commonExtensions. */
+	agentExtensions?: Record<string, string[]>;
+	/** v0.3.78 review fix (adv F1): tool NAMES the config extensions register
+	 *  (e.g. pi-lsp's lsp_* family, pi-blackhole's `recall`), merged onto
+	 *  every CAPABILITY agent's registration `tools` allowlist — pi-coding-
+	 *  agent treats `tools` as allowedToolNames and silently drops every
+	 *  extension tool not declared in it (hook-side value loads regardless).
+	 *  Extension packages carry no tool manifest, so names are DECLARED here,
+	 *  not resolved. Same scope predicate as commonExtensions (mechanical
+	 *  classifiers excluded). Invalid names fail harmlessly at child launch. */
+	commonExtensionTools?: string[];
+	/** Per-role additions merged onto that role's tools allowlist — honored
+	 *  for ANY role (explicit beats scope); `sd-`-prefixed keys accepted.
+	 *  Same semantics as commonExtensionTools. */
+	agentExtensionTools?: Record<string, string[]>;
 	/** v0.3.15: persistent channel for the SUPER_DEV_* tunables (timeouts,
 	 *  budgets, kill-switches, model/backend selectors) so GUI-launched pi
 	 *  sessions — which have no shell env — can still set them. Flat string

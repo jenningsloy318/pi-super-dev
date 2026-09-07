@@ -262,3 +262,130 @@ describe("registerSuperDevAgents", () => {
 		});
 	});
 });
+
+/** v0.3.78 — config-driven extension entries ride subagentOnlyExtensions.
+ * The resolver (configExtensionEntriesForAgent — scope: capability agents
+ * only, npm: normalization, missing-package degrade) is unit-tested in
+ * tests/config-extensions.test.ts; THIS file pins the registration wiring:
+ * entries union onto the commit guard (never replace), empty → key omitted,
+ * every agent consulted once. */
+const configExtStub = vi.hoisted(() => ({ entries: [] as string[], tools: [] as string[], calls: [] as string[], toolCalls: [] as string[] }));
+vi.mock("../src/agents/agent-runtime.ts", async (importOriginal) => {
+	const real = await importOriginal<Record<string, unknown>>();
+	return {
+		...real,
+		configExtensionEntriesForAgent: (agent: string) => {
+			configExtStub.calls.push(agent);
+			return configExtStub.entries;
+		},
+		configExtensionToolsForAgent: (agent: string) => {
+			configExtStub.toolCalls.push(agent);
+			return configExtStub.tools;
+		},
+	};
+});
+
+describe("v0.3.78 — commonExtensions/agentExtensions registration wiring", () => {
+	function collectingBus(): { bus: any; requests: any[] } {
+		const requests: any[] = [];
+		const bus: any = {
+			on() { return () => {}; },
+			emit(_channel: string, payload: any) {
+				requests.push(payload);
+				payload.result = { ok: true, registration: { dispose() {} } };
+			},
+		};
+		return { bus, requests };
+	}
+
+	beforeEach(() => {
+		configExtStub.entries = [];
+		configExtStub.calls = [];
+		configExtStub.tools = [];
+		configExtStub.toolCalls = [];
+	});
+
+	it("capability agent carries resolved common entries as subagentOnlyExtensions", () => {
+		configExtStub.entries = ["/fixture/common-mem.ts"];
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		const req = requests.find((r: any) => r.name === "sd-requirements-clarifier");
+		expect(req.definition.subagentOnlyExtensions).toEqual(["/fixture/common-mem.ts"]);
+	});
+
+	it("implementer UNIONS the commit guard with common entries (never replace)", () => {
+		configExtStub.entries = ["/fixture/common-mem.ts", "/fixture/common-lsp.ts"];
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		const exts = requests.find((r: any) => r.name === "sd-implementer").definition.subagentOnlyExtensions as string[];
+		expect(exts).toHaveLength(3);
+		expect(exts.some((e) => e.endsWith("child-guards/commit-guard.ts"))).toBe(true);
+		expect(exts).toContain("/fixture/common-mem.ts");
+		expect(exts).toContain("/fixture/common-lsp.ts");
+	});
+
+	it("empty resolution omits the subagentOnlyExtensions key (pre-v0.3.78 parity for unconfigured setups)", () => {
+		configExtStub.entries = [];
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		const req = requests.find((r: any) => r.name === "sd-requirements-clarifier");
+		expect(req.definition.subagentOnlyExtensions).toBeUndefined();
+	});
+
+	it("every registered agent is consulted exactly once (mechanical-role scoping lives inside the resolver)", () => {
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		expect(requests.length).toBeGreaterThan(15);
+		expect(configExtStub.calls).toHaveLength(requests.length);
+	});
+});
+
+describe("v0.3.78 review fixes — config extension TOOLS merge into the registration allowlist (adv-F1)", () => {
+	function collectingBus(): { bus: any; requests: any[] } {
+		const requests: any[] = [];
+		const bus: any = {
+			on() { return () => {}; },
+			emit(_channel: string, payload: any) {
+				requests.push(payload);
+				payload.result = { ok: true, registration: { dispose() {} } };
+			},
+		};
+		return { bus, requests };
+	}
+
+	beforeEach(() => {
+		configExtStub.entries = [];
+		configExtStub.calls = [];
+		configExtStub.tools = [];
+		configExtStub.toolCalls = [];
+	});
+
+	it("config extension tools APPEND to the role tools allowlist (reviewer: read-only set + lsp_* tools)", () => {
+		configExtStub.tools = ["lsp_diagnostics", "lsp_hover", "recall"];
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		const tools = requests.find((r: any) => r.name === "sd-code-reviewer").definition.tools as string[];
+		expect(tools).toEqual(["read", "grep", "find", "ls", "bash", "lsp_diagnostics", "lsp_hover", "recall"]);
+	});
+
+	it("writer agents keep edit/write plus config tools", () => {
+		configExtStub.tools = ["lsp_diagnostics"];
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		const tools = requests.find((r: any) => r.name === "sd-implementer").definition.tools as string[];
+		expect(tools).toEqual(["read", "grep", "find", "ls", "bash", "edit", "write", "lsp_diagnostics"]);
+	});
+
+	it("empty tools resolution keeps the bare role allowlist (pre-v0.3.78 parity)", () => {
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		expect(requests.find((r: any) => r.name === "sd-code-reviewer").definition.tools).toEqual(["read", "grep", "find", "ls", "bash"]);
+		expect(requests.find((r: any) => r.name === "sd-implementer").definition.tools).toEqual(["read", "grep", "find", "ls", "bash", "edit", "write"]);
+	});
+
+	it("every registered agent is consulted exactly once for tools", () => {
+		const { bus, requests } = collectingBus();
+		registerSuperDevAgents(bus);
+		expect(configExtStub.toolCalls).toHaveLength(requests.length);
+	});
+});

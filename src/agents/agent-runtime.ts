@@ -194,6 +194,123 @@ export function extensionsForAgent(agent: string): string[] {
 	return packages.flatMap((p) => resolveExtensionEntries(p, agentDir));
 }
 
+// ─── Config-driven extension entries (v0.3.78) ─────────────────────────────
+
+/** Normalize a config-declared package name: users copy `npm:pkg` install
+ *  ids; the node_modules layout needs the bare package name. */
+export function normalizeExtensionPackageName(pkg: string): string {
+	return pkg.startsWith("npm:") ? pkg.slice(4) : pkg;
+}
+
+const warnedMissingConfigExtensions = new Set<string>();
+const warnedMalformedConfigKeys = new Set<string>();
+
+/** v0.3.78 review fix (dual fresh-context 2026-09-08, both reviewers probe-
+ *  verified): getConfig does ZERO runtime type validation, and a wrong-type
+ *  container (`commonExtensions: 42`, or the single-string typo
+ *  `"nowledge-mem-pi"`) used to throw/decay per-character OUT of the fail-
+ *  open contract — the throw fired inside registerOne's request literal and
+ *  unregistered EVERY capability agent for the session. Loud fallback
+ *  instead: malformed container → [] with ONE warn per key per process
+ *  (v0.3.72 M3 / v0.3.74 P1-c convention). */
+function stringListOr(value: unknown, key: string, warn?: (message: string) => void): string[] {
+	if (Array.isArray(value)) return value;
+	if (value === undefined || value === null) return [];
+	if (!warnedMalformedConfigKeys.has(key)) {
+		warnedMalformedConfigKeys.add(key);
+		warn?.(`super-dev: config key "${key}" must be an array of strings — got ${typeof value}; ignoring it (fix ~/.super-dev/config.json)`);
+	}
+	return [];
+}
+
+/** Per-role lookup accepting BOTH the bare role name (consistent with
+ *  agentModels/agentThinking/agentSkills) and the `sd-`-prefixed form users
+ *  see in pi's agent listings (v0.3.78 review code-F2: the prefixed form was
+ *  a silent no-op). Bare key wins when both are present. */
+function roleEntry<T>(map: unknown, agent: string): T | undefined {
+	if (map === null || typeof map !== "object") return undefined;
+	const m = map as Record<string, unknown>;
+	const bare = m[agent];
+	if (bare !== undefined) return bare as T;
+	return m[`sd-${agent}`] as T | undefined;
+}
+
+/** v0.3.78 — config-declared extension entries for an agent's
+ *  subagentOnlyExtensions registration: `commonExtensions` (every CAPABILITY
+ *  agent; mechanical one-shot classifiers excluded — scope decision
+ *  2026-09-08) plus `agentExtensions[role]` (explicit per-role additions,
+ *  honored for ANY role including mechanical ones — explicit config beats
+ *  scope defaults; `sd-`-prefixed keys accepted). Union, deduplicated,
+ *  `npm:` prefix normalized, malformed containers degraded loudly to absent.
+ *  Missing packages degrade to absent with ONE warn per package per process
+ *  (the run continues — same policy as the hardcoded role packages). Never
+ *  throws: unreadable config → [] (getConfig itself swallows parse errors to
+ *  DEFAULT_CONFIG; the catch is defense-in-depth). Kept injectable
+ *  (config/agentDir/warn) for unit tests, mirroring resolveExtensionEntries. */
+export function configExtensionEntriesForAgent(
+	agent: string,
+	opts?: { config?: { commonExtensions?: unknown; agentExtensions?: unknown }; agentDir?: string; warn?: (message: string) => void },
+): string[] {
+	let common: string[] = [];
+	let perRole: string[] = [];
+	try {
+		const config = opts?.config ?? getConfig();
+		if (!MECHANICAL_CLASSIFIER_ROLES.has(agent)) common = stringListOr(config.commonExtensions, "commonExtensions", opts?.warn);
+		perRole = stringListOr(roleEntry<string[]>(config.agentExtensions, agent), `agentExtensions[${agent}]`, opts?.warn);
+	} catch {
+		return []; // config unreadable → no config-driven extensions; role-hardcoded ones are unaffected
+	}
+	const packages = [...new Set([...common, ...perRole].map((p) => normalizeExtensionPackageName(String(p).trim())).filter((p) => p.length > 0))];
+	if (packages.length === 0) return [];
+	const agentDir = opts?.agentDir ?? piAgentDir();
+	const resolved: string[] = [];
+	for (const pkg of packages) {
+		const entries = resolveExtensionEntries(pkg, agentDir);
+		if (entries.length === 0) {
+			if (!warnedMissingConfigExtensions.has(pkg)) {
+				warnedMissingConfigExtensions.add(pkg);
+				opts?.warn?.(`super-dev: config extension package "${pkg}" is not installed (applies to all agents; first seen on ${agent}) — skipping (install with: pi install npm:${pkg})`);
+			}
+			continue;
+		}
+		resolved.push(...entries);
+	}
+	return resolved;
+}
+
+/** v0.3.78 review fix (adversarial F1, live-proven): registrations pin
+ *  `tools:` to the role allowlists, and pi-coding-agent treats that as
+ *  allowedToolNames — dropping EVERY extension-registered tool not in it
+ *  (sd-child carried the nowledge hook bundle yet zero lsp_* / recall tools).
+ *  pi extension manifests declare entry paths, not tool names, so there is
+ *  no mechanical way to resolve them — the config DECLARES them:
+ *  `commonExtensionTools` (capability agents; mechanical classifiers
+ *  excluded, same scope predicate) plus `agentExtensionTools[role]` (any
+ *  role, explicit beats scope; `sd-`-prefixed keys accepted). Names are
+ *  trimmed, deduplicated, and merged onto the role allowlist at
+ *  registration. Malformed containers degrade loudly to [] (never throws). */
+export function configExtensionToolsForAgent(
+	agent: string,
+	opts?: { config?: { commonExtensionTools?: unknown; agentExtensionTools?: unknown }; warn?: (message: string) => void },
+): string[] {
+	let common: string[] = [];
+	let perRole: string[] = [];
+	try {
+		const config = opts?.config ?? getConfig();
+		if (!MECHANICAL_CLASSIFIER_ROLES.has(agent)) common = stringListOr(config.commonExtensionTools, "commonExtensionTools", opts?.warn);
+		perRole = stringListOr(roleEntry<string[]>(config.agentExtensionTools, agent), `agentExtensionTools[${agent}]`, opts?.warn);
+	} catch {
+		return []; // config unreadable → no config-declared tools; role-hardcoded allowlist is unaffected
+	}
+	return [...new Set([...common, ...perRole].map((t) => String(t).trim()).filter((t) => t.length > 0))];
+}
+
+/** Test isolation: clear the one-warn-per-package and per-key memos. */
+export function resetConfigExtensionWarnsForTests(): void {
+	warnedMissingConfigExtensions.clear();
+	warnedMalformedConfigKeys.clear();
+}
+
 /** Agents whose deliverable is CODE EDITS to real source files (not a document).
  *  These legitimately need to READ large existing files AND apply/verify edits
  *  within one turn, so they get a much larger wall-clock budget (see

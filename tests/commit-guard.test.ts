@@ -151,8 +151,13 @@ describe("v0.3.74 P2-e — guard extension factory (pi.on tool_call)", () => {
 	it("the guard rides subagentOnlyExtensions, NOT extensions (dual review F2: ambient discovery preserved)", async () => {
 		const { registerSuperDevAgents } = await import("../src/agents/register-agents.ts");
 		const src = readFileSync(join(import.meta.dirname, "../src/agents/register-agents.ts"), "utf8");
-		// emission contract: the guard lands in subagentOnlyExtensions
-		expect(src).toContain("subagentOnlyExtensions: [commitGuardExtensionPath(name)!");
+		// emission contract: the guard lands in subagentOnlyExtensions (v0.3.78:
+		// the channel is built by a merged block — guard first, then config-driven
+		// commonExtensions/agentExtensions — so pin BOTH the guard's presence on
+		// the channel and that `extensions` (the ambient-disabling field) never
+		// carries it).
+		expect(src).toContain("const guard = commitGuardExtensionPath(name);");
+		expect(src).toContain("subagentOnlyExtensions: merged");
 		// extensionsForAgent (the ambient-disabling field) must NOT carry the guard
 		for (const agent of ["implementer", "tdd-guide"]) {
 			expect(extensionsForAgent(agent).some((p) => p.includes("commit-guard")), agent).toBe(false);

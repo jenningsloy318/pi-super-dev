@@ -181,6 +181,26 @@ this instruction in the error; the run never hangs.)
   the delegated child's tool list contains `web_search`, `fetch_content`,
   `browser_execute`, etc. Declaring extensions disables AMBIENT discovery for
   that child (the same isolation these roles always had).
+- **Common extensions for every capability agent (v0.3.78):** the config keys
+  `commonExtensions` and `agentExtensions` in `~/.super-dev/config.json` ride
+  the additive `subagentOnlyExtensions` registration channel (the same one
+  the implementer/tdd-guide commit guard uses) — they never disable anything.
+  `commonExtensions` (package names, `npm:` prefix optional) is merged into
+  EVERY capability agent; mechanical one-shot classifiers (`task-classifier`,
+  `judge`, the red-boundary and tdd-coverage classifiers) are excluded — a
+  single tiny call gains nothing from per-child context bundles or tool
+  cards. `agentExtensions` adds per-role entries merged with the hardcoded
+  role sets (never replacing them) — the extension-side twin of `agentSkills`.
+  Typical set: `nowledge-mem-pi` (auto-syncs every child transcript to
+  Nowledge Mem), `pi-lsp` (edit-diagnostics hooks + `lsp_*` tools),
+  `pi-blackhole` (`recall` tool + compaction). Extension HOOKS always fire
+  in children; extension TOOLS additionally need their names in
+  `commonExtensionTools` (pi filters tools against the registration
+  allowlist). Extension loading never touches skills: capability agents keep
+  their ambient on-demand skill cards (v0.3.76), so a child can carry all
+  three extensions and still lazy-load any SKILL.md it needs. Entries resolve
+  once at activation (restart pi after editing); a missing package logs one
+  WARN and is skipped.
 - Text results flow through the identical `<control>` parser, so stages see
   byte-identical results — including one bounded corrective re-prompt for
   missing control keys.
@@ -733,6 +753,9 @@ set keys — see the next two sections):
 	"language": "english",
 	"agentModels": { "...": "..." },
 	"agentThinking": { "...": "..." },
+	"commonExtensions": ["nowledge-mem-pi", "pi-lsp", "pi-blackhole"],
+	"commonExtensionTools": ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_symbols", "recall"],
+	"agentExtensions": { "ui-tester": ["..."] },
 	"env": { "SUPER_DEV_...": "..." }
 }
 ```
@@ -762,6 +785,45 @@ it beats the built-in role tier, but a dedicated `agentThinking` entry wins
 when both are set, and `SUPER_DEV_THINKING` / per-call overrides still beat
 both. A colon suffix that is not a valid level word (`provider/model:latest`)
 is left intact.
+
+`commonExtensions` (v0.3.78): extension packages EVERY capability agent
+loads as a delegated child, via the additive `subagentOnlyExtensions`
+registration channel. Values are installed package names (the `npm:` prefix
+is optional and stripped). Entries are resolved to absolute entry paths from
+the `~/.pi/agent/npm/node_modules/<pkg>` package manifests ONCE at activation
+— **edits require a pi restart** (same as `agentSkills`). A missing package
+logs one WARN and is skipped; the run continues. Example — auto-sync every
+child transcript to Nowledge Mem and give children LSP tools + blackhole
+recall:
+
+```json
+"commonExtensions": ["nowledge-mem-pi", "pi-lsp", "pi-blackhole"]
+```
+
+`agentExtensions` (v0.3.78): per-role extension additions, merged with the
+hardcoded role extension sets (`research-agent` web packages,
+`qa-agent`/`ui-tester` browser package) — never replacing them. Bare role
+keys are canonical; `sd-`-prefixed keys are also accepted. Same resolution
+and restart semantics. Example:
+`"agentExtensions": { "ui-tester": ["some-future-ext"] }`.
+
+`commonExtensionTools` / `agentExtensionTools` (v0.3.78 review fix):
+extension HOOKS fire in every child that loads the package, but
+pi-coding-agent filters every extension-registered TOOL against the
+registration `tools` allowlist — a tool not declared there is silently
+dropped (verified live: a child carried the nowledge-mem bundle yet zero
+`lsp_*`/`recall` tools). Extension packages carry no tool manifest, so tool
+names are DECLARED here and merged onto each capability agent's allowlist
+(same scope predicate as `commonExtensions`; per-role keys honored for any
+role, `sd-`-prefixed keys accepted). Example:
+
+```json
+"commonExtensionTools": ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_symbols", "recall"]
+```
+
+Malformed config values (wrong-type arrays, unknown packages) never crash
+registration: each logs one WARN naming the key/package and is skipped —
+loud fallback, never a dead pipeline.
 
 `language`: the natural language **every agent-written artifact** is produced
 in — spec docs, reports, escalation/stagnation reports, `learned.md` /
