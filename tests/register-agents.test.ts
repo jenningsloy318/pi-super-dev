@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 /**
  * v0.3.25 L3 — runtime agent registration with pi-subagents.
@@ -11,6 +11,16 @@ import { describe, expect, it, vi } from "vitest";
  */
 
 import { registerSuperDevAgents, READ_ONLY_AGENTS, READ_ONLY_TOOLS, WRITER_TOOLS } from "../src/agents/register-agents.ts";
+import { resetAmbientSkillsForcedForTests } from "../src/agents/agent-runtime.ts";
+
+/** v0.3.76 dual-review R1/AR-2: registration reads config.agentSkills via
+ * getConfig() — deterministic in-file mock (mutable holder; other exports
+ * stay real so superDevEnv/skillsEnabled keep their real resolution). */
+const configHolder: { config: Record<string, unknown> } = { config: {} };
+vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
+	const real = await importOriginal<Record<string, unknown>>();
+	return { ...real, getConfig: () => configHolder.config };
+});
 
 class RecordingBus {
 	readonly emitted: Array<{ channel: string; payload: any }> = [];
@@ -166,6 +176,9 @@ describe("registerSuperDevAgents", () => {
 	});
 
 	describe("v0.3.59 — skills are a capability on the delegation backend too (cross-backend parity, v0.2.10 W4)", () => {
+		beforeEach(() => { resetAmbientSkillsForcedForTests(); });
+		afterEach(() => { resetAmbientSkillsForcedForTests(); });
+
 		/** Auto-delivering bus: emit() forwards to the simulated owner handler. */
 		function makeAutoBus() {
 			const { bus, requests } = makeOwnerBus();
@@ -177,17 +190,51 @@ describe("registerSuperDevAgents", () => {
 			return { autoBus, requests };
 		}
 
-		it("every sd-* registration declares inheritSkills:true — pi-subagents defaults it to FALSE (defaultInheritSkills → --no-skills), which silently broke the documented session/subprocess skills parity", () => {
+		it("v0.3.76: CAPABILITY roles declare inheritSkills:true (pi-subagents defaults it FALSE → --no-skills, which broke skills parity); CURATED roles (classifiers + research) declare false — the registration-level flag is the ONLY child-side ambient gate (child-launch.ts noSkills: !inheritSkills; E2E probe 2026-09-07), their cards arrive via the per-call skill field", () => {
 			vi.stubEnv("SUPER_DEV_NO_SKILLS", "");
+			vi.stubEnv("SUPER_DEV_SKILLS", "");
 			try {
 				const { autoBus, requests } = makeAutoBus();
 				registerSuperDevAgents(autoBus);
 				expect(requests.length).toBeGreaterThan(15);
 				for (const request of requests) {
-					expect(request.definition.inheritSkills).toBe(true);
+					const role = request.name.replace(/^sd-/, "");
+					const expectCurated = ["task-classifier", "judge", "tdd-coverage-classifier", "red-boundary-classifier", "research-agent"].includes(role);
+					expect(request.definition.inheritSkills, `${role}: curated roles register false, capability roles true`).toBe(!expectCurated);
 				}
 			} finally {
 				vi.unstubAllEnvs();
+			}
+		});
+
+		it("v0.3.76 L3: SUPER_DEV_SKILLS=ambient restores inheritSkills:true for EVERY role (escape hatch beats the curated tiers)", () => {
+			vi.stubEnv("SUPER_DEV_NO_SKILLS", "");
+			vi.stubEnv("SUPER_DEV_SKILLS", "ambient");
+			try {
+				const { autoBus, requests } = makeAutoBus();
+				registerSuperDevAgents(autoBus);
+				for (const request of requests) {
+					expect(request.definition.inheritSkills, request.name).toBe(true);
+				}
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
+
+		it("v0.3.76 dual-review R1/AR-2: an explicit agentSkills entry ALSO flips REGISTRATION for capability roles — ambient suppression is registration-only, so a per-call-only entry would be a silent no-op (false) or ambient+curated duplicate injection (array)", () => {
+			vi.stubEnv("SUPER_DEV_NO_SKILLS", "");
+			vi.stubEnv("SUPER_DEV_SKILLS", "");
+			configHolder.config = { agentSkills: { implementer: false, "code-reviewer": ["code-review"], "requirements-clarifier": [] } };
+			try {
+				const { autoBus, requests } = makeAutoBus();
+				registerSuperDevAgents(autoBus);
+				const byRole = new Map(requests.map((r: any) => [String(r.name).replace(/^sd-/, ""), r.definition.inheritSkills]));
+				expect(byRole.get("implementer")).toBe(false);             // false → zero cards, registration must agree
+				expect(byRole.get("code-reviewer")).toBe(false);           // array → curated-ONLY, ambient must be off
+				expect(byRole.get("requirements-clarifier")).toBe(false);  // [] ≡ false (R4)
+				expect(byRole.get("spec-writer")).toBe(true);              // untouched capability role stays ambient
+			} finally {
+				configHolder.config = {};
 			}
 		});
 

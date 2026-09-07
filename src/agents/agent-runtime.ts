@@ -676,3 +676,82 @@ export async function summarizeSlug(task: string, cwd: string, opts: { signal?: 
 	const raw = capture.called ? String((capture.value as { slug?: unknown })?.slug ?? "") : "";
 	return sanitizeSlug(raw);
 }
+
+// ─── v0.3.76 skill curation (L0 + L1; approved 2026-09-07) ───────────────────
+// The catalog DATA lives in the zero-import leaf ./skill-domains.ts (see that
+// file for why: an import edge prompts → agent-runtime corrupts v8 coverage
+// attribution). Re-exported here so consumers keep one canonical import site.
+export { MECHANICAL_CLASSIFIER_ROLES, DEFAULT_RESEARCH_SKILLS, SKILL_DOMAINS } from "./skill-domains.ts";
+export type { SkillDomainDescriptor } from "./skill-domains.ts";
+import { MECHANICAL_CLASSIFIER_ROLES, DEFAULT_RESEARCH_SKILLS, SKILL_DOMAINS } from "./skill-domains.ts";
+
+/** L3 escape hatch: `SUPER_DEV_SKILLS=ambient` restores today's full ambient
+ * injection for EVERY role (opt-OUT of curation, not a forgotten opt-in —
+ * the Option-C doctrine from v0.3.70 structured delegation). Dual-review
+ * R3/AR-1 fix: resolves via superDevEnv (process.env > config.json env map —
+ * the config channel is the ONLY one GUI-launched sessions have) and is
+ * MEMOIZED on first use — registration snapshots the decision at activate
+ * while skillsForCall consults it per call; one cached value keeps both
+ * layers consistent even if config flips mid-run (registration cannot flip
+ * back, so a per-call re-read would silently zero-card curated roles).
+ * Deliberately distinct from SUPER_DEV_NO_SKILLS (v0.3.59). */
+let ambientSkillsForcedMemo: boolean | null = null;
+export function ambientSkillsForced(env?: { SUPER_DEV_SKILLS?: string }): boolean {
+	if (env !== undefined) return String(env.SUPER_DEV_SKILLS ?? "").trim().toLowerCase() === "ambient";
+	if (ambientSkillsForcedMemo === null) {
+		ambientSkillsForcedMemo = String(superDevEnv("SUPER_DEV_SKILLS") ?? "").trim().toLowerCase() === "ambient";
+	}
+	return ambientSkillsForcedMemo;
+}
+export function resetAmbientSkillsForcedForTests(): void {
+	ambientSkillsForcedMemo = null;
+}
+
+export function skillsForCall(
+	role: string,
+	opts: { agentSkills?: Record<string, false | string[]>; skillDomains?: string[] } = {},
+): false | string[] | undefined {
+	// Dual-review R2/AR-N3: NO_SKILLS=1 must mean ZERO cards on every layer
+	// (its documented pre-v0.3.76 contract: full isolation for debugging/CI),
+	// so it gates the per-call field too — it stays the top kill-switch.
+	if (!skillsEnabled()) return false;
+	if (ambientSkillsForced()) return undefined;
+	const configured = opts.agentSkills?.[role];
+	if (configured === false) return false;
+	// Dual-review R4/AR-N2: an explicit [] is "a curated set of zero" — the
+	// config doc says `a string[] = that curated set only`, so [] ≡ false
+	// instead of silently falling through to the built-in tiers.
+	if (Array.isArray(configured)) return configured.length > 0 ? configured : false;
+	if (MECHANICAL_CLASSIFIER_ROLES.has(role)) return false;
+	if (needsWebResearch(role)) {
+		const set = new Set<string>(DEFAULT_RESEARCH_SKILLS);
+		const selected = Array.isArray(opts.skillDomains) ? opts.skillDomains : [];
+		for (const name of selected) {
+			const domain = SKILL_DOMAINS.find((d) => d.name === name);
+			if (domain) for (const s of domain.skills) set.add(s);
+		}
+		return [...set];
+	}
+	return undefined;
+}
+
+/** v0.3.76: roles whose REGISTRATION turns inheritSkills off (ambient
+ * discovery suppressed child-side; cards arrive via the per-call request
+ * `skill` field instead — skillsForCall). The registration-level flag is the
+ * only one that gates the child's ambient listing (pi-subagents
+ * child-launch.ts noSkills: !inheritSkills; E2E probe 2026-09-07). */
+export function curatedSkillsRole(role: string): boolean {
+	return MECHANICAL_CLASSIFIER_ROLES.has(role) || needsWebResearch(role);
+}
+
+/** Dual-review R1/AR-2 fix: an explicit agentSkills entry for a role (false
+ * or ANY array, including []) must ALSO flip REGISTRATION — ambient
+ * suppression is registration-only (pi-subagents child-launch
+ * `noSkills: !inheritSkills`; per-call `skill` cannot remove ambient), so a
+ * config entry that only set the per-call field would be a silent no-op
+ * (false on a capability role) or strictly worse, ambient PLUS curated
+ * duplicate injection (array on a capability role). */
+export function explicitSkillConfigured(agentSkills: Record<string, false | string[]> | undefined, role: string): boolean {
+	const v = agentSkills?.[role];
+	return v === false || Array.isArray(v);
+}

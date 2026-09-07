@@ -311,14 +311,17 @@ export const classifyStage: Stage = {
 				prompt: P.buildClassifyPrompt(setup, ctx.task),
 				schema: ClassificationData,
 			});
-			const c = result.control as { taskType?: string; uiScope?: string; rationale?: string } | null;
+			const c = result.control as { taskType?: string; uiScope?: string; rationale?: string; skillDomains?: string[] } | null;
 			if (!c || !c.taskType || !c.uiScope) {
 				ctx.log(`WARN classify: LLM classifier produced no usable result${result.error ? ` (${result.error})` : ""} — using deterministic fallback (${base.taskType}/${base.uiScope}, flagged fallback)`);
 				return { ...base, fallback: true };
 			}
 			ctx.log(`classify: taskType=${c.taskType} uiScope=${c.uiScope}${c.rationale ? ` — ${c.rationale}` : ""}`);
 			// Keep the setup-derived language/isWebUi; the LLM owns taskType/uiScope.
-			return { taskType: c.taskType, uiScope: c.uiScope, language: base.language, isWebUi: base.isWebUi, skipStages: base.skipStages ?? [], rationale: c.rationale };
+			// v0.3.76 L1: domains ride the classification (tolerant — only KNOWN
+			// domains map to curated sets; unknowns are recorded, mapped to nothing).
+			const domains = Array.isArray(c.skillDomains) ? c.skillDomains.filter((d): d is string => typeof d === "string") : undefined;
+			return { taskType: c.taskType, uiScope: c.uiScope, language: base.language, isWebUi: base.isWebUi, skipStages: base.skipStages ?? [], rationale: c.rationale, ...(domains && domains.length > 0 ? { skillDomains: domains } : {}) };
 		} catch (err) {
 			if (isFatalAbort(err) || isSafetyBoundaryError(err)) throw err; // never swallow safety/fatal
 			const msg = err instanceof Error ? err.message : String(err);

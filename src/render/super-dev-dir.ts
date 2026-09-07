@@ -61,6 +61,21 @@ export interface SuperDevConfig {
 	 *  lazily per call (superDevEnv pattern) so a config edit applies to later
 	 *  agent dispatches even mid-run; already-running agents are unaffected. */
 	agentThinking?: Record<string, string>;
+	/** v0.3.76: per-agent-role SKILL curation for delegated calls (request-
+	 * level `skill` field on the pi-subagents seam). `false` = zero card
+	 * injection for that role; a string[] = that curated set only (an EMPTY
+	 * array ≡ `false` — zero cards, NOT a fall-through to the tiers); an
+	 * explicit entry for a normally-ambient role flips its REGISTRATION too
+	 * (ambient suppression is registration-only), so EDITS REQUIRE A pi
+	 * RESTART to change registration-layer semantics; per-call curation of
+	 * already-registered roles applies to later dispatches. Unlisted roles
+	 * follow the built-in tiers (mechanical classifiers false, research
+	 * roles the firecrawl family, everything else ambient).
+	 * SUPER_DEV_NO_SKILLS=1 is the top kill-switch (zero cards on EVERY
+	 * layer — full pre-v0.3.76 isolation). SUPER_DEV_SKILLS=ambient (env or
+	 * the env map below; resolved once per session) is the opt-OUT of
+	 * curation that sits between them. */
+	agentSkills?: Record<string, false | string[]>;
 	/** v0.3.15: persistent channel for the SUPER_DEV_* tunables (timeouts,
 	 *  budgets, kill-switches, model/backend selectors) so GUI-launched pi
 	 *  sessions — which have no shell env — can still set them. Flat string

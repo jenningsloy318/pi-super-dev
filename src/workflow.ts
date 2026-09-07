@@ -32,6 +32,8 @@ import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
 import { runHelper } from "./helpers.ts";
 import { mergeUsage } from "./types.ts";
+import { skillsForCall } from "./agents/agent-runtime.ts";
+import { appendToolUsageRows } from "./evolution/tool-usage.ts";
 import { toBool } from "./doc-validators.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
 import { drainControlDrift, extractControlKeys } from "./control.ts";
@@ -533,6 +535,8 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	// resolveAgentModel applies precedence A: call.model > config.agentModels[role]
 	// > global options.model. Failure to read config degrades to {} (today's behavior).
 	const agentModels = (() => { try { return getConfig().agentModels ?? {}; } catch { return {}; } })();
+	// v0.3.76: per-role skill curation config (agentSkills) — false | string[].
+	const agentSkills = (() => { try { return getConfig().agentSkills ?? {}; } catch { return {}; } })();
 	const signal = options.signal;
 	// Single EventEmitter for the whole context: `ctx.phase()` emits on it and
 	// runWorkflow subscribes ("phase"/"stage") to route into the progress sink.
@@ -772,7 +776,21 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			if (delegationBackendDegraded()) {
 				return { text: "", control: null, error: DELEGATION_VERSION_SKEW_ERROR };
 			}
-			const delegated = await runAgentViaDelegation({ ...common, events: options.events, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state) });
+			// v0.3.76 skill curation (L0/L1): resolve the per-call skill field from
+			// the role tiers + config + the run's classifier-selected domains.
+			const callSkill = skillsForCall(call.agent, {
+				agentSkills,
+				skillDomains: (state.classify as { skillDomains?: string[] } | undefined)?.skillDomains,
+			});
+			// v0.3.76 L2 (collection): deduped per-call tool telemetry collector.
+			const toolSeen = new Set<string>();
+			const onToolUse = (tool: string, argHead: string): void => {
+				const key = `${tool}\u0000${argHead}`;
+				if (toolSeen.has(key)) return;
+				toolSeen.add(key);
+				appendToolUsageRows(state.setup?.specDirectory, [{ ts: Date.now(), runId: ledgerRunId(state), agent: delegationAgentName(call.agent), tool, argHead }]);
+			};
+			const delegated = await runAgentViaDelegation({ ...common, events: options.events, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state), skill: callSkill, onToolUse });
 			// v0.3.63: the version-skew signature (pi-subagents' own runtime
 			// extension failing to load in the child) is an executor infra failure,
 			// never a task failure — P5: fail closed naming the remedy (there is no

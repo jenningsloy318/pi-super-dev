@@ -14,6 +14,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SetupControl, Classification, ControlObj } from "./types.ts";
+import { SKILL_DOMAINS } from "./agents/skill-domains.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "./retry-feedback.ts";
 import { DATA_FENCE_PREAMBLE, fenceUntrusted } from "./fence.ts";
 export { DATA_FENCE_PREAMBLE, fenceUntrusted };
@@ -163,8 +164,12 @@ export function buildClassifyPrompt(s: SetupControl, task: string): string {
 		"- taskType: 'bug' (fixing incorrect behavior in existing functionality) | 'feature' (new capability/endpoint/page/flow) | 'refactor' (restructure, no behavior change)",
 		"- uiScope: 'none' (backend/API/library only) | 'ui-only' (frontend, no new backend) | 'ui+arch' (both UI and backend/architecture)",
 		"- rationale: one sentence citing the concrete task signals you used",
+		"- skillDomains (optional): which skill domains this task will need — pick ONLY from the catalog below; omit or [] if none apply",
 		"",
-		"Output <control> JSON with: taskType, uiScope, rationale.",
+		"## Skill domain catalog (for skillDomains)",
+		...SKILL_DOMAINS.map((d) => `- ${d.name}: ${d.description} (skills: ${d.skills.join(", ")})`),
+		"",
+		"Output <control> JSON with: taskType, uiScope, rationale, skillDomains?.",
 	].join("\n");
 }
 

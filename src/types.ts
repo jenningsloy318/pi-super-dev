@@ -293,6 +293,10 @@ export interface Classification {
 	uiScope: string;
 	language: string;
 	isWebUi: boolean;
+	/** v0.3.76 L1: skill domains the task-classifier selected for this run
+	 * (tolerant strings — only KNOWN domains in SKILL_DOMAINS map to curated
+	 * sets; unknowns are recorded but map to nothing). Absent = none. */
+	skillDomains?: string[];
 }
 
 // ─── Pipeline state (shared blackboard) ─────────────────────────────────────

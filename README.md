@@ -835,7 +835,8 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_MAX_INLINE_JUMPS` | `4` | cap on inline route-back jumps per journal |
 | `SUPER_DEV_NO_VERIFY_REPLAY_GUARD` | — | `1` = disable the Stage 10 replay guard |
 | `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |
-| `SUPER_DEV_NO_SKILLS` | — | `1` = disable skill inheritance for delegated children (registration `inheritSkills:false`) — pre-v0.2.10 isolation |
+| `SUPER_DEV_NO_SKILLS` | — | `1` = zero skill cards on EVERY layer for delegated children (registration `inheritSkills:false` AND per-call curated sets suppressed) — pre-v0.2.10 full isolation (top kill-switch) |
+| `SUPER_DEV_SKILLS` | — | `ambient` = restore full ambient skill injection for EVERY delegated child (opt-OUT escape hatch for v0.3.76 curation; classifiers/research otherwise register `inheritSkills:false` + curated per-call sets; also settable via the config.json env map, resolved once per session) |
 | `SUPER_DEV_ALLOW_OVERLAP` | — | `1` = override the cross-instance run guard (set after a `/reload` orphaned a still-running pipeline) and force a new run; also settable via the config.json env map (v0.3.61) |
 | `SUPER_DEV_BUILD_TIMEOUT_MS` | `600000` | per-command build-gate timeout |
 | `SUPER_DEV_BUILD_TEST_PACKAGES` | auto | comma-separated cargo crate names to scope build/test/clippy (`""` = force workspace-wide) |

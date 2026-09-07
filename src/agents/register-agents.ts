@@ -19,7 +19,8 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { commitGuardExtensionPath, extensionsForAgent, skillsEnabled } from "./agent-runtime.ts";
+import { commitGuardExtensionPath, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
+import { getConfig } from "../render/super-dev-dir.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
 export const RUNTIME_AGENT_REGISTER_EVENT = "pi-subagents:runtime-agent-register:v1";
@@ -121,6 +122,10 @@ export function delegationOwnerPresent(): boolean | null {
  *  `onAnswered` fires when the owner wrote any result (ok or rejection) —
  *  the v0.3.26 capability signal that pi-subagents is listening. */
 function registerOne(events: DelegationEventBus, name: string, log: (line: string) => void, onAnswered: () => void): (() => void) | null {
+	// v0.3.76 dual-review R1/AR-2: the SAME config skillsForCall consults per
+	// call — read once at registration (activate-time) so the two layers
+	// agree on entry existence; try/catch matches workflow.ts's read pattern.
+	const agentSkillsConfig = (() => { try { return getConfig().agentSkills ?? {}; } catch { return {}; } })();
 	const request: {
 		version: 1;
 		name: string;
@@ -145,7 +150,28 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			// so a skill-instructed out-of-role action remains executable; the
 			// BINDING enforcement is the downstream deterministic gates (P4:
 			// prompts and skills are advisory).
-			inheritSkills: skillsEnabled(),
+			//
+			// v0.3.76 — the REGISTRATION-level gate is the one that actually controls
+			// child-side ambient discovery (pi-subagents child-launch.ts:298
+			// `noSkills: !inheritSkills`; the per-call request `skill` field only
+			// adds a curated injection block, it does NOT suppress ambient — E2E
+			// probe 2026-09-07, /tmp/sd376probe). So curated roles (mechanical
+			// classifiers: measured 0 skill use; research: firecrawl family via the
+			// per-call field) register inheritSkills:false and get their cards via
+			// skillsForCall on each request instead. SUPER_DEV_SKILLS=ambient (L3
+			// escape hatch) keeps every role ambient — the standing "subagents same
+			// as pi" decision for capability roles is untouched.
+			//
+			// Dual-review R1/AR-2 fix: an explicit agentSkills config entry for a
+			// role ALSO flips registration (ambient suppression is registration-
+			// only) — otherwise `false` on a capability role is a silent no-op and
+			// an array is ambient+curated duplicate injection. Registration reads
+			// the config ONCE at activate, so agentSkills EDITS REQUIRE A pi
+			// RESTART to change a role's registration-layer semantics (documented
+			// in super-dev-dir.ts).
+			// Ambient-forced forces inheritSkills TRUE for every role (restore);
+			// otherwise any curation flag (tier or explicit config) → false.
+			inheritSkills: skillsEnabled() && (ambientSkillsForced() || !(curatedSkillsRole(name) || explicitSkillConfigured(agentSkillsConfig, name))),
 			// v0.3.64 — per-agent extension entries for roles that need
 			// extension-provided tools: research-agent (pi-web-access web tools +
 			// pi-mcp-adapter MCP gateway) and qa-agent/ui-tester

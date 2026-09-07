@@ -36,6 +36,7 @@ import {
 export { resetStructuredModeForTests }; // test isolation (mirrors the skew degrade)
 import { armDelegationWatchdog } from "../watchdog.ts";
 import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "./agent-runtime.ts";
+import { toolArgHead } from "../evolution/tool-usage.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
 import { mergeUsage } from "../types.ts";
 import type { AgentProgress, SpawnResult } from "../types.ts";
@@ -83,6 +84,10 @@ export interface DelegationRequestPayload {
 	 *  validated at call time (pi-subagents 0.65); text mode is the legacy
 	 *  prose contract (prompt-embedded schema + <control> parsing). */
 	result: { kind: "text" } | { kind: "structured"; schema: unknown };
+	/** v0.3.76 skill curation: false = zero card injection, string[] =
+	 *  curated set, absent = ambient discovery (pi-subagents 0.66 request
+	 *  seam — skillOverride = normalizeSkillInput(params.skill)). */
+	skill?: string | string[] | boolean;
 }
 
 interface DelegationTerminalResponse {
@@ -222,6 +227,14 @@ export interface DelegationAgentOptions {
 	 *  carries result:{kind:"structured",schema}; engine-side validation runs
 	 *  regardless of the wire mode. */
 	schema?: unknown;
+	/** v0.3.76 skill curation (L0/L1): the per-call skill field on the
+	 *  delegation request. `false` = zero card injection, string[] = curated
+	 *  set only, undefined = ambient discovery (pi-subagents 0.66 seam:
+	 *  skillOverride = normalizeSkillInput(params.skill)). */
+	skill?: boolean | string[];
+	/** v0.3.76 L2 collection: invoked once per OBSERVED tool invocation
+	 *  (deduped upstream per call). Telemetry only — never gates execution. */
+	onToolUse?: (tool: string, argHead: string) => void;
 	/** Inherited main-session defaults (SCENARIO-001 parity): applied BELOW an
 	 *  explicit model/thinking param, exactly like the other two backends. */
 	inheritedModelObject?: import("./agent-runtime.ts").SessionModelOption;
@@ -282,6 +295,10 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 	// main-session default > (thinking only) role default.
 	const model = opts.model ?? resolveModel(undefined) ?? (opts.inheritedModelObject ? `${opts.inheritedModelObject.provider}/${opts.inheritedModelObject.id}` : undefined);
 	if (model) request.model = model;
+	// v0.3.76: per-call skill curation rides the request (undefined = ambient,
+	// exactly the pre-v0.3.76 wire shape).
+	if (opts.skill === false) request.skill = false;
+	else if (Array.isArray(opts.skill) && opts.skill.length > 0) request.skill = [...opts.skill];
 	const perCallThinking = (opts.thinking ?? opts.thinkingLevel) as import("./agent-runtime.ts").ThinkingLevel | undefined;
 	const thinking = resolveThinking(opts.agent, perCallThinking, opts.inheritedThinking as import("./agent-runtime.ts").ThinkingLevel | undefined);
 	if (thinking) request.thinking = thinking;
@@ -337,10 +354,12 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 				for (const entry of payload.recentTools) {
 					if (!entry || typeof entry.tool !== "string") continue;
 					logToolLine(`→ ${entry.tool}${entry.args ? ` ${entry.args}` : ""}`);
+					opts.onToolUse?.(entry.tool, toolArgHead(entry.args));
 				}
 			}
 			if (payload.currentTool) {
 				logToolLine(`→ ${payload.currentTool}${payload.currentToolArgs ? ` ${payload.currentToolArgs}` : ""}`);
+				opts.onToolUse?.(payload.currentTool, toolArgHead(payload.currentToolArgs));
 			}
 			// Narration output tail (subprocess live-text parity): prefer the
 			// bridge's recentOutputLines window, fall back to splitting

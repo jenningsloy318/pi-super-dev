@@ -439,6 +439,10 @@ export type RedReviewData = Static<typeof RedReviewData>;
 export const ClassificationData = Type.Object({
 	taskType: Type.Union([Type.Literal("bug"), Type.Literal("feature"), Type.Literal("refactor")]),
 	uiScope: Type.Union([Type.Literal("none"), Type.Literal("ui-only"), Type.Literal("ui+arch")]),
+	/** v0.3.76 L1: tolerant strings — only KNOWN domains (SKILL_DOMAINS) map
+	 * to curated sets; a wrong invention costs nothing and is recorded
+	 * honestly rather than burning a corrective round on an enum. */
+	skillDomains: Type.Optional(Type.Array(Type.String())),
 	rationale: Type.String(),
 }, { additionalProperties: false });
 export type ClassificationData = Static<typeof ClassificationData>;
