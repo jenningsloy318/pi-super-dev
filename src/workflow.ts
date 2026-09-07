@@ -24,6 +24,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { splitModelThinking } from "./agents/agent-runtime.ts";
 import { buildRunMetricsRow, appendRunMetrics, checkSigmaBands } from "./evolution/sigma-bands.ts";
 import { checkPredictionsFromLedger } from "./evolution/predictions.ts";
+import { stageKey as usageStageKey, appendUsageCallRows, writeUsageArtifacts, USAGE_FIELDS } from "./evolution/usage-report.ts";
 export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evolution/sigma-bands.ts";
 import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
@@ -61,7 +62,7 @@ import type {
 	RunOptions,
 	RunStatus,
 	RunSummary,
-	SpawnResult, UsageAccumulator, AgentUsage,
+	SpawnResult, UsageAccumulator, AgentUsage, UsageCallRow,
 	StageContext,
 	StageProgressEvent,
 	Workflow,
@@ -420,23 +421,36 @@ function freshUsage(): UsageAccumulator {
 	return {
 		totals: { calls: 0, turns: 0, toolCalls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, durationMs: 0 },
 		byAgent: {},
+		byStage: {},
 	};
 }
 
-function accumulateUsage(acc: UsageAccumulator, agent: string, u: AgentUsage | undefined): void {
+function accumulateUsage(acc: UsageAccumulator, agent: string, u: AgentUsage | undefined, stage?: string): void {
 	if (!u) return; // absent usage is never fabricated (P10)
 	acc.totals.calls += 1;
-	for (const k of ["turns", "toolCalls", "input", "output", "cacheRead", "cacheWrite", "cost", "durationMs"] as const) {
+	for (const k of USAGE_FIELDS) {
 		const v = u[k];
 		if (typeof v === "number" && Number.isFinite(v)) acc.totals[k] += v;
 	}
 	const per = acc.byAgent[agent] ?? { calls: 0, turns: 0, toolCalls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, durationMs: 0 };
 	per.calls += 1;
-	for (const k of ["turns", "toolCalls", "input", "output", "cacheRead", "cacheWrite", "cost", "durationMs"] as const) {
+	for (const k of USAGE_FIELDS) {
 		const v = u[k];
 		if (typeof v === "number" && Number.isFinite(v)) per[k] += v;
 	}
 	acc.byAgent[agent] = per;
+	// v0.3.75 W1: the same bucket keyed by stageKey(call.id) — which STAGE
+	// burned the money (user ask 2026-09-07). Absent stage -> "(unlabeled)".
+	if (stage != null) {
+		const key = stage || "(unlabeled)";
+		const st = (acc.byStage ??= {})[key] ?? { calls: 0, turns: 0, toolCalls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, durationMs: 0 };
+		st.calls += 1;
+		for (const k of USAGE_FIELDS) {
+			const v = u[k];
+			if (typeof v === "number" && Number.isFinite(v)) st[k] += v;
+		}
+		acc.byStage![key] = st;
+	}
 }
 
 /** Structural subset of UsageAccumulator totals (summaries stay
@@ -530,6 +544,11 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	// every successful agent call lands in (per-agent + totals), the RunSummary
 	// usage block reads, and the SUPER_DEV_MAX_RUN_COST/TOKENS fuses check.
 	const usage = freshUsage();
+	// v0.3.75 W1: per-call usage ledger — one row per TERMINAL call (completed
+	// AND failed), appended to <specDir>/usage-calls.jsonl per call and
+	// rendered into usage-report.md at close-out. Failed calls carry the error
+	// even without usage: wasted dispatches are where money goes wrong.
+	const usageCalls: UsageCallRow[] = [];
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
 		// BUG-4: atomic reservation — bail BEFORE doing any work when the cap is hit,
@@ -801,13 +820,43 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			});
 		};
 		log(`agent ${label}: start agent=${call.agent} backend=pi-subagents access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${common.model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
+		// v0.3.75 review M3: count DISPATCHES (transient 429/overload retries) at
+		// the exec seam so the report can say "N calls (M dispatches)" — a logical
+		// call that retried burns the fixed prompt floor twice.
+		let dispatches = 0;
+		const countedExec = () => { dispatches++; return exec(); };
+		let ledgerRowLanded = false;
 		try {
-			const result = await runWithTransientRetry(exec, signal, (m) => log(m));
+			const result = await runWithTransientRetry(countedExec, signal, (m) => log(m));
 			fleetDone(result);
 			// v0.3.68 F10-1: accumulate the per-call usage block (absent usage never
 			// fabricates — accumulateUsage no-ops). Keyed by the DELEGATION agent
 			// name (sd-*) so the split matches FleetView/registration identities.
-			accumulateUsage(usage, delegationAgentName(call.agent), result.usage);
+			accumulateUsage(usage, delegationAgentName(call.agent), result.usage, usageStageKey(call.id ?? call.agent));
+			// v0.3.75 W1: record the terminal call — best-effort ledger append,
+			// never throws, and the row exists even when usage is absent (P10).
+			try {
+				const row: UsageCallRow = {
+					ts: Date.now(),
+					runId: ledgerRunId(state),
+					id: call.id ?? call.agent,
+					agent: call.agent,
+					model: result.model,
+					status: result.error ? "failed" : "completed",
+					error: result.error?.slice(0, 200),
+				};
+				const u = result.usage;
+				if (u) {
+					for (const k of USAGE_FIELDS) {
+						const v = u[k];
+						if (typeof v === "number" && Number.isFinite(v)) row[k] = v;
+					}
+				}
+				if (dispatches > 1) row.dispatches = dispatches;
+				usageCalls.push(row);
+				appendUsageCallRows(state.setup?.specDirectory, [row]);
+				ledgerRowLanded = true;
+			} catch { /* best-effort observability (P5) */ }
 			// v0.3.54 review fix (adv F5): capture-side drift telemetry (F6 fallback
 			// acceptances, parse warnings) is emitted during RESULT parsing inside
 			// exec — after this call's prompt-time drain ran. Drain again here so
@@ -853,6 +902,28 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			const elapsed = Date.now() - started;
 			const message = finalErr instanceof Error ? finalErr.message : String(finalErr);
 			log(`agent ${label}: threw elapsed=${elapsed}ms error=${message}`);
+			// v0.3.75 review M2: "every terminal call lands ONE row" must hold for
+			// THROWN calls too (exec throw, events.on throw, structuredClone on a
+			// bad schema). A boundary quarantine AFTER the success-path append is
+			// excluded via ledgerRowLanded (no double row). Usage is genuinely
+			// unknown here — absent stays absent (P10); engine-measured durationMs
+			// is stamped because it is observed fact.
+			if (!ledgerRowLanded) {
+				try {
+					const row: UsageCallRow = {
+						ts: Date.now(),
+						runId: ledgerRunId(state),
+						id: call.id ?? call.agent,
+						agent: call.agent,
+						status: "failed",
+						error: message.slice(0, 200),
+						durationMs: elapsed,
+					};
+					if (dispatches > 1) row.dispatches = dispatches;
+					usageCalls.push(row);
+					appendUsageCallRows(state.setup?.specDirectory, [row]);
+				} catch { /* best-effort observability (P5) */ }
+			}
 			appendRunEvent(state.setup?.specDirectory, {
 				runId: ledgerRunId(state),
 				agent: call.agent,
@@ -887,7 +958,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		return results;
 	}
 
-	return { task, options, state, agent, helper, parallel, budget, usage, log, phase: (label: string) => events.emit("phase", label), withScope: <T>(marker: string, fn: () => Promise<T>): Promise<T> => { const parent = scopeAls.getStore() ?? []; return scopeAls.run([...parent, marker], fn); }, events, signal, results: [] };
+	return { task, options, state, agent, helper, parallel, budget, usage, usageCalls, log, phase: (label: string) => events.emit("phase", label), withScope: <T>(marker: string, fn: () => Promise<T>): Promise<T> => { const parent = scopeAls.getStore() ?? []; return scopeAls.run([...parent, marker], fn); }, events, signal, results: [] };
 }
 
 /** Run a workflow for a task. */
@@ -1181,6 +1252,19 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// v0.3.69 E5: prediction ledger — verify finding predictions against the
 	// accumulated metrics (decision observability; never throws).
 	checkPredictionsFromLedger((m) => progress?.log(m));
+
+	// v0.3.75 W1: usage attribution dashboard — render usage-report.md + log
+	// the compact summary (best-effort, P5). The per-call LEDGER was already
+	// appended at terminal time in realAgent; nothing is re-flushed here (a row
+	// whose append failed stays absent from the jsonl but still shows in this
+	// report via ctx.usageCalls).
+	writeUsageArtifacts(state.setup?.specDirectory, {
+		runId,
+		status,
+		wallMs: Date.now() - runStartedAt,
+		usage: ctx.usage ?? freshUsage(),
+		calls: ctx.usageCalls ?? [],
+	}, (m) => progress?.log(m));
 
 	return {
 		workflowId: workflow.id,

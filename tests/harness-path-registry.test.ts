@@ -47,6 +47,10 @@ const GOLDEN_RED_BOUNDARY_SPEC_SCOPED = [
 	"replan-requests.json",
 	"artifact-revisions.json",
 	"completion-audit.md",
+	// v0.3.75 W1 review M1: usage-attribution artifacts join the spec-scoped
+	// set (per-call ledger appends mid-RED; close-out report render).
+	"usage-calls.jsonl",
+	"usage-report.md",
 ] as const;
 
 const GOLDEN_TRACKER_ADVISORY_NOISE = [
@@ -57,6 +61,7 @@ const GOLDEN_TRACKER_ADVISORY_NOISE = [
 	"change-tracker.jsonl",
 	"implementation-evidence.jsonl",
 	"escalation-report.md",
+	"usage-calls.jsonl",
 ] as const;
 
 const GOLDEN_INTERNAL_RUNTIME_CLAIM = [".resume-cache.jsonl", ".run-lock"] as const;
@@ -72,6 +77,8 @@ const GOLDEN_SPEC_DIR_BOOKKEEPING = [
 	".convergence-ledger.json",
 	"completion-audit.md",
 	"test-runner.json",
+	"usage-calls.jsonl",
+	"usage-report.md",
 ] as const;
 
 const GOLDEN_PHASE_COMMIT_EXCLUDED = [".judge.jsonl", "test-runner.json"] as const;

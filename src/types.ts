@@ -65,13 +65,46 @@ export interface AgentUsage {
 }
 
 /** v0.3.68 F10-1: run-scoped usage accumulator (Anthropic: multi-agent ≈ 15×
- * chat tokens — totals and per-agent splits are the governance surface). */
+ * chat tokens — totals and per-agent splits are the governance surface).
+ * v0.3.75 W1 adds `byStage` — the same buckets keyed by stageKey(call.id) so
+ * the usage report can answer "which STAGE burned the money" (user ask
+ * 2026-09-07). */
 export interface UsageAccumulator {
 	totals: { calls: number; turns: number; toolCalls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; durationMs: number };
 	byAgent: Record<string, { calls: number; turns: number; toolCalls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; durationMs: number }>;
+	byStage?: Record<string, { calls: number; turns: number; toolCalls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; durationMs: number }>;
 }
 
 export type RunUsage = UsageAccumulator;
+
+/** v0.3.75 W1: one JSON row per TERMINAL agent call, landed in
+ * <specDir>/usage-calls.jsonl (crash-durable per-call append, never throws).
+ * Failed calls are recorded too (status/error) even without usage — wasted
+ * dispatches are exactly where money goes wrong. Absent usage fields stay
+ * absent (P10). */
+export interface UsageCallRow {
+	ts: number;
+	runId: string;
+	id: string;
+	agent: string;
+	model?: string;
+	status: "completed" | "failed";
+	error?: string;
+	/** v0.3.75 review M3: how many times the engine DISPATCHED this logical
+	 * call (transient 429/overload retries at the runWithTransientRetry seam).
+	 * Stamped only when > 1 — one dispatch is the default and stays unstated
+	 * (P10). Backend-internal corrective rounds are folded into the summed
+	 * usage but are NOT counted here (invisible at this seam). */
+	dispatches?: number;
+	turns?: number;
+	toolCalls?: number;
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: number;
+	durationMs?: number;
+}
 
 /** v0.3.72 M1 (review F1/ADV-F1): sum two usage blocks per-field — corrective
  * rounds and transient retries burn real tokens on EVERY attempt, so the
@@ -346,6 +379,11 @@ export interface StageContext {
 	 * the RunSummary; absent usage stays zeroed — never fabricated). Optional —
 	 * bare test contexts omit it; makeContext ALWAYS provides it. */
 	usage?: UsageAccumulator;
+	/** v0.3.75 W1: per-call usage ledger rows for THIS pass — pushed by realAgent
+	 * on every terminal call (completed AND failed), flushed to
+	 * <specDir>/usage-calls.jsonl and rendered into usage-report.md at
+	 * close-out. Optional — bare test contexts omit it. */
+	usageCalls?: UsageCallRow[];
 	log(message: string): void;
 	/** Announce a sub-phase of the current stage (pi-native): routes through the
 	 *  progress sink's `phase()` so it surfaces as the dashboard subtitle, the

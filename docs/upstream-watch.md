@@ -68,8 +68,21 @@ If a file reports DIFF, act per contract:
 
 ## Drift log
 
-- **2026-09-05** — OPEN WATCH: **pi-subagents 0.65.1 × pi 0.85.1 background children
-  broken upstream.** Background/async children require `@earendil-works/pi-server`
+- **2026-09-07** — pi-subagents **0.66.0** installed (2026-09-06 release, on disk 08-09-07).
+  Reviewed full changelog against C1–C6: zero contract-surface changes (delegation
+  event fields, result envelope kinds, runtime-agent-register payload, exports map
+  all unchanged). Additive only: agent registration gains optional `advertise:`
+  (prompt visibility), read-only 429 fallback continuation, named workflows for
+  trusted extensions. **STRUCK the 2026-09-05 background-children watch** — 0.66.0
+  #1944 fixes background launches on stable pi 0.85.1 without experimental
+  packages, exactly the upstream gap we documented. Version-skew note: sessions
+  started before 2026-09-07 08:48 hold 0.65.x in memory vs 0.66.0 on disk; the
+  0.64 CLI-spawn skew class does not apply to 0.65+ in-process foreground
+  children, and v0.3.72 skew guards (shapes A/B) remain the backstop.
+
+- **2026-09-05** — ~~OPEN WATCH: pi-subagents 0.65.1 × pi 0.85.1 background children
+  broken upstream.~~ **RESOLVED 2026-09-07 by 0.66.0 (#1944)** — kept for history.
+  Background/async children required `@earendil-works/pi-server`
   (+`/unix`) and `@earendil-works/pi-client/unix` resolvable from the **pi package
   root** (`resolveHostPeerAliases`, `runs/background/runner-aliases.ts:123` — walks
   only the pi install tree). pi 0.85.1 declares neither as a dependency and does not

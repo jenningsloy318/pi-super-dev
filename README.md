@@ -616,6 +616,20 @@ figure), so usage is a first-class governance surface, not a log decoration:
   timestamp). Best-effort observability: never throws, never gates. This is
   the closing-the-loop feed the σ-band monitor (v0.3.69) reads instead of
   hand-mining multi-thousand-line prose run logs.
+- **Attribution dashboard (v0.3.75)**: "where did the money go" is answered by
+  three artifacts, all best-effort and never run-gating:
+  `<specDir>/usage-calls.jsonl` — one JSON row per TERMINAL call (id, agent,
+  model, status/error, tokens, cache, cost, duration, `runId`); failed calls
+  are recorded even without usage. `<specDir>/usage-report.md` — the rendered
+  dashboard: totals with cache-hit share, a per-stage table and a per-agent
+  table (both cost-sorted), the top-10 most expensive calls, and a
+  "fixed floor" line (the cheapest observed prompt ≈ the ambient skill list +
+  tools + system prompt overhead — multiply by calls for the run's fixed
+  cost). The run log gets a compact one-line summary. Stage keys collapse
+  retry/attempt suffixes (`.aN`/`.tN`/`.rNN`) so re-work aggregates under one
+  row; resume passes each render their own report (prior rows stay in the
+  ledger under their `runId`). This is the yardstick the v0.3.76 skill
+  curation effect is measured against.
 
 ## Review finding discipline & plan Risks/Proof (v0.3.71)
 

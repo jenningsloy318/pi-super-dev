@@ -78,6 +78,18 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	"replan-requests.json": { redBoundarySpecScoped: true },
 	"artifact-revisions.json": { redBoundarySpecScoped: true },
 	"completion-audit.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
+	// v0.3.75 W1 usage-attribution artifacts. Dual-review BLOCKER (both
+	// reviewers, independent): shipping these WITHOUT registry entries
+	// regressed the exact M6 class this registry exists to kill — merge-verify
+	// flagged its own ledger (every merged run downgraded to PARTIAL: tracked-
+	// modified usage-calls.jsonl is not exempt) and the RED boundary read the
+	// per-call engine appends as production writes (polluted-red retries /
+	// wasted boundary-evaluator dispatches — the events.jsonl incident shape).
+	// Parity: usage-calls.jsonl == events.jsonl (per-call append mid-RED,
+	// tracker advisory noise anywhere); usage-report.md == completion-audit.md
+	// (close-out render only).
+	"usage-calls.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
+	"usage-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
 	".convergence-ledger.json": { specDirBookkeeping: true },
 };
 
