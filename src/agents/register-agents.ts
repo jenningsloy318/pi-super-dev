@@ -19,7 +19,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { commitGuardExtensionPath, configExtensionEntriesForAgent, configExtensionToolsForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
+import { commitGuardExtensionPath, buildToolIndex, configExtensionEntriesForAgent, configExtensionToolsForAgent, toolsWildcardForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
 import { getConfig } from "../render/super-dev-dir.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
@@ -31,6 +31,19 @@ export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 
 /** Writer tool set — the coding surface minus the super_dev tool itself. */
 export const WRITER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"] as const;
+
+/** v0.3.82: tools excluded when the all-tools mode unpins an allowlist.
+ *  Read-only roles: the write family + powershell (the Windows bash twin —
+ *  never in READ_ONLY_TOOLS by precedent, so the unpinned mode must re-exclude
+ *  it to preserve posture). EVERY role: `super_dev` — children without an
+ *  extensions pin keep AMBIENT extension loading, so an unpinned child would
+ *  otherwise carry an ACTIVE super_dev tool and could recurse into a nested
+ *  13-stage pipeline (dual review code-F3/adv-F5; the pin was the only thing
+ *  keeping it out — see the WRITER_TOOLS "minus the super_dev tool" note).
+ *  Bash stays available per repo precedent; the binding read-only enforcement
+ *  remains the engine-side source boundary. */
+const WILDCARD_READ_ONLY_EXCLUDES = ["write", "edit", "powershell", "super_dev"] as const;
+const WILDCARD_WRITER_EXCLUDES = ["powershell", "super_dev"] as const;
 
 /** Agents whose ROLE is analytical (reviewers, judges, classifiers,
  *  analyzers) — they never need to mutate the worktree. Mirrors the
@@ -121,7 +134,22 @@ export function delegationOwnerPresent(): boolean | null {
 /** Emit one registration request; returns the dispose when accepted.
  *  `onAnswered` fires when the owner wrote any result (ok or rejection) —
  *  the v0.3.26 capability signal that pi-subagents is listening. */
-function registerOne(events: DelegationEventBus, name: string, log: (line: string) => void, onAnswered: () => void): (() => void) | null {
+function registerOne(events: DelegationEventBus, name: string, log: (line: string) => void, onAnswered: () => void, toolIndex?: ReadonlyMap<string, readonly string[]>): (() => void) | null {
+	// v0.3.82: resolved ONCE per agent (registration-time) — list + wildcard.
+	let cachedTools: { list: string[]; wildcard: boolean } | undefined;
+	const configToolsFor = (agent: string): { list: string[]; wildcard: boolean } => {
+		if (!cachedTools) {
+			const wildcard = toolsWildcardForAgent(agent, { warn: log });
+			if (wildcard && !warnedWildcardOnce) {
+				warnedWildcardOnce = true;
+				log(`super-dev: allTools mode active for '${agent}' — registration omits the tools pin (all tools incl. every mcp__* direct tool)${READ_ONLY_AGENTS.has(agent) ? `; read-only posture kept via excludeTools [${WILDCARD_READ_ONLY_EXCLUDES.join(", ")}]` : ""}`);
+			}
+			cachedTools = { list: wildcard ? [] : configExtensionToolsForAgent(agent, { warn: log, toolIndex }), wildcard };
+		}
+		return cachedTools;
+	};
+	let warnedWildcardOnce = false;
+
 	// v0.3.76 dual-review R1/AR-2: the SAME config skillsForCall consults per
 	// call — read once at registration (activate-time) so the two layers
 	// agree on entry existence; try/catch matches workflow.ts's read pattern.
@@ -129,7 +157,7 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	const request: {
 		version: 1;
 		name: string;
-		definition: { description: string; systemPrompt: string; tools: readonly string[]; inheritSkills: boolean; extensions?: string[]; subagentOnlyExtensions?: string[] };
+		definition: { description: string; systemPrompt: string; tools?: readonly string[]; excludeTools?: readonly string[]; inheritSkills: boolean; extensions?: string[]; subagentOnlyExtensions?: string[] };
 		result?: { ok: true; registration: { dispose(): void } } | { ok: false; error: Error };
 	} = {
 		version: 1,
@@ -139,12 +167,24 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			systemPrompt: loadAgentBasePrompt(name),
 			// v0.3.78 review fix (adv F1): pi-coding-agent maps `tools` to
 			// allowedToolNames and drops extension-registered tools not in it —
-			// config-declared extension tool names merge onto the role allowlist
-			// (scope + malformed guards live in configExtensionToolsForAgent).
-			tools: [...new Set([
-				...(READ_ONLY_AGENTS.has(name) ? READ_ONLY_TOOLS : WRITER_TOOLS),
-				...configExtensionToolsForAgent(name, { warn: log }),
-			])],
+			// every tool of every DECLARED extension merges onto the role
+			// allowlist mechanically (the activation-time tool index; scope and
+			// malformed guards live in configExtensionToolsForAgent).
+			//
+			// v0.3.82 all-tools MODE (boolean allTools/agentAllTools — replaced
+			// the "*" string form): registration OMITS the pin (the only correct
+			// "all tools" — pi's allowlist is exact-match) for BOTH postures;
+			// excludeTools preserves the write-family posture for read-only roles
+			// and the recursion guard (super_dev) for EVERY role (ambient children
+			// load pi-super-dev itself — see WILDCARD_*_EXCLUDES). The binding
+			// read-only enforcement remains the engine-side source boundary (P4);
+			// this is the tool-layer mirror.
+			...(configToolsFor(name).wildcard
+				? { excludeTools: READ_ONLY_AGENTS.has(name) ? WILDCARD_READ_ONLY_EXCLUDES : WILDCARD_WRITER_EXCLUDES }
+				: { tools: [...new Set([
+					...(READ_ONLY_AGENTS.has(name) ? READ_ONLY_TOOLS : WRITER_TOOLS),
+					...configToolsFor(name).list,
+				])] }),
 			// v0.3.59 — skills are a capability on EVERY backend (v0.2.10 W4 parity).
 			// pi-subagents defaults inheritSkills to FALSE (agents.ts
 			// defaultInheritSkills), which launched every sd-* child with
@@ -228,12 +268,58 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 /** Register every specialist. Idempotent-ish: re-registration attempts that
  *  the owner rejects (collision) are logged, not thrown. Returns a dispose
  *  that unregisters everything accepted so far. */
-export function registerSuperDevAgents(events: DelegationEventBus, log: (line: string) => void = () => {}): () => void {
+/** v0.3.82 dual review BLOCKER fix: registerSuperDevAgents must NOT be
+ *  called at extension-activation time — pi.getAllTools() THROWS there
+ *  (notInitialized stub until _bindExtensionCore, which runs after every
+ *  extension factory), and the old "alphabetical load order" rationale was
+ *  wrong (settings.json packages-array order). Deferred registration:
+ *  arm the first session_start (runtime bound, every settings package
+ *  activated, tools carry their real npm:<pkg> sourceInfo) with a belt-and-
+ *  braces 15s unref'd timer fallback for hosts that never emit the event
+ *  (the fallback registers with whatever the index then holds — a loud WARN
+ *  covers the empty case; agents existing with role built-ins beats every
+ *  delegation failing "Unknown agent"). Once per activation; a previous
+ *  activation's registration is disposed first (reload re-activates us).
+ *  Returns a dispose that cancels the deferral AND any registration made. */
+export function registerSuperDevAgentsDeferred(
+	pi: { on?: (event: "session_start", handler: () => void) => void; getAllTools?: () => Array<{ name: string; sourceInfo?: { source?: string; path?: string } }> },
+	events: DelegationEventBus,
+	log: (line: string) => void = () => {},
+): () => void {
+	let done = false;
+	let registered: (() => void) | null = null;
+	const fire = () => {
+		if (done) return;
+		done = true;
+		if (timer) clearTimeout(timer);
+		try {
+			registered?.();
+		} catch { /* best-effort */ }
+		registered = null;
+		const built = buildToolIndex(pi);
+		if (built.error) log(`super-dev: tool index build FAILED (${built.error}) — extension-registered tools will NOT merge onto agent allowlists (children keep role built-ins; declared extension hooks still load)`);
+		registered = registerSuperDevAgents(events, log, built.toolIndex);
+	};
+	let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => { try { fire(); } catch (error) { log(`super-dev: deferred registration fallback failed: ${error instanceof Error ? error.message : String(error)}`); } }, 15_000);
+	timer.unref?.();
+	try {
+		pi.on?.("session_start", fire);
+	} catch (error) {
+		log(`super-dev: session_start listener failed to arm (${error instanceof Error ? error.message : String(error)}) — relying on the 15s fallback`);
+	}
+	return () => {
+		if (done && registered) { try { registered(); } catch { /* best-effort */ } registered = null; }
+		done = true;
+		if (timer) clearTimeout(timer);
+	};
+}
+
+export function registerSuperDevAgents(events: DelegationEventBus, log: (line: string) => void = () => {}, toolIndex?: ReadonlyMap<string, readonly string[]>): () => void {
 	const accepted: Array<() => void> = [];
 	let answered = 0; // requests that got ANY result back → an owner is listening
 	for (const name of REGISTERED_AGENTS) {
 		try {
-			const dispose = registerOne(events, name, log, () => { answered++; });
+			const dispose = registerOne(events, name, log, () => { answered++; }, toolIndex);
 			if (dispose) accepted.push(dispose);
 		} catch (error) {
 			log(`super-dev: agent registration failed for ${name}: ${error instanceof Error ? error.message : String(error)}`);

@@ -278,37 +278,145 @@ export function configExtensionEntriesForAgent(
 	return resolved;
 }
 
-/** v0.3.78 review fix (adversarial F1, live-proven): registrations pin
- *  `tools:` to the role allowlists, and pi-coding-agent treats that as
- *  allowedToolNames — dropping EVERY extension-registered tool not in it
- *  (sd-child carried the nowledge hook bundle yet zero lsp_* / recall tools).
- *  pi extension manifests declare entry paths, not tool names, so there is
- *  no mechanical way to resolve them — the config DECLARES them:
- *  `commonExtensionTools` (capability agents; mechanical classifiers
- *  excluded, same scope predicate) plus `agentExtensionTools[role]` (any
- *  role, explicit beats scope; `sd-`-prefixed keys accepted). Names are
- *  trimmed, deduplicated, and merged onto the role allowlist at
- *  registration. Malformed containers degrade loudly to [] (never throws). */
-export function configExtensionToolsForAgent(
+/** v0.3.82: extension PACKAGE names an agent declares — role-hardcoded
+ *  (browser/web-research, static names) ∪ config commonExtensions ∪
+ *  agentExtensions[role]. No filesystem resolution: this feeds the mechanical
+ *  tool-index lookup (a declared-but-uninstalled package simply contributes
+ *  nothing — the tool index only holds tools of extensions that DID load). */
+export function extensionPackagesForAgent(
 	agent: string,
-	opts?: { config?: { commonExtensionTools?: unknown; agentExtensionTools?: unknown }; warn?: (message: string) => void },
+	opts?: { config?: { commonExtensions?: unknown; agentExtensions?: unknown }; warn?: (message: string) => void },
 ): string[] {
-	let common: string[] = [];
-	let perRole: string[] = [];
+	const role = isBrowserAgent(agent) ? BROWSER_EXTENSION_PACKAGES : (needsWebResearch(agent) ? RESEARCH_EXTENSION_PACKAGES : []);
+	let declared: string[] = [];
 	try {
 		const config = opts?.config ?? getConfig();
-		if (!MECHANICAL_CLASSIFIER_ROLES.has(agent)) common = stringListOr(config.commonExtensionTools, "commonExtensionTools", opts?.warn);
-		perRole = stringListOr(roleEntry<string[]>(config.agentExtensionTools, agent), `agentExtensionTools[${agent}]`, opts?.warn);
+		// v0.3.82 r2 review fix (code-R2-1): thread the warn sink — this function
+		// runs BEFORE configExtensionEntriesForAgent's loud call in the real
+		// registration path, so an un-threaded stringListOr silently consumes the
+		// shared warnedMalformedConfigKeys memo and the loud fallback never fires.
+		const common = MECHANICAL_CLASSIFIER_ROLES.has(agent) ? [] : stringListOr(config.commonExtensions, "commonExtensions", opts?.warn);
+		const perRole = stringListOr(roleEntry<string[]>(config.agentExtensions, agent), "agentExtensions[" + agent + "]", opts?.warn);
+		declared = [...common, ...perRole];
 	} catch {
-		return []; // config unreadable → no config-declared tools; role-hardcoded allowlist is unaffected
+		declared = [];
 	}
-	return [...new Set([...common, ...perRole].map((t) => String(t).trim()).filter((t) => t.length > 0))];
+	return [...new Set([...role, ...declared].map((p) => normalizeExtensionPackageName(String(p).trim())).filter((p) => p.length > 0))];
+}
+
+export function configExtensionToolsForAgent(
+	agent: string,
+	opts?: { config?: { commonExtensions?: unknown; agentExtensions?: unknown }; warn?: (message: string) => void; toolIndex?: ReadonlyMap<string, readonly string[]> },
+): string[] {
+	// v0.3.82: MECHANICAL ONLY. Declaring an extension (commonExtensions /
+	// agentExtensions / role-hardcoded) is sufficient — every tool the loaded
+	// extension registered is merged onto this agent allowlist automatically.
+	// The index is built once (deferred to the first session_start — see
+	// buildToolIndex; pi.getAllTools() THROWS during activation) from
+	// pi.getAllTools() package-attributed via sourceInfo. The explicit-name
+	// config keys (commonExtensionTools / agentExtensionTools) were removed;
+	// the all-tools mode moved to the boolean allTools / agentAllTools keys
+	// (toolsWildcardForAgent).
+	const declared = extensionPackagesForAgent(agent, opts?.config || opts?.warn ? { config: opts?.config, warn: opts?.warn } : undefined);
+	const mechanical: string[] = [];
+	for (const pkg of declared) {
+		const tools = opts?.toolIndex?.get(pkg);
+		if (tools) mechanical.push(...tools);
+		else if (opts?.warn && !warnedZeroToolPackages.has(pkg)) {
+			// v0.3.82 dual review (adv-F2): a declared package contributing ZERO
+			// tools used to be a silent empty merge — the exact silent-loss class
+			// this feature replaced. Loud once per package: tool-less hook-only
+			// packages (nowledge-mem) legitimately hit this; so do attribution
+			// misses and lazily-registered tools (mcp__* direct tools register
+			// per-server — use the all-tools mode for those).
+			warnedZeroToolPackages.add(pkg);
+			opts.warn(`super-dev: config extension package "${pkg}" contributed no tools to the mechanical merge (registers none, or registers lazily — e.g. per-server mcp__* direct tools, for which the allTools mode exists) — its hooks still load in children`);
+		}
+	}
+	return [...new Set(mechanical.map((t) => String(t).trim()).filter((t) => t.length > 0))];
+}
+
+const warnedZeroToolPackages = new Set<string>();
+
+/** v0.3.82 dual review (BLOCKER, empirically probed): pi.getAllTools() THROWS
+ *  during extension activation — pi stubs action methods with notInitialized
+ *  until _bindExtensionCore (which runs after every extension factory), and
+ *  the load-order bet was wrong anyway (settings.json packages-array order,
+ *  not alphabetical). The index is therefore built DEFERRED (first
+ *  session_start); these helpers are the testable core. */
+export function buildToolIndexFromTools(
+	tools: Array<{ name: string; sourceInfo?: { source?: string; path?: string } }>,
+): Map<string, string[]> {
+	// Scoped-package-aware: node_modules/@scope/pkg/ must capture the FULL
+	// "@scope/pkg" (the naive [^\\/]+ capture truncated to "@scope" — adv-F3).
+	const re = /node_modules[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)[\\/]/;
+	const toolIndex = new Map<string, string[]>();
+	for (const t of tools) {
+		const source = t.sourceInfo?.source ?? "";
+		const sourcePath = t.sourceInfo?.path ?? "";
+		const pkg = source.startsWith("npm:") ? source.slice(4) : (re.exec(sourcePath)?.[1] ?? "");
+		// Built-ins carry source "builtin" + synthetic "<builtin:name>" paths
+		// (no node_modules segment) and fall out at the empty-pkg guard; the
+		// pi-package guard covers the path-attributed fallback (scoped name).
+		if (!pkg || pkg === "pi-coding-agent" || pkg.endsWith("/pi-coding-agent")) continue;
+		const list = toolIndex.get(pkg);
+		if (list) list.push(t.name);
+		else toolIndex.set(pkg, [t.name]);
+	}
+	return toolIndex;
+}
+
+/** Thin wrapper: read pi.getAllTools() and attribute; NEVER throws — on
+ *  failure returns the empty index plus the error text so the caller can WARN
+ *  (a silent empty index is the universal silent-loss failure mode). */
+export function buildToolIndex(pi: {
+	getAllTools?: () => Array<{ name: string; sourceInfo?: { source?: string; path?: string } }>;
+}): { toolIndex: Map<string, string[]>; error?: string } {
+	try {
+		return { toolIndex: buildToolIndexFromTools(pi.getAllTools?.() ?? []) };
+	} catch (err) {
+		return { toolIndex: new Map(), error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/** v0.3.82: the all-tools MODE — config.allTools (capability agents;
+ *  mechanical classifiers excluded, same scope predicate) or
+ *  agentAllTools[role] (any role, explicit beats scope). True means the
+ *  registration OMITS the tools pin (the only correct "all tools": pi's
+ *  allowedToolNames is an exact-match Set). Never throws. */
+export function toolsWildcardForAgent(
+	agent: string,
+	opts?: { config?: { allTools?: unknown; agentAllTools?: unknown }; warn?: (message: string) => void },
+): boolean {
+	try {
+		const config = opts?.config ?? getConfig();
+		// v0.3.82 dual review (code-F4): the v0.3.78 loud-fallback contract —
+		// malformed container → ONE warn naming the key — must hold for the new
+		// keys too (allTools: "yes" / 42 silently coerced to false otherwise).
+		if (config.allTools !== undefined && typeof config.allTools !== "boolean" && opts?.warn && !warnedMalformedConfigKeys.has("allTools")) {
+			warnedMalformedConfigKeys.add("allTools");
+			opts.warn(`super-dev: config key "allTools" must be a boolean — got ${typeof config.allTools}; ignoring it (fix ~/.super-dev/config.json)`);
+		}
+		if (config.agentAllTools && typeof config.agentAllTools === "object") {
+			const perRole = roleEntry<unknown>(config.agentAllTools as Record<string, unknown>, agent);
+			if (perRole !== undefined && typeof perRole !== "boolean" && opts?.warn && !warnedMalformedConfigKeys.has(`agentAllTools[${agent}]`)) {
+				warnedMalformedConfigKeys.add(`agentAllTools[${agent}]`);
+				opts.warn(`super-dev: config key "agentAllTools[${agent}]" must be a boolean — got ${typeof perRole}; ignoring it (fix ~/.super-dev/config.json)`);
+			}
+			if (perRole !== undefined) return perRole === true;
+		}
+		if (MECHANICAL_CLASSIFIER_ROLES.has(agent)) return false;
+		return config.allTools === true;
+	} catch {
+		return false;
+	}
 }
 
 /** Test isolation: clear the one-warn-per-package and per-key memos. */
 export function resetConfigExtensionWarnsForTests(): void {
 	warnedMissingConfigExtensions.clear();
 	warnedMalformedConfigKeys.clear();
+	warnedZeroToolPackages.clear();
 }
 
 /** Agents whose deliverable is CODE EDITS to real source files (not a document).

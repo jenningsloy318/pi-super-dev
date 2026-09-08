@@ -38,7 +38,7 @@ import { releaseHeldRunLock } from "./setup.ts";
 import { appendRunEvent } from "./runlog.ts";
 import { abbreviatePath, type ThinkingLevel } from "./agents/agent-runtime.ts";
 import { setActiveTracker } from "./tracking.ts";
-import { registerSuperDevAgents } from "./agents/register-agents.ts";
+import { registerSuperDevAgentsDeferred } from "./agents/register-agents.ts";
 import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
 import { superDevRunMetadataLine } from "./version.ts";
 import type { Escalate, EscalationDecision, EscalationFailure, ProgressSink, RunStatus, RunSummary, RuntimeInstruction, RuntimeInstructionImage } from "./types.ts";
@@ -639,7 +639,16 @@ export default function activate(pi: ExtensionAPI): void {
 	try {
 		const delegationBus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
 		if (delegationBus) {
-			superDevAgentsDispose = registerSuperDevAgents(delegationBus, (line: string) => { try { pi.appendEntry?.("super-dev-agent-registration", { line }); } catch { /* best-effort */ } });
+			// v0.3.82 dual review BLOCKER fix: registration is DEFERRED to the
+			// first session_start — pi.getAllTools() THROWS during activation
+			// (notInitialized stub until _bindExtensionCore, which runs after
+			// every extension factory), and package load order follows the
+			// settings.json packages array (pi-blackhole/nowledge load AFTER
+			// super-dev on this machine), so an activation-time snapshot was both
+			// uncallable and incomplete. registerSuperDevAgentsDeferred builds the
+			// package-attributed tool index post-bind (every settings package
+			// activated, real npm:<pkg> sourceInfo applied) and registers once.
+			superDevAgentsDispose = registerSuperDevAgentsDeferred(pi, delegationBus, (line: string) => { try { pi.appendEntry?.("super-dev-agent-registration", { line }); } catch { /* best-effort */ } });
 		}
 	} catch { /* best-effort */ }
 	// v0.3.81 C1: serving-copy freshness — stamp the version once at activation

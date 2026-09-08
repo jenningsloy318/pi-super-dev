@@ -98,6 +98,27 @@ If a file reports DIFF, act per contract:
   mise pi tree's `node_modules/@earendil-works/`. Remove this item when pi-subagents
   extends the resolution to 0.85.x hosts or pi ships the packages.
 
+- **2026-09-08** — pi-subagents **0.66.0**: TWO upstream gaps found via the
+  2026-09-08T05-30-30-723Z incident + the v0.3.82 dual review. (1) **Persisted
+  model-exclusions poison restarts**: 0.66.0 flushes the model-exclusion store
+  to `<tmp>/pi-subagents-uid-<uid>/model-exclusions.json` and RELOADS it at
+  startup; only auth-shaped entries self-invalidate (auth.json mtime), while
+  quota 429 entries ride the flat 24h `DEFAULT_MODEL_EXCLUSION_TTL_MS` and
+  IGNORE the provider's own reset hint (zai: "将在 … 重置" — user-confirmed
+  local time). A 5-hour quota window therefore poisons every fresh process
+  for 24h (incident: quota reset 20:12, exclusions live until next 08:15;
+  manual remediation = quit pi, delete the store file, restart). Upstream
+  ask: parse the provider reset hint and cap the TTL (the auth-mtime
+  precedent already exists in `invalidateAuthExclusions`). Engine-side
+  mitigation shipped in v0.3.82 (`assessQuotaReset` + persistence-aware
+  remedy). (2) **`pi.getAllTools()` throws during extension activation**
+  (notInitialized stub until `_bindExtensionCore`, which runs after every
+  extension factory) and package load order follows the settings.json
+  `packages` array (NOT alphabetical) — extensions cannot enumerate tools at
+  activation. Engine-side workaround shipped in v0.3.82
+  (`registerSuperDevAgentsDeferred`: first `session_start` + 15s fallback).
+  Upstream ask: a documented activation-safe tool-enumeration API.
+
 - **2026-09-08** — pi-subagents **0.66.0** on disk (installed 2026-09-07 08:48).
   Verified live from a pi session started 2026-09-04 (in-memory 0.65.x): foreground
   in-process child delegation WORKS (builtin implementer "OK" probe) and background

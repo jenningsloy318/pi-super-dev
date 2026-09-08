@@ -10,7 +10,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
  * event payload carries the result slot.
  */
 
-import { registerSuperDevAgents, READ_ONLY_AGENTS, READ_ONLY_TOOLS, WRITER_TOOLS } from "../src/agents/register-agents.ts";
+import { registerSuperDevAgents, registerSuperDevAgentsDeferred, READ_ONLY_AGENTS, READ_ONLY_TOOLS, WRITER_TOOLS } from "../src/agents/register-agents.ts";
 import { resetAmbientSkillsForcedForTests } from "../src/agents/agent-runtime.ts";
 
 /** v0.3.76 dual-review R1/AR-2: registration reads config.agentSkills via
@@ -175,7 +175,81 @@ describe("registerSuperDevAgents", () => {
 		expect(typeof dispose).toBe("function");
 	});
 
-	describe("v0.3.59 — skills are a capability on the delegation backend too (cross-backend parity, v0.2.10 W4)", () => {
+	describe("v0.3.82 — allTools boolean mode unpins the allowlist (read-only posture kept via excludeTools)", () => {
+	// NOTE: this file mocks agent-runtime's configExtensionToolsForAgent with
+	// configExtStub — the wildcard drives THROUGH the stub here (registration
+	// wiring); the mechanical tool-index merge is tested for real in
+	// tests/config-extensions.test.ts.
+	beforeEach(() => { configExtStub.tools = []; configExtStub.entries = []; configHolder.config = {}; });
+
+	/** v0.3.82: auto-delivering bus — registrations complete synchronously. */
+	const autoBus = (requests: any[]): any => {
+		let handler: ((payload: unknown) => void) | undefined;
+		const bus: any = {
+			on(channel: string, h: (payload: unknown) => void) {
+				if (channel === "pi-subagents:runtime-agent-register:v1") handler = h;
+				return () => { if (handler === h) handler = undefined; };
+			},
+			emit(_channel: string, payload: any) {
+				requests.push(payload);
+				if (!payload.version || !payload.name || !payload.definition?.systemPrompt) {
+					payload.result = { ok: false, error: new Error("malformed registration") };
+				} else {
+					payload.result = { ok: true, registration: { dispose() {} } };
+				}
+				handler?.(payload);
+			},
+		};
+		return bus;
+	};
+
+	it("allTools mode → definition omits the tools pin entirely (all tools incl. every mcp__* direct tool)", () => {
+		configHolder.config = { allTools: true };
+		const requests: any[] = [];
+		registerSuperDevAgents(autoBus(requests) as never);
+		expect(requests.length).toBeGreaterThan(20);
+		expect(requests.find((r) => r.name === "sd-spec-reviewer").definition.tools).toBeUndefined();
+		expect(requests.find((r) => r.name === "sd-implementer").definition.tools).toBeUndefined();
+	});
+
+	it("read-only roles under allTools keep their posture: excludeTools pins the write family + powershell + super_dev", () => {
+		configHolder.config = { allTools: true };
+		const requests: any[] = [];
+		registerSuperDevAgents(autoBus(requests) as never);
+		expect([...requests.find((r) => r.name === "sd-spec-reviewer").definition.excludeTools ?? []].sort()).toEqual(["edit", "powershell", "super_dev", "write"]);
+		// v0.3.82 review fix (code-F3/adv-F5): writers keep the recursion guard too —
+		// unpinned ambient children load pi-super-dev itself (active super_dev tool).
+		expect([...requests.find((r) => r.name === "sd-implementer").definition.excludeTools ?? []].sort()).toEqual(["powershell", "super_dev"]);
+	});
+
+	it("agentAllTools per-role unpins that role only", () => {
+		configHolder.config = { agentAllTools: { "spec-reviewer": true } };
+		const requests: any[] = [];
+		registerSuperDevAgents(autoBus(requests) as never);
+		expect(requests.find((r) => r.name === "sd-spec-reviewer").definition.tools).toBeUndefined();
+		expect((requests.find((r) => r.name === "sd-code-reviewer").definition.tools as string[]).length).toBeGreaterThan(0);
+	});
+
+	it("non-wildcard list keeps today's exact-merge pin (regression)", () => {
+		configExtStub.tools = ["lsp_diagnostics"];
+		const requests: any[] = [];
+		registerSuperDevAgents(autoBus(requests) as never);
+		const tools = requests.find((r) => r.name === "sd-spec-reviewer").definition.tools as string[];
+		expect(tools).toContain("lsp_diagnostics");
+		expect(tools).toContain("read");
+		expect(requests.find((r) => r.name === "sd-spec-reviewer").definition.excludeTools).toBeUndefined();
+	});
+
+	it("empty stub (mechanical classifiers resolve []) → classic role pin", () => {
+		configExtStub.tools = [];
+		const requests: any[] = [];
+		registerSuperDevAgents(autoBus(requests) as never);
+		const tools = requests.find((r) => r.name === "sd-spec-reviewer").definition.tools as string[];
+		expect(tools).toEqual([...READ_ONLY_TOOLS]);
+	});
+});
+
+describe("v0.3.59 — skills are a capability on the delegation backend too (cross-backend parity, v0.2.10 W4)", () => {
 		beforeEach(() => { resetAmbientSkillsForcedForTests(); });
 		afterEach(() => { resetAmbientSkillsForcedForTests(); });
 
@@ -387,5 +461,90 @@ describe("v0.3.78 review fixes — config extension TOOLS merge into the registr
 		const { bus, requests } = collectingBus();
 		registerSuperDevAgents(bus);
 		expect(configExtStub.toolCalls).toHaveLength(requests.length);
+	});
+});
+
+
+describe("v0.3.82 dual-review BLOCKER fix — deferred registration (pi.getAllTools() throws at activation)", () => {
+	/** Auto-answering bus (same contract as the wildcard describe above). */
+	const autoBus = (requests: any[]): any => {
+		let handler: ((payload: unknown) => void) | undefined;
+		return {
+			on(channel: string, h: (payload: unknown) => void) {
+				if (channel === "pi-subagents:runtime-agent-register:v1") handler = h;
+				return () => { if (handler === h) handler = undefined; };
+			},
+			emit(_channel: string, payload: any) {
+				requests.push(payload);
+				payload.result = payload.definition?.systemPrompt
+					? { ok: true, registration: { dispose() {} } }
+					: { ok: false, error: new Error("malformed registration") };
+				handler?.(payload);
+			},
+		};
+	};
+
+	it("registration happens on session_start (NOT at arm time) — post-bind index build", () => {
+		vi.useFakeTimers();
+		try {
+			const requests: any[] = [];
+			const handlers: Array<() => void> = [];
+			const pi = {
+				on: (event: string, h: () => void) => { if (event === "session_start") handlers.push(h); },
+				getAllTools: () => [{ name: "lsp_hover", sourceInfo: { source: "npm:pi-lsp" } }],
+			};
+			registerSuperDevAgentsDeferred(pi as never, autoBus(requests) as never);
+			expect(requests).toHaveLength(0); // NOTHING at arm time (the BLOCKER fix)
+			expect(handlers).toHaveLength(1);
+			handlers[0]!();
+			expect(requests.length).toBeGreaterThan(20); // registered post-bind
+			// (the index built at fire time merges through configExtensionToolsForAgent —
+			//  mocked in THIS file per the note above; the real merge is pinned in
+			//  tests/config-extensions.test.ts and buildToolIndex* unit tests.)
+		} finally { vi.useRealTimers(); }
+	});
+
+	it("second session_start is a no-op (once per activation); dispose cancels the deferral", () => {
+		vi.useFakeTimers();
+		try {
+			const requests: any[] = [];
+			const handlers: Array<() => void> = [];
+			const pi = { on: (_e: string, h: () => void) => handlers.push(h), getAllTools: () => [] };
+			const dispose = registerSuperDevAgentsDeferred(pi as never, autoBus(requests) as never);
+			handlers[0]!();
+			const n = requests.length;
+			handlers[0]!(); // reload-shaped second fire
+			expect(requests).toHaveLength(n);
+			dispose();
+			expect(() => handlers[0]!()).not.toThrow();
+			expect(requests).toHaveLength(n);
+		} finally { vi.useRealTimers(); }
+	});
+
+	it("15s unref'd timer fallback fires when no host ever emits session_start", () => {
+		vi.useFakeTimers();
+		try {
+			const requests: any[] = [];
+			registerSuperDevAgentsDeferred({ getAllTools: () => [] } as never, autoBus(requests) as never);
+			expect(requests).toHaveLength(0);
+			vi.advanceTimersByTime(15_000);
+			expect(requests.length).toBeGreaterThan(20);
+		} finally { vi.useRealTimers(); }
+	});
+
+	it("a THROWING getAllTools (the activation-stub shape) still registers — loud WARN, children keep role built-ins", () => {
+		const logs: string[] = [];
+		const requests: any[] = [];
+		const handlers: Array<() => void> = [];
+		registerSuperDevAgentsDeferred(
+			{ on: (_e: string, h: () => void) => handlers.push(h), getAllTools: () => { throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading."); } } as never,
+			autoBus(requests) as never,
+			(m: string) => logs.push(m),
+		);
+		handlers[0]!();
+		expect(requests.length).toBeGreaterThan(20); // agents exist — role built-ins beat "Unknown agent"
+		expect(logs.some((l) => /tool index build FAILED .*not initialized/.test(l))).toBe(true);
+		const tools = requests.find((r) => r.name === "sd-spec-reviewer").definition.tools as string[];
+		expect(tools).toEqual([...READ_ONLY_TOOLS]); // bare allowlist — the WARN says exactly this
 	});
 });

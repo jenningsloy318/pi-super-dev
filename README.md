@@ -194,9 +194,11 @@ this instruction in the error; the run never hangs.)
   Typical set: `nowledge-mem-pi` (auto-syncs every child transcript to
   Nowledge Mem), `pi-lsp` (edit-diagnostics hooks + `lsp_*` tools),
   `pi-blackhole` (`recall` tool + compaction). Extension HOOKS always fire
-  in children; extension TOOLS additionally need their names in
-  `commonExtensionTools` (pi filters tools against the registration
-  allowlist). Extension loading never touches skills: capability agents keep
+  in children; extension TOOLS merge onto the registration allowlist
+  MECHANICALLY (v0.3.82: declaring the package in `commonExtensions` /
+  `agentExtensions` is sufficient — every tool the loaded extension
+  registered is attributed to its package at activation and added to each
+  declaring agent's allowlist; no separate tool-name list to maintain). Extension loading never touches skills: capability agents keep
   their ambient on-demand skill cards (v0.3.76), so a child can carry all
   three extensions and still lazy-load any SKILL.md it needs. Entries resolve
   once at activation (restart pi after editing); a missing package logs one
@@ -775,8 +777,8 @@ set keys — see the next two sections):
 	"agentModels": { "...": "..." },
 	"agentThinking": { "...": "..." },
 	"commonExtensions": ["nowledge-mem-pi", "pi-lsp", "pi-blackhole"],
-	"commonExtensionTools": ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_symbols", "recall"],
 	"agentExtensions": { "ui-tester": ["..."] },
+	"allTools": false,
 	"env": { "SUPER_DEV_...": "..." }
 }
 ```
@@ -828,18 +830,39 @@ keys are canonical; `sd-`-prefixed keys are also accepted. Same resolution
 and restart semantics. Example:
 `"agentExtensions": { "ui-tester": ["some-future-ext"] }`.
 
-`commonExtensionTools` / `agentExtensionTools` (v0.3.78 review fix):
-extension HOOKS fire in every child that loads the package, but
-pi-coding-agent filters every extension-registered TOOL against the
-registration `tools` allowlist — a tool not declared there is silently
-dropped (verified live: a child carried the nowledge-mem bundle yet zero
-`lsp_*`/`recall` tools). Extension packages carry no tool manifest, so tool
-names are DECLARED here and merged onto each capability agent's allowlist
-(same scope predicate as `commonExtensions`; per-role keys honored for any
-role, `sd-`-prefixed keys accepted). Example:
+`allTools` / `agentAllTools` (v0.3.82): extension TOOLS are merged onto
+each declaring agent's allowlist MECHANICALLY — declaring the package in
+`commonExtensions` / `agentExtensions` is sufficient, no separate tool-name
+list exists (the old `commonExtensionTools` / `agentExtensionTools` keys
+were removed; leftovers in an existing config.json are ignored harmlessly).
+The index is built once, DEFERRED to the first `session_start` (calling
+`pi.getAllTools()` during extension activation throws — pi binds action
+methods only after every extension loads; and package load order follows the
+settings.json `packages` array, so late-listed packages are invisible to an
+activation-time snapshot). Tools that register lazily (per-server
+`mcp__*` direct tools) are outside any one-shot snapshot — the `mcp` proxy
+merges mechanically; for the full direct set use the all-tools mode.
+The trade-off: tool granularity is per-package (all of a declared extension's
+tools), not per-tool. To unpin entirely, set the all-tools MODE — `allTools:
+true` (every capability agent; mechanical classifiers excluded, same scope
+predicate as `commonExtensions`) or `"agentAllTools": { "<role>": true }`
+(any role, explicit beats scope; `sd-`-prefixed keys accepted). When active,
+registration OMITS the `tools` pin — the only correct "all tools", since
+pi's allowlist is an exact-match Set — so the child sees every tool:
+role built-ins, all extension tools, and every present or future
+`mcp__<server>__<tool>` direct tool. The mode re-excludes `super_dev` (the
+recursion guard: unpinned children keep ambient extension loading and would
+otherwise carry an ACTIVE super_dev tool), `powershell`, and — for read-only
+roles — the write family (the binding read-only enforcement stays the
+engine-side source boundary). Host-specific residual: any OTHER ambient
+extension registering pipeline-class tools (on this machine `stock_analysis`,
+`omisis_analyze`) is NOT excluded — the mode trusts the operator; extend the
+exclusion list in `src/agents/register-agents.ts` if you run `allTools` on a
+host that installs such packages. Example:
 
 ```json
-"commonExtensionTools": ["lsp_diagnostics", "lsp_hover", "lsp_definition", "lsp_references", "lsp_symbols", "recall"]
+"allTools": false,
+"agentAllTools": { "research-agent": true }
 ```
 
 Malformed config values (wrong-type arrays, unknown packages) never crash

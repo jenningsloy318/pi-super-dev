@@ -95,19 +95,25 @@ export interface SuperDevConfig {
 	 *  classifiers included (explicit beats scope defaults). Same resolution,
 	 *  restart, and missing-package semantics as commonExtensions. */
 	agentExtensions?: Record<string, string[]>;
-	/** v0.3.78 review fix (adv F1): tool NAMES the config extensions register
-	 *  (e.g. pi-lsp's lsp_* family, pi-blackhole's `recall`), merged onto
-	 *  every CAPABILITY agent's registration `tools` allowlist — pi-coding-
-	 *  agent treats `tools` as allowedToolNames and silently drops every
-	 *  extension tool not declared in it (hook-side value loads regardless).
-	 *  Extension packages carry no tool manifest, so names are DECLARED here,
-	 *  not resolved. Same scope predicate as commonExtensions (mechanical
-	 *  classifiers excluded). Invalid names fail harmlessly at child launch. */
-	commonExtensionTools?: string[];
-	/** Per-role additions merged onto that role's tools allowlist — honored
-	 *  for ANY role (explicit beats scope); `sd-`-prefixed keys accepted.
-	 *  Same semantics as commonExtensionTools. */
-	agentExtensionTools?: Record<string, string[]>;
+	/** v0.3.82: all-tools MODE — when true, registration OMITS the tools pin
+	 *  entirely (pi's allowedToolNames is an exact-match Set, so omitting is
+	 *  the only correct "all tools"), letting the child see every tool:
+	 *  role built-ins, all extension-registered tools, and every present or
+	 *  future mcp__<server>__<tool> direct tool. Read-only roles keep their
+	 *  posture via excludeTools on the write family; the binding read-only
+	 *  enforcement stays the engine-side source boundary. Mechanical
+	 *  classifiers are excluded from this common switch (same scope predicate
+	 *  as commonExtensions). Replaces the removed per-tool-list keys
+	 *  (commonExtensionTools/agentExtensionTools) and their "*" wildcard. */
+	allTools?: boolean;
+	/** Per-role all-tools MODE (v0.3.82): registration omits the tools pin for
+	 *  that role — the child sees EVERY tool (role built-ins + all extension
+	 *  tools, including every mcp__<server>__<tool> direct tool, present and
+	 *  future). Honored for ANY role (explicit beats scope); `sd-`-prefixed
+	 *  keys accepted. Read-only roles keep their posture via excludeTools on
+	 *  the write family — the binding read-only enforcement stays the
+	 *  engine-side source boundary. */
+	agentAllTools?: Record<string, boolean>;
 	/** v0.3.15: persistent channel for the SUPER_DEV_* tunables (timeouts,
 	 *  budgets, kill-switches, model/backend selectors) so GUI-launched pi
 	 *  sessions — which have no shell env — can still set them. Flat string

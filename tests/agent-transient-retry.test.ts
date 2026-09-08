@@ -21,7 +21,7 @@ vi.mock("../src/render/knowledge.ts", () => ({ knowledgeForAgent: vi.fn(() => ""
 
 import { makeContext } from "../src/workflow.ts";
 import { runAgentViaDelegation } from "../src/agents/delegation-backend.ts";
-import { isNonRetryableAgentError, isModelExclusionHit, nonRetryableAgentSummary } from "../src/agent-errors.ts";
+import { isNonRetryableAgentError, isModelExclusionHit, nonRetryableAgentSummary, quotaResetHintFromError, assessQuotaReset } from "../src/agent-errors.ts";
 import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 const CALL: AgentCall = { id: "pipeline.x", agent: "spec-writer", prompt: "p" };
@@ -109,11 +109,91 @@ it("does NOT transient-retry a cached exclusion even though the reason contains 
 	expect(captured.some((m) => /transient error/.test(m))).toBe(false);
 });
 
-it("nonRetryableAgentSummary names the restart remedy for exclusion hits", () => {
+it("nonRetryableAgentSummary names the persistence-aware remedy for exclusion hits (v0.3.82: restart alone no longer clears the 0.66+ store)", () => {
 	const s = nonRetryableAgentSummary(EXCLUSION_429);
 	expect(s).toContain("non-retryable agent environment failure");
-	expect(s).toMatch(/restart pi/i);
 	expect(s).toMatch(/model-exclusion/i);
+	expect(s).toContain("model-exclusions.json"); // names the persisted store
+	expect(s).toMatch(/no longer clears/i); // restart-alone caveat
+	expect(s).toMatch(/quit pi/i); // the actual remedy sequence
+});
+
+it("v0.3.82: a passed provider quota-reset hint marks the persisted entry stale (zai Chinese shape, self-consistent anchors)", () => {
+	// Self-consistent incident shape: 429 fired 4h ago (expires = recordedAt + 24h flat TTL),
+	// provider said the 5h window resets 1h ago → delta 3h ≤ window → plausible → stale claim fires.
+	const failedAt = Date.now() - 4 * 3_600_000;
+	const hintAt = new Date(Date.now() - 3_600_000);
+	const pad = (n: number) => String(n).padStart(2, "0");
+	const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+	const err = `delegation ended with status failed: Requested subagent model 'zai-coding-cn/glm-5.3' is excluded and cannot be replaced by a fallback (reason: 429: {"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 ${fmt(hintAt)} 重置。"}; expires: ${new Date(failedAt + 24 * 3_600_000).toISOString()})`;
+	expect(Math.abs((quotaResetHintFromError(err)?.getTime() ?? 0) - hintAt.getTime())).toBeLessThan(1_000); // hint format drops milliseconds
+	expect(nonRetryableAgentSummary(err)).toMatch(/appears to have reset at .+ \(parsed in this machine's timezone/);
+	expect(nonRetryableAgentSummary(err)).toMatch(/Asia\/Shanghai|local/);
+});
+
+it("v0.3.82 TZ guard: the REALISTIC misparse shape (provider UTC render, +08 machine → parse 8h early, parsed delta NEGATIVE) is never claimed stale", () => {
+	// r2 review (adv-R2-3): realistic mismatch = true reset 6h after failure rendered as a UTC
+	// wall clock; a +08 machine parses it 8h EARLY → parsed hint lands BEFORE the failure epoch
+	// (negative delta) — the 5h-window validation must reject it.
+	const failedAt = Date.now() - 2 * 3_600_000;
+	const trueReset = new Date(failedAt + 6 * 3_600_000);
+	const utcRender = new Date(trueReset.getTime() - 8 * 3_600_000); // the wall clock zai-UTC would print
+	const parsedLocal = new Date(`${utcRender.toISOString().slice(0, 10)}T${utcRender.toISOString().slice(11, 19)}`); // machine re-reads it as +08
+	const pad = (n: number) => String(n).padStart(2, "0");
+	const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+	const err = `... is excluded and cannot be replaced by a fallback (reason: 429: {"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 ${fmt(parsedLocal)} 重置。"}; expires: ${new Date(failedAt + 24 * 3_600_000).toISOString()})`;
+	const a = assessQuotaReset(err);
+	expect(a.hint).toBeDefined();
+	expect(a.recordedAtEst).toBeDefined();
+	expect(a.windowHours).toBe(5);
+	expect(a.timezonePlausible).toBe(false); // parsed hint precedes the failure — impossible
+	expect(a.validated).toBe(false);
+	expect(a.stale).toBe(false);
+	expect(nonRetryableAgentSummary(err)).toMatch(/timezone inference could not be validated/);
+	// sanity: the same incident rendered in LOCAL time (aligned provider) validates the other way
+	const aligned = `... is excluded and cannot be replaced by a fallback (reason: 429: {"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 ${fmt(new Date(failedAt + 4 * 3_600_000))} 重置。"}; expires: ${new Date(failedAt + 24 * 3_600_000).toISOString()})`;
+	const a2 = assessQuotaReset(aligned, failedAt + 5 * 3_600_000); // now past the reset
+	expect(a2.validated).toBe(true);
+	expect(a2.stale).toBe(true);
+});
+
+it("v0.3.82 r2 hardening: NO expires anchor or NO stated window ⇒ unvalidated ⇒ never stale (adv-R2-2 shapes F/C′)", () => {
+	const failedAt = Date.now() - 4 * 3_600_000;
+	const hintAt = new Date(Date.now() - 3_600_000); // past
+	const pad = (n: number) => String(n).padStart(2, "0");
+	const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+	// F: no expires anchor
+	const noAnchor = `... is excluded and cannot be replaced by a fallback (reason: 429 resets at ${fmt(hintAt)})`;
+	const aF = assessQuotaReset(noAnchor);
+	expect(aF.hint).toBeDefined();
+	expect(aF.recordedAtEst).toBeUndefined();
+	expect(aF.validated).toBe(false);
+	expect(aF.stale).toBe(false); // unvalidated ⇒ suppressed
+	// C′: anchor present but NO stated window (unstated-window quota + skew is the false-early shape)
+	const noWindow = `... is excluded and cannot be replaced by a fallback (reason: 429 resets at ${fmt(hintAt)}; expires: ${new Date(failedAt + 24 * 3_600_000).toISOString()})`;
+	const aC = assessQuotaReset(noWindow);
+	expect(aC.windowHours).toBeUndefined();
+	expect(aC.validated).toBe(false);
+	expect(aC.stale).toBe(false);
+});
+
+it("v0.3.82: a FUTURE reset hint is not called stale; an unparsable hint stays unknown", () => {
+	const future = new Date(Date.now() + 3_600_000);
+	const pad = (n: number) => String(n).padStart(2, "0");
+	const hint = `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())} ${pad(future.getHours())}:${pad(future.getMinutes())}:${pad(future.getSeconds())}`;
+	const err = `... is excluded and cannot be replaced by a fallback (reason: 429: 5 hours quota; resets at ${hint}; expires: ${new Date(Date.now() + 20 * 3_600_000).toISOString()})`;
+	const a = assessQuotaReset(err);
+	expect(a.hint?.getTime()).toBeGreaterThan(Date.now());
+	expect(a.stale).toBe(false);
+	// non-vacuous (r2 adv-R2-3): pin the ACTUAL stale phrase absence AND that the
+	// generic remedy copy still appears — a regression firing the stale note on a
+	// future hint would flip both.
+	const summary = nonRetryableAgentSummary(err);
+	// plausible + future ⇒ NO note at all (neither the stale claim nor the caveat)
+	expect(summary).not.toMatch(/appears to have reset at/);
+	expect(summary).not.toMatch(/could not be validated/);
+	expect(quotaResetHintFromError("429 plain rate limit, no timestamp")).toBeUndefined();
+	expect(quotaResetHintFromError(undefined)).toBeUndefined();
 });
 
 it("ordinary errors keep the bare summary (remedy text only on exclusion hits)", () => {
@@ -143,7 +223,8 @@ describe("v0.3.77 reviews code-F2 — sibling envelope: ALL candidates excluded 
 
 	it("summary names the restart remedy and the auth/billing caveat (reviews adv-F2)", () => {
 		const s = nonRetryableAgentSummary(EXHAUSTED);
-		expect(s).toMatch(/restart pi/i);
+		expect(s).toMatch(/no longer clears/i); // v0.3.82: restart alone is insufficient (persisted store)
+	expect(s).toMatch(/quit pi/i);
 		expect(s).toMatch(/model-exclusion/i);
 		expect(s).toMatch(/auth\/billing/i);
 	});

@@ -21,6 +21,8 @@ vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 });
 
 import {
+	buildToolIndex,
+	buildToolIndexFromTools,
 	configExtensionEntriesForAgent,
 	configExtensionToolsForAgent,
 	resetConfigExtensionWarnsForTests,
@@ -165,36 +167,182 @@ describe("v0.3.78 review fixes — container hardening + sd- keys", () => {
 	});
 });
 
-describe("v0.3.78 review fixes — configExtensionToolsForAgent (adv-F1 tool allowlist merge)", () => {
+describe("v0.3.82 — explicit tool-name keys REMOVED; allTools boolean mode", () => {
 	let warns: string[];
 	const warn = (m: string) => warns.push(m);
 
 	beforeEach(() => {
 		warns = [];
 		resetConfigExtensionWarnsForTests();
+		getConfigImpl.impl = () => ({});
 	});
 
-	it("capability agent merges commonExtensionTools (deduped, trimmed)", () => {
-		expect(configExtensionToolsForAgent("implementer", { config: { commonExtensionTools: ["lsp_diagnostics", "lsp_diagnostics", " recall "] }, warn }))
-			.toEqual(["lsp_diagnostics", "recall"]);
+	it("leftover commonExtensionTools/agentExtensionTools keys in config are IGNORED (no merge, no warn)", () => {
+		const out = configExtensionToolsForAgent("implementer", {
+			config: { commonExtensionTools: ["lsp_diagnostics"], agentExtensionTools: { implementer: ["recall"] } } as never,
+			warn,
+		});
+		expect(out).toEqual([]); // mechanical-only now
+		expect(warns).toEqual([]);
 	});
 
-	it("mechanical one-shot classifiers are excluded from commonExtensionTools (same scope predicate)", () => {
-		for (const role of MECHANICAL_CLASSIFIER_ROLES) {
-			expect(configExtensionToolsForAgent(role, { config: { commonExtensionTools: ["lsp_diagnostics"] }, warn }), `role ${role}`).toEqual([]);
-		}
+	it("toolsWildcardForAgent: allTools true → wildcard (capability agents)", async () => {
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		expect(toolsWildcardForAgent("implementer", { config: { allTools: true } })).toBe(true);
+		expect(toolsWildcardForAgent("spec-reviewer", { config: { allTools: true } })).toBe(true);
 	});
 
-	it("explicit agentExtensionTools[role] honored for ANY role; sd--prefixed keys accepted", () => {
-		expect(configExtensionToolsForAgent("task-classifier", { config: { agentExtensionTools: { "task-classifier": ["recall"] } }, warn })).toEqual(["recall"]);
-		expect(configExtensionToolsForAgent("ui-tester", { config: { agentExtensionTools: { "sd-ui-tester": ["browser_execute"] } }, warn })).toEqual(["browser_execute"]);
+	it("toolsWildcardForAgent: mechanical classifiers scoped out of allTools; per-role explicit beats scope", async () => {
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		expect(toolsWildcardForAgent("task-classifier", { config: { allTools: true } })).toBe(false);
+		expect(toolsWildcardForAgent("task-classifier", { config: { agentAllTools: { "task-classifier": true } } })).toBe(true);
+		expect(toolsWildcardForAgent("ui-tester", { config: { agentAllTools: { "sd-ui-tester": true } } })).toBe(true);
 	});
 
-	it("malformed containers never throw → [] + one warn naming the key", () => {
-		expect(() => configExtensionToolsForAgent("implementer", { config: { commonExtensionTools: "lsp_diagnostics" }, warn })).not.toThrow();
-		expect(configExtensionToolsForAgent("implementer", { config: { commonExtensionTools: 42 }, warn })).toEqual([]);
-		expect(() => configExtensionToolsForAgent("implementer", { config: { agentExtensionTools: { implementer: {} } }, warn })).not.toThrow();
-		expect(warns.filter((w) => w.includes("commonExtensionTools"))).toHaveLength(1);
-		expect(warns.filter((w) => w.includes("agentExtensionTools"))).toHaveLength(1);
+	it("toolsWildcardForAgent: false/absent/malformed → false, never throws", async () => {
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		expect(toolsWildcardForAgent("implementer", { config: {} })).toBe(false);
+		expect(toolsWildcardForAgent("implementer", { config: { allTools: "yes" as never } })).toBe(false);
+		expect(toolsWildcardForAgent("implementer", { config: { agentAllTools: { implementer: "nope" as never } } })).toBe(false);
+	});
+});
+
+describe("v0.3.82 — mechanical tool-index merge (declaring an extension suffices)", () => {
+	const idx = (entries: Record<string, string[]>): ReadonlyMap<string, readonly string[]> => new Map(Object.entries(entries));
+
+	beforeEach(() => {
+		resetConfigExtensionWarnsForTests();
+		getConfigImpl.impl = () => ({});
+	});
+
+	it("commonExtensions declares pi-lsp → its toolIndex tools merge mechanically (no commonExtensionTools needed)", () => {
+		getConfigImpl.impl = () => ({ commonExtensions: ["pi-lsp"] });
+		const out = configExtensionToolsForAgent("spec-reviewer", {
+			toolIndex: idx({ "pi-lsp": ["lsp_diagnostics", "lsp_hover"] }),
+		});
+		expect(out).toEqual(["lsp_diagnostics", "lsp_hover"]);
+	});
+
+	it("agentExtensions per-role merges mechanically for that role only", () => {
+		getConfigImpl.impl = () => ({ agentExtensions: { "research-agent": ["pi-web-access"] } });
+		const out = configExtensionToolsForAgent("research-agent", {
+			toolIndex: idx({ "pi-web-access": ["web_search", "fetch_content"], "pi-lsp": ["lsp_diagnostics"] }),
+		});
+		expect(out).toEqual(["web_search", "fetch_content"]);
+	});
+
+	it("role-hardcoded packages merge WITHOUT any config (browser/web-research static names)", () => {
+		const out = configExtensionToolsForAgent("research-agent", {
+			toolIndex: idx({ "pi-web-access": ["web_search"], "pi-browser-cdp-extension": ["browser_execute"], "pi-lsp": ["lsp_diagnostics"] }),
+		});
+		expect(out).toContain("web_search");
+		expect(out).not.toContain("lsp_diagnostics"); // undeclared for this agent
+	});
+
+	it("mechanical classifiers never mechanically merge common extensions", () => {
+		getConfigImpl.impl = () => ({ commonExtensions: ["pi-lsp"] });
+		const out = configExtensionToolsForAgent("task-classifier", {
+			toolIndex: idx({ "pi-lsp": ["lsp_diagnostics"] }),
+		});
+		expect(out).toEqual([]);
+	});
+
+	it("undeclared package tools are NOT merged (scoping holds)", () => {
+		getConfigImpl.impl = () => ({ commonExtensions: ["pi-lsp"] });
+		const out = configExtensionToolsForAgent("spec-reviewer", {
+			toolIndex: idx({ "pi-lsp": ["lsp_diagnostics"], "pi-browser-cdp-extension": ["browser_execute"] }),
+		});
+		expect(out).toEqual(["lsp_diagnostics"]);
+	});
+
+	it("mechanical output is exactly the declared packages' tools (no config key carries tool names anymore)", () => {
+		getConfigImpl.impl = () => ({ commonExtensions: ["pi-lsp"] });
+		const out = configExtensionToolsForAgent("spec-reviewer", {
+			toolIndex: idx({ "pi-lsp": ["lsp_diagnostics", "lsp_hover"] }),
+		});
+		expect(out).toEqual(["lsp_diagnostics", "lsp_hover"]);
+	});
+
+	it("extensionPackagesForAgent: role ∪ common ∪ perRole, npm: normalized, classifiers scoped", async () => {
+		const { extensionPackagesForAgent } = await import("../src/agents/agent-runtime.ts");
+		getConfigImpl.impl = () => ({ commonExtensions: ["npm:pi-lsp", "pi-blackhole"], agentExtensions: { "qa-agent": ["pi-extra"] } });
+		expect(extensionPackagesForAgent("spec-reviewer")).toEqual(["pi-lsp", "pi-blackhole"]);
+		expect(extensionPackagesForAgent("qa-agent")).toEqual(["pi-browser-cdp-extension", "pi-lsp", "pi-blackhole", "pi-extra"]); // qa-agent is a browser role
+		expect(extensionPackagesForAgent("task-classifier")).toEqual([]);
+		expect(extensionPackagesForAgent("research-agent")).toContain("pi-web-access"); // role-hardcoded
+	});
+});
+
+
+describe("v0.3.82 dual-review fixes — index build, zero-contribution WARN, malformed allTools", () => {
+	beforeEach(() => resetConfigExtensionWarnsForTests());
+
+	it("buildToolIndexFromTools: npm: source attribution + scoped path fallback + builtin/pi-package skip", () => {
+		const idx = buildToolIndexFromTools([
+			{ name: "lsp_hover", sourceInfo: { source: "npm:pi-lsp", path: "/x/node_modules/pi-lsp/index.ts" } },
+			{ name: "lsp_hover_alias", sourceInfo: { source: undefined, path: "/x/node_modules/@earendil-works/some-pkg/index.ts" } },
+			{ name: "read", sourceInfo: { source: "builtin", path: "<builtin:read>" } },
+			{ name: "bash", sourceInfo: { path: "/mise/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js" } },
+			{ name: "mcp", sourceInfo: { source: "npm:pi-mcp-adapter" } },
+		]);
+		expect(idx.get("pi-lsp")).toEqual(["lsp_hover"]);
+		expect(idx.get("@earendil-works/some-pkg")).toEqual(["lsp_hover_alias"]); // scoped FULL name (adv-F3: naive capture gave "@earendil-works")
+		expect(idx.get("pi-mcp-adapter")).toEqual(["mcp"]);
+		expect(idx.has("builtin")).toBe(false);
+		expect(idx.has("@earendil-works")).toBe(false); // no truncated scoped fragment
+		expect(idx.has("@earendil-works/pi-coding-agent")).toBe(false); // pi package guard (dead pre-fix)
+	});
+
+	it("r2 code-R2-1: malformed commonExtensions warns EXACTLY once across the registration-order double consumption (tools-channel first, entries-channel second)", () => {
+		const warns: string[] = [];
+		const cfg = { commonExtensions: "nowledge-mem-pi" as never }; // the single-string typo
+		// Registration order: registerOne evaluates configToolsFor (tools channel) BEFORE
+		// configExtensionEntriesForAgent (entries channel). Pre-fix the tools channel called
+		// extensionPackagesForAgent with NO warn sink — silently consuming the shared memo and
+		// muting the entries channel's loud fallback (zero warns total).
+		const tools = configExtensionToolsForAgent("spec-reviewer", { config: cfg, warn: (m) => warns.push(m), toolIndex: new Map() });
+		const entries = configExtensionEntriesForAgent("spec-reviewer", { config: cfg, warn: (m) => warns.push(m) });
+		expect(tools).toEqual([]);
+		expect(entries).toEqual([]);
+		const malformed = warns.filter((l) => l.includes('"commonExtensions" must be an array of strings'));
+		expect(malformed).toHaveLength(1); // loud, exactly once across BOTH consumers
+	});
+
+	it("buildToolIndex NEVER throws on a throwing getAllTools (the BLOCKER shape) — returns empty index + error text", () => {
+		const r = buildToolIndex({ getAllTools: () => { throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading."); } });
+		expect(r.toolIndex.size).toBe(0);
+		expect(r.error).toMatch(/not initialized/i);
+		const r2 = buildToolIndex({}); // missing method entirely
+		expect(r2.toolIndex.size).toBe(0);
+		expect(r2.error).toBeUndefined();
+	});
+
+	it("zero-contribution merge is LOUD: declared package absent from the index warns once per package (adv-F2 silent-loss fix)", () => {
+		const warns: string[] = [];
+		const idx = new Map([["pi-lsp", ["lsp_diagnostics"]]]);
+		const cfg = { commonExtensions: ["pi-lsp", "nowledge-mem-pi"] };
+		const out1 = configExtensionToolsForAgent("spec-reviewer", { config: cfg as never, warn: (m) => warns.push(m), toolIndex: idx });
+		const out2 = configExtensionToolsForAgent("code-reviewer", { config: cfg as never, warn: (m) => warns.push(m), toolIndex: idx });
+		expect(out1).toEqual(["lsp_diagnostics"]);
+		expect(out2).toEqual(["lsp_diagnostics"]);
+		expect(warns.filter((w) => w.includes("nowledge-mem-pi"))).toHaveLength(1); // once per package, not per agent
+		expect(warns[0]).toMatch(/contributed no tools/);
+	});
+
+	it("malformed allTools / agentAllTools values warn ONCE per key and degrade to false (code-F4 loud-fallback contract)", async () => {
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		const warns: string[] = [];
+		const w = (m: string) => warns.push(m);
+		expect(toolsWildcardForAgent("spec-reviewer", { config: { allTools: "yes" } as never, warn: w })).toBe(false);
+		expect(toolsWildcardForAgent("code-reviewer", { config: { allTools: 42 } as never, warn: w })).toBe(false);
+		expect(toolsWildcardForAgent("implementer", { config: { agentAllTools: { implementer: "true" } } as never, warn: w })).toBe(false);
+		expect(warns).toHaveLength(2); // allTools once + agentAllTools[implementer] once
+		expect(warns[0]).toContain('"allTools" must be a boolean');
+		expect(warns[1]).toContain("agentAllTools[implementer]");
+		// well-formed booleans never warn
+		warns.length = 0;
+		expect(toolsWildcardForAgent("spec-reviewer", { config: { allTools: true }, warn: w })).toBe(true);
+		expect(toolsWildcardForAgent("implementer", { config: { agentAllTools: { implementer: false } }, warn: w })).toBe(false);
+		expect(warns).toHaveLength(0);
 	});
 });
