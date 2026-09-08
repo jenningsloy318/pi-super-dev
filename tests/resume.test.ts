@@ -254,3 +254,222 @@ describe("countStageRounds (F3 resume round budget)", () => {
 		}
 	});
 });
+
+// ── v0.3.83 — cached agent errors are never replayed ─────────────────────────
+// Incident 2026-09-08 (spec 25, run 13-21-29-124Z): a live 429 recorded an
+// AgentResult with error and empty text into .resume-cache.jsonl. Every later
+// resume replayed the error verbatim ("resumed (cached): pipeline.requirements"
+// → fatal) — invisible to restarts, quota resets, and exclusion-store deletion,
+// because no live model call ever happened. Errors carry no replayable value;
+// success is the only thing worth memoizing.
+describe("v0.3.83 — cached agent errors are never replayed (2026-09-08 quota poison)", () => {
+	const errorRow = (text: string): AgentResult => ({ text, control: null, error: "delegation ended with status failed: Requested subagent model 'zai-coding-cn/glm-5.3-flash' is excluded" });
+
+	it("read side: a pure cached error (no control, no recoverable text) is NOT replayed — the call re-runs live and the fresh row shadows the old one", async () => {
+		const d = tmpDir();
+		try {
+			appendResumeResult(d, "pipeline.requirements@root#1", errorRow(""));
+			const cache = loadResumeCache(d);
+			const logs: string[] = [];
+			let live = 0;
+			const agent = createMemoizingAgent(async () => { live++; return result({ healed: true }); }, cache, () => d, (m) => logs.push(m));
+			const r = await agent(call("pipeline.requirements"));
+			expect(live).toBe(1);                       // RED today: 0 (error replayed)
+			expect(r.control).toEqual({ healed: true }); // RED today: null + error
+			expect(logs.some((m) => m.includes("NOT replayed") && m.includes("re-running live"))).toBe(true);
+			// append-only last-wins: the live row now shadows the error row
+			const reloaded = loadResumeCache(d);
+			expect(reloaded.get("pipeline.requirements@root#1")?.control).toEqual({ healed: true });
+			expect(reloaded.get("pipeline.requirements@root#1")?.error).toBeUndefined();
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("write side: a pure failure (error, no control, no body text) is never persisted", async () => {
+		const d = tmpDir();
+		try {
+			const cache = new Map<string, AgentResult>();
+			const agent = createMemoizingAgent(async () => errorRow(""), cache, () => d, () => {});
+			const r = await agent(call("x"));
+			expect(r.error).toBeDefined();
+			expect(cache.has("x@root#1")).toBe(false);          // RED today: true
+			expect(loadResumeCache(d).has("x@root#1")).toBe(false); // RED today: true
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("write side: an error WITH body text IS still persisted (keeps the v0.3.48 parse-boundary recovery chance)", async () => {
+		const d = tmpDir();
+		try {
+			const cache = new Map<string, AgentResult>();
+			const agent = createMemoizingAgent(async () => errorRow("long partial review text…"), cache, () => d, () => {});
+			await agent(call("x"));
+			expect(cache.get("x@root#1")?.error).toBeDefined();
+			expect(loadResumeCache(d).get("x@root#1")?.text).toContain("partial review");
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("v0.3.48 recovery still wins BEFORE the live re-run: a cached error whose text holds a valid control is recovered without calling the agent", async () => {
+		const cache = new Map<string, AgentResult>([["x@root#1", { text: '{"verdict":"Approved","findings":[]}', control: null, error: "delegation ended with status failed" }]]);
+		let live = 0;
+		const agent = createMemoizingAgent(async () => { live++; return result(); }, cache, () => "/tmp", () => {});
+		const r = await agent({ id: "x", agent: "a", prompt: "", controlKeys: ["verdict", "findings"] });
+		expect(live).toBe(0);
+		expect(r.control).toEqual({ verdict: "Approved", findings: [] });
+		expect(r.error).toBeUndefined();
+	});
+
+	it("an unrecoverable error WITH text falls through to the live re-run (recovery attempted, failed, not replayed)", async () => {
+		const d = tmpDir();
+		try {
+			appendResumeResult(d, "x@root#1", errorRow("truncated garbage, no control JSON"));
+			const cache = loadResumeCache(d);
+			let live = 0;
+			const agent = createMemoizingAgent(async () => { live++; return result({ fresh: true }); }, cache, () => d, () => {});
+			const r = await agent({ id: "x", agent: "a", prompt: "", controlKeys: ["verdict"] });
+			expect(live).toBe(1); // RED today: 0 — the garbage-text error was replayed verbatim
+			expect(r.control).toEqual({ fresh: true });
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("success rows still replay without a live call (regression)", async () => {
+		const cache = new Map<string, AgentResult>([["x@root#1", result({ hit: true })]]);
+		let live = 0;
+		const agent = createMemoizingAgent(async () => { live++; return result(); }, cache, () => "/tmp", () => {});
+		const r = await agent(call("x"));
+		expect(r.control).toEqual({ hit: true });
+		expect(live).toBe(0);
+	});
+});
+
+// ── v0.3.83 r2 — dual fresh-context review fixes ─────────────────────────────
+// adv-F1: delegation-backend.ts:505/:508 corrective-retry failures return
+// {text, control, error} where the control is the FIRST attempt's
+// schema-violating object — certified invalid by the engine (that is why the
+// corrective fired). Persisting it verbatim replays poison that escapes BOTH
+// escape hatches: the v0.3.65 agent-error marking (nodes.ts G21 needs
+// error && !control) and the v0.3.83 miss path (needed control == null).
+// Reviewer probe k5: live=0 — stale control + error replayed forever, the
+// quota-wall disease wearing a control mask.
+describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fixes)", () => {
+	const errorRow = (text: string): AgentResult => ({ text, control: null, error: "delegation ended with status failed: model excluded" });
+	const errCtrlRow = (text: string, control: Record<string, unknown>): AgentResult => ({
+		text,
+		control: control as AgentResult["control"],
+		error: "delegation retry after validation failure (missing: verdict): agent timed out after 1200000ms",
+	});
+
+	it("read side (adv-F1): a cached error+control row (corrective-retry strain) is NOT replayed — re-runs live and shadows", async () => {
+		const d = tmpDir();
+		try {
+			appendResumeResult(d, "x@root#1", errCtrlRow("", { stale: true }));
+			const cache = loadResumeCache(d);
+			const logs: string[] = [];
+			let live = 0;
+			const agent = createMemoizingAgent(async () => { live++; return result({ fresh: true }); }, cache, () => d, (m) => logs.push(m));
+			const r = await agent({ id: "x", agent: "a", prompt: "", controlKeys: ["verdict"] });
+			expect(live).toBe(1);                          // RED today: 0 (stale control+error replayed verbatim)
+			expect(r.control).toEqual({ fresh: true });    // RED today: { stale: true }
+			expect(r.error).toBeUndefined();               // RED today: the poisoned error
+			expect(logs.some((m) => m.includes("NOT replayed") && m.includes("re-running live"))).toBe(true);
+			const reloaded = loadResumeCache(d);
+			expect(reloaded.get("x@root#1")?.control).toEqual({ fresh: true });
+			expect(reloaded.get("x@root#1")?.error).toBeUndefined();
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("read side (adv-F1): recoverable text in an error+control row recovers BEFORE the live re-run (stale control discarded)", async () => {
+		const cache = new Map<string, AgentResult>([
+			["x@root#1", errCtrlRow('{"verdict":"Approved","findings":[]}', { stale: true })],
+		]);
+		let live = 0;
+		const agent = createMemoizingAgent(async () => { live++; return result(); }, cache, () => "/tmp", () => {});
+		const r = await agent({ id: "x", agent: "a", prompt: "", controlKeys: ["verdict", "findings"] });
+		expect(live).toBe(0);
+		expect(r.control).toEqual({ verdict: "Approved", findings: [] }); // from TEXT, not the stale control
+		expect(r.error).toBeUndefined();
+	});
+
+	it("write side (adv-F1): an error+control result is persisted with the control STRIPPED — the live caller keeps the original", async () => {
+		const d = tmpDir();
+		try {
+			const cache = new Map<string, AgentResult>();
+			const agent = createMemoizingAgent(async () => errCtrlRow("partial first-attempt text", { stale: true }), cache, () => d, () => {});
+			const r = await agent(call("x"));
+			expect(r.control).toEqual({ stale: true });            // live caller sees the original result unchanged
+			const persisted = cache.get("x@root#1");
+			expect(persisted?.control).toBeNull();                // RED today: { stale: true } persisted verbatim
+			expect(persisted?.text).toContain("partial first-attempt text"); // text survives as recovery material
+			expect(persisted?.error).toBeDefined();
+			expect(loadResumeCache(d).get("x@root#1")?.control).toBeNull();   // and on disk
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("write side (adv-F1): an error+control row with no text persists nothing at all (pure failure after strip)", async () => {
+		const d = tmpDir();
+		try {
+			const cache = new Map<string, AgentResult>();
+			const agent = createMemoizingAgent(async () => errCtrlRow("", { stale: true }), cache, () => d, () => {});
+			const r = await agent(call("x"));
+			expect(r.control).toEqual({ stale: true }); // live caller unchanged
+			expect(cache.has("x@root#1")).toBe(false); // RED today: true
+			expect(loadResumeCache(d).has("x@root#1")).toBe(false);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("write side (code-F1): whitespace-only body text is no text — nothing persisted; the read side degrades it to live", async () => {
+		const d = tmpDir();
+		try {
+			const cache = new Map<string, AgentResult>();
+			const agent = createMemoizingAgent(async () => errorRow("   "), cache, () => d, () => {});
+			await agent(call("x"));
+			expect(cache.has("x@root#1")).toBe(false);
+			expect(loadResumeCache(d).has("x@root#1")).toBe(false);
+			// read side: a pre-existing whitespace-text error row is not replayable either
+			appendResumeResult(d, "y@root#1", errorRow("   "));
+			let live = 0;
+			const reader = createMemoizingAgent(async () => { live++; return result({ ok: 1 }); }, loadResumeCache(d), () => d, () => {});
+			const r = await reader(call("y"));
+			expect(live).toBe(1);
+			expect(r.control).toEqual({ ok: 1 });
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("countStageRounds (adv-F2): error rows are holes, not banked work — excluded from the round count", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-count-errs-"));
+		try {
+			const row = (key: string, r: AgentResult) => JSON.stringify({ key, result: r });
+			writeFileSync(`${d}/.resume-cache.jsonl`, [
+				row("pipeline.spec@root#1", { text: "r1", control: null }),
+				row("pipeline.spec@root#2", { text: "r2", control: null }),
+				row("pipeline.spec@root#3", errorRow("")),
+				row("pipeline.spec@root#4", errCtrlRow("", { stale: true })),
+				row("pipeline.spec@root#5", errorRow("some text")),
+			].join("\n") + "\n");
+			expect(countStageRounds(d, "pipeline.spec")).toBe(2); // RED today: 5
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("countStageRounds (adv-F2): an all-error history counts 0 — every round re-runs fresh on resume", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-count-errs-2-"));
+		try {
+			const row = (key: string) => JSON.stringify({ key, result: errorRow("") });
+			writeFileSync(`${d}/.resume-cache.jsonl`, [row("pipeline.spec@root#1"), row("pipeline.spec@root#2"), row("pipeline.spec@root#3")].join("\n") + "\n");
+			expect(countStageRounds(d, "pipeline.spec")).toBe(0); // RED today: 3
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("tombstone (adv-F4): an all-pure-failure pass still leaves a non-empty cache file — the track stays resumable", async () => {
+		const d = tmpDir();
+		try {
+			const cache = new Map<string, AgentResult>();
+			const agent = createMemoizingAgent(async () => errorRow(""), cache, () => d, () => {});
+			await agent(call("x"));
+			await agent(call("y"));
+			expect(existsSync(resumeCachePath(d))).toBe(true); // RED today: no file at all
+			expect(isResumable(d)).toBe(true);                 // RED today: false → --resume/findReusableSpec skip the track
+			// the tombstone is inert: no call key collides and no row carries poison
+			const reloaded = loadResumeCache(d);
+			expect([...reloaded.keys()].every((k) => k.startsWith("__tombstone__"))).toBe(true);
+			expect([...reloaded.values()].every((v) => v.error == null)).toBe(true);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+});

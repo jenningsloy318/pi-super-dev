@@ -686,6 +686,43 @@ Wave B of the spec-25 root-cause program (`docs/findings/deep-analysis-2026-09-0
 
 Wave C of the spec-25 program: the extension stamps its serving version at every activation and warns (fire-and-forget, never blocks) when the installed copy is behind its `origin/main` — the 2026-09-04T14-10 incident class where a fixed bug kept running live because the serving copy lagged the repo. The version was already stamped into every `run.log` header; now the mismatch is loud at startup. Also: the incident eval suite (`npm run evals`) is flake-free — the v0.3.28 session-backend narration test's waitFor-attach race was replaced with a creation-time harness hook.
 
+## Resume cache: errors are never replayed (v0.3.83)
+
+The resume memoizer (`.resume-cache.jsonl` in the spec dir, append-only,
+last-wins) exists to make completed work free on resume — a replayed success
+makes zero model calls. Before v0.3.83 it cached failures the same way: a
+quota wall (2026-09-08, spec 25) wrote four pure-error rows, and every later
+resume replayed the 16:15 error verbatim forever — quota resets, exclusion-store
+deletions, and pi restarts are all invisible to a replay that spends nothing.
+The failure masqueraded as a fresh "it failed again" with an `expires:`
+timestamp that was just text inside the error string, never parsed or compared.
+
+Two cuts close the class. **Read side (heals existing caches):** a cached hit
+that is an error — with or without a control — first tries the v0.3.48 text
+recovery (kept — a parse-boundary improvement can revive an errored row into a
+success); when nothing is recoverable the row is treated as a MISS and the
+call re-runs live (honest log: `cached agent error NOT replayed; re-running
+live`), and the fresh row shadows the error row in the last-wins log — no
+manual cache surgery, and old poisoned cache files self-heal on first resume.
+A control riding an error is the first attempt's schema-violating object
+(the corrective-retry strain, delegation-backend 505/508) — certified invalid
+by the engine, so it is discarded rather than replayed. **Write side (no new
+poison):** a pure failure (error, no control, no body text) is never persisted
+— failure is not a result, it is the absence of one; errors WITH body text
+remain cacheable (the recovery path's raw material), with any accompanying
+invalid control stripped from the persisted copy only (the live caller keeps
+it); and an all-pure-failure pass still touches an inert tombstone row so the
+track stays resumable. **Round accounting (dual-review fix):** error rows are
+holes, not banked work — `countStageRounds` counts successful rows only, so
+the live re-runs a poisoned cache performs count as FRESH rounds for the
+3-consecutive agent-error FatalAbort and the round budget (a poisoned k-round
+cache can no longer re-spend k uncounted live calls per resume while infra
+stays down). Success replay, the v0.3.48 recovery precedence, the replay
+guard, and the 3-consecutive live-failure FatalAbort are all unchanged.
+Time-based failures (quota windows, transient infra) now self-heal by
+construction: each resume retries the poisoned call exactly once live;
+success takes over.
+
 ## Structured delegation (v0.3.70)
 
 Every stage call carries a TypeBox schema (`STAGE_MODELS`), and since v0.3.70

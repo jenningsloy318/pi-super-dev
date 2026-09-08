@@ -220,11 +220,13 @@ import { isFatalAbort } from "../src/nodes.ts";
 
 /** Seed `.resume-cache.jsonl` with recorded occurrences per callId — the
  *  persisted count a resumed convergence loop reads via countStageRounds.
- *  Multiple callIds accumulate into ONE file (last write wins would clobber). */
-function seedStageRounds(specDir: string, seeds: Array<[callId: string, rounds: number]>): void {
+ *  Multiple callIds accumulate into ONE file (last write wins would clobber).
+ *  opts.error seeds ERROR rows instead of inert no-control rows — the shape
+ *  the v0.3.83 memoizer degrades to a live re-run (adv-F2 fixtures). */
+function seedStageRounds(specDir: string, seeds: Array<[callId: string, rounds: number]>, opts: { error?: string } = {}): void {
 	const rows = seeds.flatMap(([callId, rounds]) =>
 		Array.from({ length: rounds }, (_, i) =>
-			JSON.stringify({ key: `${callId}@root#${i + 1}`, result: { text: "", control: null } })));
+			JSON.stringify({ key: `${callId}@root#${i + 1}`, result: opts.error ? { text: "", control: null, error: opts.error } : { text: "", control: null } })));
 	writeFileSync(join(specDir, ".resume-cache.jsonl"), rows.join("\n") + "\n");
 }
 
@@ -991,5 +993,26 @@ describe("v0.3.65 — agent-error rounds never masquerade as verdicts (incident 
 		// Rounds 1–5 replayed (not counted), 6–8 fresh: the 8th round fatals.
 		expect(harness.reviewCalls()).toBe(8);
 		expect(harness.logs.some((l) => l.includes("replayed — not counted"))).toBe(true);
+	});
+
+	it("v0.3.83 (adv-F2): ERROR-seeded rounds are not banked — the degraded-to-live re-runs count FRESH and the fuse fires at 3, not prior+3", async () => {
+		const s = setup(dir);
+		mkdirSync(s.specDirectory, { recursive: true });
+		// 5 recorded rounds per callId, every row an ERROR row: under v0.3.83 the
+		// memoizer degrades each to a LIVE re-run (they are holes, not banked
+		// work), so priorRounds must be 0 — the 3-consecutive fuse fires on
+		// rounds 1–3 instead of re-spending 5 uncounted live rounds first.
+		seedStageRounds(s.specDirectory, [
+			["pipeline.requirements", 5],
+			["pipeline.requirementsReview", 5],
+		], { error: "delegation ended with status failed: Requested subagent model 'zai-coding-cn/glm-5.3-flash' is excluded" });
+		const state: PipelineState = { setup: s, classify: { taskType: "feature", uiScope: "none", language: "backend", isWebUi: false } };
+		const harness = agentErrorCtx(state, requirementsControl([]), { reviewerPlan: Array.from({ length: 20 }, () => SKEW_ERROR) });
+		let caught: unknown;
+		try { await requirementsConvergenceNode.run(state, harness.ctx); } catch (err) { caught = err; }
+		expect(isFatalAbort(caught)).toBe(true);
+		const message = String((caught as Error).message);
+		expect(message).toContain("review agent errored 3 consecutive");
+		expect(harness.reviewCalls()).toBe(3); // RED today: 8 (prior=5 hides the live re-runs from the fuse)
 	});
 });
