@@ -38,6 +38,7 @@ import { runInStepScope } from "../step-scope.ts";
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
 import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "../fault-classification.ts";
 import { clearBaselineCache } from "../build-runner/baseline.ts";
+import { phaseClauseFiles } from "./plan-feasibility.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
 import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../build-runner/runner-discovery.ts";
 import { deriveConventionsRunnerSpec } from "../build-runner/conventions.ts";
@@ -294,13 +295,9 @@ function toStringArr(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
-/** RC12c: compute the worktree's currently-dirty (non-bookkeeping) files that
- *  are NOT in the phase's SPEC-DECLARED scope (requireFiles + requireContains
- *  files) and NOT among this phase's RED test files (they are legitimately
- *  dirty during GREEN — reviewer F-2). The implementer's OWN claimed files
- *  are deliberately NOT scope (reviewer F-3: self-claims are the thing being
- *  audited — claiming a file must not hide it). Pure git read; returns [] on
- *  any failure — observability only, never blocks the phase. */
+/** Out-of-scope edits: changed tracked+untracked files OUTSIDE the phase's
+ *  declared clause scope (canonical phaseClauseFiles grammar, v0.3.80 B1) and
+ *  outside the RED test files. Advisory input for the leak classifier. */
 function trackerOutofScopeEdits(tracker: ReturnType<typeof getActiveTracker>, worktreePath: string, declaredScope: Set<string>, redTestFiles: string[]): string[] {
 	if (!tracker) return [];
 	try {
@@ -825,6 +822,60 @@ function phaseDeliverableFiles(phase: LeakPhase | undefined): string[] {
  *  already existed; the honest revert was itself flagged "RED pollution").
  *  Returns the changed files that intersect any LATER phase's declared
  *  deliverables (path-drift tolerant), current phase excluded. Pure. */
+/** v0.3.80 B2 — stage-close re-verification (commit fusion): a phase can end
+ *  PARTIAL with its work already landed in the tree (gate-window expiry, work
+ *  absorbed by a later phase's commit, or the stash-kill-switch leaving it
+ *  dirty). Before the stage reports allGreen=false, re-verify each PARTIAL
+ *  phase's deliverable contract LIVE. Dual-review hardening (v0.3.80):
+ *  (a) at least one AFFIRMATIVE clause (requireFiles/requireContains/
+ *  requireScenarios) is required — notContains-only contracts are vacuously
+ *  satisfiable by a missing file and never flip;
+ *  (b) at least one of the phase's clause files must be in `changedThisRun`
+ *  (vs the run baseline, committed or dirty) so PRE-EXISTING content cannot
+ *  flip a phase the run never touched (the §F no-op doctrine);
+ *  (c) requireTests-bearing contracts are additionally gated by the caller's
+ *  full runDeliverableCheck (deliverablesAlreadyMet ignores requireTests).
+ *  Empty/absent contracts stay fail-closed partial. Pure: no gates, no
+ *  mutation — the caller decides. */
+export function reverifyPartialPhases(
+	phases: Array<Record<string, unknown>>,
+	phaseStatus: Array<{ id: string; status: string }>,
+	worktreePath: string,
+	defaultBranch: string,
+	exclude: ReadonlySet<string> = new Set(),
+	changedThisRun: ReadonlySet<string> = new Set(),
+): { flippable: Array<{ id: string; index: number }>; skippedVacuous: string[] } {
+	const flippable: Array<{ id: string; index: number }> = [];
+	const skippedVacuous: string[] = [];
+	const partialById = new Map(phaseStatus.filter((p) => p.status === "partial").map((p) => [p.id, p]));
+	if (partialById.size === 0) return { flippable, skippedVacuous };
+	phases.forEach((phase, index) => {
+		const id = `phase-${String(index + 1).padStart(2, "0")}`;
+		if (!partialById.has(id)) return;
+		if (exclude.has(id)) return; // environment-blocked phases resolve through the judge — close-reverify must not bypass that route
+		const deliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
+		if (!deliverables) return; // fail-closed: no contract, no re-verification
+		const d = deliverables as { requireFiles?: unknown[]; requireContains?: unknown[]; requireScenarios?: unknown[] };
+		const affirmative = (d.requireFiles?.length ?? 0) + (d.requireContains?.length ?? 0) + (d.requireScenarios?.length ?? 0);
+		if (affirmative === 0) {
+			skippedVacuous.push(`${id} (no affirmative clause)`);
+			return; // notContains-only: vacuously satisfiable — never flip
+		}
+		const clauseSet = new Set(phaseClauseFiles(phase as never).map(leakNorm));
+		const touchedThisRun = changedThisRun.size === 0 ? true : [...clauseSet].some((f) => changedThisRun.has(f));
+		if (!touchedThisRun) {
+			skippedVacuous.push(`${id} (satisfied by pre-existing content — no clause file changed this run)`);
+			return;
+		}
+		try {
+			if (deliverablesAlreadyMet(worktreePath, deliverables, defaultBranch)) flippable.push({ id, index });
+		} catch {
+			// fail-closed on any evaluation error
+		}
+	});
+	return { flippable, skippedVacuous };
+}
+
 export function laterPhaseDeliverableHits(changedFiles: string[], phases: LeakPhase[], currentIndex: number): string[] {
 	const later = new Set<string>();
 	for (let j = currentIndex + 1; j < phases.length; j++) {
@@ -1569,6 +1620,8 @@ export const implementationStage: Stage = {
 		if (phaseStatus.length) ctx.log(`Implementation: resuming convergence iteration (${phaseStatus.filter((p) => p.status === "green").length}/${phases.length} phases already green)`);
 		let phasesCompleted = 0;
 		let allGreen = true;
+		// v0.3.80 B2: environment-blocked phases are judge-owned — excluded from stage-close re-verification.
+		const envBlockedPhases = new Set<string>();
 		// v0.3.0 (harness research): DEPRECATED — never set to true anymore. The
 		// field survives on the control shape for downstream readers (workflow
 		// summary, §D loop predicate) which now treat it as always-false; a failed
@@ -2884,13 +2937,11 @@ export const implementationStage: Stage = {
 				// phase's declared scope (auth-service type shims to dodge an unrelated
 				// build failure) — record a low non-blocking finding so the drift is
 				// visible in the ledger instead of silently persisting in the worktree.
-				const rc12Deliverables = (phase.deliverables ?? {}) as { requireFiles?: unknown; requireContains?: unknown };
-				const declaredScope = new Set<string>([
-					...toStringArr(rc12Deliverables.requireFiles),
-					...(Array.isArray(rc12Deliverables.requireContains)
-						? (rc12Deliverables.requireContains as Array<{ file?: unknown }>).map((e) => (e && typeof e.file === "string") ? e.file : "").filter(Boolean)
-						: []),
-				]);
+				// v0.3.80 B1 (P6): own-scope now derives from the validator's canonical
+				// clause grammar — requireNotContains/requireTests targets count as
+				// declared scope too, so a co-owned file declared through ANY clause
+				// form is never misclassified as a later-phase leak.
+				const declaredScope = new Set<string>(phaseClauseFiles(phase as never).map(leakNorm)); // review P3: leakNorm parity (trim + trailing slash) with the leak-side set
 				const outOfScope = [...declaredScope].length
 					? trackerOutofScopeEdits(tracker, setup.worktreePath, declaredScope, testFiles)
 					: [];
@@ -3000,7 +3051,7 @@ export const implementationStage: Stage = {
 					const leakFiles = laterPhaseDeliverableHits(changedAll.filter((f) => !inOwnScope.includes(f)), phases, idx);
 					boundaryLeakOwners = [...new Set([...boundaryLeakOwners, ...leakOwners])];
 					boundaryLeakFiles = [...new Set([...boundaryLeakFiles, ...leakFiles])];
-					ctx.log(`Implementation ${phaseId} BLOCKING: changed-not-claimed file(s) ${leakFiles.join(", ")} are DECLARED DELIVERABLES of later phase(s) ${leakOwners.join(", ")} — phase-boundary leak; reverting them (this phase's scope stands, later phases redo the work with an honest RED)`);
+					ctx.log(`Implementation ${phaseId} BLOCKING: changed-not-claimed file(s) ${leakFiles.join(", ")} are DECLARED DELIVERABLES of later phase(s) ${leakOwners.join(", ")} — phase-boundary leak; reverting them (this phase's scope stands, later phases redo the work with an honest RED). ROUTE TO APPROVAL: if these files genuinely belong to this phase's work, the phase contract must DECLARE them (co-ownership — any clause form counts) or the plan must be revised to order the introduction before this phase; steer guidance to revise the plan rather than retrying blind.`);
 					restorePaths(setup.worktreePath, leakFiles);
 				}
 				if (advisory.length) {
@@ -3522,6 +3573,7 @@ export const implementationStage: Stage = {
 						// stop line carries no suffix for it) + this DISTINCT stop log so the
 						// boundary remains identifiable in the run log.
 						terminalStopReason = "failed";
+					envBlockedPhases.add(phaseId); // v0.3.80 B2: judge-owned environmental stop — excluded from stage-close re-verification
 						if (envGuidanceReentryGranted) {
 							// v0.2.6 G4 — the granted re-entry declines the windup trip: the outer
 							// convergence loop re-enters the phase and the persisted guidance
@@ -3812,6 +3864,7 @@ export const implementationStage: Stage = {
 				// non-green phases for another bounded pass until allGreen or the
 				// global budget fuse.
 				preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : terminalStopReason === "environment-blocked" ? "environment-blocked" : "gates-unmet"); // review-2 F8: keep the honest reason
+			if (terminalStopReason === "environment-blocked") envBlockedPhases.add(phaseId);
 				{
 					const sig = terminalReasons.join("; ").slice(0, 200);
 					const prior = phaseStatus.find((p) => p.id === phaseId);
@@ -3856,6 +3909,66 @@ export const implementationStage: Stage = {
 				} else {
 					ctx.log(`Implementation ${phaseId} deterministic commit fell back to the orchestrator agent: ${commitOutcome.reason}`);
 					await ctx.agent({ id: `pipeline.implementation.${phaseId}.commit`, agent: "orchestrator", prompt: buildCommitPrompt(setup, phase.name) });
+				}
+			}
+		}
+		// v0.3.80 B2 — stage-close re-verification (commit fusion): gate-window expiry
+		// can end a phase PARTIAL with its work already landed; the stage verdict must
+		// reflect the tree, not the stale gate window. Dual-review hardening: the flip
+		// requires an affirmative clause + a clause file changed THIS RUN (vs the merge
+		// base — pre-existing content cannot flip) + the stage build gate + a FULL
+		// runDeliverableCheck per flippable (deliverablesAlreadyMet ignores
+		// requireTests); flipped phases splice lastFailures and get their deterministic
+		// commit like every other green path (review F3).
+		{
+			const changedThisRun = new Set<string>();
+			try {
+				const mergeBase = String(spawnSync("git", ["-C", setup.worktreePath, "merge-base", "HEAD", setup.defaultBranch], { encoding: "utf8", timeout: 10_000 }).stdout ?? "").trim();
+				if (mergeBase) {
+					const diffOut = String(spawnSync("git", ["-C", setup.worktreePath, "diff", "--name-only", mergeBase, "HEAD"], { encoding: "utf8", timeout: 15_000 }).stdout ?? "");
+					const statusOut = String(spawnSync("git", ["-C", setup.worktreePath, "status", "--porcelain"], { encoding: "utf8", timeout: 10_000 }).stdout ?? "");
+					for (const line of diffOut.split("\n")) if (line.trim()) changedThisRun.add(leakNorm(line.trim()));
+					for (const line of statusOut.split("\n")) {
+						const rel = line.slice(3).trim().replace(/^"|"$/g, "");
+						if (rel && !rel.includes(" -> ")) changedThisRun.add(leakNorm(rel));
+					}
+				}
+			} catch { /* changed-set is a hardening input, not a gate — empty set degrades to the pre-hardening behavior for absorbed-work detection */ }
+			const reverify = reverifyPartialPhases(phases as unknown as Array<Record<string, unknown>>, phaseStatus as Array<{ id: string; status: string }>, setup.worktreePath, setup.defaultBranch, envBlockedPhases, changedThisRun);
+			for (const skipped of reverify.skippedVacuous) ctx.log(`Implementation stage-close re-verification: ${skipped} — keeping PARTIAL (honest)`);
+			if (reverify.flippable.length > 0) {
+				ctx.phase("Stage 9 — Implementation — stage-close re-verification");
+				resetDeliverableCheckCache();
+				const closeGate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
+				appendGateChecked(state, "stage-close-reverify", closeGate, "implementation");
+				if (closeGate.pass || closeGate.inScopePass) {
+					for (const f of reverify.flippable) {
+						const rvDeliverables = (phases[f.index] as { deliverables?: DeliverableContract }).deliverables;
+						const rvCheck = rvDeliverables
+							? runDeliverableCheck(setup.worktreePath, rvDeliverables, { signal: ctx.signal, skipTests: false, defaultBranch: setup.defaultBranch })
+							: null;
+						if (rvCheck && !rvCheck.pass) {
+							ctx.log(`Implementation ${f.id} stage-close re-verification: deliverablesAlreadyMet passed but the FULL deliverable check FAILED (missing: ${rvCheck.missing.slice(0, 3).join("; ")}) — keeping PARTIAL (honest; requireTests/scenario sweep authoritative)`);
+							continue;
+						}
+						ctx.log(`Implementation ${f.id} stage-close re-verification: deliverables satisfied at close (full check + build gate green) — marking GREEN (gate-window expiry had left landed work unverified; commit fusion)`);
+						phaseStatusUpsert(phaseStatus, f.id, "green");
+						phasesCompleted++;
+						lastFailures = lastFailures.filter((e) => !e.phaseId || e.phaseId !== f.id); // review F3: a green phase carries no stale failure row
+						if (ctx.budget.check()) {
+							const commitOutcome = deterministicPhaseCommit(setup.worktreePath, {
+								phaseIndex: f.index + 1,
+								totalPhases: phases.length,
+								phaseName: String((phases[f.index] as { name?: unknown })?.name ?? f.id),
+								worktreeCreated: (setup as { worktreeCreated?: boolean }).worktreeCreated,
+								gateSummary: "stage-close re-verification: build green; deliverables met (full check)",
+							});
+							ctx.log(`Implementation ${f.id} stage-close commit: ${commitOutcome.status} — ${commitOutcome.reason}`);
+						}
+					}
+					if (phaseStatus.length === phases.length && phaseStatus.every((p) => p.status === "green")) allGreen = true; // review P3: never claim all-green over an entry subset (REPLAN break leaves later phases without entries)
+				} else {
+					ctx.log(`Implementation stage-close re-verification: ${reverify.flippable.length} partial phase(s) have satisfied deliverables but the stage build gate FAILED — keeping PARTIAL (honest)`);
 				}
 			}
 		}

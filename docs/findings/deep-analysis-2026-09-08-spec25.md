@@ -156,3 +156,20 @@ Guiding principles (from the cross-reference): (1) shift feasibility left — ch
 | Budget-exhausted discard branch unpinned | ADV-7 NIT | adv | FIXED — pinned test |
 
 Cleared by reviewers (end-to-end traced): async conversion call sites; corrective budget invariants (INV-3, ≤2/signature, ≤12/run, timeout-retry interplay); fabrication discipline (unverified verdicts never route on claimed route — the P1 was the sole exception, now fixed); REPLAN double-fire impossibility (`__replan` guard + R5 + fingerprint dedupe); A3 infra classification (source-set + suffix defense); stagnation REPLAN status propagation (`__replan` → terminal replan before failed); judge corrective fall-through (verdict2 → allowed/confidence gates).
+
+---
+
+## 9. v0.3.80 (Wave B) dual-review verdict table (2026-09-08)
+
+| Finding | Severity | Reviewer | Disposition |
+|---|---|---|---|
+| Close-out flip verified a weaker contract (requireTests hole + vacuous notContains-only + pre-existing content) | P2 / HIGH | both (probe-confirmed) | FIXED — affirmative-clause + changed-this-run guards + full runDeliverableCheck per flippable |
+| Flipped phase kept stale lastFailures row and no deterministic commit | P3 / MED (adv-F3) | adv | FIXED — splice + deterministicPhaseCommit on flip |
+| `allGreen` could be true over a phaseStatus subset (REPLAN break) | P3 | code | FIXED — length-parity guard |
+| Own-scope normalization lacked leakNorm's trim/trailing-slash | P3/NIT | both | FIXED — unified on leakNorm |
+| Exclude-set behavior + both envBlockedPhases.add sites unpinned | P3 | code | FIXED — 2 pin tests |
+| B3 injected human-owned replan rows as machine hard constraints (AC-20) | MED (adv-F2) | adv (probe-confirmed) | FIXED — human rows filtered |
+| Dead `rc12Deliverables` + stale docblock | P3 | code | FIXED |
+| "revised N time(s)" conflated requests with rounds | NIT (adv-F5) | adv | FIXED — rounds wording |
+
+Cleared by reviewers: §D re-entry double-count NOT reproducible (per-invocation local, green-skip); stash interaction correct (stashed work fails deliverables check); REPLAN double-fire impossible; import-cycle clean; prompt-injection residual (LLM titles verbatim) accepted as internal trust domain.

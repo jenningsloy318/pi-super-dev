@@ -11,6 +11,7 @@ import * as P from "../prompts.ts";
 import { ClassificationData } from "../render/schemas.ts";
 import { toBool, normalizePhases } from "../doc-validators.ts";
 import { isHarnessBookkeepingPath } from "../helpers.ts";
+import { priorReplanConstraintBlock } from "../replan/replan.ts";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
 
@@ -93,7 +94,7 @@ export const specWriter: Stage = writerTask({
 	accessMode: "source-read-only",
 	requires: ["*-requirements.md", "*-bdd-scenarios.md"],
 	buildPrompt: (state, ctx) =>
-		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null),
+		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null, priorReplanConstraintBlock((state as { setup?: { specDirectory?: string } | undefined }).setup?.specDirectory)),
 	normalizeControl: normalizeSpecControl,
 });
 

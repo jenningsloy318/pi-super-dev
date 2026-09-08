@@ -73,7 +73,11 @@ const norm = (p: string): string => String(p ?? "").trim().replace(/\\/g, "/").r
 const phaseLabel = (p: PlanPhase | undefined, index: number): string => p?.name?.trim() || `phase-${index + 1}`;
 
 /** Every file the phase's deliverable contract names (its writable set). */
-function phaseClauseFiles(phase: PlanPhase | undefined): string[] {
+/** Canonical clause-target file set of a phase (requireFiles + contains +
+ *  notContains + requireTests). Shared with implementation.ts so the leak
+ *  classifier's "own scope" and the validator's "writable set" derive from
+ *  ONE grammar (v0.3.80 B1, P6). */
+export function phaseClauseFiles(phase: PlanPhase | undefined): string[] {
 	const d = phase?.deliverables;
 	if (!d) return [];
 	const out: string[] = [];

@@ -672,6 +672,14 @@ modes) and **Proof** (which gate/test command/deliverable clause proves
 completion) — optional fields, bounded to 3 one-liners, never padded; old
 specs and resume replays stay valid.
 
+## Phase ownership, commit fusion, plan memory (v0.3.80)
+
+Wave B of the spec-25 root-cause program (`docs/findings/deep-analysis-2026-09-08-spec25.md`):
+
+- **B1 ownership grammar** — a phase's "own scope" (what the phase-boundary leak guard treats as legitimately editable) and the plan validator's "writable set" now derive from ONE canonical clause grammar (`phaseClauseFiles`: requireFiles/contains/notContains/tests). Co-declaring a shared file in BOTH phases is the legal handoff; the BLOCKING leak revert now carries a ROUTE TO APPROVAL (declare the file, or revise the plan's ordering) per the playbook's blocking-hook rule; the spec prompt teaches the grammar to the plan writer.
+- **B2 stage-close re-verification (commit fusion)** — a phase ending PARTIAL with its work already landed (gate-window expiry, absorbed work) is re-verified at stage close: live deliverable check per partial phase + one stage-level build gate; satisfied phases flip GREEN honestly. Judge-owned environmental stops are excluded (their resolution is env/judge-owned).
+- **B3 plan memory** — fresh runs on a spec dir with replan history inject the persisted replan requests as HARD CONSTRAINTS into the spec-writer prompt, so a re-derived plan does not re-introduce the shapes a prior REPLAN revised away.
+
 ## Structured delegation (v0.3.70)
 
 Every stage call carries a TypeBox schema (`STAGE_MODELS`), and since v0.3.70

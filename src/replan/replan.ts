@@ -517,6 +517,36 @@ export async function triggerReplanForFindings(
 
 // ─── R3 consumption: the owning convergence node side ───────────────────────
 
+/** v0.3.80 B3 — plan memory: render the spec dir's replan-request history as a
+ *  hard-constraint block for the spec-writer prompt, so a FRESH run re-deriving
+ *  a plan for the same spec dir does not re-introduce the shapes a prior REPLAN
+ *  already revised away (run 14-14 re-derived the contradictory 10-phase plan
+ *  after 13-57's REPLAN). History, not just pending rows — addressed requests
+ *  are exactly the lessons worth keeping. Returns "" when there is no history. */
+export function priorReplanConstraintBlock(specDir: string | undefined): string {
+	if (!specDir) return "";
+	let requests: ReplanRequest[] = [];
+	let rounds = 0;
+	try {
+		const file = readJson<ReplanRequestsFile>(specPath(specDir, REPLAN_REQUESTS_FILE), { version: 1, rounds: 0, requests: [] });
+		requests = file.requests ?? [];
+		rounds = file.rounds ?? 0;
+	} catch {
+		return ""; // unreadable history is not a blocker; the A1 validator remains the detective half
+	}
+	// review F2 (AC-20): human-owned rows are structurally excluded from every
+	// machine-injected channel — an OPEN human decision must not become a
+	// settled machine directive in the writer's prompt.
+	requests = requests.filter((r) => r.ownerStage !== "human");
+	if (requests.length === 0) return "";
+	const rows = requests.slice(-12).map((r) => `- [${r.ownerStage}] ${r.title}${r.requestedRevision ? ` — required revision: ${r.requestedRevision}` : ""}`);
+	return [
+		"## Prior replan findings (this spec dir's history) — HARD CONSTRAINTS",
+		`This specification has been replanned ${rounds} round(s); the machine-owned findings below were the reasons. The re-derived plan MUST NOT reintroduce any of these shapes:`,
+		...rows,
+	].join("\n");
+}
+
 /** Pending replan requests owned by `stage` (round-1 injection input).
  *  Human rows are structurally excluded — they are never injected into any
  *  convergence loop (AC-20). */
