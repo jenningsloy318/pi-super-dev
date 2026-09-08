@@ -110,6 +110,9 @@ const sessionHarness = vi.hoisted(() => ({
 	 *  landing DURING the awaited session-creation window). */
 	abortOnReload: null as AbortController | null,
 	lastSession: null as { abortCalls: number; promptCalls: number } | null,
+	/** v0.3.81: fired synchronously inside createAgentSession so a test can
+	 *  attach per-session behavior BEFORE any prompt can race the attach. */
+	onSessionCreated: null as ((s: unknown) => void) | null,
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", () => {
@@ -134,6 +137,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 			sessionHarness.createCalls++;
 			const s = new FakeSession();
 			sessionHarness.lastSession = s;
+			sessionHarness.onSessionCreated?.(s);
 			return { session: s };
 		},
 		createCodingTools: () => [],
@@ -191,38 +195,46 @@ describe("v0.3.28: terminal usage summary + run.log narration (session backend)"
 		const { runAgentViaSession } = await import("../src/bench/session-agent.ts");
 		const events: string[] = [];
 		const controller = new AbortController();
-		const pending = runAgentViaSession({
-			agent: "requirements-clarifier",
-			id: "pipeline.requirements.a1",
-			prompt: "Clarify.\n\nOutput <control> JSON with: ok.",
-			cwd: "/tmp",
-			controlKeys: ["ok"],
-			signal: controller.signal,
-			onProgress: { event: (m: string) => events.push(m), text: () => {} },
-		});
-		await vi.waitFor(() => expect(sessionHarness.lastSession).toBeTruthy());
-		const s = sessionHarness.lastSession as unknown as {
-			messages: unknown[];
-			listener?: (e: unknown) => void;
-			onPrompt?: (s: unknown) => void;
+		// v0.3.81 de-flake: attach per-session behavior from INSIDE
+		// createAgentSession (harness hook) — the old waitFor-then-attach raced
+		// the first prompt() under scheduler variance (failed only under -t
+		// filtered runs).
+		sessionHarness.onSessionCreated = (raw) => {
+			const sess = raw as { messages: unknown[]; onPrompt?: (s: unknown) => void; listener?: (e: unknown) => void };
+			let pushedUsage = false;
+			sess.onPrompt = (self) => {
+				const s2 = self as { listener?: (e: unknown) => void };
+				// narration streams in via message_update (text_end shape); the
+				// listener here is the one forwardProgress registered.
+				s2.listener?.({ type: "message_update", assistantMessageEvent: { type: "text_end", partial: { content: [{ type: "text", text: "Reading the export chain." }] } } });
+				// the assistant reply lands in session.messages WITH usage (live
+				// shape). Push EXACTLY ONCE — self-heal re-prompts must not
+				// double-count usage.
+				if (!pushedUsage) {
+					pushedUsage = true;
+					sess.messages.push({
+						role: "assistant",
+						model: "zai-coding-cn/glm-5.2",
+						content: [{ type: "text", text: "<control>{\"ok\": true}</control>" }],
+						usage: { input: 210, output: 55, cacheRead: 1900, cacheWrite: 0, cost: { total: 0.0042 } },
+					});
+				}
+			};
 		};
-		s.onPrompt = (sess) => {
-			// narration streams in via message_update (text_end shape)
-			s.listener?.({ type: "message_update", assistantMessageEvent: { type: "text_end", partial: { content: [{ type: "text", text: "Reading the export chain." }] } } });
-			// the assistant reply lands in session.messages WITH usage (live shape).
-			// Only on the FIRST prompt — runAgentViaSession's self-heal #1 re-prompts
-			// once when structured_output was never called; that turn adds no message
-			// here (usage must not double-count).
-			const first = (sess as { promptCalls: number }).promptCalls === 1;
-			if (first) (sess as { messages: unknown[] }).messages.push({
-				role: "assistant",
-				model: "zai-coding-cn/glm-5.2",
-				content: [{ type: "text", text: "<control>{\"ok\": true}</control>" }],
-				usage: { input: 210, output: 55, cacheRead: 1900, cacheWrite: 0, cost: { total: 0.0042 } },
+		try {
+			const result = await runAgentViaSession({
+				agent: "requirements-clarifier",
+				id: "pipeline.requirements.a1",
+				prompt: "Clarify.\n\nOutput <control> JSON with: ok.",
+				cwd: "/tmp",
+				controlKeys: ["ok"],
+				signal: controller.signal,
+				onProgress: { event: (m: string) => events.push(m), text: () => {} },
 			});
-		};
-		const result = await pending;
-		expect(result.control).toEqual({ ok: true });
+			expect(result.control).toEqual({ ok: true });
+		} finally {
+			sessionHarness.onSessionCreated = null;
+		}
 		const done = events.find((m) => m.startsWith("session pipeline.requirements.a1: completed"));
 		expect(done).toBeTruthy();
 		expect(done).toContain("model=zai-coding-cn/glm-5.2");

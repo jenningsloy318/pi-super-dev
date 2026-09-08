@@ -35,3 +35,6 @@ vi.mock("../../src/render/super-dev-dir.ts", async (importOriginal) => {
 // (run-metrics.test, sigma-bands.test) delete this var locally; they mock
 // getSuperDevDir so their writes stay in tmp dirs either way.
 process.env.SUPER_DEV_NO_GLOBAL_METRICS = "1";
+// v0.3.81 adv-F1: activation's fire-and-forget git fetch must never do real
+// network I/O (or mutate remote-tracking refs) from inside the unit suite.
+process.env.SUPER_DEV_NO_FRESHNESS_CHECK = "1";

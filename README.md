@@ -680,6 +680,10 @@ Wave B of the spec-25 root-cause program (`docs/findings/deep-analysis-2026-09-0
 - **B2 stage-close re-verification (commit fusion)** — a phase ending PARTIAL with its work already landed (gate-window expiry, absorbed work) is re-verified at stage close: live deliverable check per partial phase + one stage-level build gate; satisfied phases flip GREEN honestly. Judge-owned environmental stops are excluded (their resolution is env/judge-owned).
 - **B3 plan memory** — fresh runs on a spec dir with replan history inject the persisted replan requests as HARD CONSTRAINTS into the spec-writer prompt, so a re-derived plan does not re-introduce the shapes a prior REPLAN revised away.
 
+## Serving-copy freshness + eval stability (v0.3.81)
+
+Wave C of the spec-25 program: the extension stamps its serving version at every activation and warns (fire-and-forget, never blocks) when the installed copy is behind its `origin/main` — the 2026-09-04T14-10 incident class where a fixed bug kept running live because the serving copy lagged the repo. The version was already stamped into every `run.log` header; now the mismatch is loud at startup. Also: the incident eval suite (`npm run evals`) is flake-free — the v0.3.28 session-backend narration test's waitFor-attach race was replaced with a creation-time harness hook.
+
 ## Structured delegation (v0.3.70)
 
 Every stage call carries a TypeBox schema (`STAGE_MODELS`), and since v0.3.70

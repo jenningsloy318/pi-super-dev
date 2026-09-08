@@ -48,6 +48,7 @@ export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
 export * as nodes from "./nodes.ts";
 export { runWorkflow } from "./workflow.ts";
 export { SUPER_DEV_VERSION_METADATA, SUPER_DEV_EXTENSION_VERSION, SUPER_DEV_VERSION_POLICY, superDevVersionLabel } from "./version.ts";
+import { checkServingFreshness, SERVING_EXTENSION_DIR, servingVersionLine } from "./serving-freshness.ts";
 
 const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
@@ -640,6 +641,17 @@ export default function activate(pi: ExtensionAPI): void {
 		if (delegationBus) {
 			superDevAgentsDispose = registerSuperDevAgents(delegationBus, (line: string) => { try { pi.appendEntry?.("super-dev-agent-registration", { line }); } catch { /* best-effort */ } });
 		}
+	} catch { /* best-effort */ }
+	// v0.3.81 C1: serving-copy freshness — stamp the version once at activation
+	// and warn (best-effort, fire-and-forget, never blocks activation) when the
+	// installed copy is behind its origin (incident class 2026-09-04T14-10: a
+	// fixed bug kept running live because the serving copy lagged repo main).
+	try {
+		console.error(`[super-dev] ${servingVersionLine()}`);
+		void checkServingFreshness(SERVING_EXTENSION_DIR, (line) => {
+			try { console.error(line); } catch { /* best-effort */ }
+			try { pi.appendEntry?.("super-dev-freshness", { line }); } catch { /* best-effort */ }
+		});
 	} catch { /* best-effort */ }
 	// Phase 1 (AC-01 / SCENARIO-001): register the mid-run input listener EXACTLY
 	// ONCE at module lifetime (inside activate, never per execute() call). The
