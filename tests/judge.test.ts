@@ -67,10 +67,13 @@ describe("judge unit", () => {
 	// upstream stages is consequential, so the judge must quote the offending
 	// artifact text + the contradicting reality; a zero-evidence verdict discards.
 	// SCENARIO-002
-	it("v0.2.8: a zero-evidence replan-upstream verdict DISCARDS (evidence-required, NOT missing-evidence-exempt)", async () => {
+	it("v0.2.8: a zero-evidence replan-upstream verdict never ROUTES — v0.3.79 corrective floor escalates (evidence-required, NOT missing-evidence-exempt)", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "replan-upstream", evidence: [] }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-ru-empty", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment", "replan-upstream"] });
-		expect(out.status).toBe("discarded");
+		// v0.3.79 A2: corrective re-call returns the same zero-evidence verdict →
+		// escalate floor; the consequential route never fires unverified.
+		expect(out.status).toBe("escalate");
+		if (out.status === "escalate") expect(out.verdict.route).toBe("escalate-now");
 	});
 
 	// SCENARIO-003
@@ -84,7 +87,7 @@ describe("judge unit", () => {
 	// allow-scaffold is likewise evidence-required (not missing-evidence-exempt).
 	it("v0.2.8: a zero-evidence allow-scaffold verdict DISCARDS; an evidence-backed one ROUTES", async () => {
 		const empty = makeCtx(() => ({ control: baseVerdict({ route: "allow-scaffold", evidence: [] }) as Record<string, unknown> }));
-		expect((await runJudge(empty.ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-as-empty", worktreePath: wt, context: "ctx", allowedRoutes: ["allow-scaffold", "re-author-tests"] })).status).toBe("discarded");
+		expect((await runJudge(empty.ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-as-empty", worktreePath: wt, context: "ctx", allowedRoutes: ["allow-scaffold", "re-author-tests"] })).status).toBe("escalate");
 		const ok = makeCtx(() => ({ control: baseVerdict({ route: "allow-scaffold" }) as Record<string, unknown> }));
 		const out = await runJudge(ok.ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-as-ok", worktreePath: wt, context: "ctx", allowedRoutes: ["allow-scaffold", "re-author-tests"] });
 		expect(out.status).toBe("routed");
@@ -135,10 +138,11 @@ describe("judge unit", () => {
 		expect(logs.join(" ")).toContain("route=re-author-tests");
 	});
 
-	it("runJudge discards an unverified verdict (escalates, never permissive)", async () => {
+	it("runJudge never routes an unverified verdict (v0.3.79: corrective floor escalates, never permissive)", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ evidence: [{ file: "src/a.test.ts", quote: "fabricated quote not present anywhere" }] }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "test", signature: "sig-2", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "continue"] });
-		expect(out.status).toBe("discarded");
+		// v0.3.79 A2: corrective attempt repeats the fabrication → escalate floor.
+		expect(out.status).toBe("escalate");
 	});
 
 	// ── F4 (RC4 + adversarial F4-JUDGE-INTEGRITY): escalate-now with NO evidence
@@ -153,10 +157,10 @@ describe("judge unit", () => {
 		expect(logs.join(" ")).toContain("unverified escalate accepted");
 	});
 
-	it("runJudge still DISCARDS an escalate-now verdict with a fabricated quote", async () => {
+	it("an escalate-now verdict with a fabricated quote never routes on escalate's own evidence — v0.3.79 floor escalates with the diagnosis preserved", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "escalate-now", evidence: [{ file: "src/a.test.ts", quote: "a fabricated quote that appears nowhere in the file at all" }] }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "test", signature: "sig-f4b", worktreePath: wt, context: "ctx", allowedRoutes: ["escalate-now"] });
-		expect(out.status).toBe("discarded");
+		expect(out.status).toBe("escalate");
 	});
 
 	// ── J5 (run 2026-08-19T02-01-12-840Z): the RED no-progress recovery routes
@@ -189,18 +193,17 @@ describe("judge unit", () => {
 	});
 
 	// SCENARIO-003
-	it("J5: re-author-tests with a FABRICATED quote still DISCARDS (fabrication guard unchanged)", async () => {
+	it("J5: re-author-tests with a FABRICATED quote never ROUTES (fabrication guard unchanged; v0.3.79 floor escalates)", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "re-author-tests", evidence: [{ file: "src/a.test.ts", quote: "this quote is fabricated and appears nowhere in the file" }] }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-j5c", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment"] });
-		expect(out.status).toBe("discarded");
+		expect(out.status).toBe("escalate");
 	});
 
 	// SCENARIO-004
-	it("J5: re-author-tests with MALFORMED (all-empty) evidence still DISCARDS", async () => {
+	it("J5: re-author-tests with MALFORMED (all-empty) evidence never ROUTES (v0.3.79 floor escalates — the run-14-14 silent-discard class now has an exit)", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "re-author-tests", evidence: [{ file: "", quote: "" }] }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "stage9.red-no-progress.phase-01", signature: "sig-j5d", worktreePath: wt, context: "ctx", allowedRoutes: ["re-author-tests", "fix-environment"] });
-		expect(out.status).toBe("discarded");
-		if (out.status === "discarded") expect(out.reason).toContain("malformed");
+		expect(out.status).toBe("escalate");
 	});
 
 	// SCENARIO-005 — FLIPPED in v0.2.11 (run 2026-08-19T14-54-22-165Z): the
@@ -224,10 +227,10 @@ describe("judge unit", () => {
 		expect(String(entry.reason ?? "")).toContain("NO evidence");
 	});
 
-	it("v0.2.11: challenge-test with FABRICATED evidence still DISCARDS (fabrication guard unchanged)", async () => {
+	it("v0.2.11: challenge-test with FABRICATED evidence never ROUTES (fabrication guard unchanged; v0.3.79 floor escalates)", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "challenge-test", evidence: [{ file: "src/a.test.ts", quote: "this quote is fabricated and appears nowhere in the file" }] }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "stage9.impl-no-progress.phase-01", signature: "sig-v0211b", worktreePath: wt, context: "ctx", allowedRoutes: ["challenge-test", "re-author-tests"] });
-		expect(out.status).toBe("discarded");
+		expect(out.status).toBe("escalate");
 	});
 
 	// SCENARIO-006
@@ -261,13 +264,10 @@ describe("judge unit", () => {
 	// fabricated its evidence; that is MALFORMED, not MISSING — it discards on
 	// EVERY route (including escalate-now), never degrades via the
 	// missing-evidence path. "attached nothing" ≠ "attached garbage".
-	it("B4: an all-empty evidence array classifies as malformed and DISCARDS even on escalate-now", async () => {
+	it("B4: an all-empty evidence array classifies as malformed — v0.3.79: corrective floor escalates even on escalate-now (the run-14-14 class)", async () => {
 		const { ctx } = makeCtx(() => ({ control: baseVerdict({ route: "escalate-now", evidence: [{ file: "", quote: "" }] }) as Record<string, unknown> }));
 		const out = await runJudge(ctx, { scope: "test", signature: "sig-b4", worktreePath: wt, context: "ctx", allowedRoutes: ["escalate-now"] });
-		// RED today: parseJudgeControl filters the empty item away, so the verdict
-		// looks evidence-LESS and takes the escalate degrade.
-		expect(out.status).toBe("discarded");
-		if (out.status === "discarded") expect(out.reason).toContain("malformed");
+		expect(out.status).toBe("escalate");
 	});
 
 	it("B4 (unit): verifyJudgeEvidence flags an all-empty-whitespace evidence array as malformed", () => {

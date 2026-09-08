@@ -282,7 +282,7 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 			const results: boolean[] = [];
 			let s = mk();
 			for (const attempt of [1, 2, 3, 4]) {
-				results.push(recordVerificationStagnation(s, ctx, rec(attempt)));
+				results.push(await recordVerificationStagnation(s, ctx, rec(attempt)));
 				s = carryW(s, mk());
 			}
 			expect(results, "replayed 1-2 must not arm (THE incident); fresh 3 alone must not; fresh 4 arms").toEqual([false, false, false, true]);
@@ -298,9 +298,9 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 			const ctx = { ...fakeCtx(), options: {} } as unknown as StageContext;
 			const { recordVerificationStagnation } = await import("../src/stages/verify.ts");
 			let s = mk();
-			const r1 = recordVerificationStagnation(s, ctx, rec(1));
+			const r1 = await recordVerificationStagnation(s, ctx, rec(1));
 			s = carryW(s, mk());
-			expect([r1, recordVerificationStagnation(s, ctx, rec(2))], "no resume ⇒ old behavior: attempt 2 arms").toEqual([false, true]);
+			expect([r1, await recordVerificationStagnation(s, ctx, rec(2))], "no resume ⇒ old behavior: attempt 2 arms").toEqual([false, true]);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -311,9 +311,9 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 			const ctx = { ...fakeCtx(), options: { resumeSpecIdentifier: "x" } } as unknown as StageContext;
 			const { recordVerificationStagnation } = await import("../src/stages/verify.ts");
 			let s = WITH_FIX(STAGNANT_STATE(d));
-			const r1 = recordVerificationStagnation(s, ctx, rec(1));
+			const r1 = await recordVerificationStagnation(s, ctx, rec(1));
 			s = carryW(s, WITH_FIX(STAGNANT_STATE(d)));
-			expect([r1, recordVerificationStagnation(s, ctx, rec(2))], "kill-switch ⇒ replayed attempt 2 arms (pre-fix semantics)").toEqual([false, true]);
+			expect([r1, await recordVerificationStagnation(s, ctx, rec(2))], "kill-switch ⇒ replayed attempt 2 arms (pre-fix semantics)").toEqual([false, true]);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -330,7 +330,7 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 			// Re-entry: the loop restarts `attempt` at 1, but seq = max(1, ledger 4) = 4 > arms 2 ⇒ FRESH.
 			// (Pre-remediation the guard compared record.attempt directly: 1 ≤ 2 ⇒
 			// suppressed — the over-suppression both reviewers flagged.)
-			const r = recordVerificationStagnation(afterEntry1, ctx, rec(1));
+			const r = await recordVerificationStagnation(afterEntry1, ctx, rec(1));
 			expect(r, "re-entry attempt 1 with 4 recorded attempts is FRESH — pushes round, may arm on recurrence").toBe(false);
 			const hist = (afterEntry1 as unknown as Record<string, unknown>).__verificationFailureFingerprintRounds as unknown[] | undefined;
 			expect(hist, "the re-entry attempt pushed into the arming history (not suppressed)").toHaveLength(1);
@@ -344,9 +344,9 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 			let s = WITH_FIX(STAGNANT_STATE(d)); // …and none on state
 			const { recordVerificationStagnation, verificationReplayArms } = await import("../src/stages/verify.ts");
 			expect(verificationReplayArms(s, ctx)).toBe(0);
-			const r1 = recordVerificationStagnation(s, ctx, rec(1));
+			const r1 = await recordVerificationStagnation(s, ctx, rec(1));
 			s = carryW(s, WITH_FIX(STAGNANT_STATE(d)));
-			expect([r1, recordVerificationStagnation(s, ctx, rec(2))], "no marker anywhere ⇒ attempt 2 arms").toEqual([false, true]);
+			expect([r1, await recordVerificationStagnation(s, ctx, rec(2))], "no marker anywhere ⇒ attempt 2 arms").toEqual([false, true]);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });

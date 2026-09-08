@@ -98,6 +98,16 @@ If a file reports DIFF, act per contract:
   mise pi tree's `node_modules/@earendil-works/`. Remove this item when pi-subagents
   extends the resolution to 0.85.x hosts or pi ships the packages.
 
+- **2026-09-08** — pi-subagents **0.66.0** on disk (installed 2026-09-07 08:48).
+  Verified live from a pi session started 2026-09-04 (in-memory 0.65.x): foreground
+  in-process child delegation WORKS (builtin implementer "OK" probe) and background
+  async workflow children spawn (runs.run fan-out) — no version-skew crash class
+  observed across the 0.65.x→0.66.0 boundary so far. `codex-exec`/`claude-code`
+  external-CLI children fail on their OWN auth (401 against api.openai.com), not on
+  the delegation machinery — ops note only. Re-check C1-C6 contract surfaces against
+  0.66.0 source when changelog access is available (npm/github fetch blocked
+  historically; AnySearch first).
+
 - **2026-08-29** — checked after "pi-subagents updated today" report. No new npm
   release (0.58.0 remains latest, published 2026-08-27T04:57Z). Main gained 10
   unreleased commits (through `1f2abe1`): turnBudget/defaultTurnBudget removals

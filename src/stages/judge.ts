@@ -297,10 +297,10 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 	runCalls++;
 	ctx.log(`judge ${req.scope}: call ${used + 1}/${MAX_CALLS_PER_SIGNATURE} (run ${runCalls}/${maxCallsPerRun()})`);
 	try {
-		const judgeAgentCall = () => ctx.agent({
+		const judgeAgentCall = (contextText: string = req.context) => ctx.agent({
 			id: `pipeline.judge.${req.scope.replace(/[^A-Za-z0-9.-]+/g, "-")}`,
 			agent: "judge",
-			prompt: buildJudgePrompt(req.scope, req.context, allowed),
+			prompt: buildJudgePrompt(req.scope, contextText, allowed),
 			accessMode: "source-read-only",
 			controlKeys: [...JUDGE_CONTROL_KEYS],
 			// v0.3.70 W3: structured delegation + engine-side schema validation —
@@ -348,7 +348,7 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 			appendAudit(req, { error: result.error, ...(judgeAttempts > 1 ? { attempts: judgeAttempts } : {}) });
 			return { status: "degraded", reason: `judge agent failed: ${result.error}` };
 		}
-		const verdict = parseJudgeControl(result.control);
+		let verdict = parseJudgeControl(result.control);
 		if (!verdict) {
 			appendAudit(req, { error: "unparseable judge control", control: result.control ?? null });
 			return { status: "discarded", reason: "judge control unparseable or missing diagnosis/route" };
@@ -393,9 +393,64 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 			// with the cap spent) degrade a routed challenge-test to HITL with the
 			// diagnosis surfaced — the safe floor is unchanged.
 			if (!(missingOnly && DIAGNOSIS_DRIVEN_MISSING_OK.has(verdict.route))) {
-				appendAudit(req, { verdict, discarded: true, evidenceFailures });
-				ctx.log(`judge ${req.scope}: verdict DISCARDED — evidence verification failed: ${evidenceFailures.join("; ")}`);
-				return { status: "discarded", reason: `evidence verification failed: ${evidenceFailures.join("; ")}` };
+				// v0.3.79 A2 (spec-25 run 2026-09-07T14-14-09-937Z ×2): an evidence-
+				// verification failure is NEVER a silent discard — that run burned its
+				// no-progress escape valve twice on "evidence is malformed: every item
+				// is empty/whitespace" and looped for hours with no exit. One corrective
+				// re-call feeds the failures back (critique-and-retry,
+				// arXiv:2509.02761: specific critiques converge in ≤3 rounds); a
+				// corrective verdict that verifies routes normally; one that still
+				// fails ESCALATES with the diagnosis preserved (F4 doctrine: the
+				// diagnosis is the product). Fabrication discipline preserved — an
+				// unverified verdict never routes on its claimed route; the only floor
+				// is escalate. Bounded by the same per-signature/run budgets (INV-3).
+				const usedNow = signatureCalls.get(sigKey) ?? 0;
+				if (usedNow < MAX_CALLS_PER_SIGNATURE && runCalls < maxCallsPerRun()) {
+					signatureCalls.set(sigKey, usedNow + 1);
+					runCalls++;
+					appendAudit(req, { verdict, correctiveRetry: true, evidenceFailures });
+					ctx.log(`judge ${req.scope}: verdict failed evidence verification — one corrective re-call with the failures fed back: ${evidenceFailures.join("; ")}`);
+					const correctiveContext = [
+						req.context,
+						"",
+						"## Prior verdict rejected — evidence verification failed",
+						...evidenceFailures.map((f) => `- ${f}`),
+						"",
+						"Re-emit your control with VERIFIABLE evidence: each item must be an exact quote that appears in the named file (file + quote), or an exact quote from the captured output tails. If you cannot ground your diagnosis, route escalate-now and say so.",
+					].join("\n");
+					let corrective: { ok: true; result: Awaited<ReturnType<typeof judgeAgentCall>> } | { ok: false; thrown: string };
+					try {
+						corrective = { ok: true, result: await judgeAgentCall(correctiveContext) };
+					} catch (err) {
+						corrective = { ok: false, thrown: err instanceof Error ? err.message : String(err) };
+					}
+					if (!corrective.ok || (corrective.result.error && !corrective.result.control)) {
+						appendAudit(req, { error: corrective.ok ? String(corrective.result.error) : corrective.thrown, correctiveAttempt: 2 });
+						return { status: "degraded", reason: `judge agent failed on the corrective attempt: ${corrective.ok ? String(corrective.result.error) : corrective.thrown}` };
+					}
+					const verdict2 = parseJudgeControl(corrective.result.control);
+					const failures2 = verdict2 ? verifyJudgeEvidence(verdict2, req.worktreePath, req.outputTails ?? []) : ["corrective control unparseable"];
+					if (verdict2 && failures2.length === 0) {
+						appendAudit(req, { verdict: verdict2, correctiveRescued: true });
+						ctx.log(`judge ${req.scope}: corrective verdict verified — adjudicating normally (route=${verdict2.route})`);
+						verdict = verdict2;
+						// fall through to the allowed/confidence gates below
+					} else {
+						const floor = verdict2 ?? verdict;
+						appendAudit(req, { verdict: floor, escalated: true, evidenceFailures, correctiveFailed: true, reason: "escalate-after-corrective-retry (diagnosis preserved, evidence unverified)" });
+						ctx.log(`judge ${req.scope}: corrective verdict STILL fails evidence verification — escalating with the diagnosis preserved (never a silent discard): ${failures2.join("; ")}`);
+						// CR-v0379-P1: the floor's evidence FAILED verification — zero it.
+						// Consumers (judgeEscalateEvidencePresent at the convergence caps)
+						// treat NON-EMPTY escalate evidence as machine-verified and
+						// FatalAbort on it; an unverified quote must degrade to the same
+						// advisory-only escalate the F4 missing-evidence path produces.
+						return { status: "escalate", verdict: { ...floor, route: "escalate-now", evidence: [] } };
+					}
+				} else {
+					appendAudit(req, { verdict, discarded: true, evidenceFailures, reason: "corrective budget exhausted" });
+					ctx.log(`judge ${req.scope}: verdict DISCARDED — evidence verification failed and the corrective budget is exhausted: ${evidenceFailures.join("; ")}`);
+					return { status: "discarded", reason: `evidence verification failed: ${evidenceFailures.join("; ")}` };
+				}
 			}
 			// missing-evidence exempt: fall through to the allowed/confidence gates
 			// (a not-offered or below-confidence route still escalates), then to the

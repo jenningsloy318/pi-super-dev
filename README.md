@@ -708,6 +708,15 @@ enforce-when-schema; plan: docs/plans/2026-09-05-v0.3.68-hardening-plan.md §5):
   red-boundary/file classifiers. P6 dynamic cross-check pins the judge route
   union against `stages/judge.ts JUDGE_ROUTES`.
 
+## Plan feasibility & escape-valve integrity (v0.3.79)
+
+Root cause class (spec-25 deep analysis, `docs/findings/deep-analysis-2026-09-08-spec25.md`): the machinery executed plans it had never validated for feasibility, on a single-worktree ownership model that horizontal specs structurally violate, through stage-local loops whose only escape valve (the judge) failed closed — so the same infeasibility surfaced at a different stage each run.
+
+- **Plan-feasibility validator** (`src/stages/plan-feasibility.ts`, deterministic, zero-LLM) runs at Stage 9 entry: cross-phase identifier contradictions (an earlier phase's test clause needs an identifier the plan positions in a later phase's production file — every satisfiable fix trips the BLOCKING boundary guard) and requireContains/requireNotContains same-file same-pattern conflicts route **REPLAN before any phase executes**; shared-file coupling and missing vitest coverage tooling surface as advisories first.
+- **Execution-time contradiction fast-fail**: a phase whose repeated no-progress signature coincides with observed BLOCKING phase-boundary reverts arms a contradiction frame at the no-progress valve — `replan-upstream` is offered to the judge, and a routed verdict triggers the replan machinery instead of blind retries (run 14-14 burned 6 attempts ≈2h before its generic valve fired).
+- **Judge evidence failures never silently discard**: one corrective re-call feeds the verification failures back into the prompt; a corrective verdict that verifies routes normally; one that still fails **escalates with the diagnosis preserved** (the fabrication guard stands — an unverified verdict never routes on its claimed route; the only floor is escalate).
+- **Stagnation routes by finding class**: reviewer infra non-completions ("X review did not complete") never arm the stagnation stop; a genuine content stop first asks the judge once whether the blockers are within the stage's authority or plan/spec-owned — a `replan-upstream` verdict becomes a REPLAN instead of a human-decision PARTIAL.
+
 ## The auto-continuous evolution loop (v0.3.69)
 
 The harness's fix lifecycle (findings → class-level tests → version) has

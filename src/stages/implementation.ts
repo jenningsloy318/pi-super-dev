@@ -24,8 +24,9 @@ import type { ChangeRecord, StructuredChanges } from "../tracking.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
-import { firstCitedTestFile, runJudge } from "./judge.ts";
+import { firstCitedTestFile, runJudge, type JudgeRoute } from "./judge.ts";
 import { triggerReplanForFindings, replanPending } from "../replan/replan.ts";
+import { planFeasibilityFindings, contradictionFastFailFrame } from "./plan-feasibility.ts";
 import { isNoEditCompletion } from "../agent-errors.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA, TddCoverageControlData, FileClassifyControlData } from "../render/schemas.ts";
@@ -1498,6 +1499,39 @@ export const implementationStage: Stage = {
 			ctx.log(`Implementation: WORKTREE GONE — ${setup.worktreePath} no longer exists (removed externally). Failing the stage closed; every delegation into it would hang or die silently. If a host process for this run is still alive, stop it, then start a fresh run or resume.`);
 			return { phasesCompleted: 0, totalPhases: phases.length, allGreen: false, filesModified: [], phaseStatus: [], lastFailures: [{ phaseId: "phase-all", reasons: [`worktree removed externally: ${setup.worktreePath}`] }] };
 		}
+		// v0.3.79 A1 (spec-25, docs/findings/deep-analysis-2026-09-08-spec25.md):
+		// plan feasibility — the plan is a program; validate it BEFORE executing
+		// (the cheapest correction point; PDoctor/Turborepo precedent: check the
+		// graph you actually execute, at load time). Cross-phase contradictions
+		// route straight to REPLAN instead of surfacing hours later as BLOCKING
+		// phase-boundary revert loops (run 2026-09-07T14-14-09-937Z: ~2h burned
+		// on phase-01 of 10). Advisories surface even when no contradiction fires.
+		// ADV-v0379-2: validate ONCE per run — §D re-entries must not re-derive
+		// contradictions against a mid-run worktree (an incidental HEAD state
+		// change could replan after work already converged; a REPLAN restart
+		// gets a fresh state and re-validates in the new run).
+		const feasibilityOnce = ((state as Record<string, unknown>).__planFeasibilityChecked as boolean | undefined) ?? false;
+		(state as Record<string, unknown>).__planFeasibilityChecked = true;
+		const feasibility = feasibilityOnce
+			? { contradictions: [], advisories: [] }
+			: planFeasibilityFindings(phases, setup.worktreePath);
+		for (const advisory of feasibility.advisories) {
+			ctx.log(`Implementation plan advisory: ${advisory.title}`);
+		}
+		if (feasibility.contradictions.length > 0) {
+			for (const c of feasibility.contradictions) {
+				ctx.log(`Implementation plan CONTRADICTION: ${c.title} — ${c.detail}`);
+			}
+			let planReplanned = false;
+			try {
+				planReplanned = await triggerReplanForFindings(state, ctx, feasibility.contradictions.map((c) => ({ file: null, severity: "high", title: c.title, detail: c.detail, ownerStage: c.ownerStage })), "implementation", setup.specIdentifier ?? "unknown");
+			} catch { planReplanned = false; }
+			if (planReplanned) {
+				ctx.log(`Implementation: plan infeasible (${feasibility.contradictions.length} contradiction(s)) — routed to REPLAN before executing any phase`);
+				return { phasesCompleted: 0, totalPhases: phases.length, allGreen: false, filesModified: [], phaseStatus: [], lastFailures: [{ phaseId: "phase-all", reasons: feasibility.contradictions.map((c) => c.title) }] };
+			}
+			ctx.log("Implementation: plan contradictions detected but replan unavailable (budget/marker) — proceeding with the contradictions logged");
+		}
 		// §D auto-iterate: carry per-phase green state + failure reasons from the
 		// PRIOR convergence iteration (state.implementation holds the last run's
 		// control). Green phases are skipped; a failed phase's prior reasons seed
@@ -1662,6 +1696,15 @@ export const implementationStage: Stage = {
 			// iteration (a later re-entry gets a fresh budget of exactly 1) and grants
 			// EXACTLY ONE post-quarantine re-run; D-2: no delay-based anti-windup.
 			let envBlockerRegateUsed = false;
+			// v0.3.79 A2 (spec-25 run 14-14): count BLOCKING phase-boundary
+			// reverts in this phase — a repeated no-progress signature coinciding
+			// with reverts is a DETERMINISTIC plan contradiction, and the
+			// no-progress valve below becomes contradiction-informed (replan-
+			// upstream offered) instead of blind retry (the run burned 6 attempts
+			// ≈2h before its generic valve fired and then discarded the verdicts).
+			let boundaryRevertHits = 0;
+			let boundaryLeakOwners: string[] = [];
+			let boundaryLeakFiles: string[] = [];
 			// v0.2.6 G1 — dirt PROVENANCE: the phase's FIRST-EVER start porcelain
 			// snapshot, PERSISTED across §D convergence iterations (adversarial
 			// sd26-F1: the outer loop re-invokes the whole stage with no cap, so a
@@ -1689,9 +1732,14 @@ export const implementationStage: Stage = {
 			let envGuidanceReentryGranted = false;
 			// J9-a: judge diagnosis to surface at the human boundary when it escalates.
 			let redJudgeDiagnosis = "";
+			// ADV-v0379-4: honest labeling — the v0.3.79 corrective floor escalates with
+			// UNVERIFIED evidence (zeroed); "verified evidence" is only true for routed
+			// verdicts or evidence-carrying escalates (route-not-offered).
+			let redJudgeEvidenceLabel = "verified evidence";
 			let attemptProgressHistory: ProgressSignature[] = [];
 			// J9-b: judge diagnosis / guidance at the implementer no-progress boundary.
 			let implJudgeDiagnosis = "";
+			let implJudgeEvidenceLabel = "verified evidence";
 			let judgeGuidance = "";
 			// AND-semantics (AC-03 → SCENARIO-011..015): the missing DELIVERABLE entries
 			// from the previous attempt, fed into the next implementer retry under a
@@ -2373,6 +2421,7 @@ export const implementationStage: Stage = {
 								}
 								if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
 									redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+					redJudgeEvidenceLabel = judgeOut.status === "escalate" && judgeOut.verdict.evidence.length === 0 ? "escalated — evidence unverified" : "verified evidence";
 								}
 								terminalStopReason = "no-progress";
 								const why = seenBefore
@@ -2389,7 +2438,7 @@ export const implementationStage: Stage = {
 										const failure: import("../types.ts").EscalationFailure = {
 											kind: "stagnation",
 											stage: "implementation-red",
-											message: `RED test generation for phase "${phaseName}" is not converging (${why}). This is typically a spec or test-toolchain issue — e.g. the target package has no runnable test command, so a new test cannot be observed to fail. Inspect the recurring RED evidence or provide guidance before retrying.${redJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (verified evidence):\n${redJudgeDiagnosis}` : ""}`,
+											message: `RED test generation for phase "${phaseName}" is not converging (${why}). This is typically a spec or test-toolchain issue — e.g. the target package has no runnable test command, so a new test cannot be observed to fail. Inspect the recurring RED evidence or provide guidance before retrying.${redJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (${redJudgeEvidenceLabel}):\n${redJudgeDiagnosis}` : ""}`,
 											severity: "soft",
 											findings: (redEvidenceFailureReasons(redEvidence).length ? redEvidenceFailureReasons(redEvidence) : [redEvidence.reason ?? redEvidence.status]).slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
 											worktreePath: setup.worktreePath,
@@ -2947,7 +2996,10 @@ export const implementationStage: Stage = {
 				const inOwnScope = changedAll.filter((f) => declaredScope.has(f) || declaredScope.has(f.replace(/\\/g, "/").replace(/^\.\//, "")));
 				const leakOwners = laterPhaseDeliverableOwners(changedAll.filter((f) => !inOwnScope.includes(f)), phases, idx);
 				if (leakOwners.length > 0) {
+					boundaryRevertHits++;
 					const leakFiles = laterPhaseDeliverableHits(changedAll.filter((f) => !inOwnScope.includes(f)), phases, idx);
+					boundaryLeakOwners = [...new Set([...boundaryLeakOwners, ...leakOwners])];
+					boundaryLeakFiles = [...new Set([...boundaryLeakFiles, ...leakFiles])];
 					ctx.log(`Implementation ${phaseId} BLOCKING: changed-not-claimed file(s) ${leakFiles.join(", ")} are DECLARED DELIVERABLES of later phase(s) ${leakOwners.join(", ")} — phase-boundary leak; reverting them (this phase's scope stands, later phases redo the work with an honest RED)`);
 					restorePaths(setup.worktreePath, leakFiles);
 				}
@@ -3544,9 +3596,26 @@ export const implementationStage: Stage = {
 					footprint: changeFootprint(phaseChangeRec, projectStructured),
 				};
 				const noProgress = repeatedNoProgress(attemptProgressHistory, progressSignature);
+				// ADV-v0379-5: the contradiction valve's evidence must be from the SAME
+				// repeated-signature window — a revert from an earlier, unrelated
+				// signature must not arm the frame for this one.
+				const lastSignature = attemptProgressHistory[attemptProgressHistory.length - 1];
+				if (lastSignature && lastSignature.failure !== progressSignature.failure) {
+					boundaryRevertHits = 0;
+					boundaryLeakOwners = [];
+					boundaryLeakFiles = [];
+				}
 				attemptProgressHistory.push(progressSignature);
 				ctx.log(`Implementation ${phaseId} attempt ${attempt} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
 				if (noProgress) {
+					// v0.3.79 A2 (spec-25 run 14-14): a repeated signature + observed
+					// phase-boundary reverts is a DETERMINISTIC contradiction — arm the
+					// contradiction frame (replan-upstream offered) so the valve routes
+					// plan revision instead of blind retries; the generic J9-b frame
+					// stays when no revert was observed.
+					const cfFrame = boundaryRevertHits > 0
+						? contradictionFastFailFrame({ phaseId, phaseName: phases[idx]?.name ?? "", leakOwners: boundaryLeakOwners, leakFiles: boundaryLeakFiles, failureReasons })
+						: null;
 					// J9-b (judge routing layer): a verified diagnosis at the no-progress
 					// boundary, BEFORE the human is asked. challenge-test synthesizes the
 					// defect the implementer failed to report structurally and re-runs the
@@ -3560,6 +3629,7 @@ export const implementationStage: Stage = {
 						worktreePath: setup.worktreePath,
 						specDirectory: setup.specDirectory,
 						context: [
+							...(cfFrame ? [cfFrame.context] : []),
 							"## Recurring failure (identical signature across consecutive attempts)",
 							...failureReasons.slice(0, 12),
 							"## Implementer's last reasoning tail",
@@ -3571,9 +3641,30 @@ export const implementationStage: Stage = {
 							"## Test files under contract",
 							testFiles.join(", ") || "n/a",
 						].join("\n"),
-						allowedRoutes: ["challenge-test", "re-author-tests", "continue"],
+						allowedRoutes: cfFrame ? (cfFrame.allowedRoutes as JudgeRoute[]) : ["challenge-test", "re-author-tests", "continue"],
 						outputTails: [implTextTail, ...failureReasons],
 					});
+					if (judgeOut.status === "routed" && judgeOut.verdict.route === "replan-upstream") {
+						// v0.3.79 A2: the contradiction valve's plan-revision route —
+						// route the replan with the contradiction finding and stop this
+						// pass (shouldIterateImplementation gates the re-entry; the
+						// extension restarts under the revised spec).
+						const contradictionFinding = {
+							file: null,
+							severity: "high",
+							title: `plan contradiction at ${phaseId}: phase-boundary BLOCKING reverts block the only satisfiable fix`,
+							detail: `Repeated identical failures while the engine reverted out-of-scope edits into later-phase deliverables (${boundaryLeakFiles.join(", ") || "n/a"} owned by ${boundaryLeakOwners.join(", ") || "later phases"}). Judge diagnosis: ${judgeOut.verdict.diagnosis}`,
+							ownerStage: "spec",
+						};
+						let contradictionReplanned = false;
+						try { contradictionReplanned = await triggerReplanForFindings(state, ctx, [contradictionFinding], "implementation", setup.specIdentifier ?? "unknown"); } catch { contradictionReplanned = false; }
+						if (contradictionReplanned) {
+							redJudgeDiagnosis = judgeOut.verdict.diagnosis;
+							terminalStopReason = "no-progress";
+							ctx.log(`Implementation ${phaseId} judge route=replan-upstream: contradiction routed to REPLAN (plan revision) — stopping this pass (${boundaryRevertHits} boundary revert(s) observed)`);
+							break;
+						}
+					}
 					if (judgeOut.status === "routed" && judgeOut.verdict.route === "challenge-test" && acceptedRed && challengeReauthors < MAX_CHALLENGE_REAUTHORS) {
 						challengeReauthors++;
 						const defect = {
@@ -3608,6 +3699,7 @@ export const implementationStage: Stage = {
 					}
 					if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
 						implJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+				implJudgeEvidenceLabel = judgeOut.status === "escalate" && judgeOut.verdict.evidence.length === 0 ? "escalated — evidence unverified" : "verified evidence";
 					}
 					// HITL escalation (parity with gate-exhaustion + verify-stagnation):
 					// repeated identical failure is exactly where a human decision helps —
@@ -3646,7 +3738,7 @@ export const implementationStage: Stage = {
 							const failure: import("../types.ts").EscalationFailure = {
 								kind: "stagnation",
 								stage: "implementation",
-								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""}${implJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (verified evidence):\n${implJudgeDiagnosis}` : ""}${stillRedSuspect && implDefects.length === 0 ? "\n\nDETERMINISTIC TEST-SUSPECT SIGNAL: the phase's RED targets never went green across these repeated no-progress attempts (tdd-targets-still-red). The RED test itself may be unsatisfiable (defective). Legal next actions: re-author the RED with this failure evidence (retry-with-guidance), fix the environment, or accept the limitation." : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
+								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""}${implJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (${implJudgeEvidenceLabel}):\n${implJudgeDiagnosis}` : ""}${stillRedSuspect && implDefects.length === 0 ? "\n\nDETERMINISTIC TEST-SUSPECT SIGNAL: the phase's RED targets never went green across these repeated no-progress attempts (tdd-targets-still-red). The RED test itself may be unsatisfiable (defective). Legal next actions: re-author the RED with this failure evidence (retry-with-guidance), fix the environment, or accept the limitation." : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
 								severity: "soft",
 								findings: [
 									...(implJudgeDiagnosis ? [{ file: null, severity: null, title: `judge diagnosis: ${implJudgeDiagnosis.split("\n")[0].slice(0, 200)}` }] : []),

@@ -66,6 +66,11 @@ interface VerificationFailureItem {
 	file?: string | null;
 	severity?: string | null;
 	title?: string | null;
+	/** v0.3.79 A3 (spec-25): reviewer infra non-completion ("X review did not
+	 *  complete") — never counts toward the stagnation decision; tallied
+	 *  separately. Set at the source (failedReviewControl) with a defensive
+	 *  title-suffix fallback for older rows/resume reconstruction. */
+	infra?: boolean;
 }
 
 interface VerificationFailureFingerprintRound {
@@ -109,6 +114,7 @@ function currentVerificationFailureItems(s: PipelineState): VerificationFailureI
 				file: file || null,
 				severity,
 				title,
+				infra: finding.infra === true || / review did not complete$/i.test(title),
 			};
 		});
 	const deterministicBuildErrors = buildErrors(s).map((error, index) => ({
@@ -401,7 +407,7 @@ export function verificationReplayArms(state: PipelineState, ctx?: StageContext)
 	return arms;
 }
 
-export function recordVerificationStagnation(s: PipelineState, ctx: StageContext, record: VerificationAttemptRecord): boolean {
+export async function recordVerificationStagnation(s: PipelineState, ctx: StageContext, record: VerificationAttemptRecord): Promise<boolean> {
 	// V1: a replay-derived attempt (resume cache hit) reconstructs state but is
 	// not evidence — it must neither push into the arming fingerprint history
 	// nor arm the stagnation stop. Single choke point for all three call sites.
@@ -422,7 +428,46 @@ export function recordVerificationStagnation(s: PipelineState, ctx: StageContext
 	const items = currentVerificationFailureItems(s);
 	const history = rememberVerificationFailureRound(s, record, items);
 	const previous = history.length >= 2 ? history[history.length - 2] : undefined;
-	const recurring = recurringVerificationFailures(items, previous?.items);
+	const recurringAll = recurringVerificationFailures(items, previous?.items);
+	// v0.3.79 A3 (spec-25): reviewer infra non-completions NEVER count toward
+	// the stagnation decision — runs 00-49/13-23/13-43 stopped PARTIAL on "3
+	// recurring blockers" that were all "X review did not complete" while 18
+	// fix cycles burned on them. Content recurrence is the stop signal; infra
+	// non-completion is tallied and surfaced, never armed.
+	const recurring = recurringAll.filter((item) => !item.infra);
+	const infraNonCompletions = recurringAll.length - recurring.length;
+	if (recurringAll.length > 0 && recurring.length === 0) {
+		// ADV-v0379-3: never arming on infra alone removed the loop's cheap stop —
+		// a persistently broken reviewer class would burn the WHOLE budget (the
+		// v0.3.77 model-exclusion class). Cap consecutive all-infra rounds; past the
+		// cap stop for the human with the infra tally (retrying reviews cannot
+		// repair reviewer infrastructure).
+		const infraOnlyRounds = (((s as Record<string, unknown>).__infraOnlyRounds as number | undefined) ?? 0) + 1;
+		(s as Record<string, unknown>).__infraOnlyRounds = infraOnlyRounds;
+		if (infraOnlyRounds >= 3) {
+			ctx.log(`Stage 10: ${infraOnlyRounds} consecutive all-infra round(s) — reviewer infrastructure cannot complete (non-completion class); stopping for the human (retrying reviews does not repair infra)`);
+			(s as Record<string, unknown>).__verificationStagnated = {
+				rounds: history.length,
+				attempt: record.attempt,
+				status: (s.integration as { status?: unknown } | undefined)?.status ?? "review-build",
+				signature: record.failureSignature,
+				findings: [],
+				recurringBlockers: [],
+				infraNonCompletions,
+				infraOnlyStop: true,
+			};
+			recordVerificationConvergenceFinding(s, {
+				title: "Reviewer infrastructure non-completion persists",
+				detail: `${infraOnlyRounds} consecutive verification rounds recurred ONLY reviewer-infra non-completion findings ("review did not complete") — the reviewer agents cannot complete; retrying does not repair infrastructure`,
+				evidence: recurringAll.map((item) => `${item.source}:${item.fingerprint} ${item.label}`).slice(0, 12),
+				sourceGate: "stagnation",
+			});
+			return true;
+		}
+		ctx.log(`Stage 10: ${infraNonCompletions} recurring reviewer-infra non-completion(s) ("review did not complete") — infra, not content stagnation; not arming the stop (${infraOnlyRounds}/3 all-infra rounds)`);
+		return false;
+	}
+	if (recurring.length > 0) (s as Record<string, unknown>).__infraOnlyRounds = 0;
 	const currentRound = history[history.length - 1];
 	currentRound.recurringFingerprints = recurring.map((item) => item.fingerprint);
 	const lastFix = (s as Record<string, unknown>).__lastVerificationFix as { kind?: "review" | "integration"; changed?: boolean; before?: unknown; after?: unknown } | undefined;
@@ -450,6 +495,7 @@ export function recordVerificationStagnation(s: PipelineState, ctx: StageContext
 		signature: record.failureSignature,
 		findings,
 		recurringBlockers: recurring.map((item) => ({ fingerprint: item.fingerprint, source: item.source, label: item.label })),
+		infraNonCompletions,
 	};
 	// Preserve the existing extension summary/report path, which keys off
 	// __stagnated for verify-loop blockers.
@@ -465,6 +511,46 @@ export function recordVerificationStagnation(s: PipelineState, ctx: StageContext
 		evidence: recurring.map((item) => `${item.source}:${item.fingerprint} ${item.label}`).slice(0, 12),
 		sourceGate: "stagnation",
 	});
+	// v0.3.79 A3 (spec-25 stagnation routing): before the human-decision PARTIAL
+	// stop, ONE bounded judge adjudication asks whether the content blockers are
+	// within this stage's authority or require plan/spec revision (replan-
+	// upstream). A routed replan-upstream triggers the replan machinery — the
+	// fix loop attempting design-level work it cannot do (18 fix cycles on
+	// behavioral-semantics findings) becomes a plan-revision route instead.
+	// Fail-open: judge failure/unavailable leaves today's human stop in place.
+	try {
+		const specDir = s.setup?.specDirectory;
+		const stagnationFrame = [
+			"## Stage 10 stagnation — recurring content blockers after targeted fix cycles",
+			...recurring.map((item) => `- ${item.label}`),
+			`(${history.length} recorded round(s); last fix kind: ${String(lastFix.kind ?? "unknown")})`,
+			infraNonCompletions > 0 ? `(${infraNonCompletions} additional reviewer-infra non-completion(s) excluded from this decision)` : "",
+			"",
+			"These blockers recurred after the fix loop's targeted changes. Decide: are they fixable within this stage's authority (code changes under the current plan), or do they require plan/spec revision? If the plan/spec is the blocker (contradictory requirements, missing acceptance criteria, structural infeasibility), route replan-upstream with the blocking findings quoted. Otherwise escalate-now for the human.",
+		].filter(Boolean).join("\n");
+		const judgeOut = await runJudge(ctx, {
+			scope: "stage10.stagnation.adjudicate",
+			signature: `stagnation:${recurring.map((i) => i.fingerprint).sort().join(",")}`,
+			worktreePath: s.setup?.worktreePath ?? "",
+			specDirectory: specDir,
+			context: stagnationFrame,
+			allowedRoutes: ["replan-upstream"],
+		});
+		if (judgeOut.status === "routed" && judgeOut.verdict.route === "replan-upstream") {
+			const replanFindings = recurring.map((item) => ({
+				file: item.file ?? null,
+				severity: item.severity ?? "high",
+				title: item.title ?? item.label,
+				detail: `stagnation: recurred after ${history.length} verification round(s) and targeted fix cycles — judge-adjudicated as plan/spec-owned (judge: ${judgeOut.verdict.diagnosis.slice(0, 300)})`,
+				ownerStage: "spec",
+			}));
+			const { triggerReplanForFindings } = await import("../replan/replan.ts");
+			const replanned = await triggerReplanForFindings(s, ctx, replanFindings, "verify", s.setup?.specIdentifier ?? "unknown");
+			if (replanned) {
+				ctx.log(`Stage 10: stagnation routed to REPLAN — the judge adjudicated the ${recurring.length} content blocker(s) as plan/spec-owned (${judgeOut.verdict.diagnosis.slice(0, 200)})`);
+			}
+		}
+	} catch { /* never-throw: the stagnation stop below stands */ }
 	return true;
 }
 
@@ -653,7 +739,10 @@ function failedReviewControl(kind: "codeReview" | "adversarialReview" | "testsRe
 		date: localTimestamp().slice(0, 10),
 		verdict: "Changes Requested",
 		summary: reason,
-		findings: [{ id: `${kind}-agent-failed`, severity: "high", title, detail: reason }],
+		// v0.3.79 A3 (spec-25 runs 00-49/13-23/13-43): "3 recurring blockers" that
+		// were ALL reviewer infra non-completions masqueraded as content stagnation
+		// and burned 18 fix cycles — infra findings never arm the stagnation stop.
+		findings: [{ id: `${kind}-agent-failed`, severity: "high", title, detail: reason, infra: true }],
 	};
 }
 
@@ -1483,7 +1572,7 @@ export const verificationConvergenceNode: Node = {
 					ctx.log(`Stage 10: no actionable findings remain after triage (${deferred.length} deferred) and no build driver — stopping for human decision (non-fatal; attempt ${attempt}; ledger record + terminal attempt marker written)`);
 					return { status: "ok" };
 				}
-				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
+				if (await recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
 				if (!ctx.budget.check()) {
 					record.terminal = true;
 					ctx.log("Stage 10: verification budget exhausted after fresh review/build evidence; no final fix will run without re-review");
@@ -1522,7 +1611,7 @@ export const verificationConvergenceNode: Node = {
 			if (testResult.status === "failed") {
 				state.integration = { pass: false, status: "failed", summary: testResult.error ?? "integration bringup/test block failed", expected: expectedIntegrationRoles(state) };
 				recordAttemptEnd(state, record, false);
-				if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
+				if (await recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
 				if (!ctx.budget.check()) {
 					record.terminal = true;
 					recordVerificationConvergenceFinding(state, {
@@ -1573,7 +1662,7 @@ export const verificationConvergenceNode: Node = {
 				});
 				return { status: "failed", error: inconclusiveIntegrationMessage(outcome) };
 			}
-			if (recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
+			if (await recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
 			if (!ctx.budget.check()) {
 				record.terminal = true;
 				ctx.log("Stage 10: verification budget exhausted after fresh integration evidence; no final fix will run without re-review");

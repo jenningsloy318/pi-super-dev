@@ -931,7 +931,11 @@ describe("T4.2 — outcome ladder: degrades hit the SAME soft HITL surface, ever
 			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
 		}
 
-		expect(calls.logs.some((l) => /verdict DISCARDED — evidence verification failed/.test(l))).toBe(true);
+		// v0.3.79 A2: fabricated evidence no longer silently discards — one
+		// corrective re-call (same fabricated control) → escalate floor → the
+		// SAME soft HITL surface as before (diagnosis preserved, unverified).
+		expect(calls.logs.some((l) => /verdict failed evidence verification — one corrective re-call/.test(l))).toBe(true);
+		expect(calls.logs.some((l) => /escalating with the diagnosis preserved/.test(l))).toBe(true);
 		expect(calls.escalations).toHaveLength(1);
 		const esc = calls.escalations[0]!;
 		expect(esc.kind).toBe("stagnation");

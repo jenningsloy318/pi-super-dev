@@ -334,14 +334,17 @@ describe("M5 verify — emulation retired", () => {
 		}
 	});
 
-	it("source pin: maybeTriggerReplan is gone from verify; triggerReplanForFindings survives ONLY in implementation (RED lead)", () => {
+	it("source pin: maybeTriggerReplan is gone; triggerReplanForFindings lives in implementation (plan-feasibility + RED/contradiction sites) and verify (v0.3.79 stagnation REPLAN adjudication) — never in the convergence loops", () => {
 		const verifySrc = readFileSync("src/stages/verify.ts", "utf8");
 		expect(verifySrc).not.toContain("maybeTriggerReplan");
+		// v0.3.79 A3: verify routes stagnation replans via DYNAMIC import only
+		// (no static edge; the stagnation stop stays fail-open when replan fails)
+		expect(verifySrc).toContain('triggerReplanForFindings(s, ctx, replanFindings');
 		const artifactSrc = readFileSync("src/stages/artifact-convergence.ts", "utf8");
 		expect(artifactSrc).not.toContain("triggerReplanForFindings");
 		const specSrc = readFileSync("src/stages/spec-convergence.ts", "utf8");
 		expect(specSrc).not.toContain("triggerReplanForFindings");
 		const implSrc = readFileSync("src/stages/implementation.ts", "utf8");
-		expect(implSrc.match(/triggerReplanForFindings\(/g)?.length).toBe(1); // the RED-site exception
+		expect((implSrc.match(/triggerReplanForFindings\(/g) ?? []).length).toBe(3); // plan-feasibility entry + RED-site + contradiction valve
 	});
 });
