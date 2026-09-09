@@ -651,6 +651,16 @@ const REVIEW_TIMEOUT_AGENTS = new Set([
 	"design-reviewer",
 ]);
 
+/** v0.3.84 (incident 2026-09-08T23-27-36-732Z): spec-writer produces THREE
+ *  docs in one call (spec + implementation plan + task list; observed 62KB)
+ *  and ran at 90-100% utilization of the 20-min default — 3 of 5 rounds died
+ *  at exactly 1200s (one completion took 1082.9s). 30 min = worst observed
+ *  completion + 50% headroom, the same calibration as the v0.3.73 M4 review
+ *  tier. Surgical on evidence: other doc writers completed comfortably inside
+ *  20 min in every observed run, so they stay on the default tier. */
+const WRITER_TIMEOUT_MS = 1_800_000;
+const HEAVY_WRITER_TIMEOUT_AGENTS = new Set(["spec-writer"]);
+
 /** AC-23 (SCENARIO-049): SIGTERM → SIGKILL watchdog. A child that registered a
  *  SIGTERM handler and never exits (or whose grandchildren hold the stdio
  *  pipes) must not hold the run hostage — after this grace the ladder escalates
@@ -670,8 +680,8 @@ export const SIGTERM_GRACE_MS = 10_000;
  * process, v0.3.72 M3 loud-fallback convention) and the run proceeds on the
  * tier default.
  */
-const timeoutWarned: Record<"code" | "review" | "default", boolean> = { code: false, review: false, default: false };
-function timeoutTierMs(kind: "code" | "review" | "default", envKey: string, fallback: number): number {
+const timeoutWarned: Record<"code" | "review" | "writer" | "default", boolean> = { code: false, review: false, writer: false, default: false };
+function timeoutTierMs(kind: "code" | "review" | "writer" | "default", envKey: string, fallback: number): number {
 	const raw = superDevEnv(envKey);
 	if (raw === undefined || raw === "") return fallback;
 	const n = Number(raw);
@@ -688,6 +698,7 @@ function timeoutTierMs(kind: "code" | "review" | "default", envKey: string, fall
 export function defaultAgentTimeoutMs(agent: string): number {
 	if (isCodeWritingAgent(agent)) return timeoutTierMs("code", "SUPER_DEV_CODE_TIMEOUT_MS", CODE_WRITING_TIMEOUT_MS);
 	if (REVIEW_TIMEOUT_AGENTS.has(agent)) return timeoutTierMs("review", "SUPER_DEV_REVIEW_TIMEOUT_MS", REVIEW_TIMEOUT_MS);
+	if (HEAVY_WRITER_TIMEOUT_AGENTS.has(agent)) return timeoutTierMs("writer", "SUPER_DEV_WRITER_TIMEOUT_MS", WRITER_TIMEOUT_MS);
 	return timeoutTierMs("default", "SUPER_DEV_DEFAULT_TIMEOUT_MS", DEFAULT_SPAWN_TIMEOUT_MS);
 }
 

@@ -121,7 +121,9 @@ describe("runAgentViaDelegation", () => {
 		expect(req.task).toContain("Diagnose the loop");
 		expect(req.context).toBe("fresh");
 		expect(req.cwd).toBe(process.cwd());
-		expect(req.nodeId).toBe("pipeline.stage9.judge.a1");
+		// v0.3.84: nodeId = <logical base>@<requestId> (per-attempt unique)
+		expect(req.nodeId.startsWith("pipeline.stage9.judge.a1@")).toBe(true);
+		expect(req.nodeId.endsWith(`@${req.requestId}`)).toBe(true);
 		expect(req.ownerRunId).toBe("spec-17");
 		expect(req.result).toEqual({ kind: "text" });
 		expect(req.thinking).toBe("high");
@@ -246,7 +248,10 @@ describe("runAgentViaDelegation", () => {
 		const second = bus.emitted.filter((e) => e.channel === "prompt-template:subagent:request").map((e) => e.payload as DelegationRequestPayload)[1];
 		expect(second).toBeTruthy();
 		expect(second.requestId).not.toBe(first.requestId);
-		expect(second.nodeId).toBe(first.nodeId); // same logical node, new attempt
+		// v0.3.84: same logical BASE, fresh per-attempt suffix — a settling
+		// predecessor can never collide with its corrective successor.
+		expect(second.nodeId.split("@")[0]).toBe(first.nodeId.split("@")[0]);
+		expect(second.nodeId).not.toBe(first.nodeId);
 		expect(second.task).toMatch(/route|diagnosis/);
 		expect(second.task.length).toBeGreaterThan(first.task.length); // corrective suffix appended
 

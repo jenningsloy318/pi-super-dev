@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +41,7 @@ vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 function twinSuperDevEnv(key: string, configEnv: Record<string, unknown> | undefined): string | undefined {
 	const fromEnv = process.env[key];
 	if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+	if (process.env.SUPER_DEV_NO_CONFIG_ENV === "1") return undefined; // v0.3.84 twin parity
 	const fromConfig = configEnv?.[key];
 	return typeof fromConfig === "string" && fromConfig !== "" ? fromConfig : undefined;
 }
@@ -54,6 +55,12 @@ describe("superDevEnv (config.json env channel)", () => {
 	beforeEach(() => {
 		delete process.env.SUPER_DEV_TEST_ONLY_KEY;
 		delete process.env.SUPER_DEV_JUDGE_TIMEOUT_MS;
+		// v0.3.84: the suite setup pins the config-fallback kill-switch; the
+		// twin tests below assert PRODUCTION semantics, so lift it locally.
+		delete process.env.SUPER_DEV_NO_CONFIG_ENV;
+	});
+	afterEach(() => {
+		process.env.SUPER_DEV_NO_CONFIG_ENV = "1"; // restore the suite pin
 	});
 
 	it("returns process.env when set (env beats config file)", async () => {
@@ -63,6 +70,15 @@ describe("superDevEnv (config.json env channel)", () => {
 
 	it("falls back to the config env map when process.env is unset", () => {
 		expect(twinSuperDevEnv("SUPER_DEV_TEST_ONLY_KEY", { SUPER_DEV_TEST_ONLY_KEY: "from-file" })).toBe("from-file");
+	});
+
+	it("v0.3.84: SUPER_DEV_NO_CONFIG_ENV=1 suppresses the config fallback (env still wins)", () => {
+		process.env.SUPER_DEV_NO_CONFIG_ENV = "1";
+		try {
+			expect(twinSuperDevEnv("SUPER_DEV_TEST_ONLY_KEY", { SUPER_DEV_TEST_ONLY_KEY: "from-file" })).toBeUndefined();
+			process.env.SUPER_DEV_TEST_ONLY_KEY = "from-env";
+			expect(twinSuperDevEnv("SUPER_DEV_TEST_ONLY_KEY", { SUPER_DEV_TEST_ONLY_KEY: "from-file" })).toBe("from-env");
+		} finally { delete process.env.SUPER_DEV_NO_CONFIG_ENV; delete process.env.SUPER_DEV_TEST_ONLY_KEY; }
 	});
 
 	it("returns undefined when neither env nor config sets the key", () => {
@@ -83,6 +99,13 @@ describe("superDevEnv (config.json env channel)", () => {
 		const body = src.slice(src.indexOf("export function superDevEnv"));
 		expect(body).toContain('if (fromEnv !== undefined && fromEnv !== "") return fromEnv;');
 		expect(body).toContain('typeof fromConfig === "string" && fromConfig !== ""');
+		// C1/ADV-F1 (dual review 2026-09-09): pin the PRODUCTION kill-switch —
+		// the twin test above cannot catch deleting this line from the real
+		// module, and that deletion is exactly the M5 regression the switch
+		// exists to prevent (local vi.mock spreads ...actual and restores the
+		// real superDevEnv, so only this guard keeps default-asserting tests
+		// hermetic against a developer's live config.env).
+		expect(body).toContain('if (process.env.SUPER_DEV_NO_CONFIG_ENV === "1") return undefined;');
 	});
 
 	it("getConfig merges an env map from disk (file parsing contract)", async () => {

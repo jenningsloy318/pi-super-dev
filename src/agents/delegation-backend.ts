@@ -19,15 +19,21 @@
  *    in the prompt, parsed by extractControl) is unchanged — the delegation
  *    result text flows through the exact same parser the subprocess backend
  *    uses, so stages see an identical SpawnResult.
- *  - Identity: ownerRunId (the super-dev run) + nodeId (the per-call id, e.g.
- *    `pipeline.stage9.impl.a1`) is the logical node; each ATTEMPT gets a fresh
- *    requestId. A settled node may be re-attempted — that is the corrective
- *    re-prompt path (one retry when required control keys are missing).
+ *  - Identity: ownerRunId (the super-dev run) + nodeId (the logical node
+ *    base, e.g. `pipeline.stage9.impl.a1`) plus a per-ATTEMPT unique suffix
+ *    `@<requestId>` (v0.3.84). pi-subagents treats (ownerRunId, nodeId) as
+ *    an activable node and rejects a still-ACTIVE one with `duplicate_node`;
+ *    cancel-settle is async, so a deterministic id made any post-cancel /
+ *    post-timeout retry collide (incident 2026-09-08T23-27-36: round-4
+ *    wrapper cancel, round-5 re-dispatch 182ms later → duplicate_node →
+ *    v0.3.65 fuse FatalAbort). Every attempt now carries a fresh id, so a
+ *    settling predecessor can never collide with its successor.
  *  - Cancellation: AbortSignal and timeoutMs both emit the cancel event with
  *    the exact identity tuple and settle as an agent error, never a hang.
  */
 
 import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import {
 	structuredModeDegraded, structuredModeEnabled, isStructuredUnsupportedRejection,
 	markStructuredUnsupported, recordStructuredFailure, recordStructuredSuccess,
@@ -277,7 +283,11 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 		return Promise.resolve({ response: null, error: `agent ${opts.agent} aborted by parent signal` });
 	}
 	const requestId = randomRequestId();
-	const nodeId = opts.id ?? `pipeline.${opts.agent}`;
+	// v0.3.84: the logical base keeps its stable identity (logs, caller-supplied
+	// ids) while the @requestId suffix makes the activable node unique per
+	// attempt — see the Identity note in the header.
+	const nodeBase = opts.id ?? `pipeline.${opts.agent}`;
+	const nodeId = `${nodeBase}@${requestId}`;
 	const request: DelegationRequestPayload = {
 		requestId,
 		ownerRunId: opts.ownerRunId,
@@ -426,6 +436,27 @@ function correctiveTask(prompt: string, missing: string[], violations: string[],
 	return `${prompt}\n\n## Required output correction\nYour previous response failed validation:\n${problems.join("\n")}\n${channel}`;
 }
 
+/** v0.3.84 backoff for the duplicate_node retry — the attempt was REJECTED
+ *  before starting (43ms, zero usage), so the only cost of retrying is the
+ *  settle window of the still-active predecessor node (observed < 1s).
+ *  Tunable via SUPER_DEV_DUPLICATE_NODE_RETRY_MS (tests set 0); garbage or
+ *  unset falls back to 2s. Clamped to 60s — C2 (dual review 2026-09-09): a
+ *  copy-pasted hour would otherwise hang the call on this belt-and-
+ *  suspenders path; the actual wait lands in the progress line (P10). */
+const DUPLICATE_NODE_RETRY_MAX_MS = 60_000;
+function duplicateNodeRetryMs(): number {
+	const raw = superDevEnv("SUPER_DEV_DUPLICATE_NODE_RETRY_MS");
+	if (raw === undefined) return 2_000;
+	const n = Number(raw);
+	if (!Number.isFinite(n) || n < 0) return 2_000;
+	return Math.min(n, DUPLICATE_NODE_RETRY_MAX_MS);
+}
+
+/** The pi-subagents terminal status for a still-ACTIVE (ownerRunId, nodeId)
+ *  node. Only ever matched against ENGINE-COMPOSED error strings (terminal
+ *  status lines, bridge rejections) — never model prose. */
+const DUPLICATE_NODE_RE = /duplicate_node/;
+
 /** The backend entry: same signature family as runAgentViaSession/spawnAgent
  *  (the shared `common` object) plus events + ownerRunId. Returns a
  *  SpawnResult parsed exactly like the subprocess backend's fallback path. */
@@ -450,6 +481,30 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 		useStructured = false;
 		opts.onProgress?.event?.(`delegation ${opts.agent}: WARN structured result unsupported by this pi-subagents owner — degrading to text mode for the rest of this pi session (restart pi after upgrading pi-subagents to restore structured output)`);
 		first = await attempt(opts, task0, backstopMs, false);
+	}
+	// v0.3.84 belt-and-suspenders: with per-attempt unique nodeIds this class
+	// is unreachable from our own sequential flow, but a duplicate_node
+	// terminal costs nothing to retry (the attempt never started — 43ms
+	// rejection, zero usage). ONE bounded retry after a settle backoff, on
+	// either shape (terminal status, or a bridge rejection naming it); a
+	// second duplicate stays an honest error (the v0.3.65 consecutive-
+	// agent-error fuse owns anything persistent).
+	if ((first.error && DUPLICATE_NODE_RE.test(first.error)) || first.response?.status === "duplicate_node") {
+		const wait = duplicateNodeRetryMs();
+		opts.onProgress?.event?.(`delegation ${opts.agent}: duplicate_node (previous node still settling) — retrying once after ${wait}ms backoff`);
+		// C2: the sleep is signal-aware (abort cuts it short) and the retry is
+		// skipped entirely when the parent already aborted — the duplicate error
+		// then surfaces honestly instead of racing a cancelled run.
+		await new Promise<void>((resolve) => {
+			if (opts.signal?.aborted) return resolve();
+			const onAbort = () => { clearTimeout(t); resolve(); };
+			const t = setTimeout(() => { opts.signal?.removeEventListener("abort", onAbort); resolve(); }, wait);
+			opts.signal?.addEventListener("abort", onAbort, { once: true });
+		});
+		if (opts.signal?.aborted) {
+			return { text: "", control: null, model: undefined, usage: first.response?.usage, error: first.error ?? `delegation ended with status ${first.response?.status}` };
+		}
+		first = await attempt(opts, task0, backstopMs, useStructured);
 	}
 	if (first.error) return { text: "", control: null, model: undefined, usage: first.response?.usage, error: first.error };
 	const response = first.response!;

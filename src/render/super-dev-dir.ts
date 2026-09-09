@@ -176,6 +176,15 @@ export function getConfig(): SuperDevConfig {
 export function superDevEnv(key: string): string | undefined {
 	const fromEnv = process.env[key];
 	if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+	// v0.3.84 hermeticity (M5 class): the vitest setup pins this switch so a
+	// developer's real config.env can never leak into default-asserting
+	// tests. Needed INSIDE the implementation because ~10 test files carry a
+	// LOCAL vi.mock of this module that spreads `...actual` — restoring the
+	// real superDevEnv (and its intra-module getConfig call, which the
+	// namespace mock cannot intercept). Production never sets the switch;
+	// precedence is unchanged there (incident: user config set
+	// SUPER_DEV_DEFAULT_TIMEOUT_MS and broke the tier tests mid-session).
+	if (process.env.SUPER_DEV_NO_CONFIG_ENV === "1") return undefined;
 	const fromConfig = envConfigCached()?.[key];
 	return typeof fromConfig === "string" && fromConfig !== "" ? fromConfig : undefined;
 }

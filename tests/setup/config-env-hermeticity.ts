@@ -34,6 +34,13 @@ vi.mock("../../src/render/super-dev-dir.ts", async (importOriginal) => {
 // test rows and every real run trips fake 3σ bands. Metrics-asserting suites
 // (run-metrics.test, sigma-bands.test) delete this var locally; they mock
 // getSuperDevDir so their writes stay in tmp dirs either way.
+// v0.3.84: the REAL superDevEnv must refuse its config fallback under the
+// suite too — local vi.mock(...super-dev-dir...) factories in ~10 files
+// spread `...actual`, silently restoring the real accessor (and its
+// intra-module getConfig binding, which a namespace mock cannot intercept).
+// Observed live: a developer config.env SUPER_DEV_DEFAULT_TIMEOUT_MS broke
+// tests/agent-runtime.test.ts tier assertions mid-session.
+process.env.SUPER_DEV_NO_CONFIG_ENV = "1";
 process.env.SUPER_DEV_NO_GLOBAL_METRICS = "1";
 // v0.3.81 adv-F1: activation's fire-and-forget git fetch must never do real
 // network I/O (or mutate remote-tracking refs) from inside the unit suite.

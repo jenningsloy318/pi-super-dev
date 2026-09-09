@@ -35,7 +35,9 @@ describe("isCodeWritingAgent / defaultAgentTimeoutMs", () => {
 		expect(defaultAgentTimeoutMs("implementer")).toBe(1_800_000);
 		expect(defaultAgentTimeoutMs("tdd-guide")).toBe(1_800_000);
 		expect(defaultAgentTimeoutMs("research-agent")).toBe(1_200_000);
-		expect(defaultAgentTimeoutMs("spec-writer")).toBe(1_200_000);
+		// v0.3.84: spec-writer moved to the 30-min heavy-writer tier (incident
+		// 2026-09-08T23-27-36 — 3 of 5 rounds died at exactly 1200s).
+		expect(defaultAgentTimeoutMs("spec-writer")).toBe(1_800_000);
 		expect(defaultAgentTimeoutMs("orchestrator")).toBe(1_200_000);
 	});
 });

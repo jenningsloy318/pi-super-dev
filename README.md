@@ -635,6 +635,17 @@ figure), so usage is a first-class governance surface, not a log decoration:
   AMBIENT extension discovery (user MCP tools) stays intact
   (`SUPER_DEV_NO_COMMIT_GUARD=1` to disable; the v0.3.73 HEAD-drift detector
   stays as the fail-open detective net).)
+  (v0.3.84 duplicate-node incident class: every delegation attempt now
+  carries a per-attempt unique nodeId (`base@requestId`) — a cancelled or
+  timed-out predecessor that is still settling can never collide with its
+  successor's id, which is what aborted run 2026-09-08T23-27-36 via
+  `duplicate_node` → 3-consecutive fuse; a duplicate_node terminal also gets
+  ONE bounded backoff retry (`SUPER_DEV_DUPLICATE_NODE_RETRY_MS`, the attempt
+  never started so the retry is free); spec-writer moves to its own 30-min
+  heavy-writer tier (`SUPER_DEV_WRITER_TIMEOUT_MS`) — it writes all three
+  docs in one call and ran at 90-100% of the 20-min default; and the vitest
+  suite pins `SUPER_DEV_NO_CONFIG_ENV=1` so a developer's real config.env can
+  never leak into default-asserting tests.)
   (v0.3.72 review fixes: corrective rounds and transient retries sum EVERY
   attempt's usage — the fuse can no longer under-count spend; a set-but-
   unparseable fuse value WARNs loudly once per variable instead of silently
@@ -965,6 +976,9 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
 | `SUPER_DEV_MAX_RUN_COST` | — | run-wide cost fuse in USD (fail-closed pre-call; see Usage governance) |
 | `SUPER_DEV_MAX_RUN_TOKENS` | — | run-wide token fuse, input+output (fail-closed pre-call; see Usage governance) |
+| `SUPER_DEV_WRITER_TIMEOUT_MS` | `1800000` | heavy-writer timeout tier — spec-writer produces all three spec docs in one call (v0.3.84) |
+| `SUPER_DEV_DUPLICATE_NODE_RETRY_MS` | `2000` | backoff before the single duplicate_node delegation retry, clamped to 60s (v0.3.84) |
+| `SUPER_DEV_NO_CONFIG_ENV` | — | `1` = test-hermeticity kill switch: `superDevEnv` ignores `config.json`'s `env` map entirely (set by the vitest setup; never set in production) |
 | `SUPER_DEV_JUDGE_TIMEOUT_MS` | `480000` | judge wall-clock budget per call (retry-on-timeout consumes the 2nd signature slot) |
 | `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
