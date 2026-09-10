@@ -68,6 +68,38 @@ If a file reports DIFF, act per contract:
 
 ## Drift log
 
+- **2026-09-10** — model-exclusions store (see 2026-09-08 item 1): confirmed in practice
+  that deleting the on-disk store (`<tmp>/pi-subagents-uid-<uid>/model-exclusions.json`)
+  does NOT heal a RUNNING pi session — `model-exclusions.ts` loads once per process
+  (`loaded` flag); `reloadFromDisk()` exists but nothing calls it automatically. Live
+  instance: glm-5.3 + glm-5.3-flash recorded 429 at 09:14/09:21 UTC, provider reset was
+  09:46 UTC, store file removed mid-session, yet both models stayed blocked (explicit
+  requests hard-throw, inherited resolution reports "no usable subagent models") until
+  the 24h TTL or a process restart. Full remedy remains: quit pi → delete store file →
+  restart (restart alone also suffices when the file is already gone). Upstream ask
+  unchanged (parse provider reset hint / cap TTL); additionally a reload-on-miss or
+  documented operator refresh hook would remove the restart requirement.
+
+- **2026-09-10 (later)** — checked upstream **0.67.0** release notes + source against the
+  model-exclusions TTL ask: **partially addressed, not fixed by default**. What landed
+  (already in our on-disk 0.66.0): `modelExclusions.defaultTtlMs` config key
+  (`<agentDir>/extensions/subagent/config.json`, validated finite positive, applied at
+  extension registration via `applyModelExclusionsConfig`, and `shortenExisting: true`
+  when configured — so a configured TTL ALSO shortens already-cached exclusions at
+  load); `PI_MODEL_EXCLUSIONS_PATH` env to relocate the store; auth-class exclusions
+  auto-invalidate when `auth.json` mtime changes. Still NOT fixed: default TTL remains
+  24h (zai's 5h quota window still over-cached out of the box); no provider
+  reset-hint parsing (no retryAfter/resetAt logic anywhere); `reloadFromDisk()` still
+  has no production caller; TTL config applies only at pi startup (no mid-session
+  re-apply). Mitigation deployed locally: wrote `~/.pi/agent/extensions/subagent/
+  config.json` with `modelExclusions.defaultTtlMs = 18000000` (5h, matching the zai
+  window) — takes effect at next pi restart, which also shortens any pre-existing
+  entries. 0.67.0 also bumps launch contracts to v3 / launch-binding projections to v2
+  (digest changes; saved runs still resume) — watch item C-digest on next upgrade.
+  Environment state: pi 0.85.1 = npm latest (current); pi-subagents disk 0.66.0 vs
+  npm 0.67.0; current pi process started 17:02 today, in-memory = disk = 0.66.0, no
+  skew.
+
 - **2026-09-07** — pi-subagents **0.66.0** installed (2026-09-06 release, on disk 08-09-07).
   Reviewed full changelog against C1–C6: zero contract-surface changes (delegation
   event fields, result envelope kinds, runtime-agent-register payload, exports map
