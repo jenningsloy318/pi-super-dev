@@ -334,7 +334,7 @@ describe("M5 verify — emulation retired", () => {
 		}
 	});
 
-	it("source pin: maybeTriggerReplan is gone; triggerReplanForFindings lives in implementation (plan-feasibility + RED/contradiction sites) and verify (v0.3.79 stagnation REPLAN adjudication) — never in the convergence loops", () => {
+	it("source pin: maybeTriggerReplan is gone; triggerReplanForFindings lives in implementation (SIX legal sites: plan-feasibility entry + RED-site + contradiction valve + v0.3.85 F2 inherited-red Tier-2 declared handoff + v0.3.85 F4 door-in-the-fence handoff + v0.3.85 F5 red-weakening exhaustion escalation) and verify (v0.3.79 stagnation REPLAN adjudication) — never in the convergence loops", () => {
 		const verifySrc = readFileSync("src/stages/verify.ts", "utf8");
 		expect(verifySrc).not.toContain("maybeTriggerReplan");
 		// v0.3.79 A3: verify routes stagnation replans via DYNAMIC import only
@@ -345,6 +345,13 @@ describe("M5 verify — emulation retired", () => {
 		const specSrc = readFileSync("src/stages/spec-convergence.ts", "utf8");
 		expect(specSrc).not.toContain("triggerReplanForFindings");
 		const implSrc = readFileSync("src/stages/implementation.ts", "utf8");
-		expect((implSrc.match(/triggerReplanForFindings\(/g) ?? []).length).toBe(3); // plan-feasibility entry + RED-site + contradiction valve
+		// v0.3.85 Group 3 raised the count 3 → 5 CONSCIOUSLY (the F2 Tier-2
+		// inherited-red handoff at the partial boundary + the F4 restored-test-file
+		// door at the GREEN boundary); v0.3.85 Group 4 (F5) raised it 5 → 6: the
+		// red-weakening escalation fires at RED-retry exhaustion / persistent
+		// weakening, deterministically BEFORE the RED-site judge call, carrying
+		// source:"red-weakening" + sourcePhase (no inherited-red sub-cap). This pin
+		// exists to force exactly this adjudication when a new call site lands.
+		expect((implSrc.match(/triggerReplanForFindings\(/g) ?? []).length).toBe(6); // plan-feasibility entry + RED-site + contradiction valve + F2 Tier-2 inherited-red handoff + F4 door-in-the-fence + F5 red-weakening exhaustion escalation
 	});
 });

@@ -1,5 +1,7 @@
 # Run 2026-09-09T09-20-26 Postmortem + v0.3.85 Principles & Fix Plan
 
+Status: implemented (this commit) — v0.3.85 wave landed (F1-F5 + S1-S3 + decision-6 timeout); full grill-review history in the **Status** bullet below
+
 - **Date**: 2026-09-10 (run: 2026-09-09 17:20 → 2026-09-10 17:31, 24h11m)
 - **Run**: pi-omisis spec 26-capability-backends, super-dev v0.3.84
 - **Outcome**: phases 2-3 converged; phases 1,4,5,6,7,8 partial; phases 9-12 zero attempts (global budget exhausted). ~200 agent calls, ~$237 terminal-line cost, 24h11m wall.

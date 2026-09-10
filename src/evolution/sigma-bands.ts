@@ -40,10 +40,48 @@ export interface RunMetricsRow {
 	agentErrorRounds: number;
 	fatalAborts: number;
 	usage: { calls: number; input: number; output: number; cost: number };
+	// ── v0.3.85 S3 (§9 S3 / §13 run-metrics row of the 09-09 postmortem): the
+	// health counters that make subsystem death VISIBLE (constitution §8.3 —
+	// "every cross-module contract has a health counter in run-metrics"; the C2
+	// lesson: judge death was invisible for 15 versions). Honest-zero contract
+	// (P10): the keys are REQUIRED and always present in written rows — absent
+	// data reads as 0, never as a missing key. Values are THIS-PASS (runId-
+	// windowed) counts; derivation lives in evolution/run-observability.ts. ──
+	/** Judge verdicts ACCEPTED this pass (outcome "routed" — verification
+	 *  passed or a documented INV-2 exemption; see .judge.jsonl for per-row
+	 *  reasons). Timeout/infra judge failures are "degraded", NOT accepted or
+	 *  discarded — the meter never conflates infrastructure with verdicts. */
+	judgeAccepted: number;
+	/** Judge verdicts DISCARDED this pass (evidence verification failed AND
+	 *  the corrective budget was exhausted — the honest discard class; a
+	 *  corrective-failure escalates instead, preserving the diagnosis). */
+	judgeDiscarded: number;
+	/** Phases ending `partial` this pass (state.implementation.phaseStatus). */
+	partialPhases: number;
+	/** `source:"inherited-red"` replan handoff rows written this pass (F2/F4). */
+	inheritedRedHandoffs: number;
+	/** Inherited-red occurrences this pass — boundary evaluations whose
+	 *  classification survived Tier 0+1 (reached the Tier-2 decision; the
+	 *  .inherited-red.jsonl `event:"occurrence"` tally, windowed). */
+	inheritedRedOccurrences: number;
+	/** Peak implementer attempts any phase consumed this pass (F3 exposure). */
+	maxPhaseAttempts: number;
 	ts: number;
 }
 
-export function buildRunMetricsRow(input: { runId: string; status: string; agentsSpawned: number; wallMs: number; results: Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>; usage?: { totals?: Partial<{ calls: number; input: number; output: number; cost: number }>; byAgent?: unknown }; ts: number }): RunMetricsRow {
+/** The v0.3.85 S3 counter set (schema lives here — the row's owner; the
+ * derivation lives in evolution/run-observability.ts so this module stays
+ * dependency-light). Same honest-zero contract as the row fields. */
+export interface S3Counters {
+	judgeAccepted: number;
+	judgeDiscarded: number;
+	partialPhases: number;
+	inheritedRedHandoffs: number;
+	inheritedRedOccurrences: number;
+	maxPhaseAttempts: number;
+}
+
+export function buildRunMetricsRow(input: { runId: string; status: string; agentsSpawned: number; wallMs: number; results: Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>; usage?: { totals?: Partial<{ calls: number; input: number; output: number; cost: number }>; byAgent?: unknown }; s3?: Partial<S3Counters>; ts: number }): RunMetricsRow {
 	const stages: Record<string, number> = {};
 	let agentErrorRounds = 0;
 	let fatalAborts = 0;
@@ -60,6 +98,15 @@ export function buildRunMetricsRow(input: { runId: string; status: string; agent
 		stages,
 		agentErrorRounds,
 		fatalAborts,
+		// v0.3.85 S3 honest-zero: absent derivation input still writes every
+		// counter as 0 — the key is always present, the subsystem never dies
+		// silently (P10).
+		judgeAccepted: input.s3?.judgeAccepted ?? 0,
+		judgeDiscarded: input.s3?.judgeDiscarded ?? 0,
+		partialPhases: input.s3?.partialPhases ?? 0,
+		inheritedRedHandoffs: input.s3?.inheritedRedHandoffs ?? 0,
+		inheritedRedOccurrences: input.s3?.inheritedRedOccurrences ?? 0,
+		maxPhaseAttempts: input.s3?.maxPhaseAttempts ?? 0,
 		usage: {
 			calls: input.usage?.totals?.calls ?? 0,
 			input: input.usage?.totals?.input ?? 0,
@@ -105,7 +152,10 @@ export function appendRunMetrics(specDir: string | undefined, row: RunMetricsRow
 
 // ── E1: robust bands ────────────────────────────────────────────────────────
 
-export type SigmaMetricName = "wallMs" | "costUsd" | "tokens" | "agentErrorRounds" | "fatalAborts" | "agentsSpawned";
+export type SigmaMetricName = "wallMs" | "costUsd" | "tokens" | "agentErrorRounds" | "fatalAborts" | "agentsSpawned"
+// v0.3.85 S3: the new health counters join the SAME banding machinery — no
+// new banding code, just rows in the existing table (§9 S3 "sigma-banded").
+	| "judgeAccepted" | "judgeDiscarded" | "partialPhases" | "inheritedRedHandoffs" | "inheritedRedOccurrences" | "maxPhaseAttempts";
 
 export interface SigmaBand {
 	metric: SigmaMetricName;
@@ -140,10 +190,19 @@ function metricValue(r: RunMetricsRow, metric: SigmaMetricName): number {
 		case "agentErrorRounds": return r.agentErrorRounds ?? 0;
 		case "fatalAborts": return r.fatalAborts ?? 0;
 		case "agentsSpawned": return r.agentsSpawned ?? 0;
+		// v0.3.85 S3: `?? 0` guards old ledger rows (pre-S3 files lack the keys;
+		// a missing counter reads as the honest 0, never NaN — junk filtering
+		// below then treats it as a legitimate baseline value).
+		case "judgeAccepted": return r.judgeAccepted ?? 0;
+		case "judgeDiscarded": return r.judgeDiscarded ?? 0;
+		case "partialPhases": return r.partialPhases ?? 0;
+		case "inheritedRedHandoffs": return r.inheritedRedHandoffs ?? 0;
+		case "inheritedRedOccurrences": return r.inheritedRedOccurrences ?? 0;
+		case "maxPhaseAttempts": return r.maxPhaseAttempts ?? 0;
 	}
 }
 
-const METRICS: SigmaMetricName[] = ["wallMs", "costUsd", "tokens", "agentErrorRounds", "fatalAborts", "agentsSpawned"];
+const METRICS: SigmaMetricName[] = ["wallMs", "costUsd", "tokens", "agentErrorRounds", "fatalAborts", "agentsSpawned", "judgeAccepted", "judgeDiscarded", "partialPhases", "inheritedRedHandoffs", "inheritedRedOccurrences", "maxPhaseAttempts"];
 
 /** Deterministic σ classification of the CURRENT row against the trailing
  *  baseline of prior rows. rows = full ledger (last row = current). */

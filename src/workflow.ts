@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { splitModelThinking } from "./agents/agent-runtime.ts";
 import { buildRunMetricsRow, appendRunMetrics, checkSigmaBands } from "./evolution/sigma-bands.ts";
+import { deriveS3Counters, type S3ImplementationState } from "./evolution/run-observability.ts";
 import { checkPredictionsFromLedger } from "./evolution/predictions.ts";
 import { stageKey as usageStageKey, appendUsageCallRows, writeUsageArtifacts, USAGE_FIELDS } from "./evolution/usage-report.ts";
 export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evolution/sigma-bands.ts";
@@ -51,6 +52,7 @@ import { validateTeamReadiness } from "./team/raci.ts";
 import { recordInstruction } from "./team/messages.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
 import { isNonRetryableAgentError } from "./agent-errors.ts";
+import { freshRunWallFuseState, readRunWallFuseMarker, runWallFusePreCallError } from "./wall-fuse.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
 import type {
 
@@ -553,6 +555,12 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	// rendered into usage-report.md at close-out. Failed calls carry the error
 	// even without usage: wasted dispatches are where money goes wrong.
 	const usageCalls: UsageCallRow[] = [];
+	// v0.3.85 F3 (§10 decision 2): the run-pass wall fuse — ONE fresh window per
+	// runWorkflow invocation (a resumed pass gets a fresh fuse window; the fuse
+	// bounds wall per run-pass, never per spec). Mirrors the budget surface:
+	// created here, readable by stages as ctx.wallFuse, and checked at the same
+	// pre-call seam in realAgent below.
+	const wallFuse = freshRunWallFuseState();
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
 		// BUG-4: atomic reservation — bail BEFORE doing any work when the cap is hit,
@@ -567,6 +575,23 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: "budget exhausted (maxAgents reached)" },
 			});
 			return { text: "", control: null, error: "budget exhausted (maxAgents reached)" };
+		}
+		// v0.3.85 F3 (decision 2): run wall fuse at the SAME pre-call seam as the
+		// spawn budget above — other stages' convergence loops see the fuse here,
+		// fail-closed with an honest error naming the numbers (zero further agent
+		// spend; the deterministic wind-down + close-out still run). The state
+		// marker this stamps is what deriveRunStatus maps to `partial (wall-fuse)`.
+		const wallFuseError = runWallFusePreCallError(wallFuse, state);
+		if (wallFuseError) {
+			log(`agent ${call.id ?? call.agent}: ${wallFuseError}`);
+			appendRunEvent(state.setup?.specDirectory, {
+				runId: ledgerRunId(state),
+				agent: call.agent,
+				stage: (call.id ?? "").replace(/^pipeline\./, ""),
+				type: "agent.called",
+				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: wallFuseError },
+			});
+			return { text: "", control: null, error: wallFuseError };
 		}
 		// v0.3.68 F10-1 (D6 方案 A): cost/token fuse — same pre-call shape as the
 		// spawn budget above. The call is not launched; the honest error names the
@@ -976,7 +1001,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		return results;
 	}
 
-	return { task, options, state, agent, helper, parallel, budget, usage, usageCalls, log, phase: (label: string) => events.emit("phase", label), withScope: <T>(marker: string, fn: () => Promise<T>): Promise<T> => { const parent = scopeAls.getStore() ?? []; return scopeAls.run([...parent, marker], fn); }, events, signal, results: [] };
+	return { task, options, state, agent, helper, parallel, budget, usage, usageCalls, wallFuse, log, phase: (label: string) => events.emit("phase", label), withScope: <T>(marker: string, fn: () => Promise<T>): Promise<T> => { const parent = scopeAls.getStore() ?? []; return scopeAls.run([...parent, marker], fn); }, events, signal, results: [] };
 }
 
 /** Run a workflow for a task. */
@@ -1054,16 +1079,28 @@ export function deriveRunStatus(input: {
 	// A-03 (NFR-6): the replan marker must never MASK a subsequent abort.
 	const replanAbort = aborted && abortError !== undefined && abortError.includes("REPLAN at round cap");
 
+	// v0.3.85 F3 (§10 decision 2): the wall-fuse marker makes the run's terminal
+	// state `partial (wall-fuse)` — resumable BY DESIGN, deliberately DISTINCT
+	// from FatalAbort (bug class: a fuse-blocked agent cascade must never read as
+	// a bug). It outranks a plain abort UNLESS the user cancelled (the cancel is
+	// then the terminal fact); REPLAN still outranks it (the restart resumes into
+	// a fresh fuse window anyway) and a fully-converged run stays success.
+	const wallFuseMarker = readRunWallFuseMarker(state);
+	const wallFuseEnds = wallFuseMarker !== undefined && abortError !== "workflow cancelled";
+
 	const statusReasons: string[] = [];
 	let status: RunStatus;
 	if (replanMarker && (!aborted || replanAbort)) {
 		status = "replan";
-	} else if (aborted || phases === 0) {
+	} else if ((aborted && !wallFuseEnds) || phases === 0) {
 		status = "failed";
 	} else if (green && reviewRan && approved && buildAffirmed && !hardGateFailed && !mergeNotConfirmed && !cleanupBlocked && !acceptedLimitations && failedStages.length === 0) {
 		status = "success";
 	} else {
 		status = "partial";
+		if (wallFuseEnds) {
+			statusReasons.push(`partial (wall-fuse): run wall budget exhausted at ${new Date(wallFuseMarker!.trippedAt).toISOString()} (SUPER_DEV_MAX_RUN_WALL_MS=${wallFuseMarker!.capMs}ms; ${wallFuseMarker!.reason}) — bounded by design: converged phases are committed and a resumed pass continues with a FRESH fuse window`);
+		}
 		if (!buildAffirmed && state.buildGate === undefined) statusReasons.push("build gate absent (no deterministic build verification ran)");
 		if (!green) statusReasons.push("implementation not all-green");
 		if (!reviewRan) statusReasons.push("review never ran");
@@ -1222,7 +1259,14 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 						? `a fatal-gate limitation was accepted without validation (see state.__acceptedLimitations: ${Object.keys(acceptedLimitations).join(", ")})`
 						: "review/build/integration/merge or a stage did not fully pass"
 				: `implementation finished ${done}/${total} phase(s)${(impl?.phaseStatus ?? []).filter((p) => p.status === "partial").length > 0 ? ` (${(impl?.phaseStatus ?? []).filter((p) => p.status === "partial").length} partial — best attempts stash-preserved, see run log)` : ""}`;
-			progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.${statusReasons.length ? ` Reasons: ${statusReasons.slice(0, 4).join("; ")}` : ""}`);
+			// v0.3.85 F3 (decision 2): the wall-fuse partial is NAMED — a resumable-
+			// by-design terminal state, distinct from a failure.
+			const fuseCloseMarker = readRunWallFuseMarker(state);
+			if (fuseCloseMarker && statusReasons.some((r) => r.startsWith("partial (wall-fuse)"))) {
+				progress?.log(`Workflow "${workflow.id}" complete — PARTIAL (wall-fuse): ${reason}; the run wall fuse (SUPER_DEV_MAX_RUN_WALL_MS=${fuseCloseMarker.capMs}ms) bounded this pass by design — converged phases are committed, resume-cache rows are written, and a resumed pass gets a FRESH fuse window. Resume to continue.${statusReasons.length > 1 ? ` Reasons: ${statusReasons.slice(1, 5).join("; ")}` : ""}`);
+			} else {
+				progress?.log(`Workflow "${workflow.id}" complete — PARTIAL: ${reason}; downstream close-out was gated for unverified work. Inspect the run, or resume to continue.${statusReasons.length ? ` Reasons: ${statusReasons.slice(0, 4).join("; ")}` : ""}`);
+			}
 		} else if (status === "replan") {
 			progress?.log(`Workflow "${workflow.id}" complete — REPLAN round ${replanMarker?.rounds ?? "?"}: ${replanMarker?.owners?.join(", ") ?? "?"} will revise; auto-resuming`);
 		} else {
@@ -1254,6 +1298,10 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	// per run in <specDir>/run-metrics.jsonl (never throws; no spec dir → no
 	// row). Leading/lagging counters the σ-band monitor (v0.3.69 E1) reads
 	// instead of hand-mining 4k-line prose logs.
+	// v0.3.85 S3: the health counters (judge accepted/discarded, partial phases,
+	// inherited-red handoffs/occurrences, peak attempts) are DERIVED from the
+	// run's own ledgers + implementation state — never thrown away when a
+	// subsystem dies (the C2 lesson; constitution §8.3).
 	appendRunMetrics(state.setup?.specDirectory, buildRunMetricsRow({
 		runId,
 		status,
@@ -1261,6 +1309,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		wallMs: Date.now() - runStartedAt,
 		results: ctx.results as Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>,
 		usage: ctx.usage,
+		s3: deriveS3Counters({ runId, specDirectory: state.setup?.specDirectory, implementation: state.implementation as S3ImplementationState }),
 		ts: Date.now(),
 	}));
 

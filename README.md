@@ -971,6 +971,10 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_LANGUAGE` | `english` | output language for every agent-written artifact (beats `config.json` `language`) |
 | `SUPER_DEV_THINKING` | — | per-agent thinking level override (beats role tiers and inheritance) |
 | `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
+| `SUPER_DEV_MAX_PHASE_ATTEMPTS` | `4` | implementer attempts per phase per §D entry; RED sub-loop retries excluded (v0.3.85 F3) |
+| `SUPER_DEV_FAULT_RECURRENCE` | `3` | consecutive same-FaultClass attempts that trip the no-progress valve even with fresh footprints (v0.3.85 F3) |
+| `SUPER_DEV_MAX_PHASE_WALL_MS` | `5400000` | per-phase wall budget (90min), resets on each §D re-entry (v0.3.85 F3) |
+| `SUPER_DEV_MAX_RUN_WALL_MS` | `14400000` | run-pass wall fuse (4h) with graceful wind-down — `0` disables; terminal `partial (wall-fuse)` is resumable with a fresh window (v0.3.85 F3/decision 2) |
 | `SUPER_DEV_MAX_RED_JUDGE_ROUTES` | `3` | routed judge interventions per phase before only `fix-environment` remains |
 | `SUPER_DEV_MAX_CHALLENGE_REAUTHORS` | `2` | implementer-driven RED re-author cap |
 | `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
@@ -979,7 +983,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_WRITER_TIMEOUT_MS` | `1800000` | heavy-writer timeout tier — spec-writer produces all three spec docs in one call (v0.3.84) |
 | `SUPER_DEV_DUPLICATE_NODE_RETRY_MS` | `2000` | backoff before the single duplicate_node delegation retry, clamped to 60s (v0.3.84) |
 | `SUPER_DEV_NO_CONFIG_ENV` | — | `1` = test-hermeticity kill switch: `superDevEnv` ignores `config.json`'s `env` map entirely (set by the vitest setup; never set in production) |
-| `SUPER_DEV_JUDGE_TIMEOUT_MS` | `480000` | judge wall-clock budget per call (retry-on-timeout consumes the 2nd signature slot) |
+| `SUPER_DEV_JUDGE_TIMEOUT_MS` | `1200000` | judge wall-clock budget per call — dedicated 20-min tier, raised from 480s after two 480s discards in run 2026-09-09 (v0.3.85; retry-on-timeout consumes the 2nd signature slot) |
 | `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
 | `SUPER_DEV_SKIP_DEP_BOOTSTRAP` | — | `1` = skip dependency bootstraps in build-gate command discovery |

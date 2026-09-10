@@ -126,7 +126,7 @@ describe("v0.3.69 E2 — runPostMortem delegation (engine writes, agent never do
 				inboxDir: inbox,
 				runId: "run-pm-1",
 				status: "failed",
-				metricsRow: { runId: "run-pm-1", status: "failed", agentsSpawned: 9, wallMs: 1000, stages: { failed: 1 }, agentErrorRounds: 3, fatalAborts: 1, usage: { calls: 9, input: 1, output: 1, cost: 0.01 }, ts: 1 },
+				metricsRow: { runId: "run-pm-1", status: "failed", agentsSpawned: 9, wallMs: 1000, stages: { failed: 1 }, agentErrorRounds: 3, fatalAborts: 1, judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 1, inheritedRedHandoffs: 0, inheritedRedOccurrences: 0, maxPhaseAttempts: 2, usage: { calls: 9, input: 1, output: 1, cost: 0.01 }, ts: 1 },
 				artifactPaths: { runLog: "/tmp/run.log", eventsJsonl: "/tmp/events.jsonl", specDir: "/tmp/spec" },
 			});
 			expect(out.draftPath).toBeDefined();
@@ -149,7 +149,7 @@ describe("v0.3.69 E2 — runPostMortem delegation (engine writes, agent never do
 		try {
 			const out = await runPostMortem({
 				events: bus as never, inboxDir: inbox, runId: "run-pm-2", status: "failed",
-				metricsRow: { runId: "run-pm-2", status: "failed", agentsSpawned: 1, wallMs: 1, stages: {}, agentErrorRounds: 0, fatalAborts: 0, usage: { calls: 0, input: 0, output: 0, cost: 0 }, ts: 1 },
+				metricsRow: { runId: "run-pm-2", status: "failed", agentsSpawned: 1, wallMs: 1, stages: {}, agentErrorRounds: 0, fatalAborts: 0, judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 0, inheritedRedHandoffs: 0, inheritedRedOccurrences: 0, maxPhaseAttempts: 0, usage: { calls: 0, input: 0, output: 0, cost: 0 }, ts: 1 },
 				artifactPaths: { runLog: "/tmp/x", eventsJsonl: "/tmp/y", specDir: "/tmp/z" },
 			});
 			expect(out.draftPath).toBeUndefined();

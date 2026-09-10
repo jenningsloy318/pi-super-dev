@@ -33,7 +33,23 @@ export const JudgeControlData = Type.Object({
 		Type.Literal("continue"), Type.Literal("escalate-now"),
 	], { description: "one of the JUDGE_ROUTES values (stages/judge.ts)" }),
 	confidence: Type.Number({ minimum: 0, maximum: 1 }),
-	evidence: Type.Array(Type.String(), { minItems: 1, description: "file:line or quoted-log evidence" }),
+	// F1 (v0.3.85, C2 class fix — ADR 7): union(object, canonical string). The
+	// string arm keeps degraded text mode SCHEMA-LEGAL while the verifier
+	// accepts exactly ONE canonical form ("<path>: <quote>", split on the first
+	// colon+space; quote bound by judge.ts QUOTE_MIN/QUOTE_MAX). The old
+	// `Type.String()`-only arm plus the old description ("file:line or quoted-log
+	// evidence") invited an UNVERIFIABLE form the engine-side verifier could
+	// never byte-check — every schema-valid verdict failed verification and the
+	// judge routing subsystem was dead for 14 versions (run 2026-09-09: 6 calls,
+	// 0 accepted). The description is model-facing prompt surface: it must teach
+	// the canonical form, not a self-inflicted C2.
+	evidence: Type.Array(
+		Type.Union([
+			Type.Object({ file: Type.String(), quote: Type.String() }),
+			Type.String(),
+		]),
+		{ minItems: 1, description: "verbatim quoted evidence: 'path: quote' canonical string form or {file, quote} object" },
+	),
 });
 
 /** tdd-coverage-classifier control. */
@@ -44,14 +60,28 @@ export const TddCoverageControlData = Type.Object({
 	summary: Type.String(),
 });
 
-/** red-boundary-classifier / verify file-classifier control. */
+/** red-boundary-classifier / verify file-classifier control.
+ *  v0.3.85 (code-review Critical, schema↔prompt alignment): per-item `allowed`
+ *  and `source` are ENGINE-DERIVED — the consumer (test-artifacts.ts
+ *  redBoundaryResultFromAgent) stamps `source:"agent"` on model rows and
+ *  derives `allowed` from category + forbiddenFiles/ambiguousFiles + the
+ *  MIN_AGENT_CONFIDENCE rule; it never reads a model self-report for either.
+ *  The old schema REQUIRED both fields while the prompt never asked for them
+ *  (a prompt-following model was schema-INVALID — a burned corrective round
+ *  per call), and the schema's category vocabulary drifted from both the
+ *  prompt and the engine's normalizeCategory set. Now the schema asks the
+ *  model for exactly what the prompt requests: path, category (the closed
+ *  7-value vocabulary all three sides share), confidence, reason. */
 export const FileClassifyControlData = Type.Object({
 	classifications: Type.Array(Type.Object({
 		path: Type.String(),
-		category: Type.String({ description: "test | production | config | tooling | ambiguous" }),
-		allowed: Type.Boolean(),
-		source: Type.String({ description: "deterministic | agent" }),
+		category: Type.Union([
+			Type.Literal("test"), Type.Literal("support"), Type.Literal("runtime"),
+			Type.Literal("scaffold"), Type.Literal("production"), Type.Literal("ambiguous"),
+			Type.Literal("substrate"),
+		], { description: "test | support | runtime | scaffold | production | ambiguous | substrate" }),
 		confidence: Type.Number({ minimum: 0, maximum: 1 }),
+		reason: Type.String({ description: "why this category fits the file" }),
 	})),
 	forbiddenFiles: Type.Array(Type.String()),
 	ambiguousFiles: Type.Array(Type.String()),

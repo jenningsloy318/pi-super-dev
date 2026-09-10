@@ -223,9 +223,15 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 		expect(hasLog(fake.logs, "partial after 2 attempt(s) (no progress) — continuing to the next phase")).toBe(true);
 	});
 
-	it("beyond-old-cap convergence: changing failures can recover GREEN on attempt 6 (SCENARIO-012/015)", async () => {
-		// Persistent green gate; deliverable failures change for five attempts, then
-		// pass on attempt 6. This proves Stage 9 is not locally hard-capped at five.
+	it("v0.3.85 F3 rewrite — changing deliverable failures are bounded: the failure-category recurrence valve ends the phase partial at attempt 3 (unclassified × 3), never budget death", async () => {
+		// Pre-F3 this test proved "not locally hard-capped at five" (green on
+		// attempt 6) — the exact C5 unbounded-attempts disease the ratified spec
+		// removed. v0.3.85 F3 / decision 4: deliverable-only failures classify
+		// `unclassified` (gate.errors is empty), and the SAME FaultClass across ≥3
+		// consecutive recorded attempts trips the existing no-progress valve even
+		// with fresh signatures. The phase ends partial (bounded by design),
+		// attempts capped well below the old 5-11 grind. Attempt-cap provocation
+		// lives in tests/implementation-bounds.test.ts.
 		seedGate(GATE_PASS, 6);
 		mock.deliverableQ.push(
 			{ ...DELIVERABLE_FAIL, missing: ["missing file: src/screen-1.rs"] },
@@ -241,12 +247,12 @@ describe("Phase 3 — AND-semantics wiring EDGE cases (AC-03)", () => {
 			ctx,
 		)) as ControlObj;
 
-		expect(hasLog(fake.logs, "Implementation phase-01 GREEN on attempt 6")).toBe(true);
-		expect(res.phasesCompleted).toBe(1);
-		expect(res.allGreen).toBe(true);
-		expect(fake.agentIds.some((id) => id.includes("phase-01.commit"))).toBe(true);
-		expect(mock.gateCalls).toBe(6);
-		expect(mock.deliverableCalls).toBe(6);
+		expect(hasLog(fake.logs, "failure-category recurrence (unclassified × 3")).toBe(true);
+		expect(hasLog(fake.logs, "partial after 3 attempt(s) (no progress) — continuing to the next phase")).toBe(true);
+		expect(res.allGreen).toBe(false);
+		expect((res.phaseStatus as Array<{ status: string }>)[0]?.status).toBe("partial");
+		expect(mock.gateCalls).toBe(3);
+		expect(mock.deliverableCalls).toBe(3);
 	});
 
 	it("missing-block injection is INDEPENDENT of the gate result: in-scope gate FAIL + deliverable FAIL still feeds the block to attempt 2", async () => {

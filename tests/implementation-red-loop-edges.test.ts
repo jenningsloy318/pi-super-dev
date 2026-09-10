@@ -690,7 +690,8 @@ describe("P3 edges — each phase owns an independent red-oracle loop", () => {
 		expect(res.phasesCompleted).toBe(1); // phase2 green
 		expect(res.phaseStatus).toEqual([
 			expect.objectContaining({ id: "phase-01", status: "partial" }),
-			{ id: "phase-02", status: "green" },
+			// v0.3.85 S3: green entries carry the peak-attempts metric field.
+			{ id: "phase-02", status: "green", attempts: 1 },
 		]);
 		expect(res.allGreen).toBe(false);
 		expect(logs.some((l) => /red-not-confirmed/i.test(l))).toBe(true);

@@ -50,9 +50,11 @@ const GOLDEN_RED_BOUNDARY_SPEC_SCOPED = [
 	// v0.3.75 W1 review M1: usage-attribution artifacts join the spec-scoped
 	// set (per-call ledger appends mid-RED; close-out report render).
 	// v0.3.76 L2: tool-usage telemetry (events.jsonl parity).
+	// v0.3.85 F2/F4: inherited-red ladder ledger (events.jsonl parity).
 	"usage-calls.jsonl",
 	"usage-report.md",
 	"tool-usage.jsonl",
+	".inherited-red.jsonl",
 ] as const;
 
 const GOLDEN_TRACKER_ADVISORY_NOISE = [
@@ -65,6 +67,7 @@ const GOLDEN_TRACKER_ADVISORY_NOISE = [
 	"escalation-report.md",
 	"usage-calls.jsonl",
 	"tool-usage.jsonl",
+	".inherited-red.jsonl",
 ] as const;
 
 const GOLDEN_INTERNAL_RUNTIME_CLAIM = [".resume-cache.jsonl", ".run-lock"] as const;
@@ -83,6 +86,7 @@ const GOLDEN_SPEC_DIR_BOOKKEEPING = [
 	"usage-calls.jsonl",
 	"usage-report.md",
 	"tool-usage.jsonl",
+	".inherited-red.jsonl",
 ] as const;
 
 const GOLDEN_PHASE_COMMIT_EXCLUDED = [".judge.jsonl", "test-runner.json"] as const;

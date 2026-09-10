@@ -276,10 +276,11 @@ describe("judge unit", () => {
 		expect(failures).toContain("malformed");
 	});
 
-	// B5 — RELATIVE evidence paths are contained under the worktree: the
+	// B5 — ALL evidence paths are contained under the worktree: the
 	// documented contract ("file resolves under the worktree") must hold for
-	// `..` traversal too, not just for names that happen to exist. ABSOLUTE
-	// paths stay allowed by design (documented allowance).
+	// `..` traversal too, not just for names that happen to exist. v0.3.85 High #3
+	// closed the absolute-path bypass: ABSOLUTE host citations now fail containment
+	// the same way (see control-contract-shapes.test.ts for the absolute-path rows).
 	it("B5: a relative evidence path escaping the worktree via .. is rejected even when the file exists and the quote matches", () => {
 		const outer = mkdtempSync(join(tmpdir(), "judge-b5-"));
 		try {
@@ -387,10 +388,10 @@ describe("judge unit", () => {
 
 	// ─── J1/J2 (v0.2.4): timeout budget + retry-on-timeout ─────────────────────
 
-	it("J1: judge timeout defaults to 480s and honors SUPER_DEV_JUDGE_TIMEOUT_MS", async () => {
+	it("J1: judge timeout defaults to the 20-min tier (v0.3.85 decision 6) and honors SUPER_DEV_JUDGE_TIMEOUT_MS", async () => {
 		const { ctx, calls } = makeCtx(() => ({ control: baseVerdict({}) as Record<string, unknown> }));
 		await runJudge(ctx, { scope: "t-j1", signature: "sig-j1", worktreePath: wt, context: "c", allowedRoutes: ["re-author-tests"] });
-		expect((calls[0] as { timeoutMs?: number }).timeoutMs).toBe(480_000);
+		expect((calls[0] as { timeoutMs?: number }).timeoutMs).toBe(1_200_000);
 		process.env.SUPER_DEV_JUDGE_TIMEOUT_MS = "65000";
 		try {
 			const r2 = makeCtx(() => ({ control: baseVerdict({}) as Record<string, unknown> }));

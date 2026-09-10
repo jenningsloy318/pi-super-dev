@@ -64,13 +64,17 @@ describe("v0.3.68 F10-2 — run-metrics harvest", () => {
 	it("appendRunMetrics appends one JSON line per call and never throws on a bad path", () => {
 		const dir = mkdtempSync(join(tmpdir(), "sd-metrics-"));
 		try {
-			appendRunMetrics(dir, { runId: "a", status: "ok", agentsSpawned: 1, wallMs: 1, stages: { ok: 1 }, agentErrorRounds: 0, fatalAborts: 0, usage: { calls: 1, input: 0, output: 0, cost: 0 }, ts: ts() });
-			appendRunMetrics(dir, { runId: "b", status: "failed", agentsSpawned: 2, wallMs: 2, stages: { failed: 1 }, agentErrorRounds: 1, fatalAborts: 0, usage: { calls: 2, input: 0, output: 0, cost: 0 }, ts: ts() });
+			appendRunMetrics(dir, { runId: "a", status: "ok", agentsSpawned: 1, wallMs: 1, stages: { ok: 1 }, agentErrorRounds: 0, fatalAborts: 0, judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 0, inheritedRedHandoffs: 0, inheritedRedOccurrences: 0, maxPhaseAttempts: 0, usage: { calls: 1, input: 0, output: 0, cost: 0 }, ts: ts() });
+			appendRunMetrics(dir, { runId: "b", status: "failed", agentsSpawned: 2, wallMs: 2, stages: { failed: 1 }, agentErrorRounds: 1, fatalAborts: 0, judgeAccepted: 1, judgeDiscarded: 2, partialPhases: 3, inheritedRedHandoffs: 1, inheritedRedOccurrences: 1, maxPhaseAttempts: 4, usage: { calls: 2, input: 0, output: 0, cost: 0 }, ts: ts() });
 			const lines = readFileSync(join(dir, "run-metrics.jsonl"), "utf8").trim().split("\n");
 			expect(lines).toHaveLength(2);
 			expect(JSON.parse(lines[1]).runId).toBe("b");
+			// v0.3.85 S3: the health counters ride the row verbatim (P10 — the keys
+			// are written even when zero; a subsystem never dies silently).
+			expect(JSON.parse(lines[0])).toMatchObject({ judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 0, inheritedRedHandoffs: 0, inheritedRedOccurrences: 0, maxPhaseAttempts: 0 });
+			expect(JSON.parse(lines[1])).toMatchObject({ judgeAccepted: 1, judgeDiscarded: 2, partialPhases: 3, inheritedRedHandoffs: 1, inheritedRedOccurrences: 1, maxPhaseAttempts: 4 });
 			// never throws on an unusable path
-			expect(() => appendRunMetrics("/proc/definitely/not/writable", { runId: "c", status: "ok", agentsSpawned: 0, wallMs: 0, stages: {}, agentErrorRounds: 0, fatalAborts: 0, usage: { calls: 0, input: 0, output: 0, cost: 0 }, ts: ts() })).not.toThrow();
+			expect(() => appendRunMetrics("/proc/definitely/not/writable", { runId: "c", status: "ok", agentsSpawned: 0, wallMs: 0, stages: {}, agentErrorRounds: 0, fatalAborts: 0, judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 0, inheritedRedHandoffs: 0, inheritedRedOccurrences: 0, maxPhaseAttempts: 0, usage: { calls: 0, input: 0, output: 0, cost: 0 }, ts: ts() })).not.toThrow();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -79,6 +83,26 @@ describe("v0.3.68 F10-2 — run-metrics harvest", () => {
 	it("usage absent → the row records calls=0 and zeroed usage honestly (no NaN, no fabrication)", () => {
 		const row = buildRunMetricsRow({ runId: "r", status: "ok", agentsSpawned: 0, wallMs: 0, results: [], usage: undefined, ts: ts() });
 		expect(row.usage).toEqual({ calls: 0, input: 0, output: 0, cost: 0 });
+	});
+
+	// ── v0.3.85 S3 — the health counters (§9 S3 / §13 run-metrics row) ──────
+	it("s3 absent → every health counter is PRESENT as honest 0 (never a missing key — the C2 lesson)", () => {
+		const row = buildRunMetricsRow({ runId: "r", status: "ok", agentsSpawned: 0, wallMs: 0, results: [], usage: undefined, ts: ts() });
+		expect(row).toMatchObject({ judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 0, inheritedRedHandoffs: 0, inheritedRedOccurrences: 0, maxPhaseAttempts: 0 });
+		// P10: the keys are materialized in the serialized row, not defaulted on read.
+		for (const key of ["judgeAccepted", "judgeDiscarded", "partialPhases", "inheritedRedHandoffs", "inheritedRedOccurrences", "maxPhaseAttempts"] as const) {
+			expect(Object.prototype.hasOwnProperty.call(row, key)).toBe(true);
+		}
+	});
+
+	it("s3 partial input → missing members default to 0, present members pass through verbatim", () => {
+		const row = buildRunMetricsRow({ runId: "r", status: "partial", agentsSpawned: 3, wallMs: 9, results: [{ status: "partial" }], usage: undefined, s3: { judgeAccepted: 2, partialPhases: 5, maxPhaseAttempts: 4 }, ts: ts() });
+		expect(row.judgeAccepted).toBe(2);
+		expect(row.partialPhases).toBe(5);
+		expect(row.maxPhaseAttempts).toBe(4);
+		expect(row.judgeDiscarded).toBe(0);
+		expect(row.inheritedRedHandoffs).toBe(0);
+		expect(row.inheritedRedOccurrences).toBe(0);
 	});
 
 	it("runWorkflow wires the harvest before returning (source contract)", async () => {

@@ -18,7 +18,7 @@ import type { RunMetricsRow } from "../src/evolution/sigma-bands.ts";
 
 const mkRow = (agentErrorRounds: number): RunMetricsRow => ({
 	runId: `r${agentErrorRounds}`, status: "ok", agentsSpawned: 1, wallMs: 1, stages: {},
-	agentErrorRounds, fatalAborts: 0, usage: { calls: 1, input: 0, output: 0, cost: 0 }, ts: 1,
+	agentErrorRounds, fatalAborts: 0, judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 0, inheritedRedHandoffs: 0, inheritedRedOccurrences: 0, maxPhaseAttempts: 0, usage: { calls: 1, input: 0, output: 0, cost: 0 }, ts: 1,
 });
 
 const DRAFT_MD = `# Finding draft: reviewer errors masquerade as rejections

@@ -90,7 +90,8 @@ describe("§D convergence loop — per-phase green-state carry", () => {
 		// v0.3.0: a failed phase is recorded as PARTIAL (best attempt preserved, run
 		// continues) — never "failed"-with-run-termination anymore.
 		expect(out.phaseStatus).toEqual([
-			{ id: "phase-01", status: "green" },
+			// v0.3.85 S3: green entries carry the peak-attempts metric field.
+			{ id: "phase-01", status: "green", attempts: 1 },
 			expect.objectContaining({ id: "phase-02", status: "partial" }),
 		]);
 		expect(out.lastFailures.map((f) => f.phaseId)).toEqual(["phase-02"]);
@@ -222,17 +223,21 @@ describe("H3 — GREEN-loop A↔B recurrence detection (AC-03, SCENARIO-006/007)
 		expect(logs.some((l) => /budget exhausted/.test(l))).toBe(false);
 	}, 20_000);
 
-	it("SCENARIO-007: strictly fresh signatures (A,B,C,D,…) never trip no-progress — the loop continues on its normal budget", async () => {
+	it("SCENARIO-007 (v0.3.85 F3 rewrite): strictly fresh signatures (A,B,C,D,…) are STILL bounded — the failure-category recurrence valve (default 3) ends the phase partial at attempt 3 (C5: fresh footprints, same FaultClass)", async () => {
+		// v0.3.85 F3 / decision 4: the pre-F3 contract ("strictly fresh signatures
+		// never trip no-progress", 7 attempts to green) is OBSOLETE — it is exactly
+		// the C5 disease (run 09-09 burned 5-11 fresh-signature attempts per
+		// phase). The failure-category recurrence valve now trips the SAME
+		// no-progress block when one FaultClass repeats ≥3 consecutive recorded
+		// attempts, even with fresh (failure, footprint) pairs. Pinned here at the
+		// default SUPER_DEV_FAULT_RECURRENCE=3 (tiny-value provocation lives in
+		// tests/implementation-bounds.test.ts).
 		const distinctFails = [1, 2, 3, 4, 5, 6].map((n) => ({
 			pass: false, inScopePass: false,
 			errors: [`distinct gate failure #${n}: error kind ${n}`],
 			outOfScopeErrors: [] as string[], ran: ["npm test"],
 		}));
 		const distinctImpls = distinctFails.map((_, i) => ({ control: { filesModified: [`src/fresh-${i + 1}.ts`] } }));
-		// Six distinct FAILED attempts, then a PASS: with a healthy detector every
-		// distinct signature gets its attempt (6 fails), the 7th goes green, and
-		// the no-progress branch NEVER fires. Unbounded budget — the loop is not
-		// budget-tripped here.
 		gateQ = [...distinctFails, PASS];
 		const { ctx, implCalls, logs } = mkCtx("fresh", {
 			implResults: [...distinctImpls, { control: { filesModified: ["src/final.ts"] } }],
@@ -241,9 +246,12 @@ describe("H3 — GREEN-loop A↔B recurrence detection (AC-03, SCENARIO-006/007)
 
 		const out = await implementationStage.run(singlePhaseState(), ctx) as { allGreen: boolean };
 
-		expect(out.allGreen).toBe(true); // the fresh run converged on its own
-		expect(implCalls).toHaveLength(7); // every distinct signature got its attempt, then green
-		expect(logs.some((l) => /stopped after repeated no-progress failure on attempt/.test(l))).toBe(false);
+		expect(out.allGreen).toBe(false); // bounded partial — never the 09-09 unbounded grind
+		expect(implCalls).toHaveLength(3); // default SUPER_DEV_FAULT_RECURRENCE=3: product-defect × 3 consecutive
+		expect(logs.some((l) => /failure-category recurrence \(product-defect × 3/.test(l))).toBe(true);
+		// The existing no-progress branch still fires (judge routing / HITL escalation).
+		expect(logs.some((l) => /partial after 3 attempt\(s\) \(no progress\)/.test(l))).toBe(true);
+		// NEVER budget death as the trip mechanism.
 		expect(logs.some((l) => /budget exhausted/.test(l))).toBe(false);
 	}, 20_000);
 
@@ -278,7 +286,8 @@ describe("v0.3.0 — run never ends at zero: partial + continue", () => {
 		const out = await implementationStage.run(state, ctx) as { allGreen: boolean; convergenceBlocked?: boolean; phaseStatus: Array<{ id: string; status: string }>; phasesCompleted: number };
 		expect(out.phaseStatus).toEqual([
 			expect.objectContaining({ id: "phase-01", status: "partial" }),
-			{ id: "phase-02", status: "green" },
+			// v0.3.85 S3: green entries carry the peak-attempts metric field.
+			{ id: "phase-02", status: "green", attempts: 1 },
 		]);
 		expect(out.allGreen).toBe(false);
 		expect(out.convergenceBlocked).toBe(false);

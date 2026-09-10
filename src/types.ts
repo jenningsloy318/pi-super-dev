@@ -15,6 +15,7 @@
 
 import type { EventEmitter } from "node:events";
 import type { StepScopeInfo } from "./step-scope.ts";
+import type { RunWallFuseState } from "./wall-fuse.ts";
 
 // ─── Primitive result types ─────────────────────────────────────────────────
 
@@ -379,6 +380,14 @@ export interface StageContext {
 	 */
 	parallel(calls: Array<() => Promise<AgentResult>>): Promise<AgentResult[]>;
 	budget: Budget;
+	/** v0.3.85 F3 (§10 decision 2): the run-pass wall fuse, surfaced exactly
+	 *  like `budget` — ONE window created per runWorkflow invocation in
+	 *  makeContext (a resumed pass gets a FRESH fuse window; the fuse bounds
+	 *  wall per run-pass, never per spec) and checked at the same pre-call seam
+	 *  in realAgent. Optional so bare test contexts keep compiling; the
+	 *  implementation stage falls back to a stage-local fresh window when
+	 *  absent. */
+	wallFuse?: RunWallFuseState;
 	/** v0.3.68 F10-1: run-scoped usage accumulator (mutable record shared with
 	 * the RunSummary; absent usage stays zeroed — never fabricated). Optional —
 	 * bare test contexts omit it; makeContext ALWAYS provides it. */

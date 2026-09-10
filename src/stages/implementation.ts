@@ -25,7 +25,11 @@ import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
 import { firstCitedTestFile, runJudge, type JudgeRoute } from "./judge.ts";
-import { triggerReplanForFindings, replanPending } from "../replan/replan.ts";
+import { triggerReplanForFindings, replanPending, countInheritedRedRows, pendingInheritedRedRows } from "../replan/replan.ts";
+// v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
+// stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
+import { FatalAbort } from "../nodes.ts";
+import { INHERITED_RED_SOURCE, appendInheritedRedEvent, countInheritedRedOccurrences, extractFailingTestFilePaths, f4ScopeMatch, inheritedRedAttribution, inheritedRedBoundaryShape, inheritedRedFlakeTally, normalizeRepoPath } from "./inherited-red.ts";
 import { planFeasibilityFindings, contradictionFastFailFrame } from "./plan-feasibility.ts";
 import { isNoEditCompletion } from "../agent-errors.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -36,7 +40,8 @@ import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeli
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../retry-feedback.ts";
 import { runInStepScope } from "../step-scope.ts";
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../convergence-ledger.ts";
-import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "../fault-classification.ts";
+import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount, type FaultClass } from "../fault-classification.ts";
+import { freshRunWallFuseState, markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../wall-fuse.ts";
 import { clearBaselineCache } from "../build-runner/baseline.ts";
 import { phaseClauseFiles } from "./plan-feasibility.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
@@ -44,7 +49,7 @@ import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runner
 import { deriveConventionsRunnerSpec } from "../build-runner/conventions.ts";
 import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../build-runner/coverage-gate.ts";
 
-type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red";
+type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red" | "weakened-preexisting-test";
 
 export interface RedEvidence {
 	phaseId: string;
@@ -61,6 +66,15 @@ export interface RedEvidence {
 	diagnostics?: RedCheckDiagnostic[];
 	redRetries: number;
 	reason?: string;
+	/** v0.3.85 F5: the DECREASED (weakened) pre-existing test files with their
+	 *  before→after assertion-surface counts — present only on
+	 *  weakened-preexisting-test evidence (rejection detail, hint + finding
+	 *  inputs). */
+	weakenedFiles?: Array<{ path: string; before: number; after: number }>;
+	/** v0.3.85 F5: ALL pre-existing test files this RED try edited (weakened
+	 *  or not) — the SCOPED revert set. Newly authored test files are absent
+	 *  by construction (not tracked at HEAD) and SURVIVE the revert. */
+	preexistingTestFiles?: string[];
 }
 
 interface TddCoverageResult {
@@ -131,6 +145,22 @@ function repeatedNoProgress(history: ProgressSignature[], next: ProgressSignatur
 	// the first attempt is never no-progress, and strictly fresh signatures
 	// (A,B,C,D,…) never trip (escalation paths untouched).
 	return history.some((h) => h.failure === next.failure && h.footprint === next.footprint);
+}
+
+/** v0.3.85 F3 (decision 4): failure-category recurrence — advance the
+ * consecutive-same-FaultClass streak. Module-scope PURE helper deliberately:
+ * the attempt loop's control flow (initial reading + re-classification
+ * assignments inside the environmental-blocker branch) CFA-narrows a `let`
+ * FaultClass to `never` at the streak-update site; function parameters carry
+ * their declared types, immune to that narrowing history. Same shape as
+ * `repeatedNoProgress` above. */
+function nextFaultStreak(
+	prev: { faultClass: FaultClass; count: number } | null,
+	cls: FaultClass,
+): { faultClass: FaultClass; count: number } {
+	return prev !== null && prev.faultClass === cls
+		? { faultClass: cls, count: prev.count + 1 }
+		: { faultClass: cls, count: 1 };
 }
 
 /** v0.3.24 S4-2: harness runtime-evidence and spec-dir bookkeeping paths are
@@ -407,6 +437,13 @@ function firstRedDiagnosticDetail(e: RedEvidence): string {
 
 export function redEvidenceFailureReasons(e: RedEvidence): string[] {
 	if (e.status === "polluted-red") return [`red-polluted: RED phase changed production file(s): ${e.forbiddenFiles.join(", ")}`];
+	// v0.3.85 F5 (C3): the ratchet rejection carries its own named class so the
+	// terminal/ledger rows stay attributable (a weakened oracle must never read
+	// as a generic red-generation failure).
+	if (e.status === "weakened-preexisting-test") {
+		const weakened = (e.weakenedFiles ?? []).map((w) => `${w.path} ${w.before}→${w.after}`).join(", ");
+		return [`red-weakened-preexisting: ${weakened || e.reason || "pre-existing test assertion surface decreased"} — pre-existing assertions must not decrease; author an independent NEW test file (a required weakening is a spec amendment: the declared route)`];
+	}
 	const detail = firstRedDiagnosticDetail(e);
 	if (e.status === "coverage-incomplete") return [`red-coverage-incomplete: missing BDD scenario coverage: ${(e.missingScenarios ?? []).join(", ") || "unknown"}${e.reason ? `; ${e.reason}` : ""}`];
 	if (e.status === "green-weak-test") {
@@ -492,6 +529,24 @@ export function redGenerationRetryHint(e: RedEvidence, opts?: { failClosed?: boo
 		missingScenarios: e.missingScenarios ?? [],
 		summary: e.reason ?? "BDD scenario coverage incomplete",
 	});
+	// v0.3.85 F5 (C3): the assertion-ratchet rejection's corrective hint — the
+	// exact adjudicated semantics: (a) pre-existing assertions must not decrease,
+	// (b) the legal RED is an independent NEW test file, (c) a genuinely required
+	// weakening of a frozen suite is a spec amendment routed through the declared
+	// route (report as a blocker — never edit the frozen tests).
+	if (e.status === "weakened-preexisting-test") {
+		const weakened = (e.weakenedFiles ?? []).map((w) => `${w.path} (${w.before}→${w.after} markers)`).join(", ");
+		return `\n\n${implementationRetrySection("RED assertion ratchet rejected the previous test set", {
+			phase: e.phaseId,
+			attempt: e.attempt,
+			gate: "red-assertion-ratchet",
+			location: "pre-existing test files",
+			observed: `the RED phase DECREASED the assertion surface of pre-existing test file(s): ${weakened || e.reason || "unknown"} — editing a frozen suite is not a legal route to a RED`,
+			expected: "every pre-existing test file keeps its assertion surface (test(/it(/assert/expect/SCENARIO marker count never decreases); equal or higher is legal",
+			missing: (e.weakenedFiles ?? []).map((w) => w.path),
+			nextAction: "(a) Pre-existing assertions must not decrease — restore what you removed. (b) Author an independent NEW test file that fails for the missing behavior (that is the legal RED). (c) If the work genuinely requires weakening a pre-existing suite, that is a SPEC AMENDMENT — report it as a blocker in your summary (the declared route); do not edit the frozen tests.",
+		})}`;
+	}
 	if (e.status === "green-weak-test") return redRePromptHint("green") + redDiagnosticsPrompt(e.diagnostics);
 	if (e.status === "broken-test") return redRePromptHint("broken") + redDiagnosticsPrompt(e.diagnostics);
 	// v0.3.30 F2: unknown evidence retries with a HONEST, scoped hint so the
@@ -565,7 +620,12 @@ function readTestSnippets(cwd: string, testFiles: string[]): Array<{ path: strin
 	}).filter((item) => item.content.trim().length > 0);
 }
 
-async function resolveTddScenarioCoverage(args: { ctx: StageContext; cwd: string; phaseId: string; phaseName: string; phase: unknown; expectedScenarios: string[]; testFiles: string[]; specControl: ControlObj | null | undefined; bddControl: ControlObj | null | undefined }): Promise<TddCoverageResult> {
+// Exported for tests/control-contract-shapes.test.ts (S1): the REAL engine-side
+// consumer/verifier of TddCoverageControlData — the S1 contract test generates a
+// minimal instance from the TypeBox schema and runs it through this function so
+// the schema↔consumer pair can never drift silently (the C2 class). Same
+// precedent as verifyJudgeEvidence ("Pure + exported for unit tests").
+export async function resolveTddScenarioCoverage(args: { ctx: StageContext; cwd: string; phaseId: string; phaseName: string; phase: unknown; expectedScenarios: string[]; testFiles: string[]; specControl: ControlObj | null | undefined; bddControl: ControlObj | null | undefined }): Promise<TddCoverageResult> {
 	if (args.expectedScenarios.length === 0) {
 		return { allCovered: true, expectedScenarios: [], coveredScenarios: [], missingScenarios: [], summary: "no expected BDD scenario baseline available" };
 	}
@@ -715,6 +775,119 @@ export function assertionPresenceGaps(snapshot: Map<string, string | null>): str
 		if (!ASSERTION_RE.test(content)) gaps.push(path);
 	}
 	return gaps;
+}
+
+// ── v0.3.85 F5 (C3 fix; §9 F5, §14 ADR 10) — the RED-phase assertion ratchet ──
+
+/** §13/§14 ADR 8: the F5 declared-handoff row tag — distinct from
+ *  INHERITED_RED_SOURCE (the F2/F4 tag) and never overloading
+ *  `classificationSource` (that is R2 routing provenance, a different concept). */
+const RED_WEAKENING_SOURCE = "red-weakening";
+
+/** v0.3.85 F5 — the assertion-surface GRAMMAR (P2: enumerated, not
+ *  one-form-at-a-time). A file's assertion surface is the number of matches of
+ *  ONE canonical regex:
+ *
+ *    /\b(?:test|it)\s*\(|\bassert|\bexpect|\bSCENARIO\b/g
+ *
+ * covering the marker families the pipeline's stacks actually use:
+ *   - `test(` / `it(` — JS/TS (jest/vitest/mocha/node:test), allowing optional
+ *     whitespace before the paren (`it (`). Python declarations (`def
+ *     test_x():`) carry NO declaration marker — the underscored name breaks
+ *     `test\s*\(` — so a python file's surface rides its `assert` markers
+ *     (documented). Skip-marked forms (`test.skip(`, `xit(`) do NOT match the
+ *     declaration marker: converting `test(` → `test.skip(` LOWERS the surface
+ *     (detected); deleting an already-skipped test leaves it unchanged
+ *     (undetected — documented fail-open blind spot).
+ *   - `assert` — Python `assert`, Rust `assert!`/`assert_eq!`, JUnit
+ *     `assertEquals`/`assertTrue`, Go testify — matched as a word START with NO
+ *     end boundary, so `assertion`/`asserted` also count.
+ *   - `expect` — jest/vitest/Playwright `expect(...)` and Rust `.expect(...)` —
+ *     word START only, so `expected`/`expects` also count.
+ *   - `SCENARIO` — the harness's BDD scenario ids (`SCENARIO-001`) and Gherkin
+ *     `Scenario:` headers — CASE-SENSITIVE (the id grammar is uppercase;
+ *     lowercase `scenario` does not count).
+ *
+ * COUNTING RULE: raw occurrence count per file, with BOTH sides of the
+ * comparison read under this SAME grammar. Comments are deliberately NOT
+ * stripped — mirroring ASSERTION_RE's documented choice but for the OPPOSITE
+ * safety reason: a marker inside a comment (or a prose word like `expected`)
+ * only INFLATES a surface, and inflation can only MASK a decrease (fail-open),
+ * never fabricate one; a comment-stripper bug that ate real code would do the
+ * fail-closed harm instead. `describe(`/`context(` grouping forms are out of
+ * grammar: they group tests without asserting, so removing one without
+ * removing its inner markers does not lower the surface (documented). */
+const ASSERTION_SURFACE_RE = /\b(?:test|it)\s*\(|\bassert|\bexpect|\bSCENARIO\b/g;
+
+/** Count one file's assertion surface under the F5 grammar. Pure; never throws. */
+export function assertionSurfaceCount(content: string): number {
+	return (content.match(ASSERTION_SURFACE_RE) ?? []).length;
+}
+
+/** One comparable file for the ratchet. `before` is the pre-edit (HEAD)
+ * content — `null` means the file did NOT exist pre-edit (newly authored this
+ * try → exempt: it survives both the ratchet and the revert). `after` `null`
+ * means the file was deleted on disk (surface 0). */
+export interface AssertionSurfaceRow {
+	path: string;
+	before: string | null;
+	after: string | null;
+}
+
+/** A weakened row: the path plus its before→after surface counts. */
+export interface WeakenedAssertionSurface {
+	path: string;
+	before: number;
+	after: number;
+}
+
+/** The ratchet predicate (pure; never throws): every row whose post-edit
+ *  surface is STRICTLY lower than its pre-edit surface (a deleted pre-existing
+ *  file counts as 0). Equal or HIGHER surfaces pass — ADDING assertions to a
+ *  pre-existing test file is legal and stays accepted. */
+export function weakenedAssertionSurfaces(rows: AssertionSurfaceRow[]): WeakenedAssertionSurface[] {
+	const out: WeakenedAssertionSurface[] = [];
+	for (const row of rows) {
+		if (row.before === null) continue; // not pre-existing — new file, exempt
+		const before = assertionSurfaceCount(row.before);
+		const after = row.after === null ? 0 : assertionSurfaceCount(row.after);
+		if (after < before) out.push({ path: row.path, before, after });
+	}
+	return out;
+}
+
+/** `git show HEAD:<path>` content — `null` when the path is not tracked at
+ *  HEAD (new/untracked file), on any git failure, or on a spawn error. Never
+ *  throws. For a path clean at RED entry (everything in redChangedFiles, by
+ *  the setDiff construction) HEAD content IS the pre-edit disk content. */
+function headFileContent(cwd: string, path: string): string | null {
+	try {
+		const r = spawnSync("git", ["-C", cwd, "show", `HEAD:${path}`], { encoding: "utf8", timeout: 10_000 });
+		if (r.error || typeof r.status !== "number" || r.status !== 0) return null;
+		return String(r.stdout ?? "");
+	} catch {
+		return null;
+	}
+}
+
+/** The F5 comparable set (impure; never throws): RED-changed paths that are
+ *  TEST files by name (TEST_FILE_NAME_RE; conftest.py stays a support
+ *  artifact, mirroring assertionPresenceGaps) and PRE-EXISTING (tracked at
+ *  HEAD). Harness bookkeeping/substrate paths are exempt, mirroring
+ *  restoreUnacceptedRedChanges's filter. */
+function preexistingTestSurfaceRows(cwd: string, changedFiles: string[]): AssertionSurfaceRow[] {
+	const rows: AssertionSurfaceRow[] = [];
+	for (const path of changedFiles) {
+		const rel = normalizeSlash(path);
+		if (!TEST_FILE_NAME_RE.test(rel) || PYTEST_SUPPORT_BASENAME_RE.test(rel)) continue;
+		if (isInternalRuntimeClaim(rel) || isSubstrateArtifact(rel) || isHarnessBookkeepingPath(rel)) continue;
+		const before = headFileContent(cwd, rel);
+		if (before === null) continue; // not pre-existing — new file, exempt
+		let after: string | null = null;
+		try { after = readFileSync(join(cwd, rel), "utf8"); } catch { after = null; }
+		rows.push({ path: rel, before, after });
+	}
+	return rows;
 }
 
 function changedSinceSnapshot(cwd: string, before: Map<string, string | null>): string[] {
@@ -912,6 +1085,43 @@ const MAX_CHALLENGE_REAUTHORS = (() => {
 	const raw = Number.parseInt(superDevEnv("SUPER_DEV_MAX_CHALLENGE_REAUTHORS") ?? "", 10);
 	return Number.isFinite(raw) && raw > 0 ? raw : 2;
 })();
+
+/** v0.3.85 F3 (C5 fix, §10 decision 4): implementer attempts per phase PER §D
+ *  ENTRY — the phase's attempt-loop hard cap. RED-generation tries INSIDE an
+ *  attempt keep their own MAX_RED_RETRIES bound and are NOT counted; the ≥2
+ *  same-signature partialReEntries windup bound is untouched. Cap exhaustion
+ *  ends the phase partial with the NAMED reason `phase-attempt-cap`, which
+ *  feeds the F2 boundary logic like any partial. Lazy env read (defensive
+ *  rule #5 — the maxReplanRounds pattern in replan/replan.ts). */
+export const maxPhaseAttempts = (): number => {
+	const n = Number.parseInt(superDevEnv("SUPER_DEV_MAX_PHASE_ATTEMPTS") ?? "", 10);
+	return Number.isFinite(n) && n > 0 ? n : 4;
+};
+
+/** v0.3.85 F3 (decision 2): per-phase WALL budget — anchored at phase start
+ *  inside the stage run, so it resets on each §D re-entry by construction.
+ *  Checked before each new implementer attempt within the phase. Lazy env
+ *  read. */
+export const phaseWallBudgetMs = (): number => {
+	const n = Number.parseInt(superDevEnv("SUPER_DEV_MAX_PHASE_WALL_MS") ?? "", 10);
+	return Number.isFinite(n) && n > 0 ? n : 5_400_000;
+};
+
+/** v0.3.85 F3 (decision 4): failure-category recurrence valve — the SAME
+ *  FaultClass across ≥ this many CONSECUTIVE recorded attempts within the
+ *  phase trips the existing no-progress valve even when every footprint is
+ *  fresh (C5: run 09-09 ground 5-11 attempts per phase because the exact
+ *  (failure, footprint) repeat never matched). GREEN side only — RED-side
+ *  terminalRedTries keeps its own bound. The counter resets on §D re-entry
+ *  and on a non-matching FaultClass. Lazy env read. */
+export const faultRecurrenceLimit = (): number => {
+	const n = Number.parseInt(superDevEnv("SUPER_DEV_FAULT_RECURRENCE") ?? "", 10);
+	return Number.isFinite(n) && n > 0 ? n : 3;
+};
+
+// F3 bound interplay (§9): the phase wall (90min) typically fires BEFORE the
+// attempt cap (4 × 30min code-tier attempt timeout = 120min) — intended, the
+// fuse dominates; the bounds stay independent.
 
 /** A concrete implementer report that a confirmed RED test is unsatisfiable.
  *  `reason` carries the impossibility proof (e.g. "line 338 asserts
@@ -1191,6 +1401,11 @@ export interface PhaseStatusEntry {
 	 *  phases that can still converge). */
 	partialReEntries?: number;
 	lastFailureSig?: string;
+	/** v0.3.85 S3 (metrics-only): the PEAK implementer attempts this phase
+	 *  consumed across §D entries (attempts reset per §D re-entry per F3, so
+	 *  the max is the honest exposure). No control flow reads this — it feeds
+	 *  RunMetricsRow.maxPhaseAttempts at close-out via deriveS3Counters. */
+	attempts?: number;
 }
 export interface PhaseFailureEntry {
 	phaseId: string;
@@ -1243,10 +1458,16 @@ function preservePartialPhase(ctx: StageContext, setup: { worktreePath: string; 
 	}
 }
 
-export function phaseStatusUpsert(arr: PhaseStatusEntry[], id: string, status: "green" | "failed" | "partial"): void {
+export function phaseStatusUpsert(arr: PhaseStatusEntry[], id: string, status: "green" | "failed" | "partial", attempts?: number): void {
 	const i = arr.findIndex((p) => p.id === id);
-	if (i >= 0) arr[i] = { id, status };
-	else arr.push({ id, status });
+	// v0.3.85 S3: `attempts` merges as a MAX across §D entries (the metric is
+	// peak exposure); the existing replace semantics for id/status are
+	// unchanged, and the partial-boundary mutations below (lastFailureSig /
+	// partialReEntries) still apply to the fresh entry.
+	const prev = i >= 0 ? arr[i] : undefined;
+	const entry: PhaseStatusEntry = { id, status, ...(attempts !== undefined || prev?.attempts !== undefined ? { attempts: Math.max(attempts ?? 0, prev?.attempts ?? 0) } : {}) };
+	if (i >= 0) arr[i] = entry;
+	else arr.push(entry);
 }
 export function lastFailuresUpsert(arr: PhaseFailureEntry[], phaseId: string, reasons: string[]): void {
 	const i = arr.findIndex((f) => f.phaseId === phaseId);
@@ -1581,6 +1802,25 @@ export const implementationStage: Stage = {
 				ctx.log(`Implementation: plan infeasible (${feasibility.contradictions.length} contradiction(s)) — routed to REPLAN before executing any phase`);
 				return { phasesCompleted: 0, totalPhases: phases.length, allGreen: false, filesModified: [], phaseStatus: [], lastFailures: [{ phaseId: "phase-all", reasons: feasibility.contradictions.map((c) => c.title) }] };
 			}
+			// v0.3.85 F2 (§10 decision 3, grill pass 3): the log-and-proceed fallback
+			// is overridden to HARD-FAIL for restart states carrying PENDING
+			// source:"inherited-red" rows — an amended plan that still contradicts
+			// the zero-LLM plan-feasibility validator after a declared handoff
+			// routes Tier 3 FatalAbort naming the validator findings (no retry
+			// loop). Every other restart keeps today's log-and-proceed.
+			const pendingIrRows = pendingInheritedRedRows(setup.specDirectory);
+			if (pendingIrRows.length > 0) {
+				// FIX ROUND 1 (F-ii): the abort names the validator findings IN FULL —
+				// kind + title + EVIDENCE lines (the evidence carries the clause text,
+				// e.g. `P1 requireContains src/x.ts: FOO`, so the failing clause form
+				// is machine-readable in the terminal reason, not just the prose title).
+				const validatorFindings = feasibility.contradictions
+					.slice(0, 6)
+					.map((c) => `[${c.kind}] ${c.title} — evidence: ${c.evidence.join("; ")}`)
+					.join(" | ");
+				ctx.log(`Implementation: plan validation FAILED after an inherited-red declared handoff (${pendingIrRows.length} pending row(s): ${pendingIrRows.map((r) => r.id).join(", ")}) — routing Tier 3 FatalAbort naming the validator findings (no retry loop; v0.3.85 F2 validator override): ${validatorFindings}`);
+				throw new FatalAbort(`inherited-red restart failed plan validation (v0.3.85 F2, ADR 8/9): the spec dir still carries ${pendingIrRows.length} pending source:"inherited-red" handoff row(s) (${pendingIrRows.map((r) => r.id).join(", ")}) while the amended plan contradicts the zero-LLM plan-feasibility validator — validator findings: ${validatorFindings}. A declared handoff's amended plan must pass the validator before execution; no retry loop.`);
+			}
 			ctx.log("Implementation: plan contradictions detected but replan unavailable (budget/marker) — proceeding with the contradictions logged");
 		}
 		// §D auto-iterate: carry per-phase green state + failure reasons from the
@@ -1588,9 +1828,15 @@ export const implementationStage: Stage = {
 		// control). Green phases are skipped; a failed phase's prior reasons seed
 		// its next attempt 1 so iteration 2 targets the real failures.
 		const startInstructionFingerprint = runtimeInstructionFingerprint(state.setup?.specDirectory);
-		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[]; runtimeInstructionFingerprint?: string; invalidatedByRuntimeInstructions?: boolean; runStartDirt?: string[]; phaseGuidanceReentryUsed?: Record<string, true> };
+		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[]; runtimeInstructionFingerprint?: string; invalidatedByRuntimeInstructions?: boolean; runStartDirt?: string[]; phaseStartDirt?: Record<string, string[]>; phaseGuidanceReentryUsed?: Record<string, true>; inheritedRedFlakeGrantUsed?: boolean };
 		const priorInstructionInvalidated = priorImpl.invalidatedByRuntimeInstructions === true || (typeof priorImpl.runtimeInstructionFingerprint === "string" && priorImpl.runtimeInstructionFingerprint !== startInstructionFingerprint);
 		const priorRunStart = (Array.isArray(priorImpl.runStartDirt) ? priorImpl.runStartDirt : undefined);
+		// v0.3.85 F2: per-phase FIRST-EVER porcelain snapshots (the attribution
+		// boundary — see the phase-entry capture below), persisted across §D
+		// convergence iterations exactly like runStartDirt (the sd26-F1 lesson:
+		// a re-entry must not re-capture after this phase's own prior-iteration
+		// edits hit disk, or its own live work would classify as pre-phase).
+		const phaseStartDirt: Record<string, string[]> = priorInstructionInvalidated || !priorImpl.phaseStartDirt || typeof priorImpl.phaseStartDirt !== "object" ? {} : { ...priorImpl.phaseStartDirt };
 		const priorGuidanceReentryUsed = (priorImpl.phaseGuidanceReentryUsed && typeof priorImpl.phaseGuidanceReentryUsed === "object") ? priorImpl.phaseGuidanceReentryUsed : undefined;
 		let phaseStatus: PhaseStatusEntry[] = priorInstructionInvalidated ? [] : (Array.isArray(priorImpl.phaseStatus) ? priorImpl.phaseStatus.map((p) => ({ ...p })) : []);
 		// v0.2.6 G1 (adversarial sd26-F1 + code-review sd26-CR-1): ONE run-start
@@ -1629,6 +1875,27 @@ export const implementationStage: Stage = {
 		let convergenceBlocked = false;
 		let convergenceBlockReason = "";
 		const filesModified: string[] = [];
+		// v0.3.85 F3 (decision 2): the run-pass wall fuse + its attempt-duration
+		// estimator. ctx.wallFuse is the SAME window realAgent checks pre-call
+		// (created once per runWorkflow invocation — a resumed pass gets a FRESH
+		// window); bare test contexts without the surface get a stage-local fresh
+		// window. attemptDurations records each completed implementer attempt's
+		// wall time (pushed at the NEXT attempt's entry — exactly when the
+		// trailing-3-median wind-down decision needs it), scoped to this stage run
+		// so a §D re-entry re-estimates from its own attempts.
+		const runFuse = ctx.wallFuse ?? freshRunWallFuseState();
+		const attemptDurations: number[] = [];
+		let attemptStartedAt = 0;
+		let attemptDurationClosed = true;
+		// v0.3.85 F2 (decision 3, D-2): the per-run Tier-1 flake-filter grant —
+		// ≤1 deterministic full-gate re-run per run, NEVER consuming an
+		// implementer attempt. Carried on the control so §D convergence re-entries
+		// within one run share the single grant ("per run", the wall-fuse
+		// per-run-pass doctrine — a resumed pass starts a fresh run and gets a
+		// fresh grant). The flake TALLY itself is ledger-backed and persists
+		// across resume (surfaced in the close-out report only — never a retry
+		// reason).
+		let inheritedRedFlakeGrantUsed = priorImpl.inheritedRedFlakeGrantUsed === true;
 
 		for (const [idx, phase] of phases.entries()) {
 			// F9-C (v0.3.67): once a REPLAN round is routed, the spec artifacts are
@@ -1641,6 +1908,33 @@ export const implementationStage: Stage = {
 			}
 			const phaseId = `phase-${pad(idx + 1)}`;
 			const phaseName = (phase as { name?: string }).name?.trim() || phaseId;
+			// v0.3.85 F3 (decision 2): run wall fuse — PHASE-BOUNDARY check. When the
+			// fuse cannot fund another attempt (exhausted, or remaining below the
+			// trailing-3-attempt median duration), defer the remaining phases to the
+			// resumed pass instead of starting work that cannot finish inside the
+			// window. Wind-down only, never mid-write: converged phases keep their
+			// deterministic commits, resume-cache rows are written normally, and the
+			// run's terminal state becomes `partial (wall-fuse)` — resumable by
+			// design, never a FatalAbort. convergenceBlocked stops the §D loop from
+			// re-entering this pass (re-entry is pointless — only a resumed pass gets
+			// a fresh fuse window).
+			{
+				const fuseBoundary = runFuseWindDown(runFuse, attemptDurations);
+				if (fuseBoundary.blocked) {
+					runFuse.tripped = true;
+					runFuse.tripReason = fuseBoundary.why;
+					markRunWallFuseTripped(state, runWallFuseMs(), `phase boundary ${phaseId}: ${fuseBoundary.why}`);
+					convergenceBlocked = true;
+					convergenceBlockReason = `wall-fuse: ${fuseBoundary.why}`;
+					// Fix-round 1: deferred phases are NOT green — without this the deferral
+					// break leaves the stage-scope `allGreen = true` default intact and
+					// deriveRunStatus could report SUCCESS for work decision 2 defers to
+					// the resumed pass; the pass is `partial (wall-fuse)`, never success.
+					allGreen = false;
+					ctx.log(`Implementation: wall fuse at the ${phaseId} boundary — ${fuseBoundary.why}; deferring remaining phase(s) (${phases.length - idx} of ${phases.length}) to the resumed pass (fresh fuse window); converged phases stay committed`);
+					break;
+				}
+			}
 			const expectedScenarios = expectedScenariosForPhase(phase, state.spec ?? null, state.bdd ?? null);
 			const phaseHeadline = `Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			const phaseLabel = `↳ Phase ${idx + 1}/${phases.length}: ${phaseName}`;
@@ -1739,7 +2033,7 @@ export const implementationStage: Stage = {
 			let attemptsRun = 0;
 			let terminalFailureKind: "red-generation" | "implementation-gate" = "implementation-gate";
 			let terminalRedTries = 0;
-			let terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" = "failed";
+			let terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" = "failed";
 			// v0.3.57 liveness: set when the worktree vanished under a running phase —
 			// breaks the PHASE loop after this phase's partial bookkeeping (remaining
 			// phases cannot run in a deleted worktree; re-probing each is pure noise).
@@ -1758,6 +2052,14 @@ export const implementationStage: Stage = {
 			let boundaryRevertHits = 0;
 			let boundaryLeakOwners: string[] = [];
 			let boundaryLeakFiles: string[] = [];
+			// v0.3.85 F3 (decision 2): per-phase wall anchor — resets on each §D
+			// re-entry by construction (stage-run scope). Checked before each new
+			// implementer attempt in the phase.
+			const phaseWallStartedAt = Date.now();
+			// v0.3.85 F3 (decision 4): consecutive-same-FaultClass streak for the
+			// failure-category recurrence valve — resets on a non-matching class
+			// and, via phase scope, on §D re-entry.
+			let faultClassStreak: { faultClass: FaultClass; count: number } | null = null;
 			// v0.2.6 G1 — dirt PROVENANCE: the phase's FIRST-EVER start porcelain
 			// snapshot, PERSISTED across §D convergence iterations (adversarial
 			// sd26-F1: the outer loop re-invokes the whole stage with no cap, so a
@@ -1919,8 +2221,80 @@ export const implementationStage: Stage = {
 			ensurePhaseRunning();
 			announceActivity();
 			if (tracker) tracker.begin("phase", phaseId);
+			// v0.3.85 F2 (C1): the phase's FIRST-EVER porcelain snapshot — the F2
+			// attribution boundary. Persisted across §D convergence iterations via
+			// the control (the sd26-F1 lesson runStartDirt already pins: a re-entry
+			// must not re-capture after this phase's own prior-iteration edits hit
+			// disk, or its own live work would classify as pre-phase/inherited).
+			// Dirt present in the first-ever snapshot is PRE-PHASE (earlier phases'
+			// leftovers / prior-run state — the C1 poison class); dirt absent from
+			// it appeared during THIS phase (the phase's own leak). A git failure
+			// degrades to [] — unknown provenance can never support an inherited
+			// classification (the safe direction is the Tier-0 own-leak ladder).
+			// FIX ROUND 1 (A): the spawn is SKIPPED entirely for an absent worktree
+			// (same [] degradation, zero latency) — a git spawn between the F3
+			// phase-wall anchor and attempt 1 pre-empted the FIRST attempt under a
+			// tiny SUPER_DEV_MAX_PHASE_WALL_MS (the wall bounds ATTEMPTS, never
+			// pre-empts attempt 1).
+			if (!Object.prototype.hasOwnProperty.call(phaseStartDirt, phaseId)) {
+				phaseStartDirt[phaseId] = existsSync(setup.worktreePath) ? listPorcelainPaths(setup.worktreePath).map(normalizeRepoPath) : [];
+			} else {
+				ctx.log(`Implementation ${phaseId}: reusing persisted first-ever phase-start dirt snapshot (F2 attribution boundary stays the phase's first entry ever)`);
+			}
+			const phaseStartSet = new Set<string>(phaseStartDirt[phaseId] ?? []);
 			for (let attempt = 1; ctx.budget.check(); attempt++) {
+				// v0.3.85 F3: close out the PREVIOUS attempt's wall duration first — the
+				// trailing-3-attempt median the run-fuse wind-down compares against is
+				// consulted at every new attempt's entry AND at phase boundaries.
+				if (attemptStartedAt > 0 && !attemptDurationClosed) {
+					attemptDurations.push(Date.now() - attemptStartedAt);
+					attemptDurationClosed = true;
+				}
+				// v0.3.85 F3 (decision 4): attempt cap — counts implementer attempts per
+				// phase per §D entry (RED-generation tries inside an attempt keep their
+				// own MAX_RED_RETRIES bound and are never counted here; the ≥2
+				// same-signature partialReEntries block is untouched). Exhaustion ends
+				// the phase partial with the NAMED reason `phase-attempt-cap`, which
+				// feeds the F2 boundary logic like any partial.
+				if (attempt > maxPhaseAttempts()) {
+					terminalStopReason = "phase-attempt-cap";
+					attemptErrors.push(`phase-attempt-cap: implementer attempt budget exhausted (SUPER_DEV_MAX_PHASE_ATTEMPTS=${maxPhaseAttempts()} per phase per §D entry; best attempt stays stash-preserved)`);
+					ctx.log(`Implementation ${phaseId} attempt cap reached (${maxPhaseAttempts()} implementer attempts per phase per §D entry) — ending the phase partial (phase-attempt-cap)`);
+					break;
+				}
+				// v0.3.85 F3 (decision 2): per-phase wall budget — checked before each
+				// new implementer attempt within the phase; resets on each §D re-entry.
+				// Structural floor: a phase ALWAYS gets its first attempt (the anchor is
+				// taken at phase start; only budget-jitter between anchor and attempt 1
+				// could pre-empt it — the wall bounds attempts ≥ 2, never zeroes a phase).
+				if (attempt > 1 && Date.now() - phaseWallStartedAt >= phaseWallBudgetMs()) {
+					terminalStopReason = "phase-wall";
+					attemptErrors.push(`phase-wall: per-phase wall budget exhausted (SUPER_DEV_MAX_PHASE_WALL_MS=${phaseWallBudgetMs()}ms since phase start; resets on each §D re-entry)`);
+					ctx.log(`Implementation ${phaseId} phase wall budget exhausted (${phaseWallBudgetMs()}ms since phase start) — ending the phase partial (phase-wall)`);
+					break;
+				}
+				// v0.3.85 F3 (decision 2): run wall fuse — wind-down check before a NEW
+				// attempt (an in-flight attempt always runs to its own
+				// completion/timeout; overshoot is bounded by one attempt timeout).
+				// No new attempt starts when the fuse is exhausted or the remaining
+				// budget is below the trailing-3-attempt median duration.
+				{
+					const fuseAttempt = runFuseWindDown(runFuse, attemptDurations);
+					if (fuseAttempt.blocked) {
+						runFuse.tripped = true;
+						runFuse.tripReason = fuseAttempt.why;
+						markRunWallFuseTripped(state, runWallFuseMs(), `attempt boundary ${phaseId} attempt ${attempt}: ${fuseAttempt.why}`);
+						convergenceBlocked = true; // §D re-entry is pointless this pass — only a resumed pass gets a fresh fuse window
+						convergenceBlockReason = `wall-fuse: ${fuseAttempt.why}`;
+						terminalStopReason = "wall-fuse";
+						attemptErrors.push(`wall-fuse: ${fuseAttempt.why} — partial (wall-fuse), resumable by design (converged work stays committed; a resumed pass gets a fresh fuse window)`);
+						ctx.log(`Implementation ${phaseId} wall fuse before attempt ${attempt} — ${fuseAttempt.why}; no new attempt starts (in-flight work already completed); phase ends partial (wall-fuse), remaining phases deferred to the resumed pass`);
+						break;
+					}
+				}
 				attemptsRun = attempt;
+				attemptStartedAt = Date.now();
+				attemptDurationClosed = false;
 				redReviewInFlight = null; // v0.3.43: a stale in-flight review must never join a later attempt (the join/paths above always null it first — TS types the reset `never`, F3 verified dead)
 				// v0.3.57 liveness: fail the attempt CLOSED when the worktree was
 				// removed externally (silent-zombie incident, ledger 2026-09-01) —
@@ -2248,6 +2622,43 @@ export const implementationStage: Stage = {
 								ctx.log(`Implementation ${phaseId} RED scenario coverage FAIL: missing=${coverage.missingScenarios.join(", ") || "unknown"}; ${coverage.summary}`);
 							}
 						}
+						// ── v0.3.85 F5 — RED-phase assertion ratchet (C3 fix; §9 F5, §14 ADR 10) ──
+						// During RED the boundary LEGALLY admits edits to pre-existing test
+						// files (the GREEN-side test-edit ban is v0.3.43) — the 09-09 phase-1
+						// tdd-guide answered an "unsatisfiable RED" by gutting 3 pre-existing
+						// guard suites, making the oracle green and misrouting the phase. The
+						// ratchet: a pre-existing test file's assertion-surface count (F5
+						// grammar, above) must NEVER decrease vs its pre-edit HEAD state.
+						// Checked at ACCEPTANCE — only for tries heading to acceptance
+						// (classes already rejected below revert everything anyway, and an
+						// unknown that is NOT fail-closed still falls through to the
+						// implementer per v0.3.30 F2's P3 contract) — so a weakened oracle
+						// can NEVER reach GREEN, not even via the already-satisfied route.
+						// ADR 10 (the F4/F5 asymmetry): unlike F4 — which escalates
+						// IMMEDIATELY because retry is PROVABLY futile (a deterministically
+						// restored lockstep test kills every later attempt) — F5 retries
+						// FIRST because the corrective hint teaches a legal recoverable
+						// alternative (author an independent NEW test file); escalation fires
+						// only on RED-retry exhaustion or persistent weakening (below).
+						const f5AlreadyRejected = redEvidence.status === "coverage-incomplete"
+							|| redEvidence.status === "green-weak-test"
+							|| redEvidence.status === "broken-test"
+							|| redEvidence.status === "polluted-red"
+							|| ((redEvidence.status === "unknown-no-runner" || redEvidence.status === "unknown-unclassified") && redFailClosedUnknown);
+						if (!f5AlreadyRejected) {
+							const f5Rows = preexistingTestSurfaceRows(setup.worktreePath, redChangedFiles);
+							const f5Weakened = weakenedAssertionSurfaces(f5Rows);
+							if (f5Weakened.length > 0) {
+								redEvidence = {
+									...redEvidence,
+									status: "weakened-preexisting-test",
+									reason: `pre-existing test assertion surface decreased: ${f5Weakened.map((w) => `${w.path} ${w.before}→${w.after}`).join(", ")}`,
+									weakenedFiles: f5Weakened,
+									preexistingTestFiles: f5Rows.map((r) => r.path),
+								};
+								ctx.log(`Implementation ${phaseId} RED assertion ratchet: REJECTED — weakened pre-existing test file(s) ${f5Weakened.map((w) => `${w.path} (${w.before}→${w.after} markers)`).join(", ")}; the pre-existing test edit(s) will be reverted, new independent test files survive`);
+							}
+						}
 						appendImplementationEvidence(setup.specDirectory, redEvidence);
 						if (redEvidence.status === "polluted-red") {
 							restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);
@@ -2376,6 +2787,42 @@ export const implementationStage: Stage = {
 							const hitCeiling = retries + 1 >= MAX_RED_RETRIES;
 							redProgressHistory.push(signature);
 							if (seenBefore || hitCeiling) {
+								// ── v0.3.85 F5 escalation (§9 F5, §14 ADR 8/10) — deterministic-first ──
+								// RED-retry exhaustion (hitCeiling) OR persistent weakening
+								// (seenBefore — the same weakened signature recurred): the ratchet
+								// rejection rides the declared-handoff circuit with a DISTINCT
+								// source:"red-weakening" tag, consuming ONE round of the shared
+								// SUPER_DEV_MAX_REPLAN_ROUNDS pool — ADR 8's FOURTH consumer, with
+								// NO inherited-red sub-cap (it never touches countInheritedRedRows).
+								// Deterministic scoped cleanup runs FIRST (F2 Tier-0-at-exhausted-
+								// budget doctrine: cleanup is deterministic, no agent call; the
+								// surviving new test files stay on disk for the restart). Unroutable
+								// (pool exhausted / marker already set / ledger write failure) falls
+								// through to the existing judge + HITL path with the honest evidence.
+								if (redEvidence.status === "weakened-preexisting-test" && !replanPending(state) && !runFuse.tripped) {
+									restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.preexistingTestFiles ?? []);
+									const f5WeakenedDetail = (redEvidence.weakenedFiles ?? []).map((w) => `${w.path} ${w.before}→${w.after}`).join(", ") || String(redEvidence.reason ?? "unknown");
+									const f5Finding: Record<string, unknown> = {
+										id: `red-weakening-${phaseId}`,
+										file: redEvidence.weakenedFiles?.[0]?.path ?? null,
+										severity: "high",
+										title: `RED-phase assertion ratchet exhausted at ${phaseId}: pre-existing test surface weakened after ${retries + 1} RED tries`,
+										detail: `The RED loop rejected ${retries + 1} tries because pre-existing test file(s) lost assertion surface (F5 grammar: test(/it(/assert/expect/SCENARIO): ${f5WeakenedDetail}. The corrective hint — author an independent NEW test file — did not land, so the work apparently REQUIRES weakening a frozen suite, which is a spec amendment: the declared route. Pre-existing test edits were reverted; surviving new test files stay on disk.`,
+										ownerStage: "spec",
+										source: RED_WEAKENING_SOURCE,
+										sourcePhase: phaseId,
+										recommendation: "Amend the spec/plan to declare the pre-existing suite's amendment (co-ownership in any clause form counts, or a phase that owns the atomic test change), so the RED can be authored without weakening the frozen guards.",
+									};
+									let f5Routed = false;
+									try { f5Routed = await triggerReplanForFindings(state, ctx, [f5Finding], "implementation-red", setup.specIdentifier ?? "unknown"); } catch { f5Routed = false; }
+									if (f5Routed) {
+										terminalStopReason = "red-weakening";
+										attemptErrors = [...attemptErrors, `red-weakening: pre-existing test assertion surface decreased (${f5WeakenedDetail}) after ${retries + 1} RED tries — declared handoff routed (source:red-weakening, sourcePhase:${phaseId}); the run ends status "replan"`];
+										ctx.log(`Implementation ${phaseId} F5 red-weakening escalation: ${seenBefore ? `persistent weakening (the same weakened signature recurred after ${retries + 1} tries)` : `RED retries exhausted (${retries + 1} tries)`} — replan-requests.json row routed via the shared replan pool (source:red-weakening, sourcePhase:${phaseId}, ownerStage:spec; NO inherited-red sub-cap); the phase ends partial (red-weakening) and the run ends status "replan"`);
+										break;
+									}
+									ctx.log(`Implementation ${phaseId} F5 red-weakening escalation: declared handoff UNAVAILABLE (replan pool exhausted / marker set / ledger write failure) — falling through to the judge + human boundary with the ratchet evidence`);
+								}
 								// J9-a (judge routing layer): one verified diagnosis before the
 								// human boundary. A routed re-author-tests / fix-environment restarts
 								// the RED loop with the diagnosis appended (bounded by the judge's
@@ -2527,6 +2974,14 @@ export const implementationStage: Stage = {
 							const reviewNeverRan = redEvidence.status === "review-weak" && /RED review (?:did not complete|returned no usable verdict)/i.test(String(redEvidence.reason ?? ""));
 							if (!reviewNeverRan && (redEvidence.status === "green-weak-test" || redEvidence.status === "review-weak" || redEvidence.status === "polluted-red")) {
 								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
+							} else if (redEvidence.status === "weakened-preexisting-test") {
+								// v0.3.85 F5: SCOPED revert — pre-existing test-file edits ONLY.
+								// The corrective route is an independent NEW test file, so the new
+								// files SURVIVE the revert (salvageability, Group 3's non-destructive
+								// Tier-0 doctrine) — the full changedFiles revert above would
+								// `git clean` them away and force the next try to rewrite from
+								// scratch (the v0.3.16 F2 ghost-file lesson).
+								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.preexistingTestFiles ?? []);
 							} else if (reviewNeverRan) {
 								ctx.log(`Implementation ${phaseId} RED cleanup SKIPPED: the review did not complete (no verdict was rendered) — preserving the written test file(s) on disk for the retry`);
 							}
@@ -2535,6 +2990,16 @@ export const implementationStage: Stage = {
 							ctx.log(`Implementation ${phaseId} RED generation retry ${retries}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
 							continue;
 						}
+						break;
+					}
+					// v0.3.85 F5: a ROUTED red-weakening handoff ends the phase partial with
+					// the NAMED reason — bypass the unaccepted-RED terminal block below (its
+					// full changedFiles revert would destroy the surviving new test files,
+					// and its reason overwrite would bury the handoff row; the scoped revert
+					// already ran at the escalation site).
+					if (redEvidence && terminalStopReason === "red-weakening") {
+						terminalFailureKind = "red-generation";
+						terminalRedTries = retries + 1;
 						break;
 					}
 					if (!redEvidence) {
@@ -2620,6 +3085,23 @@ export const implementationStage: Stage = {
 						expected: "the confirmed RED test files remain byte-for-byte unchanged; only production/source code is modified",
 						missing: [],
 						nextAction: "Do NOT create, edit, or modify ANY test file — not even a comment, import, or header. The test files are the frozen RED oracle that judges your implementation. Implement ONLY production/source code (the module under test) to make the existing tests pass. If a test looks stale or wrong, that is the RED phase's job — leave the test file untouched.",
+					}));
+				}
+				// v0.3.85 F2 Tier 0: the previous attempt's own-leak revert — the retry
+				// must know the undeclared out-of-scope edit was rolled back and that
+				// the fix belongs INSIDE the declared scope (the declared-amendment
+				// route is the escape for genuinely-needed scope changes).
+				if (attemptErrors.some((e) => e.startsWith("inherited-red-own-leak-reverted:"))) {
+					const reverted = attemptErrors.filter((e) => e.startsWith("inherited-red-own-leak-reverted:")).map((e) => e.slice("inherited-red-own-leak-reverted:".length).trim());
+					implParts.push(implementationRetrySection("Out-of-scope own-leak REVERTED (inherited-red Tier 0)", {
+						phase: phaseId,
+						attempt,
+						gate: "inherited-red-tier0",
+						location: "undeclared out-of-scope edits",
+						observed: `the engine reverted ${reverted.length} undeclared out-of-scope path(s): ${reverted.join(", ")} — an out-of-scope subject that passes at baseline broke, and with a tree clean at phase start the break is attributable to this phase's own edits`,
+						expected: "only the phase's declared clause files (and the confirmed RED test files) change",
+						missing: reverted,
+						nextAction: "Redo the fix INSIDE the declared scope. If an out-of-scope file genuinely must change, that is a declared amendment (spec change) — report it as a blocker in your summary instead of editing the file.",
 					}));
 				}
 				// v0.3.0 budget reminder (Codex rollout_budget / alatirok model): the
@@ -3082,6 +3564,56 @@ export const implementationStage: Stage = {
 					if (modifiedRedTests.length) {
 						const restoredCount = restoreRedTestFiles(setup.worktreePath, redTestSnapshot, modifiedRedTests);
 						ctx.log(`Implementation ${phaseId} post-red-oracle: implementer modified confirmed RED test file(s) during GREEN — RESTORED ${restoredCount}/${modifiedRedTests.length} (${modifiedRedTests.join(", ")}); keeping confirmed RED (no re-generation).`);
+						// ── v0.3.85 F4 — the door in the fence (C4 fix; §9 F4, §14 ADR 8/10) ─
+						// A deterministically restored test file that belongs to a prior
+						// PARTIAL phase's scope (Arm A: declared clause files; Arm B:
+						// recorded failing-test paths) routes the declared handoff
+						// IMMEDIATELY — retry is PROVABLY futile (every subsequent
+						// implementer attempt hits the same restore; F3's cap bounds the
+						// UNDETECTABLE, not the detected — amendment 4). Shares F2's single
+						// ≤1 source:"inherited-red" sub-cap; spent → Tier 3 FatalAbort.
+						// No prior partial phase exists → F4 can never fire (the restore is
+						// implementer error and today's behavior stands). P3: never route
+						// after the run already ended — the replan marker OR a tripped run
+						// wall fuse (the fuse state read directly, mirroring the F2 ladder
+						// guard; structurally unreachable mid-attempt today because fuse
+						// breaks happen at the attempt head — kept explicit).
+						if (!replanPending(state) && !runFuse.tripped) {
+							const f4Match = f4ScopeMatch(modifiedRedTests, phases as Array<Record<string, unknown>>, phaseStatus, idx, lastFailures);
+							if (f4Match) {
+								const armLabel = f4Match.arm === "arm-a" ? "A: declared clause files" : "B: recorded failing-test paths";
+								const f4PriorRows = countInheritedRedRows(setup.specDirectory);
+								if (f4PriorRows >= 1) {
+									appendInheritedRedEvent(setup.specDirectory, { event: "f4-handoff", phaseId, outcome: "tier3-fatal", arm: f4Match.arm, sourcePhase: f4Match.phaseId, paths: modifiedRedTests }, ctx.log);
+									ctx.log(`Implementation ${phaseId} F4 door-in-the-fence: restored test file(s) ${modifiedRedTests.join(", ")} match prior partial phase ${f4Match.phaseId}'s scope (arm ${armLabel}) — inherited-red sub-cap already spent (${f4PriorRows} row(s)) — Tier 3 FatalAbort (stop-the-line; no retry loop)`);
+									throw new FatalAbort(`inherited-red sub-cap spent at ${phaseId} F4 (v0.3.85, ADR 8/9): the restored test file(s) ${modifiedRedTests.join(", ")} belong to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm} — ${armLabel}), but the single source:"inherited-red" handoff row was already consumed. Stop-the-line — a second declared handoff is mechanically unavailable.`);
+								}
+								const f4Finding: Record<string, unknown> = {
+									id: `f4-declared-handoff-${phaseId}`,
+									file: f4Match.path,
+									severity: "high",
+									title: `test-edit ban deadlock at ${phaseId}: the restored test file belongs to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm})`,
+									detail: `The GREEN-boundary restore deterministically reverted the implementer's edit to ${f4Match.path} — a file whose completion-relevant scope belongs to prior PARTIAL phase ${f4Match.phaseId} (arm ${f4Match.arm === "arm-a" ? "declared clause/target files" : "recorded failing-test file paths"}). Completing this phase requires editing that test file, which the GREEN test-edit ban mechanically forbids and restores: retry is provably futile. Amend the plan so the coupling is declared (co-ownership in this phase's contract, or a merged/reordered phase that owns both sides atomically). Restored path(s): ${modifiedRedTests.join(", ")}.`,
+									ownerStage: "spec",
+									source: INHERITED_RED_SOURCE,
+									sourcePhase: f4Match.phaseId,
+									handoffArm: f4Match.arm,
+									recommendation: "Declare the coupling in the plan: give this phase co-ownership of the test file (any clause form counts), or merge/reorder so the phase that owns the production change also owns the atomic test amendment.",
+								};
+								let f4Routed = false;
+								try { f4Routed = await triggerReplanForFindings(state, ctx, [f4Finding], "implementation", setup.specIdentifier ?? "unknown"); } catch { f4Routed = false; }
+								if (f4Routed) {
+									appendInheritedRedEvent(setup.specDirectory, { event: "f4-handoff", phaseId, outcome: "handoff-routed", arm: f4Match.arm, sourcePhase: f4Match.phaseId, paths: modifiedRedTests }, ctx.log);
+									terminalStopReason = "declared-handoff";
+									attemptErrors = [...attemptErrors, `declared-handoff (f4): restored test file(s) ${modifiedRedTests.join(", ")} belong to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm}) — spec amendment routed (source:inherited-red, sourcePhase:${f4Match.phaseId})`];
+									ctx.log(`Implementation ${phaseId} F4 door-in-the-fence: IMMEDIATE declared handoff — restored test file(s) ${modifiedRedTests.join(", ")} match prior partial phase ${f4Match.phaseId}'s scope (arm ${armLabel}); retry is provably futile, so the phase exits partial (declared-handoff (f4)) now and the run ends status "replan" — "requires a spec change" becomes a mechanism (row: source:inherited-red, sourcePhase:${f4Match.phaseId}, handoffArm:${f4Match.arm})`);
+									break;
+								}
+								appendInheritedRedEvent(setup.specDirectory, { event: "f4-handoff", phaseId, outcome: "handoff-unavailable", arm: f4Match.arm, sourcePhase: f4Match.phaseId, paths: modifiedRedTests }, ctx.log);
+								ctx.log(`Implementation ${phaseId} F4 door-in-the-fence: declared handoff UNAVAILABLE (replan pool exhausted / marker set / ledger write failure) while the restored test file(s) provably belong to prior partial phase ${f4Match.phaseId}'s scope — Tier 3 FatalAbort (no retry loop)`);
+								throw new FatalAbort(`F4 declared handoff unavailable at ${phaseId} (v0.3.85 F4, ADR 8): the restored test file(s) ${modifiedRedTests.join(", ")} belong to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm}), but the replan circuit could not route (pool exhausted, marker already set, or ledger write failure). Stop-the-line — no retry loop.`);
+							}
+						}
 						// Re-run the oracle against the RESTORED tests so the retry feedback
 						// carries the real status (green = the edit was the only blocker;
 						// red = real assertions still need production code).
@@ -3189,7 +3721,7 @@ export const implementationStage: Stage = {
 				}
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0 && coverageResult?.status !== "below-threshold") {
 					green = true;
-					phaseStatusUpsert(phaseStatus, phaseId, "green");
+					phaseStatusUpsert(phaseStatus, phaseId, "green", attempt); // v0.3.85 S3: peak-attempts metric
 					emitPhaseStatus("ok");
 					const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);
 					if (gate.pass) {
@@ -3247,6 +3779,11 @@ export const implementationStage: Stage = {
 					ownScope: { deliverablePass: deliverableCheck.pass, changePass: changeGate.pass, symbolPass: symbolGate.pass, tddClean: tddOracleFailures.length === 0 },
 					foreignDirtCount: foreignDirt.length,
 				});
+				// v0.3.85 F3 (decision 4): the attempt's effective FaultClass for the
+				// failure-category recurrence valve — re-classifications below
+				// (post-quarantine re-run, judge override) replace the initial reading
+				// so the streak counts the class the attempt actually ended as.
+				let attemptFaultClass: FaultClass = fault.faultClass;
 				if (fault.faultClass === "environmental-blocker") {
 					// blocker branch — must break or hand off to judge; never `continue`;
 					// never spawn the implementer (SCENARIO-004 · AC-02).
@@ -3310,7 +3847,7 @@ export const implementationStage: Stage = {
 								latestDeliverableCheck2 = deliverableCheck2;
 								if ((gate2.pass || gate2.inScopePass) && deliverableCheck2.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
 									green = true;
-									phaseStatusUpsert(phaseStatus, phaseId, "green");
+									phaseStatusUpsert(phaseStatus, phaseId, "green", attempt); // v0.3.85 S3: peak-attempts metric
 									emitPhaseStatus("ok");
 									const _efi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_efi >= 0) lastFailures.splice(_efi, 1);
 									if (gate2.pass) {
@@ -3373,6 +3910,7 @@ export const implementationStage: Stage = {
 						});
 						if (reClassify.faultClass !== "environmental-blocker") {
 							reRunClassifiedProduct = true;
+							attemptFaultClass = reClassify.faultClass; // v0.3.85 F3: the re-run's class is the attempt's effective class
 							postRegateProductErrors = gate2.errors;
 							ctx.log(`Implementation ${phaseId} post-quarantine re-run classified ${reClassify.faultClass} (${regateStillRed ? "re-run still failing — remaining failures are this phase's product problem (foreign dirt already stashed)" : "own-scope evidence not green"}) — class=product; next=<implementer-retry> — environmental judge skipped`);
 						}
@@ -3477,6 +4015,7 @@ export const implementationStage: Stage = {
 						// convergence block entirely — the attempt falls through to failureReasons
 						// and the implementer is re-spawned with the judge's reading in context.
 						appendEnvironmentFault(setup.specDirectory, { kind: "judge-environmental", paths: null, stashRef: null, reason: `implementer-retry: ${judgeOut.verdict.diagnosis.slice(0, 200)}` }, ctx.log);
+						attemptFaultClass = "product-defect"; // v0.3.85 F3: the judge's grounded override — the audited log line says class=product
 						// v0.2.6 G3 + code-review sd26-CR-5: when this override arrives via
 						// a still-red post-quarantine re-gate, the re-run's errors are the
 						// tree's current truth — mirror the G2 carrier so the implementer
@@ -3647,7 +4186,17 @@ export const implementationStage: Stage = {
 					failure: failureSignature(failureReasons),
 					footprint: changeFootprint(phaseChangeRec, projectStructured),
 				};
-				const noProgress = repeatedNoProgress(attemptProgressHistory, progressSignature);
+				const signatureRepeat = repeatedNoProgress(attemptProgressHistory, progressSignature);
+				// v0.3.85 F3 (decision 4): failure-category recurrence — the same
+				// FaultClass across ≥ SUPER_DEV_FAULT_RECURRENCE (default 3) CONSECUTIVE
+				// recorded attempts trips the existing no-progress valve even when every
+				// footprint is fresh (C5: exact-signature matching alone let phases burn
+				// 5-11 attempts on varying approaches). A non-matching class resets the
+				// streak; §D re-entry resets it via phase scope. The update goes through
+				// the module-scope pure helper — see its docstring for why (CFA `never`).
+				faultClassStreak = nextFaultStreak(faultClassStreak, attemptFaultClass);
+				const faultRecurrence = faultClassStreak.count >= faultRecurrenceLimit();
+				const noProgress = signatureRepeat || faultRecurrence;
 				// ADV-v0379-5: the contradiction valve's evidence must be from the SAME
 				// repeated-signature window — a revert from an earlier, unrelated
 				// signature must not arm the frame for this one.
@@ -3658,7 +4207,169 @@ export const implementationStage: Stage = {
 					boundaryLeakFiles = [];
 				}
 				attemptProgressHistory.push(progressSignature);
-				ctx.log(`Implementation ${phaseId} attempt ${attempt} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}`);
+				ctx.log(`Implementation ${phaseId} attempt ${attempt} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}${faultRecurrence && !signatureRepeat ? ` [fault-category recurrence: ${attemptFaultClass} × ${faultClassStreak.count} consecutive attempt(s)]` : ""}`);
+				// ── v0.3.85 F2: the inherited-red tier ladder (C1 fix; §10 decision 3) ──
+				// Replaces C1's blind forward-continue at the partial boundary: when
+				// the GATE is the blocker, every remaining failure is out-of-scope, a
+				// baseline verification ran, own-scope evidence is green, and the
+				// failing subjects sit outside the declared targets — attribution
+				// decides. Occurrence = a boundary whose classification SURVIVES Tier 0
+				// (attribution) and Tier 1 (flake filter) — reaches the Tier-2 decision;
+				// Tier-0-reverted and Tier-1-flake-cleared boundaries are metrics-only
+				// and NEVER consume the tally. P3 guards: no ladder after the run already
+				// ended (replan marker / wall-fuse terminal), no double-fire with the env
+				// machinery's product fall-throughs, and F4's handoff sets the marker so
+				// this block cannot re-route in the same boundary. Runs AFTER the
+				// signature recording so a Tier-0 retry is visible to the no-progress
+				// detector on the NEXT attempt (bounded by the attempt cap — P8).
+				if (
+					!replanPending(state)
+					&& envJudgeOverrideFeedback.length === 0
+					&& postRegateProductErrors === null
+					// FIX ROUND 1 (TSC TS2367 + the P3 intent behind it): read the FUSE
+					// STATE directly, never the terminalStopReason string (CFA narrows
+					// the reason away from "wall-fuse" on this path, and a string compare
+					// is not structural anyway). runFuse.tripped is the same live window
+					// the loop-head wind-down checks — fuse-terminal phases must NOT
+					// route handoffs after the run already ended.
+					&& !runFuse.tripped
+					&& inheritedRedBoundaryShape({
+						gate,
+						ownScope: { deliverablePass: deliverableCheck.pass, changePass: changeGate.pass, symbolPass: symbolGate.pass, tddClean: tddOracleFailures.length === 0 },
+						coverageBlocked: coverageResult?.status === "below-threshold",
+						declaredScope,
+					}).shape
+				) {
+					const prePhaseDirt = dirtPaths.filter((p) => phaseStartSet.has(normalizeRepoPath(p)));
+					const ownLeakPaths = dirtPaths.filter((p) => !phaseStartSet.has(normalizeRepoPath(p)));
+					const baselineStatus = gate.baselineCheck?.status;
+					const attribution = inheritedRedAttribution({ baselineStatus, prePhaseDirt, ownLeakPaths });
+					if (attribution === "not-evaluable") {
+						// The deliberate exclusion: no attribution evidence (unknown
+						// baseline) — today's behavior; the poison, if any, is caught at the
+						// next completed gate.
+						ctx.log(`Implementation ${phaseId} inherited-red boundary: NOT EVALUABLE (baseline=${baselineStatus ?? "absent"}) — attribution needs evidence; today's retry semantics stand`);
+					} else if (attribution === "own-leak") {
+						// TIER 0 — deterministic attribution: an out-of-scope subject that
+						// passes at baseline cannot break on a tree clean at phase start any
+						// other way than this phase's own edits (G1's row-2 derivation).
+						// Revert the phase's undeclared out-of-scope dirt (deterministic,
+						// no agent call — runs even at exhausted attempt budget) and retry
+						// CONSUMING the phase's own attempt budget.
+						//
+						// FIX ROUND 1 (B): the revert is NON-DESTRUCTIVE. Only CONFIRMED
+						// tracked/staged leaks are restored to HEAD (recoverable,
+						// deterministic). UNTRACKED new files are the implementer's live
+						// work — the G1/v0.3.0 preserve contract keeps them on disk for the
+						// partial preserve-stash and names them in the retry feedback
+						// (restorePaths' `git clean` would delete them irrecoverably). A
+						// failed/empty porcelain read reverts NOTHING (fail-safe: no
+						// destructive op on unknown state).
+						const tier0Entries = porcelainEntries(setup.worktreePath);
+						const tier0Untracked = new Set(tier0Entries.filter((e) => e.status.startsWith("?")).map((e) => e.path));
+						const tier0Tracked = new Set(tier0Entries.filter((e) => !e.status.startsWith("?")).map((e) => e.path));
+						const revertableLeakPaths = ownLeakPaths.filter((p) => tier0Tracked.has(p) && !tier0Untracked.has(p));
+						const liveLeakPaths = ownLeakPaths.filter((p) => !revertableLeakPaths.includes(p));
+						appendInheritedRedEvent(setup.specDirectory, { event: "tier0-own-leak", phaseId, outcome: revertableLeakPaths.length ? "reverted" : ownLeakPaths.length ? "live-work-named" : "no-revertable-dirt", ownLeakPaths, baseline: baselineStatus }, ctx.log);
+						if (revertableLeakPaths.length > 0) {
+							restorePaths(setup.worktreePath, revertableLeakPaths);
+							attemptErrors = [...attemptErrors, ...revertableLeakPaths.map((p) => `inherited-red-own-leak-reverted: ${p}`)];
+						}
+						if (ownLeakPaths.length > 0) {
+							ctx.log(`Implementation ${phaseId} inherited-red Tier 0 (own-leak): regression on a tree clean at phase start with no pre-phase dirt — the out-of-scope failure is this phase's own leak; REVERTED ${revertableLeakPaths.length} tracked undeclared out-of-scope path(s) (${revertableLeakPaths.join(", ") || "none"}) — deterministic cleanup, no agent call${liveLeakPaths.length ? `; LEFT ${liveLeakPaths.length} untracked live-work path(s) in place, never destroyed (${liveLeakPaths.join(", ")}) — named in the retry feedback and preserved for the partial stash` : ""}`);
+						} else {
+							ctx.log(`Implementation ${phaseId} inherited-red Tier 0 (own-leak): no revertable undeclared out-of-scope dirt — the leak rides the phase's in-scope edits (an in-scope product regression; the implementer retry carries the failure feedback)`);
+						}
+						if (attempt < maxPhaseAttempts() && ctx.budget.check()) {
+							ctx.log(`Implementation ${phaseId} inherited-red Tier 0: retrying (the phase's own attempt budget is consumed — attempt ${attempt + 1} of ${maxPhaseAttempts()})`);
+							continue;
+						}
+						ctx.log(`Implementation ${phaseId} inherited-red Tier 0: attempt budget exhausted (attempt ${attempt}/${maxPhaseAttempts()}) — the revert still ran; the phase ends partial and boundary logic proceeds (Tier-0 boundaries are metrics-only and never consume the occurrence tally)`);
+					} else {
+						// attribution === "inherited" — Tier 1 flake filter first.
+						let tier1Gate: BuildGateResult | null = null;
+						if (!inheritedRedFlakeGrantUsed) {
+							inheritedRedFlakeGrantUsed = true;
+							announceActivity("Inherited-red flake filter (Tier 1)", attemptDetail(attempt));
+							tier1Gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
+							appendGateChecked(state, "phase-build:inherited-red-flake-rerun", tier1Gate, "implementation");
+							const flakeCleared = tier1Gate.pass || tier1Gate.inScopePass;
+							appendInheritedRedEvent(setup.specDirectory, { event: "flake-rerun", phaseId, outcome: flakeCleared ? "flake-cleared" : "still-red", baseline: baselineStatus }, ctx.log);
+							ctx.log(`Implementation ${phaseId} inherited-red Tier 1 (flake filter): deterministic full-gate re-run → ${flakeCleared ? "GREEN" : "RED"} (the re-run NEVER consumes an implementer attempt; the per-run grant is now spent; flake tally ${inheritedRedFlakeTally(setup.specDirectory)})`);
+							if (flakeCleared) {
+								// Green-through on the re-run (the env-blocker T3.3 precedent):
+								// own-scope evidence is green by the trigger shape, so the phase
+								// is green — NOT inherited-red; metrics-only, the tally is never
+								// consumed and a flake is never a retry reason.
+								green = true;
+								phaseStatusUpsert(phaseStatus, phaseId, "green", attempt); // v0.3.85 S3: peak-attempts metric
+								emitPhaseStatus("ok");
+								const _irfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_irfi >= 0) lastFailures.splice(_irfi, 1);
+								attemptErrors = tier1Gate.errors;
+								ctx.log(`Implementation ${phaseId} ${tier1Gate.pass ? "GREEN" : "IN-SCOPE GREEN"} via inherited-red Tier 1 flake filter on attempt ${attempt} — flake cleared, not inherited-red (occurrence tally NEVER consumed)`);
+								break;
+							}
+						} else {
+							ctx.log(`Implementation ${phaseId} inherited-red Tier 1 (flake filter): per-run grant already spent — the classification stands without a re-run (flake tally ${inheritedRedFlakeTally(setup.specDirectory)})`);
+						}
+						// TIER 2 decision — occurrence accounting (ledger-backed, persists
+						// across resume). Subjects come from the freshest gate (the Tier-1
+						// re-run when it ran); the owning prior phase is derived from the
+						// same Option-C scope predicate F4 uses (Arm A clause files ∪ Arm B
+						// recorded failing paths of prior PARTIAL phases).
+						const subjectsGate = tier1Gate ?? gate;
+						// P1 (FIX ROUND 2, item-1 audit): never trust gate shapes at the
+						// consumption sites either — the boundary shape already used
+						// Array-guarded reads; mirror that here so a runtime gate with an
+						// absent array cannot TypeError inside the Tier-2/3 subject naming.
+						const irOos = Array.isArray(subjectsGate.outOfScopeErrors) ? subjectsGate.outOfScopeErrors : [];
+						const irSubjects = [...new Set([...irOos, ...extractFailingTestFilePaths(irOos)])].slice(0, 6) as string[];
+						const irOwner = f4ScopeMatch([...prePhaseDirt, ...extractFailingTestFilePaths(irOos)], phases as Array<Record<string, unknown>>, phaseStatus, idx, lastFailures);
+						const priorOccurrences = countInheritedRedOccurrences(setup.specDirectory);
+						const priorHandoffRows = countInheritedRedRows(setup.specDirectory);
+						if (priorOccurrences >= 1 || priorHandoffRows >= 1) {
+							// TIER 3 — second occurrence (or sub-cap spent by an F2/F4
+							// trigger): FatalAbort naming the failing subjects + the owning
+							// prior phase. The poisoned baseline propagated past the single
+							// declared handoff — stop-the-line.
+							appendInheritedRedEvent(setup.specDirectory, { event: "occurrence", phaseId, outcome: "tier3-fatal", subjects: irSubjects, attribution, baseline: baselineStatus }, ctx.log);
+							ctx.log(`Implementation ${phaseId} inherited-red Tier 3: SECOND OCCURRENCE (prior occurrences=${priorOccurrences}, inherited-red handoff rows=${priorHandoffRows}) — FatalAbort naming the failing subjects + the owning prior phase (stop-the-line; no retry loop)`);
+							throw new FatalAbort(`inherited-red second occurrence at ${phaseId} (v0.3.85 F2, ADR 9): gate failures are out-of-scope by attribution (baseline=${baselineStatus ?? "n/a"}; ${prePhaseDirt.length} pre-phase dirt path(s): ${prePhaseDirt.slice(0, 6).join(", ") || "none"}) — failing subjects: ${irSubjects.join(" | ").slice(0, 600)}; owning prior phase: ${irOwner ? `${irOwner.phaseId} (arm ${irOwner.arm}, ${irOwner.path})` : "unidentified (no prior partial phase's declared scope matches the poison paths — pre-run dirt)"}. The poisoned baseline already consumed the single declared handoff; stop-the-line.`);
+						}
+						// Occurrence #1 → TIER 2 declared handoff: one replan-requests.json
+						// row (ownerStage:"spec" + source:"inherited-red" + sourcePhase) via
+						// the existing triggerReplanForFindings circuit; consumes ONE round
+						// of the shared SUPER_DEV_MAX_REPLAN_ROUNDS pool; the run ends
+						// status "replan" and the amended plan must pass the plan-feasibility
+						// validator before execution (§D re-entry).
+						const irFinding: Record<string, unknown> = {
+							id: `inherited-red-${phaseId}`,
+							file: null,
+							severity: "high",
+							title: `inherited-red partial boundary at ${phaseId}: gate failures out-of-scope by attribution (baseline=${baselineStatus ?? "n/a"})`,
+							detail: `The full-suite gate is red on failures outside this phase's declared targets, and attribution says they are NOT this phase's own: baseline=${baselineStatus ?? "n/a"}${prePhaseDirt.length ? `, ${prePhaseDirt.length} pre-phase dirt path(s) (${prePhaseDirt.slice(0, 6).join(", ")}) predating the phase's first-ever start` : ""}. Failing subjects: ${irSubjects.join(" | ").slice(0, 600)}. A prior phase left a poisoned baseline this phase cannot clear inside its declared scope — continuing forward-continues the poison (the C1 disease).`,
+							ownerStage: "spec",
+							source: INHERITED_RED_SOURCE,
+							sourcePhase: phaseId,
+							recommendation: "Merge the unfinished scope forward: amend the plan so the phase that owns the failing subjects' production change also owns the atomic test amendment (co-ownership in any clause form counts), or reorder/merge phases so the baseline this phase gates against is green when its turn comes.",
+						};
+						let irRouted = false;
+						try { irRouted = await triggerReplanForFindings(state, ctx, [irFinding], "implementation", setup.specIdentifier ?? "unknown"); } catch { irRouted = false; }
+						if (irRouted) {
+							appendInheritedRedEvent(setup.specDirectory, { event: "occurrence", phaseId, outcome: "tier2-handoff-routed", subjects: irSubjects, attribution, baseline: baselineStatus }, ctx.log);
+							terminalStopReason = "inherited-red";
+							attemptErrors = [...attemptErrors, `inherited-red: gate failures out-of-scope by attribution (baseline=${baselineStatus ?? "n/a"}) — declared handoff routed (source:inherited-red, sourcePhase:${phaseId}); the run ends status "replan"`];
+							ctx.log(`Implementation ${phaseId} inherited-red Tier 2 (declared handoff): occurrence 1 — replan-requests.json row routed via the shared replan pool (source:inherited-red, sourcePhase:${phaseId}, ownerStage:spec); consuming ONE SUPER_DEV_MAX_REPLAN_ROUNDS round; the phase ends partial and the run ends status "replan" (auto-resume → spec convergence regenerates the plan → plan-feasibility validator → §D re-entry)`);
+							break;
+						}
+						// The handoff could not route (pool exhausted / marker set / write
+						// failure): the occurrence still consumed the tally — routing
+						// Tier 3 keeps the C1 disease from forward-continuing silently.
+						appendInheritedRedEvent(setup.specDirectory, { event: "occurrence", phaseId, outcome: "handoff-unavailable", subjects: irSubjects, attribution, baseline: baselineStatus }, ctx.log);
+						ctx.log(`Implementation ${phaseId} inherited-red Tier 2: declared handoff UNAVAILABLE (replan pool exhausted / marker set / ledger write failure) — the occurrence consumed the tally; routing Tier 3 FatalAbort (no retry loop)`);
+						throw new FatalAbort(`inherited-red declared handoff unavailable at ${phaseId} (v0.3.85 F2, ADR 8/9): the replan circuit could not route while the gate is red on out-of-scope failures by attribution (baseline=${baselineStatus ?? "n/a"}). Failing subjects: ${irSubjects.join(" | ").slice(0, 600)}; owning prior phase: ${irOwner ? `${irOwner.phaseId} (arm ${irOwner.arm}, ${irOwner.path})` : "unidentified (pre-run dirt)"}. Stop-the-line — no retry loop.`);
+					}
+				}
 				if (noProgress) {
 					// v0.3.79 A2 (spec-25 run 14-14): a repeated signature + observed
 					// phase-boundary reverts is a DETERMINISTIC contradiction — arm the
@@ -3682,7 +4393,9 @@ export const implementationStage: Stage = {
 						specDirectory: setup.specDirectory,
 						context: [
 							...(cfFrame ? [cfFrame.context] : []),
-							"## Recurring failure (identical signature across consecutive attempts)",
+							faultRecurrence && !signatureRepeat
+								? `## Recurring failure-category (${attemptFaultClass} across ${faultClassStreak?.count ?? 0} consecutive attempts — signatures are fresh, the CLASS repeats)`
+								: "## Recurring failure (identical signature across consecutive attempts)",
 							...failureReasons.slice(0, 12),
 							"## Implementer's last reasoning tail",
 							implTextTail || "(none)",
@@ -3829,9 +4542,17 @@ export const implementationStage: Stage = {
 						} catch { /* never-throw: fall through to the terminal break */ }
 					}
 					terminalStopReason = "no-progress";
-					ctx.log(`Implementation ${phaseId} stopped after repeated no-progress failure on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}${stillRedSuspect ? " [test-suspect: RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence or accept the limitation]" : ""}`);
+					ctx.log(`Implementation ${phaseId} stopped after ${faultRecurrence && !signatureRepeat ? `failure-category recurrence (${attemptFaultClass} × ${faultClassStreak?.count ?? 0} consecutive attempts — fresh footprints, same class)` : "repeated no-progress failure"} on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}${stillRedSuspect ? " [test-suspect: RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence or accept the limitation]" : ""}`);
 					break;
 				}
+			}
+			// v0.3.85 F3: close out the FINAL attempt's wall duration — a green break or
+			// a terminal break never reaches a next attempt's entry, so without this
+			// the phase-boundary fuse decision would not see a single-attempt green
+			// phase's cost (the dominant shape for converged phases).
+			if (attemptStartedAt > 0 && !attemptDurationClosed) {
+				attemptDurations.push(Date.now() - attemptStartedAt);
+				attemptDurationClosed = true;
 			}
 			if (!green && terminalStopReason !== "no-progress" && !ctx.budget.check()) terminalStopReason = "budget";
 			// Close the phase bracket EXACTLY ONCE after the attempt loop: the
@@ -3863,13 +4584,13 @@ export const implementationStage: Stage = {
 				// CONTINUES to the next phase; the outer §D convergence loop re-enters
 				// non-green phases for another bounded pass until allGreen or the
 				// global budget fuse.
-				preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : terminalStopReason === "environment-blocked" ? "environment-blocked" : "gates-unmet"); // review-2 F8: keep the honest reason
+				preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : terminalStopReason === "environment-blocked" ? "environment-blocked" : terminalStopReason === "phase-attempt-cap" ? "phase-attempt-cap" : terminalStopReason === "phase-wall" ? "phase-wall" : terminalStopReason === "wall-fuse" ? "wall-fuse" : terminalStopReason === "inherited-red" ? "inherited-red" : terminalStopReason === "declared-handoff" ? "declared-handoff (f4)" : terminalStopReason === "red-weakening" ? "red-weakening" : "gates-unmet"); // review-2 F8: keep the honest reason (v0.3.85 F3: the three bound reasons pass through verbatim; v0.3.85 F2/F4: the handoff reasons pass through named; v0.3.85 F5: the red-weakening handoff reason passes through named)
 			if (terminalStopReason === "environment-blocked") envBlockedPhases.add(phaseId);
 				{
 					const sig = terminalReasons.join("; ").slice(0, 200);
 					const prior = phaseStatus.find((p) => p.id === phaseId);
 					const sameSig = prior?.status === "partial" && prior.lastFailureSig === sig;
-					phaseStatusUpsert(phaseStatus, phaseId, "partial");
+					phaseStatusUpsert(phaseStatus, phaseId, "partial", attemptsRun); // v0.3.85 S3: peak-attempts metric
 					const entry = phaseStatus.find((p) => p.id === phaseId)!;
 					entry.lastFailureSig = sig;
 					entry.partialReEntries = sameSig ? (prior?.partialReEntries ?? 0) + 1 : 0;
@@ -3882,9 +4603,9 @@ export const implementationStage: Stage = {
 					...hollowFiles.map((e) => `hollow-file: ${e}`),
 				]);
 				if (terminalFailureKind === "red-generation") {
-					ctx.log(`Implementation ${phaseId} partial (RED generation stopped after ${terminalRedTries} tries in attempt ${attemptsRun}${terminalStopReason === "no-progress" ? ", no progress" : terminalStopReason === "budget" ? ", budget exhausted" : terminalStopReason === "environment-blocked" ? ", environment blocked (fix is outside this worktree — judge diagnosis above)" : ""}) — continuing to the next phase`); // review-2 F8
+					ctx.log(`Implementation ${phaseId} partial (RED generation stopped after ${terminalRedTries} tries in attempt ${attemptsRun}${terminalStopReason === "no-progress" ? ", no progress" : terminalStopReason === "budget" ? ", budget exhausted" : terminalStopReason === "environment-blocked" ? ", environment blocked (fix is outside this worktree — judge diagnosis above)" : terminalStopReason === "red-weakening" ? " (red-weakening — declared handoff routed; the run ends status replan)" : ""}) — continuing to the next phase`); // review-2 F8
 				} else {
-					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : ""} — continuing to the next phase`); // review-2 F8
+					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : terminalStopReason === "phase-attempt-cap" ? " (phase-attempt-cap)" : terminalStopReason === "phase-wall" ? " (phase wall budget exhausted)" : terminalStopReason === "wall-fuse" ? " (wall-fuse — run wall budget exhausted; resumable by design)" : terminalStopReason === "inherited-red" ? " (inherited-red — declared handoff routed; the run ends status replan)" : terminalStopReason === "declared-handoff" ? " (declared-handoff (f4) — the run ends status replan)" : ""} — continuing to the next phase`); // review-2 F8
 				}
 				allGreen = false;
 				if (worktreeGone) break; // v0.3.57 liveness: no further phase can run in a deleted worktree
@@ -3984,6 +4705,11 @@ export const implementationStage: Stage = {
 			// PERSIST across §D convergence iterations — the control rides
 			// state.implementation exactly like phaseStatus.
 			runStartDirt,
+			// v0.3.85 F2: per-phase first-ever porcelain snapshots persist across §D
+			// convergence iterations (the attribution boundary — see the phase-entry
+			// capture); the per-run Tier-1 flake grant rides with them.
+			phaseStartDirt,
+			inheritedRedFlakeGrantUsed,
 			phaseGuidanceReentryUsed,
 			convergenceBlocked,
 			convergenceBlockReason,

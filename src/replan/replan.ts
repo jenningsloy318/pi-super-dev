@@ -67,6 +67,19 @@ export interface ReplanRequest {
 	classificationReason: string;
 	/** Human-readable revision ask rendered into the owning writer's prompt. */
 	requestedRevision: string;
+	/** v0.3.85 F2/F4 (ADR 8): provenance tag for declared handoffs —
+	 *  `source:"inherited-red"` marks the inherited-red handoff circuit
+	 *  (F2 boundary + F4 door, sharing the single ≤1-per-run sub-cap).
+	 *  Deliberately DISTINCT from `classificationSource` (that is R2 routing
+	 *  provenance); optional so version-1 replan-requests.json files stay
+	 *  compatible. */
+	source?: string;
+	/** The phase the handoff is attributed to (audit): F2 — the phase whose
+	 *  boundary fired; F4 — the prior PARTIAL phase whose scope matched. */
+	sourcePhase?: string;
+	/** F4 only: which scope arm matched (A = prior partial phase's declared
+	 *  clause files; B = its recorded failing-test file paths). */
+	handoffArm?: string;
 	fingerprint: string;
 	status: "pending" | "addressed";
 	addressedAt?: string;
@@ -407,6 +420,11 @@ export async function triggerReplanForFindings(
 				classificationSource: decision.source,
 				classificationReason: decision.reason,
 				requestedRevision: `Revise the ${decision.owner} artifact to resolve: ${title}. ${String(finding.recommendation ?? finding.detail ?? "")}`.trim(),
+				// v0.3.85 F2/F4 (ADR 8): the declared-handoff provenance fields ride
+				// the row when the finding carries them (optional; version-1 compatible).
+				...(typeof finding.source === "string" && finding.source ? { source: finding.source } : {}),
+				...(typeof finding.sourcePhase === "string" && finding.sourcePhase ? { sourcePhase: finding.sourcePhase } : {}),
+				...(typeof finding.handoffArm === "string" && finding.handoffArm ? { handoffArm: finding.handoffArm } : {}),
 				fingerprint: fp,
 				status: "pending",
 				originatedRunId,
@@ -563,6 +581,29 @@ export function pendingHumanReplanRequests(specDir: string | undefined): ReplanR
 	if (!specDir) return [];
 	const file = readJson<ReplanRequestsFile>(specPath(specDir, REPLAN_REQUESTS_FILE), { version: 1, rounds: 0, requests: [] });
 	return file.requests.filter((r) => r.status === "pending" && r.ownerStage === "human");
+}
+
+// ─── v0.3.85 F2/F4 (ADR 8): the inherited-red sub-cap + validator override ───
+
+/** Count `source:"inherited-red"` rows in the ledger — ANY status (the sub-cap
+ *  is non-resetting: an addressed handoff still spends it; a resumed run must
+ *  never route a second inherited-red handoff). Deterministic, file-backed;
+ *  0 when the file is absent/unreadable. */
+export function countInheritedRedRows(specDir: string | undefined): number {
+	if (!specDir) return 0;
+	const file = readJson<ReplanRequestsFile>(specPath(specDir, REPLAN_REQUESTS_FILE), { version: 1, rounds: 0, requests: [] });
+	return file.requests.filter((r) => r.source === "inherited-red").length;
+}
+
+/** PENDING `source:"inherited-red"` rows — the restart-state signal for the
+ *  Stage-9 plan-validation hard-fail override (§10 decision 3): a resumed run
+ *  still carrying an unaddressed inherited-red handoff must not log-and-proceed
+ *  on plan contradictions; it routes Tier 3 FatalAbort naming the validator
+ *  findings. */
+export function pendingInheritedRedRows(specDir: string | undefined): ReplanRequest[] {
+	if (!specDir) return [];
+	const file = readJson<ReplanRequestsFile>(specPath(specDir, REPLAN_REQUESTS_FILE), { version: 1, rounds: 0, requests: [] });
+	return file.requests.filter((r) => r.status === "pending" && r.source === "inherited-red");
 }
 
 /** Flip this stage's pending requests to addressed (called on approval — the

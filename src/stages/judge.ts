@@ -10,10 +10,12 @@
  *   INV-1 the judge never acquits: every route is executed by deterministic
  *         wiring code; no gate verdict (RED status, build pass, review approval)
  *         is ever taken from the judge;
- *   INV-2 evidence must be machine-verifiable: each `{file, quote}` is checked
- *         (file exists under the worktree; quote byte-occurs in that file or in
- *         the captured outputs supplied by the caller); an unverified verdict is
- *         discarded and falls back to `escalate-now` — NEVER to a permissive route;
+ *   INV-2 evidence must be machine-verifiable: each `{file, quote}` — or
+ *         canonical-string evidence `"<path>: <quote>"` (F1, v0.3.85) — is
+ *         checked (file resolves INSIDE the worktree, relative or absolute;
+ *         quote byte-occurs in that file or in the captured outputs supplied
+ *         by the caller); an unverified verdict is discarded and falls back
+ *         to `escalate-now` — NEVER to a permissive route;
  *   INV-3 budgets are independent and small: ≤2 calls per failure signature,
  *         ≤12 per run (env-tunable), never shared with implementer/reviewer budgets;
  *   INV-4 fresh context, read-only: the judge agent gets a self-contained prompt
@@ -28,7 +30,7 @@
  * Kill switch: SUPER_DEV_DISABLE_JUDGE=1 makes runJudge degrade instantly.
  */
 
-import { existsSync, readFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, realpathSync, openSync, readSync, closeSync } from "node:fs";
 import { superDevEnv } from "../render/super-dev-dir.ts";
 import { JudgeControlData } from "../render/schemas.ts";
 import { join, isAbsolute, sep } from "node:path";
@@ -70,17 +72,20 @@ const maxCallsPerRun = (): number => {
 	const n = Number.parseInt(superDevEnv("SUPER_DEV_MAX_JUDGE_CALLS") ?? "", 10);
 	return Number.isFinite(n) && n > 0 ? n : 12;
 };
-/** Wall-clock cap for one judge attempt: diagnosis must be fast, never block a
- *  loop. Lazy env override SUPER_DEV_JUDGE_TIMEOUT_MS; default 480s — LLM judge
- *  latency is heavy-tailed (observed ~71s typical; OpenAI/Anthropic SDKs
- *  default 600s per request). The old 120s wall killed grounded diagnoses
- *  mid-exploration, and run 2026-08-27T12-33-43-088Z then lost 4/4 judge calls
- *  at EXACTLY the 240s cap (240161/240193/240244/240237ms — glm-5.2 @
- *  thinking=high exploring a worktree systematically overruns it while the
- *  soft-deadline wrap-up fails to terminate). 480s = SDK default minus grace. */
+/** Wall-clock cap for one judge attempt: diagnosis must be fast, never block
+ *  a loop. Lazy env override SUPER_DEV_JUDGE_TIMEOUT_MS; default 1_200_000ms
+ *  (20min, v0.3.85 decision 6 — a DEDICATED tier: the judge is a routing
+ *  decision, not a deep review; 30min too loose, 480s observed too tight twice
+ *  on run 2026-09-09 phase 5). NO new env key — the live override stays the
+ *  escape (a parallel dead key is exactly the C2 disease). History: the 120s
+ *  wall killed grounded diagnoses mid-exploration; 240s lost 4/4 judge calls
+ *  at EXACTLY the cap (240161/240193/240244/240237ms, run
+ *  2026-08-27T12-33-43-088Z — glm-5.2 @ thinking=high exploring a worktree
+ *  systematically overruns it while the soft-deadline wrap-up fails to
+ *  terminate); 480s = SDK default minus grace, still clipped phase-5 twice. */
 export const judgeTimeoutMs = (): number => {
 	const n = Number.parseInt(superDevEnv("SUPER_DEV_JUDGE_TIMEOUT_MS") ?? "", 10);
-	return Number.isFinite(n) && n > 0 ? n : 480_000;
+	return Number.isFinite(n) && n > 0 ? n : 1_200_000;
 };
 
 /** Timeout classification shared by every backend surface (review F-1, both
@@ -101,12 +106,25 @@ export interface JudgeEvidence {
 	quote: string;
 }
 
+/** One evidence item as it arrives on the control wire (F1, v0.3.85 — ADR 7):
+ *  the object arm `{file, quote}` or the canonical string arm `"<path>: <quote>"`
+ *  (split on the FIRST colon+space). verifyJudgeEvidence normalizes strings to
+ *  records IN PLACE at entry — afterwards the guard, the per-item loop, and
+ *  every downstream consumer see one uniform {file, quote} shape. */
+export type JudgeEvidenceWire = JudgeEvidence | string;
+
 export interface JudgeVerdict {
 	diagnosis: string;
 	route: JudgeRoute;
 	confidence: number;
 	evidence: JudgeEvidence[];
 }
+
+/** The verdict as parseJudgeControl produces it, PRE-verification: evidence
+ *  may still carry canonical STRINGS (the schema's union arm). Once
+ *  verifyJudgeEvidence has run, the same object satisfies the post-verification
+ *  JudgeVerdict contract — see asVerifiedVerdict at the call site. */
+export type JudgeVerdictWire = Omit<JudgeVerdict, "evidence"> & { evidence: JudgeEvidenceWire[] };
 
 export interface JudgeRequest {
 	/** Wiring-point id, e.g. "stage9.red-unknown" — used in logs/audit + agent id. */
@@ -170,66 +188,123 @@ export function judgeBudgetState(): { run: number; signatures: number } {
 // Evidence verification (INV-2). Pure + exported for unit tests.
 
 function boundedRead(path: string): string {
+	// v0.3.85 High #3: the read ITSELF is bounded (openSync + readSync into a
+	// pre-sized buffer) — the old readFileSync-then-slice loaded the WHOLE file
+	// first, so a multi-GB worktree file would allocate it all (and a
+	// /dev/zero-style special path would stream unboundedly) before the cap
+	// ever applied. Containment above already excludes host special paths; this
+	// bounds legitimate-but-huge worktree files.
+	let fd: number | undefined;
 	try {
-		const buf = readFileSync(path);
-		return buf.length > VERIFY_FILE_CAP ? buf.subarray(0, VERIFY_FILE_CAP).toString("utf8") : buf.toString("utf8");
+		fd = openSync(path, "r");
+		const buf = Buffer.alloc(VERIFY_FILE_CAP);
+		// readSync (synchronous form) returns the byte count as a plain number —
+		// the {bytesRead} object shape belongs to the ASYNC fs.read promise.
+		const bytesRead = readSync(fd, buf, 0, VERIFY_FILE_CAP, 0);
+		return buf.subarray(0, bytesRead).toString("utf8");
 	} catch {
 		return "";
+	} finally {
+		if (fd !== undefined) { try { closeSync(fd); } catch { /* best-effort close */ } }
 	}
 }
 
 /**
- * Verify each evidence item: RELATIVE file paths resolve — and are CONTAINED —
- * under the worktree (realpath both sides, so `..` traversal and symlink
- * indirection cannot cite host files; B5), absolute paths are allowed by
- * design (documented allowance — the judge runs source-read-only on the host
- * and may cite host-visible build output), and the quote byte-occurs in that
- * file OR in one of the supplied captured outputs. Returns per-item failures;
- * empty array = fully verified. The WORKTREE is the only relative base —
- * never the process cwd (a host-repo same-named path must not false-verify a
- * fabricated location).
+ * Verify each evidence item: EVERY file path — relative or ABSOLUTE — must
+ * resolve (and be CONTAINED) under the worktree (realpath both sides, so `..`
+ * traversal and symlink indirection cannot cite host files; B5 + v0.3.85
+ * High #3 — the old absolute-path allowance let "/etc/passwd"-style citations
+ * bypass the boundary entirely), and the quote must byte-occur in that file
+ * OR in one of the supplied captured outputs. String evidence (the F1
+ * canonical arm) is normalized to {file, quote} records at ENTRY — BEFORE the
+ * all-empty guard, so an all-string array is never misread as malformed-empty
+ * — with the canonical form "<path>: <quote>" split on the FIRST colon+space
+ * (QUOTE_MIN/QUOTE_MAX bind the QUOTE substring only; "path:12" numerics die
+ * naturally below the minimum — no line-number special case). A string with
+ * no canonical prefix, or whose prefix resolves to no file, stays
+ * schema-legal but fails with the named reason `evidence-unattributed` (the
+ * corrective message teaches the form — degraded mode gets one actionable
+ * retry, not a mystery discard). Returns per-item failures; empty array =
+ * fully verified. The WORKTREE is the only relative base — never the process
+ * cwd (a host-repo same-named path must not false-verify a fabricated
+ * location).
  */
-export function verifyJudgeEvidence(verdict: JudgeVerdict, worktreePath: string, outputTails: string[]): string[] {
+export function verifyJudgeEvidence(verdict: JudgeVerdictWire, worktreePath: string, outputTails: string[]): string[] {
 	const failures: string[] = [];
-	if (verdict.route !== "continue" && verdict.evidence.length < 1) {
+	// F1 (C2 class fix): canonical-string parse at ENTRY — string items carry
+	// no .file/.quote, so the allEmpty predicate below would classify every
+	// ALL-STRING evidence array as malformed before the per-item loop ever ran
+	// (the exact v0.3.70–v0.3.84 wiring that killed judge routing). Parse HERE
+	// and write the records back: single parse, guard and loop both see
+	// {file, quote}, downstream consumers read a uniform shape.
+	const stringArms = new Set<number>();
+	const evidence: JudgeEvidence[] = verdict.evidence.map((ev, i): JudgeEvidence => {
+		if (typeof ev !== "string") return ev;
+		stringArms.add(i); // EVERY string arm — attribution failures are named for the whole arm
+		const idx = ev.indexOf(": "); // split on the FIRST colon+space only
+		const parsed: JudgeEvidence = idx === -1
+			? { file: "", quote: ev }
+			: { file: ev.slice(0, idx), quote: ev.slice(idx + 2) };
+		return parsed;
+	});
+	verdict.evidence = evidence;
+	if (verdict.route !== "continue" && evidence.length < 1) {
 		failures.push(`route "${verdict.route}" requires at least 1 evidence item`);
 	}
-	if (verdict.evidence.length > MAX_EVIDENCE_ITEMS) {
-		failures.push(`evidence has ${verdict.evidence.length} items (max ${MAX_EVIDENCE_ITEMS})`);
+	if (evidence.length > MAX_EVIDENCE_ITEMS) {
+		failures.push(`evidence has ${evidence.length} items (max ${MAX_EVIDENCE_ITEMS})`);
 	}
 	// B4 (NFR-6): an evidence array whose items are ALL empty/whitespace is
 	// MALFORMED (fabricated shape), not MISSING — it discards on every route
 	// (including escalate-now), never taking the missing-evidence degrade.
 	// "the judge attached nothing" ([]) and "the judge attached garbage"
-	// (all-blank items) are different failure classes.
-	const allEmpty = verdict.evidence.length > 0 && verdict.evidence.every((ev) => !String(ev.file ?? "").trim() && !String(ev.quote ?? "").trim());
+	// (all-blank items) are different failure classes. Normalization ran first,
+	// so an all-string array of blanks reaches this guard as parsed empty
+	// records — same class as object-arm garbage, as it should be.
+	const allEmpty = evidence.length > 0 && evidence.every((ev) => !String(ev.file ?? "").trim() && !String(ev.quote ?? "").trim());
 	if (allEmpty) failures.push("evidence is malformed: every item is empty/whitespace");
-	// B5: realpath the worktree ONCE per call (both containment comparisons use
-	// it); falls back to the given path when realpath is unavailable.
+	// B5: realpath the worktree ONCE per call — the containment comparison for
+	// BOTH relative and absolute evidence uses it; falls back to the given path
+	// when realpath is unavailable.
 	let worktreeReal: string | undefined;
 	try { worktreeReal = realpathSync(worktreePath); } catch { worktreeReal = undefined; }
-	for (const [i, ev] of verdict.evidence.entries()) {
+	const root = worktreeReal ?? worktreePath;
+	for (const [i, ev] of evidence.entries()) {
 		const file = String(ev.file ?? "").trim();
 		const quote = String(ev.quote ?? "");
-		if (!file) { failures.push(`evidence[${i}]: empty file`); continue; }
+		const fromString = stringArms.has(i);
+		if (!file) {
+			// String arm: no canonical "<path>: " prefix — name the failure class
+			// and teach the form (F1). Object arm: pre-existing empty-file failure.
+			failures.push(fromString
+				? `evidence[${i}]: evidence-unattributed: string evidence must use the canonical "<path>: <quote>" form (worktree-relative path, colon, space, verbatim quote)`
+				: `evidence[${i}]: empty file`);
+			continue;
+		}
 		if (quote.length < QUOTE_MIN || quote.length > QUOTE_MAX) {
 			failures.push(`evidence[${i}]: quote length ${quote.length} outside ${QUOTE_MIN}-${QUOTE_MAX}`);
 			continue;
 		}
 		const resolved = isAbsolute(file) ? file : join(worktreePath, file.replace(/^\.\//, ""));
-		if (!existsSync(resolved)) { failures.push(`evidence[${i}]: file not found: ${file}`); continue; }
-		if (!isAbsolute(file)) {
-			// B5 (NFR-6): contain RELATIVE evidence under the worktree — the docstring
-		// contract was false for `join(worktreePath, "../../etc/passwd")`, which
-		// resolves outside and would verify against a host file. realpath both
-		// sides so symlink indirection cannot bypass the boundary either.
-			let real: string;
-			try { real = realpathSync(resolved); } catch { real = resolved; }
-			const root = worktreeReal ?? worktreePath;
-			if (real !== root && !real.startsWith(root + sep)) {
-				failures.push(`evidence[${i}]: file resolves outside the worktree: ${file}`);
-				continue;
-			}
+		if (!existsSync(resolved)) {
+			// String arm: an unresolvable prefix is still an ATTRIBUTION failure
+			// (the named `evidence-unattributed` class); the object arm keeps its
+			// granular "file not found".
+			failures.push(fromString
+				? `evidence[${i}]: evidence-unattributed: "${file}" resolves to no file in the worktree (canonical form is "<path>: <quote>" with a real worktree-relative path)`
+				: `evidence[${i}]: file not found: ${file}`);
+			continue;
+		}
+		// v0.3.85 High #3: containment for ALL evidence — relative AND absolute.
+		// The judge runs source-read-only on the host, but VERIFICATION is the
+		// trust boundary: an absolute host path (or a symlink landing outside)
+		// must not byte-verify against host files the worktree never owned.
+		// realpath both sides so symlink indirection cannot bypass the boundary.
+		let real: string;
+		try { real = realpathSync(resolved); } catch { real = resolved; }
+		if (real !== root && !real.startsWith(root + sep)) {
+			failures.push(`evidence[${i}]: file resolves outside the worktree: ${file}`);
+			continue;
 		}
 		if (!boundedRead(resolved).includes(quote)) {
 			const inTails = outputTails.some((t) => t.includes(quote));
@@ -242,7 +317,7 @@ export function verifyJudgeEvidence(verdict: JudgeVerdict, worktreePath: string,
 // ---------------------------------------------------------------------------
 // Control parsing: defensive, never throws, falls back to discarded.
 
-function parseJudgeControl(control: Record<string, unknown> | null): JudgeVerdict | null {
+function parseJudgeControl(control: Record<string, unknown> | null): JudgeVerdictWire | null {
 	if (!control) return null;
 	const diagnosisRaw = typeof control.diagnosis === "string" ? control.diagnosis.trim() : "";
 	const routeRaw = typeof control.route === "string" ? control.route.trim() as JudgeRoute : ("" as JudgeRoute);
@@ -256,9 +331,13 @@ function parseJudgeControl(control: Record<string, unknown> | null): JudgeVerdic
 	// MALFORMED (discard on every route) instead of collapsing to the
 	// missing-evidence degrade. Partially-empty arrays keep their per-item
 	// "empty file" failures, same as before.
-	const evidence: JudgeEvidence[] = evidenceRaw
+	const evidence: JudgeEvidenceWire[] = evidenceRaw
 		.slice(0, MAX_EVIDENCE_ITEMS)
 		.map((e) => {
+			// F1 (v0.3.85): canonical-string arm passes through UNTOUCHED — the
+			// parse runs at verifyJudgeEvidence ENTRY (single parse; direct unit
+			// callers of the verifier get the same normalization).
+			if (typeof e === "string") return e;
 			const o = (e ?? {}) as Record<string, unknown>;
 			return { file: String(o.file ?? ""), quote: String(o.quote ?? "") };
 		});
@@ -348,12 +427,18 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 			appendAudit(req, { error: result.error, ...(judgeAttempts > 1 ? { attempts: judgeAttempts } : {}) });
 			return { status: "degraded", reason: `judge agent failed: ${result.error}` };
 		}
-		let verdict = parseJudgeControl(result.control);
-		if (!verdict) {
+		let verdictWire = parseJudgeControl(result.control);
+		if (!verdictWire) {
 			appendAudit(req, { error: "unparseable judge control", control: result.control ?? null });
 			return { status: "discarded", reason: "judge control unparseable or missing diagnosis/route" };
 		}
-		const evidenceFailures = verifyJudgeEvidence(verdict, req.worktreePath, req.outputTails ?? []);
+		const evidenceFailures = verifyJudgeEvidence(verdictWire, req.worktreePath, req.outputTails ?? []);
+		// F1: verifyJudgeEvidence's ENTRY normalization has rewritten any
+		// canonical-string evidence into {file, quote} records — the verdict now
+		// satisfies the post-verification JudgeVerdict contract every downstream
+		// consumer (audit JSON, route consumers, escalate floors) reads.
+		const asVerifiedVerdict = (v: JudgeVerdictWire): JudgeVerdict => v as JudgeVerdict;
+		let verdict = asVerifiedVerdict(verdictWire);
 		if (evidenceFailures.length > 0) {
 			// F4 (RC4, runs 2026-08-17T08-56-53-706Z ×2): an escalate-now verdict
 			// with missing/unverifiable evidence must DEGRADE TO ESCALATE, never
@@ -416,7 +501,7 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 						"## Prior verdict rejected — evidence verification failed",
 						...evidenceFailures.map((f) => `- ${f}`),
 						"",
-						"Re-emit your control with VERIFIABLE evidence: each item must be an exact quote that appears in the named file (file + quote), or an exact quote from the captured output tails. If you cannot ground your diagnosis, route escalate-now and say so.",
+						"Re-emit your control with VERIFIABLE evidence: each item is either an object {file, quote} or the canonical string \"<path>: <quote>\" (worktree-relative path, colon, space, then the quote copied VERBATIM); the quote (8-200 characters) must appear exactly in that file or in the captured output tails. If you cannot ground your diagnosis, route escalate-now and say so.",
 					].join("\n");
 					let corrective: { ok: true; result: Awaited<ReturnType<typeof judgeAgentCall>> } | { ok: false; thrown: string };
 					try {
@@ -428,8 +513,9 @@ async function runJudgeInner(ctx: StageContext, req: JudgeRequest): Promise<Judg
 						appendAudit(req, { error: corrective.ok ? String(corrective.result.error) : corrective.thrown, correctiveAttempt: 2 });
 						return { status: "degraded", reason: `judge agent failed on the corrective attempt: ${corrective.ok ? String(corrective.result.error) : corrective.thrown}` };
 					}
-					const verdict2 = parseJudgeControl(corrective.result.control);
-					const failures2 = verdict2 ? verifyJudgeEvidence(verdict2, req.worktreePath, req.outputTails ?? []) : ["corrective control unparseable"];
+					const verdict2Wire = parseJudgeControl(corrective.result.control);
+					const failures2 = verdict2Wire ? verifyJudgeEvidence(verdict2Wire, req.worktreePath, req.outputTails ?? []) : ["corrective control unparseable"];
+					const verdict2 = verdict2Wire ? asVerifiedVerdict(verdict2Wire) : null;
 					if (verdict2 && failures2.length === 0) {
 						appendAudit(req, { verdict: verdict2, correctiveRescued: true });
 						ctx.log(`judge ${req.scope}: corrective verdict verified — adjudicating normally (route=${verdict2.route})`);

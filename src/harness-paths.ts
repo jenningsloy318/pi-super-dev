@@ -93,6 +93,10 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// v0.3.76 L2: per-call tool-tick telemetry (events.jsonl parity — appended
 	// mid-RED on every delegation update tick).
 	"tool-usage.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
+	// v0.3.85 F2/F4: the inherited-red ladder's append-only tally/audit ledger
+	// (events.jsonl parity — engine-appended inside the spec dir at phase
+	// boundaries and handoffs; rides phase commits as durable evidence).
+	".inherited-red.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
 	".convergence-ledger.json": { specDirBookkeeping: true },
 };
 

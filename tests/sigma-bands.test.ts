@@ -52,6 +52,13 @@ const row = (over: Partial<RunMetricsRow>): RunMetricsRow => ({
 	stages: { ok: 5 },
 	agentErrorRounds: 0,
 	fatalAborts: 0,
+	// v0.3.85 S3 health counters (honest-zero defaults in the factory).
+	judgeAccepted: 0,
+	judgeDiscarded: 0,
+	partialPhases: 0,
+	inheritedRedHandoffs: 0,
+	inheritedRedOccurrences: 0,
+	maxPhaseAttempts: 0,
 	usage: { calls: 10, input: 50_000, output: 10_000, cost: 0.1 },
 	ts: 1,
 	...over,
@@ -125,6 +132,28 @@ describe("v0.3.69 E1 — sigmaReport (median + MAD robust bands)", () => {
 		}));
 		const names = report.bands.map((b) => b.metric).sort();
 		expect(names).toEqual(["agentErrorRounds", "agentsSpawned", "costUsd", "fatalAborts", "tokens", "wallMs"].sort());
+	});
+
+	// ── v0.3.85 S3: the new health counters join the SAME banding machinery ──
+	it("S3 counters are sigma-banded by the existing pattern (MAD=0 baseline → any deviation capped 3σ; equal values quiet)", () => {
+		const prior = mkRows(8, 100_000, 0.1);
+		// Equal-to-baseline S3 counters stay quiet (0σ, absent from the band list).
+		const quiet = sigmaReport(prior, row({ runId: "cur", judgeAccepted: 0, judgeDiscarded: 0, partialPhases: 0, maxPhaseAttempts: 0 }));
+		expect(quiet.bands.filter((b) => b.metric !== "wallMs" && b.metric !== "costUsd" && b.metric !== "tokens")).toHaveLength(0);
+		// The C2 shape surfacing: judge discards jump from an all-zero baseline.
+		const drifted = sigmaReport(prior, row({ runId: "cur", judgeAccepted: 3, judgeDiscarded: 2, partialPhases: 5, inheritedRedHandoffs: 1, inheritedRedOccurrences: 1, maxPhaseAttempts: 4 }));
+		for (const metric of ["judgeAccepted", "judgeDiscarded", "partialPhases", "inheritedRedHandoffs", "inheritedRedOccurrences", "maxPhaseAttempts"] as const) {
+			const band = drifted.bands.find((b) => b.metric === metric);
+			expect(band, `${metric} must be banded`).toBeDefined();
+			expect(band!.tier).toBe("3σ"); // all-identical history: any deviation is maximally surprising (capped)
+		}
+	});
+
+	it("S3 counters on OLD ledger rows (keys absent) read as honest 0 and never NaN the baseline", () => {
+		const legacy = mkRows(8, 100_000, 0.1).map((r) => { const { judgeAccepted: _a, judgeDiscarded: _b, partialPhases: _c, inheritedRedHandoffs: _d, inheritedRedOccurrences: _e, maxPhaseAttempts: _f, ...rest } = r; return rest as RunMetricsRow; });
+		expect(() => sigmaReport(legacy, row({ runId: "cur", judgeDiscarded: 1 }))).not.toThrow();
+		const report = sigmaReport(legacy, row({ runId: "cur", judgeDiscarded: 1 }));
+		expect(report.bands.find((b) => b.metric === "judgeDiscarded")?.tier).toBe("3σ");
 	});
 
 	it("junk rows (NaN/undefined fields) never throw — they are excluded from the baseline deterministically", () => {
