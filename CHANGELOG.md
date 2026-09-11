@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — v0.3.94: SUPER_DEV_DEFAULT_TIMEOUT_MS 改名为 SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS（作用域消歧）
+
+`DEFAULT` 单独出现时与 `SUPER_DEV_MAX_RUN_WALL_MS`（run 级）产生作用域误读（用户实际困惑，
+2026-09-11）。该键实为**agent 档**超时——无 code/review/writer/judge 专档的 agent
+（classifier/clarifier/reflection 等）的单次派发超时，默认 1200000ms。
+
+- 新键 `SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS`；旧键按 v0.3.86 F-17 改名-别名先例保留为
+  弃用别名（一次性 WARN 指向新键，两键并存时新键胜出；<1000ms 垃圾值文法不变）。
+- 读取点唯一（agent-runtime.ts defaultAgentTimeoutMs）；键名不出进程（delegation 只传
+  timeoutMs 数值）——纯内部改名，零上游契约影响。
+- README env 表 + 超时档段落同步；注册钉测/别名行为测试更新；历史文档按惯例不改写。
+
 ### Fixed — v0.3.93: 只读角色声明 completionGuard:false（0.67 官方变异守卫逃生门）
 
 v0.3.92 的后续加固。pi-subagents 0.67 的 `validateImplementationToolContract` 按 task 文本的

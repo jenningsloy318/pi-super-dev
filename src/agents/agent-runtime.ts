@@ -828,11 +828,34 @@ function timeoutTierMs(kind: "code" | "review" | "writer" | "default", envKey: s
 	return fallback;
 }
 
+let legacyDefaultTierWarned = false;
+/** v0.3.94 deprecated alias: SUPER_DEV_DEFAULT_TIMEOUT_MS → SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS. */
+function legacyDefaultTierTimeoutMs(fallback: number): number {
+	const raw = superDevEnv("SUPER_DEV_DEFAULT_TIMEOUT_MS");
+	if (raw === undefined || raw === "") return fallback;
+	if (!legacyDefaultTierWarned) {
+		legacyDefaultTierWarned = true;
+		console.warn(`[super-dev] SUPER_DEV_DEFAULT_TIMEOUT_MS is DEPRECATED — rename it to SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS in your config/env (the old key still works; this warning appears once per process)`);
+	}
+	const n = Number(raw);
+	if (Number.isFinite(n) && n >= 1_000) return n;
+	if (!timeoutWarned["default"]) {
+		timeoutWarned["default"] = true;
+		console.warn(`[super-dev] SUPER_DEV_DEFAULT_TIMEOUT_MS=${JSON.stringify(raw)} is not a positive number of milliseconds — keeping the tier default ${fallback}ms (this warning appears once per process)`);
+	}
+	return fallback;
+}
+
 export function defaultAgentTimeoutMs(agent: string): number {
 	if (isCodeWritingAgent(agent)) return timeoutTierMs("code", "SUPER_DEV_CODE_TIMEOUT_MS", CODE_WRITING_TIMEOUT_MS);
 	if (REVIEW_TIMEOUT_AGENTS.has(agent)) return timeoutTierMs("review", "SUPER_DEV_REVIEW_TIMEOUT_MS", REVIEW_TIMEOUT_MS);
 	if (HEAVY_WRITER_TIMEOUT_AGENTS.has(agent)) return timeoutTierMs("writer", "SUPER_DEV_WRITER_TIMEOUT_MS", WRITER_TIMEOUT_MS);
-	return timeoutTierMs("default", "SUPER_DEV_DEFAULT_TIMEOUT_MS", DEFAULT_SPAWN_TIMEOUT_MS);
+	// v0.3.94 rename (scope-ambiguity fix): the default TIER keys off
+	// SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS — "DEFAULT" alone read as a run-level
+	// knob next to SUPER_DEV_MAX_RUN_WALL_MS (user confusion, 2026-09-11). The
+	// old key stays honored as a deprecated alias with a one-time WARN
+	// (v0.3.86 F-17 rename-with-alias precedent); new key wins when both are set.
+	return timeoutTierMs("default", "SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS", legacyDefaultTierTimeoutMs(DEFAULT_SPAWN_TIMEOUT_MS));
 }
 
 /** W4 (v0.2.10): skills are a CAPABILITY, not ambient noise — v0.3.59: ONE

@@ -194,7 +194,7 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 	const restore = () => {
 		for (const [k, v] of Object.entries(saved)) setEnv(k, v);
 	};
-	const KEYS = ["SUPER_DEV_CODE_TIMEOUT_MS", "SUPER_DEV_REVIEW_TIMEOUT_MS", "SUPER_DEV_DEFAULT_TIMEOUT_MS"] as const;
+	const KEYS = ["SUPER_DEV_CODE_TIMEOUT_MS", "SUPER_DEV_REVIEW_TIMEOUT_MS", "SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS"] as const;
 
 	beforeAll(() => {
 		for (const k of KEYS) saved[k] = process.env[k];
@@ -218,15 +218,15 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 		expect(defaultAgentTimeoutMs("tdd-guide")).toBe(2400000);
 	});
 
-	it("SUPER_DEV_DEFAULT_TIMEOUT_MS overrides the default tier only", async () => {
-		setEnv("SUPER_DEV_DEFAULT_TIMEOUT_MS", "600000");
+	it("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS overrides the default tier only", async () => {
+		setEnv("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS", "600000");
 		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
 		expect(defaultAgentTimeoutMs("task-classifier")).toBe(600000);
 		expect(defaultAgentTimeoutMs("code-reviewer")).toBe(1_800_000);
 	});
 
 	it("tier precedence: the agent's OWN tier key wins over the default key", async () => {
-		setEnv("SUPER_DEV_DEFAULT_TIMEOUT_MS", "600000");
+		setEnv("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS", "600000");
 		setEnv("SUPER_DEV_REVIEW_TIMEOUT_MS", "900000");
 		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
 		expect(defaultAgentTimeoutMs("code-reviewer")).toBe(900000);
@@ -237,12 +237,12 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			setEnv("SUPER_DEV_REVIEW_TIMEOUT_MS", "30 min");
-			setEnv("SUPER_DEV_DEFAULT_TIMEOUT_MS", "250k");
+			setEnv("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS", "250k");
 			const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
 			expect(defaultAgentTimeoutMs("code-reviewer")).toBe(1_800_000);
 			expect(defaultAgentTimeoutMs("task-classifier")).toBe(1_200_000);
 			expect(warn.mock.calls.some((a) => String(a[0]).includes("SUPER_DEV_REVIEW_TIMEOUT_MS"))).toBe(true);
-			expect(warn.mock.calls.some((a) => String(a[0]).includes("SUPER_DEV_DEFAULT_TIMEOUT_MS"))).toBe(true);
+			expect(warn.mock.calls.some((a) => String(a[0]).includes("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS"))).toBe(true);
 		} finally {
 			warn.mockRestore();
 		}
@@ -264,12 +264,12 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 describe("v0.3.84 — heavy-writer timeout tier (incident 2026-09-08T23-27-36: spec-writer 90-100% budget utilization)", () => {
 	const KEY = "SUPER_DEV_WRITER_TIMEOUT_MS";
 	const saved = process.env[KEY];
-	const savedDefault = process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS;
+	const savedDefault = process.env.SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS;
 	afterAll(() => {
 		if (saved === undefined) delete process.env[KEY]; else process.env[KEY] = saved;
-		if (savedDefault === undefined) delete process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS; else process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS = savedDefault;
+		if (savedDefault === undefined) delete process.env.SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS; else process.env.SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS = savedDefault;
 	});
-	beforeEach(() => { delete process.env[KEY]; delete process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS; });
+	beforeEach(() => { delete process.env[KEY]; delete process.env.SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS; });
 
 	it("spec-writer gets the 30-min writer tier (observed worst 20.3m + 50% headroom, M4 calibration)", async () => {
 		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
@@ -285,7 +285,20 @@ describe("v0.3.84 — heavy-writer timeout tier (incident 2026-09-08T23-27-36: s
 		expect(defaultAgentTimeoutMs("handoff-writer")).toBe(1_200_000);
 	});
 
-	it("SUPER_DEV_WRITER_TIMEOUT_MS overrides the writer tier; SUPER_DEV_DEFAULT_TIMEOUT_MS must NOT leak into it", async () => {
+		it("v0.3.94 — the deprecated SUPER_DEV_DEFAULT_TIMEOUT_MS alias still feeds the default tier with a deprecation WARN", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS = "600000";
+			const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+			expect(defaultAgentTimeoutMs("task-classifier")).toBe(600000);
+			expect(warn.mock.calls.some((a) => String(a[0]).includes("DEPRECATED"))).toBe(true);
+		} finally {
+			delete process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS;
+			warn.mockRestore();
+		}
+	});
+
+it("SUPER_DEV_WRITER_TIMEOUT_MS overrides the writer tier; SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS must NOT leak into it", async () => {
 		process.env[KEY] = "2400000";
 		process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS = "3600000";
 		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");

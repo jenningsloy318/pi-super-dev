@@ -626,7 +626,7 @@ figure), so usage is a first-class governance surface, not a log decoration:
   parallel Set literals; the `task()` auto-render net guarantees every
   control-bearing stage leaves an artifact even when its manual render call
   is forgotten; the three timeout tiers are operator-tunable via
-  `SUPER_DEV_CODE/REVIEW/DEFAULT_TIMEOUT_MS` (no reload needed — read per
+  `SUPER_DEV_CODE/REVIEW_TIMEOUT_MS` + `SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS` (v0.3.94 rename of the scope-ambiguous `SUPER_DEV_DEFAULT_TIMEOUT_MS`, still honored as a deprecated alias; no reload needed — read per
   call; sub-second values are rejected as unit mistakes); and the two writer
   agents carry a commit-guard child extension that BLOCKS commit-class git
   invocations (commit/merge/rebase/cherry-pick/stash/revert/pull/push/am;
@@ -1219,6 +1219,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_WRITER_TIMEOUT_MS` | `1800000` | heavy-writer timeout tier — spec-writer produces all three spec docs in one call (v0.3.84) |
 | `SUPER_DEV_DUPLICATE_NODE_RETRY_MS` | `2000` | backoff before the single duplicate_node delegation retry, clamped to 60s (v0.3.84) |
 | `SUPER_DEV_NO_CONFIG_ENV` | — | `1` = test-hermeticity kill switch: `superDevEnv` ignores `config.json`'s `env` map entirely (set by the vitest setup; never set in production) |
+| `SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS` | `1200000` | default agent tier (classifiers/clarifier/reflection/etc. — agents without a code/review/writer/judge tier); v0.3.94 rename of `SUPER_DEV_DEFAULT_TIMEOUT_MS`, which stays honored as a deprecated alias with a one-time WARN (v0.3.85 timeout tiers) |
 | `SUPER_DEV_JUDGE_TIMEOUT_MS` | `1200000` | judge wall-clock budget per call — dedicated 20-min tier, raised from 480s after two 480s discards in run 2026-09-09 (v0.3.85; retry-on-timeout consumes the 2nd signature slot) |
 | `SUPER_DEV_DISABLE_JUDGE` | — | `1` = kill switch, judge degrades instantly |
 | `SUPER_DEV_DISABLE_BASELINE_CHECK` | — | `1` = skip merge-base regression verification |
