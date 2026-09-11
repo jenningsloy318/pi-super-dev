@@ -176,6 +176,23 @@ Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增�
 | 部分 9 | 评估路线图（随使用模式演化） | 个人工具语境→DEC-13④ 管线版本波触发刷新 |
 | 部分 10 | 测步骤不只测结果（冗余调用/重复搜索检测） | 已含且外部印证——D6 确定性频次检查正是其形态 |
 
+## 9. 实现记录（2026-09-11，三波落地）
+
+按 §6 分期全部实现（living 约定回写）：
+
+- **P1 = v0.3.89**（d2d1408d）：D1 金标层 + D2 rubric 工件 + D7 校验门机器。adversarial 门 10 findings
+  全折叠（三臂 target 文法 / verdict 家族映射 / scorer 去重 / id==basename / realpath 包含 / wx / caseSet 锚定）。
+- **P2 = v0.3.90**（45f0c906）：D5+D3 双打分器（eval-stage 失败开放面 + eval-scorer 第 31 个 specialist）。
+  adversarial 11 findings 裁定（10 折叠 + F-05 off-by-one 经 HEAD 对照驳回为预先存在）：仪器隔离冻结快照、
+  版本章上链、mustNot 统一语义、中止跳过、SUPER_DEV_NO_EVAL_STAGE 解耦。
+- **P3 = v0.3.91**（this commit）：D4 飞轮 + D6 + 污染防火墙。adversarial 10 findings 全折叠：门三态语义
+  （directional-only=无信号→台账重算）+ latest-wins 去重（漂移可检）、clusterKey 注册表防 mv 重起草循环、
+  configStamp 进聚类键、注入文档实测清单（phaseClauseFiles 语义纠正）、路径级聚合、CJK 分词、
+  degraded 冻结 streak、终响短式提案、changedModules null/[] 区分。
+
+规格主张→机器对照：每波 code gate + adversarial gate（均 gemini-3.8-flash）+ delta re-gate 三门全清；
+21 项 adversarial findings 中 20 项折叠、1 项驳回（证伪记录在案）。
+
 ## 8. 第三轮 grill + 检索折叠（2026-09-11，工具质量正典）
 
 第三轮独立评审（glm-5.3-flash）：**P1 READY**（4 个单行折叠已入）；P2/P3 面五项方法论缺口，全部裁定折叠 + AnySearch 检索补强（来源见 §9）。

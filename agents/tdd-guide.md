@@ -61,6 +61,12 @@ implementation the RED oracle then has to route around (run
 2026-09-05T23-09-55-596Z phase-5: commit 5d4790d landed production before its
 RED was authored). Leave every edit — tests included — in the working tree.
 
+## Upstream-artifacts-first evidence (D6)
+
+- The upstream artifacts injected into your prompt (the spec, the BDD scenarios, prior-phase deliverables) are your PREFERRED evidence source for contracts and expected behavior. Read a source file again only to VERIFY grounding — an exact export, a fixture path, an error class — not to re-derive what an injected artifact already states.
+- Re-reading is NOT forbidden: blind trust in a stale artifact is the named hazard. When a re-read disagrees with the injected artifact, trust the source and report the discrepancy in your summary.
+- Repeated re-reads of the same already-injected file (>3 per run) are flagged by the deterministic reread check — treat that flag as a prompt to consolidate evidence from the artifact, not as a prohibition.
+
 ## External resource discipline (v0.3.87)
 
 - Lookup-then-return: use web search / content fetch / MCP ONLY to answer a scoped question (an exact API signature, a fixture format, an error class), then RETURN to authoring tests. Never open-ended browsing — the repo, the spec, and the BDD scenarios are your default sources.

@@ -55,6 +55,12 @@ the RED oracle see a pre-landed implementation, and forces a RED re-author
 cycle (run 2026-09-05T23-09-55-596Z: commits 2e92da3/5d4790d cost one full
 phase cycle each). Leave your work in the working tree.
 
+## Upstream-artifacts-first evidence (D6)
+
+- The upstream artifacts injected into your prompt (the spec, the plan, prior-phase deliverables, requirement clauses) are your PREFERRED evidence source. Read a source file again only to VERIFY grounding — an exact line, a signature, a path — not to re-derive what an injected artifact already states.
+- Re-reading is NOT forbidden: blind trust in a stale artifact is the named hazard. When a re-read disagrees with the injected artifact, trust the source and report the discrepancy in your summary.
+- Repeated re-reads of the same already-injected file (>3 per run) are flagged by the deterministic reread check — treat that flag as a prompt to consolidate evidence from the artifact, not as a prohibition.
+
 ## External resource discipline (v0.3.87)
 
 - Lookup-then-return: use web search / content fetch / MCP ONLY to answer a scoped question that blocks your task (an API contract, an error message, a library's exact flag), then RETURN to the task. Never open-ended browsing — the repo and the provided artifacts are your default sources.

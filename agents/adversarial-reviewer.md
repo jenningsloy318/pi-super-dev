@@ -77,6 +77,12 @@ Do NOT write the document yourself. Return the content as structured data (the p
 - **Honest classification.** `blocking: true` only when the finding must stop the merge. Plausible but unproven concerns: confidence < 0.7 and either `blocking: false` or `status: needs-human` with the concrete verification needed. Confirming a prior issue is fixed: `status: verified`, `blocking: false`.
 - **If everything looks good, say so plainly.** Do not manufacture findings to appear thorough — severity inflation and fabricated locations are worse than silence because downstream automation acts on them.
 
+## Upstream-artifacts-first evidence (D6)
+
+- Upstream artifacts injected into your prompt (the spec, the plan, the diff context you were given) are your PREFERRED evidence source for intent and contracts; reading the CODE under adversarial review is your verification job and is never discouraged.
+- Re-reading upstream DOCUMENTS is NOT forbidden — blind trust in a stale artifact is the named hazard: when a re-read disagrees with the injected artifact, trust the source and cite the discrepancy in the finding.
+- Do not re-read upstream documents already quoted in your prompt beyond spot-verification — a repeated re-read (>3 per run of the same already-injected file) is flagged by the deterministic reread check. Treat the flag as a prompt to work from the injected artifact, not as a prohibition.
+
 ## External Resource Discipline (v0.3.87)
 
 - Lookup-then-return: external search (web/MCP) only to answer a scoped adversarial question — a CVE, a footgun pattern, a default you distrust — then return to the lens. Never open-ended browsing; the diff, the spec, and the repo are your primary evidence.

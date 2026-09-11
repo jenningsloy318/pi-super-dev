@@ -818,7 +818,7 @@ describe("tripwires (P4/P6/§7 部分 5 — deterministic source contracts)", ()
 		expect(specifiers.length).toBeGreaterThan(0);
 		const allowed = new Set([
 			"node:crypto", "node:fs", "node:path", "typebox",
-			"./sigma-bands.ts", "./eval-layer.ts", "../runlog.ts", "../render/super-dev-dir.ts", "../agents/agent-runtime.ts",
+			"./sigma-bands.ts", "./eval-layer.ts", "./eval-shared.ts", "../runlog.ts", "../render/super-dev-dir.ts", "../agents/agent-runtime.ts",
 		]);
 		for (const s of specifiers) expect(allowed.has(s), `unexpected import ${s} in eval-stage.ts (observational allowlist)`).toBe(true);
 		// Belt and braces: the mutation-suspect modules are named and banned.

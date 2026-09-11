@@ -33,7 +33,20 @@ import { cleanupOldRuns } from "./cleanup.ts";
  *  backend's bench copy was deleted in v0.3.88) — it bypasses realAgent's
  *  prompt seam — so the output-language directive must ride here explicitly:
  *  learned.md / reflection.md are cross-run history and must honor
- *  config.language. */
+ *  config.language.
+ *
+ * P3 / §8.1 contamination firewall — the reflection-INPUT exclusion seam.
+ * Why THIS seam (documented ruling): learned-index.json has NO engine-owned
+ * write seam (the reflection AGENT writes it with file tools), so a
+ * write-side filter cannot hold mechanically without a second writer on an
+ * agent-owned file; and the agent's NAMED input (audit.jsonl) provably
+ * carries no eval-provenance rows (the eval stage writes events.jsonl /
+ * rows.jsonl / eval-report.md — never audit.jsonl; pinned by test). The
+ * exclusion therefore (a) names the eval-provenance surfaces the agent must
+ * NOT mine into learned.md/learned-index, and (b) is backstopped
+ * MECHANICALLY by the canary/7-gram scan + quarantine at the injection seam
+ * (render/learned.ts) — which holds even when this advisory text is
+ * disobeyed (P4). */
 export function buildReflectionTask(runDir?: string | null): string {
 	return [
 		"## Files",
@@ -42,6 +55,9 @@ export function buildReflectionTask(runDir?: string | null): string {
 		`- Archive: ${getLearnedArchivePath()}`,
 		`- Index: ${getLearnedIndexPath()}`,
 		`- Reflection summary: ${runDir ? reflectionPathFor(runDir) : getReflectionPath()}`,
+		"",
+		"## Eval-provenance exclusion (§8.1 — binding)",
+		"The measurement surfaces are EXCLUDED from learned-index mining: never read, quote, summarize, or derive lessons from `eval.*` events (events.jsonl), eval-report.md, or anything under `~/.super-dev/evals/` (golden cases, rubrics, labels, runs/rows.jsonl, proposals, state.json). Golden-case scenario/verdict text leaking into learned-index contaminates every future measured run (the instrument must not perturb the measured system). Your named inputs above are the ONLY mining surface.",
 		"",
 		"## Task",
 		"Analyze the audit trail. Identify patterns (retries, errors, timing).",

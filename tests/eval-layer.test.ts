@@ -114,8 +114,8 @@ function rubricWire(over: Record<string, unknown> = {}): Record<string, unknown>
 	};
 }
 
-function row(caseId: string, verdict: string, confidence: number, caseVersion = 1): ScorerVerdictRow {
-	return { caseId, caseVersion, verdict, confidence };
+function row(caseId: string, verdict: string, confidence: number, caseVersion = 1, ts?: number): ScorerVerdictRow {
+	return { caseId, caseVersion, verdict, confidence, ...(ts !== undefined ? { ts } : {}) };
 }
 
 function label(caseId: string, expectedByHuman: string, caseVersion = 1): MaintainerVerdict {
@@ -686,6 +686,29 @@ describe("computeGateAgreement", () => {
 		expect(a.agreementRate).toBe(1);
 		expect(a.agreed).toBe(1);
 		expect(gatePasses(a).posture).toBe("directional-only");
+	});
+
+	it("F-01b: the LATEST duplicate observation by ts drives the verdict (ties → last occurrence); duplicates stay counted (P10)", () => {
+		// an early "Blocked" row, then a LATER "Approved" row for the same
+		// (caseId, caseVersion) — first-wins would have frozen "Blocked".
+		const rows = [
+			row("gc-1", "Blocked", 0.9, 1, 1),
+			row("gc-1", "Approved", 0.9, 1, 5),
+		];
+		const a = computeGateAgreement(rows, [label("gc-1", "Approved")]);
+		expect(a.matchedPairs).toBe(1);
+		expect(a.duplicateScorerRows).toBe(1);
+		expect(a.agreed).toBe(1); // the LATEST (ts=5, Approved) agreed
+		expect(a.agreementRate).toBe(1);
+		// an OLDER late-arriving row must NOT displace the newest
+		const stale = [row("gc-1", "Approved", 0.9, 1, 9), row("gc-1", "Blocked", 0.9, 1, 3)];
+		const b = computeGateAgreement(stale, [label("gc-1", "Approved")]);
+		expect(b.agreed).toBe(1); // ts=9 wins over the ts=3 straggler
+		expect(b.duplicateScorerRows).toBe(1);
+		// ties (incl. missing ts) → the LAST occurrence in ledger order wins
+		const tied = [row("gc-1", "Approved", 0.9), row("gc-1", "Blocked", 0.9)]; // both ts absent → tie
+		const c = computeGateAgreement(tied, [label("gc-1", "Blocked")]);
+		expect(c.agreed).toBe(1); // the LAST row (Blocked) drove the pair
 	});
 
 	it("bootstrap is null below GATE_MIN_MATCHED_PAIRS (§8.5 — no CI on a directional-only sample, F5)", () => {

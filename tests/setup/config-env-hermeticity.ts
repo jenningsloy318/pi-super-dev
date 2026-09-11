@@ -50,6 +50,10 @@ process.env.SUPER_DEV_NO_GLOBAL_METRICS = "1";
 // append dataset rows to the real ~/.super-dev/evals/runs/, and write extra
 // events/reports — the tests/eval-stage.test.ts wiring test deletes this var
 // locally (with getSuperDevDir mocked to a tmp dir) to exercise the wiring.
+// P3 (D4): the flywheel rides the SAME switch (state.json / proposals under
+// the default home would otherwise be written at every close-out); the D6
+// reread check deliberately does NOT (always on — read-only + event-on-
+// findings only, zero writes when no findings).
 process.env.SUPER_DEV_NO_EVAL_STAGE = "1";
 // v0.3.81 adv-F1: activation's fire-and-forget git fetch must never do real
 // network I/O (or mutate remote-tracking refs) from inside the unit suite.

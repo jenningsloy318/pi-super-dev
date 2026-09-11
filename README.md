@@ -804,10 +804,9 @@ read-only; no agent may edit gates, methodology, or evals; rollback = git.
 ## Golden-case eval layer (v0.3.89, P1)
 
 The E4 incident-pinned suites answer "did the fix break what it fixed"; the
-golden-case layer (spec: `docs/requirements/sdlc-tips-adoption.md`, P1 of 3)
-answers "is the pipeline still good at its job on a fixed reference set".
-P1 ships the substrate only — no pipeline wiring yet (P2 adds scorers, P3 the
-flywheel):
+golden-case layer (spec: `docs/requirements/sdlc-tips-adoption.md`) answers
+"is the pipeline still good at its job on a fixed reference set". P1 laid
+the substrate, P2 the scorers, P3 the flywheel + D6 + the firewall:
 
 - **Assets live user-local** under `~/.super-dev/evals/` — `cases/`
   (one JSON per golden case, seven fields incl. `caseVersion`, scenario must
@@ -844,6 +843,97 @@ flywheel):
   never spend LLM tokens. The D7 validation gate executes whenever maintainer
   labels cover scored cases. `SUPER_DEV_NO_EVAL_STAGE=1` disables the stage
   (default on).
+- **P3 (v0.3.91) closes the loop — the flywheel + D6 + contamination
+  firewall**, all deterministic and fail-open: the flywheel drafts golden-case
+  PROPOSALS (skeleton drafts in `~/.super-dev/evals/proposals/`; moving one
+  into `cases/` is the maintainer's human gate) only after the D7 validation
+  gate holds — a single-run directional-only outcome falls back to the ledger
+  recompute, and scorer agreement dedups latest-wins so drift stays
+  detectable. Cluster keys carry the configStamp (evidence never bundles
+  across configs); a cluster registry prevents re-draft loops after a
+  maintainer accepts a case (re-proposal needs ≥3 NEW runs of evidence);
+  saturated cases (5 agreeing runs) retire from the hill-climb signal while
+  staying as regression baselines; a per-version refresh marker lists golden
+  cases due for re-review. **D6 artifact-instead-of-reread**: tool-usage rows
+  gained `count:n` (in-call repeats folded), and a zero-LLM reread check
+  flags >3 reads of a VERIFIED prompt-injected doc path (aggregated by path
+  across tools; advisory only). **Contamination firewall**: reflection is
+  barred from eval-provenance material, and every learned-index injection is
+  mechanically scanned (literal canary GUID + 7-gram overlap with CJK-aware
+  tokenization) — tainted entries are quarantined and ledgered, never
+  injected.
+- **P3 adds the flywheel + D6 + the contamination firewall** (spec
+  `docs/requirements/sdlc-tips-adoption.md` D4/D6/DEC-11/DEC-13/§8.1 — all
+  deterministic, zero LLM):
+  - **D6 artifact-instead-of-reread**: the tool-usage telemetry rows gained
+    `count: n` (the per-call (tool, argHead) dedup key now increments instead
+    of dropping; absent ≡ 1 — old rows stay valid). The deterministic
+    **reread check** at close-out flags file-reading calls (read/grep only —
+    ls/find are directory listings) on the docs the prompt builders
+    VERIFIABLY embed as upstream artifacts (the stage controls' docPath /
+    design docs / spec paths — never deliverable clause files, which are
+    what implementers WRITE) beyond `REREAD_MAX_CALLS = 3` aggregate calls
+    on one path (counts sum across tools/argHeads) — advisory only (log
+    line + `eval.reread` event when findings exist); re-reading is never
+    forbidden (stale-artifact blind trust is the named hazard; the rule
+    ships in the implementer/tdd-guide/code-reviewer/adversarial-reviewer
+    prompts as `Upstream-artifacts-first evidence`).
+  - **D4 flywheel** (`src/evolution/flywheel.ts`, user-local under
+    `~/.super-dev/evals/`): proposal DRAFTING only — clustering rows.jsonl
+    trajectory rows at anomaly band positions and failing final-response
+    rubric dimensions (≥ `PROPOSAL_MIN_RUNS = 2` distinct runs; per
+    configStamp — rows never bundle across configs) into zero-LLM
+    golden-case skeletons under `proposals/` with canary + provenance
+    (incl. `configStamps`); trajectory clusters are validator-passing
+    long-forms, final-response clusters are SHORT-FORM drafts (no target
+    exists — target/expected stay `TODO(maintainer)` and will not validate
+    until filled). **Nothing enters `cases/` until the maintainer moves it
+    there by hand** (`mv` = the human gate, DEC-11③). Drafting runs ONLY
+    behind the D7 gate: the live stage decision is honored at a genuine
+    posture (calibrated arms it, miscalibrated blocks), while a
+    directional-only or absent gate is NO SIGNAL — the deterministic ledger
+    recompute decides (no single-run gate deadlock; the gate's scorer-row
+    dedup is latest-wins by ts). A registered cluster re-drafts only after
+    ≥ `PROPOSAL_NEW_RUNS = 3` NEW runIds of evidence (the registry lives in
+    state.json and survives the maintainer's mv; the re-draft lands as a
+    fresh file). **Saturation** (`STREAK_N = 5` consecutive agreeing scored
+    runs → excluded from the drafting signal, still scored, never deleted;
+    first disagreement un-saturates; scorerDegraded rows freeze the streak;
+    streaks recomputed from rows.jsonl every run). **The discrimination
+    check** flags caseSets where two configStamps are
+    verdict-distribution-indistinguishable on ≥ `DISCRIM_MIN_CASES = 8`
+    shared cases (“fix case difficulty, do not artificially harden”).
+    **Evolution refresh**: on an extension-version wave the flywheel flags
+    golden cases for re-review (null/absent changed-modules list = ALL —
+    conservative; an EMPTY list = none) and writes
+    `~/.super-dev/evals/refresh-pending` — clear it (`rm`) after re-review.
+    `state.json` tracks saturation + `lastSeenExtensionVersion` + the
+    proposal-cluster registry + `noteProposalApplied(caseSet)` stamps (§8.3
+    M1: a landed proposal means (caseSet, caseVersion, rubricVersion) band
+    baselines must re-key — the P4-era banding consumers read the stamp; the
+    baselines themselves are not built in P3).
+  - **§8.1 contamination firewall**: eval-provenance material
+    (`eval.*` events, eval-report.md, everything under `~/.super-dev/evals/`)
+    is excluded from learned-index mining at the reflection input seam
+    (binding section in the reflection task + `agents/reflection.md`;
+    audit.jsonl never carries eval rows — engine-written). The MECHANICAL
+    backstop: every learned-index injection (render/learned.ts) is scanned
+    against the golden-case texts — literal canary GUID + 7-gram overlap
+    (quarantine when > `CONTAMINATION_OVERLAP_THRESHOLD = 0.1` of a
+    scenario's 7-grams appear in an entry; the tokenizer is CJK-aware —
+    each CJK character is its own token, deterministic, no Intl.Segmenter)
+    — and a flagged entry is
+    **quarantined: never injected**, warned loudly, and logged to
+    `~/.super-dev/evals/contamination.jsonl` (first detections; the scan
+    re-runs per injection and per flywheel run). The flywheel rides
+    `SUPER_DEV_NO_EVAL_STAGE` alongside the stage; the reread check is
+    always on (free and deterministic).
+
+  All P3 policy knobs are named constants in their modules (not env keys):
+  `REREAD_MAX_CALLS` (reread-check.ts), `STREAK_N` / `DISCRIM_MIN_CASES` /
+  `PROPOSAL_MIN_RUNS` / `PROPOSAL_NEW_RUNS` (flywheel.ts),
+  `CONTAMINATION_NGRAM_SIZE` / `CONTAMINATION_OVERLAP_THRESHOLD`
+  (contamination.ts).
 
 ## Configuration
 
@@ -1159,7 +1249,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_TRANSIENT_RETRY_MS` | `2000,4000,…` | transient agent-error retry envelope (comma-separated backoff delays) |
 | `SUPER_DEV_SERVICE_CMD_ALLOWLIST` | — | comma-separated EXTRA first-token service launchers for the verification bringup allowlist (model-discovered `cmd` must start with a standard launcher — npm/pnpm/yarn/bun run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, `python -m http.server`, cargo/go run; anything else is refused with an honest log and the pipeline degrades to no-live-service, never punishing the work) |
 | `SUPER_DEV_NO_SAFETY_GUARD` | — | `1` = kill switch for the delegated-child safety guard (dangerous-bash denylist + protected-file writes, loaded via `subagentOnlyExtensions` for every agent alongside the commit guard) |
-| `SUPER_DEV_NO_EVAL_STAGE` | — | `1` = kill switch for the in-pipeline eval stage at run close-out (trajectory + final-response scoring, `eval.*` events, eval-report.md, and the user-local dataset append to `~/.super-dev/evals/runs/rows.jsonl`); the stage is ON by default — this is a hermeticity/escape switch of the `SUPER_DEV_NO_SAFETY_GUARD` class, also honored via the config.json `env` map |
+| `SUPER_DEV_NO_EVAL_STAGE` | — | `1` = kill switch for the in-pipeline eval surface at run close-out (trajectory + final-response scoring, `eval.*` events, eval-report.md, the user-local dataset append to `~/.super-dev/evals/runs/rows.jsonl`, AND the P3 flywheel — same switch, same class); the stage + flywheel are ON by default — this is a hermeticity/escape switch of the `SUPER_DEV_NO_SAFETY_GUARD` class, also honored via the config.json `env` map. The D6 reread check is NOT under this switch (always on — free + deterministic, writes only on findings) |
 | `SUPER_DEV_DEBUG` | — | debug logging |
 
 Every entry above can be exported in the shell (traditional behavior,

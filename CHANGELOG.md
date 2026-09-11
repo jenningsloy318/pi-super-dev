@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.3.91: P3 飞轮 + D6 工件换重读 + 污染防火墙（规格三波收官）
+
+`sdlc-tips-adoption.md` P3 终波——数据集飞轮（全确定性、人工闸门不可谈判 L7）、D6 落地、
+金标污染防火墙；全部 fail-open 观测类：
+
+- **D6 遥测修正案（DEC-12）**：tool-usage 行增 `count:n`——collector 按 (tool, argHead) 折叠
+  调用内重复为计数（per-call Map、finally 单次 flush：throw 路径遥测不丢；缺省≡1 向后兼容）。
+- **D6 确定性频次检查（新 reread-check.ts）**：零 LLM——注入工件路径 >3 次源码读取（read/grep）
+  → 建议性 eval.reread 事件；聚合按**路径**跨工具/参数求和（防碎片化）；目录工具与尾斜杠
+  前缀排除（防假阳性）；注入文档清单 = 逐 builder 实测的 prompt 注入面（requirements/bdd/
+  research/assessment/design/prototype/spec/plan/tasks——phaseClauseFiles 交付物语义已纠正
+  排除）。四个 agent prompt 增"上游工件优先"证据规则（重读不禁——偏信过时工件是命名危害）。
+- **D4 飞轮（新 flywheel.ts）**：DEC-13① 前提门三态（活 calibrated 武装 / 活 miscalibrated
+  阻断 / directional-only=无信号 → 台账重算裁决——单 run 死锁修复）；提案=确定性骨架草稿
+  （轨迹簇验证可过；终响簇短式 TODO(maintainer) 明示不验证）；**clusterKey 注册表**防
+  mv 后重起草循环（≥3 新 runId 才重提案——拒绝后再证据路径）；**latest-wins 去重**（F-01b：
+  台账漂移可检，创世纪冻结修复）；饱和 STREAK_N=5 退役（连续同意→退出爬坡信号仍作回归基线；
+  scorerDegraded 冻结 streak）；判别力配对比较咨询；演化刷新标记（版本波→重审清单；
+  changedModules null=全部 []=无）；M1 `noteProposalApplied` 基线重键戳。
+- **污染防火墙（§8.1，新 contamination.ts + eval-shared.ts 叶模块）**：反思输入排除
+  （advisory）+ **loadLearnedLessons 注入缝机械扫描**（P4：prompt 被违抗也守得住）——字面
+  canary GUID + 7-gram 重叠（CJK 逐字确定性分词，无 Intl.Segmenter）；检出即隔离（永不注入）
+  + contamination.jsonl 去重台账；eval 溯源材料被证明不进 audit.jsonl（源测试钉死）。
+- configStamp 进聚类键（跨配置证据永不混捆）+ provenance.configStamps；51→53 项新测试
+  （flywheel 30 / reread 17 / contamination 13 / tool-usage 5 + latest-wins/CJK plants）；
+  全套件 253 文件 / 3828 green。
+
+双 gemini-3.8-flash 评审门 ×3 波全程（code gate PASS ×3；adversarial 21 findings 全裁定
+折叠——P2 一项驳回（HEAD 证伪）——+ delta re-gate PASS ×3）。规格 P1→P2→P3 至此全部落地：
+金标地基（v0.3.89）→ 双打分器（v0.3.90）→ 飞轮+D6+防火墙（本版）。
+
 ### Added — v0.3.90: P2 双打分器（eval-stage 失败开放面，D5+D3）
 
 `sdlc-tips-adoption.md` 规格 P2 波——每个 run 的 close-out 边界长出评测面（两打分器 + 校验门执行），

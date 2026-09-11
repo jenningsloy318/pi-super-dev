@@ -51,6 +51,16 @@ One-paragraph description of the pattern and how to avoid it.
 }
 ```
 
+## Eval-provenance exclusion (§8.1 — binding)
+
+The eval surfaces are measurement instruments, not mining material. NEVER read, quote, summarize, or derive learned.md/learned-index entries from:
+
+- `eval.*` events in any `events.jsonl` (eval.scored / eval.gate / eval.reread)
+- `eval-report.md` in any spec directory
+- anything under `~/.super-dev/evals/` — golden cases (`cases/`), rubrics (`rubrics/`), labels (`labels/`), dataset rows (`runs/rows.jsonl`), proposals (`proposals/`), `state.json`
+
+Golden-case scenario or expected-verdict text leaking into learned-index contaminates every future measured run (the instrument must not perturb the measured system). Your named inputs — the audit trail and the existing knowledge base — are the ONLY mining surface. A canary/7-gram scan quarantines any leaked entry at injection time regardless (§8.1); obeying this rule keeps the knowledge base clean in the first place.
+
 ## Constraints
 - Only add HIGH-VALUE lessons (caused retries/failures, not trivial observations).
 - Deduplicate: if a pattern exists, increment frequency — don't add a duplicate.

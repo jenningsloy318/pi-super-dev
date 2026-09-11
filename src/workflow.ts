@@ -28,6 +28,11 @@ import { deriveS3Counters, type S3ImplementationState } from "./evolution/run-ob
 // observational read of the close-out counters + one guarded specialist
 // dispatch; never actuates loop state (see evolution/eval-stage.ts).
 import { runEvalStage, evalStageEnabled } from "./evolution/eval-stage.ts";
+// P3 (D6/DEC-12): the deterministic reread frequency check + the D4 flywheel
+// (both zero-LLM; the flywheel is disabled alongside the eval stage under
+// SUPER_DEV_NO_EVAL_STAGE, the reread check is always on — see close-out).
+import { runRereadCheck, upstreamArtifactDocPaths } from "./evolution/reread-check.ts";
+import { runFlywheel } from "./evolution/flywheel.ts";
 import { checkPredictionsFromLedger } from "./evolution/predictions.ts";
 import { stageKey as usageStageKey, appendUsageCallRows, writeUsageArtifacts, USAGE_FIELDS } from "./evolution/usage-report.ts";
 export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evolution/sigma-bands.ts";
@@ -817,15 +822,32 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				agentSkills,
 				skillDomains: (state.classify as { skillDomains?: string[] } | undefined)?.skillDomains,
 			});
-			// v0.3.76 L2 (collection): deduped per-call tool telemetry collector.
-			const toolSeen = new Set<string>();
+			// v0.3.76 L2 (collection) + P3 D6 (DEC-12 telemetry amendment): the
+			// per-call collector keys on (tool, argHead) and FOLDS in-call repeats
+			// into `count: n` — ONE row per key per agent call, flushed once when
+			// the delegation settles (finally: partial usage is still recorded on a
+			// thrown call — telemetry honesty). `count` absent ≡ 1 on read
+			// (backward compatible; readers that ignore count see the pre-P3
+			// behavior). Map preserves first-use order, so the flush is deterministic.
+			const toolCounts = new Map<string, { tool: string; argHead: string; count: number }>();
 			const onToolUse = (tool: string, argHead: string): void => {
 				const key = `${tool}\u0000${argHead}`;
-				if (toolSeen.has(key)) return;
-				toolSeen.add(key);
-				appendToolUsageRows(state.setup?.specDirectory, [{ ts: Date.now(), runId: ledgerRunId(state), agent: delegationAgentName(call.agent), tool, argHead }]);
+				const prev = toolCounts.get(key);
+				toolCounts.set(key, { tool, argHead, count: (prev?.count ?? 0) + 1 });
 			};
-			const delegated = await runAgentViaDelegation({ ...common, events: options.events, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state), skill: callSkill, onToolUse });
+			const flushToolUsage = (): void => {
+				if (toolCounts.size === 0) return;
+				const ts = Date.now();
+				const runId = ledgerRunId(state);
+				const agent = delegationAgentName(call.agent);
+				appendToolUsageRows(state.setup?.specDirectory, [...toolCounts.values()].map((r) => ({ ts, runId, agent, tool: r.tool, argHead: r.argHead, count: r.count })));
+			};
+			let delegated: Awaited<ReturnType<typeof runAgentViaDelegation>>;
+			try {
+				delegated = await runAgentViaDelegation({ ...common, events: options.events, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state), skill: callSkill, onToolUse });
+			} finally {
+				flushToolUsage();
+			}
 			// v0.3.63: the version-skew signature (pi-subagents' own runtime
 			// extension failing to load in the child) is an executor infra failure,
 			// never a task failure — P5: fail closed naming the remedy (there is no
@@ -1308,9 +1330,13 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	const runWallMs = Date.now() - runStartedAt;
 	const runAgentsSpawned = ctx.budget.count;
 	const runUsageSnapshot = ctx.usage ? { totals: { ...ctx.usage.totals } } : undefined;
+	// F-01a: the LIVE gate decision rides {passed, posture} — a directional-
+	// only posture (or a null gate) is NO SIGNAL, and the flywheel then decides
+	// from the deterministic ledger recompute instead (no single-run deadlock).
+	let evalGateDecision: { passed: boolean; posture: string } | null = null;
 	if (evalStageEnabled()) {
 		try {
-			await runEvalStage({
+			const evalOutcome = await runEvalStage({
 				runId,
 				status,
 				specDirectory: state.setup?.specDirectory,
@@ -1326,8 +1352,61 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 				agentCall: (call) => ctx.agent(call),
 				log: (m) => progress?.log(m),
 			});
+			evalGateDecision = evalOutcome.gate !== null
+				? { passed: evalOutcome.gate.decision.passes, posture: evalOutcome.gate.decision.posture }
+				: null;
 		} catch (err) {
 			progress?.log(`eval stage: failed open — run unaffected (${err instanceof Error ? err.message : String(err)}; P4/P5)`);
+		}
+	}
+
+	// P3 (v0.3.90 wave, D6/DEC-12 — docs/requirements/sdlc-tips-adoption.md): the
+	// DETERMINISTIC reread frequency check, wired NEXT TO the eval stage. Zero
+	// LLM, free, so it carries NO enable guard of its own (always on); its
+	// only spec-dir side effect is the eval.reread event, appended ONLY when
+	// findings exist (an all-clear writes nothing — zero perturbation of the
+	// hermetic suite and of event-sequence pins). Advisory only: it never
+	// blocks and never actuates (the same observational class as the stage).
+	// Adversarial-gate F-04: the injected-path surface is the docs the prompt
+	// builders VERIFIABLY embed as upstream artifacts (stage-control docPath /
+	// design docs / spec paths — see upstreamArtifactDocPaths for the verified
+	// list). The plan's deliverable clause files were REMOVED from this wiring
+	// (deliverables are what implementers WRITE, not injected artifacts).
+	try {
+		const injectedPaths = upstreamArtifactDocPaths({
+			requirements: state.requirements,
+			bdd: state.bdd,
+			research: state.research,
+			assessment: state.assessment,
+			design: state.design,
+			prototype: state.prototype,
+			spec: state.spec,
+		});
+		const reread = runRereadCheck({ specDir: state.setup?.specDirectory, injectedPaths });
+		for (const warning of reread.warnings) progress?.log(warning);
+		if (reread.findings.length > 0) {
+			appendRunEvent(state.setup?.specDirectory, { runId, type: "eval.reread", data: { note: reread.note, findings: reread.findings } });
+		}
+	} catch (err) {
+		progress?.log(`reread-check: failed open — run unaffected (${err instanceof Error ? err.message : String(err)}; P4/P5)`);
+	}
+
+	// P3 (D4/DEC-11+DEC-13): the flywheel at close-out, AFTER the eval stage
+	// (it consumes the stage's persisted rows + gate decision). Deterministic
+	// (no budget guard); disabled under SUPER_DEV_NO_EVAL_STAGE alongside the
+	// stage — the same class of switch. All user-local writes under
+	// ~/.super-dev/evals/; every layer fail-open (P4/P5). The live gate
+	// decision rides in as {passed, posture} (F-01a); a directional-only or
+	// absent gate is NO SIGNAL — the flywheel then re-derives from the ledger.
+	if (evalStageEnabled()) {
+		try {
+			runFlywheel({
+				runId,
+				gateDecision: evalGateDecision,
+				log: (m) => progress?.log(m),
+			});
+		} catch (err) {
+			progress?.log(`flywheel: failed open — run unaffected (${err instanceof Error ? err.message : String(err)}; P4/P5)`);
 		}
 	}
 

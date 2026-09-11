@@ -10,10 +10,22 @@
  * + File path for on-demand depth search.
  *
  * Cold start: if learned-index.json doesn't exist yet, returns "" (no injection).
+ *
+ * P3 / §8.1 contamination firewall (the MECHANICAL half of the reflection
+ * exclusion — prompts are advisory, P4): before any entry is injected, the
+ * parsed index is scanned against the raw golden-case texts (literal canary
+ * GUID + 7-gram overlap; evolution/contamination.ts — a pure leaf import,
+ * no eval-layer cycle). A flagged entry is QUARANTINED: dropped here, never
+ * injected, warned loudly, and durably recorded by the flywheel-run scan in
+ * ~/.super-dev/evals/contamination.jsonl. The seam re-scans per load on
+ * purpose — enforcement must not depend on the ledger having been written
+ * first (detection is cheap, personal-tool scale). The whole firewall layer
+ * is fail-open: it can never break prompt assembly (P4/P5).
  */
 
 import { readFileSync, existsSync } from "node:fs";
 import { getLearnedIndexPath, getLearnedPath, getConfig } from "./super-dev-dir.ts";
+import { loadGoldenCaseTexts, scanLearnedIndexEntries } from "../evolution/contamination.ts";
 
 interface LearnedIndex {
 	totalEntries: number;
@@ -27,6 +39,23 @@ interface LearnedIndex {
 	byAgent: Record<string, string[]>;
 	byLang: Record<string, string[]>;
 	topOverall: string[];
+}
+
+/**
+ * §8.1: the entry ids this load must NOT inject (golden-case contamination —
+ * canary hit or 7-gram overlap). Pure given (index, caseTexts); never throws;
+ * LOUD per entry (a silent quarantine would hide an instrument fault).
+ */
+function contaminatedEntryIds(index: LearnedIndex, caseTexts: ReturnType<typeof loadGoldenCaseTexts>): Set<string> {
+	const blocked = new Set<string>();
+	if (caseTexts.length === 0) return blocked; // nothing to protect — cold start
+	for (const f of scanLearnedIndexEntries(index, caseTexts)) {
+		if (!blocked.has(f.entryId)) {
+			blocked.add(f.entryId);
+			console.warn(`[super-dev] contamination firewall: quarantined learned-index entry "${f.entryId}" (${f.trigger}, golden case ${f.caseId}) — never injected; see ~/.super-dev/evals/contamination.jsonl (§8.1)`);
+		}
+	}
+	return blocked;
 }
 
 /** Load and format learned lessons for an agent's system prompt. Returns "" if
@@ -48,11 +77,17 @@ export function loadLearnedLessons(agentName: string): string {
 	const relevantIds = [...new Set([...byAgent, ...byAny])];
 	if (relevantIds.length === 0) return "";
 
-	// Map to entries, sort by score descending
+	// §8.1 firewall: quarantine contaminated entries BEFORE any injection.
+	let blocked = new Set<string>();
+	try {
+		blocked = contaminatedEntryIds(index, loadGoldenCaseTexts());
+	} catch { /* fail-open: the firewall must never break prompt assembly */ }
+
+	// Map to entries (id-tagged for the quarantine filter), sort by score descending
 	const relevant = relevantIds
-		.map((id) => index.entries[id])
-		.filter(Boolean)
-		.sort((a, b) => b.score - a.score);
+		.map((id) => ({ id, entry: index.entries[id] }))
+		.filter((r): r is { id: string; entry: LearnedIndex["entries"][string] } => Boolean(r.entry) && !blocked.has(r.id))
+		.sort((a, b) => b.entry.score - a.entry.score);
 	if (relevant.length === 0) return "";
 
 	// Tier 1: top-N full entries
@@ -62,14 +97,14 @@ export function loadLearnedLessons(agentName: string): string {
 
 	const lines: string[] = [
 		"## Lessons from past runs (top-scored, pre-loaded)",
-		...topNEntries.map((e) => `### [score:${e.score}] ${e.title}\n${e.summary}`),
+		...topNEntries.map((e) => `### [score:${e.entry.score}] ${e.entry.title}\n${e.entry.summary}`),
 		"",
 		"## More lessons (grep for details)",
 		`File: ${getLearnedPath()}`,
-		...indexEntries.map((e) => `- [score:${e.score}] ${e.title}`),
+		...indexEntries.map((e) => `- [score:${e.entry.score}] ${e.entry.title}`),
 	];
 	if (relevant.length > topN + listSize) {
-		lines.push(`... and ${relevant.length - topN - listSize} more`);
+		lines.push(`... and ${relevant.length - topN + listSize} more`);
 	}
 	return lines.join("\n");
 }

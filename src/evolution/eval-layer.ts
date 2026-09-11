@@ -51,11 +51,10 @@
  *       template writes use flag "wx"; optional caseSet stamp + caseSetOf
  *       layer derivation.
  */
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { getSuperDevDir } from "../render/super-dev-dir.ts";
+import { casesDir, labelsDir, makeCanary, rubricsDir } from "./eval-shared.ts";
 import { STAGE_IDS } from "../graph/edges.ts";
 import { REGISTERED_AGENTS } from "../agents/register-agents.ts";
 import { REVIEW_VERDICT_VALUES } from "../helpers.ts";
@@ -183,20 +182,11 @@ export function allowedVerdictsForTarget(target: { stage?: string; agent?: strin
 	return [...out];
 }
 
-// ─── §8.1 canary ────────────────────────────────────────────────────────────
+// ─── §8.1 canary (moved to the leaf eval-shared.ts in P3 so the learned-index
+// injection seam can share the SAME derivation without an import cycle;
+// re-exported here — the historical import surface — and used below.) ─────
 
-/**
- * The literal canary GUID embedded in every golden-case scenario (§8.1):
- * deterministic in the case id (sha256-derived, GUID-shaped) so validation
- * RECOMPUTES it instead of trusting a stored copy — a scenario that lost its
- * canary fails validation loudly. Quoting this string anywhere (learned
- * index, prompt, trajectory) is proof of golden-case contamination.
- */
-export function makeCanary(caseId: string): string {
-	const hex = createHash("sha256").update(`super-dev-eval-canary:${caseId}`).digest("hex");
-	const guid = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32)].join("-");
-	return `canary-guid:${guid}`;
-}
+export { makeCanary } from "./eval-shared.ts";
 
 // ─── Golden case schema (DEC-6, seven fields + optional caseSet) ───────────
 
@@ -445,9 +435,10 @@ export interface LoadedGoldenCases {
 }
 
 /** Default dataset home: ~/.super-dev/evals/cases/ (DEC-5 — user-local, never
- *  in-repo; same neighborhood as learned-index). */
+ *  in-repo; same neighborhood as learned-index). The layout lives once in
+ *  eval-shared.ts (P6 single spelling). */
 export function defaultCasesDir(): string {
-	return join(getSuperDevDir(), "evals", "cases");
+	return casesDir();
 }
 
 /** Load every valid *.json case (one case per file). Missing dir = empty
@@ -636,7 +627,7 @@ export interface LoadedRubrics {
 }
 
 export function defaultRubricsDir(): string {
-	return join(getSuperDevDir(), "evals", "rubrics");
+	return rubricsDir();
 }
 
 export function loadRubrics(dir: string = defaultRubricsDir(), opts: { log?: (line: string) => void } = {}): LoadedRubrics {
@@ -791,12 +782,16 @@ export function caseSetOf(c: GoldenCase, fallback = "default"): string {
 // ─── Validation gate (D7 / DEC-13① / L2 / L3) — P1 machinery ────────────────
 
 /** The P2 scorer-row shape (DEC-2/DEC-9): what the scorers will emit per
- *  golden case. Confidence is RANKING-ONLY (§8.2) — see RUBRIC_SCALE. */
+ *  golden case. Confidence is RANKING-ONLY (§8.2) — see RUBRIC_SCALE.
+ *  `ts` (adversarial-gate F-01b) is OPTIONAL provenance for the latest-wins
+ *  duplicate resolution in computeGateAgreement — absent rows tie at 0 and
+ *  the LAST occurrence in ledger order wins; it never gates anything. */
 export interface ScorerVerdictRow {
 	caseId: string;
 	caseVersion: number;
 	verdict: string;
 	confidence: number;
+	ts?: number;
 }
 
 /** One maintainer hand label (DEC-13① — the known-good/bad calibration the
@@ -891,7 +886,7 @@ export interface LoadedGateLabels {
 }
 
 export function defaultLabelsDir(): string {
-	return join(getSuperDevDir(), "evals", "labels");
+	return labelsDir();
 }
 
 export function loadGateLabels(dir: string = defaultLabelsDir(), opts: { log?: (line: string) => void } = {}): LoadedGateLabels {
@@ -1032,26 +1027,33 @@ export function computeGateAgreement(
 	type Pair = { key: string; target: string; agree: boolean; confidence: number | null };
 	const pairs: Pair[] = [];
 	const matchedKeys = new Set<string>();
-	const seenScorerKeys = new Set<string>();
+	const latestByKey = new Map<string, ScorerVerdictRow>();
 	let unmatchedScorerRows = 0;
 	let unmatchedLabels = 0;
 	let malformedScorerRows = 0;
 	let duplicateScorerRows = 0;
 
+	// Adversarial-gate F-01b (first-wins freezing): ONE scored row per (caseId,
+	// caseVersion) — the LATEST observation by ts drives the verdict (ties, incl.
+	// missing ts, → the LAST occurrence in ledger order). A later emission no
+	// longer freezes the disposition at the first sighting; every additional
+	// same-key row is STILL counted in duplicateScorerRows (P10 visibility — a
+	// duplicate emission remains a scorer bug worth seeing, just not a second
+	// pair and not a stale verdict). Map order = FIRST-encounter order (stable,
+	// deterministic) while the VALUE is the latest row.
+	const tsOf = (r: ScorerVerdictRow): number => (typeof r.ts === "number" && Number.isFinite(r.ts) ? r.ts : 0);
 	for (const row of scorerVerdicts) {
 		if (typeof row?.caseId !== "string" || row.caseId.trim() === "" || typeof row.caseVersion !== "number" || !Number.isInteger(row.caseVersion) || row.caseVersion < 1 || typeof row.verdict !== "string") {
 			malformedScorerRows += 1;
 			continue;
 		}
 		const key = `${row.caseId}\u0000${String(row.caseVersion)}`;
-		// F3: ONE scored row per (caseId, caseVersion) — the first occurrence
-		// fixes the disposition; later same-key rows are duplicates (honest
-		// count, never a second pair).
-		if (seenScorerKeys.has(key)) {
-			duplicateScorerRows += 1;
-			continue;
-		}
-		seenScorerKeys.add(key);
+		const prev = latestByKey.get(key);
+		if (prev !== undefined) duplicateScorerRows += 1;
+		if (prev === undefined || tsOf(row) >= tsOf(prev)) latestByKey.set(key, row);
+	}
+	for (const row of latestByKey.values()) {
+		const key = `${row.caseId}\u0000${String(row.caseVersion)}`;
 		const label = labelByKey.get(key);
 		if (!label) {
 			unmatchedScorerRows += 1;

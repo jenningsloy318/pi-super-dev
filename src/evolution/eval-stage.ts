@@ -99,6 +99,7 @@ import {
 } from "./eval-layer.ts";
 import { appendRunEvent } from "../runlog.ts";
 import { getConfig, getSuperDevDir, superDevEnv, type SuperDevConfig } from "../render/super-dev-dir.ts";
+import { runsDir } from "./eval-shared.ts";
 import { resolveToolBudget } from "../agents/agent-runtime.ts";
 
 // ── constants ───────────────────────────────────────────────────────────────
@@ -614,7 +615,8 @@ export function runGate(rows: readonly EvalRow[], cases: readonly GoldenCase[], 
 		if (version === undefined) { excludedRows++; continue; } // row for a case this run did not load — named
 		// Deterministic trajectory rows carry no verbalized confidence; NaN is
 		// computeGateAgreement's honest "no confidence" (calibrationExcluded).
-		scorerVerdicts.push({ caseId: row.caseRef, caseVersion: version, verdict: row.verdict, confidence: row.confidence ?? Number.NaN });
+		// ts rides through for the F-01b latest-wins duplicate resolution.
+		scorerVerdicts.push({ caseId: row.caseRef, caseVersion: version, verdict: row.verdict, confidence: row.confidence ?? Number.NaN, ts: row.ts });
 	}
 	const agreement = computeGateAgreement(scorerVerdicts, allLabels, cases);
 	return { agreement, decision: gatePasses(agreement), excludedRows };
@@ -622,9 +624,10 @@ export function runGate(rows: readonly EvalRow[], cases: readonly GoldenCase[], 
 
 // ── outputs: dataset rows / events / report ────────────────────────────────
 
-/** Default dataset home: ~/.super-dev/evals/runs/ (DEC-5 user-local). */
+/** Default dataset home: ~/.super-dev/evals/runs/ (DEC-5 user-local; the
+ *  layout lives once in eval-shared.ts — P6 single spelling). */
 export function defaultDatasetDir(): string {
-	return join(getSuperDevDir(), "evals", "runs");
+	return runsDir();
 }
 
 /** Read the global run-metrics ledger (E1 baselines; best-effort — never
