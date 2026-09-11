@@ -1,5 +1,5 @@
 # SDLC tips adoption — implementation spec (FINALIZED 2026-09-11)
-Status: finalized 2026-09-11 (grilling closed; living — implementation-period corrections write back)
+Status: finalized 2026-09-11 (grilling closed ×3 + research folds; living — implementation-period corrections write back)
 
 Source: `docs/requirements/sdlc/tip.md` (11 tips distilled from the four SDLC research docs). Produced by a grilling session (2026-09-11), updated after every confirmed decision. **This is the single artifact of the session** — scope, language, decisions, verdicts, and delta requirements all live here; when grilling completes it becomes the implementation spec. Verdicts judge the **staged pipeline** (requirements → research → design → spec → TDD implementation → verification convergence → docs → merge; pipeline-primary; the historical "13-stage" naming was deprecated repo-wide in v0.3.87); tips 7/11 are judged at the engine surface where they live. Scale: **adopt / already-have / reject**; partial outcomes land as delta requirements.
 
@@ -63,7 +63,7 @@ tip 7（智能模型路由）与 tip 11（Shunt 成本路由）的目的是同�
 
 ## 3.4 DEC-6 — 金标 schema：六字段 + expected.verdict 枚举闭包
 
-金标案例六字段：`id` / `title` / `source`（强制回指仓内 postmortem/dossier 路径，DEC-5 重建缓解的落地字段）/ `target`（stage｜agent，支持按层过滤套件）/ `scenario` / `expected`。分层判定契约：`expected.verdict` 只允许**既有 verdict 枚举值**（收敛评审、prototype pass/fail、judge ACCEPTED/DISCARDED、故障分类表），加载时对枚举闭包表做确定性校验（配对 generate/validate，P2 教训的落地）；`mustHold`/`mustNot` 语义断言交 scorer LM 判。即：verdict 比对零 LM，语义判断必有 LM。
+金标案例七字段：`id` / `title` / `source`（强制回指仓内 postmortem/dossier 路径，DEC-5 重建缓解的落地字段）/ `target`（stage｜agent，支持按层过滤套件）/ `scenario` / `expected` / `caseVersion`（第三轮评审增：修订是一等行为——案例修订后旧行与新行不可见地混比；行盖章 caseVersion，带键 = (caseSet, caseVersion, rubricVersion)；gate↔target 映射规则：门变更归其 owning stage 的 target 面）。分层判定契约：`expected.verdict` 只允许**既有 verdict 枚举值**（收敛评审、prototype pass/fail、judge ACCEPTED/DISCARDED、故障分类表），加载时对枚举闭包表做确定性校验（配对 generate/validate，P2 教训的落地）；`mustHold`/`mustNot` 语义断言交 scorer LM 判。即：verdict 比对零 LM，语义判断必有 LM。
 
 ## 3.5 DEC-7 — rubric 形态：断言级 boolean + 0..1 confidence，版本分键基线
 
@@ -87,7 +87,7 @@ trajectory scorer ＝ 确定性代码为主：σ-带漂移分类（已存在）�
 
 ## 3.10 DEC-12 — D6 执法形态：prompt 规则 + 确定性频次检查 + 观测性叙述
 
-D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ **确定性频次检查** + trajectory scorer 的低档 LM 叙述**观察**重读行为（观测，非执法）。确定性层（2026-09-11 评审裁定**恢复**）：v0.3.76 的 tool-usage 遥测已把每个子代理的工具调用（工具名 + 60 字符 argHead）落入 `<specDir>/tool-usage.jsonl`（src/evolution/tool-usage.ts，delegation tick 通道）——**调用级观测在 super-dev 可动面内**；据此对 rows 做频次/层级检查（如：对已作为上游工件注入的路径 >N 次源码读取调用），fail-open。上游边界（如实）：内容级读取、拦截、重定向仍属 pi-subagents 上游，记为 upstream ask 可选项，不实现。（原记录的“源码读取不可观测”前提为假——v0.3.76 遥测已证伪，且本记录的低档叙述层恰恰依赖该可观测性；问询中默认值无否决确认——保留为历史注记，部分被本次裁定取代。）
+D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ **确定性频次检查** + trajectory scorer 的低档 LM 叙述**观察**重读行为（观测，非执法）。确定性层（2026-09-11 评审裁定**恢复**）：v0.3.76 的 tool-usage 遥测已把每个子代理的工具调用（工具名 + 60 字符 argHead）落入 `<specDir>/tool-usage.jsonl`（src/evolution/tool-usage.ts，delegation tick 通道）——**调用级观测在 super-dev 可动面内**；据此对 rows 做频次/层级检查（如：对已作为上游工件注入的路径 >N 次源码读取调用），fail-open。遥测修正案（第三轮评审裁定）：v0.3.76 采集器按 (tool, argHead) 每调用去重——调用内重复（旗舰示例类）被折叠；行 schema 增 `count: n`（去重键→计数，缺省≡1 向后兼容），argHead 保持 60 字符（长路径=前缀族语义，如实记录）。上游边界（如实）：内容级读取、拦截、重定向仍属 pi-subagents 上游，记为 upstream ask 可选项，不实现。（原记录的“源码读取不可观测”前提为假——v0.3.76 遥测已证伪，且本记录的低档叙述层恰恰依赖该可观测性；问询中默认值无否决确认——保留为历史注记，部分被本次裁定取代。）
 
 ## 3.11 DEC-13 — 数据集生命周期：引导校验、判别力、饱和退役、演化刷新（eval.md 方法论吸收，2026-09-11）
 
@@ -157,7 +157,7 @@ D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ *
 
 ## 6. Closure
 
-Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增量需求 D1–D6 全部 RESOLVED（DEC-5–DEC-12），实现就绪。建议分期：**P1** = D1+D2（金标集 + rubric 地基）→ **P2** = D5+D3（双打分器）→ **P3** = D4 飞轮 + D6。后续实现期的修正仍回写本文档（living 约定保留）。定稿后同日独立 grill 评审（pi-super-dev 会话，glm-5.3-flash）：33 项主张核验（29 ✅），4 处漂移修正（SUPER_DEV_BENCH 现存时引用×2、“13-stage”命名、DEC-12 不可观测假前提、bench 幽灵命名）+ 2 项 owner-proxy 裁定已 fold（D6 确定性层恢复 / v1 严格只读）；Status 行同步翻转。同日 eval.md 方法论吸收（DEC-13/D7 + 两处 ledger 增行，覆盖矩阵 §7）：四缺口——打分器引导校验、判别力、饱和退役、演化刷新；其余六项已含（含部分 10 对 D6 的外部印证）。
+Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增量需求 D1–D7 全部 RESOLVED（DEC-5–DEC-13），实现就绪（P1 面；P2/P3 面经第三轮评审+检索折叠后定稿，见 §8）。建议分期：**P1** = D1+D2（金标集 + rubric 地基）→ **P2** = D5+D3（双打分器）→ **P3** = D4 飞轮 + D6。后续实现期的修正仍回写本文档（living 约定保留）。定稿后同日独立 grill 评审（pi-super-dev 会话，glm-5.3-flash）：33 项主张核验（29 ✅），4 处漂移修正（SUPER_DEV_BENCH 现存时引用×2、“13-stage”命名、DEC-12 不可观测假前提、bench 幽灵命名）+ 2 项 owner-proxy 裁定已 fold（D6 确定性层恢复 / v1 严格只读）；Status 行同步翻转。同日 eval.md 方法论吸收（DEC-13/D7 + 两处 ledger 增行，覆盖矩阵 §7）：四缺口——打分器引导校验、判别力、饱和退役、演化刷新；其余六项已含（含部分 10 对 D6 的外部印证）。
 
 ## 7. eval.md 方法论覆盖矩阵（2026-09-11 吸收记录）
 
@@ -175,3 +175,45 @@ Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增�
 | 部分 8 | 判别力（可区分已知不同系统；饱和即失信号） | →DEC-13②③ 判别力检查 + 饱和退役 |
 | 部分 9 | 评估路线图（随使用模式演化） | 个人工具语境→DEC-13④ 管线版本波触发刷新 |
 | 部分 10 | 测步骤不只测结果（冗余调用/重复搜索检测） | 已含且外部印证——D6 确定性频次检查正是其形态 |
+
+## 8. 第三轮 grill + 检索折叠（2026-09-11，工具质量正典）
+
+第三轮独立评审（glm-5.3-flash）：**P1 READY**（4 个单行折叠已入）；P2/P3 面五项方法论缺口，全部裁定折叠 + AnySearch 检索补强（来源见 §9）。
+
+### 8.1 污染防火墙（H1，裁定 1a + 检索补强）
+
+飞轮回路（D4④ 回归 run → 审计痕迹 → reflection → learned-index → Tier-1 全文注入未来 prompt）会把金标场景/期望 verdict 泄漏进被测 agent 上下文——饱和案例永久保存=最大暴露面；测量仪器不得扰动被测系统。落地（P3/D4 增项，P4 机械保证）：eval-run 溯源标记 + reflection 对 eval-provenance run 的排除 + 周期金丝雀扫描。**检索补强**：金丝雀扫描按标准技术实现为 n-gram 重叠检测（数据污染综述 arXiv:2502.14425 的标准方法）+ **金标场景内嵌 literal canary GUID 串**（canary string 是污染诊断的公认手段）——learned-index 条目命中 canary 或与金标场景 n-gram 高重叠即标记并人工剔除。
+
+### 8.2 打分器偏置与校准（M4，检索补强）
+
+- **自我偏好**（Wataoka et al., 311 引用：裁判给同家族输出抬分）：final-response scorer 与被评 agent 同为前沿档同源——配置上提供**跨家族 scorer pin** 选项，或至少周期性跨家族抽查。
+- **位置偏置**（Shi et al. 2025 IJCNLP，357 引用：repetition stability 度量）：断言级 pointwise 设计结构上规避配对位置偏置 ✓；对任何引入比较性判定的未来扩展，度量基准=交换一致性（swap consistency）。
+- **冗长偏置**：断言级 boolean 已弱化；诚实栏断言①（可溯源）显式长度无关措辞，报告面不做长度奖励。
+- **裁判漂移**：scorer 模型换版=数据生成过程变更——并入 8.3 的配置轴规则。
+- **言语化置信度失准**（arXiv:2509.25532：LLM 对低知实例报高置信；综述 arXiv:2311.08298）：DEC-7 的 0..1 confidence **只作排序信号不作概率**；引导校验（DEC-13①）在种子集上同时产出 confidence→实证正确率的校准映射（reliability diagram），聚类用校准后值。
+
+### 8.3 带位基线配置轴（M1）
+
+带键当前只有 rubricVersion——提案落地（prompt 变更）/model pin 变更换了数据生成过程，之后每个带都会 3σ 误报直到 20 行窗口静默混流。规则：行盖章 proposalVersion（生效提案集合的哈希）；提案 apply 即重键/重置受影响带的基线（与 DEC-13④ 的金标重审同触发）。
+
+### 8.4 配额降级语义（M3，裁定 3b+3a 组合）
+
+前沿档 scorer 撞 zai 5h 窗/429：发确定性子集行（DEC-10② 零语义、免 LM）显式标 `scorerDegraded: true`——**排除出带位基线**（保数据集连续性不污基线）；确定性子集也跑不了→诚实缺席（P10 命名弃置，无伪造行）。模型回退拒绝（DEC-9"双低档"否决类：失真仪器测质量比不测更糟）。
+
+### 8.5 小样本统计姿态（M5，检索补强）
+
+断言率报告 **bootstrap 百分位置信区间**（Indeed 工程实践；Spark-LLM-Eval 框架同法）；n<8 行只作方向性信号不进比较结论（与 σ-带 MIN_PRIOR_RUNS=8 诚实规则同源对齐；bootstrap 在 n≈5 区间过窄的已知缺陷——rdoodles/统计文献）；判别力检查（DEC-13②）= 同金标子集上两配置的**配对比较**（paired，非独立样本 t 检验错觉），每配置 runs 数显式记录成本；饱和 N 定为**连续 3 个审阅周期全绿**（与提案审阅周期同节奏）。
+
+### 8.6 其余单行折叠（L1-L9）
+
+L1 §6 句已修（D1–D7/DEC-13）· L2 D7 校验门=P1 建门（人工标注协议+映射表/rubric 上执行），P2 scorer 到位时实际执行 ✓已由 §6 措辞覆盖 · L3 人工标签住址=`~/.super-dev/evals/labels/`（同区不进仓）· L4 饱和力学=按案例集的带位量（扩展 sigma-bands 需提取 module-private 统计核+带内输出路径——实现项记入 D3，"不重造分带"修正为"复用统计核重造报告面"）· L5 gate→owning-stage 映射已入 DEC-6 注 · L6 rubric 换版触发 DEC-13① 重校验（种子集重跑）· L7 learned-index 度量博弈诚实句：飞轮课程优化被测观测量本身是古德哈特定律形态，提案审阅（人工闸门）是唯一的语义防线 · L8 S2 E2E 表述改"脚本化 CI 复跑" ✓ · L9 平凡 run 的 scorer 常开成本接受（dataset 连续性优先）。
+
+## 9. 检索来源（AnySearch，2026-09-11）
+
+- Shi et al., *A Systematic Study of Position Bias in LLM-as-a-Judge*, IJCNLP 2025（aclanthology.org/2025.ijcnlp-long.18.pdf；repetition stability 度量）
+- Wataoka et al., *Self-Preference Bias in LLM-as-a-Judge*（openreview Ns8zGZ0lmM，311 引用）
+- *A Survey on Data Contamination for LLMs*, arXiv:2502.14425（n-gram 重叠标准法）；canary string 实践（HF papers: sealed evaluation）
+- *Calibrating Verbalized Confidence with Self-Generated Distractors*, arXiv:2509.25532；*A Survey of Confidence Estimation and Calibration in LLMs*, arXiv:2311.08298
+- Indeed Engineering, *Bootstrap Confidence Intervals for LLM Evaluation*（2026）；Spark-LLM-Eval, arXiv:2603.28769；Cameron Wolfe, *Applying Statistics to LLM Evaluations*；小 n bootstrap 区间过窄缺陷（stats.stackexchange / rdoodles）
+
+裁定记录：1a 污染机械防火墙 / 2a 紧范围 count 遥测升级 / 3b+3a 降级组合+回退拒绝——owner-proxy 2026-09-11，可推翻。P2/P3 面就此定稿。
