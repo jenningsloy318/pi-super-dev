@@ -1,5 +1,5 @@
 ## part 1 
-Status: draft (eval-layer spec — companion to sdlc-tips-adoption.md D1-D6)
+Status: absorbed (2026-09-11) — source material folded into sdlc-tips-adoption.md DEC-13/D7 + §7 coverage matrix; retained verbatim as provenance
 The best way to get good at evals is to  take a workflow you know really well and figure out how to make its quality measurable.
 
 Study the actual traces - the sequence of prompts typical users have, what good responses would look like at each step and for the end to end outcome.

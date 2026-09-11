@@ -89,6 +89,15 @@ trajectory scorer ＝ 确定性代码为主：σ-带漂移分类（已存在）�
 
 D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ **确定性频次检查** + trajectory scorer 的低档 LM 叙述**观察**重读行为（观测，非执法）。确定性层（2026-09-11 评审裁定**恢复**）：v0.3.76 的 tool-usage 遥测已把每个子代理的工具调用（工具名 + 60 字符 argHead）落入 `<specDir>/tool-usage.jsonl`（src/evolution/tool-usage.ts，delegation tick 通道）——**调用级观测在 super-dev 可动面内**；据此对 rows 做频次/层级检查（如：对已作为上游工件注入的路径 >N 次源码读取调用），fail-open。上游边界（如实）：内容级读取、拦截、重定向仍属 pi-subagents 上游，记为 upstream ask 可选项，不实现。（原记录的“源码读取不可观测”前提为假——v0.3.76 遥测已证伪，且本记录的低档叙述层恰恰依赖该可观测性；问询中默认值无否决确认——保留为历史注记，部分被本次裁定取代。）
 
+## 3.11 DEC-13 — 数据集生命周期：引导校验、判别力、饱和退役、演化刷新（eval.md 方法论吸收，2026-09-11）
+
+源材料：`docs/requirements/eval.md`（10 部分评估方法论系列；覆盖矩阵见 §7）。四项裁定：
+
+1. **打分器引导校验（质量前沿先行）**：信任任何自动化得分前，先在种子集上校验打分器自身——维护者人工判定的已知好/坏案例对照，trajectory scorer 的带位映射与 final-response scorer 的断言判定分别过一致性检查（不一致即修 rubric/映射，不修数据）；校验通过前飞轮不得自动起草提案（D4 ②的前提门）。
+2. **判别力检查**：套件必须能区分已知不同的配置——对同一金标子集，两个已知有实质差异的配置（如不同 model pin / prompt 版本）跑出的得分分布须可分离；不可分离的套件判“低判别力”，修案例难度而非接受噪声（现实+难+对能力差敏感三性，不人为加难）。
+3. **饱和退役**：连续 N 个周期全绿且已无区分能力的金标标记 saturated——不删（回归基线价值），移出爬坡信号集；σ-带按 rubric 版本分键的既有机制扩展为按案例集计带位，全绿带位即饱和信号。
+4. **演化刷新触发器**：管线机器变更（阶段/门/agent 契约变更的版本波）触发金标集审阅——受影响 target（stage｜agent）的金标重跑/修订/新增；金标 source 字段回指的仓内档案（DEC-5）保证可重建。个人工具语境下“用户使用模式演化”的等价物就是管线自身演化。
+
 ## 4. Verdict ledger
 
 ### Cluster 1 — Verification (tips 1 + 3): ADOPT (DEC-1, DEC-2)
@@ -101,6 +110,8 @@ D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ *
 | Trajectory eval (tip 3) | **adopt** (scoring; enforcement stays structural) | Stages/gates/toolBudget enforce; run-observability 记录 + sigma-bands 已对健康计数器做确定性 σ-带分类（漂移监测）；缺的是 rubric/LM 对轨迹质量的打分（工具选择、verdict 质量） |
 | Eval execution placement | **adopt** — in-pipeline stage (DEC-2) | Datasets bootstrap from real runs; fail-open per P4/P5 |
 | Eval verdict semantics | **adopt** — both scorers, advisory (DEC-2) | Trajectory scorer at convergence boundaries + final-response scorer before report; verdicts → report + dataset rows; no new gate |
+| 评估阶梯（eval.md 部分 4）：冒烟/回归/爬坡 | already-have / adopt（映射） | 冒烟＝确定性门（语言定义里的 Test）；回归＝D4 金标 runner；爬坡＝飞轮 + σ-带漂移；**上线评估（真实流量级）明确拒绝**——单用户个人工具无在线流量面，最接近物是 v0.3.85 S2 E2E golden path（一次性、非流量镜像），不新建 |
+| 单一分/加权总分禁令（eval.md 部分 5） | **adopt**（显式化） | 报告层禁止把断言级行聚合成单一分或加权分（平均数暴政）；维护者看分级行的明细与分布（DEC-7 断言级刻度的落地约束，加进 D5 报告面） |
 
 ### Cluster 2 — Artifact chain (tips 8 + 9 + 10): ALREADY-HAVE (DEC-3)
 
@@ -141,8 +152,26 @@ D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ *
 - **D4** — Flywheel wiring (RESOLVED，DEC-11): 提案-上架分离——聚类自动（reflection 引擎代理 + learned-index）→ Proposal 工件自动起草 → 人工点头唯一闸门 → eval 回归执行器（golden-case runner）跑受影响金标，绿了才落地。
 - **D5** — In-pipeline eval stage (RESOLVED，DEC-2/9/10): fail-open surface inside every run；trajectory scorer（确定性，收敛边界处，词表复用既有枚举 + `eval.*` 事件）+ final-response scorer（前沿档 specialist agent，run 末尾，诚实栏 + 限界 spec 保真断言集）；verdicts advisory——run report + golden-case dataset rows，无新 merge gate。
 
-- **D6** — 工件换重读 (RESOLVED，DEC-12 评审裁定修订)（artifact-instead-of-reread）：下游 agent 以上游工件为首选证据源，源码重读仅用于 grounding 验证；落地＝work-unit prompt 规则 + **确定性频次检查**（tool-usage.jsonl rows，fail-open）+ 观测性 LM 叙述；内容级拦截/重定向降级为 upstream ask 可选。约束：不禁止验证性重读——省 token 不许换来偏信过时工件。*(cluster 4 复议)*
+- **D6** — 工件换重读 (RESOLVED，DEC-12 评审裁定修订)（artifact-instead-of-reread）：下游 agent 以上游工件为首选证据源，源码重读仅用于 grounding 验证；落地＝work-unit prompt 规则 + **确定性频次检查**（tool-usage.jsonl rows，fail-open）+ 观测性 LM 叙述；内容级拦截/重定向降级为 upstream ask 可选。约束：不禁止验证性重读——省 token 不许换来偏信过时工件。外部印证：eval.md 部分 10（测步骤不只测结果——重复搜索/冗余调用的步骤级检测正是频次检查的形态）。*(cluster 4 复议)*
+- **D7** — 数据集生命周期（RESOLVED，DEC-13）：引导校验门（飞轮前提）+ 判别力检查 + 饱和退役（全绿带位移出爬坡信号集）+ 演化刷新触发器（管线版本波触发 target 命中金标重审）；归 D1 的生命周期条款，P1 期落地校验门，P3 期接入飞轮。*(eval.md 吸收)*
 
 ## 6. Closure
 
-Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增量需求 D1–D6 全部 RESOLVED（DEC-5–DEC-12），实现就绪。建议分期：**P1** = D1+D2（金标集 + rubric 地基）→ **P2** = D5+D3（双打分器）→ **P3** = D4 飞轮 + D6。后续实现期的修正仍回写本文档（living 约定保留）。定稿后同日独立 grill 评审（pi-super-dev 会话，glm-5.3-flash）：33 项主张核验（29 ✅），4 处漂移修正（SUPER_DEV_BENCH 现存时引用×2、“13-stage”命名、DEC-12 不可观测假前提、bench 幽灵命名）+ 2 项 owner-proxy 裁定已 fold（D6 确定性层恢复 / v1 严格只读）；Status 行同步翻转。
+Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增量需求 D1–D6 全部 RESOLVED（DEC-5–DEC-12），实现就绪。建议分期：**P1** = D1+D2（金标集 + rubric 地基）→ **P2** = D5+D3（双打分器）→ **P3** = D4 飞轮 + D6。后续实现期的修正仍回写本文档（living 约定保留）。定稿后同日独立 grill 评审（pi-super-dev 会话，glm-5.3-flash）：33 项主张核验（29 ✅），4 处漂移修正（SUPER_DEV_BENCH 现存时引用×2、“13-stage”命名、DEC-12 不可观测假前提、bench 幽灵命名）+ 2 项 owner-proxy 裁定已 fold（D6 确定性层恢复 / v1 严格只读）；Status 行同步翻转。同日 eval.md 方法论吸收（DEC-13/D7 + 两处 ledger 增行，覆盖矩阵 §7）：四缺口——打分器引导校验、判别力、饱和退役、演化刷新；其余六项已含（含部分 10 对 D6 的外部印证）。
+
+## 7. eval.md 方法论覆盖矩阵（2026-09-11 吸收记录）
+
+源材料 `docs/requirements/eval.md`（10 部分）逐部分吸收对照：
+
+| eval.md | 主张 | 处置 |
+|---|---|---|
+| 部分 1 | 研究真实轨迹→建评估；持续镜像使用演化 | 前半已含（DEC-1/D1）；后半→DEC-13④ 演化刷新 |
+| 部分 2 | 质量前沿先行，先贵裁判建可信信号再降成本 | →DEC-13① 打分器引导校验（飞轮前提门） |
+| 部分 3 | 失败模式分类学（聚类+具体命名） | 已含（DEC-11① target/assertion/defectClass + FaultClass 闭包） |
+| 部分 4 | 四级评估阶梯（爬坡/回归/冒烟/上线） | 阶梯映射入 ledger；上线评估显式拒绝（无流量面） |
+| 部分 5 | 平均数暴政（禁单一分/加权分） | 显式化入 ledger（报告层聚合禁令，D5 落地） |
+| 部分 6 | 爬坡＝选维度优化，分类学为罗盘 | 已含（飞轮 + DEC-4） |
+| 部分 7 | 金发姬粒度（按 job-to-be-done 分阶段定位故障层） | 已含（DEC-6 target stage｜agent + 收敛边界打分） |
+| 部分 8 | 判别力（可区分已知不同系统；饱和即失信号） | →DEC-13②③ 判别力检查 + 饱和退役 |
+| 部分 9 | 评估路线图（随使用模式演化） | 个人工具语境→DEC-13④ 管线版本波触发刷新 |
+| 部分 10 | 测步骤不只测结果（冗余调用/重复搜索检测） | 已含且外部印证——D6 确定性频次检查正是其形态 |
