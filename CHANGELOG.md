@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.3.90: P2 双打分器（eval-stage 失败开放面，D5+D3）
+
+`sdlc-tips-adoption.md` 规格 P2 波——每个 run 的 close-out 边界长出评测面（两打分器 + 校验门执行），
+全量 fail-open（P4/P5：评测永不失败/阻塞被评 run）：
+
+- **σ-带统计核提取（D3/L4）**：median/MAD/classifyBand/BandPosition/bandPositions 从 sigma-bands.ts
+  导出复用（sigmaReport 重构到同一核上，**零行为变化**——含一处预先存在的 21-vs-20 窗口疣的
+  诚实命名注释，本波不改）；eval 层不重造分带。
+- **轨迹打分器（确定性，严格只读）**：读 S3 计数器 + E1 带位 → rubric bandMap 映射 →
+  per-target 建议性 verdict 行（默认映射保守：非歧义单族正位才给正判，否则诚实缺席）；
+  **2026-09-11 裁定钉死：读计数器、永不驱动**——AST tripwire 测试钉住 eval-stage 的 import
+  允许清单（不触碰任何变更循环状态的模块）。
+- **终响打分器（eval-scorer，第 31 个 specialist agent）**：run 末尾前沿档只读打分，
+  TypeBox 结构化结果 + 引擎侧蒸馏；uniform pass=准则满足 语义（mustNot: 违规未发生）；
+  prompt 只引用 existsSync 验证过的证据文件 + 内联冻结快照（不引用尚未写出的 run-metrics.jsonl）。
+- **仪器隔离（adversarial F-01）**：eval 派发前冻结快照（wallMs/agentsSpawned/usage 克隆）
+  同喂 eval 与 run-metrics——测量仪器不进被测系统的计数器（usage-calls.jsonl 照记，观测≠计数器）；
+  运行时接线测试端到端钉住 metrics-row `agentsSpawned:0` vs summary `agentsSpawned:1`。
+- **行 schema 版本章（adversarial F-03，DEC-6/7）**：EvalRow += caseVersion/caseSet/rubricId/
+  rubricVersion——P3 飞轮按版本分键的基础；DEFAULT 规则行不带假溯源。
+- **降级与中止语义（M3 + adversarial F-06）**：配额/生成/超时 → `scorerDegraded:true` 确定性
+  子集行（禁基线）+ 诚实缺席地板，**无模型回退**（DEC-9）；run 中止 → 只跑确定性轨迹，
+  前沿派发跳过（诚实缺席非 degraded），零 LLM 花销。
+- **configStamp（M1）**：agentModels/agentThinking/toolBudget 的稳定哈希盖章每行
+  （P3 提案应用时按它重键基线）。
+- **D7 校验门执行（DEC-13①）**：标签覆盖被评案例时跑 computeGateAgreement+gatePasses
+  落报告（为 P3 飞轮武装前提门；本波不压制任何东西）。
+- **新 env 键 `SUPER_DEV_NO_EVAL_STAGE`**（默认开；v0.3.86 SUPER_DEV_NO_SAFETY_GUARD 同类
+  hermeticity/逃生键）——与 SUPER_DEV_NO_GLOBAL_METRICS 解耦（adversarial F-07），
+  hermeticity setup 设置之；运行时接线测试真实执行 runWorkflow close-out（INV-L5：run.completed
+  保持在事件块最后）。
+- 报告面：断言级/带位级行 only（单一分/加权聚合禁令 §7 部分 5，AST 绊线）；unmatchedLabels
+  上浮；极性局限（对称异常位，语义归 bandMap）与 v1 面覆盖（judge+implementation）诚实文档化。
+- tests/eval-stage.test.ts 37 项（全合成数据/hermetic）；全套件 249 文件 / 3762 green。
+
+双 gemini-3.8-flash 评审门（code PASS 9/9 + adversarial 11 findings 全裁定折叠——含 1 项驳回
+[F-05 off-by-one 经 HEAD 对照证伪为预先存在]——+ delta re-gate PASS 9/9）。
+
 ### Added — v0.3.89: P1 评测层地基（金标集 + rubric 工件 + 校验门机器）
 
 新增 `src/evolution/eval-layer.ts`（sdlc-tips-adoption.md 规格 P1 波：D1 + D2 + D7 的 P1 部分）——

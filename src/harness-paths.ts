@@ -90,6 +90,10 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// (close-out render only).
 	"usage-calls.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
 	"usage-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
+	// P2 (v0.3.90, D5): the eval-stage run report — usage-report.md parity
+	// (close-out render only, inside the spec dir; the dataset rows live
+	// user-local under ~/.super-dev/evals/, never in the repo worktree).
+	"eval-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
 	// v0.3.76 L2: per-call tool-tick telemetry (events.jsonl parity — appended
 	// mid-RED on every delegation update tick).
 	"tool-usage.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },

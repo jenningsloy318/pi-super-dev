@@ -24,6 +24,10 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { splitModelThinking } from "./agents/agent-runtime.ts";
 import { buildRunMetricsRow, appendRunMetrics, checkSigmaBands } from "./evolution/sigma-bands.ts";
 import { deriveS3Counters, type S3ImplementationState } from "./evolution/run-observability.ts";
+// P2 (v0.3.90): the in-pipeline fail-open eval surface (D5+D3) — strictly
+// observational read of the close-out counters + one guarded specialist
+// dispatch; never actuates loop state (see evolution/eval-stage.ts).
+import { runEvalStage, evalStageEnabled } from "./evolution/eval-stage.ts";
 import { checkPredictionsFromLedger } from "./evolution/predictions.ts";
 import { stageKey as usageStageKey, appendUsageCallRows, writeUsageArtifacts, USAGE_FIELDS } from "./evolution/usage-report.ts";
 export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evolution/sigma-bands.ts";
@@ -1280,6 +1284,53 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		}
 	}
 
+	// P2 (v0.3.90, D5+D3 — docs/requirements/sdlc-tips-adoption.md): the
+	// in-pipeline fail-open eval surface, at the RUN close-out boundary (the
+	// deriveS3Counters/run-observability close-out is the convergence boundary
+	// v1 scores; per-phase mid-run boundaries are deferred — documented in
+	// evolution/eval-stage.ts). Runs BEFORE the topic.snapshot/run.completed
+	// bracket so its `eval.*` events land INSIDE the run's event block (INV-L5
+	// bracket integrity — a replan restart would otherwise see this run's block
+	// end on eval.* instead of run.completed).
+	//
+	// INSTRUMENT ISOLATION (F-01): runWallMs / runAgentsSpawned /
+	// runUsageSnapshot are FROZEN HERE — before the eval dispatch — and feed
+	// BOTH the eval stage's current-row band face AND the run-metrics row
+	// below, so the scorer's own dispatch can never perturb the counters of
+	// the run it measures. The scorer's spend still lands in usage-calls.jsonl
+	// and RunSummary.usage (attribution doctrine: observation ≠ counters);
+	// ONLY the run-metrics row excludes the instrument, by reading this frozen
+	// snapshot. evalStageEnabled() (the SUPER_DEV_NO_EVAL_STAGE kill switch)
+	// skips the whole surface; every layer inside is fail-open (P4/P5 — eval
+	// can never fail or block the run under review). Aborted runs (F-06) still
+	// get the deterministic trajectory scoring but NEVER the frontier dispatch.
+	const s3Counters = deriveS3Counters({ runId, specDirectory: state.setup?.specDirectory, implementation: state.implementation as S3ImplementationState });
+	const runWallMs = Date.now() - runStartedAt;
+	const runAgentsSpawned = ctx.budget.count;
+	const runUsageSnapshot = ctx.usage ? { totals: { ...ctx.usage.totals } } : undefined;
+	if (evalStageEnabled()) {
+		try {
+			await runEvalStage({
+				runId,
+				status,
+				specDirectory: state.setup?.specDirectory,
+				s3: s3Counters,
+				metrics: {
+					agentsSpawned: runAgentsSpawned,
+					wallMs: runWallMs,
+					results: ctx.results as Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>,
+					usage: runUsageSnapshot,
+				},
+				budgetOk: ctx.budget.check(),
+				runAborted: aborted,
+				agentCall: (call) => ctx.agent(call),
+				log: (m) => progress?.log(m),
+			});
+		} catch (err) {
+			progress?.log(`eval stage: failed open — run unaffected (${err instanceof Error ? err.message : String(err)}; P4/P5)`);
+		}
+	}
+
 	// P2: the topic projection — a pre-digested owner-status view folded FROM
 	// the ledger itself (the shared-blackboard snapshot E4's A/B comparisons
 	// consume). Emitted BEFORE run.completed so the block still ends with its
@@ -1311,11 +1362,14 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 	appendRunMetrics(state.setup?.specDirectory, buildRunMetricsRow({
 		runId,
 		status,
-		agentsSpawned: ctx.budget.count,
-		wallMs: Date.now() - runStartedAt,
+		// F-01: the FROZEN pre-eval snapshot — the eval scorer's own dispatch
+		// (which may have spent a budget slot + usage above) must never land in
+		// the measured run's counters.
+		agentsSpawned: runAgentsSpawned,
+		wallMs: runWallMs,
 		results: ctx.results as Array<{ id?: string; label?: string; status?: string; error?: string; cause?: string }>,
-		usage: ctx.usage,
-		s3: deriveS3Counters({ runId, specDirectory: state.setup?.specDirectory, implementation: state.implementation as S3ImplementationState }),
+		usage: runUsageSnapshot,
+		s3: s3Counters,
 		ts: Date.now(),
 	}));
 

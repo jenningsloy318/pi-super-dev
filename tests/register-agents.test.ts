@@ -86,7 +86,7 @@ describe("registerSuperDevAgents", () => {
 		const rejected = requests.filter((r) => r.result && !r.result.ok);
 		expect(rejected).toEqual([]);
 		expect(accepted.length).toBe(requests.length);
-		expect(accepted.length).toBe(30); // REGISTERED_AGENTS (33 .md files exist; 3 are not registered)
+		expect(accepted.length).toBe(31); // REGISTERED_AGENTS (34 .md files exist; 3 are not registered; v0.3.90 added eval-scorer)
 		// every emitted systemPrompt is trim-clean by itself (belt and braces)
 		for (const r of requests) expect(r.definition.systemPrompt).toBe(r.definition.systemPrompt.trim());
 	});

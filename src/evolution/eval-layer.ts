@@ -506,6 +506,24 @@ export interface RubricDimension {
 	/** Assertions that must NOT hold (violation conditions). Optional on the
 	 *  wire (F2); the parsed form normalizes absent to []. */
 	mustNot: string[];
+	/** P2 / D3 (DEC-9): OPTIONAL band-position → verdict mapping for the
+	 *  deterministic trajectory scorer. Keys are the sigma-bands BandPosition
+	 *  values EXCEPT "no-band" (insufficient history is never a score); values
+	 *  must be verdicts admitted by the SCORED TARGET's family (validated at
+	 *  scoring time via allowedVerdictsForTarget — the rubric itself is
+	 *  target-agnostic). Absent bandMap ⇒ the documented conservative default
+	 *  mapping (evolution/eval-stage.ts DEFAULT band rule). */
+	bandMap?: RubricDimensionBandMap;
+}
+
+/** The four banded positions a rubric bandMap may map (the σ-band tiers plus
+ *  in-band; "no-band" is deliberately NOT mappable — it is an honesty skip,
+ *  not a score). Key spelling matches BandPosition verbatim (P6). */
+export interface RubricDimensionBandMap {
+	"in-band"?: string;
+	"1σ"?: string;
+	"2σ"?: string;
+	"3σ"?: string;
 }
 
 export interface Rubric {
@@ -516,6 +534,40 @@ export interface Rubric {
 	version: string;
 	dimensions: RubricDimension[];
 	scale: RubricScale;
+}
+
+const BAND_MAP_KEYS = ["in-band", "1σ", "2σ", "3σ"] as const;
+
+/** Validate one dimension's optional bandMap (shape only — target admission
+ *  is a scoring-time check; the rubric file has no target context). At least
+ *  one entry; every key one of the four banded positions; every value a
+ *  non-empty string. */
+function validateBandMap(raw: unknown, label: string, reasons: string[]): Record<string, string> | null {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		reasons.push(`${label}.bandMap: must be an object mapping band positions ("in-band"/"1σ"/"2σ"/"3σ") to verdict strings`);
+		return null;
+	}
+	const entries = Object.entries(raw as Record<string, unknown>);
+	if (entries.length === 0) {
+		reasons.push(`${label}.bandMap: at least one entry required (an empty mapping is decorative — omit the field instead)`);
+		return null;
+	}
+	const out: Record<string, string> = {};
+	let ok = true;
+	for (const [key, value] of entries) {
+		if (!(BAND_MAP_KEYS as readonly string[]).includes(key)) {
+			reasons.push(`${label}.bandMap: key "${key}" is not a band position (allowed: ${BAND_MAP_KEYS.join(", ")}; "no-band" is never mappable — insufficient history is a skip, not a score)`);
+			ok = false;
+			continue;
+		}
+		if (typeof value !== "string" || value.trim() === "") {
+			reasons.push(`${label}.bandMap["${key}"]: must be a non-empty verdict string`);
+			ok = false;
+			continue;
+		}
+		out[key] = value;
+	}
+	return ok ? out : null;
 }
 
 export function validateRubric(raw: unknown, options: { expectedRubricId?: string } = {}): Validation<Rubric> {
@@ -550,6 +602,7 @@ export function validateRubric(raw: unknown, options: { expectedRubricId?: strin
 			const mustHold = stringArray(dim.mustHold, `${label}.mustHold`, reasons);
 			if (mustHold !== null && mustHold.length === 0) reasons.push(`${label}.mustHold: at least one assertion required (a dimension with zero assertions is decorative)`);
 			if (dim.mustNot !== undefined) stringArray(dim.mustNot, `${label}.mustNot`, reasons);
+			if (dim.bandMap !== undefined) validateBandMap(dim.bandMap, label, reasons);
 		});
 	}
 
@@ -563,11 +616,15 @@ export function validateRubric(raw: unknown, options: { expectedRubricId?: strin
 	const dimensions: RubricDimension[] = [];
 	for (const d of dimsRaw) {
 		const dim = d as Record<string, unknown>;
+		// bandMap was already validated in the loop above; parse only runs when
+		// reasons.length === 0, so a present bandMap is a validated shape.
+		const bandMap = (dim.bandMap !== undefined && typeof dim.bandMap === "object" && dim.bandMap !== null && !Array.isArray(dim.bandMap)) ? dim.bandMap as RubricDimensionBandMap : undefined;
 		dimensions.push({
 			name: dim.name as string,
 			guidance: dim.guidance as string,
 			mustHold: dim.mustHold as string[],
 			mustNot: (dim.mustNot ?? []) as string[],
+			...(bandMap !== undefined ? { bandMap } : {}),
 		});
 	}
 	return { ok: true, value: { rubricId, version, dimensions, scale: RUBRIC_SCALE }, reasons: [] };

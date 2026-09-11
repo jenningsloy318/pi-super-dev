@@ -181,10 +181,26 @@ export interface SigmaReport {
 export const MIN_PRIOR_RUNS = 8;
 const TRAILING_WINDOW = 20;
 
-function median(xs: number[]): number {
+// ── Statistics core (v0.3.90 P2 / D3 + §8.6 L4 extraction) ─────────────────
+// The module-private median/MAD/banding below was extracted into reusable
+// exports so the P2 eval layer (evolution/eval-stage.ts) REUSES the same
+// statistics instead of re-inventing banding (spec L4: "复用统计核重造报告面"
+// — reuse the stats core, rebuild the REPORT face). sigmaReport keeps its
+// exact behavior: it is refactored onto these same helpers, not beside them.
+
+/** Median of a numeric array (even length averages the middle pair; empty →
+ *  NaN — callers gate on sample size before reading it). */
+export function median(xs: number[]): number {
 	const s = [...xs].sort((a, b) => a - b);
 	const mid = Math.floor(s.length / 2);
 	return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+}
+
+/** Median absolute deviation about the median (MAD) — the robust spread the
+ *  σ-band scale builds on (robust z = |x−median| / (1.4826·MAD)). */
+export function medianAbsoluteDeviation(xs: number[]): number {
+	const med = median(xs);
+	return median(xs.map((v) => Math.abs(v - med)));
 }
 
 function metricValue(r: RunMetricsRow, metric: SigmaMetricName): number {
@@ -209,37 +225,98 @@ function metricValue(r: RunMetricsRow, metric: SigmaMetricName): number {
 
 const METRICS: SigmaMetricName[] = ["wallMs", "costUsd", "tokens", "agentErrorRounds", "fatalAborts", "agentsSpawned", "judgeAccepted", "judgeDiscarded", "partialPhases", "inheritedRedHandoffs", "inheritedRedOccurrences", "maxPhaseAttempts"];
 
+/** Which band a value lands in (D3/L4): "in-band" (<1σ), "1σ"/"2σ"/"3σ"
+ *  (the existing tiers), or "no-band" — the honest skip when the baseline
+ *  is below MIN_PRIOR_RUNS (finite values) or the value itself is not a
+ *  finite number. Position vocabulary is shared verbatim with the P2
+ *  rubric bandMap keys (eval-layer RubricDimension.bandMap). */
+export type BandPosition = "in-band" | "1σ" | "2σ" | "3σ" | "no-band";
+
+/** One classification of a value against a baseline (all stats fields are
+ *  computed over the FINITE baseline subset; sigma is null only for
+ *  "no-band" — insufficient history or a non-finite value). */
+export interface BandClassification {
+	position: BandPosition;
+	/** Robust z in σ units (|x−median| / (1.4826·MAD)); the MAD=0 honesty rule
+	 *  caps any deviation at 3. Null exactly when position is "no-band". */
+	sigma: number | null;
+	median: number;
+	mad: number;
+	/** Count of finite baseline values the classification rests on. */
+	n: number;
+}
+
+/** Classify ONE value against a baseline with the EXACT sigmaReport rules
+ *  (MAD=0 → equal is exactly 0σ, any deviation capped 3σ; <8 finite baseline
+ *  values → no-band, never fabricated confidence; junk baseline entries
+ *  excluded deterministically). Pure; never throws. */
+export function classifyBand(value: number, baseline: readonly number[]): BandClassification {
+	const finite = baseline.filter((v) => typeof v === "number" && Number.isFinite(v));
+	const med = median(finite);
+	const mad = median(finite.map((v) => Math.abs(v - med)));
+	if (finite.length < MIN_PRIOR_RUNS || typeof value !== "number" || !Number.isFinite(value)) {
+		return { position: "no-band", sigma: null, median: med, mad, n: finite.length };
+	}
+	let sigma: number;
+	if (mad === 0) {
+		sigma = value === med ? 0 : 3; // all-identical history: any deviation is maximally surprising (capped)
+	} else {
+		sigma = Math.abs(value - med) / (1.4826 * mad);
+	}
+	const position: BandPosition = sigma >= 3 ? "3σ" : sigma >= 2 ? "2σ" : sigma >= 1 ? "1σ" : "in-band";
+	return { position, sigma, median: med, mad, n: finite.length };
+}
+
+/** The prior-run window both band report faces share (sigmaReport's exact
+ *  expressions — one windowing rule, two report faces). PRE-EXISTING WART
+ *  (P10, named not fixed): the two arms disagree by one row — the
+ *  current-given arm windows to TRAILING_WINDOW (20) priors while the
+ *  derived arm takes the last TRAILING_WINDOW + 1 (21) of the minus-last
+ *  slice. This is the ORIGINAL behavior, byte-identical at extraction time
+ *  (verified against the pre-extraction source); changing it is a deliberate
+ *  future change requiring baseline-impact analysis (every band's n and σ
+ *  shifts), never a drive-by. */
+function priorWindow(rows: RunMetricsRow[], current?: RunMetricsRow): RunMetricsRow[] {
+	const prior = rows.slice(0, rows.length - (current ? 0 : 1)).slice(-TRAILING_WINDOW - 1);
+	return current ? rows.slice(-TRAILING_WINDOW) : prior;
+}
+
+/** The FULL band-position report face (D3): every metric classified —
+ *  including in-band and no-band (sigmaReport intentionally surfaces only
+ *  ≥1σ drift; the eval layer needs the position of EVERY metric to map
+ *  rubric bandMap verdicts). Same trailing-window semantics as sigmaReport. */
+export interface MetricBandPosition extends BandClassification {
+	metric: SigmaMetricName;
+}
+
+export function bandPositions(rows: RunMetricsRow[], current?: RunMetricsRow): MetricBandPosition[] {
+	const last = current ?? rows[rows.length - 1];
+	if (!last) {
+		return METRICS.map((metric) => ({ metric, position: "no-band" as const, sigma: null, median: 0, mad: 0, n: 0 }));
+	}
+	const priorRows = priorWindow(rows, current);
+	return METRICS.map((metric) => ({ metric, ...classifyBand(metricValue(last, metric), priorRows.map((r) => metricValue(r, metric))) }));
+}
+
 /** Deterministic σ classification of the CURRENT row against the trailing
  *  baseline of prior rows. rows = full ledger (last row = current). */
 export function sigmaReport(rows: RunMetricsRow[], current?: RunMetricsRow): SigmaReport {
 	const last = current ?? rows[rows.length - 1];
-	const prior = rows.slice(0, rows.length - (current ? 0 : 1)).slice(-TRAILING_WINDOW - 1);
 	// When `current` is passed separately, prior = all rows (windowed); when
 	// derived, prior = everything except the last row.
-	const priorRows = current ? rows.slice(-TRAILING_WINDOW) : prior;
+	const priorRows = priorWindow(rows, current);
 	if (!last) return { insufficientHistory: true, priorRuns: 0, bands: [] };
 	if (priorRows.length < MIN_PRIOR_RUNS) {
 		return { insufficientHistory: true, priorRuns: priorRows.length, bands: [] };
 	}
 	const bands: SigmaBand[] = [];
 	for (const metric of METRICS) {
-		const baseline = priorRows
-			.map((r) => metricValue(r, metric))
-			.filter((v) => typeof v === "number" && Number.isFinite(v));
-		if (baseline.length < MIN_PRIOR_RUNS) continue; // junk-excluded rows can starve a metric — skip it honestly
-		const med = median(baseline);
-		const mad = median(baseline.map((v) => Math.abs(v - med)));
-		const x = metricValue(last, metric);
-		if (typeof x !== "number" || !Number.isFinite(x)) continue;
-		let sigma: number;
-		if (mad === 0) {
-			sigma = x === med ? 0 : 3; // all-identical history: any deviation is maximally surprising (capped)
-		} else {
-			sigma = Math.abs(x - med) / (1.4826 * mad);
-		}
-		if (sigma < 1) continue;
-		const tier: SigmaBand["tier"] = sigma >= 3 ? "3σ" : sigma >= 2 ? "2σ" : "1σ";
-		bands.push({ metric, value: x, median: med, mad, sigma: Math.min(sigma, 99), tier, n: baseline.length });
+		const cls = classifyBand(metricValue(last, metric), priorRows.map((r) => metricValue(r, metric)));
+		// classifyBand folds the original per-metric honesty rules: no-band skips
+		// the metric (insufficient finite baseline OR non-finite current value —
+		// "skip it honestly"), in-band stays below the ≥1σ report threshold.
+		if (cls.position === "no-band" || cls.position === "in-band") continue;
+		bands.push({ metric, value: metricValue(last, metric), median: cls.median, mad: cls.mad, sigma: Math.min(cls.sigma!, 99), tier: cls.position, n: cls.n });
 	}
 	bands.sort((a, b) => b.sigma - a.sigma);
 	return { insufficientHistory: false, priorRuns: priorRows.length, bands };

@@ -58,6 +58,9 @@ const GOLDEN_RED_BOUNDARY_SPEC_SCOPED = [
 	// v0.3.87 S4(b): research-assist ledger (engine-appended mid-attempt inside
 	// the spec dir — the NOVEL four-role combo, see below).
 	"research-assists.jsonl",
+	// P2 (v0.3.90): eval-stage run report — usage-report.md parity (close-out
+	// render only).
+	"eval-report.md",
 ] as const;
 
 const GOLDEN_TRACKER_ADVISORY_NOISE = [
@@ -92,6 +95,7 @@ const GOLDEN_SPEC_DIR_BOOKKEEPING = [
 	"tool-usage.jsonl",
 	".inherited-red.jsonl",
 	"research-assists.jsonl",
+	"eval-report.md",
 ] as const;
 
 const GOLDEN_PHASE_COMMIT_EXCLUDED = [".judge.jsonl", "test-runner.json", "research-assists.jsonl"] as const;

@@ -76,6 +76,10 @@ export const READ_ONLY_AGENTS = new Set([
 	"ui-ux-designer",
 	"architecture-improver",
 	"architecture-designer",
+	// P2 (v0.3.90, D5②/DEC-9): the final-response scorer — read-only judge of
+	// the completed run's honesty bar; the ENGINE writes eval rows from its
+	// structured result (strictly observational, same P4 shape as post-mortem).
+	"eval-scorer",
 ]);
 
 /** Every specialist rides the SAME delegation backend — including the
@@ -114,6 +118,11 @@ export const REGISTERED_AGENTS = [
 	"reflection",
 	"replan-lead",
 	"post-mortem",
+	// P2 (v0.3.90, D5②/DEC-9): final-response scorer — frontier-tier specialist
+	// dispatched once at run close-out by evolution/eval-stage.ts (read-only,
+	// structured per-assertion result; NOT a mechanical classifier — it is
+	// judgment work, so it keeps the capability-agent surface incl. budgets).
+	"eval-scorer",
 	"prototype-runner",
 	"api-tester",
 	"ui-tester",

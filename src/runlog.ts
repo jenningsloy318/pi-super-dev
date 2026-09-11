@@ -50,7 +50,11 @@ export type RunEventType =
 	| "replan.routed"
 	| "replan.resumed"
 	// R4 revision counters:
-	| "artifact.revised";
+	| "artifact.revised"
+	// P2 eval stage (v0.3.90, D5/D7 — docs/requirements/sdlc-tips-adoption.md):
+	// advisory rows + the validation-gate decision at run close-out.
+	| "eval.scored"
+	| "eval.gate";
 
 /** What each event's `data` carries (documentation contract; runtime objects
  *  are plain records — the ledger never schema-validates its own writes, it
@@ -77,6 +81,8 @@ export interface RunEventDataHints {
 	"replan.routed": { findings: Array<{ id?: string; owner: string; routable: boolean; source: string; reason: string }>; invalidationSet: string[] };
 	"replan.resumed": { runId: string; requests: number };
 	"artifact.revised": { artifact: string; revision: number };
+	"eval.scored": { scorerKind: "trajectory" | "final-response"; configStamp: string; degraded?: boolean; skipped?: string; rows: unknown[]; assertions?: unknown[] };
+	"eval.gate": { passes: boolean; posture: string; reasons: string[]; matchedPairs: number; agreed: number; excludedRows?: number };
 	"route.taken": { from: string; to: string; seq: number; budgetBefore: number; budgetAfter: number; resumeFromIndex: number };
 	"route.declined": { from: string; to: string; reason: string };
 }

@@ -57,6 +57,7 @@ vi.mock("../src/agents/fleet-visibility.ts", () => ({
 const ownerProbe = vi.hoisted(() => ({ present: null as boolean | null }));
 vi.mock("../src/agents/register-agents.ts", () => ({
 	delegationOwnerPresent: vi.fn(() => ownerProbe.present),
+	REGISTERED_AGENTS: [],
 }));
 
 import { makeContext } from "../src/workflow.ts";

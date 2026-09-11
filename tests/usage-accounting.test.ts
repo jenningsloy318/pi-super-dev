@@ -28,7 +28,7 @@ vi.mock("../src/agents/fleet-visibility.ts", () => ({
 	resolveExternalRunsModule: vi.fn(async () => false),
 	fleetBegin: vi.fn(), fleetUpdate: vi.fn(), fleetFinish: vi.fn(),
 }));
-vi.mock("../src/agents/register-agents.ts", () => ({ delegationOwnerPresent: vi.fn(() => null) }));
+vi.mock("../src/agents/register-agents.ts", () => ({ delegationOwnerPresent: vi.fn(() => null), REGISTERED_AGENTS: [] }));
 
 import { makeContext, summarizeUsage } from "../src/workflow.ts";
 import { mergeUsage } from "../src/types.ts";

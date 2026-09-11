@@ -42,6 +42,15 @@ vi.mock("../../src/render/super-dev-dir.ts", async (importOriginal) => {
 // tests/agent-runtime.test.ts tier assertions mid-session.
 process.env.SUPER_DEV_NO_CONFIG_ENV = "1";
 process.env.SUPER_DEV_NO_GLOBAL_METRICS = "1";
+// P2 (v0.3.90, F-07): the close-out eval stage's OWN kill switch — same
+// hermeticity class as SUPER_DEV_NO_GLOBAL_METRICS above, deliberately a
+// SEPARATE key (decoupled: metrics ledger and eval surface can be disabled
+// independently; the stage is ON by default in production). Suites that
+// drive runWorkflow to close-out would otherwise dispatch eval-scorer,
+// append dataset rows to the real ~/.super-dev/evals/runs/, and write extra
+// events/reports — the tests/eval-stage.test.ts wiring test deletes this var
+// locally (with getSuperDevDir mocked to a tmp dir) to exercise the wiring.
+process.env.SUPER_DEV_NO_EVAL_STAGE = "1";
 // v0.3.81 adv-F1: activation's fire-and-forget git fetch must never do real
 // network I/O (or mutate remote-tracking refs) from inside the unit suite.
 process.env.SUPER_DEV_NO_FRESHNESS_CHECK = "1";

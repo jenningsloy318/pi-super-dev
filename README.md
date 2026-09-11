@@ -830,6 +830,20 @@ flywheel):
 - `writeGoldenCaseTemplate()` / `writeRubricTemplate()` scaffold validated
   skeletons (atomic `wx` create) — content is hand-written (DEC-7: no
   auto-generated seeds).
+- **P2 (v0.3.90) adds the dual scorers** at every run's close-out, entirely
+  fail-open (an eval failure NEVER fails the run under review): a
+  deterministic **trajectory scorer** (S3 counters + σ-band positions →
+  rubric bandMap → advisory verdict rows — strictly observational, pinned by
+  an import-allowlist tripwire) and a frontier-tier **`eval-scorer` agent**
+  for final-response assertion scoring (uniform pass = criterion-satisfied
+  semantics; confidence stays a ranking signal). The measuring instrument is
+  excluded from the measured run's counters via a frozen pre-eval snapshot;
+  every row carries a configStamp (stable hash of the run-shaping config) and
+  case/rubric version stamps; quota failures degrade to a
+  `scorerDegraded` deterministic-only row (no model fallback); aborted runs
+  never spend LLM tokens. The D7 validation gate executes whenever maintainer
+  labels cover scored cases. `SUPER_DEV_NO_EVAL_STAGE=1` disables the stage
+  (default on).
 
 ## Configuration
 
@@ -1145,6 +1159,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_TRANSIENT_RETRY_MS` | `2000,4000,…` | transient agent-error retry envelope (comma-separated backoff delays) |
 | `SUPER_DEV_SERVICE_CMD_ALLOWLIST` | — | comma-separated EXTRA first-token service launchers for the verification bringup allowlist (model-discovered `cmd` must start with a standard launcher — npm/pnpm/yarn/bun run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, `python -m http.server`, cargo/go run; anything else is refused with an honest log and the pipeline degrades to no-live-service, never punishing the work) |
 | `SUPER_DEV_NO_SAFETY_GUARD` | — | `1` = kill switch for the delegated-child safety guard (dangerous-bash denylist + protected-file writes, loaded via `subagentOnlyExtensions` for every agent alongside the commit guard) |
+| `SUPER_DEV_NO_EVAL_STAGE` | — | `1` = kill switch for the in-pipeline eval stage at run close-out (trajectory + final-response scoring, `eval.*` events, eval-report.md, and the user-local dataset append to `~/.super-dev/evals/runs/rows.jsonl`); the stage is ON by default — this is a hermeticity/escape switch of the `SUPER_DEV_NO_SAFETY_GUARD` class, also honored via the config.json `env` map |
 | `SUPER_DEV_DEBUG` | — | debug logging |
 
 Every entry above can be exported in the shell (traditional behavior,

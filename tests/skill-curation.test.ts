@@ -26,7 +26,7 @@ vi.mock("../src/render/knowledge.ts", () => ({ knowledgeForAgent: vi.fn(() => ""
 vi.mock("../src/agents/fleet-visibility.ts", () => ({
 	resolveExternalRunsModule: vi.fn(async () => null),
 }));
-vi.mock("../src/agents/register-agents.ts", () => ({ delegationOwnerPresent: vi.fn(() => null) }));
+vi.mock("../src/agents/register-agents.ts", () => ({ delegationOwnerPresent: vi.fn(() => null), REGISTERED_AGENTS: [] }));
 
 import {
 	skillsForCall,
