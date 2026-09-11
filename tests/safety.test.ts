@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkBashCommand, checkProtectedWrite, safetyPreamble } from "../src/safety.ts";
+import { checkBashCommand, checkProtectedWrite } from "../src/safety.ts";
 
 describe("checkBashCommand", () => {
 	it("blocks rm -rf /", () => {
@@ -120,15 +120,5 @@ describe("checkProtectedWrite", () => {
 			// reason names the boundary, not a protected-dir/secret match
 			expect(checkProtectedWrite("/etc/hosts", d).reason).toMatch(/outside the working directory/i);
 		} finally { rmSync(d, { recursive: true, force: true }); }
-	});
-});
-
-describe("safetyPreamble", () => {
-	it("mentions the key forbidden commands and protected files", () => {
-		const p = safetyPreamble();
-		expect(p).toMatch(/rm -rf/i);
-		expect(p).toMatch(/git push --force/i);
-		expect(p).toMatch(/\.env/i);
-		expect(p.length).toBeGreaterThan(100);
 	});
 });

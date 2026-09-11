@@ -4,13 +4,15 @@
  * pi-subagents delegation backend (the ONLY specialist backend since v0.3.64),
  * the sd-* registration, and the workflow engine.
  *
- * History: these lived in pi-spawn.ts (the deleted subprocess backend) and
- * session-agent.ts (the deleted in-process backend). v0.3.64 removed both
- * backends — every specialist call now routes through pi-subagents' structured
- * delegation — so their shared utilities moved here unchanged, and everything
- * backend-specific (spawn/RPC machinery, per-stage schema corrective
- * re-prompting) was deleted with them. Do not grow this module into a backend:
- * agent EXECUTION belongs to delegation-backend.ts; this file only holds pure
+ * History: these lived in pi-spawn.ts (the subprocess backend) and
+ * session-agent.ts (the in-process session backend). v0.3.64 removed both
+ * backends from the production path — every specialist call now routes
+ * through pi-subagents' structured delegation — and v0.3.88 deleted the
+ * bench session-agent copy, leaving delegation the sole executor; their
+ * shared utilities moved here unchanged, and everything backend-specific
+ * (spawn/RPC machinery, per-stage schema corrective re-prompting) was
+ * deleted with them. Do not grow this module into a backend: agent
+ * EXECUTION belongs to delegation-backend.ts; this file only holds pure
  * resolution/resolution-adjacent helpers.
  */
 

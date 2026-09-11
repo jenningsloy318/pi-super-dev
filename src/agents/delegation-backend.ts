@@ -1,8 +1,9 @@
 /**
  * v0.3.25 L2 — the pi-subagents structured-delegation agent backend.
  *
- * super-dev's third specialist execution backend (besides the in-process
- * session backend and the raw `pi` subprocess backend): every agent call is
+ * The ONLY specialist execution backend since v0.3.64 (the in-process session
+ * and raw `pi` subprocess backends were removed from the production path then;
+ * v0.3.88 deleted the session backend's bench copy): every agent call is
  * executed by pi-subagents' delegation executor — the SAME machinery as the
  * `subagent` tool — via the process-local event contract documented in
  * pi-subagents' docs/extension-api.md ("Structured delegation API").
@@ -14,11 +15,12 @@
  * Design constraints honored here:
  *  - NO runtime import of pi-subagents (separately installed package; the
  *    event contract is pure `pi.events`). The payload types are mirrored
- *    locally and versioned against pi-subagents@0.58.0.
+ *    locally, versioned against pi-subagents@0.58.0, and re-verified
+ *    field-by-field through pi-subagents@0.67 (S4 verified toolBudget).
  *  - Result mode is TEXT: super-dev's control contract (`<control> JSON with:`
  *    in the prompt, parsed by extractControl) is unchanged — the delegation
- *    result text flows through the exact same parser the subprocess backend
- *    uses, so stages see an identical SpawnResult.
+ *    result text flows through the exact same parser the legacy subprocess
+ *    backend used, so stages see an identical SpawnResult.
  *  - Identity: ownerRunId (the super-dev run) + nodeId (the logical node
  *    base, e.g. `pipeline.stage9.impl.a1`) plus a per-ATTEMPT unique suffix
  *    `@<requestId>` (v0.3.84). pi-subagents treats (ownerRunId, nodeId) as
@@ -217,8 +219,8 @@ function delegationTerminalLine(agent: string, resp: DelegationTerminalResponse)
 	});
 }
 
-/** The execution options — the same `common` object the other two backends
- *  receive, plus the delegation-specific inputs (event bus + run identity). */
+/** The execution options — the shared `common` agent-call object plus the
+ *  delegation-specific inputs (event bus + run identity). */
 export interface DelegationAgentOptions {
 	agent: string;
 	prompt: string;
@@ -237,7 +239,7 @@ export interface DelegationAgentOptions {
 	 *  override on the wire. */
 	toolBudget?: import("./agent-runtime.ts").ResolvedToolBudget;
 	/** Optional-by-contract keys whose empty-array value counts as present
-	 *  (same semantics as the session backend's corrective check). */
+	 *  (same semantics the legacy session backend's corrective check had). */
 	allowEmptyArraysFor?: string[];
 	/** v0.3.70 W3: the call's JSON schema (TypeBox STAGE_MODELS object). When
 	 *  present (and structured mode is not degraded/opted out) the request
@@ -253,7 +255,7 @@ export interface DelegationAgentOptions {
 	 *  (deduped upstream per call). Telemetry only — never gates execution. */
 	onToolUse?: (tool: string, argHead: string) => void;
 	/** Inherited main-session defaults (SCENARIO-001 parity): applied BELOW an
-	 *  explicit model/thinking param, exactly like the other two backends. */
+	 *  explicit model/thinking param (the rule the legacy backends applied). */
 	inheritedModelObject?: import("./agent-runtime.ts").SessionModelOption;
 	inheritedThinking?: string;
 	onProgress?: AgentProgress;
@@ -311,7 +313,7 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 			? { kind: "structured", schema: structuredClone(opts.schema) }
 			: { kind: "text" },
 	};
-	// Review-2 P2: model/thinking resolution mirrors the other backends —
+	// Review-2 P2: model/thinking resolution follows the legacy backends' rule —
 	// explicit param > SUPER_DEV_MODEL/SUPER_DEV_THINKING env > inherited
 	// main-session default > (thinking only) role default.
 	const model = opts.model ?? resolveModel(undefined) ?? (opts.inheritedModelObject ? `${opts.inheritedModelObject.provider}/${opts.inheritedModelObject.id}` : undefined);
@@ -472,12 +474,13 @@ function duplicateNodeRetryMs(): number {
  *  status lines, bridge rejections) — never model prose. */
 const DUPLICATE_NODE_RE = /duplicate_node/;
 
-/** The backend entry: same signature family as runAgentViaSession/spawnAgent
- *  (the shared `common` object) plus events + ownerRunId. Returns a
- *  SpawnResult parsed exactly like the subprocess backend's fallback path. */
+/** The backend entry: takes the shared `common` object (the same signature
+ *  family the deleted runAgentViaSession/spawnAgent backends used — the
+ *  `thinking` field name dates from them) plus events + ownerRunId. Returns
+ *  a SpawnResult parsed by the same extractControl path the stages consume. */
 export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promise<SpawnResult> {
 	const task0 = opts.prompt;
-	// Review-2 P1: local backstop parity — the session/spawn backends both
+	// Review-2 P1: local backstop parity — the legacy session/spawn backends both
 	// fall back to the role timeout when the call sets none (in practice only
 	// reflection.ts sets call.timeoutMs), so a request without timeoutMs must
 	// still never hang forever when pi-subagents is absent/unresponsive.

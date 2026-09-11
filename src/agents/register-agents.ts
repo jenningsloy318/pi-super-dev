@@ -6,7 +6,8 @@
  * Each agents/<name>.md body is the system prompt (the SAME prompt the
  * session/subprocess backends load via loadAgentPrompt — one source of
  * truth); the name is `sd-`-prefixed to avoid collisions with pi-subagents'
- * own agents; the tool set mirrors the session backend's access-mode split
+ * own agents; the tool set mirrors the access-mode split (historically the
+ * session backend's)
  * (reviewers/judges/classifiers are read-only; writers/implementers may
  * edit). Learned lessons are NOT baked into the registration (base .md body
  * only — review-2 P2) — they inject per-call through the task prompt as
@@ -25,8 +26,9 @@ import type { DelegationEventBus } from "./delegation-backend.ts";
 
 export const RUNTIME_AGENT_REGISTER_EVENT = "pi-subagents:runtime-agent-register:v1";
 
-/** Read-only tool set — mirrors sessionToolAccess("source-read-only"):
- *  inspection + diagnostics, no mutation. */
+/** Read-only tool set: inspection + diagnostics, no mutation. (Historically
+ *  this mirrored the deleted session backend's
+ *  sessionToolAccess("source-read-only") split — v0.3.88 removed that copy.) */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 
 /** Writer tool set — the coding surface minus the super_dev tool itself. */
@@ -47,7 +49,7 @@ const WILDCARD_WRITER_EXCLUDES = ["powershell", "super_dev"] as const;
 
 /** Agents whose ROLE is analytical (reviewers, judges, classifiers,
  *  analyzers) — they never need to mutate the worktree. Mirrors the
- *  access-mode split the other backends apply. */
+ *  access-mode split the legacy backends applied. */
 export const READ_ONLY_AGENTS = new Set([
 	"task-classifier",
 	"requirements-clarifier",
@@ -76,9 +78,11 @@ export const READ_ONLY_AGENTS = new Set([
 	"architecture-designer",
 ]);
 
-/** The agents that must NOT be delegated (browser/web-research roles forced
- *  onto the subprocess backend) are still registered for future use — the
- *  backend-selection rule, not the registration, gates them. */
+/** Every specialist rides the SAME delegation backend — including the
+ *  browser/web-research roles (prototype-runner, api-tester, ui-tester) that
+ *  the pre-v0.3.64 backend-selection rule forced onto the subprocess backend;
+ *  that historical rule is gone, so nothing here is held back from
+ *  delegation. */
 export const REGISTERED_AGENTS = [
 	"task-classifier",
 	"requirements-clarifier",

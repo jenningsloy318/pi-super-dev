@@ -1,5 +1,6 @@
 /**
- * Shared progress-line formatting for all three agent backends (v0.3.28).
+ * Shared progress-line formatting for the agent backend (v0.3.28; historically
+ * shared by all three backends — delegation is the sole survivor since v0.3.88).
  *
  * Before v0.3.28 the delegation backend logged only the bare current tool
  * name (run.log under agentBackend pi-subagents degraded to
@@ -18,9 +19,11 @@
  *                    turns=N tools=N tokens=in/out cache=r/w $cost duration=Xs`
  */
 
-/** v0.3.28: live usage accounting shared by the subprocess loops (pi-spawn.ts)
- *  and the RPC driver (message_end events never reach onRawEvent — the driver
- *  intercepts them, so it accumulates its own copy). */
+/** v0.3.28: live usage accounting — historically shared by the subprocess
+ *  loops (pi-spawn.ts — the deleted subprocess backend) and the RPC driver
+ *  (message_end events never reach onRawEvent — the driver intercepts them,
+ *  so it accumulates its own copy). Since v0.3.64 the formatter is shared
+ *  by the delegation backend's loops. */
 export interface LiveUsageStats {
 	model?: string;
 	toolCalls: number;

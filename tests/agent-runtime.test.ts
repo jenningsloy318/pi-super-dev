@@ -154,8 +154,10 @@ describe("resolveThinking — v0.3.43 reordered precedence (ROLE TIER above INHE
 	});
 
 	it("the widened signature stays backward-compatible with the legacy 2-arg call shape", () => {
-		// Existing call sites (buildSpawnArgs, runAgentViaSession) still pass only
-		// (agent, perCall) and must keep resolving identically to before.
+		// Historically the deleted backends' call sites (buildSpawnArgs,
+		// runAgentViaSession) passed only (agent, perCall); today the sole
+		// delegation backend passes all three args, but the 2-arg shape must
+		// keep resolving identically (signature stability).
 		expect(resolveThinking("code-reviewer")).toBe("high");
 		expect(resolveThinking("code-reviewer", "off")).toBe("off");
 	});

@@ -10,7 +10,7 @@
  * means writing one builder function in `nodes.ts`, never touching the runner.
  *
  * Zero dependency on @agwab/pi-workflow: agents are spawned directly as `pi`
- * child processes (see `pi-spawn.ts`).
+ * child processes (see `src/agents/delegation-backend.ts`).
  */
 
 import type { EventEmitter } from "node:events";
@@ -153,7 +153,7 @@ export interface AgentCall {
 	 *  historical restore-immediately semantics for read-only calls that have
 	 *  no concurrent writer. */
 	concurrentWriter?: boolean;
-	/** Control keys the caller expects back (for the session backend's
+	/** Control keys the caller expects back (historically the session backend's
 	 *  structured_output schema). Optional; omitted for non-writer calls. */
 	controlKeys?: string[];
 	/** Keys whose EMPTY-ARRAY value counts as present (backends otherwise treat
@@ -167,12 +167,12 @@ export interface AgentCall {
 	 *  the permissive Type.Any-per-key schema, so the model returns typed data. */
 	schema?: unknown;
 	/** Optional per-call wall-clock cap (ms). Overrides the role-based default
-	 *  (see defaultAgentTimeoutMs). Threaded into `common` and honored by both the
-	 *  session and subprocess backends. */
+	 *  (see defaultAgentTimeoutMs). Threaded into `common`; honored by the
+	 *  delegation backend (and historically both legacy backends). */
 	timeoutMs?: number;
 	/** Optional per-call thinking override (Phase 2). Highest precedence; when
 	 *  absent the resolved level falls back to SUPER_DEV_THINKING then the role
-	 *  default. Threaded into `common` for both backends. */
+	 *  default. Threaded into `common` (historically for both backends). */
 	thinking?: import("./agents/agent-runtime.ts").ThinkingLevel;
 	/** Optional per-call model override ("provider/id"). Highest precedence — wins
 	 *  over config.agentModels and the global --model/SUPER_DEV_MODEL. Rarely set by
@@ -564,8 +564,9 @@ export interface RunOptions {
 	skipStages?: string[];
 	model?: string;
 	/** The FULL main-session model object (ctx.model), threaded from
-	 *  extension.execute() → realAgent.common → both backends. The session backend
-	 *  passes it wholesale to createAgentSession; the subprocess backend derives
+	 *  extension.execute() → realAgent.common → the backend (historically both:
+	 *  the session backend passed it wholesale to createAgentSession; the
+	 *  subprocess backend derived
 	 *  the qualified `provider/id` for `--model`. ADDITIVE — never clobbers `model`
 	 *  or a SUPER_DEV_MODEL env override; wins over the SDK/settings default. */
 	inheritedModelObject?: import("./agents/agent-runtime.ts").SessionModelOption;

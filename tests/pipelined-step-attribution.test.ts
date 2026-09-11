@@ -159,12 +159,6 @@ describe("wiring source contract (class-E: the seam cannot silently regress)", (
 		expect(implementationSrc).toContain("await inStepScope(implStepSeq, `Implementation (");
 	});
 
-	it("bench session loader follows the SAME skills switch (v0.3.59: noSkills hard-coding removed)", () => {
-		const sessionSrc = readFileSync(new URL("../src/bench/session-agent.ts", import.meta.url), "utf8");
-		expect(sessionSrc).toContain("noSkills: !skillsEnabled()");
-		expect(sessionSrc).toContain('skillsEnabled');
-	});
-
 	it("workflow progress shims attach currentStepScope to log/phase/text", () => {
 		expect(workflowSrc).toContain("progress?.log(msg, currentStepScope())");
 		expect(workflowSrc).toContain("progress.phase(String(label), currentStepScope())");

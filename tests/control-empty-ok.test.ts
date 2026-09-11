@@ -14,7 +14,6 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_EMPTY_ARRAY_OK, missingControlKeys } from "../src/control.ts";
-import { missingKeys } from "../src/bench/session-agent.ts";
 
 describe("DEFAULT_EMPTY_ARRAY_OK — the shared honest-empty set (F5+F8)", () => {
 	it("contains findings plus the five honest-empty required keys", () => {
@@ -35,7 +34,7 @@ describe("missingControlKeys with the shared base — no false corrective retrie
 	it("a zero-findings review approval is complete (F5)", () => {
 		const control = { title: "t", date: "d", verdict: "Approved", summary: "s", findings: [] };
 		const keys = ["title", "date", "verdict", "summary", "findings"];
-		expect(missingKeys(control, keys, { allowEmptyArraysFor: new Set([...DEFAULT_EMPTY_ARRAY_OK]) })).toEqual([]);
+		expect(missingControlKeys(control, keys, { allowEmptyArraysFor: new Set([...DEFAULT_EMPTY_ARRAY_OK]) })).toEqual([]);
 	});
 	it("each F8 honest-empty key passes as []", () => {
 		for (const key of ["sources", "adjustments", "regressions", "failures", "deviationsDocumented"]) {
@@ -53,7 +52,6 @@ describe("missingControlKeys with the shared base — no false corrective retrie
 describe("source-contract invariant — agent-execution modules import the shared set (P6)", () => {
 	const repoRoot = join(import.meta.dirname, "..");
 	const cases: Array<[string, RegExp]> = [
-		["src/bench/session-agent.ts", /import \{[^}]*DEFAULT_EMPTY_ARRAY_OK[^}]*\} from "\.\.\/control\.ts"/],
 		["src/agents/delegation-backend.ts", /import \{[^}]*DEFAULT_EMPTY_ARRAY_OK[^}]*\} from "\.\.\/control\.ts"/],
 	];
 	for (const [file, re] of cases) {

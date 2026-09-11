@@ -2,8 +2,9 @@
  * v0.3.86 F-13 — safety guard (child extension; commit-guard's sibling).
  *
  * `src/safety.ts`'s denylist + protected-file rules were DORMANT in
- * production: `createSafetyExtensionFactory` is only loaded by the bench
- * harness, while delegated subagents (the real pipeline path) ran with only
+ * production: `createSafetyExtensionFactory` was only loaded by the bench
+ * harness (until v0.3.88 deleted that bench copy — and with it the factory),
+ * while delegated subagents (the real pipeline path) ran with only
  * the commit guard. This child extension carries the SAME battle-tested rules
  * into every delegated child via `subagentOnlyExtensions` (register-agents.ts)
  * — hard `pi.on("tool_call")` interception of dangerous bash commands and
@@ -11,8 +12,8 @@
  *
  * SINGLE SOURCE OF TRUTH: the pattern tables and the check* functions live
  * HERE; `src/safety.ts` re-exports them for host-side consumers (lifecycle.ts
- * service bringup, the bench session agent) so the tables can never drift
- * between host and child.
+ * service bringup; historically also the bench session agent, deleted in
+ * v0.3.88) so the tables can never drift between host and child.
  *
  * SELF-CONTAINED like commit-guard, with one documented deviation: node:
  * BUILTIN imports are allowed (existsSync for the existing-secret-file check).

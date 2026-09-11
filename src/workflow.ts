@@ -687,7 +687,7 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// system prompts for output language) so every artifact
 		// (spec docs, reports, ledger/audit text, commits) lands in the configured
 		// language (default english) regardless of the task's language. One choke
-		// point covers both backends; judge calls flow through ctx.agent too.
+		// point covers every agent call; judge calls flow through ctx.agent too.
 		const promptWithLanguage = `${promptWithAccess}\n\n${languageDirective()}`;
 		const common = {
 			agent: call.agent,
@@ -704,15 +704,16 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// review via ~/.super-dev config.agentModels.
 			model: resolveAgentModel(call, agentModels, model),
 			// Thread the inherited DEFAULTS (live main-session model object +
-			// thinking level) through the shared `common` object so BOTH backends
-			// receive them. ADDITIVE — each backend applies them BELOW an explicit
-			// param/env override (see pi-spawn.resolveModel/resolveThinking and
-			// session-agent.runAgentViaSession). SCENARIO-001/005/006.
+			// thinking level) through the shared `common` object to the delegation
+			// backend — the sole specialist executor since v0.3.64 (the deleted
+			// backends' "BOTH backends receive them" wording is history). ADDITIVE —
+			// the backend applies them BELOW an explicit param/env override
+			// (agent-runtime resolveModel/resolveThinking). SCENARIO-001/005/006.
 			inheritedModelObject: options.inheritedModelObject,
 			inheritedThinking: options.inheritedThinking,
 			signal,
 			id: call.id,
-			// Per-call override; when absent each backend falls back to the
+			// Per-call override; when absent the backend falls back to the
 			// role-based default (code-writing agents get a larger cap).
 			timeoutMs,
 			// v0.3.87 (S4 decision 9): per-call toolBudget OVERRIDE (the only setter
@@ -720,13 +721,13 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// budget, tighter than research-agent's registered default). Absent =
 			// the registration-level RuntimeAgentDefinition.toolBudget applies.
 			toolBudget: call.toolBudget,
-			// Per-call thinking override. Both backends read the SAME per-call value:
-			// the subprocess backend reads `thinking` (buildSpawnArgs → --thinking via
-			// resolveThinking); the session backend reads `thinkingLevel`
-			// (applyThinkingLevel → session.setThinkingLevel). They are intentionally
-			// aliased to the same `call.thinking` so one `common` object feeds both
-			// backends; when absent, each backend falls back to SUPER_DEV_THINKING
-			// then the role default.
+			// Per-call thinking override. The `thinking`/`thinkingLevel` alias pair
+			// dates from the deleted backends — the subprocess backend read
+			// `thinking` (buildSpawnArgs → --thinking via resolveThinking), the
+			// session backend read `thinkingLevel` (applyThinkingLevel →
+			// session.setThinkingLevel). The sole delegation backend reads
+			// `thinking ?? thinkingLevel`; when absent it falls back to
+			// SUPER_DEV_THINKING then the role default.
 			thinking: perCallThinking,
 			thinkingLevel: perCallThinking,
 			onProgress: {

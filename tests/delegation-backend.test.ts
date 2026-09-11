@@ -7,8 +7,9 @@ import { EventEmitter } from "node:events";
 /**
  * v0.3.25 L2 — the structured-delegation agent backend.
  *
- * super-dev's agent calls (realAgent → runAgentViaSession/spawnAgent) gain a
- * third execution path: pi-subagents' structured delegation API
+ * super-dev's agent calls (realAgent) execute via pi-subagents' structured
+ * delegation API (historically the third path beside the deleted
+ * runAgentViaSession/spawnAgent backends; the sole executor since v0.3.64)
  * (`prompt-template:subagent:*` events, same executor as the `subagent`
  * tool). Every call then shows up in pi's Fleet UI with real turns/tools/
  * tokens/output logs, is steerable and stoppable — "the subagent same like

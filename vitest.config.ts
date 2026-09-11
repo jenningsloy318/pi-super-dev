@@ -9,9 +9,9 @@ export default defineConfig({
 			include: ["src/**"],
 			// Entry shells: extension.ts is the host-process bootstrap (RPC bus
 			// wiring exercised only by live runs); rpc-driver.ts is the standalone
-			// CLI harness; bench/ is an offline benchmark harness. All MEASURED
-			// source must hold the hard thresholds.
-			exclude: ["src/extension.ts", "src/rpc-driver.ts", "src/bench/**", "src/version.ts"],
+			// CLI harness (the offline bench/ harness was deleted in v0.3.88).
+			// All MEASURED source must hold the hard thresholds.
+			exclude: ["src/extension.ts", "src/rpc-driver.ts", "src/version.ts"],
 			reporter: ["text", "text-summary", "json-summary"],
 			// v0.3.47: HARD GATE (user mandate 2026-08-31) — passing tests alone
 			// are no longer sufficient; 85% is the floor for every measured

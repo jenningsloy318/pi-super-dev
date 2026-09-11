@@ -236,15 +236,15 @@ this instruction in the error; the run never hangs.)
 
 **History**: v0.2.10–v0.3.x shipped three backends (session = in-process SDK
 sessions, subprocess = isolated `pi` CLI children, pi-subagents = this one).
-v0.3.64 deleted the first two — their shared utilities moved to
-`src/agents/agent-runtime.ts`, and the session executor survives verbatim ONLY
-as the standalone convergence bench harness (`src/bench/session-agent.ts`, dev
-tooling never used by the pipeline). The `agentBackend` config key,
-`SUPER_DEV_BACKEND` env, and the tool's `backend` parameter are gone (the
-parameter is still accepted but ignored for legacy callers). The end-of-run
-reflection agent also delegates (visible in Fleet); without an event bus
-(bench/tests) reflection skips with a named audit row instead of silently
-doing nothing.
+v0.3.64 deleted the first two from the production path — their shared
+utilities moved to `src/agents/agent-runtime.ts` — while the session
+executor's bench copy (`src/bench/session-agent.ts`, dev tooling never used
+by the pipeline) lingered until v0.3.88 removed it; delegation is the only
+executor. The `agentBackend` config key, `SUPER_DEV_BACKEND` env, and the
+tool's `backend` parameter are gone (the parameter is still accepted but
+ignored for legacy callers). The end-of-run reflection agent also delegates
+(visible in Fleet); without an event bus (tests) reflection skips with a
+named audit row instead of silently doing nothing.
 
 **Full-field progress parity (v0.3.28)**: run.log reads uniformly. Tool lines
 `label: → tool args…`, narration lines `label: ⇢ <text>`, and a terminal
@@ -1113,9 +1113,6 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_GATE_BASE_REF` | `main` | git ref for auto-detecting touched crates |
 | `SUPER_DEV_CARGO_METADATA_TIMEOUT_MS` | `30000` | cargo metadata lookup timeout |
 | `SUPER_DEV_TRANSIENT_RETRY_MS` | `2000,4000,…` | transient agent-error retry envelope (comma-separated backoff delays) |
-| `SUPER_DEV_BENCH` | — | `1` = enable the real-LLM convergence benchmark harness (SUPER_DEV_BENCH_TRIALS=1 implied) |
-| `SUPER_DEV_BENCH_TRIALS` | `1` | trials per benchmark shape (≥3 for statistical claims) |
-| `SUPER_DEV_BENCH_TIMEOUT_MS` | `900000` | per-trial benchmark timeout |
 | `SUPER_DEV_SERVICE_CMD_ALLOWLIST` | — | comma-separated EXTRA first-token service launchers for the verification bringup allowlist (model-discovered `cmd` must start with a standard launcher — npm/pnpm/yarn/bun run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, `python -m http.server`, cargo/go run; anything else is refused with an honest log and the pipeline degrades to no-live-service, never punishing the work) |
 | `SUPER_DEV_NO_SAFETY_GUARD` | — | `1` = kill switch for the delegated-child safety guard (dangerous-bash denylist + protected-file writes, loaded via `subagentOnlyExtensions` for every agent alongside the commit guard) |
 | `SUPER_DEV_DEBUG` | — | debug logging |

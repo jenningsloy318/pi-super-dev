@@ -4,16 +4,19 @@
  * AC-01 / AC-03 / AC-05 → SCENARIO-001 (capture + thread inherited DEFAULTS),
  *                          SCENARIO-005 (inherited thinking flows from the
  *                          workflow agent factory through to the spawned agent),
- *                          SCENARIO-006 (inherited thinking reaches BOTH backends).
+ *                          SCENARIO-006 (inherited thinking reaches the backend).
  *
  * Decision from reading src/workflow.ts: `realAgent` builds ONE shared `common`
- * options object and dispatches it to either `spawnAgent` (subprocess) or
- * `runAgentViaDelegation` (session). The additive inheritance DEFAULTS must reach
- * BOTH backends through that single `common` seam — so the test asserts the
- * object handed to the backend carries `inheritedModelObject` / `inheritedThinking`
- * exactly as they arrived on `RunOptions`.
+ * options object and hands it to the specialist backend — solely
+ * `runAgentViaDelegation` since v0.3.64 (the original "either `spawnAgent`
+ * (subprocess) or `runAgentViaDelegation` (session) — BOTH backends" wording
+ * here described the pre-v0.3.64 dispatch; those backends are deleted, the
+ * session backend's bench copy going in v0.3.88). The additive inheritance
+ * DEFAULTS must reach the backend through that single `common` seam — so the
+ * test asserts the object handed to the backend carries `inheritedModelObject`
+ * / `inheritedThinking` exactly as they arrived on `RunOptions`.
  *
- * Harness mirrors tests/workflow-user-steer.test.ts: both backends are mocked to
+ * Harness mirrors tests/workflow-user-steer.test.ts: the backend is mocked to
  * capture the resolved options object, and knowledge is mocked away so the
  * captured fields are inspectable in isolation. These tests FAIL today because
  * `realAgent`'s `common` object does not yet forward the inherited fields.
@@ -22,15 +25,14 @@ import { describe, it, expect, vi } from "vitest";
 
 /** Captured backend options (the `common` object realAgent hands the backend). */
 const captured: {
-	session?: Record<string, unknown>;
-	subprocess?: Record<string, unknown>;
+	delegation?: Record<string, unknown>;
 	prompt?: string;
 } = {};
 
 vi.mock("../src/agents/delegation-backend.ts", async (importOriginal) => ({
 	...await importOriginal<typeof import("../src/agents/delegation-backend.ts")>(),
 	runAgentViaDelegation: vi.fn(async (opts: Record<string, unknown>) => {
-		captured.session = opts;
+		captured.delegation = opts;
 		captured.prompt = opts.prompt as string | undefined;
 		return { text: "", control: {} };
 	}),
@@ -52,20 +54,20 @@ const mkCtx = (state: PipelineState, options: RunOptions = {}) =>
 
 const BASE_CALL: AgentCall = { id: "pipeline.spec", agent: "spec-writer", prompt: "ORIG PROMPT" };
 
-describe("realAgent threads inherited model/thinking into BOTH backend calls (AC-01/AC-03/AC-05, SCENARIO-001/005/006)", () => {
-	it("SCENARIO-005/006: options.inheritedThinking flows into the session backend's common object", async () => {
+describe("realAgent threads inherited model/thinking into the delegation backend's call options (AC-01/AC-03/AC-05, SCENARIO-001/005/006)", () => {
+	it("SCENARIO-005/006: options.inheritedThinking flows into the delegation backend's common object", async () => {
 		await mkCtx({}, { inheritedThinking: "xhigh" }).agent(BASE_CALL);
-		expect(captured.session).toBeDefined();
+		expect(captured.delegation).toBeDefined();
 		// The additive DEFAULT must reach the backend so a specialist with no
 		// per-call/env override inherits the live session's thinking level.
-		expect(captured.session!.inheritedThinking).toBe("xhigh");
+		expect(captured.delegation!.inheritedThinking).toBe("xhigh");
 	});
 
-	it("SCENARIO-001: options.inheritedModelObject flows into the session backend's common object", async () => {
+	it("SCENARIO-001: options.inheritedModelObject flows into the delegation backend's common object", async () => {
 		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/agents/agent-runtime.ts").SessionModelOption;
 		await mkCtx({}, { inheritedModelObject: m }).agent(BASE_CALL);
-		expect(captured.session).toBeDefined();
-		expect(captured.session!.inheritedModelObject).toBe(m);
+		expect(captured.delegation).toBeDefined();
+		expect(captured.delegation!.inheritedModelObject).toBe(m);
 	});
 
 	it("SCENARIO-006: inherited model AND thinking reach the delegation backend TOGETHER through the same common seam", async () => {
@@ -73,9 +75,9 @@ describe("realAgent threads inherited model/thinking into BOTH backend calls (AC
 		// the single delegation seam instead.
 		const m = { provider: "glm", id: "glm-5.2" } as unknown as import("../src/agents/agent-runtime.ts").SessionModelOption;
 		await mkCtx({}, { inheritedModelObject: m, inheritedThinking: "high" }).agent(BASE_CALL);
-		expect(captured.session).toBeDefined();
-		expect(captured.session!.inheritedModelObject).toBe(m);
-		expect(captured.session!.inheritedThinking).toBe("high");
+		expect(captured.delegation).toBeDefined();
+		expect(captured.delegation!.inheritedModelObject).toBe(m);
+		expect(captured.delegation!.inheritedThinking).toBe("high");
 	});
 
 	it("inherited DEFAULTS never clobber the per-call model/thinking override (additive-only)", async () => {
@@ -83,18 +85,18 @@ describe("realAgent threads inherited model/thinking into BOTH backend calls (AC
 		// but per-call `thinking` does — the inherited tier must still be PRESENT on the
 		// backend call (it is a DEFAULT) while the per-call override wins downstream.
 		await mkCtx({}, { inheritedThinking: "high" }).agent({ ...BASE_CALL, thinking: "off" });
-		expect(captured.session).toBeDefined();
+		expect(captured.delegation).toBeDefined();
 		// Inheritance is threaded as a DEFAULT (present), not as a clobber of per-call.
-		expect(captured.session!.inheritedThinking).toBe("high");
-		expect(captured.session!.thinking).toBe("off");
+		expect(captured.delegation!.inheritedThinking).toBe("high");
+		expect(captured.delegation!.thinking).toBe("off");
 	});
 
 	it("SCENARIO-002: absent inherited fields do not throw and pass through undefined (older/non-TUI ctx)", async () => {
 		// No inheritedModelObject/inheritedThinking on options → realAgent must still run,
 		// and the backend call receives undefined for both (byte-identical baseline).
 		await expect(mkCtx({}).agent(BASE_CALL)).resolves.toBeDefined();
-		expect(captured.session).toBeDefined();
-		expect(captured.session!.inheritedModelObject).toBeUndefined();
-		expect(captured.session!.inheritedThinking).toBeUndefined();
+		expect(captured.delegation).toBeDefined();
+		expect(captured.delegation!.inheritedModelObject).toBeUndefined();
+		expect(captured.delegation!.inheritedThinking).toBeUndefined();
 	});
 });

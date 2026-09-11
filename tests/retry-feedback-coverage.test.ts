@@ -15,7 +15,6 @@ describe("shared retry-feedback coverage", () => {
 		const implementation = src("src/stages/implementation.ts");
 		const verify = src("src/stages/verify.ts");
 		const delegation = src("src/agents/delegation-backend.ts");
-		const session = src("src/bench/session-agent.ts");
 
 		// Foundational artifact convergence: requirements, BDD, research.
 		expect(stages).toContain("requirementsConvergenceNode");
@@ -51,10 +50,9 @@ describe("shared retry-feedback coverage", () => {
 		expect(verify).toContain("verificationRetryFeedbackBlock");
 		expect(verify).toContain("renderRetryFeedbackBlock(feedback, \"Verification retry evidence for this fix\")");
 
-		// Agent backend corrective retries are global retry surfaces used by all stages.
-		expect(session).toContain("renderRetryFeedbackBlock([feedback], \"Corrective Re-Prompt\")");
 		// The delegation backend's corrective re-prompt is a task suffix built in
-		// correctiveTask() (mirroring the session backend's semantics), not the
+		// correctiveTask() (the sole specialist backend since v0.3.88 — the bench
+		// session-agent copy of that re-prompt loop was deleted with it), not the
 		// shared renderer.
 		expect(delegation).toContain("correctiveTask");
 	});

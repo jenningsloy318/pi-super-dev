@@ -2,8 +2,10 @@
  * v0.3.86 F-13 — the safety-guard CHILD extension (commit-guard's sibling).
  *
  * `src/safety.ts`'s denylist + protected-file rules were DORMANT in production
- * (only the bench session agent loaded createSafetyExtensionFactory). The rules
- * now live in src/child-guards/safety-guard.ts (single source of truth;
+ * (historically only the bench session agent loaded createSafetyExtensionFactory;
+ * v0.3.88 deleted that bench copy — and with it the factory — so every live
+ * consumer is the child guard below). The rules now live in
+ * src/child-guards/safety-guard.ts (single source of truth;
  * safety.ts re-exports) and ride `subagentOnlyExtensions` for EVERY delegated
  * agent alongside the commit guard.
  *

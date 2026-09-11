@@ -29,9 +29,11 @@ import { cleanupOldRuns } from "./cleanup.ts";
 
 /** v0.3.23: pure task builder so the language directive (and any future prompt
  *  policy) is unit-testable without touching audit files. Reflection calls
- *  runAgentViaSession DIRECTLY — it bypasses realAgent's prompt seam — so the
- *  output-language directive must ride here explicitly: learned.md /
- *  reflection.md are cross-run history and must honor config.language. */
+ *  the agent backend DIRECTLY (delegation since v0.3.64; the session
+ *  backend's bench copy was deleted in v0.3.88) — it bypasses realAgent's
+ *  prompt seam — so the output-language directive must ride here explicitly:
+ *  learned.md / reflection.md are cross-run history and must honor
+ *  config.language. */
 export function buildReflectionTask(runDir?: string | null): string {
 	return [
 		"## Files",
@@ -82,7 +84,7 @@ export async function runReflection(runDir?: string, events?: DelegationEventBus
 	// v0.3.64: reflection runs through the pi-subagents delegation backend (the
 	// sd-reflection registration carries agents/reflection.md as its system
 	// prompt) so it rides the same machinery — and the same Fleet visibility —
-	// as every specialist call. Without an event bus (bench/tests) there is no
+	// as every specialist call. Without an event bus (tests) there is no
 	// delegation owner in-process: SKIP with a named audit row (P10 — the
 	// discard is named, never silent) instead of hanging on an unanswered
 	// request.
