@@ -446,6 +446,34 @@ function isPidAlive(pid: number): boolean {
  *  holder (≠ this process) blocks setup with an actionable error, anything
  *  else (dead pid, unreadable, our own pid — replan auto-restarts re-enter
  *  runSetup in the same process) is stolen and retried (≤3 attempts). */
+
+/** Bounded SYNCHRONOUS sleep (no child process, no event-loop dependency):
+ *  Atomics.wait on a zero-initialized SharedArrayBuffer is the canonical
+ *  sync sleep in Node and resolves in every context acquireRunLock runs in. */
+function sleepSyncMs(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** F-10 (v0.3.86): when readLockHolder returns null the file may be an
+ *  EMPTied-but-locked window — another process's openSync("wx") has created
+ *  the file but its writeSync has not landed yet. Stealing immediately (the
+ *  old rmSync) let BOTH processes hold the lock (TOCTOU). Bounded backoff:
+ *  2 retries × 75ms, stealing only if the file is STILL unreadable after the
+ *  window — a genuine holder writes within one loop iteration, so the total
+ *  added latency for the stale case is a fixed ≤150ms. */
+const LOCK_EMPTY_RETRIES = 2;
+const LOCK_EMPTY_BACKOFF_MS = 75;
+
+function readLockHolderWithBackoff(path: string): { pid: number; startedAt?: string } | null {
+	let holder = readLockHolder(path);
+	if (holder !== null) return holder;
+	for (let i = 0; i < LOCK_EMPTY_RETRIES && holder === null; i++) {
+		sleepSyncMs(LOCK_EMPTY_BACKOFF_MS);
+		holder = readLockHolder(path);
+	}
+	return holder;
+}
+
 function acquireRunLock(specDirectory: string): void {
 	const lockPath = join(specDirectory, RUN_LOCK_BASENAME);
 	for (let attempt = 0; attempt < 3; attempt++) {
@@ -462,9 +490,12 @@ function acquireRunLock(specDirectory: string): void {
 		} catch (err) {
 			const code = (err as { code?: string }).code;
 			if (code !== "EEXIST") throw err; // real IO failure — fail closed
-			const holder = readLockHolder(lockPath);
+			// F-10: an EMPTY/unparseable lock gets the bounded backoff FIRST — the
+			// competing process's writeSync usually lands within one retry, turning a
+			// would-be steal into the honest live-holder block above.
+			const holder = readLockHolderWithBackoff(lockPath);
 			// A holder pid equal to process.pid is ALWAYS stolen; a live foreign
-			// holder blocks; a dead/unreadable lock is stale and stolen.
+			// holder blocks; a dead/still-unreadable lock is stale and stolen.
 			if (holder && holder.pid !== process.pid && isPidAlive(holder.pid)) {
 				throw new Error(`spec directory ${specDirectory} is locked by another super-dev run (pid ${holder.pid}, started ${holder.startedAt ?? "unknown"}); wait for it to finish, or remove ${lockPath} if that run is gone`);
 			}

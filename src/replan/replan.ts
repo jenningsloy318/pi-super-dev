@@ -145,7 +145,9 @@ export function appendRouteBackRequests(
 			r.status !== "addressed" || (runStart !== "" && String(r.addressedAt ?? "") >= runStart);
 		let appended = 0;
 		for (const finding of findings) {
-			const fp = fingerprintFinding(finding);
+			// F-11: the route-back OWNER is the fingerprint's owner component — the
+			// raw finding's own ownerStage (usually absent here) is only the fallback.
+			const fp = fingerprintFinding(finding, owner);
 			if (file.requests.some((r) => r.fingerprint === fp && suppresses(r))) continue;
 			const title = String(finding.title ?? finding.id ?? "upstream finding");
 			file.requests.push({
@@ -262,15 +264,21 @@ const classifyOwnerOf = (finding: Record<string, unknown>): string => {
 	return ownerStage || "spec";
 };
 
-function fingerprintFinding(f: Record<string, unknown>): string {
+function fingerprintFinding(f: Record<string, unknown>, targetOwner?: string): string {
 	// Sweep-3 G36: detail hash + owner join the fingerprint — pre-fix two
 	// DISTINCT blockers sharing file|severity|title (different root causes in
 	// the detail, or different owning stages) deduped into one request and the
 	// second was silently dropped from round-1 injection.
+	// F-11 (v0.3.86): raw findings rarely carry `ownerStage` — ownership is the
+	// CLASSIFIER's output (decision.owner / the route-back owner arg), so hashing
+	// `f.ownerStage ?? ""` collapsed same-title findings routed to DIFFERENT
+	// owners into one fingerprint and the corrected-owner route was suppressed
+	// as a "duplicate". Callers now pass the target owner; the explicit
+	// finding.ownerStage stays the fallback when no target is supplied.
 	const detailHash = String(f.detail ?? "");
 	let h = 5381;
 	for (let i = 0; i < detailHash.length; i++) h = ((h << 5) + h) ^ detailHash.charCodeAt(i);
-	const owner = String(f.ownerStage ?? "").toLowerCase().trim();
+	const owner = String(targetOwner ?? f.ownerStage ?? "").toLowerCase().trim();
 	return `${String(f.file ?? "")}|${String(f.severity ?? "")}|${String(f.title ?? "")}|${(h >>> 0).toString(36)}|${owner}`.toLowerCase().replace(/\s+/g, " ");
 }
 
@@ -407,7 +415,11 @@ export async function triggerReplanForFindings(
 		const existingByFp = new Map(file.requests.filter(suppressesReroute).map((r) => [r.fingerprint, r]));
 		const newRequests: ReplanRequest[] = [];
 		for (const { finding, decision } of routable) {
-			const fp = fingerprintFinding(finding);
+			// F-11: the CLASSIFIED owner — not the raw finding's usually-absent
+			// ownerStage — is the fingerprint component, so the same finding routed
+			// to a corrected owner re-routes instead of deduping against the stale
+			// owner's row.
+			const fp = fingerprintFinding(finding, decision.owner);
 			if (existingByFp.has(fp)) continue; // already requested — still pending or addressed
 			const title = String(finding.title ?? finding.id ?? "upstream finding");
 			const request: ReplanRequest = {
@@ -442,7 +454,9 @@ export async function triggerReplanForFindings(
 		const humanRequests: ReplanRequest[] = [];
 		for (const { finding, decision } of classified) {
 			if (routable.some((r) => r.finding === finding)) continue;
-			const fp = fingerprintFinding(finding);
+			// F-11: human rows fingerprint under their structural owner "human" —
+			// stable whether or not the raw finding carried an explicit ownerStage.
+			const fp = fingerprintFinding(finding, "human");
 			if (existingByFp.has(fp) || file.requests.some((r) => r.fingerprint === fp)) continue; // already persisted (pending or human)
 			humanRequests.push({
 				id: String(finding.id ?? fp.slice(0, 24)),
@@ -461,11 +475,20 @@ export async function triggerReplanForFindings(
 			});
 		}
 		file.requests.push(...humanRequests);
+		// F-06 (v0.3.86): human-owned rows must reach DISK even when every routable
+		// finding was already pending (newRequests.length === 0) — pre-fix the
+		// early return below skipped writeJson and silently dropped the human
+		// rows (M10/AC-20: the HITL boundary lost its deferred list). Rounds stay
+		// untouched (human rows never drive a restart); a write failure falls
+		// through to the same honest path below.
 		if (newRequests.length === 0) {
+			if (humanRequests.length > 0 && !writeJson(requestsPath, file)) {
+				ctx.log("Stage 10: persisting human-owned replan rows FAILED (disk write error) — the human boundary may be missing deferred findings");
+			}
 			// Every routable finding was already requested before and none has been
 			// addressed — that is a stall on the owning stage, not a fresh round.
 			ctx.log("Stage 10: all routable findings already have pending replan requests — falling through to the human boundary");
-			appendAudit(setup.specDirectory, { event: "duplicate-requests", routable: routable.length });
+			appendAudit(setup.specDirectory, { event: "duplicate-requests", routable: routable.length, humanPersisted: humanRequests.length });
 			return false;
 		}
 		file.rounds += 1;

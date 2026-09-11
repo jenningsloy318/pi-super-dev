@@ -364,6 +364,27 @@ describe("spec-dir run lock (AC-30)", () => {
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
+	// ── F-10 (v0.3.86): an EMPTY lock file is the wx-created-but-not-yet-written
+	// window of a COMPETING process — the old code rmSync'd it instantly (TOCTOU:
+	// both processes then held the lock). The bounded backoff (2 × 75ms) re-reads
+	// before stealing; a genuinely stale empty lock is still stolen afterwards.
+	it("F-10: an empty lock file gets a bounded backoff BEFORE the steal (not an instant rmSync)", () => {
+		const d = seededInPlaceTrack();
+		try {
+			const lockPath = join(d, "docs", "specifications", "24-auth-flow", ".run-lock");
+			writeFileSync(lockPath, ""); // empty: the TOCTOU window shape
+			const before = Date.now();
+			const s = runSetup("implement @docs/specifications/24-auth-flow/ the token refresh changes", { cwd: d, skipWorktree: true });
+			const elapsed = Date.now() - before;
+			expect(s.specIdentifier).toBe("24-auth-flow"); // still stolen after the bounded retry — the honest terminal state for a stale-empty lock
+			// RED pre-fix: ~0ms (the old code stole an empty lock instantly)
+			expect(elapsed).toBeGreaterThanOrEqual(100);
+		} finally {
+			releaseHeldRunLock();
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	it("the .run-lock basename is exempt: harness bookkeeping + internal runtime claims ignore a dirty lock file", () => {
 		const d = seededInPlaceTrack();
 		try {

@@ -192,7 +192,15 @@ export function runGuardRefusal(): string | null {
 // v0.3.61: a Set/Map of pending reflections (promise → run dir) — the v0.3.60
 // single slot went blind to run A's still-pending reflection once run B
 // overwrote and settled it, so shutdown under-reported drops.
-const pendingReflections = new Map<Promise<unknown>, string>();
+// v0.3.86 F-16: the registry is a generic in-flight BACKGROUND-WORK registry
+// (promise → { runDir, kind }) — the detached auto post-mortem registers with
+// kind "post-mortem" so a teardown names IT too instead of severing the child
+// agent silently. Reflections keep their exact historical message wording.
+interface InFlightBackgroundWork {
+	runDir: string;
+	kind: "reflection" | "post-mortem";
+}
+const pendingReflections = new Map<Promise<unknown>, InFlightBackgroundWork>();
 
 /** Bound on queued mid-run inputs so a single specialist spawn cannot be
  *  token-bombed via a huge guidance prepend. Older entries are dropped first
@@ -301,20 +309,22 @@ export function releaseRunGuard(token: string): void {
 	if (!guard?.token || guard.token === token) setRunGuard(undefined);
 }
 
-/** v0.3.60 R9: single write path registering the in-flight reflection so
+/** v0.3.60 R9: single write path registering in-flight background work so
  *  session_shutdown can NAME it when a teardown drops it. v0.3.61: a Map of
- *  pending reflections (promise → run dir), not a single slot — overlapping
- *  reflections are all reported; each entry SELF-CLEARS when its reflection
- *  settles, so only genuinely-pending reflections are ever reported as
- *  dropped (P10: no false alarms). */
-export function noteInFlightReflection(runDir: string | undefined, reflection: Promise<unknown> | undefined): void {
+ *  pending entries (promise → { runDir, kind }), not a single slot — overlapping
+ * entries are all reported; each entry SELF-CLEARS when its work settles, so
+ * only genuinely-pending work is ever reported as dropped (P10: no false
+ * alarms). v0.3.86 F-16: `kind` labels the entry ("reflection" default;
+ * "post-mortem" for the auto post-mortem) so the drop line names WHAT was
+ * dropped. */
+export function noteInFlightReflection(runDir: string | undefined, reflection: Promise<unknown> | undefined, kind: InFlightBackgroundWork["kind"] = "reflection"): void {
 	if (!runDir || !reflection) return;
 	let tracked: Promise<unknown> | undefined;
 	tracked = reflection.finally(() => {
 		if (tracked) pendingReflections.delete(tracked);
 	});
-	pendingReflections.set(tracked, runDir);
-	void tracked.catch(() => { /* the reflection reports its own failures */ });
+	pendingReflections.set(tracked, { runDir, kind });
+	void tracked.catch(() => { /* the work reports its own failures */ });
 }
 
 /** Tool-result shape returned by the foreground tool call. */
@@ -723,8 +733,8 @@ export default function activate(pi: ExtensionAPI): void {
 			const dir = getRunGuard()?.runDir ?? "unknown";
 			honest.push(`a super-dev run is STILL IN FLIGHT (run dir: ${dir}) — the pipeline keeps running headlessly in this process and writes results to its run.log; inspect or resume it via /super-dev with resume:true`);
 		}
-		for (const [promise, dir] of pendingReflections) {
-			honest.push(`post-run reflection for ${dir} was in flight and is DROPPED by session_shutdown (reason: ${event.reason})`);
+		for (const [promise, entry] of pendingReflections) {
+			honest.push(`post-run ${entry.kind} for ${entry.runDir} was in flight and is DROPPED by session_shutdown (reason: ${event.reason})`);
 			void promise.catch(() => { /* reported, not awaited */ });
 		}
 		pendingReflections.clear();
@@ -1044,7 +1054,7 @@ export default function activate(pi: ExtensionAPI): void {
 						const bus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
 						const frame = readLastMetricsRow(summary.specDirectory);
 						if (bus && frame) {
-							void runPostMortem({
+							const postMortem = runPostMortem({
 								events: bus,
 								runId: frame.runId,
 								status: summary.status,
@@ -1054,7 +1064,13 @@ export default function activate(pi: ExtensionAPI): void {
 									eventsJsonl: summary.specDirectory ? `${summary.specDirectory}/events.jsonl` : undefined,
 									specDir: summary.specDirectory || undefined,
 								},
-							}).then((out) => {
+							});
+							// v0.3.86 F-16: register the detached post-mortem in the in-flight
+							// background-work registry (kind "post-mortem") — a session_shutdown
+							// mid-analysis now NAMES the dropped post-mortem (P10) instead of
+							// severing the child agent silently.
+							noteInFlightReflection(runDir, postMortem, "post-mortem");
+							postMortem.then((out) => {
 								auditAppend(out.draftPath
 									? { stage: "post-mortem", control: { event: "finding-draft", path: out.draftPath } }
 									: { stage: "post-mortem", error: out.error ?? "no draft" }, runDir);

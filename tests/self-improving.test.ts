@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendToKnowledge, clearKnowledge, knowledgeForAgent, knowledgePath, AGENT_KNOWLEDGE_NEEDS } from "../src/render/knowledge.ts";
@@ -104,6 +104,24 @@ describe("knowledge.json accumulation + extraction", () => {
 		expect(AGENT_KNOWLEDGE_NEEDS["spec-writer"]).toBeDefined();
 		expect(AGENT_KNOWLEDGE_NEEDS["bdd-scenario-writer"]).toBeDefined();
 		expect(AGENT_KNOWLEDGE_NEEDS["code-reviewer"]).toBeDefined();
+	});
+
+	// ── F-08 (v0.3.86): the tmp-name monotonic counter + same-ms append burst.
+	// The read-modify-write is synchronous (single-threaded JS cannot interleave
+	// it), so same-process loss was never reproducible pre-fix — this test pins
+	// the CONTRACT (every stage of a same-millisecond burst survives) that the
+	// per-call-unique tmp names make true BY CONSTRUCTION (a reused basename
+	// plus an interrupted rename is the one real collision edge the counter
+	// removes).
+	it("F-08: N appends landing in the same millisecond ALL persist (unique tmp name per call)", () => {
+		const N = 25;
+		for (let i = 0; i < N; i++) appendToKnowledge(dir, `stage-${i}`, { summary: `s${i}` });
+		const raw = readFileSync(knowledgePath(dir), "utf8");
+		const parsed = JSON.parse(raw) as { stages: Record<string, unknown> };
+		expect(Object.keys(parsed.stages).sort()).toEqual(Array.from({ length: N }, (_, i) => `stage-${i}`).sort());
+		// no tmp stragglers left behind
+		const strays = readdirSync(dir).filter((f) => f.includes(".knowledge.json.tmp-"));
+		expect(strays).toEqual([]);
 	});
 });
 

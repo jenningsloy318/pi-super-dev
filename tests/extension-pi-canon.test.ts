@@ -295,6 +295,26 @@ describe("v0.3.61 review fixes (r60 lanes)", () => {
 		expect(lines.some((l: string) => l.includes("DROPPED"))).toBe(false);
 	});
 
+	// ── F-16 (v0.3.86): the detached auto post-mortem registers in the SAME
+	// in-flight registry with kind "post-mortem" — a teardown NAMES the dropped
+	// post-mortem instead of severing the child agent silently (P10).
+	it("F-16: a pending post-mortem is named (kind-labeled) and dropped honestly by session_shutdown", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const never = new Promise<void>(() => { /* still running */ });
+		(ext as any).noteInFlightReflection("/tmp/.super-dev/runs/PM", never, "post-mortem");
+		const pi = makeMockPi();
+		activate(pi);
+		pi.fire("session_shutdown", { type: "session_shutdown", reason: "reload" });
+		const lines = pi.entries.filter((e: any) => e.type === "super-dev-shutdown").map((e: any) => e.data.line as string);
+		const pm = lines.find((l: string) => l.includes("post-mortem"));
+		expect(pm).toBeDefined();
+		expect(pm).toContain("/tmp/.super-dev/runs/PM");
+		expect(pm).toContain("DROPPED");
+		// reflections keep their exact historical wording (no drift)
+		expect(lines.some((l: string) => l.includes("post-run reflection"))).toBe(false);
+		expect(consoleError).toHaveBeenCalled();
+	});
+
 	it("R8: the 50KB bound is UTF-8 BYTES — CJK content no longer slips through at ~3x the cap", () => {
 		const text = "汉".repeat(30_000); // 90,000 bytes, 30,000 chars — passed the old char bound
 		const out = canonTruncate(text, "/tmp/log");

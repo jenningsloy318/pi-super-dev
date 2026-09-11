@@ -275,7 +275,9 @@ describe("stripVolatileNoise — PRB primitive (SCENARIO-014/018/019, AC-06/AC-0
 	});
 
 	it("strips (cached) and [cached] markers", () => {
-		expect(stripVolatileNoise("ok pkg (cached) [cached]")).toBe("ok pkg  ");
+		// v0.3.86 noise grammar: trailing whitespace is volatile too (node:test
+		// TAP duration/count lines) — the old pin preserved leftover spaces.
+		expect(stripVolatileNoise("ok pkg (cached) [cached]")).toBe("ok pkg");
 	});
 
 	it("combined: two SCENARIO-016 replica lines differing ONLY in noise strip to identical output (SCENARIO-018)", () => {
@@ -317,6 +319,66 @@ describe("stripVolatileNoise — PRB primitive (SCENARIO-014/018/019, AC-06/AC-0
 
 	it("semver-ish and path tokens survive verbatim", () => {
 		expect(stripVolatileNoise("v1.2.3 0.2.3src pkg/sub target/debug")).toBe("v1.2.3 0.2.3src pkg/sub target/debug");
+	});
+
+	// ── v0.3.86 signature-noise class fix (Group-5 flag): node:test TAP volatile
+	// comment lines — `# duration_ms <n>` (UNITLESS), the pass/fail/cancelled/
+	// skipped/todo COUNT lines, and `# Subtest: …` headers — strip whole-line so
+	// the same failure with different per-run durations hashes to ONE signature.
+	it("strips unitless node:test TAP duration_ms lines", () => {
+		expect(stripVolatileNoise("# duration_ms 12.34")).toBe("");
+		expect(stripVolatileNoise("# duration_ms 5678")).toBe("");
+	});
+
+	it("strips the TAP count lines and Subtest headers", () => {
+		expect(stripVolatileNoise("# Subtest: computes total")).toBe("");
+		expect(stripVolatileNoise("# pass 1")).toBe("");
+		expect(stripVolatileNoise("# fail 0")).toBe("");
+		expect(stripVolatileNoise("# cancelled 0\n# skipped 1\n# todo 0")).toBe("\n\n"); // lines die, newlines stay (caller collapses)
+	});
+
+	it("strips per-line trailing whitespace", () => {
+		expect(stripVolatileNoise("ok 1 - passes  \nnot ok 2 - fails")).toBe("ok 1 - passes\nnot ok 2 - fails");
+	});
+
+	it("the SAME node:test failure with DIFFERENT durations/signature-strips identical (the anti-windup contract)", () => {
+		const runA = [
+			"# Subtest: computes total",
+			"not ok 1 - computes total",
+			"  ---",
+			"  error: expected 4 to be 5",
+			"  ...",
+			"# duration_ms 0.31",
+			"# pass 0",
+			"# fail 1",
+			"# cancelled 0",
+			"# skipped 0",
+			"# todo 0",
+			"# duration_ms 18.204",
+		].join("\n");
+		const runB = [
+			"# Subtest: computes total",
+			"not ok 1 - computes total",
+			"  ---",
+			"  error: expected 4 to be 5",
+			"  ...",
+			"# duration_ms 0.29",
+			"# pass 0",
+			"# fail 1",
+			"# cancelled 0",
+			"# skipped 0",
+			"# todo 0",
+			"# duration_ms 21.907",
+		].join("\n");
+		// RED pre-fix: the two unitless `# duration_ms` lines survived → distinct
+		expect(stripVolatileNoise(runA)).toBe(stripVolatileNoise(runB));
+		// the DISCRIMINATING failure content survives (no over-normalization)
+		expect(stripVolatileNoise(runA)).toContain("expected 4 to be 5");
+	});
+
+	it("prose merely CONTAINING duration_ms is untouched (line-anchored grammar, no over-strip)", () => {
+		expect(stripVolatileNoise("the runner prints duration_ms for every test")).toBe("the runner prints duration_ms for every test");
+		expect(stripVolatileNoise("# duration_ms is not a comment line here: 5")).toContain("duration_ms");
 	});
 });
 

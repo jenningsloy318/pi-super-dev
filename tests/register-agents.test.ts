@@ -341,8 +341,8 @@ describe("v0.3.59 — skills are a capability on the delegation backend too (cro
  * The resolver (configExtensionEntriesForAgent — scope: capability agents
  * only, npm: normalization, missing-package degrade) is unit-tested in
  * tests/config-extensions.test.ts; THIS file pins the registration wiring:
- * entries union onto the commit guard (never replace), empty → key omitted,
- * every agent consulted once. */
+ * entries union onto the commit guard + the v0.3.86 safety-guard floor (never
+ * replace), empty + kill switch → key omitted, every agent consulted once. */
 const configExtStub = vi.hoisted(() => ({ entries: [] as string[], tools: [] as string[], calls: [] as string[], toolCalls: [] as string[] }));
 vi.mock("../src/agents/agent-runtime.ts", async (importOriginal) => {
 	const real = await importOriginal<Record<string, unknown>>();
@@ -377,29 +377,40 @@ describe("v0.3.78 — commonExtensions/agentExtensions registration wiring", () 
 		configExtStub.calls = [];
 		configExtStub.tools = [];
 		configExtStub.toolCalls = [];
+		delete process.env.SUPER_DEV_NO_SAFETY_GUARD;
+	});
+	afterEach(() => {
+		delete process.env.SUPER_DEV_NO_SAFETY_GUARD;
 	});
 
-	it("capability agent carries resolved common entries as subagentOnlyExtensions", () => {
+	it("capability agent carries resolved common entries + the safety-guard floor as subagentOnlyExtensions", () => {
 		configExtStub.entries = ["/fixture/common-mem.ts"];
 		const { bus, requests } = collectingBus();
 		registerSuperDevAgents(bus);
 		const req = requests.find((r: any) => r.name === "sd-requirements-clarifier");
-		expect(req.definition.subagentOnlyExtensions).toEqual(["/fixture/common-mem.ts"]);
+		// v0.3.86 F-13: the safety-guard floor rides the channel for EVERY agent —
+		// config entries union AFTER it (never replace).
+		expect(req.definition.subagentOnlyExtensions).toEqual([
+			expect.stringMatching(/child-guards\/safety-guard\.ts$/),
+			"/fixture/common-mem.ts",
+		]);
 	});
 
-	it("implementer UNIONS the commit guard with common entries (never replace)", () => {
+	it("implementer UNIONS the commit guard + safety guard with common entries (never replace)", () => {
 		configExtStub.entries = ["/fixture/common-mem.ts", "/fixture/common-lsp.ts"];
 		const { bus, requests } = collectingBus();
 		registerSuperDevAgents(bus);
 		const exts = requests.find((r: any) => r.name === "sd-implementer").definition.subagentOnlyExtensions as string[];
-		expect(exts).toHaveLength(3);
+		expect(exts).toHaveLength(4); // commit guard + safety guard + 2 config entries
 		expect(exts.some((e) => e.endsWith("child-guards/commit-guard.ts"))).toBe(true);
+		expect(exts.some((e) => e.endsWith("child-guards/safety-guard.ts"))).toBe(true);
 		expect(exts).toContain("/fixture/common-mem.ts");
 		expect(exts).toContain("/fixture/common-lsp.ts");
 	});
 
-	it("empty resolution omits the subagentOnlyExtensions key (pre-v0.3.78 parity for unconfigured setups)", () => {
+	it("empty resolution + SUPER_DEV_NO_SAFETY_GUARD omits the subagentOnlyExtensions key (kill-switch parity)", () => {
 		configExtStub.entries = [];
+		process.env.SUPER_DEV_NO_SAFETY_GUARD = "1"; // v0.3.86 F-13: the floor guard's escape hatch
 		const { bus, requests } = collectingBus();
 		registerSuperDevAgents(bus);
 		const req = requests.find((r: any) => r.name === "sd-requirements-clarifier");

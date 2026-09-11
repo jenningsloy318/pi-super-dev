@@ -22,119 +22,15 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
-import { basename, relative, resolve, isAbsolute } from "node:path";
+import { checkBashCommand, checkProtectedWrite } from "./child-guards/safety-guard.ts";
 
-export interface CheckResult {
-	blocked: boolean;
-	reason?: string;
-}
-
-/** Dangerous command patterns — ported verbatim from the original block-dangerous.mjs. */
-const DANGEROUS: ReadonlyArray<readonly [RegExp, string]> = [
-	[/rm\s+-rf\s+\/(?!\w)/, "rm -rf /"],
-	[/rm\s+-rf\s+~/, "rm -rf ~"],
-	[/rm\s+-rf\s+\.\./, "rm -rf .."],
-	// A recursive-force rm of the current directory or a bare glob wipes the whole
-	// worktree just as effectively as `rm -rf .` — the three patterns above missed
-	// `.`, `./`, and `*` (verified bypass). Match `.`/`./`/`*` as the target.
-	[/rm\s+-rf\s+\.\/?(?:\s|$)/, "rm -rf . (current directory)"],
-	[/rm\s+-rf\s+\*/, "rm -rf * (glob)"],
-	[/git\s+reset\s+--hard/, "git reset --hard"],
-	[/git\s+push\s.*--force(?!-)/, "git push --force"],
-	[/git\s+push\s.*-f\s/, "git push -f"],
-	[/git\s+push\s+-f$/, "git push -f"],
-	[/git\s+clean\s+-fd/, "git clean -fd"],
-	[/git\s+branch\s+-D/, "git branch -D"],
-	[/DROP\s+TABLE/i, "DROP TABLE"],
-	[/DROP\s+DATABASE/i, "DROP DATABASE"],
-	[/TRUNCATE\s+TABLE/i, "TRUNCATE TABLE"],
-	[/DELETE\s+FROM\s+\S+$/i, "DELETE FROM (no WHERE clause)"],
-	[/curl\s.*\|\s*(?:sh|bash)/, "curl | sh"],
-	[/wget\s.*\|\s*(?:sh|bash)/, "wget | sh"],
-	// Env-exfiltration: the child pi process inherits the full parent env (API keys,
-	// cloud creds) so it can authenticate. Block the obvious paths that ship that env
-	// off-box — `printenv`/`env`/`export`/`set` fed into a network tool, in either
-	// order (pipe or command-substitution argument).
-	[/\b(?:printenv|env|export|set)\b[\s\S]*\|[\s\S]*\b(?:curl|wget|nc|ncat|telnet)\b/i, "env piped to network tool"],
-	[/\b(?:curl|wget|nc|ncat)\b[\s\S]*\$\((?:\s*(?:printenv|env|export|set))/i, "network tool sending env via command substitution"],
-	[/chmod\s+777/, "chmod 777"],
-	[/chmod\s+-R\s+777/, "chmod -R 777"],
-	[/chmod\s+\+s/, "chmod +s (setuid)"],
-	[/kubectl\s+delete\s+namespace/, "kubectl delete namespace"],
-	[/kubectl\s+delete\s.*--all/, "kubectl delete --all"],
-	[/npm\s+unpublish/, "npm unpublish"],
-	[/cargo\s+yank/, "cargo yank"],
-	[/mkfs\./, "mkfs (format disk)"],
-	[/dd\s+if=.*\s+of=\/dev\//, "dd to device"],
-	[/>\s*\/dev\/sd/, "write to raw device"],
-];
-
-/** Secret-file basename patterns (block OVERWRITE of existing only). */
-const SECRET_BASENAME: ReadonlyArray<RegExp> = [
-	/^\.env$/i,
-	/^\.env\./i,
-	/\.pem$/i,
-	/\.key$/i,
-	/\.p12$/i,
-	/\.pfx$/i,
-	/\.keystore$/i,
-	/^id_rsa/i,
-	/^id_ed25519/i,
-	/\.secret$/i,
-	/^token\.json$/i,
-	/^service-account.*\.json$/i,
-];
-
-/** Protected directories — any direct write is blocked (existing or not). */
-const PROTECTED_DIRS: ReadonlyArray<RegExp> = [/^secrets\//i, /^\.git\//i, /^credentials\//i];
-
-/** Basenames always allowed even if they match a secret pattern. */
-const ALWAYS_ALLOWED = new Set([".env.example"]);
-
-/** Check a bash command against the denylist. */
-export function checkBashCommand(command: string): CheckResult {
-	for (const [pattern, desc] of DANGEROUS) {
-		if (pattern.test(command)) return { blocked: true, reason: `command matches dangerous pattern '${desc}'` };
-	}
-	return { blocked: false };
-}
-
-/**
- * Check a write/edit target. Blocks protected-directory writes (any) and
- * OVERWRITES of existing secret files; allows creates + `.env.example`.
- * `cwd` is the child session's cwd (the worktree) so paths resolve correctly
- * when the factory runs in the host process.
- */
-export function checkProtectedWrite(file: string, cwd: string): CheckResult {
-	const name = basename(file);
-	if (ALWAYS_ALLOWED.has(name)) return { blocked: false };
-
-	// Resolve to an absolute path (relative paths resolve against the child cwd).
-	const target = isAbsolute(file) ? file : resolve(cwd, file);
-	const rel = relative(cwd, target).replace(/\\/g, "/");
-
-	// Worktree-escape guard: any path that resolves OUTSIDE the child cwd (a `..`
-	// prefix after normalization, or an absolute path that isn't under cwd) is
-	// blocked outright. Without this, the `^`-anchored PROTECTED_DIRS patterns
-	// below never match an escaping path (e.g. `../.git/hooks/pre-commit` or
-	// `/etc/...`), so a specialist agent could write anywhere on disk. Specialist
-	// agents must only mutate their own worktree.
-	if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
-		return { blocked: true, reason: `'${file}' is outside the working directory` };
-	}
-
-	for (const re of PROTECTED_DIRS) {
-		if (re.test(rel)) return { blocked: true, reason: `'${file}' is in a protected directory` };
-	}
-	for (const re of SECRET_BASENAME) {
-		if (re.test(name)) {
-			if (existsSync(target)) return { blocked: true, reason: `overwriting existing secret file '${file}' is blocked` };
-			return { blocked: false }; // create allowed
-		}
-	}
-	return { blocked: false };
-}
+// F-13 (v0.3.86): the denylist/protected-file tables + checkers now live in
+// the SELF-CONTAINED child extension (src/child-guards/safety-guard.ts) so the
+// SAME rules load inside every delegated child via subagentOnlyExtensions;
+// this module re-exports them for host-side consumers (lifecycle.ts service
+// bringup, the bench session agent). Single source of truth — no drift.
+export { checkBashCommand, checkProtectedWrite } from "./child-guards/safety-guard.ts";
+export type { CheckResult } from "./child-guards/safety-guard.ts";
 
 /**
  * Inline ExtensionFactory: registers a `tool_call` hook on the child session

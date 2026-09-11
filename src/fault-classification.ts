@@ -154,6 +154,18 @@ const DURATION_RE = /\b\d+(?:\.\d+)?(?:ms|s)\b/g;
  *  equal once collapsed). */
 const CACHED_PAREN_RE = /\(cached\)/g;
 const CACHED_BRACKET_RE = /\[cached\]/g;
+/** node:test TAP volatile COMMENT lines (v0.3.86 signature-noise class fix):
+ *  `# duration_ms <n>` (UNITLESS — DURATION_RE's unit suffix can't see it; the
+ *  whole line is stripped whatever remains after DURATION_RE), the count lines
+ *  `# pass|fail|cancelled|skipped|todo <n>`, and the `# Subtest: <name>`
+ *  headers. Enumerated grammar, line-anchored so a prose sentence merely
+ *  CONTAINING "duration_ms" is untouched. Stripped WHOLE-LINE before hashing
+ *  so per-run timing/count noise can never split one failure into many
+ *  signatures (the Group-5 E2E dual-valve flag). */
+const TAP_VOLATILE_LINE_RE = /^[ \t]*#(?:[ \t]+Subtest:.*|[ \t]+(?:pass|fail|cancelled|skipped|todo)[ \t]+\d+|[ \t]+duration_ms(?:[ \t]+\d+(?:\.\d+)?)?[ \t]*)\r?$/gm;
+/** Trailing spaces/tabs per line (TAP indents and terminal copy-paste) — the
+ *  final grammar row; harmless before the caller's whitespace collapse. */
+const TRAILING_WS_RE = /[ \t]+$/gm;
 
 /**
  * Strip volatile noise from failure text — the PRB primitive
@@ -161,7 +173,9 @@ const CACHED_BRACKET_RE = /\[cached\]/g;
  * (strip → collapse → trim → cap), so noise never displaces discriminating
  * content past the cap (SCENARIO-015) and identical failures hash to ONE
  * signature (SCENARIO-016). Classes, in order (T1.3): ISO-8601 timestamps,
- * UUIDs, durations, `(cached)`/`[cached]` markers.
+ * UUIDs, durations, `(cached)`/`[cached]` markers, node:test TAP volatile
+ * comment lines (# Subtest / # pass|fail|cancelled|skipped|todo counts /
+ * # duration_ms — v0.3.86), per-line trailing whitespace (v0.3.86).
  * scenarioRefs: [SCENARIO-018, SCENARIO-019] · acceptanceCriteriaRefs: [AC-06, AC-08]
  */
 export function stripVolatileNoise(text: string): string {
@@ -170,7 +184,9 @@ export function stripVolatileNoise(text: string): string {
 		.replace(UUID_RE, "")
 		.replace(DURATION_RE, "")
 		.replace(CACHED_PAREN_RE, "")
-		.replace(CACHED_BRACKET_RE, "");
+		.replace(CACHED_BRACKET_RE, "")
+		.replace(TAP_VOLATILE_LINE_RE, "")
+		.replace(TRAILING_WS_RE, "");
 }
 
 // ── PRC: canonical dirt inventory (OQ-2 exclusion predicate + porcelain reader) ──

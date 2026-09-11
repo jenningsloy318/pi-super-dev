@@ -194,6 +194,28 @@ export function extensionsForAgent(agent: string): string[] {
 	return packages.flatMap((p) => resolveExtensionEntries(p, agentDir));
 }
 
+/** v0.3.86 F-13 — the SAFETY guard child extension (dangerous-bash denylist +
+ *  protected-file writes; the tables live in child-guards/safety-guard.ts and
+ *  are re-exported by src/safety.ts). Unlike the commit guard this rides EVERY
+ *  registered agent (any child with a bash/write tool gets the same floor; the
+ *  legit-flow audit is documented at the guard file). Same registration
+ *  mechanics: existsSync-verified path, WARN-once degrade to absent, kill
+ *  switch SUPER_DEV_NO_SAFETY_GUARD=1 (fail-open — the deterministic gates and
+ *  the service-bringup screening remain). */
+let safetyGuardPathWarned = false;
+export function safetyGuardExtensionPath(_agent: string): string | null {
+	if (superDevEnv("SUPER_DEV_NO_SAFETY_GUARD") === "1") return null;
+	const path = fileURLToPath(new URL("../child-guards/safety-guard.ts", import.meta.url));
+	if (!existsSync(path)) {
+		if (!safetyGuardPathWarned) {
+			safetyGuardPathWarned = true;
+			console.warn(`[super-dev] safety guard not found at ${path} — delegated agents run without the bash/protected-write safety hook (deterministic gates remain; this warning appears once per process)`);
+		}
+		return null;
+	}
+	return path;
+}
+
 // ─── Config-driven extension entries (v0.3.78) ─────────────────────────────
 
 /** Normalize a config-declared package name: users copy `npm:pkg` install
@@ -354,7 +376,10 @@ export function buildToolIndexFromTools(
 	for (const t of tools) {
 		const source = t.sourceInfo?.source ?? "";
 		const sourcePath = t.sourceInfo?.path ?? "";
-		const pkg = source.startsWith("npm:") ? source.slice(4) : (re.exec(sourcePath)?.[1] ?? "");
+		// F-15 (v0.3.86): normalize to FORWARD slashes — on Windows the capture
+		// yields `@scope\pkg`, and downstream lookups query normalized
+		// `@scope/pkg`, so every scoped-package tool silently missed its allowlist.
+		const pkg = (source.startsWith("npm:") ? source.slice(4) : (re.exec(sourcePath)?.[1] ?? "")).replace(/\\/g, "/");
 		// Built-ins carry source "builtin" + synthetic "<builtin:name>" paths
 		// (no node_modules segment) and fall out at the empty-pkg guard; the
 		// pi-package guard covers the path-attributed fallback (scoped name).

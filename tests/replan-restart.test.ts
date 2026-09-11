@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { triggerReplanForFindings, pendingReplanRequests, pendingHumanReplanRequests, consumeReplanRequests, invalidateResumeCache, REPLAN_REQUESTS_FILE, ARTIFACT_REVISIONS_FILE, maxReplanRounds } from "../src/replan/replan.ts";
+import { triggerReplanForFindings, appendRouteBackRequests, pendingReplanRequests, pendingHumanReplanRequests, consumeReplanRequests, invalidateResumeCache, REPLAN_REQUESTS_FILE, ARTIFACT_REVISIONS_FILE, maxReplanRounds } from "../src/replan/replan.ts";
 import { requirementsConvergenceNode } from "../src/stages/artifact-convergence.ts";
 import { getConvergenceLedger } from "../src/convergence-ledger.ts";
 import { getRetryFeedback } from "../src/retry-feedback.ts";
@@ -160,7 +160,7 @@ describe("R3/R4/R5 — triggerReplanForFindings (the M5 survivor; the verify wra
 		try {
 			writeFileSync(join(d, REPLAN_REQUESTS_FILE), JSON.stringify({
 				version: 1, rounds: 1,
-				requests: [{ id: "AR-03-03", title: "Resumable NeedsYou has no resume protocol", detail: "", severity: "medium", ownerStage: "spec", classificationSource: "doc-path", classificationReason: "r", requestedRevision: "r", fingerprint: "docs/specifications/03-staging-agent-pipeline.md|medium|resumable needsyou has no resume protocol|45h|", status: "pending", createdAt: "t" }],
+				requests: [{ id: "AR-03-03", title: "Resumable NeedsYou has no resume protocol", detail: "", severity: "medium", ownerStage: "spec", classificationSource: "doc-path", classificationReason: "r", requestedRevision: "r", fingerprint: "docs/specifications/03-staging-agent-pipeline.md|medium|resumable needsyou has no resume protocol|45h|spec", status: "pending", createdAt: "t" }],
 			}));
 			const state = stateWith(d, [{
 				id: "AR-03-03", severity: "medium", title: "Resumable NeedsYou has no resume protocol",
@@ -359,6 +359,79 @@ describe("R3/R4/R5 — triggerReplanForFindings (the M5 survivor; the verify wra
 			expect(pendingHumanReplanRequests(d)).toHaveLength(3);
 			expect(pendingHumanReplanRequests(d)[0]!.status).toBe("pending");
 			expect(pendingReplanRequests(d, "spec")).toHaveLength(2);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	// ── F-06 (v0.3.86): human rows must reach DISK even when every routable
+	// request is already pending (newRequests.length === 0) — pre-fix the early
+	// return skipped writeJson and the HITL boundary silently lost them.
+	it("F-06: human findings persist to disk when all routable requests are duplicates", async () => {
+		const d = specDir();
+		try {
+			// Seed the PENDING spec row for finding A (the duplicate routable).
+			writeFileSync(join(d, REPLAN_REQUESTS_FILE), JSON.stringify({
+				version: 1, rounds: 1,
+				requests: [{ id: "A", title: "Contract one is undefined", detail: "", severity: "medium", ownerStage: "spec", classificationSource: "doc-path", classificationReason: "r", requestedRevision: "r", fingerprint: "docs/specifications/03-a-specification.md|medium|contract one is undefined|45h|spec", status: "pending", createdAt: "t" }],
+			}));
+			const state = stateWith(d, [
+				{ id: "A", severity: "medium", title: "Contract one is undefined", file: "docs/specifications/03-a-specification.md" }, // routable duplicate
+				{ id: "H-9", severity: "high", title: "Regression in dispatcher", detail: "behavior change", ownerStage: "implementation" }, // fixer-domain → human
+			]);
+			const { ctx, logs } = ctxWith();
+			expect(await maybeTriggerReplan(state, ctx, "run")).toBe(false); // no fresh round
+			const requests = JSON.parse(readFileSync(join(d, REPLAN_REQUESTS_FILE), "utf8"));
+			expect(requests.rounds).toBe(1); // rounds untouched by the human-only persist
+			const humanRows = requests.requests.filter((r: { ownerStage: string }) => r.ownerStage === "human");
+			expect(humanRows).toHaveLength(1); // RED pre-fix: 0 (row was memory-only)
+			expect(humanRows[0].id).toBe("H-9");
+			expect(pendingHumanReplanRequests(d)).toHaveLength(1);
+			expect(logs.join("\n")).toContain("falling through to the human boundary");
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	// ── F-11 (v0.3.86): the fingerprint's owner component is the TARGET owner
+	// (route-back arg / classified decision.owner), not the raw finding's
+	// usually-absent ownerStage.
+	it("F-11: appendRouteBackRequests under two different owners yields TWO rows with distinct fingerprints (same title)", () => {
+		const d = specDir();
+		try {
+			const finding = { id: "X", severity: "medium", title: "Same blocker", detail: "same detail", file: "docs/specifications/03-a-specification.md" };
+			expect(appendRouteBackRequests(d, "spec", [finding], "run-1")).toBe(1);
+			expect(appendRouteBackRequests(d, "requirements", [finding], "run-1")).toBe(1); // RED pre-fix: 0 (fingerprint deduped — owner was ignored)
+			const requests = JSON.parse(readFileSync(join(d, REPLAN_REQUESTS_FILE), "utf8"));
+			expect(requests.requests).toHaveLength(2);
+			expect(new Set(requests.requests.map((r: { fingerprint: string }) => r.fingerprint)).size).toBe(2);
+			expect(requests.requests.map((r: { ownerStage: string }) => r.ownerStage).sort()).toEqual(["requirements", "spec"]);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("F-11: a route-back row for owner spec does NOT suppress a replan round that classifies the same finding to requirements", async () => {
+		const d = specDir();
+		try {
+			// Explicit reviewer ownerStage drives the classifier to requirements,
+			// while the earlier route-back persisted it under owner spec — pre-fix
+			// both sides hashed the SAME owner-less fingerprint, so the corrected
+			// owner's round was suppressed as a "duplicate".
+			const finding = { id: "Y", severity: "medium", title: "Owned upstream", detail: "d", ownerStage: "requirements" };
+			expect(appendRouteBackRequests(d, "spec", [finding], "run-1")).toBe(1);
+			const state = stateWith(d, [finding]);
+			const { ctx } = ctxWith();
+			expect(await maybeTriggerReplan(state, ctx, "run-2")).toBe(true); // RED pre-fix: false (dedupe)
+			const requests = JSON.parse(readFileSync(join(d, REPLAN_REQUESTS_FILE), "utf8"));
+			expect(requests.requests.map((r: { ownerStage: string }) => r.ownerStage).sort()).toEqual(["requirements", "spec"]);
+			expect(pendingReplanRequests(d, "requirements")).toHaveLength(1);
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("F-11: an explicitly-owned finding keeps its ownerStage fingerprint when no target owner is supplied (backward compat)", async () => {
+		const d = specDir();
+		try {
+			const state = stateWith(d, [{ id: "Z", severity: "medium", title: "Explicit owner", detail: "d2", ownerStage: "design" }]);
+			const { ctx } = ctxWith();
+			expect(await maybeTriggerReplan(state, ctx, "run-3")).toBe(true);
+			const requests = JSON.parse(readFileSync(join(d, REPLAN_REQUESTS_FILE), "utf8"));
+			expect(requests.requests[0].ownerStage).toBe("design");
+			expect(requests.requests[0].fingerprint.endsWith("|design")).toBe(true);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });

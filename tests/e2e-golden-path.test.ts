@@ -406,9 +406,11 @@ describe("v0.3.85 S2 — E2E golden path (scripted agents, REAL judge/verifier/o
 		expect(hasLog("verdict failed evidence verification — one corrective re-call")).toBe(true);
 		expect(hasLog("corrective verdict STILL fails evidence verification — escalating with the diagnosis preserved")).toBe(true);
 		// Identical failures stop within the anti-windup bound — attempt 2 via
-		// signature repeat OR attempt 3 via failure-category recurrence (F3: the
-		// real node:test tail carries per-run `duration_ms` noise, so either valve
-		// can fire first; both precede the attempt cap) — and the phase is partial.
+		// signature repeat OR attempt 3 via failure-category recurrence (v0.3.86:
+		// stripVolatileNoise now strips node:test TAP `# duration_ms` lines, so the
+		// signature-repeat valve is expected to fire deterministically at attempt 2;
+		// the tolerant range stays as defense against residual noise classes and
+		// both valves still precede the attempt cap) — and the phase is partial.
 		const floorImplCalls = implCalls.filter((c) => c.prompt.includes("- Phase: CorrectiveFloor"));
 		expect(floorImplCalls.length).toBeGreaterThanOrEqual(2);
 		expect(floorImplCalls.length).toBeLessThanOrEqual(3);

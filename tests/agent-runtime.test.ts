@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveExtensionEntries, summarizeToolCall, resolveThinking } from "../src/agents/agent-runtime.ts";
+import { isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveExtensionEntries, summarizeToolCall, resolveThinking, buildToolIndexFromTools } from "../src/agents/agent-runtime.ts";
 
 vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/render/super-dev-dir.ts")>();
@@ -158,6 +158,45 @@ describe("resolveThinking — v0.3.43 reordered precedence (ROLE TIER above INHE
 		// (agent, perCall) and must keep resolving identically to before.
 		expect(resolveThinking("code-reviewer")).toBe("high");
 		expect(resolveThinking("code-reviewer", "off")).toBe("off");
+	});
+});
+
+// ── F-15 (v0.3.86): Windows scoped-package paths — the node_modules capture
+// yields `@scope\pkg` on backslash paths; the index must normalize to forward
+// slashes or every downstream `@scope/pkg` lookup silently misses.
+describe("buildToolIndexFromTools — scoped-package path normalization (F-15)", () => {
+	it("a BACKSLASH sourcePath attributes under the forward-slash scoped name", () => {
+		const index = buildToolIndexFromTools([
+			{ name: "browser_execute", sourceInfo: { path: "C:\\repo\\node_modules\\@scope\\my-ext\\index.js" } },
+		]);
+		// RED pre-fix: the key was "@scope\\my-ext" and the lookup missed
+		expect(index.get("@scope/my-ext")).toEqual(["browser_execute"]);
+	});
+
+	it("forward-slash and backslash forms of the SAME package collapse to one key", () => {
+		const index = buildToolIndexFromTools([
+			{ name: "a", sourceInfo: { path: "/x/node_modules/@scope/pkg/index.js" } },
+			{ name: "b", sourceInfo: { path: "C:\\x\\node_modules\\@scope\\pkg\\index.js" } },
+		]);
+		expect([...index.keys()]).toEqual(["@scope/pkg"]);
+		expect(index.get("@scope/pkg")).toEqual(["a", "b"]);
+	});
+
+	it("unscoped packages and the npm: source form are unchanged", () => {
+		const index = buildToolIndexFromTools([
+			{ name: "web_search", sourceInfo: { path: "/x/node_modules/pi-web-access/index.js" } },
+			{ name: "fetch", sourceInfo: { source: "npm:@scope/other" } },
+		]);
+		expect(index.get("pi-web-access")).toEqual(["web_search"]);
+		expect(index.get("@scope/other")).toEqual(["fetch"]);
+	});
+
+	it("pi-coding-agent tools stay excluded (pre-existing guard, both separators)", () => {
+		const index = buildToolIndexFromTools([
+			{ name: "read", sourceInfo: { path: "/x/node_modules/pi-coding-agent/index.js" } },
+			{ name: "edit", sourceInfo: { path: "C:\\x\\node_modules\\@scope\\pi-coding-agent\\index.js" } },
+		]);
+		expect(index.size).toBe(0);
 	});
 });
 

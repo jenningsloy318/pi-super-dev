@@ -26,7 +26,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, mkdirSync as mkDir } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { planFeasibilityFindings } from "../src/stages/plan-feasibility.ts";
 import type { PlanPhase } from "../src/stages/plan-feasibility.ts";
 
@@ -43,6 +43,28 @@ const writeWt = (rel: string, content: string) => {
 	mkDir(join(p, ".."), { recursive: true });
 	writeFileSync(p, content);
 };
+
+// ── F-12 (v0.3.86): clause paths are MODEL-derived — `../` and absolute paths
+// must never let the identifier-available check read OUTSIDE the worktree.
+// Shape: the EARLIEST phase's test clause requires SHARED_X; its writable set
+// declares an ESCAPING file that (pre-fix) satisfied availability by reading a
+// host file; a LATER phase positions SHARED_X's production introduction in
+// src/late.ts (absent at HEAD). Pre-fix: available-from-escape ⇒ NO
+// contradiction. Post-fix: the escape is unreadable ⇒ the contradiction fires.
+function escapeF12Phases(escapeRel: string): PlanPhase[] {
+	return [
+		{
+			name: "early-tests",
+			deliverables: {
+				// the escaping file joins the writable set WITHOUT a pattern mention
+				// (requireFiles feed clauseFiles; containsClauses stay test-only)
+				requireFiles: [escapeRel],
+				requireContains: [{ file: "tests/early.test.ts", pattern: "SHARED_X" }],
+			},
+		},
+		{ name: "late-prod", deliverables: { requireContains: [{ file: "src/late.ts", pattern: "SHARED_X" }] } },
+	];
+}
 
 /** The spec-25 incident shape, verbatim from run 14-14's parsed plan. */
 const spec25Phases = (): PlanPhase[] => [
@@ -66,6 +88,42 @@ const spec25Phases = (): PlanPhase[] => [
 ];
 
 describe("v0.3.79 A1 plan-feasibility validator", () => {
+	// ── F-12 (v0.3.86): containment — escaping clause paths are UNREADABLE.
+	it("F-12: a `../` escaping writable file does NOT satisfy identifier availability (no host read)", () => {
+		const outside = mkdtempSync(join(tmpdir(), "sd-planfeas-out-"));
+		try {
+			writeFileSync(join(outside, "helper.ts"), "export const SHARED_X = 1;\n");
+			writeWt("tests/early.test.ts", "import { SHARED_X } from 'x';\n");
+			const escapeRel = relative(wt, join(outside, "helper.ts")); // starts with ../
+			expect(escapeRel.startsWith("..")).toBe(true);
+			const report = planFeasibilityFindings(escapeF12Phases(escapeRel), wt);
+			// RED pre-fix: identifierAvailableAtHead READ the outside file → available → no contradiction
+			expect(report.contradictions.some((c) => c.kind === "cross-phase-identifier")).toBe(true);
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("F-12: an ABSOLUTE clause path is rejected the same way", () => {
+		const outside = mkdtempSync(join(tmpdir(), "sd-planfeas-abs-"));
+		try {
+			const helperAbs = join(outside, "helper.ts");
+			writeFileSync(helperAbs, "export const SHARED_X = 1;\n");
+			writeWt("tests/early.test.ts", "import { SHARED_X } from 'x';\n");
+			const report = planFeasibilityFindings(escapeF12Phases(helperAbs), wt);
+			expect(report.contradictions.some((c) => c.kind === "cross-phase-identifier")).toBe(true);
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("F-12 control: a LEGIT relative writable file inside the worktree still satisfies availability (no contradiction)", () => {
+		writeWt("tests/early.test.ts", "import { SHARED_X } from 'x';\n");
+		writeWt("src/helper.ts", "export const SHARED_X = 1;\n");
+		const report = planFeasibilityFindings(escapeF12Phases("src/helper.ts"), wt);
+		expect(report.contradictions.filter((c) => c.kind === "cross-phase-identifier")).toHaveLength(0);
+	});
+
 	it("cross-phase identifier contradiction: earlier test clause needs an identifier positioned only in a later phase's production file (run 14-14 shape)", () => {
 		writeWt("tests/catalyst-contract.test.ts", `import { expect } from "vitest";\n`);
 		writeWt("src/stages.ts", `export const OTHER = 1;\n`);

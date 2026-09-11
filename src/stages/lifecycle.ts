@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Node, NodeResult, PipelineState, ServiceHandle, ServiceMap, Stage, StageContext } from "../types.ts";
 import { checkBashCommand } from "../safety.ts";
+import { superDevEnv } from "../render/super-dev-dir.ts";
 import { SIGTERM_GRACE_MS } from "../agents/agent-runtime.ts";
 
 /** How to start one service. `portEnv` is the env-var name that receives the
@@ -102,13 +103,98 @@ export function loadDotEnv(cwd: string): Record<string, string> {
 	return out;
 }
 
+/** F-07 (v0.3.86) layer (a) — FIRST-TOKEN ALLOWLIST for model-discovered
+ *  service commands. `spec.cmd` originates from assessment output and runs via
+ *  shell:true; the denylist (checkBashCommand) can only reject known-bad shapes,
+ *  so a positive allowlist of STANDARD service launchers bounds what may ever
+ *  execute. Anything else → refuse to start (ready:false handle + honest log)
+ *  and the ladder moves to the next candidate — the pipeline degrades to
+ *  no-live-service (P5: a refused checker never punishes the work under test).
+ *  Extend via SUPER_DEV_SERVICE_CMD_ALLOWLIST="make,rails,…" (comma-separated
+ *  first-token basenames). ONE table; see serviceCmdAllowed's grammar rows. */
+const SERVICE_PM_TOKENS = new Set(["npm", "pnpm", "yarn", "bun"]);
+/** Package-manager verbs that launch a service (`npm run dev`, `pnpm start`). */
+const SERVICE_PM_VERBS = new Set(["run", "start", "dev", "test", "build", "preview", "serve"]);
+/** Direct server binaries/dev-server launchers (first token is the whole authority). */
+const SERVICE_DIRECT_TOKENS = new Set([
+	"npx", "bunx", "node", "deno", "vite", "next", "webpack", "serve",
+	"http-server", "caddy", "wrangler", "flask", "uvicorn", "gunicorn",
+	"rails", "puma", "php",
+]);
+/** `python(3) -m <module>` — ONLY the built-in static/HTTP server modules. */
+const SERVICE_PYTHON_MODULES = new Set(["http.server", "SimpleHTTPServer"]);
+
+/** Allowlist decision for a service command line. Pure; never throws.
+ *  Grammar rows (P2 — enumerated, not sampled):
+ *   1. `npm|pnpm|yarn|bun <verb> …` — verb ∈ SERVICE_PM_VERBS (`npm run dev`).
+ *   2. first token ∈ SERVICE_DIRECT_TOKENS (`vite`, `npx --yes serve …`, `node server.js`).
+ *   3. `python|python3 -m http.server|SimpleHTTPServer …` (static-server ladder).
+ *   4. `cargo run …` / `go run …` (the run subcommand only).
+ *   5. first token listed in SUPER_DEV_SERVICE_CMD_ALLOWLIST (explicit user extension).
+ *  A path-like first token (`./node_modules/.bin/vite`) is judged by its basename.
+ *  Anything else is refused — including env-assignment prefixes (`PORT=3000 npm …`),
+ *  which the candidate ladder can express as `npm …` + spec.portEnv instead. */
+export function serviceCmdAllowed(cmd: string): { ok: boolean; reason: string } {
+	const tokens = cmd.trim().split(/\s+/).filter(Boolean);
+	const first = tokens[0] ?? "";
+	const second = tokens[1] ?? "";
+	const third = tokens[2] ?? "";
+	const base = first.split("/").pop() ?? first;
+	const ext = superDevEnv("SUPER_DEV_SERVICE_CMD_ALLOWLIST") ?? "";
+	const extended = new Set(ext.split(",").map((t) => t.trim()).filter(Boolean));
+	if (SERVICE_PM_TOKENS.has(base)) {
+		if (SERVICE_PM_VERBS.has(second)) return { ok: true, reason: "" };
+		return { ok: false, reason: `package-manager command "${base}" must launch via one of ${[...SERVICE_PM_VERBS].join("/")} (got "${second || "(none)"}")` };
+	}
+	if (base === "python" || base === "python3") {
+		if (second === "-m" && SERVICE_PYTHON_MODULES.has(third)) return { ok: true, reason: "" };
+		return { ok: false, reason: `python may only run ${[...SERVICE_PYTHON_MODULES].join("/")} here (arbitrary scripts are not service launchers)` };
+	}
+	if (base === "cargo") {
+		if (second === "run") return { ok: true, reason: "" };
+		return { ok: false, reason: "cargo must use the run subcommand" };
+	}
+	if (base === "go") {
+		if (second === "run") return { ok: true, reason: "" };
+		return { ok: false, reason: "go must use the run subcommand" };
+	}
+	if (SERVICE_DIRECT_TOKENS.has(first) || SERVICE_DIRECT_TOKENS.has(base)) return { ok: true, reason: "" };
+	if (extended.has(base) || extended.has(first)) return { ok: true, reason: "" };
+	return { ok: false, reason: `first token "${first}" is not a standard service launcher (allowlist: package-manager run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, python -m http.server, cargo/go run; extend via SUPER_DEV_SERVICE_CMD_ALLOWLIST)` };
+}
+
+/** Credential-shaped inherited env-var names. Explicit intent (spec.env or the
+ *  project's own .env) ALWAYS wins — those are layered back on top after the
+ *  strip, so a project that genuinely needs its own service API key keeps it. */
+const SECRET_ENV_NAME_RE = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AWS_|GITHUB_|ANTHROPIC_|OPENAI_|GOOGLE_)/i;
+
+/** F-07 (v0.3.86) layer (b) — build the service child env: inherited
+ *  `process.env` MINUS credential-shaped names, then the project's .env and
+ *  the spec's explicit env layered back on top (explicit intent wins), then
+ *  the port injection. PATH/HOME/NODE_ENV/PORT never match the credential
+ *  pattern and are kept by construction. Pure; never throws. */
+export function sanitizeServiceEnv(
+	inherited: Record<string, string | undefined>,
+	dotEnv: Record<string, string>,
+	specEnv: Record<string, string> | undefined,
+): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(inherited)) {
+		if (typeof v !== "string") continue;
+		if (SECRET_ENV_NAME_RE.test(k)) continue;
+		out[k] = v;
+	}
+	Object.assign(out, dotEnv, specEnv ?? {});
+	return out;
+}
+
 /** Start one service per `spec`, injecting the chosen port via `portEnv`, then
  *  readiness-poll it. `.env` from the cwd is loaded into the spawned env (so the
  *  app reads its own config/secrets). `opts.port` lets a caller reuse a fixed
  *  port across a try/fallback ladder. On timeout the handle is returned with
  *  `ready:false` (the pid is still recorded so teardown can clean it up). Never
  *  throws — bringup records not-ready services and `withServiceDeps` skips. */
-export async function startService(spec: StartSpec, opts: { port?: number; signal?: AbortSignal } = {}): Promise<ServiceHandle> {
+export async function startService(spec: StartSpec, opts: { port?: number; signal?: AbortSignal; log?: (m: string) => void } = {}): Promise<ServiceHandle> {
 	// Explicit caller port > the spec's own fixed port > a fresh random one.
 	const port = opts.port ?? spec.port ?? (await pickFreePort());
 	// The service command is MODEL-DISCOVERED (assessment output) and runs via
@@ -118,12 +204,20 @@ export async function startService(spec: StartSpec, opts: { port?: number; signa
 	// a not-ready handle so withServiceDeps skips it instead of executing it.
 	const safety = checkBashCommand(spec.cmd);
 	if (safety.blocked) {
+		opts.log?.(`bringup ${spec.role}: REFUSED "${spec.cmd}" — ${safety.reason} (no process started; degrading to no-live-service)`);
 		return { role: spec.role, baseUrl: `http://127.0.0.1:${port}`, pid: -1, port, cmd: spec.cmd, external: false, ready: false };
 	}
+	// F-07 layer (a): denylists only reject known-bad shapes — a first-token
+	// ALLOWLIST bounds what may ever execute (see serviceCmdAllowed's grammar).
+	const allowed = serviceCmdAllowed(spec.cmd);
+	if (!allowed.ok) {
+		opts.log?.(`bringup ${spec.role}: REFUSED "${spec.cmd}" — ${allowed.reason} (no process started; degrading to no-live-service)`);
+		return { role: spec.role, baseUrl: `http://127.0.0.1:${port}`, pid: -1, port, cmd: spec.cmd, external: false, ready: false };
+	}
+	// F-07 layer (b): strip credential-shaped INHERITED vars; explicit intent
+	// (the project's own .env + spec.env + the injected port) wins on top.
 	const env: Record<string, string> = {
-		...(process.env as Record<string, string>),
-		...loadDotEnv(spec.cwd),
-		...(spec.env ?? {}),
+		...sanitizeServiceEnv(process.env as Record<string, string | undefined>, loadDotEnv(spec.cwd), spec.env),
 		...(spec.portEnv ? { [spec.portEnv]: String(port) } : {}),
 	};
 	const child = spawn(spec.cmd, {
@@ -343,7 +437,7 @@ function candidatesFor(role: "api" | "ui", override: { api?: unknown; ui?: unkno
 async function tryStartService(role: "api" | "ui", candidates: StartSpec[], port: number, log: (m: string) => void, perAttemptMs = 12_000, signal?: AbortSignal): Promise<ServiceHandle | null> {
 	for (const spec of candidates) {
 		if (signal?.aborted) return null; // never start the next candidate
-		const h = await startService({ ...spec, readinessTimeoutMs: perAttemptMs }, { port, signal });
+		const h = await startService({ ...spec, readinessTimeoutMs: perAttemptMs }, { port, signal, log });
 		if (h.ready) return h;
 		stopService(h);
 		if (signal?.aborted) return null;

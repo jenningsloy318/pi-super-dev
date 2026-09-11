@@ -19,7 +19,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { commitGuardExtensionPath, buildToolIndex, configExtensionEntriesForAgent, configExtensionToolsForAgent, toolsWildcardForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
+import { commitGuardExtensionPath, safetyGuardExtensionPath, buildToolIndex, configExtensionEntriesForAgent, configExtensionToolsForAgent, toolsWildcardForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
 import { getConfig } from "../render/super-dev-dir.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
@@ -243,8 +243,12 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 		// pi after edits (same as agentSkills).
 		...(() => {
 			const guard = commitGuardExtensionPath(name);
+			// v0.3.86 F-13: the SAFETY guard (dangerous-bash denylist + protected-file
+			// writes) rides the SAME additive child-only channel for EVERY agent —
+			// previously the rules were dormant outside the bench harness.
+			const safetyGuard = safetyGuardExtensionPath(name);
 			const configEntries = configExtensionEntriesForAgent(name, { warn: log });
-			const merged = [...(guard ? [guard] : []), ...configEntries];
+			const merged = [...(guard ? [guard] : []), ...(safetyGuard ? [safetyGuard] : []), ...configEntries];
 			return merged.length > 0 ? { subagentOnlyExtensions: merged } : {};
 		})(),
 		},

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractControl, extractControlKeys, missingControlKeys } from "../src/control.ts";
+import { extractControl, extractControlKeys, missingControlKeys, findLastJsonObject } from "../src/control.ts";
 
 describe("extractControlKeys", () => {
 	it("parses the requirements-style key list", () => {
@@ -116,5 +116,46 @@ describe("missingControlKeys optionality (Fix 1c/1d support)", () => {
 				allowEmptyArraysFor: new Set(["filesCreated", "filesModified", "filesDeleted", "testDefects"]),
 			}),
 		).toEqual(["summary"]);
+	});
+});
+
+// ── F-05 (v0.3.86): findLastJsonObject must return the LAST OUTERMOST balanced
+// object — the old lastIndexOf("{") scan extracted only the INNERMOST nested
+// object, so a valid nested control object was rejected as a decoy.
+describe("findLastJsonObject — last OUTERMOST object (F-05)", () => {
+	it("nested object → the OUTER object wins (the incident shape)", () => {
+		const t = 'prose {"diagnosis": "x", "details": {"key": "val"}} tail';
+		expect(JSON.parse(findLastJsonObject(t)!)).toEqual({ diagnosis: "x", details: { key: "val" } });
+	});
+
+	it("array of objects → the last element object is returned", () => {
+		const t = 'findings: [{"a": 1}, {"b": 2}]';
+		expect(JSON.parse(findLastJsonObject(t)!)).toEqual({ b: 2 });
+	});
+
+	it("trailing prose after the last object does not break extraction", () => {
+		const t = '{"verdict": "Approved"} because the tests pass';
+		expect(JSON.parse(findLastJsonObject(t)!)).toEqual({ verdict: "Approved" });
+	});
+
+	it("multiple top-level objects → the LAST outermost wins", () => {
+		const t = '{"first": 1} then {"second": 2, "nested": {"x": 1}}';
+		expect(JSON.parse(findLastJsonObject(t)!).second).toBe(2);
+	});
+
+	it("braces inside strings are inert (string-state machine preserved)", () => {
+		const t = '{"code": "a{b}c", "ok": true}';
+		expect(JSON.parse(findLastJsonObject(t)!)).toEqual({ code: "a{b}c", ok: true });
+	});
+
+	it("unbalanced braces → null (no balanced object anywhere)", () => {
+		expect(findLastJsonObject("prefix {\"key\": \"value")).toBeNull();
+		expect(findLastJsonObject("no braces at all")).toBeNull();
+	});
+
+	it("innermost-balanced fragment still returns when the outer never closes (pre-fix behavior preserved for that shape)", () => {
+		// `{"a": {"b": 1}` — the outer { has no closing brace; the inner object IS
+		// balanced and remains the last outermost candidate.
+		expect(JSON.parse(findLastJsonObject('{"a": {"b": 1}')!)).toEqual({ b: 1 });
 	});
 });

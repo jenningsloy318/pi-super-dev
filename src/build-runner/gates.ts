@@ -1224,11 +1224,33 @@ function readForDeliverable(
 	}
 }
 
+/** Regex-INTENT marker: syntax that can ONLY mean a regular expression — a
+ *  backslash escape (`\.`, `\d`), alternation `|`, start/end anchors, the
+ *  quantifier symbols `*`/`+`/`?`, `{…}` braces, or a CLASS-LIKE bracket group
+ *  (content containing `-`, `^`, or `\`; bare single-token brackets like the
+ *  literal indexing `arr[0]`/`list[i]` are NOT treated as classes). Bare
+ *  grouping parens and bare dots are deliberately ABSENT: they are ubiquitous
+ *  in literal code text (`foo(bar)`, `obj.prop`) and are the false-positive
+ *  source (F-14). */
+const REGEX_INTENT_RE = /\\[^\\]|\||^\^|\$$|[*+?]|\{|\[[^\]]*[-^\\][^\]]*\]/;
+
 /**
- * Tolerant pattern match (SCENARIO-006): try `pattern` as a RegExp first, fall
- * back to a plain substring `includes` on an INVALID regex OR when the regex
- * does not match. Match by EITHER satisfies. Never throws (an invalid regex →
- * substring). Used for requireContains, requireNotContains, and requireTests.
+ * Tolerant pattern match (SCENARIO-006). Used for requireContains,
+ * requireNotContains, and requireTests. Matching order is an ENUMERATED
+ * grammar (F-14, v0.3.86 — literal-first; the old regex-first order compiled
+ * literal code text like `foo(bar)` into a regex that false-matched `foobar`):
+ *
+ *   | stage | pattern form                        | semantics                     |
+ *   |---|---|---|
+ *   | 1 | ANY                                 | exact substring containment of the RAW pattern (metacharacters inert) |
+ *   | 2 | `(?i)`-prefixed only               | case-insensitive substring containment of the stripped source      |
+ *   | 3 | stripped source matches REGEX_INTENT_RE | compile + `test` (with `i` for `(?i)`); only when stages 1–2 failed |
+ *
+ * Consequences: a pattern that IS a literal substring can never false-positive
+ * via regex semantics (stage 1 wins); `foo(bar)` matches only literally (no
+ * regex-intent marker); `connect.*db` / `toBe\(13\)` keep regex semantics;
+ * `(?i)…` keeps its meaning in both the containment and regex stages. Never
+ * throws (an invalid stage-3 regex simply does not match).
  */
 export function tolerantMatch(pattern: string, text: string): boolean {
 	const tryPattern = (p: string): boolean => {
@@ -1240,12 +1262,16 @@ export function tolerantMatch(pattern: string, text: string): boolean {
 			source = source.slice(4);
 			flags = "i";
 		}
+		// Stage 1 — EXACT literal containment of the RAW pattern.
+		if (text.includes(p)) return true;
+		// Stage 2 — case-insensitive containment of the (?i)-stripped source.
+		if (flags === "i" && text.toLowerCase().includes(source.toLowerCase())) return true;
+		// Stage 3 — regex ONLY for regex-INTENT patterns (see REGEX_INTENT_RE);
+		// literal-looking text (bare parens/dots/brackets) never reaches a regex.
+		if (!REGEX_INTENT_RE.test(source)) return false;
 		let re: RegExp | null = null;
 		try { re = new RegExp(source, flags); } catch { re = null; }
-		if (re && re.test(text)) return true;
-		if (text.includes(p)) return true;
-		if (flags === "i" && text.toLowerCase().includes(source.toLowerCase())) return true;
-		return false;
+		return re !== null && re.test(text);
 	};
 	const variants = [pattern];
 	// Tolerant fallback: strip `async ` so `export async function X` matches
@@ -1899,9 +1925,14 @@ export function runDeliverableCheck(
  *
  * Unlike {@link runDeliverableCheck} this reads the REAL filesystem directly
  * (existsSync + readFileSync), so it does NOT consume test-stub queues and is
- * safe to run UNCONDITIONALLY (not just on resume). Returns false when no
- * requireFiles are declared (can't determine no-op without file targets).
- * NEVER throws.
+ * safe to run UNCONDITIONALLY (not just on resume). requireTests clauses are
+ * verified at EXISTENCE grade — the declared name must appear in a candidate
+ * test FILE's content (per-line tolerantMatch, the same line-entry discipline
+ * as runDeliverableCheck's list matching); the full test-list spawn and test
+ * EXECUTION authority stays with runDeliverableCheck (F-04, v0.3.86) — a name
+ * satisfiable only by a runner-generated list (test.each) fails here, so the
+ * caller keeps working (fail-closed). Returns false when no clause kind is
+ * declared at all (can't determine no-op without targets). NEVER throws.
  */
 export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableContract, baseRef?: string): boolean {
 	try {
@@ -1919,10 +1950,15 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 		const contains = deliverables.requireContains ?? [];
 		const notContains = deliverables.requireNotContains ?? [];
 		const scenarios = normalizeScenarioTags(deliverables.requireScenarios);
+		// F-04 (v0.3.86): requireTests joins the checkable-clause set — pre-fix a
+		// contract carrying only requireTests had NO checkable clause here and was
+		// permanently un-satisfiable (two grammars for one contract, the F8 class).
+		const tests = (Array.isArray(deliverables.requireTests) ? deliverables.requireTests : []).filter((t): t is string => typeof t === "string" && t.length > 0);
 		const hasCheckableClause = (Array.isArray(files) && files.length > 0)
 			|| contains.length > 0
 			|| notContains.length > 0
-			|| scenarios.length > 0;
+			|| scenarios.length > 0
+			|| tests.length > 0;
 		if (!hasCheckableClause) return false;
 		if (Array.isArray(files)) {
 			for (const p of files) {
@@ -1944,6 +1980,16 @@ export function deliverablesAlreadyMet(cwd: string, deliverables: DeliverableCon
 			const tagRes = scenarios.map((tag) => new RegExp(`\\b${tag.replace(/[-]/g, "\\-")}\\b`, "i"));
 			const { text } = collectTestFileContents(cwd, deliverables, (t) => tagRes.every((re) => re.test(t)), baseRef); // sweep-3 CR-R2-7
 			if (!tagRes.every((re) => re.test(text))) return false;
+		}
+		// requireTests (F-04, v0.3.86): every declared test NAME must appear on a
+		// LINE of the concatenated candidate test-file contents (tolerantMatch per
+		// line — the same line-entry discipline runDeliverableCheck applies to the
+		// runner's list output, so a hit inside a path/comment line can't satisfy
+		// a name). Existence grade only — see the function docstring.
+		if (tests.length > 0) {
+			const { text } = collectTestFileContents(cwd, deliverables, undefined, baseRef);
+			const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+			if (!tests.every((name) => lines.some((line) => tolerantMatch(name, line)))) return false;
 		}
 		return true;
 	} catch {

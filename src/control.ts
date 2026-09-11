@@ -289,27 +289,41 @@ export function missingControlKeys(
 	});
 }
 
-/** Find the last balanced `{...}` substring via a brace scan. */
+/** Find the LAST OUTERMOST balanced `{...}` substring via a brace scan (F-05,
+ * v0.3.86). The old `lastIndexOf("{")` indexed the brace of the INNERMOST
+ * nested object (e.g. `{"details":{"key":1}}` yielded `{"key":1}`), so a
+ * valid nested control object was rejected as a decoy by the fallback layer.
+ * Scan forward from EVERY `{` candidate; each balanced outermost object is a
+ * candidate and nested braces are consumed inside it; the LAST outermost
+ * candidate wins. Never throws. */
 export function findLastJsonObject(text: string): string | null {
-	const lastOpen = text.lastIndexOf("{");
-	if (lastOpen === -1) return null;
-	let depth = 0;
-	let inString = false;
-	let escape = false;
-	for (let i = lastOpen; i < text.length; i++) {
-		const ch = text[i];
-		if (inString) {
-			if (escape) escape = false;
-			else if (ch === "\\") escape = true;
-			else if (ch === '"') inString = false;
-			continue;
-		}
-		if (ch === '"') inString = true;
-		else if (ch === "{") depth++;
-		else if (ch === "}") {
-			depth--;
-			if (depth === 0) return text.slice(lastOpen, i + 1);
+	const candidates: string[] = [];
+	for (let i = 0; i < text.length; i++) {
+		if (text[i] !== "{") continue;
+		let depth = 0;
+		let inString = false;
+		let escape = false;
+		for (let j = i; j < text.length; j++) {
+			const ch = text[j];
+			if (inString) {
+				if (escape) escape = false;
+				else if (ch === "\\") escape = true;
+				else if (ch === '"') inString = false;
+				continue;
+			}
+			if (ch === '"') inString = true;
+			else if (ch === "{") depth++;
+			else if (ch === "}") {
+				depth--;
+				if (depth === 0) {
+					// Balanced outermost object starting at i — record it and jump the
+					// outer scan past it so nested objects are never separate candidates.
+					candidates.push(text.slice(i, j + 1));
+					i = j;
+				break;
+				}
+			}
 		}
 	}
-	return null;
+	return candidates.length > 0 ? candidates[candidates.length - 1]! : null;
 }

@@ -38,7 +38,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Structural mirror of implementation.ts LeakPhase (no import edge — the
  *  shapes evolve together but structurally compatible inputs keep this pure). */
@@ -69,6 +69,24 @@ export interface PlanFeasibilityReport {
 }
 
 const norm = (p: string): string => String(p ?? "").trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+
+/** F-12 (v0.3.86): containment guard for every model-derived plan path. Both
+ *  read sites resolve a phase clause file against the worktree — `../`
+ *  sequences and ABSOLUTE paths escaped that join and let the feasibility
+ *  check read arbitrary host files. Mirrors the isInsideOrSame/resolveInsideCwd
+ *  idiom of build-runner/gates.ts (kept LOCAL: this module deliberately imports
+ *  only node:fs/node:path to stay pure). Escaping/absolute paths are treated as
+ *  UNAVAILABLE (fail toward detecting the contradiction — the same direction an
+ *  unreadable file already takes), never read. */
+function resolveInsideWorktree(worktreePath: string, rel: string): string | null {
+	if (typeof rel !== "string" || rel.length === 0) return null;
+	const root = resolve(worktreePath);
+	const abs = resolve(root, rel);
+	const relFromRoot = relative(root, abs);
+	if (relFromRoot === "") return abs;
+	if (!relFromRoot || relFromRoot.startsWith("..") || isAbsolute(relFromRoot) || relFromRoot.startsWith(sep)) return null;
+	return abs;
+}
 
 const phaseLabel = (p: PlanPhase | undefined, index: number): string => p?.name?.trim() || `phase-${index + 1}`;
 
@@ -135,7 +153,10 @@ function patternIdentifiers(pattern: string): string[] {
 function identifierAvailableAtHead(worktreePath: string, writableFiles: string[], x: string): boolean {
 	for (const rel of writableFiles) {
 		try {
-			const abs = join(worktreePath, norm(rel));
+			// F-12: never read outside the worktree — an escaping clause path counts
+			// as NOT available (the contradiction detector stays armed).
+			const abs = resolveInsideWorktree(worktreePath, norm(rel));
+			if (abs === null) continue;
 			if (!existsSync(abs)) continue;
 			const text = readFileSync(abs, "utf8");
 			const defRe = new RegExp(`\\b(?:const|let|var|function|class|interface|type|enum|def)\\s+${x}\\b`);
@@ -297,7 +318,9 @@ export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: strin
  *  the later file was falsely flagged as unavailable). */
 function fileExportsIdentifier(worktreePath: string, rel: string, x: string): boolean {
 	try {
-		const abs = join(worktreePath, norm(rel));
+		// F-12: same containment guard as identifierAvailableAtHead.
+		const abs = resolveInsideWorktree(worktreePath, norm(rel));
+		if (abs === null) return false;
 		if (!existsSync(abs)) return false;
 		const text = readFileSync(abs, "utf8");
 		if (/\.py$/i.test(rel)) {

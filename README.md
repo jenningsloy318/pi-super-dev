@@ -634,7 +634,10 @@ figure), so usage is a first-class governance surface, not a log decoration:
   tool_call layer — registered via `subagentOnlyExtensions` so the child's
   AMBIENT extension discovery (user MCP tools) stays intact
   (`SUPER_DEV_NO_COMMIT_GUARD=1` to disable; the v0.3.73 HEAD-drift detector
-  stays as the fail-open detective net).)
+  stays as the fail-open detective net). Since v0.3.86 every delegated agent
+  ALSO carries the safety guard on the same channel (dangerous-bash denylist +
+  protected-file overwrite blocking; `SUPER_DEV_NO_SAFETY_GUARD=1` to disable)
+  — previously those rules only loaded in the bench harness.)
   (v0.3.84 duplicate-node incident class: every delegation attempt now
   carries a per-attempt unique nodeId (`base@requestId`) — a cancelled or
   timed-out predecessor that is still settling can never collide with its
@@ -1014,6 +1017,8 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_BENCH` | — | `1` = enable the real-LLM convergence benchmark harness (SUPER_DEV_BENCH_TRIALS=1 implied) |
 | `SUPER_DEV_BENCH_TRIALS` | `1` | trials per benchmark shape (≥3 for statistical claims) |
 | `SUPER_DEV_BENCH_TIMEOUT_MS` | `900000` | per-trial benchmark timeout |
+| `SUPER_DEV_SERVICE_CMD_ALLOWLIST` | — | comma-separated EXTRA first-token service launchers for the Stage 10 bringup allowlist (model-discovered `cmd` must start with a standard launcher — npm/pnpm/yarn/bun run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, `python -m http.server`, cargo/go run; anything else is refused with an honest log and the pipeline degrades to no-live-service, never punishing the work) |
+| `SUPER_DEV_NO_SAFETY_GUARD` | — | `1` = kill switch for the delegated-child safety guard (dangerous-bash denylist + protected-file writes, loaded via `subagentOnlyExtensions` for every agent alongside the commit guard) |
 | `SUPER_DEV_DEBUG` | — | debug logging |
 
 Every entry above can be exported in the shell (traditional behavior,

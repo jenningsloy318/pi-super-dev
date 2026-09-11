@@ -36,6 +36,14 @@ export function clearKnowledge(specDir: string): void {
 	try { writeFileSync(knowledgePath(specDir), JSON.stringify(EMPTY, null, 2) + "\n"); } catch { /* best-effort */ }
 }
 
+/** Monotonic per-process tmp-name counter (F-08, v0.3.86): `Date.now()` alone
+ *  gives two calls in the same millisecond the IDENTICAL tmp basename. The
+ *  read-modify-write is fully synchronous (single-threaded JS cannot interleave
+ *  it), so same-process calls were already safe — the counter removes the last
+ *  name-collision edge (a stale tmp left by an interrupted rename + an external
+ *  tmp sweeper) and keeps every tmp name UNIQUE per call by construction. */
+let knowledgeTmpSeq = 0;
+
 /** Store a stage's control object into .knowledge.json (read-modify-write).
  *  Called by renderAndWrite after the doc is rendered. */
 export function appendToKnowledge(specDir: string, stageId: string, control: Record<string, unknown> | null): void {
@@ -50,11 +58,18 @@ export function appendToKnowledge(specDir: string, stageId: string, control: Rec
 	};
 	try {
 		// Sweep-3 G31: ATOMIC write (tmp + rename) — a torn write reset the whole
-		// store to empty on crash; rename is atomic on POSIX/NTFS.
-		const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+		// store to empty on crash; rename is atomic on POSIX/NTFS. F-08 (v0.3.86):
+		// the monotonic counter makes the tmp name unique PER CALL (same-ms calls
+		// no longer reuse a basename), and the catch is HONEST (P10): a failed
+		// write logs instead of silently dropping the stage's knowledge row.
+		const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${knowledgeTmpSeq++}`;
 		writeFileSync(tmp, JSON.stringify(knowledge, null, 2) + "\n");
 		renameSync(tmp, path);
-	} catch { /* best-effort */ }
+	} catch (err) {
+		// P10 honest failure: name WHAT was lost and WHY (best-effort write — a
+		// failure never breaks the pipeline, but it must not be silent).
+		console.error(`[super-dev] appendToKnowledge: writing .knowledge.json for stage "${stageId}" FAILED (${err instanceof Error ? err.message : String(err)}) — this stage's knowledge row was not persisted`);
+	}
 }
 
 // ─── Per-agent extraction (option C) ─────────────────────────────────────────

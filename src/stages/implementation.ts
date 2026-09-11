@@ -366,7 +366,7 @@ function trackerOutofScopeEdits(tracker: ReturnType<typeof getActiveTracker>, wo
 
 /** v0.3.56 F4: restore BOTH index and worktree (source HEAD) — the old
  *  `git checkout -- <path>` left the INDEX untouched, so an agent-STAGED
- *  change survived RED cleanup (attributQuarantinedViolations already used
+ *  change survived RED cleanup (attributeQuarantinedViolations already used
  *  --staged --worktree; this closes the inconsistent restore class).
  *  Exported as the F9f seam: the ':(top)*' magic-name pin drives it directly. */
 export function restorePaths(cwd: string, paths: string[]): void {
@@ -376,7 +376,7 @@ export function restorePaths(cwd: string, paths: string[]): void {
 		const literal = `:(literal)${path}`;
 		// v0.3.56 F4: restore BOTH index and worktree (source HEAD) — the old
 		// `git checkout -- <path>` left the INDEX untouched, so an agent-STAGED
-		// change survived RED cleanup (attributQuarantinedViolations already used
+		// change survived RED cleanup (attributeQuarantinedViolations already used
 		// --staged --worktree; this closes the inconsistent restore class).
 		try { execFileSync("git", ["restore", "--staged", "--worktree", "--", literal], { cwd, stdio: "ignore" }); } catch { /* untracked or absent */ }
 		try { execFileSync("git", ["clean", "-fd", "--", literal], { cwd, stdio: "ignore" }); } catch { /* best-effort */ }
@@ -1001,13 +1001,14 @@ function phaseDeliverableFiles(phase: LeakPhase | undefined): string[] {
  *  dirty). Before the stage reports allGreen=false, re-verify each PARTIAL
  *  phase's deliverable contract LIVE. Dual-review hardening (v0.3.80):
  *  (a) at least one AFFIRMATIVE clause (requireFiles/requireContains/
- *  requireScenarios) is required — notContains-only contracts are vacuously
- *  satisfiable by a missing file and never flip;
+ *  requireScenarios/requireTests) is required — notContains-only contracts
+ *  are vacuously satisfiable by a missing file and never flip;
  *  (b) at least one of the phase's clause files must be in `changedThisRun`
  *  (vs the run baseline, committed or dirty) so PRE-EXISTING content cannot
  *  flip a phase the run never touched (the §F no-op doctrine);
- *  (c) requireTests-bearing contracts are additionally gated by the caller's
- *  full runDeliverableCheck (deliverablesAlreadyMet ignores requireTests).
+ *  (c) requireTests-bearing contracts are verified at EXISTENCE grade inside
+ *  deliverablesAlreadyMet (F-04, v0.3.86) and additionally gated by the
+ *  caller's full runDeliverableCheck (the execution authority).
  *  Empty/absent contracts stay fail-closed partial. Pure: no gates, no
  *  mutation — the caller decides. */
 export function reverifyPartialPhases(
@@ -1028,8 +1029,11 @@ export function reverifyPartialPhases(
 		if (exclude.has(id)) return; // environment-blocked phases resolve through the judge — close-reverify must not bypass that route
 		const deliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
 		if (!deliverables) return; // fail-closed: no contract, no re-verification
-		const d = deliverables as { requireFiles?: unknown[]; requireContains?: unknown[]; requireScenarios?: unknown[] };
-		const affirmative = (d.requireFiles?.length ?? 0) + (d.requireContains?.length ?? 0) + (d.requireScenarios?.length ?? 0);
+		const d = deliverables as { requireFiles?: unknown[]; requireContains?: unknown[]; requireScenarios?: unknown[]; requireTests?: unknown[] };
+		// F-04 (v0.3.86): requireTests counts as AFFIRMATIVE — pre-fix a phase whose
+		// sole deliverable was test execution was skipped as "(no affirmative
+		// clause)" and could never flip at stage close.
+		const affirmative = (d.requireFiles?.length ?? 0) + (d.requireContains?.length ?? 0) + (d.requireScenarios?.length ?? 0) + (d.requireTests?.length ?? 0);
 		if (affirmative === 0) {
 			skippedVacuous.push(`${id} (no affirmative clause)`);
 			return; // notContains-only: vacuously satisfiable — never flip
@@ -1581,7 +1585,7 @@ export function attributeQuarantinePaths(
 	return { declaredAny, claimed, unclaimed };
 }
 
-export function attributQuarantinedViolations(
+export function attributeQuarantinedViolations(
 	worktreePath: string,
 	payload: BoundaryQuarantinePayload | null | undefined,
 	implControl: unknown,
@@ -1649,6 +1653,11 @@ export function attributQuarantinedViolations(
 	if (safe.length) log(`red-review-quarantine: restored unclaimed reviewer edits (implementer never touched them): ${safe.join(", ")}`);
 	if (kept.length) log(`red-review-quarantine: left in place (implementer-owned or mixed content — quarantined copy preserved${parsed.dir ? ` at ${parsed.dir}` : ""}): ${kept.join(", ")}`);
 }
+
+/** F-17 (v0.3.86): DEPRECATED alias for {@link attributeQuarantinedViolations}
+ *  (the old spelling dropped the second 'e'). Kept as a re-export so any
+ *  out-of-tree consumer keeps compiling; identical function object. */
+export const attributQuarantinedViolations = attributeQuarantinedViolations;
 
 /** v0.3.55 security review F1: parseQuarantinePayload deleted. Error text is
  *  an agent-influenceable channel (stderr tails land verbatim in review.error
@@ -3364,7 +3373,7 @@ export const implementationStage: Stage = {
 						// phases 05/06/07). Fail OPEN instead: keep the work, degrade to the
 						// deterministic gates, record the finding, count separately; the
 						// launch site stops parallel reviews for this phase at 2 violations.
-						attributQuarantinedViolations(setup.worktreePath, review.quarantine, impl?.control, testFiles, (line) => ctx.log(line));
+						attributeQuarantinedViolations(setup.worktreePath, review.quarantine, impl?.control, testFiles, (line) => ctx.log(line));
 						phaseReviewViolations++;
 						const reason = String(review.error).slice(0, 300);
 						ctx.log(`Implementation ${phaseId} red-review-incomplete (advisory): ${reason} — GREEN work KEPT (checker failure, not suite evidence); post-RED oracle + deliverable gates remain authoritative${phaseReviewViolations >= 2 ? "; parallel review DISABLED for this phase" : ""}`);
@@ -4638,8 +4647,9 @@ export const implementationStage: Stage = {
 		// reflect the tree, not the stale gate window. Dual-review hardening: the flip
 		// requires an affirmative clause + a clause file changed THIS RUN (vs the merge
 		// base — pre-existing content cannot flip) + the stage build gate + a FULL
-		// runDeliverableCheck per flippable (deliverablesAlreadyMet ignores
-		// requireTests); flipped phases splice lastFailures and get their deterministic
+		// runDeliverableCheck per flippable (deliverablesAlreadyMet now verifies
+		// requireTests at existence grade; execution authority stays here — F-04,
+		// v0.3.86); flipped phases splice lastFailures and get their deterministic
 		// commit like every other green path (review F3).
 		{
 			const changedThisRun = new Set<string>();

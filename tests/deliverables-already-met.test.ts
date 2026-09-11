@@ -147,3 +147,54 @@ describe("deliverablesAlreadyMet — contract-shape enumeration (F8)", () => {
 		expect(deliverablesAlreadyMet(dir, contract)).toBe(false);
 	});
 });
+
+// ── F-04 (v0.3.86): requireTests joins the checkable-clause set and is verified
+// at EXISTENCE grade (name on a line of a candidate test FILE — the runner-list
+// spawn and execution authority stay with runDeliverableCheck). Pre-fix a
+// requireTests-only contract had NO checkable clause (permanently false) and a
+// files+tests contract could pass on files alone.
+describe("deliverablesAlreadyMet — requireTests existence-grade rows (F-04)", () => {
+	it("14. requireTests only, name present in a test file → true (RED pre-fix)", () => {
+		write("tests/db.test.ts", "test('connects to db', () => {});");
+		const contract: DeliverableContract = { requireTests: ["connects to db"] };
+		expect(deliverablesAlreadyMet(dir, contract)).toBe(true);
+	});
+
+	it("15. requireTests only, name absent → false", () => {
+		write("tests/db.test.ts", "test('disconnects', () => {});");
+		const contract: DeliverableContract = { requireTests: ["connects to db"] };
+		expect(deliverablesAlreadyMet(dir, contract)).toBe(false);
+	});
+
+	it("16. requireTests must land in a TEST file — a production file hit does not satisfy", () => {
+		write("src/feature.ts", "// connects to db");
+		const contract: DeliverableContract = { requireTests: ["connects to db"] };
+		expect(deliverablesAlreadyMet(dir, contract)).toBe(false);
+	});
+
+	it("17. mixed files+tests with the test name missing → false (the resume false-green guard)", () => {
+		write("src/feature.ts", "export const x = 1;");
+		write("tests/feature.test.ts", "test('other', () => {});");
+		const contract: DeliverableContract = {
+			requireFiles: ["src/feature.ts"],
+			requireTests: ["connects to db"],
+		};
+		expect(deliverablesAlreadyMet(dir, contract)).toBe(false);
+	});
+
+	it("18. mixed files+tests, both satisfied → true", () => {
+		write("src/feature.ts", "export const x = 1;");
+		write("tests/feature.test.ts", "test('connects to db', () => {});");
+		const contract: DeliverableContract = {
+			requireFiles: ["src/feature.ts"],
+			requireTests: ["connects to db"],
+		};
+		expect(deliverablesAlreadyMet(dir, contract)).toBe(true);
+	});
+
+	it("19. requireTests entries are matched per LINE (a name split across lines does not satisfy)", () => {
+		write("tests/split.test.ts", "test('connects\n  to db', () => {});");
+		const contract: DeliverableContract = { requireTests: ["connects to db"] };
+		expect(deliverablesAlreadyMet(dir, contract)).toBe(false);
+	});
+});

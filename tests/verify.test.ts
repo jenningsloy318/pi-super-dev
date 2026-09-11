@@ -20,6 +20,23 @@ describe("reviewLoopNode (Phase 1)", () => {
 	});
 });
 
+// ── F-18 (v0.3.86, P8): every `continue` inside verify.ts names its governing
+// termination bound in a nearby comment — a source-contract tripwire so a new
+// bound-less `continue` cannot be added silently.
+describe("F-18 — P8 bound-naming at every verify.ts continue", () => {
+	it("each `continue;` has a `Bound (P8)` comment within the preceding 8 lines", () => {
+		const src = readFileSync(new URL("../src/stages/verify.ts", import.meta.url), "utf8");
+		const lines = src.split("\n");
+		const missing: string[] = [];
+		lines.forEach((line, i) => {
+			if (!/\bcontinue;\s*$/.test(line)) return;
+			const window = lines.slice(Math.max(0, i - 8), i).join("\n");
+			if (!window.includes("Bound (P8)")) missing.push(`line ${i + 1}: ${line.trim()}`);
+		});
+		expect(missing, `continue without a named bound:\n${missing.join("\n")}`).toEqual([]);
+	});
+});
+
 describe("review loop exit predicate", () => {
 	const ctx = { log: () => {} } as never;
 	it("requires both approval and build green", async () => {

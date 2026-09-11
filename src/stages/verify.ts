@@ -29,7 +29,7 @@ import { planInlineRouteBack } from "../routing/walker.ts";
 import { countStageRounds } from "../resume.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { withServiceDeps, bringupTask, teardownNode } from "./lifecycle.ts";
-import { renderAndWrite } from "../render/render.ts";
+import { renderAndWrite, reserveStageDocs } from "../render/render.ts";
 import { STAGE_MODELS, FileClassifyControlData } from "../render/schemas.ts";
 import { localTimestamp } from "../render/time.ts";
 import { buildRedBoundaryPrompt, classifyObviousRedPath, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../test-artifacts.ts";
@@ -353,6 +353,9 @@ function recurringVerificationFailures(current: VerificationFailureItem[], previ
 	const seen = new Set<string>();
 	const recurring: VerificationFailureItem[] = [];
 	for (const item of current) {
+		// Bound (P8): single pass over the FINITE `current` list — `continue` only
+		// skips non-recurring/duplicate items; nothing is re-queued, so the loop
+		// terminates at current.length iterations.
 		if (!previousFingerprints.has(item.fingerprint) || seen.has(item.fingerprint)) continue;
 		seen.add(item.fingerprint);
 		recurring.push(item);
@@ -813,8 +816,15 @@ export function specDeclaresTestDeliverables(spec: unknown): boolean {
 	}
 }
 
-/** Reviewers in parallel → merged verdict under state.review. Exported for R-2 tests. */
-export const reviewStep = parallel(
+/** Reviewers in parallel → merged verdict under state.review. Exported for R-2
+ *  tests.
+ * F-09 (v0.3.86): the three review docs' NUMBERS are pre-reserved at step
+ * START — before the parallel spawn — via reserveStageDocs, which records each
+ * allocation in the prompts.ts reservation registry. Each task's later
+ * renderAndWrite → reserveStageDocs then reuses its reserved name (idempotent)
+ * instead of re-reading the dir, so no two review docs can compute the same
+ * "next free" index even if allocations race ahead of the writes. */
+const reviewParallel = parallel(
 	[
 		task({
 			id: "codeReview",
@@ -921,6 +931,23 @@ export const reviewStep = parallel(
 		},
 	},
 );
+
+/** The reviewStep NODE: reserve all three review doc numbers FIRST (F-09),
+ *  then delegate to the parallel reviewers. Keeping `.run` identical means
+ *  every existing caller (loop body, epilogue, Stage 10/11 retry paths) is
+ *  unchanged. */
+export const reviewStep: Node = {
+	kind: "reviewStep",
+	async run(state, ctx) {
+		const setup = setupOf(state);
+		if (setup?.specDirectory) {
+			for (const stageId of ["codeReview", "adversarialReview", "testsReview"]) {
+				try { reserveStageDocs(setup, stageId); } catch { /* best-effort — each task's renderAndWrite still allocates on its own */ }
+			}
+		}
+		return reviewParallel.run(state, ctx);
+	},
+};
 
 /** Build gate (deterministic build/test/typecheck). */
 const buildGateStep = task({
@@ -1462,6 +1489,11 @@ export const verificationConvergenceNode: Node = {
 			if (replayEarly && !reviewApproved(state)) {
 				recordAttemptEnd(state, record, false);
 				ctx.log(`Stage 10: attempt ${attempt} replay-derived (review cache-hit, not approved) — skipping build re-run and terminal arming until fresh evidence`);
+				// Bound (P8): the attempt loop's budget check (ctx.budget.check()) plus
+				// the replay sequence — every replayed attempt advances
+				// Math.max(attempt, attempts.length) past verificationReplayArms, so at
+				// most that many replay-continue rounds can fire before fresh evidence
+				// (or budget exhaustion) ends the loop.
 				continue;
 			}
 			const buildResult = await buildGateStep.run(state, ctx);
@@ -1489,6 +1521,9 @@ export const verificationConvergenceNode: Node = {
 					if (replaySeq <= verificationReplayArms(state, ctx)) {
 						ctx.log(`Stage 10: attempt ${attempt} boundary evidence is replay-derived (resume cache) — inline route-back/blocked-on-decisions deferred until fresh evidence`);
 						recordAttemptEnd(state, record, false);
+						// Bound (P8): same replay-sequence bound as the replayEarly arm —
+						// replaySeq is monotonically increasing per attempt and bounded by
+						// verificationReplayArms; the outer budget check caps everything else.
 						continue;
 					}
 					const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
@@ -1588,6 +1623,10 @@ export const verificationConvergenceNode: Node = {
 				const fixResult = await runVerificationFix("review", fixStepReview, state, ctx, `round ${attempt}`);
 				record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
 				if (fixResult.status === "cancelled") return fixResult;
+				// Bound (P8): loop bound = ctx.budget.check() in the attempt header plus
+				// recordVerificationStagnation's identical-failure-signature floor
+				// (returns failed) — a review-fix continue without budget/stagnation
+				// progress cannot spin unbounded.
 				continue;
 			}
 
@@ -1626,6 +1665,8 @@ export const verificationConvergenceNode: Node = {
 				const fixResult = await runVerificationFix("integration", fixStepIntegration, state, ctx, `round ${attempt}`);
 				record.fixChanged = ((state as Record<string, unknown>).__lastVerificationFix as { changed?: boolean } | undefined)?.changed;
 				if (fixResult.status === "cancelled") return fixResult;
+				// Bound (P8): same as the review-fix arm — budget check in the attempt
+				// header + recordVerificationStagnation's signature floor.
 				continue;
 			}
 

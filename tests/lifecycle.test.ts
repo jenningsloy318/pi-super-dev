@@ -3,7 +3,7 @@
  * HTTP server spawned as a child process — no mocks — so start/readiness/kill
  * are exercised end-to-end (and fast).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,8 @@ import {
 	stopService,
 	detectServices,
 	withServiceDeps,
+	serviceCmdAllowed,
+	sanitizeServiceEnv,
 } from "../src/stages/lifecycle.ts";
 import { SIGTERM_GRACE_MS } from "../src/agents/agent-runtime.ts";
 import { createServer } from "node:net";
@@ -95,6 +97,105 @@ describe("stopService edge cases", () => {
 	it("is a no-op for external (reused) services and invalid pids", () => {
 		expect(() => stopService({ role: "api", baseUrl: "x", pid: -1, port: 0, cmd: "", external: true, ready: true } as ServiceHandle)).not.toThrow();
 		expect(() => stopService({ role: "api", baseUrl: "x", pid: 999999, port: 0, cmd: "", external: false, ready: true } as ServiceHandle)).not.toThrow();
+	});
+});
+
+// ── F-07 (v0.3.86): FIRST-TOKEN ALLOWLIST — model-discovered service commands
+// run via shell:true; the denylist alone cannot bound that surface. A refused
+// candidate returns ready:false WITHOUT spawning (the ladder moves on — P5:
+// never punish the work for a refused checker).
+describe("F-07 — serviceCmdAllowed first-token allowlist", () => {
+	beforeEach(() => {
+		delete process.env.SUPER_DEV_SERVICE_CMD_ALLOWLIST;
+	});
+	afterEach(() => {
+		delete process.env.SUPER_DEV_SERVICE_CMD_ALLOWLIST;
+	});
+
+	it("standard launchers pass (the pipeline's own candidate ladder must never regress)", () => {
+		for (const ok of [
+			"npm run dev", "npm start", "pnpm preview", "yarn dev", "bun run build",
+			"node src/server.js", "deno run server.ts", "vite", "next dev",
+			"npx --yes serve -l $PORT .", "caddy file-server --listen :$PORT --root .",
+			"python3 -m http.server $PORT --bind 127.0.0.1", "cargo run --release",
+			"go run ./cmd/api", "./node_modules/.bin/vite", "http-server -p $PORT",
+		]) {
+			const r = serviceCmdAllowed(ok);
+			expect(r.ok, `${ok}: ${r.reason}`).toBe(true);
+		}
+	});
+
+	it("non-standard first tokens are refused with an actionable reason naming the escape hatch", () => {
+		for (const bad of ["make dev", "ruby server.rb", "sh start.sh", "bash -c 'node x'", "dd if=/dev/zero of=/dev/sda", "nc -l 8080"]) {
+			const r = serviceCmdAllowed(bad);
+			expect(r.ok, bad).toBe(false);
+			expect(r.reason).toContain("not a standard service launcher");
+			expect(r.reason).toContain("SUPER_DEV_SERVICE_CMD_ALLOWLIST");
+		}
+	});
+
+	it("package-manager verbs are constrained; python is constrained to the http.server family", () => {
+		expect(serviceCmdAllowed("npm exec node x").ok).toBe(false);
+		expect(serviceCmdAllowed("npm publish").ok).toBe(false);
+		expect(serviceCmdAllowed("python3 -m pickle").ok).toBe(false);
+		expect(serviceCmdAllowed("python3 -m http.server 8321").ok).toBe(true);
+	});
+
+	it("SUPER_DEV_SERVICE_CMD_ALLOWLIST extends the allowlist (explicit user intent)", () => {
+		expect(serviceCmdAllowed("make dev").ok).toBe(false);
+		process.env.SUPER_DEV_SERVICE_CMD_ALLOWLIST = "make,rails";
+		expect(serviceCmdAllowed("make dev").ok).toBe(true);
+		expect(serviceCmdAllowed("rails server").ok).toBe(true);
+		expect(serviceCmdAllowed("ruby server.rb").ok).toBe(false); // still refused
+	});
+});
+
+describe("F-07 — sanitized service env (credential stripping, explicit intent wins)", () => {
+	it("drops credential-shaped INHERITED vars; keeps PATH/HOME/NODE_ENV; .env + spec.env override the strip", () => {
+		const env = sanitizeServiceEnv(
+			{
+				PATH: "/usr/bin", HOME: "/home/u", NODE_ENV: "test", PORT: "3000",
+				ANTHROPIC_API_KEY: "sk-inherited", GITHUB_TOKEN: "gh", AWS_SECRET_ACCESS_KEY: "aws",
+				MY_PASSWORD: "p", DATABASE_URL: "pg://localhost/app",
+			},
+			{ OPENAI_API_KEY: "from-project-dotenv" },
+			{ ANTHROPIC_API_KEY: "explicit-spec-wins" },
+		);
+		expect(env.PATH).toBe("/usr/bin");
+		expect(env.HOME).toBe("/home/u");
+		expect(env.NODE_ENV).toBe("test");
+		expect(env.PORT).toBe("3000");
+		expect(env.DATABASE_URL).toBe("pg://localhost/app"); // not credential-shaped
+		expect(env.ANTHROPIC_API_KEY).toBe("explicit-spec-wins"); // explicit intent beats the strip
+		expect(env.OPENAI_API_KEY).toBe("from-project-dotenv"); // the project's own .env is explicit intent
+		expect(env.GITHUB_TOKEN).toBeUndefined(); // inherited credential, no override
+		expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+		expect(env.MY_PASSWORD).toBeUndefined();
+	});
+});
+
+describe("F-07 — startService refusal path (no spawn, honest log, ready:false)", () => {
+	it("REFUSES a non-allowlisted model-discovered cmd without spawning and logs the refusal", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sd-life-allow-"));
+		const logs: string[] = [];
+		try {
+			const before = Date.now();
+			const h = await startService({
+				role: "api",
+				cmd: "make dev", // a plausible model-discovered command that is NOT a standard launcher
+				cwd: dir,
+				portEnv: "PORT",
+				readinessTimeoutMs: 8000,
+			}, { port: 45999, log: (m) => logs.push(m) });
+			expect(h.ready).toBe(false);
+			expect(h.pid).toBe(-1);
+			expect(Date.now() - before).toBeLessThan(2000); // refused instantly — never polled
+			expect(logs.join("\n")).toContain("REFUSED");
+			expect(logs.join("\n")).toContain("not a standard service launcher");
+			expect(logs.join("\n")).toContain("no-live-service");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

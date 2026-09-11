@@ -496,7 +496,9 @@ export interface ReservedDoc {
  * task-list). Paths are STABLE across retries (specDoc reuses an existing
  * per-slug file), so a stage that re-runs targets the same files instead of
  * drifting the index. Returns [] for a stage with no render model. Pure aside
- * from the filesystem READ specDoc performs; never writes.
+ * from the filesystem READ specDoc performs; never writes. F-09 (v0.3.86): a
+ * NEW allocation is also RECORDED in the prompts.ts reservation registry, so
+ * a parallel sibling stage's allocation counts it before the file lands.
  */
 export function reserveStageDocs(setup: SetupControl, stageId: string): ReservedDoc[] {
 	const model = STAGE_MODELS[stageId];

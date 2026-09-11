@@ -154,6 +154,39 @@ describe("v0.3.80 B2 — stage-close re-verification (commit fusion)", () => {
 		const window = impl.slice(reverifyIdx, reverifyIdx + 1400);
 		expect(window).toContain("runBuildGate");
 	});
+
+	// ── F-04 (v0.3.86): requireTests counts as an AFFIRMATIVE clause — pre-fix a
+	// test-only phase was swallowed by the "(no affirmative clause)" vacuous guard.
+	it("F-04: a requireTests-only contract is affirmative — flippable when the test name exists, partial when it does not", async () => {
+		const { reverifyPartialPhases } = await import("../src/stages/implementation.ts");
+		const { wt, clean } = mkWt();
+		try {
+			mkdirSync(join(wt, "tests"), { recursive: true });
+			writeFileSync(join(wt, "tests/db.test.ts"), "test('connects to db', () => {});\n");
+			const phases = [
+				{ name: "tests-only-satisfied", deliverables: { requireTests: ["connects to db"] } },
+				{ name: "tests-only-missing", deliverables: { requireTests: ["never written"] } },
+			];
+			const out = reverifyPartialPhases(phases as never, [
+				{ id: "phase-01", status: "partial" },
+				{ id: "phase-02", status: "partial" },
+			], wt, "main");
+			expect(out.skippedVacuous.join("\n")).not.toContain("phase-01"); // RED pre-fix: "(no affirmative clause)"
+			expect(out.flippable.map((f) => f.id)).toEqual(["phase-01"]); // RED pre-fix: []
+		} finally {
+			clean();
+		}
+	});
+
+	// ── F-17 (v0.3.86): the misspelled export is renamed; the old spelling stays
+	// as a deprecated re-export alias of the SAME function object.
+	it("F-17: attributeQuarantinedViolations is the canonical export; attributQuarantinedViolations aliases it", async () => {
+		const implMod = await import("../src/stages/implementation.ts");
+		expect(typeof implMod.attributeQuarantinedViolations).toBe("function");
+		expect(implMod.attributQuarantinedViolations).toBe(implMod.attributeQuarantinedViolations);
+		// internal call sites use the corrected spelling only
+		expect(impl.match(/attributQ(?!uarantinedViolations =)/g) ?? []).toHaveLength(0);
+	});
 });
 
 describe("v0.3.80 B3 — plan memory across runs", () => {

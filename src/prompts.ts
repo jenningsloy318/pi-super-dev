@@ -11,7 +11,7 @@
  * retries don't inflate it; spec's three docs take base, base+1, base+2.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SetupControl, Classification, ControlObj } from "./types.ts";
 import { SKILL_DOMAINS } from "./agents/skill-domains.ts";
@@ -32,8 +32,50 @@ function fencedTask(task: string): string {
 
 type R = ControlObj | null | undefined;
 
+/** F-09 (v0.3.86): doc-number RESERVATION registry — specDir → slug → the
+ *  reserved `NN-<slug>.md` basename. A reservation is created the moment an
+ *  allocation site (specDoc/specDocs, i.e. reserveStageDocs at stage START)
+ *  computes a NEW doc name, and counts toward every OTHER allocation's next
+ *  free number until its file MATERIALIZES on disk (the file then counts
+ *  itself). This closes the doc-number grammar's TOCTOU edge: allocations are
+ *  pure dir-reads, so without a registry any two allocations before the first
+ *  write both compute the same "next free" index. In-process map by design
+ *  (the run lock serializes same-spec-dir processes); a reservation whose doc
+ *  never renders leaves an honest NUMBER GAP, never a collision. */
+const reservedDocNames = new Map<string, Map<string, string>>();
+
+/** Record a freshly allocated doc name for `slug` (idempotent per slug). */
+/** Join specDirectory + doc filename SEPARATOR-SAFELY (v0.3.86 F-09 follow-up):
+ * production specDirectories carry a trailing "/", but a separator-less dir
+ * glued path+filename into one token (`dir01-x.md`). Normalize once here so
+ * every doc path is invariant under both dir shapes. */
+function docBase(specDir: string): string {
+	return specDir.endsWith("/") ? specDir : `${specDir}/`;
+}
+
+function noteReservedDocName(specDir: string, slug: string, name: string): void {
+	let bySlug = reservedDocNames.get(specDir);
+	if (!bySlug) {
+		bySlug = new Map<string, string>();
+		reservedDocNames.set(specDir, bySlug);
+	}
+	bySlug.set(slug, name);
+}
+
+/** The reserved name for `slug`, or null. Self-cleans once the file exists on
+ *  disk (existingDocForSlug then owns idempotent reuse). */
+function reservedDocNameFor(specDir: string, slug: string): string | null {
+	const reserved = reservedDocNames.get(specDir)?.get(slug) ?? null;
+	if (reserved === null) return null;
+	try {
+		if (existsSync(join(specDir, reserved))) reservedDocNames.get(specDir)?.delete(slug);
+	} catch { /* unreadable dir — keep the reservation (safe: it only skips numbers) */ }
+	return reserved;
+}
+
 /** Next doc number = count of existing `NN-*` files in the spec dir (excluding
- *  any whose name ends in `-<slug>.md` for the given slugs) + 1. */
+ *  any whose name ends in `-<slug>.md` for the given slugs) + 1, plus every
+ *  RESERVED-but-not-yet-materialized doc from another group (F-09). */
 function nextDocNumber(specDir: string, excludeSlugs: string[] = []): number {
 	let count = 0;
 	try {
@@ -43,6 +85,14 @@ function nextDocNumber(specDir: string, excludeSlugs: string[] = []): number {
 			count++;
 		}
 	} catch { /* dir not readable yet — treat as empty */ }
+	const pending = reservedDocNames.get(specDir);
+	if (pending) {
+		for (const name of pending.values()) {
+			if (excludeSlugs.some((sg) => name.endsWith(`-${sg}.md`))) continue;
+			try { if (existsSync(join(specDir, name))) continue; } catch { /* count it */ }
+			count++;
+		}
+	}
 	return count + 1;
 }
 
@@ -106,10 +156,17 @@ function phaseScenarioRefsFor(specControl: R, phase: { name: string; scenarioRef
 export function specDocs(s: SetupControl, slugs: string[]): string[] {
 	// Base = count of numbered docs that are NOT one of this group's slugs, +1.
 	let base = nextDocNumber(s.specDirectory, slugs);
+	const dirBase = docBase(s.specDirectory);
 	return slugs.map((slug) => {
 		const existing = existingDocForSlug(s.specDirectory, slug);
-		if (existing) return `${s.specDirectory}${existing}`;
-		return `${s.specDirectory}${pad(base++)}-${slug}.md`;
+		if (existing) return `${dirBase}${existing}`;
+		// F-09: honor an earlier reservation for this slug (idempotent — the
+		// stage that reserved first keeps its number) before allocating fresh.
+		const reserved = reservedDocNameFor(s.specDirectory, slug);
+		if (reserved) return `${dirBase}${reserved}`;
+		const name = `${pad(base++)}-${slug}.md`;
+		noteReservedDocName(s.specDirectory, slug, name);
+		return `${dirBase}${name}`;
 	});
 }
 
@@ -123,8 +180,13 @@ export function specDocs(s: SetupControl, slugs: string[]): string[] {
  *  idempotent behavior (one artifact per slug, updated in place). */
 export function specDoc(s: SetupControl, slug: string): string {
 	const existing = existingDocForSlug(s.specDirectory, slug);
-	if (existing) return `${s.specDirectory}${existing}`;
-	return `${s.specDirectory}${pad(nextDocNumber(s.specDirectory, [slug]))}-${slug}.md`;
+	if (existing) return `${docBase(s.specDirectory)}${existing}`;
+	// F-09: honor an earlier reservation before allocating a fresh number.
+	const reserved = reservedDocNameFor(s.specDirectory, slug);
+	if (reserved) return `${docBase(s.specDirectory)}${reserved}`;
+	const name = `${pad(nextDocNumber(s.specDirectory, [slug]))}-${slug}.md`;
+	noteReservedDocName(s.specDirectory, slug, name);
+	return `${docBase(s.specDirectory)}${name}`;
 }
 
 /** Return the FIRST existing `NN-<slug>.md` filename in the spec dir (lowest
