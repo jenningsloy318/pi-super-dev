@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.3.93: 只读角色声明 completionGuard:false（0.67 官方变异守卫逃生门）
+
+v0.3.92 的后续加固。pi-subagents 0.67 的 `validateImplementationToolContract` 按 task 文本的
+实现意图分类拒绝无突变工具的子代理——而只读角色的 stage prompt 会合法内嵌用户任务原文
+（"implement docs/…"），用上游真实分类器 + 真实 buildRequirementsPrompt 输出探针实证分类为
+implementation（2026-09-11 pi-omisis spec-26 run 观察到 sd-reflection/sd-requirements-clarifier
+pre-spawn 拒绝）。
+
+- 修复采用**上游官方旗标**而非自造机制：agent 定义级 `completionGuard: false`
+  （docs/agents.md："Set false only for non-implementation agents that may mention
+  implementation words"；runtime-agent-registry 注册契约显式验证并透传该字段）。
+  语义正确：完成突变守卫拦截"声称改了文件但没改"的伪造——无突变工具的只读子代理
+  本就不适用。writers 保留默认守卫（反伪造网）。
+- 注册钉测：只读角色 completionGuard===false、writer 角色保持 undefined。
+
 ### Fixed — v0.3.92: read-only 子代理面移除 bash（0.67 review-lane 工具契约）
 
 pi-subagents 0.67 的 child-tool-plan 对 **review-lane 子代理**（名字匹配 `/\b(?:reviewer|scout)\b/i`）

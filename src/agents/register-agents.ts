@@ -216,6 +216,21 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 					...(READ_ONLY_AGENTS.has(name) ? READ_ONLY_TOOLS : WRITER_TOOLS),
 					...configToolsFor(name).list,
 				])] }),
+			// v0.3.93 — pi-subagents 0.67 completion-guard escape, DOCUMENTED for
+			// exactly this case (docs/agents.md: "Set false only for
+			// non-implementation agents that may mention implementation words").
+			// Read-only roles never mutate (no mutation tools since v0.3.92), so
+			// the implementation-tool contract + completion mutation guard are
+			// meaningless for them — and their stage prompts legitimately EMBED the
+			// user's task text ("implement docs/…"), which the upstream task-intent
+			// classifier scores as implementation intent (probe-verified against
+			// the real classifier + real buildRequirementsPrompt output). Without
+			// the flag, a host where that role lacks mutation capability rejects
+			// the child PRE-SPAWN (observed 2026-09-11: sd-reflection/
+			// sd-requirements-clarifier failures, pi-omisis spec-26 runs).
+			// Writers KEEP the guard (default): blocking a "done" claim with zero
+			// mutations on an implementation task is their anti-fabrication net.
+			...(READ_ONLY_AGENTS.has(name) ? { completionGuard: false } : {}),
 			// v0.3.59 — skills are a capability on EVERY backend (v0.2.10 W4 parity).
 			// pi-subagents defaults inheritSkills to FALSE (agents.ts
 			// defaultInheritSkills), which launched every sd-* child with

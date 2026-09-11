@@ -222,6 +222,22 @@ describe("registerSuperDevAgents", () => {
 		expect([...requests.find((r) => r.name === "sd-implementer").definition.excludeTools ?? []].sort()).toEqual(["powershell", "super_dev"]);
 	});
 
+	it("v0.3.93 — read-only roles declare completionGuard:false (0.67 mutation-guard escape, docs/agents.md)", () => {
+		const requests: any[] = [];
+		registerSuperDevAgents(autoBus(requests) as never);
+		// read-only roles: the flag is set — stage prompts legitimately embed the
+		// user task ("implement docs/…") which the upstream task-intent classifier
+		// scores as implementation; the mutation guard is meaningless for
+		// mutation-less children and would reject them pre-spawn.
+		for (const role of ["sd-requirements-clarifier", "sd-reflection", "sd-requirements-reviewer", "sd-judge", "sd-eval-scorer"]) {
+			expect(requests.find((r) => r.name === role)?.definition.completionGuard).toBe(false);
+		}
+		// writers keep the default guard: "done with zero mutations" blocking is
+		// their anti-fabrication net.
+		expect(requests.find((r) => r.name === "sd-implementer")?.definition.completionGuard).toBeUndefined();
+		expect(requests.find((r) => r.name === "sd-tdd-guide")?.definition.completionGuard).toBeUndefined();
+	});
+
 	it("v0.3.92 — the read-only tool surface carries NO bash (0.67 review-lane tool contract)", () => {
 		// pi-subagents 0.67 hard-fails reviewer|scout-named children when a DECLARED
 		// repository-inspection tool is unavailable in the host runtime — a bash-less
