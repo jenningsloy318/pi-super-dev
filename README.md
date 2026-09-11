@@ -1218,6 +1218,12 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_MAX_RUN_TOKENS` | — | run-wide token fuse, input+output (fail-closed pre-call; see Usage governance) |
 | `SUPER_DEV_CODE_TIMEOUT_MS` | `1800000` | code-tier timeout per delegation call — `implementer` + `tdd-guide` (the TDD write/test loop roles); on timeout the child is terminated and the attempt's timeout signature feeds the existing retry/fuse machinery (v0.3.73 timeout tiers) |
 | `SUPER_DEV_REVIEW_TIMEOUT_MS` | `1800000` | review-tier timeout per delegation call — the reviewer family (requirements/bdd/design/spec/code/adversarial reviewers); raised from the 20-min default after seven exact-20:00 timeouts in one healthy run (v0.3.73 M4) |
+| `SUPER_DEV_LLM_COMMITS` | — | `1` = LLM-authored commits off — commit machinery falls back to plain commits (in-place runs; v0.3.54) |
+| `SUPER_DEV_MAX_RED_ENV_RESTARTS` | `1` | judge `fix-environment` restart attempts per run (v0.3.62; capped so an unwritable environment cannot consume the RED budget) |
+| `SUPER_DEV_NO_COMMIT_GUARD` | — | `1` = disable the commit-guard child extension that blocks commit-class `git` invocations on writer agents (v0.3.74) |
+| `SUPER_DEV_NO_FRESHNESS_CHECK` | — | `1` = skip the serving-copy freshness check (test hermeticity; WARNs if active outside tests, v0.3.81) |
+| `SUPER_DEV_NO_GLOBAL_METRICS` | — | `1` = stop writing the global `~/.super-dev/run-metrics.jsonl` ledger (test hermeticity; per-spec ledger still written, v0.3.73) |
+| `SUPER_DEV_STRUCTURED` | — | `0` = opt out of structured-delegation mode (default ON since v0.3.70; sticky degrade-to-text on unsupported owners is unchanged) |
 | `SUPER_DEV_WRITER_TIMEOUT_MS` | `1800000` | heavy-writer timeout tier — spec-writer produces all three spec docs in one call (v0.3.84) |
 | `SUPER_DEV_DUPLICATE_NODE_RETRY_MS` | `2000` | backoff before the single duplicate_node delegation retry, clamped to 60s (v0.3.84) |
 | `SUPER_DEV_NO_CONFIG_ENV` | — | `1` = test-hermeticity kill switch: `superDevEnv` ignores `config.json`'s `env` map entirely (set by the vitest setup; never set in production) |
@@ -1253,7 +1259,6 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_SERVICE_CMD_ALLOWLIST` | — | comma-separated EXTRA first-token service launchers for the verification bringup allowlist (model-discovered `cmd` must start with a standard launcher — npm/pnpm/yarn/bun run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, `python -m http.server`, cargo/go run; anything else is refused with an honest log and the pipeline degrades to no-live-service, never punishing the work) |
 | `SUPER_DEV_NO_SAFETY_GUARD` | — | `1` = kill switch for the delegated-child safety guard (dangerous-bash denylist + protected-file writes, loaded via `subagentOnlyExtensions` for every agent alongside the commit guard) |
 | `SUPER_DEV_NO_EVAL_STAGE` | — | `1` = kill switch for the in-pipeline eval surface at run close-out (trajectory + final-response scoring, `eval.*` events, eval-report.md, the user-local dataset append to `~/.super-dev/evals/runs/rows.jsonl`, AND the P3 flywheel — same switch, same class); the stage + flywheel are ON by default — this is a hermeticity/escape switch of the `SUPER_DEV_NO_SAFETY_GUARD` class, also honored via the config.json `env` map. The D6 reread check is NOT under this switch (always on — free + deterministic, writes only on findings) |
-| `SUPER_DEV_DEBUG` | — | debug logging |
 
 Every entry above can be exported in the shell (traditional behavior,
 unchanged) **or** placed in the `config.json` `env` map.
