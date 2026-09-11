@@ -1,12 +1,12 @@
 # SDLC tips adoption — implementation spec (FINALIZED 2026-09-11)
-Status: in progress (grilling session — living artifact)
+Status: finalized 2026-09-11 (grilling closed; living — implementation-period corrections write back)
 
-Source: `docs/requirements/sdlc/tip.md` (11 tips distilled from the four SDLC research docs). Produced by a grilling session (2026-09-11), updated after every confirmed decision. **This is the single artifact of the session** — scope, language, decisions, verdicts, and delta requirements all live here; when grilling completes it becomes the implementation spec. Verdicts judge the **13-stage pipeline** (pipeline-primary); tips 7/11 are judged at the engine surface where they live. Scale: **adopt / already-have / reject**; partial outcomes land as delta requirements.
+Source: `docs/requirements/sdlc/tip.md` (11 tips distilled from the four SDLC research docs). Produced by a grilling session (2026-09-11), updated after every confirmed decision. **This is the single artifact of the session** — scope, language, decisions, verdicts, and delta requirements all live here; when grilling completes it becomes the implementation spec. Verdicts judge the **staged pipeline** (requirements → research → design → spec → TDD implementation → verification convergence → docs → merge; pipeline-primary; the historical "13-stage" naming was deprecated repo-wide in v0.3.87); tips 7/11 are judged at the engine surface where they live. Scale: **adopt / already-have / reject**; partial outcomes land as delta requirements.
 
 ## 1. Session scope (confirmed)
 
 - **Goal**: adoption verdicts for each of the 11 tips + a delta-requirements list; this doc is the deliverable and later the implementation spec.
-- **Surface**: pipeline-primary (what the 13-stage pipeline does to user projects); tips 7/11 at the engine level (delegation/routing/budget).
+- **Surface**: pipeline-primary (what the staged pipeline does to user projects); tips 7/11 at the engine level (delegation/routing/budget).
 - **Verdict scale**: adopt / already-have / reject per tip or tip-half; gaps become delta requirements (§5).
 
 ## 2. Language
@@ -45,7 +45,7 @@ Rejected: (a) "already-have" — the deadlock Judge plus oracles adjudicate disa
 
 ### DEC-2 — Evals execute as an in-pipeline stage
 
-Every super-dev run carries an eval surface scoring its own agents (trajectory + verdict quality) against golden cases and rubrics, so datasets bootstrap continuously from real runs and trajectory decay is measurable in-flight. Rejected: release-gate-only suite (regressions caught only at version bumps; flywheel starved of data between releases; the `SUPER_DEV_BENCH=1` real-LLM bench precedent is retained for its deterministic layer) and on-demand mode (nothing forces the flywheel). Cost accepted: every user run pays eval tokens + latency. Hard constraint: the eval stage is **fail-open** (P4/P5 — eval timeout, violation, or spawn error never fails or blocks the run under review). Confirmed semantics: **two scorers, advisory verdicts** — (1) a mid-run trajectory scorer at convergence boundaries that turns run-observability/sigma-band counters into a scored verdict feeding the EXISTING stagnation/fault machinery observably, and (2) a final-response scorer before the report. Verdicts land in the run report and emit golden-case dataset rows; no new merge gate exists.
+Every super-dev run carries an eval surface scoring its own agents (trajectory + verdict quality) against golden cases and rubrics, so datasets bootstrap continuously from real runs and trajectory decay is measurable in-flight. Rejected: release-gate-only suite (regressions caught only at version bumps; flywheel starved of data between releases; the v0.3.4 `SUPER_DEV_BENCH` real-LLM bench — deleted in v0.3.88 — is *historical* precedent for a deterministic layer, and D4's golden-case runner is new machinery, not its revival) and on-demand mode (nothing forces the flywheel). Cost accepted: every user run pays eval tokens + latency. Hard constraint: the eval stage is **fail-open** (P4/P5 — eval timeout, violation, or spawn error never fails or blocks the run under review). Confirmed semantics: **two scorers, advisory verdicts** — (1) a mid-run trajectory scorer at convergence boundaries that turns run-observability/sigma-band counters into a scored verdict — **strictly observational (2026-09-11 评审裁定)**: it READS the counters the existing stagnation/fault machinery already consumes and never actuates them (`eval.*` events + run-report rows + dataset rows only; any future actuation wiring is a named D3-era amendment carrying its own P3 failure-path table — a checker-class verdict tripping FaultActuators would violate this record's own fail-open constraint), and (2) a final-response scorer before the report. Verdicts land in the run report and emit golden-case dataset rows; no new merge gate exists.
 
 ## 3.1 DEC-3 — 工件链：intent ≡ requirement，不设独立 intent.md
 
@@ -83,11 +83,11 @@ trajectory scorer ＝ 确定性代码为主：σ-带漂移分类（已存在）�
 
 ## 3.9 DEC-11 — D4 飞轮：提案-上架分离（propose/apply split）
 
-四环节：① 聚类自动化——reflection 扩展读 rows.jsonl，按 target/assertion/defectClass 聚类，更新 learned-index（知识数据自动机制，非 prompt 代码，无新风险类）+ 系统性失败（≥N run 同断言失败）写 findings；② 提案自动化——自动起草 Proposal 工件，不直接改任何 prompt；③ 人工闸门（唯一人工环节）——维护者批准/修改/拒绝提案；④ 回归验证自动化——bench 扩展执行器按 target 匹配受影响金标，场景注入 → expected verdict 确定性比对（DEC-6 词表），绿了才落地。否决：全自动改 prompt（P4 正面冲突：无人工把关的坏聚类污染所有后续 run）、纯手工聚类（飞轮锈死）、独立聚类 agent（与 reflection 职责重叠，双份维护）。
+四环节：① 聚类自动化——reflection 引擎代理（src/render/reflection.ts，引擎运行、非 pi 扩展）读 rows.jsonl，按 target/assertion/defectClass 聚类，更新 learned-index（知识数据自动机制，非 prompt 代码，无新风险类）+ 系统性失败（≥N run 同断言失败）写 findings；② 提案自动化——自动起草 Proposal 工件，不直接改任何 prompt；③ 人工闸门（唯一人工环节）——维护者批准/修改/拒绝提案；④ 回归验证自动化——eval 回归执行器（golden-case runner，新机器——非已删除的 v0.3.4 bench 复活）按 target 匹配受影响金标，场景注入 → expected verdict 确定性比对（DEC-6 词表），绿了才落地。否决：全自动改 prompt（P4 正面冲突：无人工把关的坏聚类污染所有后续 run）、纯手工聚类（飞轮锈死）、独立聚类 agent（与 reflection 职责重叠，双份维护）。
 
-## 3.10 DEC-12 — D6 执法形态：prompt 规则 + 观测性叙述，确定性检查诚实降级
+## 3.10 DEC-12 — D6 执法形态：prompt 规则 + 确定性频次检查 + 观测性叙述
 
-D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ trajectory scorer 的低档 LM 叙述**观察**重读行为（观测，非执法）。“确定性检查重读行为”降级：源码读取在 super-dev 可动面内不可观测（工具调用 instrumentation 属 pi-subagents 上游），真拦截记为 upstream ask 可选项，不实现。问询中默认值无否决确认。
+D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ **确定性频次检查** + trajectory scorer 的低档 LM 叙述**观察**重读行为（观测，非执法）。确定性层（2026-09-11 评审裁定**恢复**）：v0.3.76 的 tool-usage 遥测已把每个子代理的工具调用（工具名 + 60 字符 argHead）落入 `<specDir>/tool-usage.jsonl`（src/evolution/tool-usage.ts，delegation tick 通道）——**调用级观测在 super-dev 可动面内**；据此对 rows 做频次/层级检查（如：对已作为上游工件注入的路径 >N 次源码读取调用），fail-open。上游边界（如实）：内容级读取、拦截、重定向仍属 pi-subagents 上游，记为 upstream ask 可选项，不实现。（原记录的“源码读取不可观测”前提为假——v0.3.76 遥测已证伪，且本记录的低档叙述层恰恰依赖该可观测性；问询中默认值无否决确认——保留为历史注记，部分被本次裁定取代。）
 
 ## 4. Verdict ledger
 
@@ -96,7 +96,7 @@ D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ t
 | Tip's demand | Verdict | Basis |
 | --- | --- | --- |
 | Tests for deterministic parts (tip 1) | already-have | RED/GREEN oracles, TDD implementation stage, build gates |
-| Evals for non-deterministic parts (tip 1) | **adopt** | Judge is deadlock-only control flow; no rubric-scored golden-case datasets；行为 bench 仅覆盖收敛单节点（SUPER_DEV_BENCH 双形状），非跨 release 行为回归套件 |
+| Evals for non-deterministic parts (tip 1) | **adopt** | Judge is deadlock-only control flow; no rubric-scored golden-case datasets；行为 bench 曾仅覆盖收敛单节点（v0.3.4 SUPER_DEV_BENCH 双形状，v0.3.88 已删除——docs/requirements/shape-dual-benchmark-v0.3.4.md 存档），且本就非跨 release 行为回归套件 |
 | Output eval (tip 3) | already-have | Deterministic re-derivation of every LLM self-report |
 | Trajectory eval (tip 3) | **adopt** (scoring; enforcement stays structural) | Stages/gates/toolBudget enforce; run-observability 记录 + sigma-bands 已对健康计数器做确定性 σ-带分类（漂移监测）；缺的是 rubric/LM 对轨迹质量的打分（工具选择、verdict 质量） |
 | Eval execution placement | **adopt** — in-pipeline stage (DEC-2) | Datasets bootstrap from real runs; fail-open per P4/P5 |
@@ -135,14 +135,14 @@ D6 落地形态：work-unit prompt 规则（上游工件为首选证据源）+ t
 
 ## 5. Delta requirements (implementation-ready, accumulating)
 
-- **D1** — Golden-case dataset: labelled scenario → expected-verdict pairs seeded from historical postmortems, requirement dossiers, and bench scenarios; the dataset the in-pipeline eval stage scores against. 住址与 schema 已决（DEC-5、DEC-6）：`~/.super-dev/evals/`，六字段 + verdict 枚举闭包校验。 *(cluster 1)*
+- **D1** — Golden-case dataset: labelled scenario → expected-verdict pairs seeded from historical postmortems, requirement dossiers, and the archived v0.3.4 bench scenarios (docs/requirements/shape-dual-benchmark-v0.3.4.md — the bench machinery itself was deleted in v0.3.88); the dataset the in-pipeline eval stage scores against. 住址/schema **RESOLVED**（DEC-5/6）：`~/.super-dev/evals/`，六字段 + verdict 枚举闭包校验；种子集 accumulating。 *(cluster 1)*
 - **D2** — Persisted rubric artifacts (RESOLVED，DEC-7): per-rubricId 文件于 `~/.super-dev/evals/rubrics/`；断言级 boolean + 0..1 confidence；row 盖 rubricVersion 章；σ-带基线按 rubric 版本分键 + <8 行诚实规则；种子期手写。
 - **D3** — Trajectory scoring (RESOLVED，DEC-9): 确定性为主——σ-带分类（现有基底，不重造分带）→ rubric 带位映射 → 带内 verdict；工具选择质量部分低档 LM 可选叙述；测量，非执法。
-- **D4** — Flywheel wiring (RESOLVED，DEC-11): 提案-上架分离——聚类自动（reflection 扩展 + learned-index）→ Proposal 工件自动起草 → 人工点头唯一闸门 → bench 扩展跑受影响金标，绿了才落地。
+- **D4** — Flywheel wiring (RESOLVED，DEC-11): 提案-上架分离——聚类自动（reflection 引擎代理 + learned-index）→ Proposal 工件自动起草 → 人工点头唯一闸门 → eval 回归执行器（golden-case runner）跑受影响金标，绿了才落地。
 - **D5** — In-pipeline eval stage (RESOLVED，DEC-2/9/10): fail-open surface inside every run；trajectory scorer（确定性，收敛边界处，词表复用既有枚举 + `eval.*` 事件）+ final-response scorer（前沿档 specialist agent，run 末尾，诚实栏 + 限界 spec 保真断言集）；verdicts advisory——run report + golden-case dataset rows，无新 merge gate。
 
-- **D6** — 工件换重读 (RESOLVED，DEC-12)（artifact-instead-of-reread）：下游 agent 以上游工件为首选证据源，源码重读仅用于 grounding 验证；落地＝work-unit prompt 规则 + 观测性 LM 叙述；确定性拦截降级为 upstream ask 可选。约束：不禁止验证性重读——省 token 不许换来偏信过时工件。*(cluster 4 复议)*
+- **D6** — 工件换重读 (RESOLVED，DEC-12 评审裁定修订)（artifact-instead-of-reread）：下游 agent 以上游工件为首选证据源，源码重读仅用于 grounding 验证；落地＝work-unit prompt 规则 + **确定性频次检查**（tool-usage.jsonl rows，fail-open）+ 观测性 LM 叙述；内容级拦截/重定向降级为 upstream ask 可选。约束：不禁止验证性重读——省 token 不许换来偏信过时工件。*(cluster 4 复议)*
 
 ## 6. Closure
 
-Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增量需求 D1–D6 全部 RESOLVED（DEC-5–DEC-12），实现就绪。建议分期：**P1** = D1+D2（金标集 + rubric 地基）→ **P2** = D5+D3（双打分器）→ **P3** = D4 飞轮 + D6。后续实现期的修正仍回写本文档（living 约定保留）。
+Spec 定稿（2026-09-11，三轮 grilling 收口）。tip 账目见 §4，增量需求 D1–D6 全部 RESOLVED（DEC-5–DEC-12），实现就绪。建议分期：**P1** = D1+D2（金标集 + rubric 地基）→ **P2** = D5+D3（双打分器）→ **P3** = D4 飞轮 + D6。后续实现期的修正仍回写本文档（living 约定保留）。定稿后同日独立 grill 评审（pi-super-dev 会话，glm-5.3-flash）：33 项主张核验（29 ✅），4 处漂移修正（SUPER_DEV_BENCH 现存时引用×2、“13-stage”命名、DEC-12 不可观测假前提、bench 幽灵命名）+ 2 项 owner-proxy 裁定已 fold（D6 确定性层恢复 / v1 严格只读）；Status 行同步翻转。
