@@ -183,3 +183,15 @@ If a file reports DIFF, act per contract:
   prefix entry anyway so it activates if upstream gains prefix matching).
   Upstream ask: prefix-aware block entries. Neither gap blocks the S4 design
   (block-only-external semantics hold: local tools always retained).
+
+## 2026-09-11 — pi-subagents 0.67 review-lane tool contract (hard-fail on declared-but-unavailable repository tools)
+
+`src/runs/shared/child-tool-plan.ts` — for agent names matching `/\b(?:reviewer|scout)\b/i`, a DECLARED
+repository-inspection tool (`REPOSITORY_INSPECTION_TOOLS` = read/grep/find/ls/bash/powershell) that the host
+runtime does not provide throws `formatReviewLaneToolContractFailure` — the whole child dies as a lane
+infrastructure failure (non-reviewer agents only get the non-fatal prune+warn). Observed live: a super-dev run
+launched from a bash-less host session killed every `sd-*-reviewer` child in ~85ms (pi-omisis spec-26,
+2026-09-11). super-dev v0.3.92 removes `bash` from READ_ONLY_TOOLS + WILDCARD_READ_ONLY_EXCLUDES accordingly.
+Upstream observation (no ask): the hard-fail covers only reviewer|scout names while the declared list that
+triggers it comes from the OWNER's registration — owners with read-only reviewer roles should not declare
+shell tools they don't require.

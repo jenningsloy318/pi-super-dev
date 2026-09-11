@@ -26,10 +26,24 @@ import type { DelegationEventBus } from "./delegation-backend.ts";
 
 export const RUNTIME_AGENT_REGISTER_EVENT = "pi-subagents:runtime-agent-register:v1";
 
-/** Read-only tool set: inspection + diagnostics, no mutation. (Historically
- *  this mirrored the deleted session backend's
- *  sessionToolAccess("source-read-only") split — v0.3.88 removed that copy.) */
-export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
+/** Read-only tool set: inspection only, no mutation, NO bash.
+ *  (Historically this mirrored the deleted session backend's
+ *  sessionToolAccess("source-read-only") split — v0.3.88 removed that copy.)
+ *
+ *  v0.3.92: `bash` REMOVED. pi-subagents 0.67 child-tool-plan enforces a
+ *  hard tool contract on review-lane children (agent names matching
+ *  /\b(?:reviewer|scout)\b/i): a DECLARED repository-inspection tool
+ *  (read/grep/find/ls/bash/powershell) that the host runtime does not
+ *  provide fails the whole child as a lane infrastructure failure — so a
+ *  super-dev run launched from a bash-less host session killed EVERY
+ *  *-reviewer child instantly (observed 2026-09-11, pi-omisis spec-26 run:
+ *  "tool contract could not be satisfied; host runtime does not provide
+ *  permitted required repository tools [bash]"). Read-only roles never
+ *  needed bash for their binding semantics — the engine-side source
+ *  boundary is the enforcement (P4); bash on reviewers was advisory
+ *  convenience. On bash-capable hosts reviewers keep read/grep/find/ls,
+ *  which covers every inspection a review child legitimately performs. */
+export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 /** Writer tool set — the coding surface minus the super_dev tool itself. */
 export const WRITER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"] as const;
@@ -37,14 +51,18 @@ export const WRITER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "writ
 /** v0.3.82: tools excluded when the all-tools mode unpins an allowlist.
  *  Read-only roles: the write family + powershell (the Windows bash twin —
  *  never in READ_ONLY_TOOLS by precedent, so the unpinned mode must re-exclude
- *  it to preserve posture). EVERY role: `super_dev` — children without an
- *  extensions pin keep AMBIENT extension loading, so an unpinned child would
- *  otherwise carry an ACTIVE super_dev tool and could recurse into a nested
- *  nested pipeline (dual review code-F3/adv-F5; the pin was the only thing
- *  keeping it out — see the WRITER_TOOLS "minus the super_dev tool" note).
- *  Bash stays available per repo precedent; the binding read-only enforcement
- *  remains the engine-side source boundary. */
-const WILDCARD_READ_ONLY_EXCLUDES = ["write", "edit", "powershell", "super_dev"] as const;
+ *  it to preserve posture) + `bash` itself (v0.3.92 — the unpinned mode
+ *  re-opens the 0.67 review-lane tool contract failure on bash-less hosts
+ *  for reviewer-named children; excluding it here keeps the unpinned posture
+ *  identical to the pinned one for read-only roles). EVERY role: `super_dev`
+ *  — children without an extensions pin keep AMBIENT extension loading, so an
+ *  unpinned child would otherwise carry an ACTIVE super_dev tool and could
+ *  recurse into a nested nested pipeline (dual review code-F3/adv-F5; the pin
+ *  was the only thing keeping it out — see the WRITER_TOOLS "minus the
+ *  super_dev tool" note). Writers KEEP bash (non-reviewer names get the
+ *  non-fatal prune+warn on bash-less hosts, not the hard contract); the
+ *  binding read-only enforcement remains the engine-side source boundary. */
+const WILDCARD_READ_ONLY_EXCLUDES = ["write", "edit", "powershell", "bash", "super_dev"] as const;
 const WILDCARD_WRITER_EXCLUDES = ["powershell", "super_dev"] as const;
 
 /** Agents whose ROLE is analytical (reviewers, judges, classifiers,

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.3.92: read-only 子代理面移除 bash（0.67 review-lane 工具契约）
+
+pi-subagents 0.67 的 child-tool-plan 对 **review-lane 子代理**（名字匹配 `/\b(?:reviewer|scout)\b/i`）
+执行硬工具契约：声明了的仓库检查工具（read/grep/find/ls/**bash**/powershell）若宿主运行时不提供，
+整个子代理作为 lane infrastructure failure 失败。从无 bash 的宿主会话启动 super-dev run 时，
+每个 `*-reviewer` 子代理秒灭（实测 2026-09-11 pi-omisis spec-26 run：
+"tool contract could not be satisfied; host runtime does not provide permitted required repository tools [bash]"）。
+
+- `READ_ONLY_TOOLS` 移除 `bash`（只读角色的绑定执法本就在引擎侧 source boundary——P4；
+  read/grep/find/ls 覆盖评审子代理全部合法检查动作；writer 面保留 bash：非 reviewer 名字
+  在无 bash 宿主走非致命 prune+warn，不触发硬契约）。
+- `WILDCARD_READ_ONLY_EXCLUDES` 增补 `bash`（all-tools 模式重新打开同一失败路径——未钉面
+  会带上 bash 再次触发 0.67 硬契约；排除后未钉姿态与钉面姿态对只读角色一致）。
+- 回归钉测：READ_ONLY_TOOLS 无 bash / WRITER_TOOLS 有 bash / 两处字面量钉同步。
+
 ### Added — v0.3.91: P3 飞轮 + D6 工件换重读 + 污染防火墙（规格三波收官）
 
 `sdlc-tips-adoption.md` P3 终波——数据集飞轮（全确定性、人工闸门不可谈判 L7）、D6 落地、

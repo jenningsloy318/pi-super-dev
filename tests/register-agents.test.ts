@@ -216,10 +216,19 @@ describe("registerSuperDevAgents", () => {
 		configHolder.config = { allTools: true };
 		const requests: any[] = [];
 		registerSuperDevAgents(autoBus(requests) as never);
-		expect([...requests.find((r) => r.name === "sd-spec-reviewer").definition.excludeTools ?? []].sort()).toEqual(["edit", "powershell", "super_dev", "write"]);
+		expect([...requests.find((r) => r.name === "sd-spec-reviewer").definition.excludeTools ?? []].sort()).toEqual(["bash", "edit", "powershell", "super_dev", "write"]);
 		// v0.3.82 review fix (code-F3/adv-F5): writers keep the recursion guard too —
 		// unpinned ambient children load pi-super-dev itself (active super_dev tool).
 		expect([...requests.find((r) => r.name === "sd-implementer").definition.excludeTools ?? []].sort()).toEqual(["powershell", "super_dev"]);
+	});
+
+	it("v0.3.92 — the read-only tool surface carries NO bash (0.67 review-lane tool contract)", () => {
+		// pi-subagents 0.67 hard-fails reviewer|scout-named children when a DECLARED
+		// repository-inspection tool is unavailable in the host runtime — a bash-less
+		// launch session killed every *-reviewer child instantly (2026-09-11 pi-omisis
+		// spec-26 run). This pin stops a silent re-add.
+		expect(READ_ONLY_TOOLS).not.toContain("bash");
+		expect(WRITER_TOOLS).toContain("bash"); // writers keep it: non-reviewer names prune+warn, never hard-fail
 	});
 
 	it("agentAllTools per-role unpins that role only", () => {
@@ -529,7 +538,7 @@ describe("v0.3.78 review fixes — config extension TOOLS merge into the registr
 		const { bus, requests } = collectingBus();
 		registerSuperDevAgents(bus);
 		const tools = requests.find((r: any) => r.name === "sd-code-reviewer").definition.tools as string[];
-		expect(tools).toEqual(["read", "grep", "find", "ls", "bash", "lsp_diagnostics", "lsp_hover", "recall"]);
+		expect(tools).toEqual(["read", "grep", "find", "ls", "lsp_diagnostics", "lsp_hover", "recall"]);
 	});
 
 	it("writer agents keep edit/write plus config tools", () => {
@@ -543,7 +552,7 @@ describe("v0.3.78 review fixes — config extension TOOLS merge into the registr
 	it("empty tools resolution keeps the bare role allowlist (pre-v0.3.78 parity)", () => {
 		const { bus, requests } = collectingBus();
 		registerSuperDevAgents(bus);
-		expect(requests.find((r: any) => r.name === "sd-code-reviewer").definition.tools).toEqual(["read", "grep", "find", "ls", "bash"]);
+		expect(requests.find((r: any) => r.name === "sd-code-reviewer").definition.tools).toEqual(["read", "grep", "find", "ls"]);
 		expect(requests.find((r: any) => r.name === "sd-implementer").definition.tools).toEqual(["read", "grep", "find", "ls", "bash", "edit", "write"]);
 	});
 
