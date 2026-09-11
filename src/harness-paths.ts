@@ -97,6 +97,15 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// (events.jsonl parity — engine-appended inside the spec dir at phase
 	// boundaries and handoffs; rides phase commits as durable evidence).
 	".inherited-red.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
+	// v0.3.87 S4(b) (decision 9): the research-assist ledger — the NOVEL four-role
+	// combo the v0.3.85 grill fold flagged (accuracy note: .judge.jsonl carries
+	// redBoundaryAnywhere rather than SpecScoped; test-runner.json carries three
+	// roles without trackerAdvisoryNoise). Appended engine-side inside the spec
+	// dir mid-attempt (specDirBookkeeping + redBoundarySpecScoped +
+	// trackerAdvisoryNoise), but it is PER-ATTEMPT SCRATCH, never durable phase
+	// evidence — phaseCommitExcluded keeps it off the deterministic phase commit
+	// (the .judge.jsonl/test-runner.json precedent).
+	"research-assists.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true },
 	".convergence-ledger.json": { specDirBookkeeping: true },
 };
 

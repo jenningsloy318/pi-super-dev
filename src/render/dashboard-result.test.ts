@@ -71,7 +71,7 @@ function completedDetails() {
 		summaryLines: [
 			"## Summary",
 			"",
-			"**Result:** all 13 stages passed.",
+			"**Result:** all stages passed.",
 			"",
 			"- requirements: ok",
 			"- implementation: ok",
@@ -212,7 +212,7 @@ describe("AC-06 behavioral — buildResultComponent returns a Container of [Text
 		expect(md, "a Markdown child must exist").toBeDefined();
 		// Re-render and assert the summary content survived into the output.
 		const rendered = comp.render(120).join("\n");
-		expect(rendered).toContain("all 13 stages passed");
+		expect(rendered).toContain("all stages passed");
 	});
 
 	it("§1 detail-log tail lines are themed PER-KIND (plain strings default to the 'log' text token)", () => {

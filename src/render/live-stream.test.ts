@@ -7,7 +7,7 @@
  * === Why a separate factory under test ===
  * In the current codebase the sink / flush() / finalizeLive() / transcript
  * state all live as CLOSURES inside `activate().execute` in src/extension.ts.
- * That closure runs the real 13-stage pipeline via `runPipelineTask` (spawns
+ * That closure runs the real staged pipeline via `runPipelineTask` (spawns
  * `pi` child processes), so it cannot be driven directly in a unit test.
  * The spec's Testing Strategy (C) explicitly requires driving "the sink
  * through phase/log/text events" in isolation — therefore Phase 2 MUST

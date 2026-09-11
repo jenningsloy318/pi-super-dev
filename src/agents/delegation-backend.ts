@@ -86,6 +86,11 @@ export interface DelegationRequestPayload {
 	model?: string;
 	thinking?: string;
 	timeoutMs?: number;
+	/** v0.3.87 (S4 decision 9): per-call toolBudget override — mirrors
+	 *  pi-subagents SubagentDelegationRequest.toolBudget ({soft?, hard,
+	 *  block?}, ≥0.65; validated server-side). Absent = the agent's registered
+	 *  RuntimeAgentDefinition.toolBudget applies (the Group 1 seam). */
+	toolBudget?: { soft: number; hard: number; block: string[] };
 	/** v0.3.70 W3: structured mode — the child gains a structured_output tool
 	 *  validated at call time (pi-subagents 0.65); text mode is the legacy
 	 *  prose contract (prompt-embedded schema + <control> parsing). */
@@ -225,6 +230,12 @@ export interface DelegationAgentOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	controlKeys?: string[];
+	/** v0.3.87 (S4 decision 9): per-call toolBudget override — resolved by the
+	 *  caller (the research-assist dispatch: agentToolBudget["research-assist"]
+	 *  ?? ["research-agent"] ?? commonToolBudget ?? none) and carried onto the
+	 *  delegation request BELOW the agent's registered default. Absent = no
+	 *  override on the wire. */
+	toolBudget?: import("./agent-runtime.ts").ResolvedToolBudget;
 	/** Optional-by-contract keys whose empty-array value counts as present
 	 *  (same semantics as the session backend's corrective check). */
 	allowEmptyArraysFor?: string[];
@@ -313,6 +324,10 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 	const thinking = resolveThinking(opts.agent, perCallThinking, opts.inheritedThinking as import("./agent-runtime.ts").ThinkingLevel | undefined);
 	if (thinking) request.thinking = thinking;
 	if (timeoutMs) request.timeoutMs = timeoutMs;
+	// v0.3.87 (S4 decision 9): the per-call toolBudget rides the wire request —
+	// the only setter today is the research-assist dispatch (the config-resolved
+	// assist budget, tighter than research-agent's own registered ceiling).
+	if (opts.toolBudget) request.toolBudget = { soft: opts.toolBudget.soft, hard: opts.toolBudget.hard, block: [...opts.toolBudget.block] };
 
 	// v0.3.28 progress parity: per-attempt log state. `toolLines` dedupes rapid
 	// identical ticks (one line per tool call, not per progress tick);

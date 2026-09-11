@@ -55,6 +55,9 @@ const GOLDEN_RED_BOUNDARY_SPEC_SCOPED = [
 	"usage-report.md",
 	"tool-usage.jsonl",
 	".inherited-red.jsonl",
+	// v0.3.87 S4(b): research-assist ledger (engine-appended mid-attempt inside
+	// the spec dir — the NOVEL four-role combo, see below).
+	"research-assists.jsonl",
 ] as const;
 
 const GOLDEN_TRACKER_ADVISORY_NOISE = [
@@ -68,6 +71,7 @@ const GOLDEN_TRACKER_ADVISORY_NOISE = [
 	"usage-calls.jsonl",
 	"tool-usage.jsonl",
 	".inherited-red.jsonl",
+	"research-assists.jsonl",
 ] as const;
 
 const GOLDEN_INTERNAL_RUNTIME_CLAIM = [".resume-cache.jsonl", ".run-lock"] as const;
@@ -87,9 +91,10 @@ const GOLDEN_SPEC_DIR_BOOKKEEPING = [
 	"usage-report.md",
 	"tool-usage.jsonl",
 	".inherited-red.jsonl",
+	"research-assists.jsonl",
 ] as const;
 
-const GOLDEN_PHASE_COMMIT_EXCLUDED = [".judge.jsonl", "test-runner.json"] as const;
+const GOLDEN_PHASE_COMMIT_EXCLUDED = [".judge.jsonl", "test-runner.json", "research-assists.jsonl"] as const;
 
 const roleNames = (flag: keyof (typeof HARNESS_FILE_ROLES)[string]): string[] =>
 	Object.entries(HARNESS_FILE_ROLES)
@@ -120,6 +125,20 @@ describe("v0.3.74 P1-a — harness-file registry is the single source of truth",
 
 	it("registry flags reproduce the phase-commit exclusion list (golden — dual review F3)", () => {
 		expect(roleNames("phaseCommitExcluded")).toEqual([...GOLDEN_PHASE_COMMIT_EXCLUDED].sort());
+	});
+
+	it("v0.3.87 S4(b): research-assists.jsonl carries the NOVEL four-role combo (specDirBookkeeping + redBoundarySpecScoped + trackerAdvisoryNoise + phaseCommitExcluded — per-attempt scratch that must never ride phase commits)", () => {
+		// The v0.3.85 grill fold flagged this combo as NOVEL: .judge.jsonl carries
+		// four roles but redBoundaryAnywhere rather than SpecScoped; test-runner.json
+		// carries three without trackerAdvisoryNoise. research-assists.jsonl is the
+		// first basename needing all FOUR — pinned explicitly so the combo survives
+		// future registry edits (decision 9's ledger contract).
+		expect(HARNESS_FILE_ROLES["research-assists.jsonl"]).toEqual({
+			redBoundarySpecScoped: true,
+			trackerAdvisoryNoise: true,
+			specDirBookkeeping: true,
+			phaseCommitExcluded: true,
+		});
 	});
 
 	it("consumers classify every golden basename per its registry role (behavior)", () => {

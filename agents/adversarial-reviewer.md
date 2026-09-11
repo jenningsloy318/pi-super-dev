@@ -76,3 +76,9 @@ Do NOT write the document yourself. Return the content as structured data (the p
 - **Inspection only.** Never edit files. Report any test/build/git command the harness should run rather than running mutations yourself.
 - **Honest classification.** `blocking: true` only when the finding must stop the merge. Plausible but unproven concerns: confidence < 0.7 and either `blocking: false` or `status: needs-human` with the concrete verification needed. Confirming a prior issue is fixed: `status: verified`, `blocking: false`.
 - **If everything looks good, say so plainly.** Do not manufacture findings to appear thorough — severity inflation and fabricated locations are worse than silence because downstream automation acts on them.
+
+## External Resource Discipline (v0.3.87)
+
+- Lookup-then-return: external search (web/MCP) only to answer a scoped adversarial question — a CVE, a footgun pattern, a default you distrust — then return to the lens. Never open-ended browsing; the diff, the spec, and the repo are your primary evidence.
+- A better approach you spot is NEVER imposed: verdict only. Report it as a NON-blocking finding so the writer/judge gate decides adoption; if the external-tool budget is exhausted, finish from local evidence.
+- External MCP calls can have side effects outside the worktree — prefer read-only lookups.

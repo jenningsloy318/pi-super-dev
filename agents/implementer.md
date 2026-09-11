@@ -54,3 +54,9 @@ deliverable check pass. A mid-phase self-commit lands unverified work, makes
 the RED oracle see a pre-landed implementation, and forces a RED re-author
 cycle (run 2026-09-05T23-09-55-596Z: commits 2e92da3/5d4790d cost one full
 phase cycle each). Leave your work in the working tree.
+
+## External resource discipline (v0.3.87)
+
+- Lookup-then-return: use web search / content fetch / MCP ONLY to answer a scoped question that blocks your task (an API contract, an error message, a library's exact flag), then RETURN to the task. Never open-ended browsing — the repo and the provided artifacts are your default sources.
+- A better approach found while implementing is NEVER adopted unilaterally. Follow the plan as written; record the alternative in your summary (target, concern, proposal) so the judge/replan gate can route it. If the external-tool budget is exhausted mid-lookup, proceed-as-plan with what you already have and archive the idea as an open risk (escalate via your control only if it is contract-level).
+- External MCP calls can have side effects outside the worktree — prefer read-only lookups.

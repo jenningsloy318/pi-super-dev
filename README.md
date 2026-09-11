@@ -124,10 +124,10 @@ stages/index.ts ──► the pipeline expressed with control nodes
 ├─ nodes.ts              control-flow algebra (below)
 ├─ stages/               one module per stage family
 │    ├─ setup.ts, writers.ts (stages 1–8, 12–14B), design.ts, prototype.ts
-│    ├─ implementation.ts     Stage 9: RED/GREEN TDD loop, challenge channel
-│    ├─ verify.ts             Stage 10/11: review fan-out, fix loop, integration
+│    ├─ implementation.ts     RED/GREEN TDD loop, challenge channel
+│    ├─ verify.ts             review fan-out, fix loop, integration
 │    ├─ artifact-convergence.ts  write→validate→review convergence loops (2B/2C/3/6B)
-│    ├─ spec-convergence.ts   Stage 7/8 spec loop
+│    ├─ spec-convergence.ts   spec loop
 │    ├─ judge.ts              LLM judge routing (Stages 9/10 wiring points)
 │    └─ lifecycle.ts          service bring-up/teardown for integration tests
 ├─ build-runner/         deterministic build/test/typecheck oracle
@@ -278,30 +278,30 @@ Grounded in [AWS Step Functions ASL](https://states-language.net/), the [Workflo
 
 ```ts
 sequence([
-  task(setupStage),                          // Stage 1  worktree, spec dir, bootstraps
-  task(classifyStage),                       // Stage 2A task type / language routing
-  requirementsConvergenceNode,               // Stage 2B write → review → fix loop
-  bddConvergenceNode,                        // Stage 2C AC-coverage scenario loop
-  researchConvergenceNode,                   // Stage 3  online ambiguity loop
-  branch(isBug, { yes: task(debugWriter) }), // Stage 4  bug fixes only
-  task(assessmentWriter),                    // Stage 5  code assessment
-  designConvergenceNode,                     // Stage 6A/6B design → review loop
-  task(prototypeStage),                      // Stage 6C prototype (when needed)
-  specConvergenceNode,                       // Stage 7/8 spec → trace gate → review
-  loop(                                      // Stage 9  per-phase TDD until allGreen
+  task(setupStage),                          // worktree, spec dir, bootstraps
+  task(classifyStage),                       // task type / language routing
+  requirementsConvergenceNode,               // write → review → fix loop
+  bddConvergenceNode,                        // AC-coverage scenario loop
+  researchConvergenceNode,                   // online ambiguity loop
+  branch(isBug, { yes: task(debugWriter) }), // bug fixes only
+  task(assessmentWriter),                    // code assessment
+  designConvergenceNode,                     // design → review loop
+  task(prototypeStage),                      // prototype (when needed)
+  specConvergenceNode,                       // spec → trace gate → review
+  loop(                                      // per-phase TDD until allGreen
     { while: (s,c) => !implAllGreen(s) && !implConvergenceBlocked(s) && c.budget.check() },
     task(implementationStage)),
-  branch(hasImplementation,                  // Stage 10 review/build/integration
+  branch(hasImplementation,                  // review/build/integration
     { yes: verificationConvergenceNode }),   //         convergence (restarts at review
                                              //         after every fix)
   branch(hasVerifiedImplementation, {
     yes: sequence([
-      task(docsWriter),                      // Stage 12 source-read-only close-out
+      task(docsWriter),                      // source-read-only close-out
       task(preMergeBuildStage),              //         hard build gate before cleanup
-      task(cleanupTask),                     // Stage 13 dependency cleanup + scan
-      branch(canMerge, { yes: sequence([     // Stage 14 merge (LLM performs it…)
+      task(cleanupTask),                     // dependency cleanup + scan
+      branch(canMerge, { yes: sequence([     // merge (LLM performs it…)
         task(mergeWriter),
-        task(mergeVerifyTask),               // Stage 14B …git deterministically verifies)
+        task(mergeVerifyTask),               // …git deterministically verifies)
       ]) }),
     ]),
   }),
@@ -316,7 +316,7 @@ importing the node builders and stages — see the exports at the bottom of
 
 Every claim an LLM makes is re-derived by code. The layers, in pipeline order:
 
-**Phase-green triple gate (Stage 9).** A phase is GREEN only when
+**Phase-green triple gate (implementation).** A phase is GREEN only when
 
 ```
 (gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass
@@ -331,7 +331,7 @@ filesDeleted}` against git reality: **claimed-but-unchanged hard-fails** (fed
 back as `## Claimed changes not present in git`), git-edits-under-reported
 stays advisory. Never throws; degrades to pass when git is unavailable.
 
-**RED/GREEN TDD oracle (Stage 9, cross-language).** The RED check runs the
+**RED/GREEN TDD oracle (implementation, cross-language).** The RED check runs the
 scoped test command from the conventions table and classifies STRICTLY from
 structured evidence (JUnit XML / TAP / go-test-JSON / declared count lines)
 plus the exit code: red / green / broken / unknown — console prose never
@@ -341,7 +341,7 @@ routes through the judge's `allow-scaffold` escape instead of a regex
 shortcut. The RED boundary classifier (`red-boundary-classifier`) rejects
 production-file edits during RED.
 
-**RED review with joint-satisfiability screening (Stage 9).** A Tier-2
+**RED review with joint-satisfiability screening (implementation).** A Tier-2
 reviewer (`code-reviewer`) judges the RED suite for behavior-binding
 assertions, tautologies, and scenario coverage — and must additionally check
 that **at least one conforming implementation could pass ALL tests
@@ -351,14 +351,14 @@ verdict and route back to tdd-guide with the proof inlined — closing the
 "unsatisfiable RED suite accepted as strong, implementer doomed" failure
 class.
 
-**testDefects challenge channel (Stage 9).** When the implementer *proves* a
+**testDefects challenge channel (implementation).** When the implementer *proves* a
 confirmed RED test is unsatisfiable (internal contradiction), it reports
 structured `testDefects {testFile, lines, reason}` (always emitted, `[]` when
 none). The stage then drops `acceptedRed` and re-runs tdd-guide *with the
 implementer's diagnosis* — bounded by `SUPER_DEV_MAX_CHALLENGE_REAUTHORS`
 (default 2) — instead of blind re-authoring the same contradiction.
 
-**Stage 10 review fan-out + deterministic triage.** Three parallel reviewers
+**Verification review fan-out + deterministic triage.** Three parallel reviewers
 (code, adversarial, and — when the spec declares test deliverables —
 tests/coverage, reusing the `code-reviewer` role) feed
 `merge-review-verdicts`, which triages every finding deterministically:
@@ -379,7 +379,7 @@ open high-severity findings exist (no silent downgrade to "Approved with
 Comments") — and the adversarial reviewer's literal `PASS` verdict passes
 through the same guard, never a silent approval past a blocking finding.
 
-**Out-of-scope regression baseline (Stage 9/10 gates).** Pre-existing failures
+**Out-of-scope regression baseline (implementation/verification gates).** Pre-existing failures
 in *untouched* test files would historically be excused wholesale. Now, when
 out-of-scope failures are the only failures, the gate re-runs those failing
 subjects in a temp detached worktree at the **merge-base** of the default
@@ -389,7 +389,7 @@ error block. Cached per (repo, merge-base); never throws;
 `SUPER_DEV_DISABLE_BASELINE_CHECK=1` escapes. Ambiguous outcomes degrade to
 the historical lenient pass.
 
-**Fault-classified actuation + reused-worktree hygiene (Stage 9/Stage 1).** On
+**Fault-classified actuation + reused-worktree hygiene (implementation/setup).** On
 every build-gate failure a deterministic classifier (pure TypeScript, no LLM,
 `src/fault-classification.ts`) runs before actuator selection: out-of-scope-only
 failures + a regression verdict + green own-scope evidence ⇒
@@ -454,12 +454,12 @@ reason/hint now LEAD with that true cause — the old canned "no supported test
 runner was available" asserted a false environment defect that sent agents
 re-verifying runners and judges reading harness source. (3) A REPLAN round
 routed mid-run now WINDS THE PASS DOWN: remaining phases are deferred (named
-log), the §D loop stops re-attempting, and Stage 10 skips with a named notice —
+log), the §D loop stops re-attempting, and verification skips with a named notice —
 no more executing a superseded spec for hours before the restart (research
 basis: Fox et al. ICAPS-06 plan stability; Nav2 replan-immediately-on-
 invalidation; CI cancel-in-progress).
 
-**Merge verification (Stage 14B).** The merge agent *performs* the merge
+**Merge verification (deterministic follow-up).** The merge agent *performs* the merge
 (instructed to merge from the main checkout — inside a linked worktree it
 structurally cannot advance the checked-out default branch), but the run only
 *claims* `merged: true` after a deterministic git check re-derives it
@@ -467,7 +467,7 @@ structurally cannot advance the checked-out default branch), but the run only
 commit SHA exists). Unverified claims are rewritten to `merged: false` with
 concrete reasons; the run reports `partial`, never success.
 
-**Sensitive-file scan (Stage 13).** Cleanup scans only **git-carried** files
+**Sensitive-file scan (cleanup stage).** Cleanup scans only **git-carried** files
 (diff vs the default-branch merge-base plus staged/unstaged tracked diffs) for
 secrets patterns — untracked files (including pipeline-copied `.env`) never
 block. A blocked merge yields an honest `partial` status with the reason, not
@@ -504,11 +504,11 @@ deadlock boundaries **without** weakening any guarantee:
 
 | Loop | Bounds |
 |---|---|
-| Stage 2B/2C/3/6B/7 convergence | budget + 8-round cap + stall escalation (≤2 retries per `kind:stage`) |
-| Stage 9 RED retries | `SUPER_DEV_MAX_RED_RETRIES` (default 6) + no-progress + oscillation detection |
-| Stage 9 challenge re-authors | default 2 (`SUPER_DEV_MAX_CHALLENGE_REAUTHORS`) |
-| Stage 9/10 per-attempt fix loops | budget + recurring-signature no-progress (any earlier attempt) |
-| Stage 10 review loop | approval (verdict AND build green) + stagnation (identical non-empty findings signature) + **dead-state breaks**: no actionable findings with a green gate (or absent gate after one full round) breaks for HITL |
+| requirements/bdd/research/design/spec convergence | budget + 8-round cap + stall escalation (≤2 retries per `kind:stage`) |
+| Implementation RED retries | `SUPER_DEV_MAX_RED_RETRIES` (default 6) + no-progress + oscillation detection |
+| Implementation challenge re-authors | default 2 (`SUPER_DEV_MAX_CHALLENGE_REAUTHORS`) |
+| Implementation/verification per-attempt fix loops | budget + recurring-signature no-progress (any earlier attempt) |
+| Verification review loop | approval (verdict AND build green) + stagnation (identical non-empty findings signature) + **dead-state breaks**: no actionable findings with a green gate (or absent gate after one full round) breaks for HITL |
 | Global agent budget | `maxAgents` (default per run options) |
 | Global cost/token fuse | `SUPER_DEV_MAX_RUN_COST` / `SUPER_DEV_MAX_RUN_TOKENS` — per-call fail-closed (v0.3.68; see below) |
 
@@ -591,7 +591,7 @@ Findings with a missing/unknown owner label normalize to the current stage
 (conservative — no laundering a blocker out of a loop by inventing an owner).
 Route-back re-entries also reset the round budget to segment scope (the jump
 budget bounds cycles), and the judge's escalate-now evidence gate accepts any
-non-empty evidence field, not only verbatim quotes. In Stage 9, the RED
+non-empty evidence field, not only verbatim quotes. In implementation, the RED
 boundary evaluator's path matching is suffix-tolerant (absolute-path echoes
 land), the RED evidence signature excludes harness bookkeeping so oscillation
 detection actually fires, RED cleanup never `git clean`s harness files, and
@@ -777,7 +777,7 @@ enforce-when-schema; plan: docs/plans/2026-09-05-v0.3.68-hardening-plan.md §5):
 
 Root cause class (spec-25 deep analysis, `docs/findings/deep-analysis-2026-09-08-spec25.md`): the machinery executed plans it had never validated for feasibility, on a single-worktree ownership model that horizontal specs structurally violate, through stage-local loops whose only escape valve (the judge) failed closed — so the same infeasibility surfaced at a different stage each run.
 
-- **Plan-feasibility validator** (`src/stages/plan-feasibility.ts`, deterministic, zero-LLM) runs at Stage 9 entry: cross-phase identifier contradictions (an earlier phase's test clause needs an identifier the plan positions in a later phase's production file — every satisfiable fix trips the BLOCKING boundary guard) and requireContains/requireNotContains same-file same-pattern conflicts route **REPLAN before any phase executes**; shared-file coupling and missing vitest coverage tooling surface as advisories first.
+- **Plan-feasibility validator** (`src/stages/plan-feasibility.ts`, deterministic, zero-LLM) runs at implementation entry: cross-phase identifier contradictions (an earlier phase's test clause needs an identifier the plan positions in a later phase's production file — every satisfiable fix trips the BLOCKING boundary guard) and requireContains/requireNotContains same-file same-pattern conflicts route **REPLAN before any phase executes**; shared-file coupling and missing vitest coverage tooling surface as advisories first.
 - **Execution-time contradiction fast-fail**: a phase whose repeated no-progress signature coincides with observed BLOCKING phase-boundary reverts arms a contradiction frame at the no-progress valve — `replan-upstream` is offered to the judge, and a routed verdict triggers the replan machinery instead of blind retries (run 14-14 burned 6 attempts ≈2h before its generic valve fired).
 - **Judge evidence failures never silently discard**: one corrective re-call feeds the verification failures back into the prompt; a corrective verdict that verifies routes normally; one that still fails **escalates with the diagnosis preserved** (the fabrication guard stands — an unverified verdict never routes on its claimed route; the only floor is escalate).
 - **Stagnation routes by finding class**: reviewer infra non-completions ("X review did not complete") never arm the stagnation stop; a genuine content stop first asks the judge once whether the blockers are within the stage's authority or plan/spec-owned — a `replan-upstream` verdict becomes a REPLAN instead of a human-decision PARTIAL.
@@ -920,6 +920,105 @@ Malformed config values (wrong-type arrays, unknown packages) never crash
 registration: each logs one WARN naming the key/package and is skipped —
 loud fallback, never a dead pipeline.
 
+`commonToolBudget` / `agentToolBudget` (v0.3.87): tool-call budget caps for
+delegated agents — the mechanical backstop behind the external-resource
+discipline (the prompt side lives in the agents' prompt files). Values are
+POLICY and live in config only — **no budget number is hardcoded in the
+extension**. **Requires pi-subagents ≥ 0.65** (native
+`toolBudget { soft, hard, block }` on the agent registration): a pre-0.65
+owner rejects the field — every agent registration fails loudly with
+`agent registration rejected for sd-<name>` and the existing structured-
+degrade machinery reports it per call; upgrade pi-subagents (no super-dev
+code path is involved). Caps are STRICTLY OPT-IN: absent config sends no
+`toolBudget` at all.
+
+```json
+"commonToolBudget": { "soft": 15, "hard": 30 },
+"agentToolBudget": {
+	"implementer": { "soft": 40, "hard": 80 },
+	"tdd-guide": { "soft": 40, "hard": 80 },
+	"research-agent": { "soft": 100, "hard": 250 },
+	"research-assist": { "soft": 15, "hard": 30 }
+}
+```
+
+Resolution: `agentToolBudget[role]` > `commonToolBudget` > none. Bare role
+keys are canonical; `sd-`-prefixed keys are accepted. `research-assist` is
+a CONFIG ROLE KEY ONLY (assist dispatches reuse `research-agent`; no agent
+file exists): its chain is `agentToolBudget["research-assist"]` >
+`agentToolBudget["research-agent"]` > `commonToolBudget` > none.
+Mechanical one-shot classifiers (`task-classifier`, `judge`,
+`tdd-coverage-classifier`, `red-boundary-classifier`) NEVER get a budget —
+even with an explicit entry (firmer than the extensions scope predicate).
+Values must be exactly `{ "soft": n, "hard": n }` (positive integers,
+soft ≤ hard, no other keys); a malformed value or container logs one WARN
+naming the key and is treated as absent — loud fallback, never a crash.
+Registration reads config once at activation — **edits require a pi
+restart** (same as `agentSkills` / `commonExtensions`).
+
+Counting/blocking semantics (verified against pi-subagents 0.67): at the
+`soft` threshold the child is nudged to finalize; past `hard`, ONLY the five
+external exploration families are blocked — `web_search`, `fetch_content`,
+`get_search_content`, `source_check`, and the MCP family (`mcp` plus the
+`mcp__` prefix entry for `mcp__<server>__<tool>` direct tools) — so local
+coding tools (read/edit/bash/`lsp_*`/blackhole/mem) are retained and the
+child can always finish with final text. Note that upstream counts EVERY
+child tool call toward the soft/hard thresholds (no family-scoped counting
+exists in 0.67); read the numbers as total-call thresholds at which
+external exploration gets cut off — the block-only-external-families
+property is what makes the cap discipline browsing, not coding.
+
+RECOMMENDED values (documentation only — nothing applies without config):
+
+| Role | soft | hard | Rationale |
+|---|---|---|---|
+| implementer / tdd-guide | 40 | 80 | total-call thresholds (see semantics above): coding agents routinely make 20-60 LOCAL calls per attempt — the cap is runaway insurance for browsing, never a coding constraint |
+| capability default (`commonToolBudget`) | 15 | 30 | doc writers/analyzers: local headroom for reads/greps, external cut early |
+| research-agent | 100 | 250 | dedicated-research sanity ceiling — observed dedicated passes run 50-90 tool calls; runaway insurance, never a discipline constraint |
+| research-assist | 15 | 30 | per-call scoped single question (240s cap anyway) |
+
+Calibration (recalibrated 2026-09-11): the postmortem's original single-digit
+values assumed external-only counting; upstream 0.67 counts EVERY tool call,
+so the numbers above are total-call thresholds sized so that local coding
+work is never constrained — only external exploration gets cut off. LangGraph's
+3-4× recursion-headroom rule and production all-tools budgets (12-25) informed
+the capability-default tier; dedicated research agents run 80-160 searches
+(Gemini calibration), which is why research-agent's ceiling sits far above
+the coding default.
+
+**Engine-mediated research assist (v0.3.87, S4)** —
+
+When the implementer gets stuck, the ENGINE — not the implementer — decides
+when research is warranted, dispatches it, and carries the distilled result
+into the next corrective prompt (report always accompanies execution, never
+report-only):
+
+- **Trigger** (hybrid): the 2nd consecutive same-class failure — RED-side
+ (`terminalRedTries ≥ 2` at the terminal RED-generation boundary, armed for
+ the §D re-entry's first attempt) or GREEN-side (`faultClassStreak ≥ 2` on
+ the F3 counter). At most **1 assist per phase ever** (persists across §D
+ re-entries); a spent cap logs an honest skip. Only the implementer gets
+ assists — tdd-guide keeps quick-lookup (ADR 6; extension deferred to
+ E-wave evidence).
+- **Enrichment, never dispatch**: the implementer control's optional
+ `needsResearch: [{question, why}]` (both fields required, ≤6/emit) is
+ ARCHIVED until a trigger trips, then appended to the engine-composed scoped
+ question. It never dispatches by itself.
+- **Dispatch**: synchronous, before the carrying attempt's implementer call;
+ reuses `research-agent` (source-read-only, 240s cap, per-call toolBudget from
+ the `research-assist` config chain — see the table above).
+- **Injection**: engine-side distillation caps the result — ≤5 findings
+ `{claim, source, applies}`, ≤10-line recommendation, ~2KB block into the
+ corrective channel; `noUsefulSignal` renders an honest-empty note that still
+ accompanies the attempt.
+- **Failure semantics (P5)**: a failed/timed-out assist degrades to a
+ `noUsefulSignal` row — no agent-error-fuse touch, no attempt consumed, no
+ abort. Budget exhaustion skips the assist with an honest log.
+- **Ledger**: one row per dispatch in `<specDir>/research-assists.jsonl`
+ (trigger, question, enrichment flag, outcome, duration, MCP-exposure audit —
+ MCP side effects sit outside the source boundary's worktree view; residual
+ risk recorded, one row per assist). Excluded from phase commits.
+
 `language`: the natural language **every agent-written artifact** is produced
 in — spec docs, reports, escalation/stagnation reports, `learned.md` /
 `reflection.md` history, audit/ledger text, and commit messages — regardless
@@ -973,7 +1072,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_MODEL` | — | global model override (per-role `agentModels` wins) |
 | `SUPER_DEV_LANGUAGE` | `english` | output language for every agent-written artifact (beats `config.json` `language`) |
 | `SUPER_DEV_THINKING` | — | per-agent thinking level override (beats role tiers and inheritance) |
-| `SUPER_DEV_MAX_RED_RETRIES` | `6` | Stage 9 RED generation retry cap |
+| `SUPER_DEV_MAX_RED_RETRIES` | `6` | Implementation RED generation retry cap |
 | `SUPER_DEV_MAX_PHASE_ATTEMPTS` | `4` | implementer attempts per phase per §D entry; RED sub-loop retries excluded (v0.3.85 F3) |
 | `SUPER_DEV_FAULT_RECURRENCE` | `3` | consecutive same-FaultClass attempts that trip the no-progress valve even with fresh footprints (v0.3.85 F3) |
 | `SUPER_DEV_MAX_PHASE_WALL_MS` | `5400000` | per-phase wall budget (90min), resets on each §D re-entry (v0.3.85 F3) |
@@ -995,7 +1094,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_NO_COVERAGE_GATE` | — | `1` = skip the target-program coverage hard gate entirely |
 | `SUPER_DEV_NO_WATCHDOG` | — | `1` = disable the external delegation watchdog (detached watcher that records a frozen host loop; v0.3.57) |
 | `SUPER_DEV_BOOTSTRAP_TIMEOUT_MS` | `600000` | setup dependency-bootstrap timeout |
-| `SUPER_DEV_NO_DIRTY_QUARANTINE` | — | `1` = kill switch, disable automatic foreign-dirt quarantine (setup reuse + Stage 9 env-blocker) |
+| `SUPER_DEV_NO_DIRTY_QUARANTINE` | — | `1` = kill switch, disable automatic foreign-dirt quarantine (setup reuse + the implementation env-blocker) |
 | `SUPER_DEV_MAX_REPLAN_ROUNDS` | `2` | replan auto-resume rounds per spec |
 | `SUPER_DEV_REPLAN_MANUAL` | — | `1` = keep single runs (disable replan auto-resume) |
 | `SUPER_DEV_DISABLE_REPLAN_LEAD` | — | `1` = skip the replan-lead enrichment agent |
@@ -1004,7 +1103,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_NO_AUTO_ROUTEBACK` | — | `1` = restore the HITL prompt for single-owner upstream blockers (v0.3.19 auto-routes them by default) |
 | `SUPER_DEV_AUTO_ROUTEBACK` | `1` | `0` = alias for disabling auto-route (same as the kill-switch above) |
 | `SUPER_DEV_MAX_INLINE_JUMPS` | `4` | cap on inline route-back jumps per journal |
-| `SUPER_DEV_NO_VERIFY_REPLAY_GUARD` | — | `1` = disable the Stage 10 replay guard |
+| `SUPER_DEV_NO_VERIFY_REPLAY_GUARD` | — | `1` = disable the verification replay guard |
 | `SUPER_DEV_NO_SPEC_REUSE` | — | `1` = disable spec-track reuse (fresh allocation every run) |
 | `SUPER_DEV_NO_SKILLS` | — | `1` = zero skill cards on EVERY layer for delegated children (registration `inheritSkills:false` AND per-call curated sets suppressed) — pre-v0.2.10 full isolation (top kill-switch) |
 | `SUPER_DEV_SKILLS` | — | `ambient` = restore full ambient skill injection for EVERY delegated child (opt-OUT escape hatch for v0.3.76 curation; classifiers/research otherwise register `inheritSkills:false` + curated per-call sets; also settable via the config.json env map, resolved once per session) |
@@ -1017,7 +1116,7 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_BENCH` | — | `1` = enable the real-LLM convergence benchmark harness (SUPER_DEV_BENCH_TRIALS=1 implied) |
 | `SUPER_DEV_BENCH_TRIALS` | `1` | trials per benchmark shape (≥3 for statistical claims) |
 | `SUPER_DEV_BENCH_TIMEOUT_MS` | `900000` | per-trial benchmark timeout |
-| `SUPER_DEV_SERVICE_CMD_ALLOWLIST` | — | comma-separated EXTRA first-token service launchers for the Stage 10 bringup allowlist (model-discovered `cmd` must start with a standard launcher — npm/pnpm/yarn/bun run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, `python -m http.server`, cargo/go run; anything else is refused with an honest log and the pipeline degrades to no-live-service, never punishing the work) |
+| `SUPER_DEV_SERVICE_CMD_ALLOWLIST` | — | comma-separated EXTRA first-token service launchers for the verification bringup allowlist (model-discovered `cmd` must start with a standard launcher — npm/pnpm/yarn/bun run/start/dev verbs, node/deno/vite/next/npx/caddy/serve/http-server, `python -m http.server`, cargo/go run; anything else is refused with an honest log and the pipeline degrades to no-live-service, never punishing the work) |
 | `SUPER_DEV_NO_SAFETY_GUARD` | — | `1` = kill switch for the delegated-child safety guard (dangerous-bash denylist + protected-file writes, loaded via `subagentOnlyExtensions` for every agent alongside the commit guard) |
 | `SUPER_DEV_DEBUG` | — | debug logging |
 
@@ -1078,10 +1177,10 @@ author — a stronger review signal), map agent roles to models:
 
 All six reviewer roles — the three **shift-left reviewers** (`requirements-reviewer`,
 `bdd-reviewer`, `design-reviewer`), the spec-stage `spec-reviewer`, and the two
-Stage 10 reviewers `code-reviewer` / `adversarial-reviewer` — plus the **judge**
+Verification reviewers `code-reviewer` / `adversarial-reviewer` — plus the **judge**
 role can be mapped here. Two details worth knowing:
 
-- The **tests/validation review angle** (Stage 10a2, runs when the spec declares
+- The **tests/validation review angle** (the tests/validation angle, runs when the spec declares
   `requireTests`/`requireScenarios` deliverables) reuses the `code-reviewer`
   role, so it follows that mapping automatically — no separate key.
 - The **judge** (LLM judge routing layer, Stages 9/10) runs at most 2 calls per

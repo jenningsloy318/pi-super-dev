@@ -134,7 +134,7 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 	it("buildImplementPrompt — testDefects present, NO phantom `lines` (the v0.1.52 regression)", () => {
 		const prompt = buildImplementPrompt(s, null, { name: "p" }, null, null);
 		const keys = extractControlKeys(prompt);
-		expect(keys).toEqual(["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"]);
+		expect(keys).toEqual(["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects", "needsResearch"]); // v0.3.87 S4(b): required-with-empty-ok
 		expect(keys).not.toContain("lines");
 	});
 
@@ -192,11 +192,14 @@ describe("control-key contracts: call-site parity (Fix 1a)", () => {
 		// IMPLEMENTER_CONTROL_KEYS is module-private in implementation.ts; the
 		// call site is the authoritative consumer. Mirror the literal here and
 		// assert parity with the built prompt (they must never drift apart).
-		const callSiteKeys = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"]; // required-with-empty-ok (allowEmptyArraysFor)
+		const callSiteKeys = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects", "needsResearch"]; // required-with-empty-ok (allowEmptyArraysFor; needsResearch: v0.3.87 S4(b))
 		const prompt = buildImplementPrompt(s, null, { name: "p" }, null, null);
 		expect(extractControlKeys(prompt)).toEqual(callSiteKeys);
 		// The challenge key survives BOTH paths (v0.1.52: neither had it).
 		expect(extractControlKeys(prompt)).toContain("testDefects");
+		// v0.3.87 S4(b) (ADR 6): the research-request field is IMPLEMENTER-ONLY —
+		// tdd-guide's control line carries no such key.
+		expect(extractControlKeys(buildTddPrompt(s, null, { name: "p" }, null))).not.toContain("needsResearch");
 	});
 });
 

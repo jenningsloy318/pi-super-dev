@@ -83,7 +83,7 @@ describe("F9-C — Stage 10 skips when a REPLAN is pending", () => {
 		const logs: string[] = [];
 		const state = { __replan: { rounds: 1, owners: ["spec"] } } as unknown as PipelineState;
 		await verificationSkippedReplanStage.run(state, { log: (m: string) => logs.push(m) } as never);
-		expect(logs.some((l) => /Stage 10 skipped — REPLAN round 1 pending/.test(l) && /revised spec after restart/.test(l))).toBe(true);
+		expect(logs.some((l) => /Verification skipped — REPLAN round 1 pending/.test(l) && /revised spec after restart/.test(l))).toBe(true);
 	});
 });
 

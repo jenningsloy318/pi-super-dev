@@ -178,6 +178,16 @@ export interface AgentCall {
 	 *  over config.agentModels and the global --model/SUPER_DEV_MODEL. Rarely set by
 	 *  stages; the usual cross-model policy is declared in ~/.super-dev config. */
 	model?: string;
+	/** v0.3.87 (S4 decision 9): optional per-call tool-call budget OVERRIDE in
+	 *  the resolved pi-subagents shape ({soft, hard, block}) — threaded through
+	 *  `common` onto the delegation request (the SubagentDelegationRequest.
+	 *  toolBudget wire seam, pi-subagents ≥0.65). Absent = the agent's
+	 *  REGISTERED RuntimeAgentDefinition.toolBudget applies (the Group 1
+	 *  registration seam). Today only the research-assist dispatch sets it: the
+	 *  config-resolved assist budget (agentToolBudget["research-assist"] ??
+	 *  ["research-agent"] ?? commonToolBudget ?? none) is tighter than
+	 *  research-agent's own registration default, so it must ride the CALL. */
+	toolBudget?: import("./agents/agent-runtime.ts").ResolvedToolBudget;
 }
 
 export type AgentAccessMode = "write" | "source-read-only";

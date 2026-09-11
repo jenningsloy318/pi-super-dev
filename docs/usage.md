@@ -83,7 +83,7 @@ Super-dev stores both configuration and run artifacts under `~/.super-dev/`:
 
 ## Composing your own workflow
 
-The 13-stage pipeline is just one composition. Import the node builders and
+The staged super-dev pipeline is just one composition. Import the node builders and
 stage modules to build your own:
 
 ```ts

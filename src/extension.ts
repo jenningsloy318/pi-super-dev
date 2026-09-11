@@ -2,7 +2,7 @@
  * Pi extension entry point.
  *
  * Registers:
- *   - `super_dev` tool — the LLM-callable entry that runs the 13-stage
+ *   - `super_dev` tool — the LLM-callable entry that runs the staged
  *     pipeline by spawning `pi` child processes. Fully self-contained: no
  *     dependency on @agwab/pi-workflow or any other workflow engine. The
  *     pipeline is a tree of control-flow nodes (src/nodes.ts) composed in
@@ -752,8 +752,8 @@ export default function activate(pi: ExtensionAPI): void {
 		name: SUPER_DEV_TOOL,
 		label: "Super Dev",
 		description:
-			"Run the self-contained 13-stage super-dev pipeline (requirements → research → design → spec → TDD implementation → verification convergence → docs → merge). Spawns specialist `pi` subagents directly — no external workflow engine required.",
-		promptSnippet: "Run the full 13-stage super-dev development pipeline for a feature/bug/refactor task",
+			"Run the self-contained staged super-dev pipeline (requirements → research → design → spec → TDD implementation → verification convergence → docs → merge). Spawns specialist `pi` subagents directly — no external workflow engine required.",
+		promptSnippet: "Run the full staged super-dev development pipeline for a feature/bug/refactor task",
 		promptGuidelines: [
 			"Use super_dev when the user asks to implement a feature, fix a bug, or refactor code as a structured multi-stage workflow.",
 			"Pass the user's full task verbatim to super_dev; do not paraphrase constraints, file references, or acceptance criteria.",
@@ -1159,7 +1159,7 @@ export default function activate(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand(SUPER_DEV_COMMAND, {
-		description: "Run the 13-stage super-dev pipeline. Usage: /super-dev <task description>",
+		description: "Run the staged super-dev pipeline. Usage: /super-dev <task description>",
 		handler: async (args, ctx) => {
 			if (hasRemovedBackgroundFlag(args)) {
 				ctx.ui.notify(

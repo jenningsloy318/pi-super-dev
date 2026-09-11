@@ -11,7 +11,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
  */
 
 import { registerSuperDevAgents, registerSuperDevAgentsDeferred, READ_ONLY_AGENTS, READ_ONLY_TOOLS, WRITER_TOOLS } from "../src/agents/register-agents.ts";
-import { resetAmbientSkillsForcedForTests } from "../src/agents/agent-runtime.ts";
+import { resetAmbientSkillsForcedForTests, resetConfigExtensionWarnsForTests } from "../src/agents/agent-runtime.ts";
 
 /** v0.3.76 dual-review R1/AR-2: registration reads config.agentSkills via
  * getConfig() — deterministic in-file mock (mutable holder; other exports
@@ -422,6 +422,85 @@ describe("v0.3.78 — commonExtensions/agentExtensions registration wiring", () 
 		registerSuperDevAgents(bus);
 		expect(requests.length).toBeGreaterThan(15);
 		expect(configExtStub.calls).toHaveLength(requests.length);
+	});
+});
+
+describe("v0.3.87 — toolBudget registration wiring (commonToolBudget / agentToolBudget)", () => {
+	// The resolver (resolveToolBudget — chain, sd- keys, loud fallback,
+	// classifier exemption, research-assist leg) is unit-tested in
+	// tests/tool-budget.test.ts; THIS block pins the SEAM: the resolved
+	// budget rides the registration definition beside tools:/
+	// subagentOnlyExtensions (registerOne), the native { soft, hard, block }
+	// shape is emitted as-is, and absent config omits the key entirely.
+	function budgetBus(): { bus: any; requests: any[] } {
+		const requests: any[] = [];
+		const bus: any = {
+			on() { return () => {}; },
+			emit(_channel: string, payload: any) { requests.push(payload); },
+		};
+		return { bus, requests };
+	}
+
+	beforeEach(() => {
+		configExtStub.entries = [];
+		configExtStub.calls = [];
+		configExtStub.tools = [];
+		configExtStub.toolCalls = [];
+		configHolder.config = {};
+		resetConfigExtensionWarnsForTests();
+	});
+	afterEach(() => {
+		configHolder.config = {}; // no budget leaks into later describes
+	});
+
+	it("absent config → NO toolBudget key on ANY registration (caps strictly opt-in)", () => {
+		const { bus, requests } = budgetBus();
+		registerSuperDevAgents(bus);
+		expect(requests.length).toBeGreaterThan(15);
+		for (const r of requests) {
+			expect(r.definition.toolBudget, String(r.name)).toBeUndefined();
+		}
+	});
+
+	it("commonToolBudget threads the native { soft, hard, block } onto every capability agent; block = the five families, never '*'", () => {
+		configHolder.config = { commonToolBudget: { soft: 2, hard: 4 } };
+		const { bus, requests } = budgetBus();
+		registerSuperDevAgents(bus);
+		const impl = requests.find((r: any) => r.name === "sd-implementer");
+		expect(impl.definition.toolBudget).toEqual({
+			soft: 2,
+			hard: 4,
+			block: ["web_search", "fetch_content", "get_search_content", "source_check", "mcp", "mcp__"],
+		});
+		expect(impl.definition.toolBudget.block).not.toContain("*");
+		// common applies to research-agent too (agent-level wins is the next test)
+		expect(requests.find((r: any) => r.name === "sd-research-agent").definition.toolBudget).toEqual(impl.definition.toolBudget);
+	});
+
+	it("agentToolBudget[role] beats commonToolBudget per role", () => {
+		configHolder.config = { commonToolBudget: { soft: 2, hard: 4 }, agentToolBudget: { implementer: { soft: 8, hard: 15 } } };
+		const { bus, requests } = budgetBus();
+		registerSuperDevAgents(bus);
+		expect(requests.find((r: any) => r.name === "sd-implementer").definition.toolBudget).toEqual({ soft: 8, hard: 15, block: ["web_search", "fetch_content", "get_search_content", "source_check", "mcp", "mcp__"] });
+		expect(requests.find((r: any) => r.name === "sd-tdd-guide").definition.toolBudget).toEqual({ soft: 2, hard: 4, block: ["web_search", "fetch_content", "get_search_content", "source_check", "mcp", "mcp__"] });
+	});
+
+	it("mechanical classifiers NEVER carry toolBudget, even with explicit entries + common set", () => {
+		configHolder.config = {
+			commonToolBudget: { soft: 2, hard: 4 },
+			agentToolBudget: { judge: { soft: 50, hard: 50 }, "task-classifier": { soft: 50, hard: 50 } },
+		};
+		const { bus, requests } = budgetBus();
+		registerSuperDevAgents(bus);
+		expect(requests.find((r: any) => r.name === "sd-judge").definition.toolBudget).toBeUndefined();
+		expect(requests.find((r: any) => r.name === "sd-task-classifier").definition.toolBudget).toBeUndefined();
+	});
+
+	it("sd--prefixed agentToolBudget keys are honored at the registration seam", () => {
+		configHolder.config = { agentToolBudget: { "sd-code-reviewer": { soft: 5, hard: 9 } } };
+		const { bus, requests } = budgetBus();
+		registerSuperDevAgents(bus);
+		expect(requests.find((r: any) => r.name === "sd-code-reviewer").definition.toolBudget).toEqual({ soft: 5, hard: 9, block: ["web_search", "fetch_content", "get_search_content", "source_check", "mcp", "mcp__"] });
 	});
 });
 

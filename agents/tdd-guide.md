@@ -60,3 +60,9 @@ commit step is the ONLY committer. A mid-phase self-commit pre-lands
 implementation the RED oracle then has to route around (run
 2026-09-05T23-09-55-596Z phase-5: commit 5d4790d landed production before its
 RED was authored). Leave every edit — tests included — in the working tree.
+
+## External resource discipline (v0.3.87)
+
+- Lookup-then-return: use web search / content fetch / MCP ONLY to answer a scoped question (an exact API signature, a fixture format, an error class), then RETURN to authoring tests. Never open-ended browsing — the repo, the spec, and the BDD scenarios are your default sources.
+- A better approach found mid-task is NEVER adopted unilaterally: keep the plan as written and record the alternative in your summary so the judge/replan gate can route it. If the external-tool budget is exhausted, proceed-as-plan and archive the idea as an open risk — escalate only if the RED's own shape is unsatisfiable, which is a spec concern to route, not yours to fix.
+- External MCP calls can have side effects outside the worktree — prefer read-only lookups.

@@ -17,7 +17,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { getConfig, superDevEnv } from "../render/super-dev-dir.ts";
+import { getConfig, superDevEnv, type ToolBudgetValue } from "../render/super-dev-dir.ts";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { sanitizeSlug } from "../setup.ts";
@@ -434,6 +434,112 @@ export function toolsWildcardForAgent(
 		return config.allTools === true;
 	} catch {
 		return false;
+	}
+}
+
+/** v0.3.87 (S4 decision 8) — the external-exploration tool families a
+ *  resolved budget blocks. NEVER "*" (a hard-trip must leave local coding
+ *  tools usable so the run can always finish). The MCP family carries the
+ *  exact-name + prefix PAIR: the pi-mcp-adapter aggregate `mcp` tool plus
+ *  the `mcp__` prefix entry for the mcp__<server>__<tool> direct-tool
+ *  family. Verified against pi-subagents 0.67 on disk (2026-09-11):
+ *  `block` accepts an array of non-empty strings or "*", and matching is
+ *  EXACT-NAME (runs/shared/tool-budget.ts shouldBlockToolForBudget →
+ *  block.includes(toolName)) — no prefix semantics upstream, so the
+ *  `mcp__` entry is the declared family form and stays inert until upstream
+ *  gains prefix matching (harmless either way: the aggregate `mcp` tool is
+ *  the exact-match path that blocks). */
+export const EXTERNAL_EXPLORATION_BLOCK_LIST = [
+	"web_search",
+	"fetch_content",
+	"get_search_content",
+	"source_check",
+	"mcp",
+	"mcp__",
+] as const;
+
+/** A config-resolved tool budget in the native pi-subagents spawn shape
+ *  (RuntimeAgentDefinition.toolBudget → every dispatch of that agent). */
+export interface ResolvedToolBudget {
+	soft: number;
+	hard: number;
+	block: string[];
+}
+
+/** v0.3.87: loud-fallback parser for ONE budget value. Exactly
+ *  `{ soft, hard }` — positive integers, soft ≤ hard, NO other keys (a
+ *  stray `block` in config would otherwise be a silent no-op: the block
+ *  list is fixed discipline, never policy input). Absent (undefined/null)
+ *  is the documented opt-out — no warn. Malformed → ONE warn naming the key
+ *  (shared warnedMalformedConfigKeys memo, reset via
+ *  resetConfigExtensionWarnsForTests) and treated as absent. Never throws. */
+function toolBudgetValueOr(
+	value: unknown,
+	key: string,
+	warn?: (message: string) => void,
+): ToolBudgetValue | undefined {
+	if (value === undefined || value === null) return undefined;
+	const shapeOk =
+		typeof value === "object" && !Array.isArray(value) &&
+		Object.keys(value).length === 2 &&
+		typeof (value as { soft?: unknown }).soft === "number" &&
+		typeof (value as { hard?: unknown }).hard === "number";
+	if (shapeOk) {
+		const { soft, hard } = value as { soft: number; hard: number };
+		if (Number.isInteger(soft) && soft >= 1 && Number.isInteger(hard) && hard >= 1 && soft <= hard) {
+			return { soft, hard };
+		}
+	}
+	if (!warnedMalformedConfigKeys.has(key)) {
+		warnedMalformedConfigKeys.add(key);
+		warn?.(`super-dev: config key "${key}" must be { soft, hard } — positive integers with soft ≤ hard, no other keys — got ${JSON.stringify(value).slice(0, 60)}; ignoring it (fix ~/.super-dev/config.json)`);
+	}
+	return undefined;
+}
+
+/** v0.3.87 (S4 decisions 8/9/10) — resolve a role's tool-call budget, pure
+ *  and exported for tests. `agentToolBudget[role] > commonToolBudget >
+ *  none`; caps are STRICTLY OPT-IN (absent config → NO toolBudget sent).
+ *  Mechanical one-shot classifiers NEVER get a budget — even with an
+ *  explicit per-role entry (firmer than the extensions scope predicate: a
+ *  single tiny call has no browsing to bound). `research-assist` is a
+ *  CONFIG ROLE KEY ONLY (§13 — assist dispatches reuse research-agent, no
+ *  agent file exists): it falls back to research-agent's entry before
+ *  common. Accepts bare and `sd-`-prefixed agentToolBudget keys (roleEntry,
+ *  the agentExtensions precedent; bare key wins when both are present).
+ *  A malformed agentToolBudget CONTAINER (non-object) warns once naming the
+ *  key and is treated as absent; malformed values warn once per key. An
+ *  unreadable config degrades to no budget. Never throws. When a budget
+ *  resolves it carries the fixed five-family block list (never "*"). */
+export function resolveToolBudget(
+	role: string,
+	opts?: { config?: { commonToolBudget?: unknown; agentToolBudget?: unknown }; warn?: (message: string) => void },
+): ResolvedToolBudget | undefined {
+	if (MECHANICAL_CLASSIFIER_ROLES.has(role)) return undefined;
+	try {
+		const config = opts?.config ?? getConfig();
+		let agentToolBudget: unknown = config.agentToolBudget;
+		// null/undefined = the documented opt-out (silent — stringListOr/roleEntry
+		// convention); any other non-object (or an array) is malformed → one warn.
+		if (agentToolBudget !== undefined && agentToolBudget !== null && (typeof agentToolBudget !== "object" || Array.isArray(agentToolBudget))) {
+			if (!warnedMalformedConfigKeys.has("agentToolBudget")) {
+				warnedMalformedConfigKeys.add("agentToolBudget");
+				opts?.warn?.(`super-dev: config key "agentToolBudget" must be an object mapping role → { soft, hard } — got ${typeof agentToolBudget}; ignoring it (fix ~/.super-dev/config.json)`);
+			}
+			agentToolBudget = undefined;
+		}
+		const perRole = toolBudgetValueOr(roleEntry<unknown>(agentToolBudget, role), `agentToolBudget[${role}]`, opts?.warn);
+		if (perRole) return { ...perRole, block: [...EXTERNAL_EXPLORATION_BLOCK_LIST] };
+		if (role === "research-assist") {
+			// decision 9/10 + §13: the assist dispatch reuses research-agent —
+			// its config entry is the per-role leg before common.
+			const viaResearchAgent = toolBudgetValueOr(roleEntry<unknown>(agentToolBudget, "research-agent"), "agentToolBudget[research-agent]", opts?.warn);
+			if (viaResearchAgent) return { ...viaResearchAgent, block: [...EXTERNAL_EXPLORATION_BLOCK_LIST] };
+		}
+		const common = toolBudgetValueOr(config.commonToolBudget, "commonToolBudget", opts?.warn);
+		return common ? { ...common, block: [...EXTERNAL_EXPLORATION_BLOCK_LIST] } : undefined;
+	} catch {
+		return undefined; // config unreadable → no budget; caps are opt-in, never a crash
 	}
 }
 

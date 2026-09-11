@@ -8,7 +8,7 @@
  *
  * Why a factory (and not inline closures in `extension.ts#execute`):
  *   The original transcript / sink / flush / finalizeLive all lived as closures
- *   inside the real `execute` path, which runs the 13-stage pipeline (spawns
+ *   inside the real `execute` path, which runs the staged pipeline (spawns
  *   `pi` children) and so cannot be driven in a unit test. The spec's Testing
  *   Strategy (C) requires driving "the sink through phase/log/text events" in
  *   isolation, so Phase 2 extracts this PURE, dependency-free factory. It owns

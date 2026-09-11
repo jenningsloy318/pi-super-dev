@@ -1,6 +1,6 @@
 ---
 name: super-dev
-description: Self-contained 13-stage development pipeline built on a composable control-flow node algebra (branch/parallel/loop/retry/gate). Orchestrates requirements, research, design, specification, TDD implementation, code review, documentation, and merge through 21 specialist agents spawned directly as `pi` subprocesses. No external workflow engine required.
+description: Self-contained staged development pipeline built on a composable control-flow node algebra (branch/parallel/loop/retry/gate). Orchestrates requirements, research, design, specification, TDD implementation, code review, documentation, and merge through 30 specialist agents spawned directly as `pi` subprocesses. No external workflow engine required.
 ---
 
 # Super Dev
@@ -15,7 +15,7 @@ Do NOT trigger on: simple questions, file searches, one-off commands, code expla
 
 ## Action
 
-Use the `super_dev` tool to start the pipeline. It spawns 21 specialist `pi` subagents directly — there is no `workflow_run` tool and no dependency on pi-workflow.
+Use the `super_dev` tool to start the pipeline. It spawns 30 specialist `pi` subagents directly — there is no `workflow_run` tool and no dependency on pi-workflow.
 
 ```text
 super_dev({ task: "<user's full request>" })

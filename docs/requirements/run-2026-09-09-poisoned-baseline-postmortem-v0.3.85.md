@@ -1,6 +1,6 @@
 # Run 2026-09-09T09-20-26 Postmortem + v0.3.85 Principles & Fix Plan
 
-Status: implemented (this commit) — v0.3.85 wave landed (F1-F5 + S1-S3 + decision-6 timeout); full grill-review history in the **Status** bullet below
+Status: implemented (this commit) — v0.3.85 wave landed (F1-F5 + S1-S3 + decision-6 timeout); v0.3.86 review remediation; v0.3.87 S4 external-resource discipline — ratified program COMPLETE; full grill-review history in the **Status** bullet below
 
 - **Date**: 2026-09-10 (run: 2026-09-09 17:20 → 2026-09-10 17:31, 24h11m)
 - **Run**: pi-omisis spec 26-capability-backends, super-dev v0.3.84

@@ -13,6 +13,16 @@ import { join } from "node:path";
 
 const SUPER_DEV_DIR = join(homedir(), ".super-dev");
 
+/** v0.3.87 (S4 decision 8): a tool-call budget VALUE — the policy part of
+ *  the mechanical external-resource cap. Exactly { soft, hard }: positive
+ *  integers, soft ≤ hard. The block list is NOT config (it is the fixed
+ *  five-family external-exploration discipline — see agent-runtime's
+ *  resolveToolBudget); values only live here, mirroring the extensions keys. */
+export interface ToolBudgetValue {
+	soft: number;
+	hard: number;
+}
+
 export interface SuperDevConfig {
 	reflectionEnabled: boolean;
 	topNPreload: number;
@@ -114,6 +124,31 @@ export interface SuperDevConfig {
 	 *  the write family — the binding read-only enforcement stays the
 	 *  engine-side source boundary. */
 	agentAllTools?: Record<string, boolean>;
+	/** v0.3.87 (S4 decisions 8/9/10): global tool-call budget EVERY capability
+	 *  agent carries as its pi-subagents spawn default (native
+	 *  RuntimeAgentDefinition.toolBudget — pi-subagents ≥ 0.65 required; a
+	 *  pre-0.65 owner rejects the registration field and the existing
+	 *  structured-degrade machinery reports it, no new code path). STRICTLY
+	 *  OPT-IN: absent config sends NO toolBudget at all. Resolution:
+	 *  agentToolBudget[role] > commonToolBudget > none. Mechanical one-shot
+	 *  classifiers (MECHANICAL_CLASSIFIER_ROLES) NEVER get a budget — even
+	 *  with an explicit per-role entry (firmer than the extensions scope
+	 *  predicate). Malformed values warn once per key and are treated as
+	 *  absent (the v0.3.78 loud-fallback contract — never throws). Read once
+	 *  at registration (activate-time) — EDITS REQUIRE A pi RESTART (same
+	 *  semantics as commonExtensions/agentSkills). ZERO numbers are hardcoded
+	 *  in code: values are policy, policy lives in config; the RECOMMENDED
+	 *  values live in the README as documentation only. */
+	commonToolBudget?: ToolBudgetValue;
+	/** v0.3.87 (S4): per-role tool-call budgets, agent-level wins over
+	 *  commonToolBudget. Bare role keys are canonical; `sd-`-prefixed keys
+	 *  accepted (agentExtensions precedent). `research-assist` is a CONFIG
+	 *  ROLE KEY ONLY (assist dispatches reuse research-agent — no agent file
+	 *  exists): its resolution chain is
+	 *  agentToolBudget["research-assist"] ?? agentToolBudget["research-agent"]
+	 *  ?? commonToolBudget ?? none. Same value shape, loud-fallback, restart,
+	 *  and min-version semantics as commonToolBudget. */
+	agentToolBudget?: Record<string, ToolBudgetValue>;
 	/** v0.3.15: persistent channel for the SUPER_DEV_* tunables (timeouts,
 	 *  budgets, kill-switches, model/backend selectors) so GUI-launched pi
 	 *  sessions — which have no shell env — can still set them. Flat string

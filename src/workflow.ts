@@ -715,6 +715,11 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// Per-call override; when absent each backend falls back to the
 			// role-based default (code-writing agents get a larger cap).
 			timeoutMs,
+			// v0.3.87 (S4 decision 9): per-call toolBudget OVERRIDE (the only setter
+			// today is the research-assist dispatch — the config-resolved assist
+			// budget, tighter than research-agent's registered default). Absent =
+			// the registration-level RuntimeAgentDefinition.toolBudget applies.
+			toolBudget: call.toolBudget,
 			// Per-call thinking override. Both backends read the SAME per-call value:
 			// the subprocess backend reads `thinking` (buildSpawnArgs → --thinking via
 			// resolveThinking); the session backend reads `thinkingLevel`

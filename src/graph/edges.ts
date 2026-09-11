@@ -78,7 +78,7 @@ export const EDGES: StageEdge[] = [
 	{ from: "spec", to: "verify", rationale: "reviewers read specControl (buildCodeReviewPrompt/buildAdversarialPrompt/buildTestsReviewPrompt take specControl)" },
 	{ from: "implementation", to: "verify", rationale: "reviewers read implControl; verification gates the implementation's phases" },
 	{ from: "spec", to: "docs", rationale: "buildDocsPrompt(…, specControl) documents the spec's deliverables" },
-	{ from: "verify", to: "docs", rationale: "composition: docs runs only after positive Stage 10 verification (hasVerifiedImplementation branch)" },
+	{ from: "verify", to: "docs", rationale: "composition: docs runs only after positive verification convergence (hasVerifiedImplementation branch)" },
 	{ from: "docs", to: "preMergeBuild", rationale: "composition: sequence(docs → preMergeBuild → cleanup → merge)" },
 	{ from: "preMergeBuild", to: "cleanup", rationale: "composition: cleanup runs after the pre-merge build gate" },
 	{ from: "cleanup", to: "merge", rationale: "composition: merge is gated on cleanup's sensitive-scan (canMerge branch)" },

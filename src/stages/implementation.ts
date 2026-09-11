@@ -30,6 +30,11 @@ import { triggerReplanForFindings, replanPending, countInheritedRedRows, pending
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { FatalAbort } from "../nodes.ts";
 import { INHERITED_RED_SOURCE, appendInheritedRedEvent, countInheritedRedOccurrences, extractFailingTestFilePaths, f4ScopeMatch, inheritedRedAttribution, inheritedRedBoundaryShape, inheritedRedFlakeTally, normalizeRepoPath } from "./inherited-red.ts";
+// v0.3.87 S4(b)+(d) (§9/§10 decision 9, §13, §14 ADR 6): the engine-mediated
+// research assist — pure helpers + ledger + the one dispatch seam. §13:
+// "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
+// research-agent, no agent file is created.
+import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, runResearchAssist, type NeedsResearchEntry, type ResearchAssistRedArm, type ResearchAssistGreenTrigger } from "./research-assist.ts";
 import { planFeasibilityFindings, contradictionFastFailFrame } from "./plan-feasibility.ts";
 import { isNoEditCompletion } from "../agent-errors.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -1172,7 +1177,11 @@ export function parseRedContradictions(control: unknown): Array<{ tests: string;
 // required-with-empty-ok. (The v0.1.52 HISTORICAL line wording "(optional…)"
 // now parses as optional under v0.3.47, but that line is only a parser
 // fixture; the live contract is this one.)
-const IMPLEMENTER_CONTROL_KEYS = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects"];
+// v0.3.87 S4(b) (decision 9): needsResearch rides the SAME required-with-
+// empty-ok contract (ALWAYS emit; [] = no research question). Semantically
+// OPTIONAL — the field NEVER dispatches by itself; parseNeedsResearch archives
+// the entries and they only ENRICH an engine-gate-triggered assist dispatch.
+const IMPLEMENTER_CONTROL_KEYS = ["filesCreated", "filesModified", "filesDeleted", "testsPassCount", "summary", "testDefects", "needsResearch"];
 
 /** Fix 5 — cheap text-proof heuristic markers. ADVISORY ONLY: text alone never
  *  auto-triggers a re-author (`.text` is always present; the no-progress guard
@@ -1837,7 +1846,7 @@ export const implementationStage: Stage = {
 		// control). Green phases are skipped; a failed phase's prior reasons seed
 		// its next attempt 1 so iteration 2 targets the real failures.
 		const startInstructionFingerprint = runtimeInstructionFingerprint(state.setup?.specDirectory);
-		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[]; runtimeInstructionFingerprint?: string; invalidatedByRuntimeInstructions?: boolean; runStartDirt?: string[]; phaseStartDirt?: Record<string, string[]>; phaseGuidanceReentryUsed?: Record<string, true>; inheritedRedFlakeGrantUsed?: boolean };
+		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[]; runtimeInstructionFingerprint?: string; invalidatedByRuntimeInstructions?: boolean; runStartDirt?: string[]; phaseStartDirt?: Record<string, string[]>; phaseGuidanceReentryUsed?: Record<string, true>; inheritedRedFlakeGrantUsed?: boolean; redAssistArmed?: Record<string, ResearchAssistRedArm>; phaseResearchAssistUsed?: Record<string, true> };
 		const priorInstructionInvalidated = priorImpl.invalidatedByRuntimeInstructions === true || (typeof priorImpl.runtimeInstructionFingerprint === "string" && priorImpl.runtimeInstructionFingerprint !== startInstructionFingerprint);
 		const priorRunStart = (Array.isArray(priorImpl.runStartDirt) ? priorImpl.runStartDirt : undefined);
 		// v0.3.85 F2: per-phase FIRST-EVER porcelain snapshots (the attribution
@@ -1847,6 +1856,20 @@ export const implementationStage: Stage = {
 		// edits hit disk, or its own live work would classify as pre-phase).
 		const phaseStartDirt: Record<string, string[]> = priorInstructionInvalidated || !priorImpl.phaseStartDirt || typeof priorImpl.phaseStartDirt !== "object" ? {} : { ...priorImpl.phaseStartDirt };
 		const priorGuidanceReentryUsed = (priorImpl.phaseGuidanceReentryUsed && typeof priorImpl.phaseGuidanceReentryUsed === "object") ? priorImpl.phaseGuidanceReentryUsed : undefined;
+		// v0.3.87 S4(b) (decision 9): research-assist per-phase state, PERSISTED
+		// across §D convergence iterations via the control (the
+		// phaseGuidanceReentryUsed precedent — per phase EVER within a run):
+		//  - redAssistArmed: a terminal RED-generation failure (terminalRedTries ≥
+		//    RESEARCH_ASSIST_RED_TRIGGER_TRIES) armed the assist for this phase's
+		//    NEXT implementer round — the dispatch happens at the §D re-entry's
+		//    corrective-prompt assembly, immediately before the implementer call
+		//    (report-always-accompanies-execution: never dispatched at the terminal
+		//    boundary itself, where no next attempt is guaranteed).
+		//  - phaseResearchAssistUsed: the per-phase assist cap (≤1 assist per
+		//    phase, P8) — a second trigger in the same phase proceeds WITHOUT
+		//    assist, logged honestly.
+		const redAssistArmed: Record<string, ResearchAssistRedArm> = priorInstructionInvalidated || !priorImpl.redAssistArmed || typeof priorImpl.redAssistArmed !== "object" ? {} : { ...priorImpl.redAssistArmed };
+		const phaseResearchAssistUsed: Record<string, true> = priorInstructionInvalidated || !priorImpl.phaseResearchAssistUsed || typeof priorImpl.phaseResearchAssistUsed !== "object" ? {} : { ...priorImpl.phaseResearchAssistUsed };
 		let phaseStatus: PhaseStatusEntry[] = priorInstructionInvalidated ? [] : (Array.isArray(priorImpl.phaseStatus) ? priorImpl.phaseStatus.map((p) => ({ ...p })) : []);
 		// v0.2.6 G1 (adversarial sd26-F1 + code-review sd26-CR-1): ONE run-start
 		// porcelain snapshot, captured at stage entry ONLY when no prior snapshot
@@ -2069,6 +2092,17 @@ export const implementationStage: Stage = {
 			// failure-category recurrence valve — resets on a non-matching class
 			// and, via phase scope, on §D re-entry.
 			let faultClassStreak: { faultClass: FaultClass; count: number } | null = null;
+			// v0.3.87 S4(b) (decision 9): research-assist trigger state — phase-loop
+			// scope, so it resets per §D re-entry (the faultClassStreak convention).
+			// The GREEN side arms a PENDING dispatch at faultClassStreak ≥ 2; the
+			// dispatch itself happens at the NEXT attempt's corrective-prompt assembly
+			// (immediately before the implementer call — report-always-accompanies-
+			// execution; a terminal break after arming simply leaves the pending state
+			// unused: nothing was dispatched, never report-only). The implementer's
+			// optional needsResearch entries are ARCHIVED here (in-memory per phase;
+			// the field never dispatches by itself) and enrich the dispatched question.
+			let researchAssistPending: ResearchAssistGreenTrigger | null = null;
+			const needsResearchArchive: NeedsResearchEntry[] = [];
 			// v0.2.6 G1 — dirt PROVENANCE: the phase's FIRST-EVER start porcelain
 			// snapshot, PERSISTED across §D convergence iterations (adversarial
 			// sd26-F1: the outer loop re-invokes the whole stage with no cap, so a
@@ -3049,6 +3083,23 @@ export const implementationStage: Stage = {
 						attemptErrors = redFailures;
 						terminalFailureKind = "red-generation";
 						terminalRedTries = retries + 1;
+						// v0.3.87 S4(b) RED side (decision 9): a terminal RED-generation
+						// failure with ≥ RESEARCH_ASSIST_RED_TRIGGER_TRIES tries (second RED
+						// retry onward) ARMS the engine-mediated assist for this phase's NEXT
+						// implementer round — the §D re-entry's first attempt. The dispatch
+						// happens at that attempt's corrective-prompt assembly (immediately
+						// before the implementer call), so the assist never fires without a
+						// following attempt that carries it (never report-only; arming is a
+						// zero-cost record, nothing is dispatched here). Per-phase cap ≤1
+						// (P8): a spent cap logs honestly and does NOT (re-)arm.
+						if (terminalRedTries >= RESEARCH_ASSIST_RED_TRIGGER_TRIES) {
+							if (phaseResearchAssistUsed[phaseId]) {
+								ctx.log(`Implementation ${phaseId} research-assist trigger (RED: terminalRedTries=${terminalRedTries}) — per-phase assist cap already spent; proceeding WITHOUT assist`);
+							} else {
+								redAssistArmed[phaseId] = { tries: terminalRedTries, detail: redFailures.slice(0, 6).join("; "), testFiles: [...testFiles] };
+								ctx.log(`Implementation ${phaseId} research-assist ARMED (RED: ${terminalRedTries} terminal RED trie(s)) — research-agent will be dispatched before this phase's NEXT implementer round (the §D re-entry attempt)`);
+							}
+						}
 						if (terminalStopReason !== "no-progress" && terminalStopReason !== "environment-blocked") terminalStopReason = ctx.budget.check() ? "failed" : "budget";
 						ctx.log(`Implementation ${phaseId} RED generation stopped after ${retries + 1} tries${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment-blocked)" : ""}`);
 						ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
@@ -3079,6 +3130,53 @@ export const implementationStage: Stage = {
 				if (redWeaknessAdvisory) {
 					implParts.push(`\n## RED review advisory\n${redWeaknessAdvisory}`);
 					redWeaknessAdvisory = "";
+				}
+				// ── v0.3.87 S4(b) (§9, §10 decision 9, §14 ADR 6): engine-mediated
+				// research assist — the hybrid trigger is CONSUMED here, immediately
+				// before the implementer call (report-always-accompanies-execution: the
+				// dispatched ResearchAssistData renders into THIS attempt's corrective
+				// block; never report-only — a dispatched assist always has this very
+				// attempt right after it). RED side: armed by a terminal
+				// RED-generation failure (≥ RESEARCH_ASSIST_RED_TRIGGER_TRIES) in a
+				// prior §D pass. GREEN side: pending from faultClassStreak ≥ 2 this
+				// pass. tdd-guide gets NO assist (implementer-only v1, ADR 6). Per-phase
+				// cap 1 (P8); the dispatch consumes the archived needsResearch entries
+				// (enrichment — surfaced in the ledger row's enrichedByNeedsResearch).
+				{
+					const redArm = redAssistArmed[phaseId] ?? null;
+					delete redAssistArmed[phaseId]; // consumed either way — an armed trigger never outlives the first implementer round it targets
+					const trigger: { side: "RED" | "GREEN"; triggerDetail: string; contextLines: string[]; failingTargets: string[] } | null = redArm
+						? { side: "RED", triggerDetail: `RED generation stuck — ${redArm.tries} terminal RED trie(s) in a prior pass`, contextLines: [`terminal RED failure reasons: ${redArm.detail}`], failingTargets: redArm.testFiles }
+						: researchAssistPending
+							? { side: "GREEN", triggerDetail: researchAssistPending.triggerDetail, contextLines: researchAssistPending.contextLines, failingTargets: [...testFiles] }
+							: null;
+					researchAssistPending = null;
+					if (trigger) {
+						if (phaseResearchAssistUsed[phaseId]) {
+							ctx.log(`Implementation ${phaseId} research-assist trigger (${trigger.side}) — per-phase assist cap already spent; proceeding WITHOUT assist (P8)`);
+						} else if (!ctx.budget.check()) {
+							ctx.log(`Implementation ${phaseId} research-assist trigger (${trigger.side}) — budget exhausted; assist skipped, proceeding WITHOUT assist`);
+						} else {
+							phaseResearchAssistUsed[phaseId] = true;
+						ctx.log(`Implementation ${phaseId} research-assist trigger (${trigger.side}: ${trigger.triggerDetail}) — dispatching research-agent synchronously before attempt ${attempt} (scoped single question, 240s cap; toolBudget resolved from the assist config chain)`);
+						const assist = await runResearchAssist({
+							ctx,
+							specDirectory: setup.specDirectory,
+							phaseId,
+							phaseName,
+							attempt,
+							trigger: trigger.side,
+							triggerDetail: trigger.triggerDetail,
+							contextLines: trigger.contextLines,
+							failingTargets: trigger.failingTargets,
+							needsResearch: needsResearchArchive,
+						});
+						// consumed — the entries surfaced in the ledger row (enrichedByNeedsResearch) once used
+						needsResearchArchive.length = 0;
+						implParts.push(assist.block);
+						ctx.log(`Implementation ${phaseId} research-assist complete (before attempt ${attempt}): outcome=${assist.row.outcome}${assist.row.enrichedByNeedsResearch ? ", enriched by needsResearch" : ""}${assist.row.noUsefulSignal ? ", noUsefulSignal (honest-empty note accompanies the attempt)" : ""}${assist.toolBudgetSent ? ", toolBudget sent" : ", no toolBudget configured"}, ${assist.row.durationMs}ms — the distilled block accompanies this attempt`);
+						}
+					}
 				}
 				// Forceful, prominent retry feedback when the PRIOR attempt edited a
 				// confirmed RED test file during GREEN (a contract violation — even a
@@ -3256,7 +3354,9 @@ export const implementationStage: Stage = {
 						// Fix 1c/1d: `testDefects: []` is the explicit "no proven defect"
 						// value — it must NOT trigger a corrective re-prompt in either
 						// backend. Absence (undefined) still does.
-						allowEmptyArraysFor: ["testDefects"],
+						// v0.3.87 S4(b): `needsResearch: []` rides the same contract — the
+						// explicit "no research question" value, never a violation.
+						allowEmptyArraysFor: ["testDefects", "needsResearch"],
 					});
 					emitStep(`Implementation (${attemptDetail(attempt)})`, r.error ? "failed" : "ok", implStepSeq);
 					return r;
@@ -3290,6 +3390,21 @@ export const implementationStage: Stage = {
 				// that ignores the contract still surfaces its reasoning. Kept per
 				// phase (latest attempt) and consumed when RED is re-authored.
 				implDefects = parseTestDefects(impl.control);
+				// v0.3.87 S4(b) (decision 9): ARCHIVE the implementer's optional
+				// needsResearch entries — the field NEVER dispatches by itself; the
+				// in-memory per-phase archive enriches the assist QUESTION when the
+				// engine gate trips. Bounded (P8): oldest entries drop first, logged
+				// honestly; malformed entries were already rejected by the parser.
+				{
+					const before = needsResearchArchive.length;
+					needsResearchArchive.push(...parseNeedsResearch(impl.control, (m) => ctx.log(`Implementation ${phaseId} ${m}`)));
+					if (needsResearchArchive.length > RESEARCH_ASSIST_ARCHIVE_CAP) {
+						const dropped = needsResearchArchive.length - RESEARCH_ASSIST_ARCHIVE_CAP;
+						needsResearchArchive.splice(0, dropped);
+						ctx.log(`Implementation ${phaseId} research-assist archive bounded (${RESEARCH_ASSIST_ARCHIVE_CAP}): dropped ${dropped} oldest needsResearch entr(ies)`);
+					}
+					if (needsResearchArchive.length > before) ctx.log(`Implementation ${phaseId} needsResearch: ${needsResearchArchive.length} entr(ies) archived (no dispatch — the engine gate has not tripped; the field alone never triggers research)`);
+				}
 				implTextTail = trimImplementerText(impl.text);
 				const projectStructured: StructuredChanges = {
 					filesCreated: structured.filesCreated.filter((f) => !isInternalRuntimeClaim(f)),
@@ -4205,6 +4320,25 @@ export const implementationStage: Stage = {
 				// the module-scope pure helper — see its docstring for why (CFA `never`).
 				faultClassStreak = nextFaultStreak(faultClassStreak, attemptFaultClass);
 				const faultRecurrence = faultClassStreak.count >= faultRecurrenceLimit();
+				// v0.3.87 S4(b) GREEN side (decision 9): the 2nd consecutive
+				// same-FaultClass failure ARMS a pending assist — dispatched at the NEXT
+				// attempt's corrective-prompt assembly. Arming is allowed even at ≥ the
+				// no-progress valve's limit: the valve's judge routes often CONTINUE the
+				// loop (re-author-tests / challenge-test / continue all reach another
+				// implementer attempt); a terminal break simply leaves the pending state
+				// unused — nothing was dispatched, never report-only. Per-phase cap ≤1
+				// (P8), logged honestly when already spent.
+				if (faultClassStreak.count >= RESEARCH_ASSIST_GREEN_TRIGGER_STREAK) {
+					if (phaseResearchAssistUsed[phaseId]) {
+						ctx.log(`Implementation ${phaseId} research-assist trigger (GREEN: fault-class ${attemptFaultClass} × ${faultClassStreak.count}) — per-phase assist cap already spent; proceeding WITHOUT assist`);
+					} else {
+						researchAssistPending = {
+							triggerDetail: `fault-class ${attemptFaultClass} × ${faultClassStreak.count} consecutive attempt(s)`,
+							contextLines: failureReasons.slice(0, 8),
+						};
+						ctx.log(`Implementation ${phaseId} research-assist ARMED (GREEN: fault-class ${attemptFaultClass} × ${faultClassStreak.count}) — research-agent will be dispatched before the next implementer attempt (if one starts)`);
+					}
+				}
 				const noProgress = signatureRepeat || faultRecurrence;
 				// ADV-v0379-5: the contradiction valve's evidence must be from the SAME
 				// repeated-signature window — a revert from an earlier, unrelated
@@ -4719,6 +4853,11 @@ export const implementationStage: Stage = {
 			// convergence iterations (the attribution boundary — see the phase-entry
 			// capture); the per-run Tier-1 flake grant rides with them.
 			phaseStartDirt,
+			// v0.3.87 S4(b): research-assist per-phase state persists across §D
+			// convergence iterations — the RED-side arm (dispatched at the re-entry's
+			// first implementer round) and the per-phase assist cap (≤1, P8).
+			redAssistArmed,
+			phaseResearchAssistUsed,
 			inheritedRedFlakeGrantUsed,
 			phaseGuidanceReentryUsed,
 			convergenceBlocked,

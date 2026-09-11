@@ -167,3 +167,19 @@ If a file reports DIFF, act per contract:
   (unused by us), optional `allowNestedSubagents`, fleet display hardening,
   validatePositiveInteger hardening. C1/C3 byte-identical; uuid-vs-path fix
   (v0.3.27) still correct against both installed and latest main.
+
+- **2026-09-11** — pi-subagents **0.67.0** toolBudget verified for v0.3.87 (S4).
+  Two upstream gaps discovered while wiring `toolBudget {soft, hard, block}`:
+  (1) **no family-scoped counting** — `subagent-prompt-runtime.ts` increments
+  `toolCount` on EVERY child tool call; soft/hard are total-call thresholds,
+  not external-only counts (super-dev's README recommended values were
+  recalibrated 2026-09-11 for this reality; the postmortem's decision-8
+  wording assumed external-only counting). Upstream ask: a `countOnly:
+  string[]` (or prefix-family) scoping option on toolBudget.
+  (2) **block list is exact-name only** — `block.includes(toolName)`; no
+  prefix matching, so a `"mcp__"` entry is inert and `mcp__<server>__<tool>`
+  direct tools can only be blocked by enumerating exact names (the aggregate
+  `mcp` tool is the practical blocking path today; super-dev sends the
+  prefix entry anyway so it activates if upstream gains prefix matching).
+  Upstream ask: prefix-aware block entries. Neither gap blocks the S4 design
+  (block-only-external semantics hold: local tools always retained).

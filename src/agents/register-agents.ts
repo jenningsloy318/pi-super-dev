@@ -19,7 +19,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { commitGuardExtensionPath, safetyGuardExtensionPath, buildToolIndex, configExtensionEntriesForAgent, configExtensionToolsForAgent, toolsWildcardForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured } from "./agent-runtime.ts";
+import { commitGuardExtensionPath, safetyGuardExtensionPath, buildToolIndex, configExtensionEntriesForAgent, configExtensionToolsForAgent, toolsWildcardForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured, resolveToolBudget, type ResolvedToolBudget } from "./agent-runtime.ts";
 import { getConfig } from "../render/super-dev-dir.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 
@@ -38,7 +38,7 @@ export const WRITER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "writ
  *  it to preserve posture). EVERY role: `super_dev` — children without an
  *  extensions pin keep AMBIENT extension loading, so an unpinned child would
  *  otherwise carry an ACTIVE super_dev tool and could recurse into a nested
- *  13-stage pipeline (dual review code-F3/adv-F5; the pin was the only thing
+ *  nested pipeline (dual review code-F3/adv-F5; the pin was the only thing
  *  keeping it out — see the WRITER_TOOLS "minus the super_dev tool" note).
  *  Bash stays available per repo precedent; the binding read-only enforcement
  *  remains the engine-side source boundary. */
@@ -116,7 +116,7 @@ export const REGISTERED_AGENTS = [
 ];
 
 function descriptionFor(name: string): string {
-	return `super-dev pipeline specialist: ${name.replace(/-/g, " ")} (13-stage development pipeline)`;
+	return `super-dev pipeline specialist: ${name.replace(/-/g, " ")}`;
 }
 
 let ownerPresentSeen: boolean | null = null;
@@ -157,7 +157,7 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	const request: {
 		version: 1;
 		name: string;
-		definition: { description: string; systemPrompt: string; tools?: readonly string[]; excludeTools?: readonly string[]; inheritSkills: boolean; extensions?: string[]; subagentOnlyExtensions?: string[] };
+		definition: { description: string; systemPrompt: string; tools?: readonly string[]; excludeTools?: readonly string[]; inheritSkills: boolean; extensions?: string[]; subagentOnlyExtensions?: string[]; toolBudget?: ResolvedToolBudget };
 		result?: { ok: true; registration: { dispose(): void } } | { ok: false; error: Error };
 	} = {
 		version: 1,
@@ -250,6 +250,21 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			const configEntries = configExtensionEntriesForAgent(name, { warn: log });
 			const merged = [...(guard ? [guard] : []), ...(safetyGuard ? [safetyGuard] : []), ...configEntries];
 			return merged.length > 0 ? { subagentOnlyExtensions: merged } : {};
+		})(),
+		// v0.3.87 (S4 decisions 8/9/10) — config-resolved tool-call budget riding
+		// the SAME per-agent registration seam as tools:/subagentOnlyExtensions:
+		// pi-subagents native RuntimeAgentDefinition.toolBudget (≥ 0.65; a
+		// pre-0.65 owner rejects the field → the existing structured-degrade
+		// machinery reports it per agent, no new code path). Resolution
+		// agentToolBudget[role] > commonToolBudget > none; absent config sends
+		// NO toolBudget (caps strictly opt-in); mechanical classifiers never
+		// get one; the block list is the fixed five external-exploration
+		// families, never "*". ZERO budget numbers live in code — values are
+		// policy in ~/.super-dev/config.json (recommended values: README).
+		// Read once at registration — restart pi after config edits.
+		...(() => {
+			const budget = resolveToolBudget(name, { warn: log });
+			return budget !== undefined ? { toolBudget: budget } : {};
 		})(),
 		},
 	};

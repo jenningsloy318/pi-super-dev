@@ -79,7 +79,7 @@ export const canMerge = (s: PipelineState) => {
 	if (impl?.allGreen !== true) return false; // completeness gate
 	if (!reviewApproved(s)) return false;     // defense-in-depth
 	const integration = s.integration as { pass?: boolean } | undefined;
-	if (integration?.pass !== true) return false; // Stage 10 verification convergence gate
+	if (integration?.pass !== true) return false; // verification convergence gate
 	const b = s.preMergeBuild as { pass?: boolean } | undefined;
 	return b?.pass === true;                   // affirmative pass, not !== false
 };
@@ -90,14 +90,14 @@ export const canMerge = (s: PipelineState) => {
  *  completeness gate, so `allGreen=false` flowed into review/test/merge of
  *  PARTIAL code (the "merged 2/6 phases" false green). Now review/test are
  *  skipped on a partial implementation; the run's status is `partial` and the
- *  caller recovers via RESUME (not via Stage 10c finishing impl work). */
+ *  caller recovers via RESUME (not via the verification fix loop finishing impl work). */
 export const hasImplementation = (s: PipelineState) => {
 	const i = s.implementation as { totalPhases?: number; allGreen?: boolean } | undefined;
 	return (i?.totalPhases ?? 0) > 0 && i?.allGreen === true;
 };
 
-/** Downstream write-capable stages may only run after Stage 10 has positively
- *  verified the implementation. A tolerant sequence can carry a failed Stage 10
+/** Downstream write-capable stages may only run after verification has positively
+ *  verified the implementation. A tolerant sequence can carry a failed verification
  *  result forward, so this predicate is the explicit safety boundary for docs,
  *  pre-merge build, cleanup, and merge. */
 export const hasVerifiedImplementation = (s: PipelineState) => {
@@ -110,7 +110,7 @@ export const hasVerifiedImplementation = (s: PipelineState) => {
 };
 
 /** §D auto-iterate convergence loop (design report §D): re-run implementation
- *  until all phases are green, the global budget is exhausted, or Stage 9 marks
+ *  until all phases are green, the global budget is exhausted, or implementation marks
  *  the phase as no-progress blocked. Combined with the per-phase green-state
  *  carry in implementation.ts, a re-run SKIPS already-green phases and
  *  re-attempts only the failed one(s), seeded with prior failure reasons. */
@@ -120,7 +120,7 @@ const implConvergenceBlocked = (s: PipelineState) =>
 	((s.implementation as { convergenceBlocked?: boolean } | undefined)?.convergenceBlocked === true);
 
 /** F9-C (v0.3.67, incident 2026-09-04T14-45-04-784Z): once a REPLAN round is
- * routed the spec artifacts are INVALIDATED — re-attempting Stage 9 against
+ * routed the spec artifacts are INVALIDATED — re-attempting implementation against
  * them can only end in no-progress bounds (the incident burned attempts 5-9,
  * ~4h, on phases a judge had already proven unsatisfiable). Research basis:
  * Fox et al. ICAPS-06 (plan stability — never keep executing a dead plan),
@@ -131,25 +131,25 @@ const implConvergenceBlocked = (s: PipelineState) =>
 export const shouldIterateImplementation = (s: PipelineState, c: { budget: { check(): boolean } }) =>
 	!implAllGreen(s) && !implConvergenceBlocked(s) && !replanPending(s) && c.budget.check();
 
-/** F9-C: Stage 10 reviews against the CURRENT spec contract; when that
+/** F9-C: verification reviews against the CURRENT spec contract; when that
  * contract is invalidated by a pending REPLAN the review is superseded — the
  * restart re-verifies under the revised artifacts. Skipped with a NAMED
  * notice (P10), never silently. */
 export const shouldRunVerification = (s: PipelineState) => hasImplementation(s) && !replanPending(s);
 
-/** F9-C: the named skip notice for Stage 10 (P10 — a skipped verification must
+/** F9-C: the named skip notice for verification (P10 — a skipped verification must
  * be visible in the run log, not a silent gap). Exported for wind-down tests. */
 export const verificationSkippedReplanStage: Stage = {
 	id: "verificationSkippedReplan",
-	label: "Stage 10 — Verification (skipped: REPLAN pending)",
+	label: "Verification (skipped: REPLAN pending)",
 	async run(input: PipelineState, ctx: { log(message: string): void }) {
 		const marker = (input as Record<string, unknown>).__replan as { rounds?: number; owners?: string[] } | undefined;
-		ctx.log(`Stage 10 skipped — REPLAN round ${marker?.rounds ?? "?"} pending (${(marker?.owners ?? []).join(", ") || "owners unknown"}): the spec artifacts are invalidated; verification re-runs under the revised spec after restart`);
+		ctx.log(`Verification skipped — REPLAN round ${marker?.rounds ?? "?"} pending (${(marker?.owners ?? []).join(", ") || "owners unknown"}): the spec artifacts are invalidated; verification re-runs under the revised spec after restart`);
 		return input;
 	},
 };
 
-// ─── Verify (Stage 10): fresh-evidence convergence loop ─────────────────────
+// ─── Verify: fresh-evidence convergence loop ────────────────────────────────
 // Extracted to src/stages/verify.ts. Each attempt runs fresh review + build
 // evidence before integration. Any fix invalidates downstream evidence and the
 // next attempt starts at review again: review → fix → review → integration →
@@ -194,7 +194,7 @@ export const PIPELINE_CHILDREN: Node[] = [
 	// against an invalidated spec only burns reviewer budget (incident: 3 full
 	// review cycles, ~2h, discarded by the 18:56 restart).
 	branch(shouldRunVerification, { yes: verificationConvergenceNode, no: task(verificationSkippedReplanStage) }),
-	// Downstream write-capable close-out stages run only after positive Stage 10
+	// Downstream write-capable close-out stages run only after positive verification
 	// verification. A failed/blocking verification in this tolerant sequence must
 	// not be followed by docs/cleanup/merge mutations.
 	branch(hasVerifiedImplementation, {
@@ -225,7 +225,7 @@ const pipeline = withInlineRouteBack(PIPELINE_CHILDREN);
 export const SUPER_DEV_WORKFLOW: Workflow = {
 	id: "super-dev",
 	description:
-		"13-stage development pipeline composed from control-flow nodes: classify → requirements/BDD/research artifact convergence → [debug] → assessment → design → [prototype] → spec/review convergence → implementation (TDD) → verification convergence → verified docs → cleanup → merge.",
+		"Staged development pipeline composed from control-flow nodes: classify → requirements/BDD/research artifact convergence → [debug] → assessment → design → [prototype] → spec/review convergence → implementation (TDD) → verification convergence → verified docs → cleanup → merge.",
 	root: pipeline,
 };
 

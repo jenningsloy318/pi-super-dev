@@ -1,6 +1,6 @@
 # Architecture (generated)
 
-> Generated from `src/graph/edges.ts` + `src/team/raci.ts` at v0.3.86 — do not edit by hand; run `npm run arch:doc`.
+> Generated from `src/graph/edges.ts` + `src/team/raci.ts` at v0.3.87 — do not edit by hand; run `npm run arch:doc`.
 
 ## Stage table (RACI over the skeleton)
 
@@ -52,7 +52,7 @@
 | `spec` | `verify` | reviewers read specControl (buildCodeReviewPrompt/buildAdversarialPrompt/buildTestsReviewPrompt take specControl) |
 | `implementation` | `verify` | reviewers read implControl; verification gates the implementation's phases |
 | `spec` | `docs` | buildDocsPrompt(…, specControl) documents the spec's deliverables |
-| `verify` | `docs` | composition: docs runs only after positive Stage 10 verification (hasVerifiedImplementation branch) |
+| `verify` | `docs` | composition: docs runs only after positive verification convergence (hasVerifiedImplementation branch) |
 | `docs` | `preMergeBuild` | composition: sequence(docs → preMergeBuild → cleanup → merge) |
 | `preMergeBuild` | `cleanup` | composition: cleanup runs after the pre-merge build gate |
 | `cleanup` | `merge` | composition: merge is gated on cleanup's sensitive-scan (canMerge branch) |
