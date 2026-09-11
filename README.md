@@ -1216,6 +1216,8 @@ All keys, defaults, and purposes:
 | `SUPER_DEV_MAX_JUDGE_CALLS` | `12` | judge calls per run (2 per signature) |
 | `SUPER_DEV_MAX_RUN_COST` | — | run-wide cost fuse in USD (fail-closed pre-call; see Usage governance) |
 | `SUPER_DEV_MAX_RUN_TOKENS` | — | run-wide token fuse, input+output (fail-closed pre-call; see Usage governance) |
+| `SUPER_DEV_CODE_TIMEOUT_MS` | `1800000` | code-tier timeout per delegation call — `implementer` + `tdd-guide` (the TDD write/test loop roles); on timeout the child is terminated and the attempt's timeout signature feeds the existing retry/fuse machinery (v0.3.73 timeout tiers) |
+| `SUPER_DEV_REVIEW_TIMEOUT_MS` | `1800000` | review-tier timeout per delegation call — the reviewer family (requirements/bdd/design/spec/code/adversarial reviewers); raised from the 20-min default after seven exact-20:00 timeouts in one healthy run (v0.3.73 M4) |
 | `SUPER_DEV_WRITER_TIMEOUT_MS` | `1800000` | heavy-writer timeout tier — spec-writer produces all three spec docs in one call (v0.3.84) |
 | `SUPER_DEV_DUPLICATE_NODE_RETRY_MS` | `2000` | backoff before the single duplicate_node delegation retry, clamped to 60s (v0.3.84) |
 | `SUPER_DEV_NO_CONFIG_ENV` | — | `1` = test-hermeticity kill switch: `superDevEnv` ignores `config.json`'s `env` map entirely (set by the vitest setup; never set in production) |
