@@ -35,6 +35,14 @@ export const MAX_PROTOTYPE_ROUNDS = 6;
 const FAIL_PREFIXES = ["FAIL", "PROTOTYPE_FAILED", "FAILED", "REJECT", "REJECTED", "INCOMPLETE", "ABORT"];
 const PASS_PREFIXES = ["PASS", "PROTOTYPE_COMPLETE", "COMPLETE", "COMPLETED", "PROTOTYPE_SKIPPED", "SUCCESS"];
 
+/** The closed prototype verdict enum as a runtime list — schemas.ts
+ *  PrototypeData unions exactly these literals (pinned equal by the
+ *  eval-layer P6 cross-check test, tests/eval-layer.test.ts). Exported for
+ *  the eval layer's DEC-6 verdict-closure table; "unknown" is the boundary
+ *  fallback of normalizePrototypeVerdict, never a verdict a golden case can
+ *  expect. */
+export const PROTOTYPE_VERDICT_VALUES = ["pass", "fail"] as const;
+
 /**
  * Boundary normalization (conservative cascade — exact vocabulary first, then
  * word-level; NEVER fuzzy). PROTOTYPE_SKIPPED counts as pass: it is the agent's

@@ -801,6 +801,36 @@ Governance guardrails (Arize tiers): drafts land in inbox only; persistent
 changes always flow through the human fix lifecycle; the post-mortem agent is
 read-only; no agent may edit gates, methodology, or evals; rollback = git.
 
+## Golden-case eval layer (v0.3.89, P1)
+
+The E4 incident-pinned suites answer "did the fix break what it fixed"; the
+golden-case layer (spec: `docs/requirements/sdlc-tips-adoption.md`, P1 of 3)
+answers "is the pipeline still good at its job on a fixed reference set".
+P1 ships the substrate only — no pipeline wiring yet (P2 adds scorers, P3 the
+flywheel):
+
+- **Assets live user-local** under `~/.super-dev/evals/` — `cases/`
+  (one JSON per golden case, seven fields incl. `caseVersion`, scenario must
+  embed its canary GUID), `rubrics/` (per-rubricId files; 0..1 confidence is a
+  RANKING signal, never a probability), `labels/` (maintainer hand-labels;
+  the filename IS the gate id). Cold start = empty, no error.
+- **The verdict closure is imported, never re-typed**: the 11 valid verdict
+  values come from the real enum owners (review verdicts, prototype pass/fail,
+  judge accepted/discarded, fault classes) — a source-scan tripwire test fails
+  the build if a literal sneaks into the eval module (P6 single grammar).
+- **Targets use a three-arm grammar** — `stage|agent`, stage-only, or
+  agent-only (judge cases target `judge` directly); a conservative
+  target→verdict-family mapping rejects cross-family nonsense at load time.
+- **The validation gate (D7) is deterministic**: maintainer-label agreement,
+  confidence→accuracy calibration buckets, bootstrap percentile CIs (seeded,
+  reproducible); n<8 matched pairs is directional-only with NO CI, and
+  duplicate scorer rows are counted (`duplicateScorerRows`) — they can never
+  inflate the sample past the n≥8 floor. The gate executes in P2 when the
+  scorers land.
+- `writeGoldenCaseTemplate()` / `writeRubricTemplate()` scaffold validated
+  skeletons (atomic `wx` create) — content is hand-written (DEC-7: no
+  auto-generated seeds).
+
 ## Configuration
 
 Super-dev stores user-level runtime data under `~/.super-dev/`:

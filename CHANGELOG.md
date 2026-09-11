@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.3.89: P1 评测层地基（金标集 + rubric 工件 + 校验门机器）
+
+新增 `src/evolution/eval-layer.ts`（sdlc-tips-adoption.md 规格 P1 波：D1 + D2 + D7 的 P1 部分）——
+为「轨迹→金标」评测飞轮打下地基，本波零管线接线（P2/P3 才接入执行流）：
+
+- **金标案例数据集（D1/DEC-6）**：七字段 schema（id/title/source/target/scenario/expected/caseVersion，
+  含 M2 折叠的 caseVersion）；verdict 闭包表 11 个值**全部 import 自真实枚举 owner**
+  （REVIEW_VERDICT_VALUES/PROTOTYPE_VERDICT_VALUES/JUDGE_EVAL_VERDICT_VALUES/FAULT_CLASS_VALUES），
+  零重打字面量（源扫描绊线测试钉死，P6 单一文法）；scenario 内嵌 canary GUID（确定性 sha256 派生，
+  P3 污染金丝雀扫描的地基，§8.1）。
+- **三臂 target 文法（adversarial F1 折叠）**：`stage|agent` 复合 / 纯 stage / 纯 agent；
+  judge 案例以纯 agent target 为家；target→verdict 家族保守映射（prototype/judge/reviewer/fault 四族，
+  未映射目标 fail-open 回落全闭包，adversarial F6）。
+- **rubric 工件（D2/DEC-7）**：`~/.super-dev/evals/rubrics/` 按 rubricId 一文件，
+  维度级 mustHold/mustNot（mustNot 可选），0..1 confidence 明确为**排序信号**非概率（§8.2）。
+- **校验门机器（D7/DEC-13①）**：人工标签协议（gate-id 即地址：文件名==gateId，整文件拒绝规则）、
+  一致率 + per-target 分解 + 置信度→实测准确率校准分桶（十分位可靠性图）、
+  bootstrap 百分位 CI（mulberry32 定种子 1000 次重采样，确定性）；**n<8 一律 directional-only 且 CI 为 null**
+  （§8.5 小样本纪律）；scorer 行去重 + duplicateScorerRows 诚实上浮（adversarial F3）——
+  单案例重复计分无法撑过 n≥8 门。该门在 P2 打分器落地后执行（本波只造机器）。
+- **用户本地住址（DEC-5）**：金标/rubric/标签全部住 `~/.super-dev/evals/{cases,rubrics,labels}/`，
+  冷启动=空不报错（learned.ts 先例）；模板写手（validate-before-write + `flag:"wx"` 原子创建，
+  adversarial F9）产出骨架，内容零自动生成（种子期手写，DEC-7）。
+- **地址完整性（adversarial F7/F8）**：case id/rubricId 必须等于文件 basename（与 labels 同规则）；
+  source 必须是仓内真实文件（isFile + realpathSync 包含检查，防符号链接逃逸）。
+- **bandKey 地基（M2/§8.3）**：`(caseSet, caseVersion, rubricVersion)` 三元组分键形状 +
+  `caseSetOf` 派生（stamp ?? stage 臂 ?? agent 臂 ?? fallback；caseSet 禁含 `::` 分隔符）。
+- 五处**外科加法导出**（零行为漂移）：helpers.ts REVIEW_VERDICT_VALUES、prototype.ts
+  PROTOTYPE_VERDICT_VALUES、judge.ts JUDGE_EVAL_VERDICT_VALUES、fault-classification.ts
+  FAULT_CLASS_VALUES（编译器强制完整）、sigma-bands.ts MIN_PRIOR_RUNS 导出（n<8 单一文法）。
+- 测试 `tests/eval-layer.test.ts` 62 项：闭包完备性、三臂文法、家族映射、去重、n=0/n<8/bootstrap-null、
+  校准分桶、CI 确定性、canary、wx/realpath/basename 拒绝、tripwire 源扫描——全部合成数据注入临时目录，
+  零 `~/.super-dev` 依赖。
+
+双 gemini-3.8-flash 评审门（code gate PASS 8/8 + adversarial gate 10 findings 全折叠 + delta re-gate PASS 11/11）。
+
 ### Added
 - **v0.3.88（遗留后端删除 — 委托后端成为唯一专家执行器）** — v0.3.64 已把生产路径切到 pi-subagents 委托传输并宣示"无回退后端"；本波把残留的副本与死缝清干净。**删除**：src/bench/（session-agent.ts — 进程内 session 后端的 bench 存留副本 + convergence-bench.ts）与 8 个只测已删模块的死测试文件；src/safety.ts 的 createSafetyExtensionFactory（session 后端加载缝）与 safetyPreamble（subprocess 后端缝，均生产零 importer，监督者裁定 A 全删）及其测试覆盖（safety-integration.test.ts 全文件 + safetyPreamble describe 块——check* 重导出与 child-guards 规则及测试完好，lifecycle.ts:205 消费链存活）；三个死 env 键 SUPER_DEV_BENCH*（零 src 读者）与 vitest.config 死覆盖排除项。**改写**：同文件残留假现在时注释全改过去时（delegation-backend 双处 + workflow 双块 + register-agents + reflection 双处 + types 四处 + progress-lines + agent-runtime 头部史——"三后端/另一后端/两后端"叙事清零，唯一历史引用隔离在 delegation-backend.ts:478）；worker 自主发现的第三个死 spawnAgent mock 键（super-dev-command.test.ts）与另两处一并移除；missingKeys→missingControlKeys 生产孪生替换（control.ts:269 签名一致）；methodology extractControl 位点计数 4→3（手数验证）；structure.test.ts 改为 src/bench 缺席断言；workflow-inherit 孤儿 subprocess 字段删除、captured.session→captured.delegation、标题去"BOTH backends"；delegation-backend 头部镜像版本注更新为"逐字段重验至 0.67（S4 验证 toolBudget）"。README 后端段改写（bench 副本存留至 v0.3.88 删除；委托为唯一执行器；agentBackend/SUPER_DEV_BACKEND 历史句保留）。委托后端逻辑字节未动（注释除外）。过程：glm-5.3:max 实现者（用户指定双 :max 配置；:max 后缀首次实跑验证通过）+ glm-5.3:max 门（fix-required 仅收尾簿记 + 注释尾项，零逻辑缺陷，6/6 偏差全收）。全套件 247 文件 3663 passed + 1 skipped（死模块随删），tsc clean；版本对齐 0.3.88。
 - **v0.3.87（S4 外部资源纪律 + 阶段计数真相修 — 事后剖析程序收官）** — 毒基线事后剖析（docs/requirements/run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md）批准工单的最后一项 S4，两组实现各自过独立 gemini-3.8-flash 门（9/9 与 7/7，零阻断发现，worker 6 项偏差全部批准）。**(a) toolBudget 双层配置**：`commonToolBudget` + `agentToolBudget[role]`（值恒 `{soft, hard}` 正整数 soft≤hard；裸键与 sd- 前缀键；malformed 每键一次 WARN 按缺失处理，v0.3.78 loud-fallback 契约）——解析序 agent > common > none，无配置则完全不发送（严格 opt-in）；零硬编码预算数字（策略只住 config + README）。生效时注册携带原生 `toolBudget {soft, hard, block}`，block 恒为五个外部探索工具名（web_search/fetch_content/get_search_content/source_check/mcp+mcp__ 前缀），永不 `"*"`；机械分类器（task-classifier/judge/tdd-coverage/red-boundary）结构性豁免（入口首位守卫，与配置序无关）；research-assist 是纯配置角色键，回退链 agentToolBudget["research-assist"] > ["research-agent"] > common > none。对接上游逐行验证（pi-subagents 0.67：runtime-agent-registry 验证 + async-execution 解析序）。**上游现实校准（README 表 2026-09-11 重校准）**：上游 0.67 软/硬阈值计数的是**全部**子工具调用（无家族限定计数——决策 8 的“只计外部”是设计意图非上游现实）且 block 是精确名匹配（mcp__ 前缀条目惰性）——两项上游缺口记入 upstream-watch.md，推荐值表按全量计数重校准（40/80、15/30、100/250、15/30：本地编码永不受约束，仅外部探索被截断）。**(b) 引擎中介 research assist（决策 9）**：混合触发（RED 侧 terminalRedTries≥2 在终态 redFailures 块武装、GREEN 侧 F3 的 faultClassStreak≥2），每 phase 终生 ≤1 次（跨 §D 再入持久，phaseGuidanceReentryUsed 先例）；implementer 控制的可选 `needsResearch: [{question, why}]`（两字段必填、≤6/次、归档 ≤8）**永不自行派发**——仅在触发跳闸后充实引擎组装的限域问题（"the implementer specifically asks: …"）；派发同步且先于承载尝试的 implementer 调用（复用 research-agent，240s 具名常量无新 env 键，per-call toolBudget 走 research-assist 配置链），报告恒随执行（never report-only）；引擎侧蒸馏限幅（≤5 findings {claim, source, applies}、≤10 行建议、~2KB 块且 MCP 审计行恒存——截断只切正文）；失败/超时降级 noUsefulSignal 行（不触 v0.3.65 熔断、不耗 attempt、不中止，P5），预算耗尽诚实跳过；账本 `<specDir>/research-assists.jsonl` 每派发一行（trigger/question/enriched/outcome/durationMs/mcpAudit——MCP 副作用在 source boundary 视野外的残余风险逐 assist 记录），四角色注册（specDirBookkeeping+redBoundarySpecScoped+trackerAdvisoryNoise+phaseCommitExcluded，事后剖析点名的 NOVEL 组合），排除出 phase 提交。tdd-guide 不参与（ADR 6：待 E 波 sigma-band 证据）。**(c) 提示纪律段**：implementer/tdd-guide/code-reviewer/adversarial-reviewer 四份 agent 提示各 ≤10 行——lookup-then-return、更优方案永不单方采纳（路由 judge/replan，预算耗尽 = 照计划执行 + 归档为 open risk 或 escalate）、MCP 副作用谨慎。**(d) 阶段/代理计数真相修（用户裁定：并入本波，去计数留弧线）**：节点组合早已 16 段（bdd/prototype/preMergeBuild/mergeVerify/verificationSkippedReplam 后增）而 9 处仍称 "13-stage"、技能称 21 专家（实际 REGISTERED_AGENTS=30）——工具描述/工作流描述/每 agent 注册描述/SKILL.md（仓内+已装副本，30 专家）/README 全部改弧线措辞（requirements → research → design → spec → TDD implementation → verification convergence → docs → merge），README 22 处散文锚 + 流水线块 Stage-N 前缀全剥、阶段跳号（无 Stage 11）与未编号 preMergeBuild 一并消解；stages/index.ts 12 处注释/标签归一（含运行时跳过标签）+ edges.ts 理由 + ARCHITECTURE.md 再生；历史条目（CHANGELOG/v0.3.0 审计快照/运行史表）不动。测试：tool-budget/research-assist（新，24 项）+ registry/prompt-control/docs-contracts/dashboard/live-stream/winddown 钉更新；全套件 255 文件 3744 passed + 1 skipped，tsc clean。修复轮（监督者侧）：MCP 审计行改为截断免疫（预算只切正文）、honest-empty 措辞对齐、RED 触发夹具改原始 "green"（探针实证：原始 "red" 是被**接受**的 RED）、S1 实例测试钉诚实空 findings 丢弃。

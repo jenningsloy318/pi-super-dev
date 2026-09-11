@@ -149,6 +149,17 @@ export type JudgeOutcome =
 	| { status: "discarded"; reason: string }
 	| { status: "degraded"; reason: string };
 
+/** The judge EVAL-verdict vocabulary (DEC-6 closure family, S3 meter
+ *  semantics — docs/requirements/sdlc-tips-adoption.md): "accepted" ≡
+ *  JudgeOutcome status "routed" (evidence verification passed, or a
+ *  documented INV-2 exemption — the run-observability.ts mapping) and
+ *  "discarded" ≡ status "discarded" (verification failed with the
+ *  corrective budget exhausted — the honest discard class). "escalate"
+ *  (diagnosis preserved, F4 doctrine) and "degraded" (infra, INV-6) are not
+ *  eval-scored verdicts. Runtime list exported for the eval layer's DEC-6
+ *  verdict-closure table (single grammar — no re-typed copy). */
+export const JUDGE_EVAL_VERDICT_VALUES = ["accepted", "discarded"] as const;
+
 // ---------------------------------------------------------------------------
 // Budgets (INV-3). Module-level so every wiring point shares one run budget.
 // Keys reset only on process restart; per-signature budget makes re-routing the
