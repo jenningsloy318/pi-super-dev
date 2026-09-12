@@ -21,7 +21,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { splitModelThinking } from "./agents/agent-runtime.ts";
+import { resolveThinking, splitModelThinking } from "./agents/agent-runtime.ts";
 import { buildRunMetricsRow, appendRunMetrics, checkSigmaBands } from "./evolution/sigma-bands.ts";
 import { deriveS3Counters, type S3ImplementationState } from "./evolution/run-observability.ts";
 // P2 (v0.3.90): the in-pipeline fail-open eval surface (D5+D3) — strictly
@@ -36,7 +36,7 @@ import { runFlywheel } from "./evolution/flywheel.ts";
 import { checkPredictionsFromLedger } from "./evolution/predictions.ts";
 import { stageKey as usageStageKey, appendUsageCallRows, writeUsageArtifacts, USAGE_FIELDS } from "./evolution/usage-report.ts";
 export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evolution/sigma-bands.ts";
-import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName } from "./agents/delegation-backend.ts";
+import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName, resetThinkingClampState } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
@@ -674,7 +674,24 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		// an explicit call.thinking still wins, the suffix fills it when absent
 		// (resolveAgentModel strips the suffix from the model string itself).
 		const perCallThinking = call.thinking ?? splitModelThinking(call.model).thinking;
-		const thinkingLabel = perCallThinking ?? options.inheritedThinking ?? superDevEnv("SUPER_DEV_THINKING") ?? "role-default";
+		// v0.3.95 FIX B1 (run-2026-09-12T15-16-29-042Z §5.1): the start log prints
+		// the SAME resolved value the delegation dispatches — resolveThinking, the
+		// one grammar the backend itself calls (P6). The old label chain
+		// (perCall ?? inherited ?? SUPER_DEV_THINKING ?? "role-default") was a
+		// stale, INCOMPLETE mirror: it missed config.agentThinking[role], the
+		// agentModels `:level` suffix, and the role tier, and ordered env AFTER
+		// inherited — the operator observed "thinking=max" in the log while the
+		// child actually dispatched :high from the config suffix. "role-default"
+		// is gone as a label. HONESTY CONTRACT (fix-round ADVISORY-1): the label
+		// is the PRE-CLAMP resolved level; when the backend clamps a heuristic
+		// source (role tier / inheritance / medium default) against the model's
+		// catalog, the delegation clamp notice ("clamped thinking X -> Y …", at
+		// least once per provider/model/level per RUN — resetThinkingClampState
+		// at runWorkflow start) is the dispatch truth. Computing the clamp HERE
+		// was rejected in adjudication: replicating the model-resolution chain
+		// across the delegation boundary risks input-shape drift, and a wrong
+		// label is worse than a pre-clamp label plus a truthful notice.
+		const thinkingLabel = resolveThinking(call.agent, perCallThinking, options.inheritedThinking);
 		const accessMode = call.accessMode ?? "write";
 		// v0.3.64: the pi-subagents delegation backend is the ONLY specialist
 		// backend — browser/web-research roles load their extension tools via the
@@ -1152,6 +1169,11 @@ export function deriveRunStatus(input: {
 }
 
 export async function runWorkflow(workflow: Workflow, task: string, options: RunOptions = {}): Promise<RunSummary> {
+	// v0.3.95 fix-round ADVISORY-1: reset the delegation thinking-clamp notice
+	// memo at RUN start — the one-warn-per-key bound (P8) is per RUN, not per
+	// process, so a second run in the same pi session still gets its clamp
+	// notices and never logs a pre-clamp thinking label with zero explanation.
+	resetThinkingClampState();
 	const progress = options.progress;
 	const state: PipelineState = {};
 	const ctx = makeContext(

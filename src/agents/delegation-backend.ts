@@ -43,7 +43,15 @@ import {
 } from "./structured-output.ts";
 export { resetStructuredModeForTests }; // test isolation (mirrors the skew degrade)
 import { armDelegationWatchdog } from "../watchdog.ts";
-import { defaultAgentTimeoutMs, resolveModel, resolveThinking } from "./agent-runtime.ts";
+import {
+	clampThinkingToModel,
+	defaultAgentTimeoutMs,
+	resolveModel,
+	resolveThinkingDetailed,
+	splitModelThinking,
+	type ThinkingLevel,
+	type ThinkingSource,
+} from "./agent-runtime.ts";
 import { toolArgHead } from "../evolution/tool-usage.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
 import { mergeUsage } from "../types.ts";
@@ -285,6 +293,80 @@ function textOf(value: unknown): string {
 	try { return JSON.stringify(value); } catch { return String(value); }
 }
 
+/** v0.3.95 FIX B2: the dispatch-time thinking decision. Pure decision core
+ *  of the attempt() wiring (exported for unit tests): takes the resolveThinking
+ *  provenance + the RESOLVED delegation model string, splits it on the first
+ *  "/" into provider/modelId (any known `:level` suffix stripped — the
+ *  splitModelThinking grammar shared with resolveAgentModel), and applies the
+ *  owner ruling:
+ *   - intent sources (per-call / SUPER_DEV_THINKING env / config
+ *     agentThinking / the agentModels :level suffix) → dispatch the level
+ *     AS-IS; when the catalog contradicts (the level is unsupported) emit a
+ *     ONE-TIME loud WARN naming the dispatch-time consequence (the provider
+ *     rejecting the suffixed id + the model-exclusion poisoning);
+ *   - heuristic sources (role tier / inheritance / the medium default) →
+ *     CLAMP down to the nearest supported level, with a one-time notice;
+ *   - no catalog data, or a model without a provider/model split → unchanged
+ *     (P5: the clamp never throws and never guesses).
+ *  The warn sink is the run-log progress line (P10 — the operator's
+ *  diagnostic surface in the incident); the memo bounds it to once per
+ *  provider/modelId/level per RUN — resetThinkingClampState() is called at
+ *  runWorkflow start (fix-round ADVISORY-1: a process-wide memo left runs 2+
+ *  in the same pi session logging thinking=<pre-clamp> with ZERO notices;
+  *  P8, the timeoutWarned pattern re-scoped per run). */
+const thinkingDispatchWarned = new Set<string>();
+
+/** Reset the one-warn-per-key thinking memo. PRODUCTION surface since the
+ *  fix round (was resetThinkingClampWarnsForTests): runWorkflow calls it at
+ *  start so every run re-emits its clamp notices/WARNs at least once per
+ *  key; tests also use it for isolation. */
+export function resetThinkingClampState(): void {
+	thinkingDispatchWarned.clear();
+}
+
+const INTENT_THINKING_SOURCES: ReadonlySet<ThinkingSource> = new Set(["per-call", "env", "agent-thinking", "model-suffix"]);
+
+export interface DispatchThinkingInput {
+	agent: string;
+	/** The RESOLVED delegation model string (`provider/id`, optionally `:level`-suffixed). */
+	model: string | undefined;
+	level: ThinkingLevel;
+	source: ThinkingSource;
+}
+
+export function clampThinkingForDispatch(input: DispatchThinkingInput, warn: (message: string) => void, opts?: { agentDir?: string }): ThinkingLevel {
+	const bare = splitModelThinking(input.model).model;
+	const slash = bare.indexOf("/");
+	if (slash <= 0 || slash === bare.length - 1) return input.level; // no provider/id split → nothing to look up
+	const provider = bare.slice(0, slash);
+	const modelId = bare.slice(slash + 1);
+	let outcome: import("./agent-runtime.ts").ThinkingClampOutcome;
+	try {
+		outcome = clampThinkingToModel(provider, modelId, input.level, opts);
+	} catch {
+		return input.level; // P5: belt-and-braces (clampThinkingToModel already never throws)
+	}
+	if (outcome.source !== "catalog") return input.level; // unknown → exactly today's behavior
+	if (!outcome.clamped) return input.level; // supported as-is → nothing to say
+	if (INTENT_THINKING_SOURCES.has(input.source)) {
+		// Operator intent wins: dispatch the configured level anyway, but say so
+		// ONCE, naming what will happen at dispatch time.
+		const key = `intent:${provider}/${modelId}:${input.level}`;
+		if (!thinkingDispatchWarned.has(key)) {
+			thinkingDispatchWarned.add(key);
+			warn(`delegation ${input.agent}: WARN thinking=${input.level} (source: ${input.source}) is NOT supported by ${provider}/${modelId} per its thinkingLevelMap — dispatching ${input.level} AS-IS because an explicit setting wins; expect the provider to reject "${provider}/${modelId}:${input.level}" ("Model not found") and the failure to exclude the model for its TTL, poisoning every later dispatch (run-2026-09-12T15-16-29-042Z class; fix the config entry; this warning appears once per ${provider}/${modelId}:${input.level} per run)`);
+		}
+		return input.level;
+	}
+	// Heuristic source (role tier / inheritance / medium default): clamp down.
+	const key = `clamp:${provider}/${modelId}:${input.level}->${outcome.level}`;
+	if (!thinkingDispatchWarned.has(key)) {
+		thinkingDispatchWarned.add(key);
+		warn(`delegation ${input.agent}: clamped thinking ${input.level} -> ${outcome.level} for ${provider}/${modelId} — the ${input.source} level is not supported by this model's thinkingLevelMap; the unclamped dispatch would send "${provider}/${modelId}:${input.level}", which the provider rejects ("Model not found") and records as a model exclusion (run-2026-09-12T15-16-29-042Z class; this notice appears once per ${provider}/${modelId}:${input.level} per run)`);
+	}
+	return outcome.level;
+}
+
 /** One delegation attempt: emit the request, await the terminal response for
  *  exactly this requestId, forward progress, honor cancel/timeout. */
 function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number | undefined, structured: boolean): Promise<{ response: DelegationTerminalResponse | null; error?: string }> {
@@ -322,8 +404,23 @@ function attempt(opts: DelegationAgentOptions, task: string, timeoutMs: number |
 	// exactly the pre-v0.3.76 wire shape).
 	if (opts.skill === false) request.skill = false;
 	else if (Array.isArray(opts.skill) && opts.skill.length > 0) request.skill = [...opts.skill];
-	const perCallThinking = (opts.thinking ?? opts.thinkingLevel) as import("./agent-runtime.ts").ThinkingLevel | undefined;
-	const thinking = resolveThinking(opts.agent, perCallThinking, opts.inheritedThinking as import("./agent-runtime.ts").ThinkingLevel | undefined);
+	const perCallThinking = (opts.thinking ?? opts.thinkingLevel) as ThinkingLevel | undefined;
+	// v0.3.95 FIX B2 (run-2026-09-12T15-16-29-042Z): resolve WITH provenance,
+	// then clamp against the model's supported thinking levels before the
+	// level rides the request — the suffixed id "provider/model:max" the
+	// provider rejects ("Model not found") is exactly what poisoned a 5h model
+	// exclusion in the incident. Owner ruling on provenance: levels that came
+	// from explicit intent (per-call / SUPER_DEV_THINKING env / config
+	// agentThinking / the agentModels :level suffix) dispatch AS-IS with a
+	// ONE-TIME loud WARN when the catalog contradicts; role-tier / inherited /
+	// medium-default levels are heuristic, so they CLAMP down to the nearest
+	// supported level (the incident's inherited "max" on gemini-3.8-flash).
+	// Missing catalog data (source "unknown") changes nothing (P5 fail-open).
+	const resolvedThinking = resolveThinkingDetailed(opts.agent, perCallThinking, opts.inheritedThinking as ThinkingLevel | undefined);
+	const thinking = clampThinkingForDispatch(
+		{ agent: opts.agent, model, level: resolvedThinking.level, source: resolvedThinking.source },
+		(m) => opts.onProgress?.event?.(m),
+	);
 	if (thinking) request.thinking = thinking;
 	if (timeoutMs) request.timeoutMs = timeoutMs;
 	// v0.3.87 (S4 decision 9): the per-call toolBudget rides the wire request —

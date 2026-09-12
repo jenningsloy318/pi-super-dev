@@ -86,8 +86,24 @@ function baseOpts(overrides: Record<string, unknown> = {}): Parameters<typeof ru
 }
 
 let dir: string;
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "sd-delegation-")); });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+// v0.3.95 FIX B2 hermeticity: the dispatch seam now consults the pi agent dir
+// for model thinkingLevelMaps (the thinking clamp). The developer's REAL
+// ~/.pi/agent/models-store.json maps zai-coding-cn/glm-5.3 medium→null, which
+// would clamp this suite's inherited/untiered thinking assertions
+// machine-dependently. Point the catalog lookup at a NONEXISTENT dir: lookup
+// source "unknown" = exactly the pre-clamp behavior these tests pin. (The
+// clamp itself has its own fixture-driven suite: tests/thinking-clamp.test.ts.)
+const NO_CATALOG_DIR = join(tmpdir(), "sd-delegation-no-catalog");
+const PREV_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
+beforeEach(() => {
+	dir = mkdtempSync(join(tmpdir(), "sd-delegation-"));
+	process.env.PI_CODING_AGENT_DIR = NO_CATALOG_DIR;
+});
+afterEach(() => {
+	rmSync(dir, { recursive: true, force: true });
+	if (PREV_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = PREV_AGENT_DIR;
+});
 
 describe("delegationAgentName", () => {
 	it("prefixes super-dev specialists with sd- (collision-proof against pi-subagents' own agents)", () => {

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.3.95: 规格命名 + 思考等级保真（排除投毒事故类根治）
+
+- **Spec slug（方案 A）**：任务引用 spec 工件路径（`docs/requirements|specifications/NN-slug.md`）时，新 track 的 slug 取自引用 basename（数字回声由 `dedupeSlugIndex` 剥除）——`implement @docs/requirements/26-capability-backends.md` 重新组成有意义的 `26-capability-backends`，不再产生 `26-docs-requirements-26-capability-backends`。文法收窄到 spec 工件（requirements/specifications 树 + 数字前缀 basename）：研究/架构文档引用一律回退旧行为，堵死 G2 track 劫持面（引用 token 不再泄入 `findReusableSpec` 包含度打分）；正则边界修复（markdown 反引号/引号/括号分隔符、`.md.bak`/`.md.tmp` 拒绝、大小写不敏感）。
+- **思考日志保真（B1）**：workflow 启动日志的 `thinking=` 现在调用与派发完全相同的 `resolveThinking`——旧标签链漏掉 config `agentThinking`、`agentModels` `:level` 后缀与角色 tier（env 优先级也排错），导致日志说 `max` 而实际派发 `:high`。
+- **思考等级钳制（B2，排除投毒根治）**：新增 `resolveThinkingDetailed`（provenance：per-call/env/agent-thinking/model-suffix/role-tier/inherited/medium-default；`resolveThinking` 保留为薄包装，P6）+ `clampThinkingToModel`（词汇表距离最近的支持级、平距取低档、双向扫描）。配置提供的等级（per-call/env/agent-thinking/模型后缀）原样派发并在 catalog 矛盾时一次性大声 WARN；角色 tier/继承/默认来源则**向下钳到目标模型最近支持级**。支持级来源：`~/.pi/agent/<provider>-model-catalog.json`（数组与对象两种形状）→ `models-store.json` → `models.json` 的 `thinkingLevelMap` 字段（`reasoning:false` 优先于 map 判定；mapless 条目透明落穿次级源）；无 catalog = 不钳（fail-open）。钳制状态每 `runWorkflow` 重置。根治 run-2026-09-12T15-16-29-042Z 的 `:max` not found → 5 小时 provider 级排除投毒事故类（继承 `max` + gemini-3.8-flash → 现派发 `high`，端到端钉测）。
+
+### Added
+- 59 个新测试：`tests/setup-spec-slug-from-path.test.ts`（工件文法/劫持死面/边界文法/同 track 重入）、`tests/thinking-clamp.test.ts`（provenance、钳制、catalog 三源、reasoning:false、真端到集成测试）、`tests/thinking-log-fidelity.test.ts`（操作者场景：config 后缀 + 继承 max → 日志显示实际派发值）。
+
+
 ### Changed — v0.3.94: SUPER_DEV_DEFAULT_TIMEOUT_MS 改名为 SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS（作用域消歧）
 
 `DEFAULT` 单独出现时与 `SUPER_DEV_MAX_RUN_WALL_MS`（run 级）产生作用域误读（用户实际困惑，

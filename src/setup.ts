@@ -251,13 +251,79 @@ export function slugTokenContainment(slug: string, task: string): number {
  * 4-digit spec numbers).
  */
 const SPEC_NUM = (raw: string) => String(parseInt(raw, 10));
+
+/** The docs/spec-tree path smell for the spec-REFERENCE numeral grammar
+ *  (specRefNumerals only — fix-round BLOCKING-2 split): a path counts when
+ *  one of its segments is docs|doc|requirements|specifications|specs|research.
+ *  Deliberately BROADER than the slug grammar below: numerals extracted from
+ *  research/ citations feed only dedupeSlugIndex echo-stripping and
+ *  anchorNumeralRefusal — reuse guards that can REFUSE a cross-workstream
+ *  absorption, never cause one — so the citation-hijack exposure that
+ *  narrowed the slug grammar does not apply here (verified in the fix round;
+ *  specRefNumerals keeps this behavior, P6: each grammar serves its own
+ *  consumer). Source paths (`src/254-e2e/…`) and asset paths must not
+ *  fabricate spec numerals. */
+const SPEC_TREE_PATH_RE = /(?:^|\/)(?:docs?|doc|requirements?|specifications?|specs?|research)(?:\/|$)/i;
+
+/** The SPEC-ARTIFACT tree grammar (fix-round BLOCKING-2, owner ruling): only
+ *  paths riding a requirements/ or specifications/ segment — super-dev's own
+ *  re-entry format (the incident shape "…/docs/requirements/26-capability-
+ *  backends.md"). Citation trees (research/, architecture/, or any other docs
+ *  subtree) NEVER derive slugs: their basenames leak tokens into
+ *  findReusableSpec's containment scoring (a later unrelated task citing the
+ *  same reference doc hit containment 1.0 and hijacked the track). */
+const SPEC_ARTIFACT_TREE_RE = /(?:^|\/)(?:requirements?|specifications?)(?:\/|$)/i;
+
+/** The spec-artifact PATH grammar (fix-round BLOCKING-3): the adversarial
+ *  reviewer's corrected boundary shape. Leading boundary accepts markdown
+ *  delimiters (backtick, quotes, angle/square brackets) beside the original
+ *  start/whitespace/paren/slash/@ forms; the basename is numeral-prefixed
+ *  (BLOCKING-2: `NN-slug.md` only); the `.md` tail is sealed with
+ *  `(?![\w.])` — NOT `\b`, which is word→non-word and still matches the dot
+ *  in `.md.bak`/`.md.tmp` (the literal `(\b|(?=[…]|$))` alternation from the
+ *  review has the same hole, so the tightest form that passes the specified
+ *  cases is the negative lookahead: no word char and no dot may follow).
+ *  Case-insensitive (`.MD` matches). */
+const SPEC_ARTIFACT_PATH_RE = /(?:^|[\s(@/'"`<[])@?((?:[\w~.-]+\/)+)(\d{1,4})-([A-Za-z0-9][\w.-]*)\.md(?![\w.])/gi;
+
 export function specRefNumerals(text: string): Set<string> {
 	const out = new Set<string>();
 	for (const m of text.matchAll(/(?<![\w/.-])(\d{1,4})(?=-[a-z0-9][\w.-]*\.md\b)/gi)) out.add(SPEC_NUM(m[1]));
 	for (const m of text.matchAll(/(?:^|[\s(/])((?:[\w.-]+\/)+)(\d{1,4})(?=-[a-z0-9])/gi)) {
-		if (/(?:^|\/)(?:docs?|doc|requirements?|specifications?|specs?|research)(?:\/|$)/i.test(m[1])) out.add(SPEC_NUM(m[2]));
+		if (SPEC_TREE_PATH_RE.test(m[1])) out.add(SPEC_NUM(m[2]));
 	}
 	return out;
+}
+
+/**
+ * v0.3.95 FIX A (run-2026-09-12T15-16-29-042Z, owner-adjudicated option A;
+ * fix-round BLOCKING-2 narrowed + BLOCKING-3 boundary-corrected) — the
+ * spec-slug fallback for SPEC-ARTIFACT path references. `slugifyTask` treats
+ * path segments as words, so `implement @docs/requirements/26-capability-
+ * backends.md` fell back to the ugly "docs-requirements-26-capability-
+ * backends" (the mid-slug numeral echo survives dedupeSlugIndex, which strips
+ * only LEADING numerals) → spec id "26-docs-requirements-26-capability-
+ * backends". When the task carries a requirements/ or specifications/ path
+ * reference whose basename is numeral-prefixed (`NN-slug.md` — super-dev's
+ * own re-entry format, the ONLY shape that ever composed meaningful slugs),
+ * the slug derives from the REFERENCED FILE's basename instead:
+ * "…/26-capability-backends.md" → "26-capability-backends" → the caller's
+ * dedupeSlugIndex strips the leading numeral echo (26 ∈ specRefNumerals(task))
+ * → "capability-backends" → spec id "26-capability-backends" (the historical
+ * meaningful shape, e.g. "24-macro-liquidity-dimension"). Citations of
+ * research/reference/architecture docs — any other tree, or non-numeral
+ * basenames — return null → slugifyTask fallback (v0.3.94 behavior, zero
+ * regression; their tokens never leak into findReusableSpec). Pure and total:
+ * FIRST spec-artifact reference wins on multi-ref tasks; the LLM-summarized
+ * `options.slug` still wins above this helper at the call site.
+ */
+export function slugFromSpecPathReference(task: string): string | null {
+	for (const m of task.matchAll(SPEC_ARTIFACT_PATH_RE)) {
+		if (!SPEC_ARTIFACT_TREE_RE.test(m[1])) continue;
+		const slug = sanitizeSlug(`${m[2]}-${m[3]}`);
+		if (slug) return slug;
+	}
+	return null;
 }
 
 /**
@@ -631,7 +697,9 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 		}
 	} else if (!specReuseEnabled()) {
 		// Kill-switch: the caller has expressed intent for a FRESH track.
-		const slug = dedupeSlugIndex(sanitizeSlug(options.slug ?? "") || slugifyTask(task), task);
+		// v0.3.95 FIX A: docs/spec-tree path references contribute their basename
+		// slug BEFORE the slugifyTask fallback (LLM options.slug still wins above).
+		const slug = dedupeSlugIndex(sanitizeSlug(options.slug ?? "") || slugFromSpecPathReference(task) || slugifyTask(task), task);
 		specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
 		if (!options.skipWorktree) {
 			const wt = createOrReuseWorktree(cwd, specIdentifier, defaultBranch);
@@ -650,7 +718,8 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 			specIdentifier = reusable;
 			reusedTrack = true;
 		} else {
-			const slug = dedupeSlugIndex(sanitizeSlug(options.slug ?? "") || slugifyTask(task), task);
+			// v0.3.95 FIX A: same precedence as the kill-switch branch above.
+			const slug = dedupeSlugIndex(sanitizeSlug(options.slug ?? "") || slugFromSpecPathReference(task) || slugifyTask(task), task);
 			specIdentifier = `${String(nextSpecNumber(cwd)).padStart(2, "0")}-${slug}`;
 		}
 		if (!options.skipWorktree) {
