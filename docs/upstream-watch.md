@@ -195,3 +195,19 @@ launched from a bash-less host session killed every `sd-*-reviewer` child in ~85
 Upstream observation (no ask): the hard-fail covers only reviewer|scout names while the declared list that
 triggers it comes from the OWNER's registration — owners with read-only reviewer roles should not declare
 shell tools they don't require.
+
+## 2026-09-12 — pi-subagents 0.67 child-path model resolution rejects thinking-suffixed antigravity ids; provider-level exclusion poisoning
+
+Direct `pi --model antigravity/claude-opus-4-6:high` resolves fine (probe ✓), but the SAME id through
+the subagent spawn path fails pre-spawn: `Model "antigravity/claude-opus-4-6:high" not found. Use
+--list-models` — the child-path resolution does not parse the thinking suffix for the antigravity
+provider while the host CLI does (bare `antigravity/claude-opus-4-6` children are proven working;
+suffixed zai ids also work — provider-asymmetric suffix handling). Compounding: the failure records a
+model-exclusions.json entry (5h TTL) that is PROVIDER-level in effect (a bare-id request is rejected
+citing the suffixed failure) and is held IN MEMORY — deleting the file mid-session does not clear it
+(the documented remedy order is quit pi → delete file → start pi). Observed kill radius: one transient
+"not found" silenced all six reviewer roles of a super-dev run for its remaining 7 hours across a pi
+restart (pi-super-dev runs 2026-09-11T14-37 / 2026-09-12T14-09). super-dev side: user config now
+carries bare ids (thinking rides the delegation's separate thinking channel, so nothing is lost).
+Upstream asks: (a) suffix-aware child model resolution, or (b) per-exact-model exclusion granularity,
+or (c) document "never suffix antigravity model ids in agent definitions".
