@@ -196,18 +196,55 @@ Upstream observation (no ask): the hard-fail covers only reviewer|scout names wh
 triggers it comes from the OWNER's registration — owners with read-only reviewer roles should not declare
 shell tools they don't require.
 
-## 2026-09-12 — pi-subagents 0.67 child-path model resolution rejects thinking-suffixed antigravity ids; provider-level exclusion poisoning
+## 2026-09-12 — ~~child-path model resolution rejects thinking-suffixed antigravity ids; provider-level exclusion poisoning~~
 
-Direct `pi --model antigravity/claude-opus-4-6:high` resolves fine (probe ✓), but the SAME id through
-the subagent spawn path fails pre-spawn: `Model "antigravity/claude-opus-4-6:high" not found. Use
---list-models` — the child-path resolution does not parse the thinking suffix for the antigravity
-provider while the host CLI does (bare `antigravity/claude-opus-4-6` children are proven working;
-suffixed zai ids also work — provider-asymmetric suffix handling). Compounding: the failure records a
-model-exclusions.json entry (5h TTL) that is PROVIDER-level in effect (a bare-id request is rejected
-citing the suffixed failure) and is held IN MEMORY — deleting the file mid-session does not clear it
-(the documented remedy order is quit pi → delete file → start pi). Observed kill radius: one transient
-"not found" silenced all six reviewer roles of a super-dev run for its remaining 7 hours across a pi
-restart (pi-super-dev runs 2026-09-11T14-37 / 2026-09-12T14-09). super-dev side: user config now
-carries bare ids (thinking rides the delegation's separate thinking channel, so nothing is lost).
-Upstream asks: (a) suffix-aware child model resolution, or (b) per-exact-model exclusion granularity,
-or (c) document "never suffix antigravity model ids in agent definitions".
+**SUPERSEDED 2026-09-13** — both the "thinking-suffix" theory and the "npm-only child extension
+resolution" framing were artifacts of runtime state, not the code contract. The verified structural
+root cause is the next entry (2026-09-13). Retained for history: the observed errors, the exclusion
+poisoning kill radius (runs 2026-09-11T14-37 / 2026-09-12T14-09), and the bare-ids-in-config
+mitigation — all still accurate observations, wrongly explained.
+
+## 2026-09-13 — pi-subagents 0.67 ROOT CAUSE (verified): foreground/delegation child sessions never load ambient extensions → extension-provided models unresolvable
+
+Verified end-to-end 2026-09-13 (pi-subagents 0.67.0, pi 0.85.1 unchanged since 09-05, so this gap
+existed on every prior run too — masked by process runtime state):
+
+- **Mechanism** — `src/runs/shared/child-launch.ts:286`: `const ambientExtensions = input.host ===
+  "runner" && !toolPlan.disableAmbientExtensions;` with the doc comment at :109 stating "The parent
+  never loads ambient extensions". Foreground (in-process, `host: "parent"`) children — which is what
+  the delegation bridge (`extension/index.ts:746-749` → `executeDelegated` → `execute`) and every
+  super-dev reviewer lane use — are created with `noExtensions: true` (`child-session.ts:236`) and
+  only builtin providers in their ModelRuntime. Any model provided by an EXTENSION (e.g.
+  `git:github.com/Rahularya01/pi-antigravity`, later `npm:pi-antigravity` before this fix) is
+  unresolvable: `Model "antigravity/gemini-3.8-flash:high" not found. Use --list-models` → P5
+  non-retryable agent-environment abort (pi-omisis run 2026-09-13T02-36-58-698Z died at Stage 2B
+  requirements-review, reviewer killed in 1.1s).
+- **models-store.json is NOT a fallback** — `@earendil-works/pi-ai/dist/models.js:67-76`
+  `getModels()` iterates REGISTERED providers only; store entries for unregistered providers are
+  never surfaced. Behavioral proof: `pi --no-extensions --list-models` lists **0** antigravity
+  models while the store holds all 14; `pi -p --no-extensions --model antigravity/gemini-3.8-flash:high`
+  reproduces the child error byte-for-byte.
+- **Async/runner children DO work** — `host: "runner"` gets ambient discovery (agent dir, project,
+  settings — including git/npm packages). Empirical: three dual-gate reviewers ran on
+  `antigravity/gemini-3.8-flash:high` via async spawns the same morning the foreground path aborted.
+- **"Why it worked last night" (plausible, not fully reconstructed)** — the process-shared
+  ModelRuntime (child-session.ts header: "shares one ModelRuntime across every child it creates";
+  `flushQueuedProviderRegistrations` at :176) can retain an antigravity registration flushed by an
+  ambient (runner-hosted or host-startup) load. pi-antigravity entered settings.json at 2026-09-12
+  23:21; the 23:39 run's reviewers worked; the 10:36 pi restart reset the process and the foreground
+  path failed again until the npm install landed.
+- **Exclusion-cache compounding (extends the 2026-09-10 item)** — a foreground "not found" failure
+  records a model-exclusions entry that (i) blocks the OTHERWISE-WORKING async/runner path pre-spawn
+  (one lane's failure poisons the other), (ii) survives on-disk store deletion (in-memory map), and
+  (iii) NEW: an already-EXPIRED entry (stated expiry in the past) still blocked a spawn — expired
+  entries appear not to be pruned at check time. Suspected upstream bug, add to the ask below.
+
+**Local remedy applied 2026-09-13 (owner)**: `npm:pi-antigravity@0.7.2` installed
+(`~/.pi/agent/npm/node_modules/pi-antigravity`), settings.json switched from the git source to the
+npm source — children resolve the provider through their own npm discovery; effective next pi
+restart (registration reads at activation). **Upstream asks (supersede 2026-09-12's):**
+(a) structural — foreground/parent-hosted children should inherit the host's registered provider set
+(or load ambient extension MODEL PROVIDERS even when ambient extensions are otherwise disabled —
+isolating child TOOLS is reasonable; isolating the model catalog breaks extension-provided models);
+(b) prune expired exclusion entries at check time; (c) exclusion granularity per exact model id
+(carried over).
