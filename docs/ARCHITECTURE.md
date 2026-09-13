@@ -80,8 +80,8 @@
 
 ## Where the semantics live
 
-- Loop vocabulary + degradation ladder: `docs/requirements/postmortem-0001-verify-loop-dead-state.md`
-- Named defensive rules: `docs/requirements/defensive-patterns.md`
+- Loop vocabulary + degradation ladder: `docs/requirements/027-postmortem-0001-verify-loop-dead-state.md`
+- Named defensive rules: `docs/requirements/026-defensive-patterns.md`
 - Event ledger + invariants: `src/runlog.ts` (INV-L1..L6)
 - Replan circuit: `src/replan/` (requests, owner classification, R5 budget)
 - Deterministic gates: `src/build-runner/`

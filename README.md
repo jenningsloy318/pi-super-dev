@@ -782,7 +782,7 @@ Root cause class (spec-25 deep analysis, `docs/findings/deep-analysis-2026-09-08
 - **Judge evidence failures never silently discard**: one corrective re-call feeds the verification failures back into the prompt; a corrective verdict that verifies routes normally; one that still fails **escalates with the diagnosis preserved** (the fabrication guard stands — an unverified verdict never routes on its claimed route; the only floor is escalate).
 - **Stagnation routes by finding class**: reviewer infra non-completions ("X review did not complete") never arm the stagnation stop; a genuine content stop first asks the judge once whether the blockers are within the stage's authority or plan/spec-owned — a `replan-upstream` verdict becomes a REPLAN instead of a human-decision PARTIAL.
 
-**Feasibility grammar v2 + progress-classified iteration (v0.3.96, spec: `docs/requirements/cross-phase-contract-architecture.md`)** — two additions to the same plan-time/execution-time defense. (1) **Protection-threat check** (feasibility Check 3): a mechanical idiom pre-scanner extracts immutability claims from the plan's declared test files (`git status --porcelain` co-present with "byte-untouched"-family wording, symmetric-quote bounded) plus an optional `repo-invariants.json`; any protected path intersecting a phase's `requireFiles` write set is a POP clobbering threat that routes **REPLAN at implementation entry** naming each (protecting source ⨯ writing phase) pair — the run-2026-09-13 SCENARIO-014 class (a byte-untouched assertion colliding with a must-edit phase) can no longer burn implementation attempts. (2) **Attempt-governor tightening**: a phase whose failure signature AND change footprint repeat (or that lands zero changes) plateaus at attempt 2 — judge routes immediately instead of burning the 4-attempt budget on static signal; a fresh footprint still earns attempt 3; the cap stands at 4. Failures citing ANOTHER phase's declared test scope route to the judge on first occurrence (the contract conflict is not solvable inside this phase).
+**Feasibility grammar v2 + progress-classified iteration (v0.3.96, spec: `docs/requirements/058-cross-phase-contract-architecture.md`)** — two additions to the same plan-time/execution-time defense. (1) **Protection-threat check** (feasibility Check 3): a mechanical idiom pre-scanner extracts immutability claims from the plan's declared test files (`git status --porcelain` co-present with "byte-untouched"-family wording, symmetric-quote bounded) plus an optional `repo-invariants.json`; any protected path intersecting a phase's `requireFiles` write set is a POP clobbering threat that routes **REPLAN at implementation entry** naming each (protecting source ⨯ writing phase) pair — the run-2026-09-13 SCENARIO-014 class (a byte-untouched assertion colliding with a must-edit phase) can no longer burn implementation attempts. (2) **Attempt-governor tightening**: a phase whose failure signature AND change footprint repeat (or that lands zero changes) plateaus at attempt 2 — judge routes immediately instead of burning the 4-attempt budget on static signal; a fresh footprint still earns attempt 3; the cap stands at 4. Failures citing ANOTHER phase's declared test scope route to the judge on first occurrence (the contract conflict is not solvable inside this phase).
 
 ## The auto-continuous evolution loop (v0.3.69)
 
@@ -806,7 +806,7 @@ read-only; no agent may edit gates, methodology, or evals; rollback = git.
 ## Golden-case eval layer (v0.3.89, P1)
 
 The E4 incident-pinned suites answer "did the fix break what it fixed"; the
-golden-case layer (spec: `docs/requirements/sdlc-tips-adoption.md`) answers
+golden-case layer (spec: `docs/requirements/055-sdlc-tips-adoption.md`) answers
 "is the pipeline still good at its job on a fixed reference set". P1 laid
 the substrate, P2 the scorers, P3 the flywheel + D6 + the firewall:
 
@@ -865,7 +865,7 @@ the substrate, P2 the scorers, P3 the flywheel + D6 + the firewall:
   tokenization) — tainted entries are quarantined and ledgered, never
   injected.
 - **P3 adds the flywheel + D6 + the contamination firewall** (spec
-  `docs/requirements/sdlc-tips-adoption.md` D4/D6/DEC-11/DEC-13/§8.1 — all
+  `docs/requirements/055-sdlc-tips-adoption.md` D4/D6/DEC-11/DEC-13/§8.1 — all
   deterministic, zero LLM):
   - **D6 artifact-instead-of-reread**: the tool-usage telemetry rows gained
     `count: n` (the per-call (tool, argHead) dedup key now increments instead
