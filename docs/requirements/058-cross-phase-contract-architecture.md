@@ -1,6 +1,6 @@
 # Cross-Phase Contract Conflict Architecture — systemic hardening of the implementation convergence loop
 
-Status: draft ×3 (delta re-gate 2026-09-13 — P1 READY; P2 unblocked by NEW-2 ruling = downstream-green INVALIDATION on rollback; advisories NEW-1/NEW-3 folded. Owner-proxy, overridable)
+Status: draft ×4 (P1 IMPLEMENTED v0.3.96; P2 pending; **S-E observed live post-P1** (2026-09-13 21:39–22:38, same run): REPLAN ledger-identity drift — delta D-E + wave P3 proposed. Owner-proxy, overridable)
 
 Parent lineage: `052-run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md` → `docs/findings/deep-analysis-2026-09-08-spec25.md` (plan-feasibility, de65969e) → this spec. The spec-25 family found "machinery executed plans never validated for feasibility"; this spec records the NEXT escape class of the same family — **plan-level contract contradictions that feasibility v1 cannot see**, discovered live in run 2026-09-13T03-24-15-047Z (pi-omisis spec-26).
 
@@ -12,6 +12,7 @@ Grill round 1 (gemini-3.8-flash, fresh context): verdict NOT-READY; verdict-driv
 - **S-B — stage-level convergence cascade on a contaminated shared worktree.** Stage 9 pass 1 ended `status=partial` (16:03, 175m) with only **3/8 phases green**; attempt 2 resumed from Phase 2 (`resuming convergence iteration (3/8 phases already green)`) **into a worktree already mutated by phases 3-8's landed work** — later-phase artifacts contaminated earlier phases' re-convergence ground.
 - **S-C — pipelined-review read-skew race.** **7×** `source-read-only boundary violation (quarantined, not restored — concurrent writer)` across phases 01/03/05/06/08 + one on attempt-2 re-entry: the parallel red-reviewer read files the concurrent implementer then modified. **7/7 salvaged** by claim attribution (v0.3.54); zero correctness impact. Frequency ∝ implementer speed × reviewer window (`:high` thinking ⇒ long reviews).
 - **S-D — phase-7 partial** after 3 attempts (deterministic-dispatch-wiring), work preserved via git stash, stage continued per design. The partial-preserve + stash path worked.
+- **S-E — REPLAN ledger-identity drift** (observed live 21:39–22:38, the P1-era replan of THIS run): the judge routed the S-A contract conflict to `replan-upstream`; the revised BDD renumbered its scenario ID space (SCENARIO-050..089), but the pre-replan spec-convergence ledger findings still carry the OLD ids (SCENARIO-030/014/044). Every spec-writer round must address those findings and re-echoes the stale ids into the regenerated spec; the deterministic trace gate (validating against the NEW BDD) bounces it — **5 consecutive rounds failed on stale ids**, SCENARIO-030 persisting every round. The LLM reviewer was never reached: the cheap deterministic gate bounces first (by design — detection at the cheapest point). Systemic shape: **REPLAN invalidates stage resume rows but not ledger-finding identity** — findings whose anchor ids vanish from the revised upstream artifact are neither superseded nor re-anchored. Fix shape (D-E, wave P3): at REPLAN application time, mechanically re-anchor or supersede ledger findings whose anchor ids no longer resolve in the revised artifact (P10: superseded findings stay visible, marked).
 
 ## 1. First-principles decomposition
 
@@ -83,6 +84,7 @@ The deterministic per-phase commits (v0.3.43) already form a checkpoint chain. O
 
 - **P1:** D-A + D-C — **IMPLEMENTED (v0.3.96)**: plan-feasibility grammar v2 Check 3 `protection-threat` (idiom pre-scanner `scanImmutabilityIdioms` + `repo-invariants.json` + threat intersection, REPLAN at entry) + attempt-governor plateau/cross-scope routing in implementation.ts. Triple-gate-cleared (Code PASS 7/7; Adversarial 5B+3A all fixed — symmetric-quote extraction, F-12 containment on invariants/claims, JSON-null honest classification, env-leak cleanup, porcelain-flag tolerance, honest cross-scope stop/judge labels; Delta PASS). Deferred advisories: ADV-8 (`foo/..` traversal edge — cannot arm against extensioned requireFiles), ADV-9 (porcelain regex quantifier simplification — both P2/cleanup).
 - **P2:** D-B + D-D (protection intervals with two-strike defense + git checkpoint rollback; delta gate verified the deterministic commit chain exists — implementation.ts deterministicPhaseCommit; NEW-2 downstream-invalidation ruling folded).
+- **P3 (proposed, from S-E):** D-E ledger re-anchoring at REPLAN — mechanically supersede/re-anchor ledger findings whose anchor ids vanish from the revised upstream artifact; independent of P2 (either may ship first).
 
 ## 8. Sources
 
