@@ -81,8 +81,8 @@ The deterministic per-phase commits (v0.3.43) already form a checkpoint chain. O
 
 ## 7. Waves sketch
 
-- **P1:** D-A + D-C (detection/routing only; builds on existing governor; no new failure modes).
-- **P2:** D-B + D-D (protection intervals + checkpoint rollback).
+- **P1:** D-A + D-C — **IMPLEMENTED (v0.3.96)**: plan-feasibility grammar v2 Check 3 `protection-threat` (idiom pre-scanner `scanImmutabilityIdioms` + `repo-invariants.json` + threat intersection, REPLAN at entry) + attempt-governor plateau/cross-scope routing in implementation.ts. Triple-gate-cleared (Code PASS 7/7; Adversarial 5B+3A all fixed — symmetric-quote extraction, F-12 containment on invariants/claims, JSON-null honest classification, env-leak cleanup, porcelain-flag tolerance, honest cross-scope stop/judge labels; Delta PASS). Deferred advisories: ADV-8 (`foo/..` traversal edge — cannot arm against extensioned requireFiles), ADV-9 (porcelain regex quantifier simplification — both P2/cleanup).
+- **P2:** D-B + D-D (protection intervals with two-strike defense + git checkpoint rollback; delta gate verified the deterministic commit chain exists — implementation.ts deterministicPhaseCommit; NEW-2 downstream-invalidation ruling folded).
 
 ## 8. Sources
 

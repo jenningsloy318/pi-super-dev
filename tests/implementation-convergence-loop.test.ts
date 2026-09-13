@@ -298,14 +298,19 @@ describe("v0.3.0 — run never ends at zero: partial + continue", () => {
 	});
 
 	it("budget reminder reaches the implementer prompt from attempt 2 (attempt number + strategy-change instruction)", async () => {
-		// FRESH signatures each attempt (A,B,C) so no-progress never fires; the
+		// FRESH signatures each attempt (A,B,C) AND fresh footprints — v0.3.96
+		// D-C: a zero-change attempt trips the plateau at attempt 2, so the
+		// reminder-path fixture must land real (fresh) changes per attempt; the
 		// phase goes green on attempt 3.
 		gateQ = [
 			{ ...FAIL, errors: ["boom: compile error A"] },
 			{ ...FAIL, errors: ["boom: compile error B"] },
 			PASS,
 		];
-		const { ctx, implCalls } = mkCtx("v030-reminder");
+		const { ctx, implCalls } = mkCtx("v030-reminder", { implResults: [
+			{ control: { filesModified: ["src/reminder-fix-1.ts"] } },
+			{ control: { filesModified: ["src/reminder-fix-2.ts"] } },
+		] });
 		const state = mkState();
 		await implementationStage.run(mkStateSinglePhase(state), ctx);
 		const prompts = implCalls.map((c) => c.prompt);

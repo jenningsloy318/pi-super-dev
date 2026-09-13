@@ -296,7 +296,9 @@ describe("v0.3.79 A1 plan-feasibility validator", () => {
 	});
 
 	it("empty/edge plans never throw", () => {
-		expect(planFeasibilityFindings([], wt)).toEqual({ contradictions: [], advisories: [] });
+		// Wave P1 D-A: the report gains protectionScan (P10 scan lines) — present
+		// and empty for an empty plan.
+		expect(planFeasibilityFindings([], wt)).toEqual({ contradictions: [], advisories: [], protectionScan: [] });
 		expect(planFeasibilityFindings([{ name: undefined, deliverables: undefined }], wt).contradictions).toHaveLength(0);
 		expect(existsSync(wt)).toBe(true);
 	});

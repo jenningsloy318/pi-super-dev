@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.3.96: Wave P1 — 跨相位契约矛盾架构（D-A 计划期可满足性 + D-C 进度分类迭代）
+
+- **D-A 计划期保护威胁检测**（`src/stages/plan-feasibility.ts` 文法 v2，Check 3 "protection-threat"）：机械式惯用预扫描器（`git status --porcelain` 与不可变措辞共现，对称引号边界；可选 `repo-invariants.json`）提取保护路径，与全部 phase 的 `requireFiles` 写集求交——保护 ⨯ 写入 = 吞噬威胁（POP 模型），**Stage 9 入口即 REPLAN**，命名每一对 (protectingSource ⨯ writingPhase)。根治 run-2026-09-13 SCENARIO-014（schemas.ts byte-untouched ⨯ 必须 edit）在实现期燃烧 3 小时的无解类。F-12 包含性全触点强制（逃逸/遍历/宿主路径永不成保护主张）；P10 逐文件命中清单（`protectionScan` 报告字段）。
+- **D-C 进度分类迭代**（`src/stages/implementation.ts`，构建于既有 `repeatedNoProgress`/`faultRecurrenceLimit`）：**(failure, footprint) 双同或零改动 → 第 2 次尝试即 plateau 走 judge**（Huang ICLR-24：无新信号的自校正不收敛）；新足迹宽限到 attempt 3；`maxPhaseAttempts()=4` 不变。**跨 scope 契约冲突路由**：失败引用其他 phase 的 requireTests 测试 → 首次出现立即 judge/REPLAN（`crossScopeContractConflictFrame`，replan-upstream 可选）——无解目标不消耗预算。
+- **研究锚定**：Huang et al. ICLR-24 (arXiv:2310.01798)、Veloso & Blythe 1994 (POP 威胁/吞噬)、Bazel hermeticity、MetaGPT/ChatDev 流水线缺口。Spec: docs/requirements/cross-phase-contract-architecture.md（三关门：grill NOT-READY→折入→delta P1 READY；对抗门 5B+3A 修复后 delta PASS）。
+- 23 个新测试（protection-threat 文法/非循环夹具/plateau/跨 scope 路由/P8 边界）。
+
+
 ### Fixed — v0.3.95: 规格命名 + 思考等级保真（排除投毒事故类根治）
 
 - **Spec slug（方案 A）**：任务引用 spec 工件路径（`docs/requirements|specifications/NN-slug.md`）时，新 track 的 slug 取自引用 basename（数字回声由 `dedupeSlugIndex` 剥除）——`implement @docs/requirements/26-capability-backends.md` 重新组成有意义的 `26-capability-backends`，不再产生 `26-docs-requirements-26-capability-backends`。文法收窄到 spec 工件（requirements/specifications 树 + 数字前缀 basename）：研究/架构文档引用一律回退旧行为，堵死 G2 track 劫持面（引用 token 不再泄入 `findReusableSpec` 包含度打分）；正则边界修复（markdown 反引号/引号/括号分隔符、`.md.bak`/`.md.tmp` 拒绝、大小写不敏感）。

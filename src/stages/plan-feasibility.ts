@@ -27,6 +27,15 @@
  *     - clause-target-ownership: a later phase forbids (requireNotContains)
  *       exactly what an earlier phase requires (requireContains) in the same
  *       file — mutually unsatisfiable at audit time regardless of order.
+ *     - protection-threat (Wave P1 D-A, docs/requirements/
+ *       cross-phase-contract-architecture.md Layer 1): a MECHANICALLY
+ *       extracted immutability claim (the `git status --porcelain` +
+ *       immutability-wording idiom inside a declared requireTests file, or an
+ *       explicit repo-invariants.json declaration) intersects a phase's
+ *       requireFiles write set — {protected} ∧ {written} = ⊥. The
+ *       run-2026-09-13 S-A shape (`expect(dirty, "src/schemas.ts must stay
+ *       byte-untouched").toBe("")` over porcelain while another phase
+ *       requires editing src/schemas.ts) is decidable at entry, statically.
  *   advisories (non-blocking):
  *     - shared-file-coupling: a file is a clause target of 2+ phases
  *       (satisfiable when each phase declares it, but handoff must be
@@ -54,18 +63,31 @@ export type PlanPhase = {
 };
 
 export interface PlanFeasibilityFinding {
-	kind: "cross-phase-identifier" | "clause-target-ownership" | "shared-file-coupling" | "coverage-tooling";
+	kind: "cross-phase-identifier" | "clause-target-ownership" | "shared-file-coupling" | "coverage-tooling" | "protection-threat";
 	title: string;
 	detail: string;
 	evidence: string[];
 	blocking: boolean;
 	/** Deterministic replan-owner routing (replan/owners.ts Rule 1). */
 	ownerStage: "spec";
+	/** protection-threat only (Wave P1 D-A): the mechanical source of the
+	 *  protection claim — "<test file>:<idiom wording>" or
+	 *  "repo-invariants.json". */
+	protectingSource?: string;
+	/** protection-threat only: the phase (label) whose requireFiles write
+	 *  claims hit a protected path. */
+	writingPhase?: string;
+	/** protection-threat only: the intersecting protected path(s). */
+	paths?: string[];
 }
 
 export interface PlanFeasibilityReport {
 	contradictions: PlanFeasibilityFinding[];
 	advisories: PlanFeasibilityFinding[];
+	/** P10 (Wave P1 D-A): one line per scanned protection source — every
+	 *  plan-declared requireTests file (hits or none, on-disk or not) plus the
+	 *  repo-invariants.json declaration — so a silent idiom miss is visible. */
+	protectionScan: string[];
 }
 
 const norm = (p: string): string => String(p ?? "").trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
@@ -273,6 +295,91 @@ export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: strin
 		});
 	}
 
+	// ---- Check 3 (Wave P1 D-A): protection-threat — mechanically extracted
+	// immutability claims × phase write claims (requireFiles). A test that
+	// demands a path stay untouched while the plan declares that path a
+	// deliverable of some phase is a POP clobbering threat (Veloso & Blythe
+	// 1994) — decidable at Stage 9 entry, statically. Every (protecting source ×
+	// writing phase) pair gets its OWN finding so the REPLAN names each threat
+	// (test (d)). P8: one scan pass (see the scanner's module comment); the
+	// repo-invariants.json file is OPTIONAL — absent = skipped silently.
+	const protectionScan: string[] = [];
+	const declaredTestFiles = [...new Set(
+		list.flatMap((p) => (p?.deliverables?.requireTests ?? []).filter((f) => typeof f === "string" && f).map(norm)),
+	)].filter(Boolean);
+	const protectedClaims: Array<{ path: string; source: string }> = [];
+	for (const normRel of declaredTestFiles) {
+		// F-12: an escaping/absolute declared test path is never read (distinct
+		// from merely absent — P10 keeps the two reasons distinguishable).
+		const abs = resolveInsideWorktree(worktreePath, normRel);
+		if (abs === null) {
+			protectionScan.push(`${normRel}: escaping/absolute declared path — never read (F-12)`);
+			continue;
+		}
+		if (!existsSync(abs)) {
+			protectionScan.push(`${normRel}: not on disk at entry — not scanned`);
+			continue;
+		}
+		try {
+			const hits = scanImmutabilityIdioms(readFileSync(abs, "utf8"));
+			protectionScan.push(`${normRel}: ${hits.length} immutability idiom hit(s)${hits.length ? ` — ${hits.map((h) => `${h.path} (${h.via})`).join(", ")}` : ""}`);
+			for (const h of hits) protectedClaims.push({ path: h.path, source: `${normRel}:${h.wording}` });
+		} catch {
+			protectionScan.push(`${normRel}: unreadable — not scanned`);
+		}
+	}
+	const invariantsAbs = resolveInsideWorktree(worktreePath, "repo-invariants.json");
+	if (invariantsAbs !== null && existsSync(invariantsAbs)) {
+		try {
+			const parsed = JSON.parse(readFileSync(invariantsAbs, "utf8")) as { protected?: unknown; rationale?: unknown } | null;
+			// adv gate B-4: valid JSON null is a STRUCTURE error, not an unparseable
+			// file (P10 honest classification).
+			const declared = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.protected)
+				? parsed.protected.filter((p): p is string => typeof p === "string" && !!p).map(claimPathUsable).filter((p): p is string => p !== null)
+				: null;
+			if (!declared) {
+				protectionScan.push("repo-invariants.json: present but malformed (expected {protected: string[]}) — skipped");
+			} else {
+				protectionScan.push(`repo-invariants.json: ${declared.length} declared protected path(s)${declared.length ? ` — ${declared.join(", ")}` : ""}`);
+				for (const p of declared) protectedClaims.push({ path: p, source: "repo-invariants.json" });
+			}
+		} catch {
+			protectionScan.push("repo-invariants.json: present but unparseable — skipped");
+		}
+	}
+	if (protectedClaims.length > 0) {
+		const writeClaims = list.map((p) => [...new Set((p?.deliverables?.requireFiles ?? []).filter((f) => typeof f === "string" && f).map(norm))]);
+		const pairs = new Map<string, { protectingSource: string; writingPhase: string; paths: string[] }>();
+		for (let j = 0; j < list.length; j++) {
+			for (const f of writeClaims[j]) {
+				for (const c of protectedClaims) {
+					if (c.path !== f) continue;
+					const writingPhase = phaseLabel(list[j], j);
+					const key = `${c.source}\u0000${writingPhase}`;
+					const pair = pairs.get(key) ?? { protectingSource: c.source, writingPhase, paths: [] };
+					if (!pair.paths.includes(f)) pair.paths.push(f);
+					pairs.set(key, pair);
+				}
+			}
+		}
+		for (const pair of pairs.values()) {
+			contradictions.push({
+				kind: "protection-threat",
+				title: `plan contradiction (protection-threat): phase ${pair.writingPhase} declares protected path(s) ${pair.paths.join(", ")} as requireFiles — protected by ${pair.protectingSource}`,
+				detail: `A mechanically extracted immutability claim (${pair.protectingSource}) demands ${pair.paths.join(", ")} stay untouched, while phase ${pair.writingPhase} declares the same path(s) as deliverables (requireFiles) it must write. {protected} ∧ {written} = ⊥ — no executor quality resolves an inconsistent contract; revise the plan (move the write to the owning scope, drop the protection, or merge the scopes).`,
+				evidence: [
+					`protection: ${pair.protectingSource} → ${pair.paths.join(", ")}`,
+					`write claim: ${pair.writingPhase} requireFiles ${pair.paths.join(", ")}`,
+				],
+				blocking: true,
+				ownerStage: "spec",
+				protectingSource: pair.protectingSource,
+				writingPhase: pair.writingPhase,
+				paths: pair.paths,
+			});
+		}
+	}
+
 	// ---- Advisory: shared-file coupling.
 	const fileOwners = new Map<string, number[]>();
 	clauseFiles.forEach((files, i) => {
@@ -309,7 +416,7 @@ export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: strin
 		});
 	}
 
-	return { contradictions, advisories };
+	return { contradictions, advisories, protectionScan };
 }
 
 /** True when the later-owned file at HEAD makes `x` import-satisfiable:
@@ -345,6 +452,120 @@ function vitestCoverageAvailable(worktreePath: string): boolean {
 		}
 	} catch { /* unreadable → treat as missing (advisory is the safe direction) */ }
 	return false;
+}
+
+// ── Wave P1 D-A (docs/requirements/cross-phase-contract-architecture.md
+// Layer 1): the mechanical immutability-claim scanner. P4: purely mechanical
+// (regex), zero LLM — the incident's own assertion was machine-detectable.
+// P6: ONE scanner module — Layer 2 (write-time protection intervals, Wave P2)
+// MUST reuse this export, never re-implement the grammar. P8 bound: ONE pass
+// over the plan-declared requireTests files at Stage 9 entry (the validator
+// runs once per run — feasibilityOnce in implementation.ts); test files
+// authored DURING the run are Layer 2's write-time concern, not re-scanned
+// here. P10: detected hits are surfaced per scanned file in the report's
+// protectionScan lines so silent idiom misses stay visible.
+
+/** One mechanically extracted immutability claim from a single test file. */
+export interface ImmutabilityIdiomHit {
+	/** Repo-relative protected path (normalized). */
+	path: string;
+	/** How the path was extracted: the porcelain `-- <path>` pathspec, or a
+	 *  quote-adjacent code path near the immutability wording. */
+	via: "porcelain-pathspec" | "message-quoted-path";
+	/** The immutability wording the claim was extracted against (proof
+	 *  text for the finding). */
+	wording: string;
+}
+
+/** The S-A idiom class: a `git status --porcelain` invocation co-present in
+ *  the SAME file with immutability message wording. */
+const PORCELAIN_BASE_RE = /git\s+status\s+--porcelain/g;
+const IMMUTABILITY_WORDING_RE = /byte.untouched|must stay untouched|must (?:remain|be) (?:unchanged|unmodified)|unmodified in git/gi;
+/** Quote-adjacent .ts/.py/.md/.json path tokens — the documented else-branch
+ *  (message-named protected paths when the porcelain call carries no
+ *  pathspec). Extension family is exactly the spec's enumerated set. */
+const CODE_PATH_TOKEN_RE = /[A-Za-z0-9_.\-/]+\.(?:ts|py|md|json)\b/g;
+/** How far around an immutability-wording match a quote-adjacent path may
+ *  sit and still count as "near the match". */
+const NEAR_MATCH_WINDOW = 200;
+
+function claimPathUsable(raw: string): string | null {
+	const p = norm(raw);
+	// F-12 containment (adv gate B-2): parent traversal and absolute/host paths
+	// are never repo-relative protected claims.
+	if (!p || p.startsWith("/") || p.startsWith("../") || p.includes("/../") || /^[A-Za-z]:/.test(p)) return null;
+	return p;
+}
+
+/** The `-- <path>` pathspec following a porcelain base match, on the same
+ *  line (quoted or bare first token — a multi-path pathspec keeps its LEADING
+ *  path, a documented bound). Null when the call carries none. */
+function porcelainPathspecAfter(text: string, from: number): string | null {
+	const nl = text.indexOf("\n", from);
+	const rest = text.slice(from, nl === -1 ? undefined : nl);
+	const m = /^(?:=[^\s]+|\s+(?:-[^\s]+\s+)*)*\s*--\s+(?:"([^"\n]+)"|'([^'\n]+)'|`([^`\n]+)`|([^\s"'`]+))/.exec(rest);
+	if (!m) return null;
+	const p = m[1] ?? m[2] ?? m[3] ?? m[4] ?? "";
+	return p || null;
+}
+
+/** Scan ONE test file's source text for the idiomatic immutability class
+ *  (the run-2026-09-13 SCENARIO-014 shape). Pure: never throws, never reads
+ *  the filesystem, never spawns git. Hit contract: a `git status --porcelain`
+ *  occurrence AND an immutability-wording match must BOTH be present in the
+ *  file (co-presence — the wording alone is prose, the porcelain alone is a
+ *  shell invocation, neither is a protection claim). Protected paths = every
+ *  porcelain pathspec ∪ every quote-adjacent .ts/.py/.md/.json path token
+ *  within ±200 chars of a wording match (deduped; the pathspec form is the
+ *  authoritative `via` when both extract the same path). */
+export function scanImmutabilityIdioms(sourceText: string): ImmutabilityIdiomHit[] {
+	const text = String(sourceText ?? "");
+	if (!text) return [];
+	PORCELAIN_BASE_RE.lastIndex = 0;
+	const porcelainEnds: number[] = [];
+	for (let m = PORCELAIN_BASE_RE.exec(text); m !== null; m = PORCELAIN_BASE_RE.exec(text)) {
+		porcelainEnds.push(m.index + m[0].length);
+	}
+	if (porcelainEnds.length === 0) return [];
+	IMMUTABILITY_WORDING_RE.lastIndex = 0;
+	const wordings: Array<{ text: string; index: number }> = [];
+	for (let m = IMMUTABILITY_WORDING_RE.exec(text); m !== null; m = IMMUTABILITY_WORDING_RE.exec(text)) {
+		wordings.push({ text: m[0], index: m.index });
+	}
+	if (wordings.length === 0) return [];
+	const byPath = new Map<string, ImmutabilityIdiomHit>();
+	const claim = (raw: string, via: ImmutabilityIdiomHit["via"], wording: string) => {
+		const path = claimPathUsable(raw);
+		if (!path) return;
+		const prev = byPath.get(path);
+		if (!prev) byPath.set(path, { path, via, wording });
+		else if (via === "porcelain-pathspec") prev.via = via; // pathspec is the authoritative form
+	};
+	for (const end of porcelainEnds) {
+		const spec = porcelainPathspecAfter(text, end);
+		if (spec) claim(spec, "porcelain-pathspec", wordings[0].text);
+	}
+	for (const w of wordings) {
+		const from = Math.max(0, w.index - NEAR_MATCH_WINDOW);
+		const to = Math.min(text.length, w.index + w.text.length + NEAR_MATCH_WINDOW);
+		const window = text.slice(from, to);
+		CODE_PATH_TOKEN_RE.lastIndex = 0;
+		for (let t = CODE_PATH_TOKEN_RE.exec(window); t !== null; t = CODE_PATH_TOKEN_RE.exec(window)) {
+			// adv gate B-1: SYMMETRIC quoting — the token must open AND close with
+			// the same quote character. A leading quote alone admits unrelated
+			// imports, prose doc paths, and partial filenames (`src/foo.ts` inside
+			// `src/foo.ts.bak`, `` matching before `.bak`); a trailing non-quote
+			// character (`.bak`, `.tmp`) rejects the token. Asymmetry is a safe
+			// false negative; a false positive burns a REPLAN round.
+			const absIdx = from + t.index;
+			const before = absIdx > 0 ? text[absIdx - 1] : "";
+			const afterIdx = absIdx + t[0].length;
+			const after = afterIdx < text.length ? text[afterIdx] : "";
+			const symmetric = (before === '"' && after === '"') || (before === "'" && after === "'") || (before === "`" && after === "`");
+			if (symmetric) claim(t[0], "message-quoted-path", w.text);
+		}
+	}
+	return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**

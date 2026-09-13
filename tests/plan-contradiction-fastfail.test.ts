@@ -67,7 +67,12 @@ describe("v0.3.79 A2/A1 wiring source contracts", () => {
 		const scope = impl.indexOf("stage9.impl-no-progress.${phaseId}");
 		expect(scope).toBeGreaterThan(0);
 		const window = impl.slice(scope, scope + 6500);
-		expect(window).toMatch(/route === "replan-upstream"[\s\S]{0,1000}triggerReplanForFindings/);
+		// Wave P1 D-C: the valve now builds a cross-scope contract-conflict
+		// finding shape BETWEEN the route check and the trigger (the cited file ×
+		// owning phases), so the window bound widened 1000 → 2500 — the pin's
+		// intent (replan-upstream routes the replan, never a blind continue) is
+		// unchanged.
+		expect(window).toMatch(/route === "replan-upstream"[\s\S]{0,2500}triggerReplanForFindings/);
 	});
 
 	it("implementationStage validates plan feasibility at entry and routes contradictions to replan before executing phases", () => {

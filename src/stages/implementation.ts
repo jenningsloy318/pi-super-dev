@@ -152,6 +152,78 @@ function repeatedNoProgress(history: ProgressSignature[], next: ProgressSignatur
 	return history.some((h) => h.failure === next.failure && h.footprint === next.footprint);
 }
 
+/** Wave P1 D-C (docs/requirements/cross-phase-contract-architecture.md
+ * Layer 3, DEC-3): zero-change plateau predicate — the attempt's landed
+ * change set is EMPTY (all three change classes empty). Parses exactly the
+ * JSON `changeFootprint` emits; anything unparseable is NOT empty (fail
+ * toward the normal loop, never a false plateau). Pure. */
+export function landedFootprintIsEmpty(footprint: string): boolean {
+	try {
+		// P6: BOTH footprint key families are the same grammar — the gitActual
+		// path emits created/modified/deleted, the structured-claims path emits
+		// filesCreated/filesModified/filesDeleted (structuredFootprint). A key
+		// being absent means nothing landed in that class (empty), not "unknown".
+		const parsed = JSON.parse(footprint) as Record<string, unknown>;
+		const classes = ["created", "modified", "deleted", "filesCreated", "filesModified", "filesDeleted"];
+		return classes.every((k) => {
+			const v = parsed[k];
+			return v === undefined || (Array.isArray(v) && v.length === 0);
+		});
+	} catch {
+		return false;
+	}
+}
+
+/** Wave P1 D-C: one cross-scope contract-conflict attribution row. */
+export interface CrossScopeCitation {
+	/** Repo-normalized cited failing test file. */
+	file: string;
+	/** The OTHER phase(s) whose requireTests scope declares the file. */
+	ownerPhases: string[];
+}
+
+/** Wave P1 D-C (Layer 3, the S-A class): cross-scope contract-conflict
+ *  attribution — the failure's cited failing test file(s) vs the plan's
+ *  per-phase requireTests mapping. A citation CONFLICTS iff the file sits
+ *  inside ANOTHER phase's requireTests scope AND outside the current phase's
+ *  own declared scope (the canonical phaseClauseFiles grammar — a file the
+ *  current phase co-declares through ANY clause form is same-scope and keeps
+ *  the normal loop; P6). Pure; never throws. */
+export function crossScopeTestCitations(citedTestFiles: readonly string[], phases: readonly LeakPhase[], currentIndex: number): CrossScopeCitation[] {
+	const ownScope = new Set(phaseClauseFiles(phases[currentIndex] as never).map(leakNorm));
+	const out: CrossScopeCitation[] = [];
+	for (const raw of citedTestFiles) {
+		const file = leakNorm(String(raw ?? ""));
+		if (!file || ownScope.has(file)) continue;
+		const ownerPhases: string[] = [];
+		for (let j = 0; j < phases.length; j++) {
+			if (j === currentIndex) continue;
+			if ((phases[j]?.deliverables?.requireTests ?? []).some((t) => leakNorm(t) === file)) {
+				ownerPhases.push(phases[j]?.name?.trim() || `phase-${j + 1}`);
+			}
+		}
+		if (ownerPhases.length > 0 && !out.some((c) => c.file === file)) out.push({ file, ownerPhases });
+	}
+	return out;
+}
+
+/** Wave P1 D-C: the judge frame for a cross-scope contract conflict — the
+ *  goal is unsatisfiable inside this phase's declared scope, so the budget is
+ *  not consumed on it (first occurrence routes immediately). Mirrors
+ *  contradictionFastFailFrame's shape (context + allowed routes). Pure. */
+export function crossScopeContractConflictFrame(input: { phaseId: string; phaseName: string; citations: CrossScopeCitation[] }): { context: string; allowedRoutes: string[] } {
+	const lines = [
+		"## Cross-scope contract conflict (unsatisfiable within this phase)",
+		`Phase ${input.phaseId}${input.phaseName ? ` (${input.phaseName})` : ""} failed on test file(s) that belong to ANOTHER phase's requireTests scope:`,
+		...(input.citations.length
+			? input.citations.map((c) => `- ${c.file} — declared requireTests of ${c.ownerPhases.join(", ")}`)
+			: ["- (citation list empty)"]),
+		"",
+		"The failure cites a contract this phase cannot satisfy inside its declared scope: every satisfiable fix edits files the phase-boundary guard BLOCKS and reverts, so further attempts cannot produce improving signal. Route replan-upstream so the plan is revised (merge the scopes, hand off the contract, or reorder the phases), or re-author/challenge the test if the citation itself is defective.",
+	];
+	return { context: lines.join("\n"), allowedRoutes: ["replan-upstream", "challenge-test", "re-author-tests", "continue"] };
+}
+
 /** v0.3.85 F3 (decision 4): failure-category recurrence — advance the
  * consecutive-same-FaultClass streak. Module-scope PURE helper deliberately:
  * the attempt loop's control flow (initial reading + re-classification
@@ -1803,8 +1875,15 @@ export const implementationStage: Stage = {
 		const feasibilityOnce = ((state as Record<string, unknown>).__planFeasibilityChecked as boolean | undefined) ?? false;
 		(state as Record<string, unknown>).__planFeasibilityChecked = true;
 		const feasibility = feasibilityOnce
-			? { contradictions: [], advisories: [] }
+			? { contradictions: [], advisories: [], protectionScan: [] }
 			: planFeasibilityFindings(phases, setup.worktreePath);
+		// Wave P1 D-A (P10 — silent-miss visibility): the immutability-idiom
+		// scanner's per-file hit list is logged at entry — a repo whose tests use
+		// an idiom OUTSIDE the enumerated grammar shows "0 hit(s)" here instead
+		// of silently missing the protection. One line per scanned source.
+		for (const scanLine of feasibility.protectionScan) {
+			ctx.log(`Implementation plan protection-scan: ${scanLine}`);
+		}
 		for (const advisory of feasibility.advisories) {
 			ctx.log(`Implementation plan advisory: ${advisory.title}`);
 		}
@@ -4339,7 +4418,23 @@ export const implementationStage: Stage = {
 						ctx.log(`Implementation ${phaseId} research-assist ARMED (GREEN: fault-class ${attemptFaultClass} × ${faultClassStreak.count}) — research-agent will be dispatched before the next implementer attempt (if one starts)`);
 					}
 				}
-				const noProgress = signatureRepeat || faultRecurrence;
+				// ── Wave P1 D-C (Layer 3, DEC-3): tighten the EXISTING governor — plateau
+				// + cross-scope routing build ON repeatedNoProgress/faultRecurrence, they
+				// do not replace them. P8 (attempt-index bounds): the plateau fires at
+				// the 2nd recorded attempt of the CURRENT signature window (history
+				// non-empty — the first attempt of a fresh window, incl. after a judge/
+				// challenge reset, is never a plateau); a FRESH footprint survives to
+				// attempt 3 (via faultRecurrenceLimit) and the maxPhaseAttempts()=4 hard
+				// cap stands for genuinely new signatures. Cross-scope conflicts route on
+				// FIRST occurrence — the budget is never consumed on an unsatisfiable
+				// goal. Ordering note: the inherited-red ladder above runs first at this
+				// boundary (its own Tier-2/3 replan routes are the same destination).
+				const zeroLandedChange = attemptProgressHistory.length > 0 && landedFootprintIsEmpty(progressSignature.footprint);
+				// P6: attribution derives from the plan's requireTests mapping via the
+				// canonical phaseClauseFiles grammar (own-scope = any clause form).
+				const crossScopeCites = crossScopeTestCitations(extractFailingTestFilePaths(postRegateProductErrors ?? gate.errors), phases, idx);
+				const crossScopeConflict = crossScopeCites.length > 0;
+				const noProgress = signatureRepeat || faultRecurrence || zeroLandedChange || crossScopeConflict;
 				// ADV-v0379-5: the contradiction valve's evidence must be from the SAME
 				// repeated-signature window — a revert from an earlier, unrelated
 				// signature must not arm the frame for this one.
@@ -4351,6 +4446,10 @@ export const implementationStage: Stage = {
 				}
 				attemptProgressHistory.push(progressSignature);
 				ctx.log(`Implementation ${phaseId} attempt ${attempt} FAIL: ${failureReasons.join("; ") || "phase gates unmet"}${faultRecurrence && !signatureRepeat ? ` [fault-category recurrence: ${attemptFaultClass} × ${faultClassStreak.count} consecutive attempt(s)]` : ""}`);
+				// P10 (Wave P1 D-C): every failed attempt logs what the governor SAW —
+				// signature delta, footprint delta, and scope attribution — so both the
+				// trip and the non-trip are auditable in the run log.
+				ctx.log(`Implementation ${phaseId} attempt ${attempt} governor: signature ${signatureRepeat ? "repeat (failure+footprint pair seen in an earlier attempt)" : "fresh"}; footprint ${zeroLandedChange ? "EMPTY (zero landed file changes)" : lastSignature && lastSignature.footprint === progressSignature.footprint ? "repeat" : "fresh"}; citations ${crossScopeConflict ? `CROSS-SCOPE: ${crossScopeCites.map((c) => `${c.file} (requireTests of ${c.ownerPhases.join(", ")})`).join("; ")}` : "same-scope or unattributable"}`);
 				// ── v0.3.85 F2: the inherited-red tier ladder (C1 fix; §10 decision 3) ──
 				// Replaces C1's blind forward-continue at the partial boundary: when
 				// the GATE is the blocker, every remaining failure is out-of-scope, a
@@ -4522,6 +4621,13 @@ export const implementationStage: Stage = {
 					const cfFrame = boundaryRevertHits > 0
 						? contradictionFastFailFrame({ phaseId, phaseName: phases[idx]?.name ?? "", leakOwners: boundaryLeakOwners, leakFiles: boundaryLeakFiles, failureReasons })
 						: null;
+					// Wave P1 D-C (S-A class): the cross-scope contract-conflict frame —
+					// replan-upstream is offered on FIRST occurrence (the goal is
+					// unsatisfiable inside this phase's scope; no attempt can produce
+					// improving signal, so the budget is not consumed on it).
+					const csFrame = crossScopeConflict
+						? crossScopeContractConflictFrame({ phaseId, phaseName: phases[idx]?.name ?? "", citations: crossScopeCites })
+						: null;
 					// J9-b (judge routing layer): a verified diagnosis at the no-progress
 					// boundary, BEFORE the human is asked. challenge-test synthesizes the
 					// defect the implementer failed to report structurally and re-runs the
@@ -4535,10 +4641,15 @@ export const implementationStage: Stage = {
 						worktreePath: setup.worktreePath,
 						specDirectory: setup.specDirectory,
 						context: [
+							...(csFrame ? [csFrame.context] : []),
 							...(cfFrame ? [cfFrame.context] : []),
 							faultRecurrence && !signatureRepeat
 								? `## Recurring failure-category (${attemptFaultClass} across ${faultClassStreak?.count ?? 0} consecutive attempts — signatures are fresh, the CLASS repeats)`
-								: "## Recurring failure (identical signature across consecutive attempts)",
+								: zeroLandedChange
+									? "## Zero-change plateau (the attempt landed no file changes — static signal)"
+									: crossScopeConflict
+										? `## Cross-scope citation (${attempt === 1 ? "first occurrence" : `occurrence on attempt ${attempt}`} — routing immediately per the attempt governor)`
+										: "## Recurring failure (identical signature across consecutive attempts)",
 							...failureReasons.slice(0, 12),
 							"## Implementer's last reasoning tail",
 							implTextTail || "(none)",
@@ -4549,15 +4660,25 @@ export const implementationStage: Stage = {
 							"## Test files under contract",
 							testFiles.join(", ") || "n/a",
 						].join("\n"),
-						allowedRoutes: cfFrame ? (cfFrame.allowedRoutes as JudgeRoute[]) : ["challenge-test", "re-author-tests", "continue"],
+						allowedRoutes: ((csFrame ?? cfFrame)?.allowedRoutes ?? ["challenge-test", "re-author-tests", "continue"]) as JudgeRoute[],
 						outputTails: [implTextTail, ...failureReasons],
 					});
 					if (judgeOut.status === "routed" && judgeOut.verdict.route === "replan-upstream") {
 						// v0.3.79 A2: the contradiction valve's plan-revision route —
 						// route the replan with the contradiction finding and stop this
 						// pass (shouldIterateImplementation gates the re-entry; the
-						// extension restarts under the revised spec).
-						const contradictionFinding = {
+						// extension restarts under the revised spec). Wave P1 D-C: a cross-scope
+						// conflict carries ITS OWN finding shape (cited file × owning phases),
+						// not the boundary-revert shape.
+						const contradictionFinding = csFrame
+							? {
+								file: null,
+								severity: "high",
+								title: `cross-scope contract conflict at ${phaseId}: gate failures cite test file(s) owned by ${crossScopeCites.map((c) => `${c.file} (${c.ownerPhases.join(", ")})`).join("; ")}`,
+								detail: `The build gate fails on test file(s) declared requireTests of ANOTHER phase (${crossScopeCites.map((c) => `${c.file}: ${c.ownerPhases.join(", ")}`).join("; ")}); every satisfiable fix edits files outside ${phaseId}'s declared scope, which the phase-boundary guard BLOCKS and reverts. Judge diagnosis: ${judgeOut.verdict.diagnosis}`,
+								ownerStage: "spec",
+							}
+							: {
 							file: null,
 							severity: "high",
 							title: `plan contradiction at ${phaseId}: phase-boundary BLOCKING reverts block the only satisfiable fix`,
@@ -4569,7 +4690,11 @@ export const implementationStage: Stage = {
 						if (contradictionReplanned) {
 							redJudgeDiagnosis = judgeOut.verdict.diagnosis;
 							terminalStopReason = "no-progress";
-							ctx.log(`Implementation ${phaseId} judge route=replan-upstream: contradiction routed to REPLAN (plan revision) — stopping this pass (${boundaryRevertHits} boundary revert(s) observed)`);
+							if (csFrame) {
+								ctx.log(`Implementation ${phaseId} judge route=replan-upstream: cross-scope contract conflict routed to REPLAN (plan revision) — stopping this pass (cited test file(s) declared by another phase; no attempt can produce improving signal)`);
+							} else {
+								ctx.log(`Implementation ${phaseId} judge route=replan-upstream: contradiction routed to REPLAN (plan revision) — stopping this pass (${boundaryRevertHits} boundary revert(s) observed)`);
+							}
 							break;
 						}
 					}
@@ -4646,7 +4771,7 @@ export const implementationStage: Stage = {
 							const failure: import("../types.ts").EscalationFailure = {
 								kind: "stagnation",
 								stage: "implementation",
-								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""}${implJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (${implJudgeEvidenceLabel}):\n${implJudgeDiagnosis}` : ""}${stillRedSuspect && implDefects.length === 0 ? "\n\nDETERMINISTIC TEST-SUSPECT SIGNAL: the phase's RED targets never went green across these repeated no-progress attempts (tdd-targets-still-red). The RED test itself may be unsatisfiable (defective). Legal next actions: re-author the RED with this failure evidence (retry-with-guidance), fix the environment, or accept the limitation." : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
+								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${crossScopeConflict ? ` THIS FAILURE CITES TEST FILE(S) DECLARED BY ANOTHER PHASE (${crossScopeCites.map((c) => `${c.file} ← ${c.ownerPhases.join(", ")}`).join("; ")}) — a cross-scope contract this phase cannot satisfy inside its declared scope; plan revision (replan) is the likely fix, not another attempt.` : ""}${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""}${implJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (${implJudgeEvidenceLabel}):\n${implJudgeDiagnosis}` : ""}${stillRedSuspect && implDefects.length === 0 ? "\n\nDETERMINISTIC TEST-SUSPECT SIGNAL: the phase's RED targets never went green across these repeated no-progress attempts (tdd-targets-still-red). The RED test itself may be unsatisfiable (defective). Legal next actions: re-author the RED with this failure evidence (retry-with-guidance), fix the environment, or accept the limitation." : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
 								severity: "soft",
 								findings: [
 									...(implJudgeDiagnosis ? [{ file: null, severity: null, title: `judge diagnosis: ${implJudgeDiagnosis.split("\n")[0].slice(0, 200)}` }] : []),
@@ -4685,7 +4810,19 @@ export const implementationStage: Stage = {
 						} catch { /* never-throw: fall through to the terminal break */ }
 					}
 					terminalStopReason = "no-progress";
-					ctx.log(`Implementation ${phaseId} stopped after ${faultRecurrence && !signatureRepeat ? `failure-category recurrence (${attemptFaultClass} × ${faultClassStreak?.count ?? 0} consecutive attempts — fresh footprints, same class)` : "repeated no-progress failure"} on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}${stillRedSuspect ? " [test-suspect: RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence or accept the limitation]" : ""}`);
+					// P10 (Wave P1 D-C): the terminal stop names WHICH governor valve fired —
+					// identical pair, zero-change plateau, fault-class recurrence, or the
+					// cross-scope citation (with its scope attribution).
+					const noProgressStopClass = signatureRepeat
+						? "repeated no-progress failure"
+						: faultRecurrence
+							? `failure-category recurrence (${attemptFaultClass} × ${faultClassStreak?.count ?? 0} consecutive attempts — fresh footprints, same class)`
+							: zeroLandedChange
+								? "zero-change plateau (the attempt landed no file changes — static signal)"
+								: crossScopeConflict
+									? `cross-scope contract conflict (cited test file(s) declared requireTests of ${crossScopeCites.map((c) => `${c.file} ← ${c.ownerPhases.join(", ")}`).join("; ")} — first occurrence routed immediately)`
+									: "repeated no-progress failure";
+					ctx.log(`Implementation ${phaseId} stopped after ${noProgressStopClass} on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}${stillRedSuspect ? " [test-suspect: RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence or accept the limitation]" : ""}`);
 					break;
 				}
 			}
