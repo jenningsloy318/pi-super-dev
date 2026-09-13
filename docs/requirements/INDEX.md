@@ -79,7 +79,7 @@ Scope: 60 docs — 58 committed + 2 in flight (marked ⚠ below). Eras: **Jul** 
 | 09-11 | 055-sdlc-tips-adoption.md | spec | Implemented — **v0.3.89 / v0.3.90 / v0.3.91** (P1 eval-layer, P2 dual scorers, P3 flywheel+firewall) |
 | 09-13 | 057-run-2026-09-12T15-16-29-042Z-antigravity-model-exclusion-root-cause.md | postmortem | Postmortem complete — operator remediation (npm pi-antigravity); durable fixes in v0.3.95 (thinking-fidelity); upstream-watch errata 9b3bcd3b |
 | 09-13 | 058-cross-phase-contract-architecture.md | architecture | Grilled ×3 → P1 implemented **v0.3.96** (4d45025a, D-A+D-C); **P2 (D-B+D-D) pending** |
-| 09-13 | 059-reviewer-quality-architecture.md | architecture | v6 — grill R6/W-layer folded (3H/4M/3L: family home→Design, pinOwnership sole authority, waves re-sequenced, pre-W re-entry, Strike-1 metadata retry); delta-4 pending |
+| 09-13 | 059-reviewer-quality-architecture.md | architecture | v7 — delta-4 folded (round-6 1-10 CLOSED; Stage 6-skip fallback gate, prospective BDD duty, structured exemption justifications); delta-5 pending |
 
 ## In flight
 
