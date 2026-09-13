@@ -2,7 +2,7 @@
 
 ## Sources
 
-1. `docs/requirements/agent-team-runtime.md`.
+1. `docs/requirements/004-agent-team-runtime.md`.
 2. `docs/reference/weichat-agent-team.md`.
 3. arXiv 2607.25446v1, **Toward an Organizational Science of Multi-Agent LLM Systems: Decoupling Who, How, and Which Algorithm**.
 4. arXiv 2507.01701, **Exploring Advanced LLM Multi-Agent Systems Based on Blackboard Architecture**.

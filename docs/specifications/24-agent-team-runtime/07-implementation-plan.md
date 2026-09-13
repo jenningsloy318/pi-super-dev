@@ -115,7 +115,7 @@ Files:
 
 - `docs/usage.md`
 - `README.md` if needed
-- `docs/reference/agent-team-runtime.md` if needed
+- `docs/reference/004-agent-team-runtime.md` if needed
 
 Tasks:
 
