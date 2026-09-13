@@ -1,6 +1,6 @@
 /**
  * v0.3.85 S3 (§9 S3 / §13 run-metrics row of
- * docs/requirements/run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md) —
+ * docs/requirements/052-run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md) —
  * the run-health counter DERIVATION. The row schema and σ-banding live in
  * sigma-bands.ts (the owner); this module reads the run's own durable
  * territory and produces the this-pass counter set the close-out writes.

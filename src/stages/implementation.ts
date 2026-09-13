@@ -152,7 +152,7 @@ function repeatedNoProgress(history: ProgressSignature[], next: ProgressSignatur
 	return history.some((h) => h.failure === next.failure && h.footprint === next.footprint);
 }
 
-/** Wave P1 D-C (docs/requirements/cross-phase-contract-architecture.md
+/** Wave P1 D-C (docs/requirements/058-cross-phase-contract-architecture.md
  * Layer 3, DEC-3): zero-change plateau predicate — the attempt's landed
  * change set is EMPTY (all three change classes empty). Parses exactly the
  * JSON `changeFootprint` emits; anything unparseable is NOT empty (fail
@@ -1496,7 +1496,7 @@ export interface PhaseFailureEntry {
 	phaseId: string;
 	reasons: string[];
 }
-/** v0.3.0 (harness research, docs/requirements/harness-research-and-v0.3.0-architecture.md):
+/** v0.3.0 (harness research, docs/requirements/037-harness-research-and-v0.3.0-architecture.md):
  *  a phase that exhausts its attempts no longer terminates the run — its best
  *  attempt is PRESERVED as a labeled git stash and the pipeline continues to
  *  the next phase (SWE-agent get_best / Anthropic git-per-increment semantics:

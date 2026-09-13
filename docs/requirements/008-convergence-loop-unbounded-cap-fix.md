@@ -120,7 +120,7 @@ enforce it at the **top of the loop body** (right after `round++`), before the w
 runs. Apply to **both** `artifactConvergenceNode` and the spec-convergence node.
 
 ```ts
-export const MAX_CONVERGENCE_ROUNDS = 8; // liveness guard; see docs/requirements/convergence-loop-unbounded-cap-fix.md
+export const MAX_CONVERGENCE_ROUNDS = 8; // liveness guard; see docs/requirements/008-convergence-loop-unbounded-cap-fix.md
 …
 // inside each node factory:
 const maxRounds = options.maxRounds ?? MAX_CONVERGENCE_ROUNDS;

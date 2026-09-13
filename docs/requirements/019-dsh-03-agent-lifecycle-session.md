@@ -96,7 +96,7 @@ a rejected step leaves steering parked), and `inject` (queue model-facing contex
 The cause is a TS-enforced same-process input (`AgentCancelCause`: `user | parent | hook | disposed`);
 an active holder copies it into the runtime-only `AbortSignal.reason`, and durable `turn/end` retains only the coarse `{ kind: 'aborted' }` outcome — recording WHO cancelled would require a separate durable event rather than overloading the terminal result (§"Cancellation").
 - **Quiescence**: `whenIdle()` "follows replacement work started before the observed driver retires, but does not identify the settlement of any particular message" — the defensive-patterns doc hammers this: async state is not synchronous state;
-several queued follow-ups, steering, and injected work may share one `running` interval, so an automation caller that truly owns a run must define its interval explicitly and describe output as interval-wide (docs/defensive-patterns.md §"Async state is not synchronous state").
+several queued follow-ups, steering, and injected work may share one `running` interval, so an automation caller that truly owns a run must define its interval explicitly and describe output as interval-wide (docs/026-defensive-patterns.md §"Async state is not synchronous state").
 - `runMaintenance(task)` runs one non-turn maintenance task from the true idle phase, synchronously claimed; later waking input remains in the inbox until the task settles while public status stays `idle`.
 - **Status is only `idle | running`**; disposal removes the agent from the registry (it is not a third status). `running` describes the driver-wide drain interval and may span consecutive queued turns (§`AgentStatus`).
 - Creation/ownership: `AgentHandle.dispose()` is a CAPABILITY ("among consumers, only the holder can tear this agent down"); the registered factory provider is a structural owner because the scoped agent depends on its service API;
@@ -118,7 +118,7 @@ A scoped section SHADOWS a global section with the same name. `AssembleContext` 
 
 `StreamChunk` is a CLOSED discriminated union (`block-start | text-delta | reasoning-delta | tool-call-delta | block-end | usage | finish`) — `switch` ends with `assertNever`, so adding a variant breaks compilation at every consumer that must handle it;
 this contrasts deliberately with the merge-extensible `SessionEvent`/`ContentBlock` unions (docs/subsystems/llm-streaming.md §"`StreamChunk` — the raw protocol"). `block-end` carries the fully-assembled `ContentBlock` so consumers don't re-assemble deltas.
-Adapters may throw, but `LlmRuntime.stream()` normalizes failure to a terminal `finish {kind:'error'|'aborted'}` chunk — "consumers [don't have to] guess whether a caught exception came from the provider, a wrapper, chunk logging, or their own assembly" (docs/defensive-patterns.md §"Honor public contracts on BOTH sides").
+Adapters may throw, but `LlmRuntime.stream()` normalizes failure to a terminal `finish {kind:'error'|'aborted'}` chunk — "consumers [don't have to] guess whether a caught exception came from the provider, a wrapper, chunk logging, or their own assembly" (docs/026-defensive-patterns.md §"Honor public contracts on BOTH sides").
 `Message` carries `id`, `role`, `content: ContentBlock[]`, and a `MessageSource`; `AssistantProvenance.provider/model/replayState` names the producing route and carries adapter-private lossless-JSON replay state.
 
 ### 2.9 Read-side machinery: projection, query, reference, title, telemetry
@@ -184,7 +184,7 @@ Admitted rounds are attributed via `GoalMessageSource { goalId, revision, round 
 failed-request recovery runs through `agent/request-error` and returns a retry action "only when the surface replacement generation advances" (retry loops cannot spin without progress). Region boundaries preserve tool-call/result pairing but NOT whole turns.
 The optional tool-result pruner replaces over-budget text middles by Unicode CODE POINT "so a retained boundary cannot split a surrogate pair", each replacement immediately preceded by a `compaction/prune` shadow-price event so pure consumers can subtract it without per-node state.
 - **Spill** (docs/subsystems/spill.md): a one-method seam (`saveText`) persisting a tool's oversized text verbatim and returning an opaque branded `SpillLocator` + `retrievalHint` + exact byte count;
-the local backend writes under `<root>/session-<sha256(sessionId)>/<random>-<safeName>` with a private 0700 root and exclusive owner-only `'wx'`/0o600 opens "so a planted symlink cannot redirect it" (mirroring docs/defensive-patterns.md §"Never hand untrusted output the ambient environment or predictable paths").
+the local backend writes under `<root>/session-<sha256(sessionId)>/<random>-<safeName>` with a private 0700 root and exclusive owner-only `'wx'`/0o600 opens "so a planted symlink cannot redirect it" (mirroring docs/026-defensive-patterns.md §"Never hand untrusted output the ambient environment or predictable paths").
 The policy consumer is best-effort: "a save failure keeps the original inline result rather than turning a successful call into an `isError`."
 
 ### 2.15 User questions
@@ -251,7 +251,7 @@ full `agent/*` and `agent-loop/config-start-failed` event catalog; `agent-preset
 - `docs/subsystems/system-prompt.md` — `AssembleContext`, `ToolProviderResult`, `PromptSection` (order conventions, `complete`), `PromptContext`; `ctx.systemPrompt` (section/context/suppressRuntimeContext/tools/variable/assemble); `system-prompt/assemble` waterfall + `system-prompt/change`.
 - `docs/subsystems/llm-streaming.md` — `ContentBlockMap`, `AssistantProvenance`, `Message`, `MessageSourceMap`, `ContextForm`/`ContextFormed`, `StreamChunk` closed union, adapter contract.
 - `docs/architecture.md` §"Turn flow" + §"Session log" (model-visible-means-logged invariant) + §"Events" (three domains).
-- `docs/defensive-patterns.md` — orthogonal outcome reporting; both-sides contract normalization; async-state guard; dispose-to-quiescence; callback containment; scrubbed env/0700 'wx' paths; symlink unlink.
+- `docs/026-defensive-patterns.md` — orthogonal outcome reporting; both-sides contract normalization; async-state guard; dispose-to-quiescence; callback containment; scrubbed env/0700 'wx' paths; symlink unlink.
 
 Source anchors (spot-verified):
 
@@ -276,4 +276,4 @@ Residual risks / limitations explicitly acknowledged by the docs themselves:
 - Concurrent writers over one session log are NOT solved by `session/end-seed` ("tolerating concurrent writers needs a signal beyond the log").
 - A plan-mode selection made after a turn's final accepted pre-step "remains process-local and is lost if the process exits before another accepted in-turn pre-step" (docs/subsystems/plan.md, README limitation).
 - Telemetry delivery is best-effort; losses and duplicates are expected and receivers must dedupe (session-telemetry.md).
-- `whenIdle()`/`agent/status` cannot attribute outcomes to individual messages (defensive-patterns.md); automations must own their intervals.
+- `whenIdle()`/`agent/status` cannot attribute outcomes to individual messages (026-defensive-patterns.md); automations must own their intervals.

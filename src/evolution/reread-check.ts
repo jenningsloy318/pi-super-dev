@@ -1,6 +1,6 @@
 /**
  * REREAD CHECK (P3 / D6 / DEC-12) — the deterministic frequency check over a
- * run's tool-usage telemetry (docs/requirements/sdlc-tips-adoption.md
+ * run's tool-usage telemetry (docs/requirements/055-sdlc-tips-adoption.md
  * DEC-12, §7 部分 10 external endorsement: test the STEPS, not only the
  * result — repeated search / redundant-call detection).
  *

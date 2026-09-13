@@ -47,9 +47,9 @@ Cost: trivial. Payoff: future agents (and us) stop re-proposing dead ends; the a
 
 ### L-3. Postmortems as institutional rule-formation (`docs/postmortem/` + defensive-patterns)
 
-dsh mechanism (dsh-06): four postmortems, each ending in a named rule inside `docs/defensive-patterns.md` ("Hard-won bug-class rules: each pattern below is a class of defect that actually shipped or nearly shipped here, stated as the rule that prevents its recurrence"). The rules are short, imperative, and story-backed: "Report orthogonal outcomes independently" (a process timed out AND exited 0); "Dispose must reach quiescence" (kills issued but not awaited); "Contain callback exceptions in the dispatcher"; "Never hand untrusted output the ambient environment"; "Unlink link-shaped paths".
+dsh mechanism (dsh-06): four postmortems, each ending in a named rule inside `docs/026-defensive-patterns.md` ("Hard-won bug-class rules: each pattern below is a class of defect that actually shipped or nearly shipped here, stated as the rule that prevents its recurrence"). The rules are short, imperative, and story-backed: "Report orthogonal outcomes independently" (a process timed out AND exited 0); "Dispose must reach quiescence" (kills issued but not awaited); "Contain callback exceptions in the dispatcher"; "Never hand untrusted output the ambient environment"; "Unlink link-shaped paths".
 
-pi-super-dev mapping: our equivalent incidents exist (validation-pipe exit-code trap hit twice — R-5 and a17f5e6c; the regex-delete of gates.ts during Fix B; the python-edit indentation failures) but live in session reflections, not the repo. Concretely: create `docs/postmortem/NNNN-<slug>.md` for the R-5 liveness ship (already the best candidate — it has root cause, two trigger instances, and the fix rule "full-suite validation must capture vitest's own exit code; never pipe unguarded"), and extract `docs/defensive-patterns.md` with our first five rules:
+pi-super-dev mapping: our equivalent incidents exist (validation-pipe exit-code trap hit twice — R-5 and a17f5e6c; the regex-delete of gates.ts during Fix B; the python-edit indentation failures) but live in session reflections, not the repo. Concretely: create `docs/postmortem/NNNN-<slug>.md` for the R-5 liveness ship (already the best candidate — it has root cause, two trigger instances, and the fix rule "full-suite validation must capture vitest's own exit code; never pipe unguarded"), and extract `docs/026-defensive-patterns.md` with our first five rules:
 
 1. Validation exit codes come from the tool, not the pipe (R-5, a17f5e6c).
 2. Never strict-compare LLM-typed booleans/numbers — read through `toBool`/`toNumber` at the boundary (merged:"true", lines:"808", dead hasNumericConstants).
@@ -125,7 +125,7 @@ From dsh-07 (the independent non-coder teardown within 24h of release):
 
 | # | Lesson | Effort | Value | First concrete step |
 |---|---|---|---|---|
-| L-3 | Postmortems + defensive-patterns doc | trivial | immediate | write `docs/postmortem/0001-r5-validation-pipe.md` + `docs/defensive-patterns.md` (5 rules above) |
+| L-3 | Postmortems + defensive-patterns doc | trivial | immediate | write `docs/postmortem/0001-r5-validation-pipe.md` + `docs/026-defensive-patterns.md` (5 rules above) |
 | L-2 | Plan-doc status lifecycle + rejection notes | trivial | high | add `Status:` headers; write first 2 rejection notes |
 | L-1 | Invariants registry + explain-or-assert contract test | low | high (kills silent-dead-gate class) | `src/invariants.ts` + per-stage companion + contract test |
 | M-3 | Degraded-subsystem boot diagnostics | trivial | medium | one log line per degraded subsystem in Stage 1 |
@@ -138,7 +138,7 @@ From dsh-07 (the independent non-coder teardown within 24h of release):
 
 ## 6. Evidence index
 
-- dsh-01-architecture-overview.md — plugin substrate, boot composition, core spine, events, seams, module graph, 10 design decisions.
-- dsh-02-cordis-paradigm-paper.md — formal semantics (revertible effects, reactive coeffects, Γ∞, calculus, metatheory), implementation mapping, critical assessment (incl. the three transferable lessons that seeded L-4/L-5/M-2 here).
+- 017-dsh-01-architecture-overview.md — plugin substrate, boot composition, core spine, events, seams, module graph, 10 design decisions.
+- 018-dsh-02-cordis-paradigm-paper.md — formal semantics (revertible effects, reactive coeffects, Γ∞, calculus, metatheory), implementation mapping, critical assessment (incl. the three transferable lessons that seeded L-4/L-5/M-2 here).
 - dsh-03…dsh-07 — lifecycle/session detail, security, ecosystem, process, field report (see each report's own evidence appendix).
-- Direct reads: `docs/architecture.md`, `docs/cordis-primer.md`, `docs/subsystems/invariants.md`, `docs/defensive-patterns.md`, `docs/rescope.md`, READMEs, paper §1–§3, `/tmp/dsh-paper.txt`, `/tmp/dsh-orange-book.txt`.
+- Direct reads: `docs/architecture.md`, `docs/cordis-primer.md`, `docs/subsystems/invariants.md`, `docs/026-defensive-patterns.md`, `docs/rescope.md`, READMEs, paper §1–§3, `/tmp/dsh-paper.txt`, `/tmp/dsh-orange-book.txt`.

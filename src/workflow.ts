@@ -1328,7 +1328,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		}
 	}
 
-	// P2 (v0.3.90, D5+D3 — docs/requirements/sdlc-tips-adoption.md): the
+	// P2 (v0.3.90, D5+D3 — docs/requirements/055-sdlc-tips-adoption.md): the
 	// in-pipeline fail-open eval surface, at the RUN close-out boundary (the
 	// deriveS3Counters/run-observability close-out is the convergence boundary
 	// v1 scores; per-phase mid-run boundaries are deferred — documented in
@@ -1382,7 +1382,7 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		}
 	}
 
-	// P3 (v0.3.90 wave, D6/DEC-12 — docs/requirements/sdlc-tips-adoption.md): the
+	// P3 (v0.3.90 wave, D6/DEC-12 — docs/requirements/055-sdlc-tips-adoption.md): the
 	// DETERMINISTIC reread frequency check, wired NEXT TO the eval stage. Zero
 	// LLM, free, so it carries NO enable guard of its own (always on); its
 	// only spec-dir side effect is the eval.reread event, appended ONLY when

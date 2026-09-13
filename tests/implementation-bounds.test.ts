@@ -1,6 +1,6 @@
 /**
  * v0.3.85 F3 — bounded time and attempts (C5 fix; §9 F3 + §10 decisions 2 & 4
- * of docs/requirements/run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md).
+ * of docs/requirements/052-run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md).
  *
  * P8 binding — every bound gets a test that PROVOKES it with tiny env values
  * (the SUPER_DEV_JUDGE_TIMEOUT_MS=1 pattern): each loop × its bound × where it

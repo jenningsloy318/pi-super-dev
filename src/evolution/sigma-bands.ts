@@ -175,7 +175,7 @@ export interface SigmaReport {
 
 /** Banding honesty floor: fewer prior rows ⇒ insufficientHistory, no bands.
  *  Exported because the eval-layer validation gate (§8.5 fold of
- *  docs/requirements/sdlc-tips-adoption.md) shares the SAME floor — n<8
+ *  docs/requirements/055-sdlc-tips-adoption.md) shares the SAME floor — n<8
  *  matched pairs is a directional signal only there too. ONE constant, two
  *  consumers (P6 single grammar; no re-typed 8). */
 export const MIN_PRIOR_RUNS = 8;

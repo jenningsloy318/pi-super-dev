@@ -5,14 +5,14 @@ Status: analysis (reference study — no implementation in this commit)
 Method: full read-through of every reference repo's documentation, architecture
 notes, agent-instruction files, prompts, and the most relevant source modules
 (not commit deltas): deepseek-harness (README, AGENTS.md, architecture.md,
-docs/AGENTS.md, .agents/notes/README.md, defensive-patterns.md, testing.md,
+docs/AGENTS.md, .agents/notes/README.md, 026-defensive-patterns.md, testing.md,
 subsystems/core.md, subsystems/agent-team.md, guard/repeat-tool-reminder source,
 dsh-code-review + dsh-prose-standard skills), codex (review rubric, goals
 completion-audit, compact, gpt-5.2 main prompt, core README), swe-agent (ACI,
 architecture, templates, demonstrations), astryx (README, .github/instructions),
 cumora (previously deep-analyzed + this cycle's 30 fix commits read in full),
 cordiverse-paper (revertible-effects formalization), orange-book (structure +
-user-perspective chapters). Companion to harness-research-and-v0.3.0-architecture.md.
+user-perspective chapters). Companion to 037-harness-research-and-v0.3.0-architecture.md.
 
 ## Part 1 — deepseek-harness (the richest transfer source)
 
@@ -289,7 +289,7 @@ sites, not classes). The full read adds four structural inputs:
 
 ## Part 8 — The refined complete 0.3.x plan
 
-(F-numbers extend the WS-x set from harness-research-and-v0.3.0-architecture.md.)
+(F-numbers extend the WS-x set from 037-harness-research-and-v0.3.0-architecture.md.)
 
 ### v0.3.1 — Class-aware feedback + reviewer rubric + critical spawn hardening
 

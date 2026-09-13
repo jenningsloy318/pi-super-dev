@@ -1,7 +1,7 @@
 /**
  * RC8–RC12 — implementation-stage harness defects from the macOS STEP E2E
  * dashboard runs 10-39 / 15-07 (docs/requirements/
- * implementation-stage-harness-defects-rc8-rc12.md).
+ * 032-implementation-stage-harness-defects-rc8-rc12.md).
  *
  *   RC8  review-rejected RED masquerading as "tests passed before
  *        implementation" in logs/judge/escalation (run 10-39 phase-2).

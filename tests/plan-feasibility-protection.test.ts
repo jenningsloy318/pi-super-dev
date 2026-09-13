@@ -1,5 +1,5 @@
 /**
- * Wave P1 D-A (docs/requirements/cross-phase-contract-architecture.md Layer 1,
+ * Wave P1 D-A (docs/requirements/058-cross-phase-contract-architecture.md Layer 1,
  * §5 D-A) — feasibility grammar v2, Check 3 "protection-threat": the
  * MECHANICAL immutability-claim scanner (the `git status --porcelain` +
  * immutability-wording idiom inside a declared requireTests file, plus the

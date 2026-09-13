@@ -6,7 +6,7 @@ Status: REVIEW REPORT — 18 findings (2 Critical / 6 High / 7 Medium / 3 Low); 
 **Scope:** Entire repository codebase (`src/**/*.ts`, root configuration, control schemas, runtime architecture)  
 **Author:** Senior Staff Engineer / Code Review Expert  
 **Target Version:** v0.3.84  
-**Output Target:** `docs/requirements/code-review-full-codebase-2026-09-10.md`  
+**Output Target:** `docs/requirements/053-code-review-full-codebase-2026-09-10.md`  
 
 ---
 

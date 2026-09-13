@@ -2,7 +2,7 @@
 
 Status: draft — awaiting grilling (living artifact)
 
-Parent lineage: run 2026-09-13T03-24-15-047Z (pi-omisis spec-26, SCENARIO-014 escape) → `cross-phase-contract-architecture.md` (execution-side hardening: L1–L4; P1 landed in v0.3.96) → this spec. The cross-phase spec hardened plan+execution; this spec records the REVIEWER escape class the same run exposed: the AC-05 ⨯ SCENARIO-041/012/014 contradiction survived 5+ review gates (requirements, bdd ×2 rounds, design ×2 rounds, spec) and was named only by the Stage 9 judge — which read the test files and sibling-spec artifacts no reviewer was given — in 5.7 minutes ($0.0094) after hours of burned implementation attempts.
+Parent lineage: run 2026-09-13T03-24-15-047Z (pi-omisis spec-26, SCENARIO-014 escape) → `058-cross-phase-contract-architecture.md` (execution-side hardening: L1–L4; P1 landed in v0.3.96) → this spec. The cross-phase spec hardened plan+execution; this spec records the REVIEWER escape class the same run exposed: the AC-05 ⨯ SCENARIO-041/012/014 contradiction survived 5+ review gates (requirements, bdd ×2 rounds, design ×2 rounds, spec) and was named only by the Stage 9 judge — which read the test files and sibling-spec artifacts no reviewer was given — in 5.7 minutes ($0.0094) after hours of burned implementation attempts.
 
 ## 0. Symptom taxonomy (all evidence from run 2026-09-13T03-24-15-047Z)
 
@@ -70,7 +70,7 @@ Golden-case set of **planted contradictions** (ContraGen-style: paired-pin fixtu
 
 ## 6. Non-goals
 
-No new reviewer roles; no access-mode changes (reviewers stay source-read-only; DEC-2's mechanical extractor runs in-engine, not in the reviewer); no full-repo inputs to reviewers; no stage renumbering; no change to convergence caps or the judge; no fix to the sibling specs' own artifacts (their pins are legitimate — the duty is on the amending spec to declare its family); no implementation-side changes (covered by cross-phase-contract-architecture.md P2).
+No new reviewer roles; no access-mode changes (reviewers stay source-read-only; DEC-2's mechanical extractor runs in-engine, not in the reviewer); no full-repo inputs to reviewers; no stage renumbering; no change to convergence caps or the judge; no fix to the sibling specs' own artifacts (their pins are legitimate — the duty is on the amending spec to declare its family); no implementation-side changes (covered by 058-cross-phase-contract-architecture.md P2).
 
 ## 7. Waves sketch
 

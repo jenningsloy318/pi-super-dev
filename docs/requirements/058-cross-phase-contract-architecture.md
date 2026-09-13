@@ -2,7 +2,7 @@
 
 Status: draft ×3 (delta re-gate 2026-09-13 — P1 READY; P2 unblocked by NEW-2 ruling = downstream-green INVALIDATION on rollback; advisories NEW-1/NEW-3 folded. Owner-proxy, overridable)
 
-Parent lineage: `run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md` → `docs/findings/deep-analysis-2026-09-08-spec25.md` (plan-feasibility, de65969e) → this spec. The spec-25 family found "machinery executed plans never validated for feasibility"; this spec records the NEXT escape class of the same family — **plan-level contract contradictions that feasibility v1 cannot see**, discovered live in run 2026-09-13T03-24-15-047Z (pi-omisis spec-26).
+Parent lineage: `052-run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md` → `docs/findings/deep-analysis-2026-09-08-spec25.md` (plan-feasibility, de65969e) → this spec. The spec-25 family found "machinery executed plans never validated for feasibility"; this spec records the NEXT escape class of the same family — **plan-level contract contradictions that feasibility v1 cannot see**, discovered live in run 2026-09-13T03-24-15-047Z (pi-omisis spec-26).
 
 Grill round 1 (gemini-3.8-flash, fresh context): verdict NOT-READY; verdict-driven revisions: (i) D-A circularity broken by a mechanical invariants pre-scanner (Fork 1B); (ii) Layer-2 contradiction resolved by two-strike bounded defense (Fork 2B); (iii) D-C reframed onto the existing footprint-aware governor — Huang applies to signature-only loops, TDD suites ARE sound feedback (Fork 3B); (iv) Layer 4 replaced by git checkpoint rollback (Fork 4B); (v) two DRIFTs corrected (existing `repeatedNoProgress` governor; spec-25 worktree characterization); (vi) S-C count 6→7.
 

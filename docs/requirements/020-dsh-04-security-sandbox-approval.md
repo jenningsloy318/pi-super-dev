@@ -15,7 +15,7 @@ dsh's security model is not one mechanism but a set of **composed capabilities, 
 - **Permission presets** (`ctx.permissionPresets`): a pure UI bundling of the two independent enforcement knobs (sandbox mode + approval policy) into named presets; it owns **no enforcement** — it writes through each knob's canonical setter (`docs/subsystems/permission-presets.md`).
 - **Credentials** (`ctx.credentials`): configuration carries only *references* (env-var names); providers own values; consumers **re-resolve per operation** (rotation without restart); one seam-wide rule: "an empty stored value is absent everywhere" (`docs/subsystems/credentials.md`).
 - **Execution-world sharing**: fs and subprocess backends share one world, so "pointing them at a remote sandbox moves Bash, PTY, and LSP with them" (`docs/architecture.md`, Capability seams) — and the in-process fs fence derives its writable roots from the *same* function as the Seatbelt profile so "the two families never confine to different roots" (`packages/fs/fs-sandbox/README.md`).
-- **Defensive engineering**: `docs/defensive-patterns.md` codifies seven hard-won bug-class rules, each traceable to a shipped or nearly-shipped defect (two documented in `docs/postmortem/0002-*` and `0004-*`).
+- **Defensive engineering**: `docs/026-defensive-patterns.md` codifies seven hard-won bug-class rules, each traceable to a shipped or nearly-shipped defect (two documented in `docs/postmortem/0002-*` and `0004-*`).
 
 A load-bearing honesty rule runs through everything: **capabilities describe only what they actually govern.** `SandboxMode` claims file effects only ("Network and process visibility are outside this vocabulary" — sandbox.md); the Windows rung's Everyone/hard-link gaps are reported as `partial`, "never promoted to the full promise" (`.agents/notes/implemented/feature/2026-07-06-sandbox.md`, Consequences); permission controls "cannot mount, unmount, or confine the filesystem stack" at runtime (postmortem 0002, Lessons).
 
@@ -152,7 +152,7 @@ Effective value = "the last `approval/policy` event in the session log, falling 
 The subprocess seam "owns the managed `DSH_*` environment namespace, the shared credential scrub (`scrubbedParentEnv`)" (`docs/subsystems/subprocess.md`):
 
 - Ambient `DSH_*` names are **discarded before** the caller's explicit `env` merges — "a current fact arrives only as a deliberate string entry, while an explicit `undefined` tombstone removes an ordinary ambient value." Merge order is enforced: ordinary `env` first, managed `dshEnv` **last**, "so a caller `env` entry can never displace a managed one" (`ShellExecRequest.dshEnv` JSDoc, `docs/subsystems/shell.md`).
-- The scrub pattern from `docs/defensive-patterns.md`: "Spawned commands get a scrubbed env (drop `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`) so harness credentials cannot leak into output, `env`, or spill files."
+- The scrub pattern from `docs/026-defensive-patterns.md`: "Spawned commands get a scrubbed env (drop `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`) so harness credentials cannot leak into output, `env`, or spill files."
 - `stdin` and `env` on the shell request are **trusted in-process plugin inputs** and "are not exposed by `dsh-tool-bash`" (the model cannot set them); same for `stdoutMaxBytes` (`.agents/notes/implemented/architecture/2026-06-30-bash-stdin-env-trusted-plugin-api.md`).
 - `resolveExecutable` "verifies absolute executable paths or resolves bare names through the provider's scrubbed `PATH`… Relative paths containing separators are rejected: the resolution base is undefined, so providers fail loud instead of guessing" (generated `ctx.subprocess` catalog).
 
@@ -182,7 +182,7 @@ Trust-boundary primitive: `lstat` exists precisely because "`resolve` intentiona
 
 ## 8. Defensive patterns: rules and the bugs behind them
 
-`docs/defensive-patterns.md` (33 lines, every pattern quoted) — "each pattern below is a class of defect that actually shipped or nearly shipped here, stated as the rule that prevents its recurrence."
+`docs/026-defensive-patterns.md` (33 lines, every pattern quoted) — "each pattern below is a class of defect that actually shipped or nearly shipped here, stated as the rule that prevents its recurrence."
 
 1. **"Report orthogonal outcomes independently"** — "a process can time out AND exit 0 because it trapped the signal. Surface each independent fact (`timedOut`, `signal`, `exitCode`) on its own; never nest one flag's report inside another's branch, or a caller reads a cut-short run as a clean success." Runtime shape: `ShellRunResult` carries `exitCode`, `signal`, `timedOut`, `aborted` as **independent** fields, with `timedOut`/`aborted` mutually exclusive via "the FIRST cause" classification ("one fused deadline drives both", `docs/subsystems/shell.md`). The subprocess seam deliberately refuses classification: `SubprocessOutcome` "carries NO timeout or cancellation classification (the caller reads the signal it owns)".
 2. **"Honor public contracts on BOTH sides"** — normalize outcome representations at the API boundary; the cited example is `LlmAdapter.stream()` (may throw OR emit error finish) vs `LlmRuntime.stream()` (exposes model-request failures "only as terminal finish chunks; middleware and consumer defects remain thrown"). This is the same discipline postmortem 0004 violated ("An adapter must preserve structured failures owned by the seam below it").
@@ -283,7 +283,7 @@ Agent Notes (decision records):
 Postmortems and rules:
 - `docs/postmortem/0002-js-expression-disabled-filesystem-tools.md` — `!!js` scope bug, UNKNOWN_TOOL snapshots, permission-controls lesson (all quotes above).
 - `docs/postmortem/0004-landlock-partial-notice-misclassified-child-failures.md` — attribution bug, `RunnerFailureRule` guardrails, in-band-channel honesty.
-- `docs/defensive-patterns.md` — all seven patterns quoted in §8.
+- `docs/026-defensive-patterns.md` — all seven patterns quoted in §8.
 
 Package READMEs:
 - `packages/sandbox/sandbox-local/README.md` — chain order, Seatbelt profile, partial-enforcement limitations, `runnerCommand` operator-assertion caveat.

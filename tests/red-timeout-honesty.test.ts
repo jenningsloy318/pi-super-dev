@@ -4,7 +4,7 @@
  * Incident run 2026-08-23T02-59-20-670Z (super-dev v0.3.15, pi-omisis track
  * 07-staged-execution): 15/26 tdd-guide calls died at exactly the 1200 s wall;
  * phases 3/5/6 burned 4–6 tries each on a doom loop with four cooperating
- * defects (see docs/requirements/red-timeout-honesty-v0.3.16.md):
+ * defects (see docs/requirements/050-red-timeout-honesty-v0.3.16.md):
  *
  *  F1 (RC-T1) — stale testFiles echo: on a tdd timeout (control=no/error) the
  *      stage kept the PREVIOUS try's claim, the log printed the lie

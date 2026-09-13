@@ -1,6 +1,6 @@
 /**
  * EVAL LAYER (P1) — golden cases + rubrics + validation-gate machinery
- * (docs/requirements/sdlc-tips-adoption.md: D1/D2/D7, DEC-5/6/7/13,
+ * (docs/requirements/055-sdlc-tips-adoption.md: D1/D2/D7, DEC-5/6/7/13,
  * §8.1/§8.2/§8.5 folds).
  *
  * P2-documented seam: everything here runs on SYNTHETIC data in temp dirs —
@@ -84,7 +84,7 @@ function caseWire(over: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		id,
 		title: "Prototype loop terminates at the round cap",
-		source: "docs/requirements/sdlc-tips-adoption.md",
+		source: "docs/requirements/055-sdlc-tips-adoption.md",
 		target: "prototype|prototype-runner",
 		scenario: `28+ rounds of unmatched verdict strings (postmortem 0001 case 3 shape).\n${makeCanary(String(id))}`,
 		expected: { verdict: "pass", mustHold: ["loop exits at the round cap"], mustNot: [] },
@@ -97,7 +97,7 @@ function caseWire(over: Record<string, unknown> = {}): Record<string, unknown> {
 const BASE_GC: GoldenCase = {
 	id: "gc-x",
 	title: "t",
-	source: "docs/requirements/sdlc-tips-adoption.md",
+	source: "docs/requirements/055-sdlc-tips-adoption.md",
 	target: { raw: "prototype|prototype-runner", arm: "compound", stage: "prototype", agent: "prototype-runner" },
 	scenario: "s",
 	expected: { verdict: "pass" },

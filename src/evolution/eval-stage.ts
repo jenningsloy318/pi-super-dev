@@ -1,6 +1,6 @@
 /**
  * EVAL STAGE (P2 / D5+D3) — the in-pipeline, fail-open eval surface
- * (docs/requirements/sdlc-tips-adoption.md DEC-2/DEC-9/DEC-10, §8.3 M1, §8.4
+ * (docs/requirements/055-sdlc-tips-adoption.md DEC-2/DEC-9/DEC-10, §8.3 M1, §8.4
  * M3; wired at run close-out in workflow.ts runWorkflow).
  *
  * Two scorers, both ADVISORY — verdicts land in the run report + `eval.*`

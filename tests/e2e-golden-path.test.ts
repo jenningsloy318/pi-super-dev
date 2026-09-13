@@ -1,6 +1,6 @@
 /**
  * v0.3.85 S2 — the E2E GOLDEN PATH (§9 S2 / §8 principle 6 of
- * docs/requirements/run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md):
+ * docs/requirements/052-run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md):
  * "verify the system, not the fix."
  *
  * C2 died in production because the smoke exercised a classifier, never a

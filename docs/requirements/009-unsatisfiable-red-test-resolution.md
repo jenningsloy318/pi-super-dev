@@ -2,7 +2,7 @@
 
 Status: **ANALYSIS / DESIGN — not yet implemented**. Awaiting review.
 Author: investigation of run `2026-08-14T02-34-13-863Z` (super-dev v0.1.50).
-Sibling docs: `red-review-loop-root-cause-fix.md` (the *test-edit-during-GREEN* loop, fixed in v0.1.43), `convergence-loop-unbounded-cap-fix.md` (v0.1.44).
+Sibling docs: `007-red-review-loop-root-cause-fix.md` (the *test-edit-during-GREEN* loop, fixed in v0.1.43), `008-convergence-loop-unbounded-cap-fix.md` (v0.1.44).
 
 ---
 

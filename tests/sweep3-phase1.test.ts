@@ -1,6 +1,6 @@
 /**
  * Codebase sweep-3 remediation, Phase 1 — escalation safety & run-status honesty.
- * Fix groups (docs/requirements/sweep3-findings-dossier.md):
+ * Fix groups (docs/requirements/047-sweep3-findings-dossier.md):
  *   G4  — applyRetryDecision must never roll back the MAIN CHECKOUT (skipWorktree).
  *   G3  — failedStages is LAST-status-per-stage (a converged-after-failure run can succeed).
  *   G9  — `success` requires an AFFIRMATIVE buildGate; absent buildGate is not a vacuous pass.

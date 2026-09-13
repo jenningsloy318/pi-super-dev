@@ -43,7 +43,7 @@ type ArtifactValidator = (state: PipelineState, ctx: StageContext) => Promise<{ 
  *  OOM). This cap is the unconditional floor: it FatalAborts exactly like the
  *  global-budget-exhaustion path, deliberately WITHOUT consuming the shared
  *  `stagnation:<feedbackKey>` escalation budget. See
- *  docs/requirements/convergence-loop-unbounded-cap-fix.md. */
+ *  docs/requirements/008-convergence-loop-unbounded-cap-fix.md. */
 export const MAX_CONVERGENCE_ROUNDS = 8;
 
 /** Optional Fagan-style LLM review step layered on top of the deterministic

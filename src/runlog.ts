@@ -51,7 +51,7 @@ export type RunEventType =
 	| "replan.resumed"
 	// R4 revision counters:
 	| "artifact.revised"
-	// P2 eval stage (v0.3.90, D5/D7 — docs/requirements/sdlc-tips-adoption.md):
+	// P2 eval stage (v0.3.90, D5/D7 — docs/requirements/055-sdlc-tips-adoption.md):
 	// advisory rows + the validation-gate decision at run close-out.
 	| "eval.scored"
 	| "eval.gate";

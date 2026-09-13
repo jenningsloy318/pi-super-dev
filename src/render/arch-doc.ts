@@ -44,8 +44,8 @@ export function renderArchitectureDoc(): string {
 	lines.push("");
 	lines.push("## Where the semantics live");
 	lines.push("");
-	lines.push("- Loop vocabulary + degradation ladder: `docs/requirements/postmortem-0001-verify-loop-dead-state.md`");
-	lines.push("- Named defensive rules: `docs/requirements/defensive-patterns.md`");
+	lines.push("- Loop vocabulary + degradation ladder: `docs/requirements/027-postmortem-0001-verify-loop-dead-state.md`");
+	lines.push("- Named defensive rules: `docs/requirements/026-defensive-patterns.md`");
 	lines.push("- Event ledger + invariants: `src/runlog.ts` (INV-L1..L6)");
 	lines.push("- Replan circuit: `src/replan/` (requests, owner classification, R5 budget)");
 	lines.push("- Deterministic gates: `src/build-runner/`");

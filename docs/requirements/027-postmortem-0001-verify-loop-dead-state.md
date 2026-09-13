@@ -1,6 +1,6 @@
 # Postmortem 0001 — Verify-Loop Dead State: two case studies
 
-Status: implemented — case study 1 in v0.1.43 (de133d19), case study 2 in v0.1.75–0.1.82 (7dd18363..e1e8cde8). Rules derived below live in `defensive-patterns.md`.
+Status: implemented — case study 1 in v0.1.43 (de133d19), case study 2 in v0.1.75–0.1.82 (7dd18363..e1e8cde8). Rules derived below live in `026-defensive-patterns.md`.
 
 Two production failure shapes, one year apart in maturity, same genus: **the loop's termination semantics contradicted its action semantics** — the pipeline demanded an action from a component that was simultaneously forbidden from performing it. Each case below states the observable symptom, the causal chain, and the fix class, then maps to named defensive rules.
 

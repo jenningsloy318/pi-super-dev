@@ -2,7 +2,7 @@
 
 Status: proposed — pending decision on which items to implement
 
-Companion to `cumora-deep-analysis.md` (the full repo study). That doc holds
+Companion to `030-cumora-deep-analysis.md` (the full repo study). That doc holds
 the *analysis*; this one holds the *repo-mapped action plan* — every lesson
 tied to a concrete super-dev touch-point, plus priorities. Nothing here is
 implemented yet.
@@ -184,7 +184,7 @@ floors; the backstop payloads, ledger, and benchmarks are the open items.
 
 ## Traceability
 
-| item | cumora-deep-analysis.md source |
+| item | 030-cumora-deep-analysis.md source |
 |---|---|
 | P-01 | §4.1 layer 6, §4.3 anti-patterns, §15.2 |
 | P-02 | §4.1 layer 5, §17.1 |

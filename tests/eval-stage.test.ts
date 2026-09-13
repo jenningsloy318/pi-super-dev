@@ -1,6 +1,6 @@
 /**
  * EVAL STAGE (P2 / D5+D3) — the in-pipeline fail-open eval surface
- * (docs/requirements/sdlc-tips-adoption.md DEC-2/9/10, §8.3 M1, §8.4 M3,
+ * (docs/requirements/055-sdlc-tips-adoption.md DEC-2/9/10, §8.3 M1, §8.4 M3,
  * §8.6 L4, D7/DEC-13①).
  *
  * Hermetic by construction: every directory is an injected tmp dir, the
@@ -111,7 +111,7 @@ function gc(over: Partial<GoldenCase> = {}): GoldenCase {
 	return {
 		id: "gc-judge",
 		title: "t",
-		source: "docs/requirements/sdlc-tips-adoption.md",
+		source: "docs/requirements/055-sdlc-tips-adoption.md",
 		target: { raw: "judge", arm: "agent", agent: "judge" },
 		scenario: "s",
 		expected: { verdict: "accepted" },

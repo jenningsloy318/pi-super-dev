@@ -28,7 +28,7 @@
  *       exactly what an earlier phase requires (requireContains) in the same
  *       file — mutually unsatisfiable at audit time regardless of order.
  *     - protection-threat (Wave P1 D-A, docs/requirements/
- *       cross-phase-contract-architecture.md Layer 1): a MECHANICALLY
+ *       058-cross-phase-contract-architecture.md Layer 1): a MECHANICALLY
  *       extracted immutability claim (the `git status --porcelain` +
  *       immutability-wording idiom inside a declared requireTests file, or an
  *       explicit repo-invariants.json declaration) intersects a phase's
@@ -454,7 +454,7 @@ function vitestCoverageAvailable(worktreePath: string): boolean {
 	return false;
 }
 
-// ── Wave P1 D-A (docs/requirements/cross-phase-contract-architecture.md
+// ── Wave P1 D-A (docs/requirements/058-cross-phase-contract-architecture.md
 // Layer 1): the mechanical immutability-claim scanner. P4: purely mechanical
 // (regex), zero LLM — the incident's own assertion was machine-detectable.
 // P6: ONE scanner module — Layer 2 (write-time protection intervals, Wave P2)

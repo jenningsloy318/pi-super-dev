@@ -1,6 +1,6 @@
 /**
  * M2 routing walker tests — tests/routing-walker.test.ts
- * Pins the M2 contracts of docs/requirements/routing-architecture-routeback.md:
+ * Pins the M2 contracts of docs/requirements/044-routing-architecture-routeback.md:
  * the addressable sub-walk (G1), journal IO with sync-before-re-entry (MP1),
  * persisted-budget authority (MP2), cache invalidation on re-entry (G5),
  * round-1 injection via pending replan requests, the pilot planner's

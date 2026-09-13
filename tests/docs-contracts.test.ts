@@ -33,7 +33,7 @@ describe("docs contracts (P0)", () => {
 	});
 
 	it("defensive-patterns: rule 6 exists with its exact contract wording, rules numbered contiguously", () => {
-		const body = readFileSync(join(REQ_DIR, "defensive-patterns.md"), "utf8");
+		const body = readFileSync(join(REQ_DIR, "026-defensive-patterns.md"), "utf8");
 		expect(body).toContain("A verdict pin and a triage defer must never disagree about who can act");
 		const nums = [...body.matchAll(/^\d+\.\s+\*\*/gm)].map((m) => Number(m[0]));
 		// contiguous 1..N in order (matchAll gives the leading number of each rule heading)
@@ -42,7 +42,7 @@ describe("docs contracts (P0)", () => {
 	});
 
 	it("postmortem-0001: both case studies and the vocabulary table are present", () => {
-		const body = readFileSync(join(REQ_DIR, "postmortem-0001-verify-loop-dead-state.md"), "utf8");
+		const body = readFileSync(join(REQ_DIR, "027-postmortem-0001-verify-loop-dead-state.md"), "utf8");
 		expect(body).toContain("Case study 1");
 		expect(body).toContain("Case study 2");
 		expect(body).toContain("## Loop vocabulary");

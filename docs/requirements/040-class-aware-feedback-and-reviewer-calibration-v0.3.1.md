@@ -2,7 +2,7 @@
 
 Status: implemented (this commit — v0.3.1)
 
-Grounding: reference-repos-full-read-v0.3.x.md (Parts 7–8) + the recovered WS-2/WS-3
+Grounding: 039-reference-repos-full-read-v0.3.x.md (Parts 7–8) + the recovered WS-2/WS-3
 designs (session research synthesis #3675) + the user's v0.3.0 architecture
 (feedback-not-verdict philosophy — every item here improves FEEDBACK QUALITY or
 SPAWN ROBUSTNESS; no new arbitration, no new gates-that-block).

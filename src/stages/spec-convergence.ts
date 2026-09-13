@@ -138,7 +138,7 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
  * (shared with artifact-convergence): termination normally comes from trace+
  * review approval, the global run budget, or cancellation, but a stochastic
  * spec-reviewer that never approves is guaranteed to stop at the cap rather than
- * loop forever. See docs/requirements/convergence-loop-unbounded-cap-fix.md.
+ * loop forever. See docs/requirements/008-convergence-loop-unbounded-cap-fix.md.
  */
 export const specConvergenceNode: Node = {
 	kind: "spec-convergence",

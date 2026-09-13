@@ -55,7 +55,7 @@ function writeCase(casesDir: string, id: string, over: Record<string, unknown> =
 	const wire = {
 		id,
 		title: `case ${id}`,
-		source: "docs/requirements/sdlc-tips-adoption.md",
+		source: "docs/requirements/055-sdlc-tips-adoption.md",
 		target: "judge",
 		scenario: `TODO scenario for ${id}\n${makeCanary(id)}`,
 		expected: { verdict: "accepted", mustHold: ["holds"], mustNot: [] },

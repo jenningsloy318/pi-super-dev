@@ -274,7 +274,7 @@ Repo-verified anchors (relative to `docs/references/deepseek-harness/`; all chec
 - `scripts/verify-*` — 35 files, 27 non-test (book's 27-gates count verified)
 - `packages/**/invariant.ts` — 219 files; 184 containing `No runtime invariant:` (verified counts match the book exactly)
 - `docs/architecture.md` — "Model-visible means logged" invariant; profiles/bundles/patch layering; no-privileged-core statement
-- `docs/defensive-patterns.md` — the bug-class rule set the postmortems feed
+- `docs/026-defensive-patterns.md` — the bug-class rule set the postmortems feed
 - `docs/rescope.md` — the 9 vendored Cordis packages and the rescope rationale (contradicts the three docs the book caught claiming "never published"; rescope.md documents them as published under `@deepseek-ai/*`, consistent with the book's npm-200 findings)
 - `grep -rl "KV Cache effect" packages --include=README.md | wc -l` = 215 (matches book's 215/219 + 4 whitelisted)
 - `find .agents/notes -name "*.md" ! -name "*.zh.md" | wc -l` = 688 English notes total (the book's 683 excludes 5 directory-level AGENTS/CLAUDE/README docs; both counts reconciled)

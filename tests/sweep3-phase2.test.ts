@@ -1,6 +1,6 @@
 /**
  * Codebase sweep-3 remediation, Phase 2 — RED oracle & build-gate correctness.
- * Fix groups (docs/requirements/sweep3-findings-dossier.md):
+ * Fix groups (docs/requirements/047-sweep3-findings-dossier.md):
  *   G1   (blocker) go RED oracle maps FILE targets to PACKAGE dirs.
  *   G5   gate-side spawns carry maxBuffer 64MB.
  *   G11  audit B-items: B-1 stem restriction, B-2 rust -p resolution,

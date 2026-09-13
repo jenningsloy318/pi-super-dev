@@ -1,5 +1,5 @@
 /**
- * Wave P1 D-C (docs/requirements/cross-phase-contract-architecture.md Layer 3,
+ * Wave P1 D-C (docs/requirements/058-cross-phase-contract-architecture.md Layer 3,
  * DEC-3) — the tightened attempt governor, pinned BEHAVIORALLY through the
  * real Stage 9 attempt loop (the signature-noise harness pattern: build-runner
  * scripted per call, everything else real).

@@ -1,5 +1,5 @@
 /**
- * LLM Judge Routing Layer (docs/requirements/llm-judge-routing-layer.md).
+ * LLM Judge Routing Layer (docs/requirements/014-llm-judge-routing-layer.md).
  *
  * The judge is the pipeline's diagnostic escape valve: deterministic loops can
  * only RECOGNIZE enumerated failure classes; when a loop stops making progress
@@ -150,7 +150,7 @@ export type JudgeOutcome =
 	| { status: "degraded"; reason: string };
 
 /** The judge EVAL-verdict vocabulary (DEC-6 closure family, S3 meter
- *  semantics — docs/requirements/sdlc-tips-adoption.md): "accepted" ≡
+ *  semantics — docs/requirements/055-sdlc-tips-adoption.md): "accepted" ≡
  *  JudgeOutcome status "routed" (evidence verification passed, or a
  *  documented INV-2 exemption — the run-observability.ts mapping) and
  *  "discarded" ≡ status "discarded" (verification failed with the

@@ -1,6 +1,6 @@
 /**
  * v0.3.85 F3 (C5 fix — bounded time; §9 F3 + §10 decision 2 of
- * docs/requirements/run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md):
+ * docs/requirements/052-run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md):
  * the GLOBAL RUN WALL FUSE.
  *
  * `SUPER_DEV_MAX_RUN_WALL_MS` (default 14_400_000 = 4h; `0` disables) bounds

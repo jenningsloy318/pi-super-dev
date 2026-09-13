@@ -534,7 +534,7 @@ export function draftProposals(input: { clusters: readonly ProposalCluster[]; pr
 		const wire: Record<string, unknown> = {
 			id: caseId,
 			title: "TODO(maintainer): case title",
-			source: "docs/requirements/sdlc-tips-adoption.md",
+			source: "docs/requirements/055-sdlc-tips-adoption.md",
 			target: targetWire,
 			scenario: [
 				`TODO(maintainer): describe the labelled scenario this candidate replays — the failure cluster below is the DETERMINISTIC trigger; the scenario text itself is yours to write (DEC-7: no auto-generated content).${!shortForm && target === null && cluster.target !== undefined ? ` (cluster target "${cluster.target}" is not a DEC-6 target — pick one.)` : ""}`,

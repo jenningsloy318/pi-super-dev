@@ -1,6 +1,6 @@
 /**
  * EVAL LAYER (P1) — golden-case dataset + rubric artifacts + validation-gate
- * machinery (docs/requirements/sdlc-tips-adoption.md — the ratified spec).
+ * machinery (docs/requirements/055-sdlc-tips-adoption.md — the ratified spec).
  *
  * What landed here and why (spec citations):
  *   D1 / DEC-5 / DEC-6 — golden cases: labelled scenario → expected-verdict
@@ -678,7 +678,7 @@ export function writeGoldenCaseTemplate(dir: string, id: string, options: { repo
 		title: "TODO(maintainer): case title",
 		// The spec itself is a real in-repo anchor; the maintainer re-points it
 		// at the postmortem/dossier the case is seeded from.
-		source: "docs/requirements/sdlc-tips-adoption.md",
+		source: "docs/requirements/055-sdlc-tips-adoption.md",
 		target: `prototype${TARGET_SEPARATOR}prototype-runner`,
 		scenario: [
 			"TODO(maintainer): describe the labelled scenario — the historical situation this case replays (seeded from the postmortem/dossier named in \"source\").",

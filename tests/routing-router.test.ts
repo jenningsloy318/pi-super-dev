@@ -1,6 +1,6 @@
 /**
  * M1 routing vocabulary tests — tests/routing-router.test.ts
- * Pins the contracts of docs/requirements/routing-architecture-routeback.md
+ * Pins the contracts of docs/requirements/044-routing-architecture-routeback.md
  * (M1): classification truth tables, budget arithmetic (MP2), journal types
  * (G3/MP4), RouteBackSignal propagation shape (G2), determinism (MP3).
  */

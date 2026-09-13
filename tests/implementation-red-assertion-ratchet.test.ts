@@ -1,6 +1,6 @@
 /**
  * v0.3.85 F5 — the RED-phase assertion ratchet (C3 fix; §9 F5, §14 ADR 10 of
- * docs/requirements/run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md).
+ * docs/requirements/052-run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md).
  *
  * The C3 defect: during RED the boundary LEGALLY admits edits to pre-existing
  * test files (the GREEN-side test-edit ban is v0.3.43), and the 09-09 phase-1

@@ -28,4 +28,4 @@ Moving a doc between states is a real edit with its commit named — `implemente
 
 ## Where the loops live (index)
 
-Loop termination semantics are defined in `postmortem-0001-verify-loop-dead-state.md` (vocabulary + degradation ladder). The dependency graph and invalidation sets live in `src/graph/edges.ts`. The replan circuit lives in `src/replan/`. The event ledger and its invariants live in `src/runlog.ts`.
+Loop termination semantics are defined in `027-postmortem-0001-verify-loop-dead-state.md` (vocabulary + degradation ladder). The dependency graph and invalidation sets live in `src/graph/edges.ts`. The replan circuit lives in `src/replan/`. The event ledger and its invariants live in `src/runlog.ts`.
