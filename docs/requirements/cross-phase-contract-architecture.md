@@ -1,6 +1,6 @@
 # Cross-Phase Contract Conflict Architecture — systemic hardening of the implementation convergence loop
 
-Status: draft ×2 (grill round 1 folded 2026-09-13 — NOT-READY resolved via forks 1B/2B/3B/4B, owner-proxy adjudications, overridable; delta re-gate pending)
+Status: draft ×3 (delta re-gate 2026-09-13 — P1 READY; P2 unblocked by NEW-2 ruling = downstream-green INVALIDATION on rollback; advisories NEW-1/NEW-3 folded. Owner-proxy, overridable)
 
 Parent lineage: `run-2026-09-09-poisoned-baseline-postmortem-v0.3.85.md` → `docs/findings/deep-analysis-2026-09-08-spec25.md` (plan-feasibility, de65969e) → this spec. The spec-25 family found "machinery executed plans never validated for feasibility"; this spec records the NEXT escape class of the same family — **plan-level contract contradictions that feasibility v1 cannot see**, discovered live in run 2026-09-13T03-24-15-047Z (pi-omisis spec-26).
 
@@ -51,7 +51,8 @@ Builds ON `repeatedNoProgress` (failure + footprint 2-tuple) and `faultRecurrenc
 
 ### Layer 4 — Git checkpoint rollback at convergence re-entry (replaces global re-verify)
 The deterministic per-phase commits (v0.3.43) already form a checkpoint chain. On stage-level convergence re-entry at Phase K:
-- **Hard-reset the worktree to Phase K-1's green commit** (the clean baseline Phase K's contracts assume); downstream uncommitted mutations are preserved in stashes (S-D path) and **re-applied sequentially** as phases K..N re-execute.
+- **Rollback target: `latestGreenCommitBefore(K) ?? stageEntryBaselineCommit`** (NEW-3: K=1 and partial-predecessor cases formally defined) — the clean baseline Phase K's contracts assume; downstream UNCOMMITTED mutations are preserved in stashes (S-D path).
+- **Downstream committed phases (NEW-2 ruling): green stamps for phases K+1..N are INVALIDATED on rollback.** Their deterministic commits certify a tree that no longer exists after the reset (per-phase commits are detached from the new HEAD); keeping their green stamps while skipping them (the `status === "green" → continue` walk) would silently drop their code. Invalidated phases re-execute through the normal convergence walk — gates + commits re-established on the new K. The cherry-pick-preserved alternative was considered and DEFERRED: cherry-picking downstream commits ahead of a re-authored K invites conflict resolution by LLM (exactly the class this spec removes), and stale green stamps are false evidence (P5). Cost is bounded by the convergence walk itself and the run wall fuse.
 - This structurally dissolves S-B contamination: phase K never converges against later-phase artifacts.
 - Cost ≈ one `git reset --hard` + stash bookkeeping (seconds), replacing the aborted "full global re-verify + deepest-broken-phase search" design (grill Finding 5: ambiguous, high-latency, and unnecessary once isolation exists).
 
@@ -67,9 +68,9 @@ The deterministic per-phase commits (v0.3.43) already form a checkpoint chain. O
 ## 5. Delta requirements
 
 - **D-A (Layer 1):** feasibility grammar v2 — idiom pre-scanner + invariants file + threat intersection; REPLAN-at-entry naming (protecting source ⨯ writing phase) pairs. Acceptance: a fixture containing the run-2026-09-13 idiomatic assertion (`git status --porcelain` + immutability message) WITHOUT any named clause is caught statically — **the fixture must NOT hand-hold the scanner** (grill circularity fixed).
-- **D-B (Layer 2):** mechanically-derived `protects[]` + two-strike defense (strike 1 revert+educate at zero attempt cost; strike 2 Judge escalation). Acceptance: strike-1 fixture reverts the edit and does not consume budget; strike-2 fixture routes to Judge with scope `stage9.protection-breach`; a third write is impossible to loop on (strike 2 always routes).
+- **D-B (Layer 2):** mechanically-derived `protects[]` + two-strike defense (strike 1 revert+educate at zero attempt cost; strike 2 Judge escalation). **Timing (NEW-1): strike-1 detection is a SYNCHRONOUS ENGINE CHOKE POINT evaluated strictly after child-agent return and RED-review join, immediately before build-gate dispatch — never a filesystem watcher or concurrent hook** (a watcher would re-introduce the S-C race inside the protection mechanism itself). Acceptance: strike-1 fixture reverts the edit and does not consume budget; strike-2 fixture routes to Judge with scope `stage9.protection-breach`; a third write is impossible to loop on (strike 2 always routes).
 - **D-C (Layer 3):** tighten `repeatedNoProgress` — plateau-at-2 on failure+footprint identity or zero-change; footprint-fresh → attempt 3; cap 4; cross-scope contract-conflict failures route to Judge/REPLAN immediately. Acceptance: three fixtures (identical-pair plateau, scaffold-with-fresh-footprint survives to 3, cross-scope citation routes immediately).
-- **D-D (Layer 4):** checkpoint rollback at convergence re-entry (reset to phase K-1 green commit; stash-preserve downstream; sequential re-apply). Acceptance: fixture where later phases contaminate phase K's ground re-enters K on its clean baseline; phase K's gates see exactly the K-1 tree.
+- **D-D (Layer 4):** checkpoint rollback at convergence re-entry. Target = `latestGreenCommitBefore(K) ?? stageEntryBaselineCommit` (NEW-3). **Downstream green invalidation (NEW-2): phases K+1..N marked green in a prior pass lose their stamps on rollback and re-execute** (their detached deterministic commits are documented as abandoned; recovery is re-execution, not cherry-pick — deferred optimization recorded in §3 Layer 4). Acceptance: fixture where later phases contaminate phase K's ground re-enters K on its clean baseline; phase K's gates see exactly the K-1 tree; a downstream green phase's files are ABSENT after rollback and restored only by its re-execution (the silent-loss case is pinned by test).
 
 ## 6. Non-goals (corrected per grill)
 
@@ -91,3 +92,4 @@ The deterministic per-phase commits (v0.3.43) already form a checkpoint chain. O
 - MetaGPT / ChatDev (waterfall multi-agent SDLC; downstream artifact propagation without sound conflict detection).
 - Live corpus: run 2026-09-13T03-24-15-047Z (run.log lines 734-3951: 7 boundary-violation throws + salvage lines; 3588-3800: partial stage, convergence resume, SCENARIO-014 conflict).
 - Grill round 1: gemini-3.8-flash fresh-context review (NOT-READY; forks 1B/2B/3B/4B adopted; drifts corrected: existing `repeatedNoProgress` governor acknowledged; spec-25 worktree characterization fixed).
+- Delta re-gate: gemini-3.8-flash fresh-context review — **P1 READY; all round-1 findings verified CLOSED with citations** (forks, DRIFTs, LOW, DEC-7 P1/P4/P6/P8/P10; deterministicPhaseCommit chain existence verified at implementation.ts:1714-1770/4760-4780; strike-1 race-freedom verified at the post-join pre-build-gate choke point). P2 blocked on NEW-2 → resolved by the downstream-invalidation ruling above; NEW-1/NEW-3 folded.
