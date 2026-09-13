@@ -6,12 +6,16 @@
 
 import { writerTask, helperTask, isFatalAbort } from "../nodes.ts";
 import { clearResumeCache } from "../resume.ts";
-import type { Stage, SetupControl } from "../types.ts";
+import type { Stage, SetupControl, PipelineState, StageContext } from "../types.ts";
 import * as P from "../prompts.ts";
 import { ClassificationData } from "../render/schemas.ts";
 import { toBool, normalizePhases } from "../doc-validators.ts";
 import { isHarnessBookkeepingPath } from "../helpers.ts";
 import { priorReplanConstraintBlock } from "../replan/replan.ts";
+// 059 R1A W1 (D-R-C plumbing): the write-time contract-surface slice — computed
+// per buildPrompt call (fresh walk, no cache) and stamped on the pipeline state
+// so the R4 exemption + R3 validators read what the writer saw.
+import { stampContractSlice, writerContractSlice } from "../review/contract-surface.ts";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
 
@@ -28,7 +32,13 @@ export const requirementsWriter: Stage = writerTask({
 	label: "Stage 2B — Requirements",
 	agent: "requirements-clarifier",
 	accessMode: "source-read-only",
-	buildPrompt: (state, ctx) => P.buildRequirementsPrompt(S(state), state.classify ?? null, ctx.task),
+	buildPrompt: (state, ctx) => {
+		// 059 W1: Stage 2B evaluates task + classify + the invariants mapping (no
+		// artifact exists yet). Absent worktree ⇒ null slice ⇒ section omitted.
+		const slice = writerContractSlice(S(state).worktreePath, [ctx.task, JSON.stringify(state.classify ?? {})]);
+		if (slice) stampContractSlice(state as Record<string, unknown>, "requirements", slice);
+		return P.buildRequirementsPrompt(S(state), state.classify ?? null, ctx.task, slice?.block ?? "");
+	},
 });
 
 export const bddWriter: Stage = writerTask({
@@ -37,7 +47,13 @@ export const bddWriter: Stage = writerTask({
 	agent: "bdd-scenario-writer",
 	accessMode: "source-read-only",
 	requires: ["*-requirements.md"],
-	buildPrompt: (state, ctx) => P.buildBddPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null),
+	buildPrompt: (state, ctx) => {
+		// 059 W1: later writer stages evaluate their upstream artifacts (task +
+		// requirements control here) against the contract inventory.
+		const slice = writerContractSlice(S(state).worktreePath, [ctx.task, JSON.stringify(state.requirements ?? {})]);
+		if (slice) stampContractSlice(state as Record<string, unknown>, "bdd", slice);
+		return P.buildBddPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, slice?.block ?? "");
+	},
 });
 
 export const researchWriter: Stage = writerTask({
@@ -87,14 +103,25 @@ export function normalizeSpecControl(control: Record<string, unknown>): Record<s
 	return control;
 }
 
+/** The spec writer's prompt builder, as a named export: the write-time slice
+ *  stamping is a REAL side effect of prompt construction (059 W1), and the S8
+ *  honesty test exercises this exact function (no manual stampContractSlice). */
+export function specWriterBuildPrompt(state: PipelineState, ctx: StageContext): string {
+	// 059 W1: the spec's write-time slice over task + every upstream control —
+	// the SAME texts spec-convergence's fallback validator evaluates, so the
+	// stamped slice and the validator context agree.
+	const slice = writerContractSlice(S(state).worktreePath, [ctx.task, JSON.stringify(state.requirements ?? {}), JSON.stringify(state.bdd ?? {}), JSON.stringify(state.research ?? {}), JSON.stringify(state.assessment ?? {}), JSON.stringify(state.design ?? {}), JSON.stringify(state.prototype ?? {})]);
+	if (slice) stampContractSlice(state as Record<string, unknown>, "spec", slice);
+	return P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null, priorReplanConstraintBlock((state as { setup?: { specDirectory?: string } | undefined }).setup?.specDirectory), slice?.block ?? "");
+}
+
 export const specWriter: Stage = writerTask({
 	id: "spec",
 	label: "Stage 7 — Specification",
 	agent: "spec-writer",
 	accessMode: "source-read-only",
 	requires: ["*-requirements.md", "*-bdd-scenarios.md"],
-	buildPrompt: (state, ctx) =>
-		P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null, priorReplanConstraintBlock((state as { setup?: { specDirectory?: string } | undefined }).setup?.specDirectory)),
+	buildPrompt: specWriterBuildPrompt,
 	normalizeControl: normalizeSpecControl,
 });
 

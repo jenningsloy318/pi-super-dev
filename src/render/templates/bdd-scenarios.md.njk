@@ -15,6 +15,9 @@
 
 - **Acceptance Criteria**: {{ s.acRef }}
 - **Priority**: {{ s.priority }}
+{% if s.pinOwnership and s.pinOwnership.length > 0 %}
+- **Pin Ownership**: {% for p in s.pinOwnership %}@{{ p.state }} {{ p.pinId }}{% if p.justification %} — {{ p.justification }}{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}
+{% endif %}
 
 **Given** {{ s.given }}
 **When** {{ s.when }}

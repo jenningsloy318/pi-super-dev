@@ -73,12 +73,12 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildRequirementsPrompt", () => {
 		expectKeys(buildRequirementsPrompt(s, null, "task"), [
-			"title", "date", "type", "priority", "executiveSummary", "acceptanceCriteria", "nonFunctional", // openQuestions? — optional since v0.3.47
+			"title", "date", "type", "priority", "executiveSummary", "acceptanceCriteria", "nonFunctional", // openQuestions?/affectsSharedSurfaces?/layerW? — optional since v0.3.47 / 059 W2
 		]);
 	});
 
 	it("buildBddPrompt", () => {
-		expectKeys(buildBddPrompt(s, null, "task", null), ["title", "date", "source", "features"]); // traceability? — optional since v0.3.47);
+		expectKeys(buildBddPrompt(s, null, "task", null), ["title", "date", "source", "features"]); // traceability?/layerW? — optional since v0.3.47 / 059 W3);
 	});
 
 	it("buildResearchPrompt", () => {
@@ -97,7 +97,7 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildDesignPrompt — bracket shape [{name, description}] stripped whole, no phantom `name`/`description` keys", () => {
 		expectKeys(buildDesignPrompt(s, null, "task", null, null, null, "designer"), [
-			"title", "date", "summary", "designer", "modules", "hasNumericConstants", // contracts/alternativesConsidered (optional…) — excluded since v0.3.47
+			"title", "date", "summary", "designer", "modules", "hasNumericConstants", // contracts/alternativesConsidered/amendmentFamily/tradeoffs/layerW (optional…) — excluded since v0.3.47 / 059 W4
 		]);
 	});
 
@@ -107,7 +107,7 @@ describe("control-key contracts: every build*Prompt ↔ extractControlKeys (Fix 
 
 	it("buildSpecPrompt", () => {
 		expectKeys(buildSpecPrompt(s, null, "task", null, null, null, null, null, null), [
-			"title", "date", "summary", "architecture", "testingStrategy", "scenarioRefs", "phases", "tasks", // acceptanceCriteriaRefs?/reviewResponses?/gate? — optional since v0.3.47
+			"title", "date", "summary", "architecture", "testingStrategy", "scenarioRefs", "phases", "tasks", // acceptanceCriteriaRefs?/reviewResponses?/gate?/amendmentFamily?/layerW? — optional since v0.3.47 / 059 W5
 		]);
 	});
 

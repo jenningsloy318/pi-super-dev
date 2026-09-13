@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.3.98: 059 R1A — reviewer 质量架构（合同面清单 + writer 声明层 + R4 豁免缝）
+
+- **D-R-A 合同面抽取器**：`src/review/contract-surface.ts` — P6 复合 058 的 `scanImmutabilityIdioms`/`claimPathUsable`（不重推导文法）；§3 文法表 4 家族 × TS/Python/Markdown（porcelain-emptiness / exactly-N / no-Xth closure / ownership tables）；确定性排序遍历；repo-invariants.json 兼容信封（`protected` + `pins[]` 锚定遗留 prose pins）；unanchored 诚实上报（P10）；R2/W1 切片构建（15-pin/60 行上限 + 截断标记 + DEC-4 横幅）。
+- **D-R-B 分阶段 validators + R4 缝**：design 集合包含（blocking）→ spec Stage-6-skip fallback → bdd pinOwnership AST（类型字段，非 markdown regex）→ requirements intent（advisory）；pre-W 降级 + P10 横幅；元数据 Strike-1（`writerMetadataRetryUsed:<stage>`，零成本内联重试 + 确定性修复模板）；`enforceReviewerConvergenceDuty` 返回 `{downgraded, exemptCount, escalateToJudge}` + evidence-pair 豁免（≥2 loci 磁盘验证 ∧ ≥1 ∈ 注入切片；界 ≤1/轮）。
+- **D-R-C writer 层**：四 builders 加法注入（W1 切片 / W2 intent+EARS-ADVISORY / W3 类型 pinOwnership+场景规范 / W4 家族+ATAM-lite / W5 家族传播+pinId 接地 / W6 自检清单）；`specWriterBuildPrompt` 命名导出（stamp 为真实副作用）。
+- **D-R-E 报告 schema**：`Finding.evidenceLoci` + 模板 Loci 行 + `[evidence-pair exempt]` 标记 + spec-review 引擎对账节。
+- **D-R-W schemas**：`affectsSharedSurfaces`/`pinOwnership`/`amendmentFamily`/`tradeoffs`/`layerW`（全 Optional 闭包 strict-capable）+ 四 .njk 模板（omit-when-absent 字节恒等）。
+- **Check 3 豁免消费者**：`planFeasibilityFindings` 3 参签名读 `.knowledge.json` amendmentFamily（design 优先、spec 兜底；malformed fail-closed 零豁免）。
+- **对抗门 5 修复**：S3 Strike-1 重渲染后强制重跑 trace gate；S4a design 切片文本窄化（task+requirements，writer/validator 零漂移）；S4b design-skip 缺席 stamp fail-closed；S5 渲染层单行 clamp（markdown 伪造防线）；S7 prompt 去 bypass 广告 + `round>1` 禁止 pre-W 降级；S8 真实副作用测试。
+- **门**：Code PASS 8/8；Adversarial 4 EXPLOITED → 全修；Delta PASS（全 VERIFIED）。全套件 261 文件 / 3996 passed（+83）。
+
+
 ### Added — v0.3.97: 058 P3/D-E — 收敛账本孤儿锚点确定性作废（S-E 修复）
 
 - **D-E ledger superseding**：`priorFindingsForInjection` 注入前对账——扫描磁盘上游工件（`*-requirements.md` / `*-bdd-scenarios.md`）的有效 `AC-\d+` / `SCENARIO-\d+` 锚点；引用已消失锚点的可注入 finding 翻转为 `status: "superseded"` + 定位理由（保留被引原文），持久化（P10：保留可见、标记、永不删除）并排除注入。REPLAN 重编号上游工件后，旧 ledger findings 不再污染 writer（活体 S-E：SCENARIO-030 五连败）。

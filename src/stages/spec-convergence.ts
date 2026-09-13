@@ -2,6 +2,12 @@ import { AGENT_ERROR_FATAL_CONSECUTIVE, agentErrorTextsSince, FatalAbort, gateVa
 import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
 import { enforceReviewerConvergenceDuty, reviewBlockingVerdictFindings } from "../review-findings.ts";
+import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
+import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readContractSliceStamp } from "../review/contract-surface.ts";
+// 059 R1A D-R-B residual (§3 R3 DEFECT-1 + D-R-E): the spec-fallback family
+// validator, its validation context, the reconciliation section builder, and
+// the Metadata Strike-1 classifier/repair template.
+import { contractValidationContext, familyInclusionMismatches, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import {
@@ -128,6 +134,60 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
 		.filter((finding) => ownerPrecedes(finding.ownerStage, "spec"))
 		.slice(0, 6)
 		.map((finding) => `${finding.id} owner=${finding.ownerStage} status=${finding.status}: ${finding.title}`);
+}
+
+/** 059 R1A residual (§3 R3 DEFECT-1 — Stage 6-skip fallback, D-R-B): after the
+ *  trace gate passes, the spec-fallback family check runs — when design did
+ *  NOT declare an amendmentFamily, the specification's own SpecificationData.
+ *  amendmentFamily must pass the same authoritative set-inclusion against the
+ *  spec stage's contract slice. A METADATA-shaped rejection gets ONE
+ *  zero-attempt-cost inline retry (writerMetadataStrikeKey state, exactly once
+ *  per run — the artifact-convergence Strike-1 precedent applied at the trace
+ *  seam, MED-3/P8). Returns the blocking errors that REMAIN after any retry
+ *  ([] = pass) plus a cancellation flag that propagates as the node result. */
+async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageContext, round: number): Promise<{ errors: string[]; cancelled: boolean; strikeUsed: boolean }> {
+	const evaluate = (): string[] => {
+		// The SAME write-time texts specWriter evaluates (writers.ts) — when the
+		// writer's stamp exists, contractValidationContext reuses it (no re-walk).
+		const contractCtx = contractValidationContext(state as Record<string, unknown>, "spec", [ctx.task, JSON.stringify(state.requirements ?? {}), JSON.stringify(state.bdd ?? {}), JSON.stringify(state.research ?? {}), JSON.stringify(state.assessment ?? {}), JSON.stringify(state.design ?? {}), JSON.stringify(state.prototype ?? {})]);
+		if (!contractCtx) return []; // absent/unwalkable worktree — every validator no-ops (fail-open harmless)
+		const { blocking, advisory } = splitContractFindings(specAmendmentFamilyFindings({
+			specControl: state.spec as Record<string, unknown> | undefined,
+			designControl: state.design as Record<string, unknown> | undefined,
+			slice: contractCtx.slice,
+			inventory: contractCtx.inventory,
+			round,
+		}));
+		for (const a of advisory) ctx.log(`spec convergence: contract-validator (advisory): ${a}`);
+		return blocking;
+	};
+	let errors = evaluate();
+	if (errors.length === 0) return { errors, cancelled: false, strikeUsed: false };
+	const stateRec = state as Record<string, unknown>;
+	const strikeKey = writerMetadataStrikeKey("spec");
+	if (!isWriterMetadataRejection(errors) || stateRec[strikeKey]) return { errors, cancelled: false, strikeUsed: false };
+	stateRec[strikeKey] = true;
+	setRetryFeedback(stateRec, "spec", [{
+		stage: "spec",
+		attempt: 1,
+		gate: "spec-contract-metadata",
+		location: "structured control (contract declarations)",
+		observed: "The specification's contract declarations failed shape validation (metadata only — content was not judged).",
+		expected: "Well-formed contract-declaration fields (see the repair template below).",
+		missing: errors.slice(0, 8),
+		diagnostics: [writerMetadataRepairFeedback("spec", errors)],
+		nextAction: "Return the SAME control with only the contract-declaration fields repaired.",
+	}]);
+	ctx.log(`spec convergence: METADATA STRIKE-1 — contract-declaration shape rejected; one zero-cost inline retry with repair template (059 §3 R3)`);
+	const strike = await specTask.run(state, ctx);
+	if (strike.status === "cancelled") return { errors, cancelled: true, strikeUsed: true };
+	if (strike.status === "ok") {
+		errors = evaluate();
+		if (errors.length === 0) ctx.log(`spec convergence: METADATA STRIKE-1 retry passed — no convergence round consumed`);
+	}
+	// strikeUsed: the retry RE-RENDERED the spec doc — the caller MUST re-run
+	// the deterministic trace gate on the new render (adversarial S3).
+	return { errors, cancelled: false, strikeUsed: true };
 }
 
 /**
@@ -343,7 +403,40 @@ export const specConvergenceNode: Node = {
 			const addressed = markConvergenceFindingsAddressedFromResponses(state, (state.spec as ControlObj | undefined)?.reviewResponses);
 			if (addressed > 0) ctx.log(`spec convergence: spec response matrix addressed ${addressed} prior finding(s)`);
 
-			const trace = await validateSpecTrace(state, ctx);
+			let trace = await validateSpecTrace(state, ctx);
+			if (!trace.pass) {
+				// 059 §3 R3 MED-3 (metadata Strike-1 at the trace seam): a W-metadata
+				// rejection (malformed amendmentFamily / missing pinOwnership shape —
+				// errors whose locations name Layer-W fields) gets ONE zero-attempt-cost
+				// inline retry with the deterministic repair template BEFORE it counts
+				// as a convergence round. State key writerMetadataRetryUsed:spec —
+				// exactly once per run, shared with the post-trace family check below.
+				const stateRecStrike = state as Record<string, unknown>;
+				if (isWriterMetadataRejection(trace.errors) && !stateRecStrike[writerMetadataStrikeKey("spec")]) {
+					stateRecStrike[writerMetadataStrikeKey("spec")] = true;
+					setRetryFeedback(stateRecStrike, "spec", [{
+						stage: "spec",
+						attempt: round,
+						gate: "spec-contract-metadata",
+						location: "structured control (contract declarations)",
+						observed: "The specification's contract declarations failed shape validation (metadata only — content was not judged).",
+						expected: "Well-formed contract-declaration fields (see the repair template below).",
+						missing: trace.errors.slice(0, 8),
+						diagnostics: [writerMetadataRepairFeedback("spec", trace.errors)],
+						nextAction: "Return the SAME control with only the contract-declaration fields repaired.",
+					}]);
+					ctx.log(`spec convergence: METADATA STRIKE-1 — trace-gate rejection is contract-metadata-only; one zero-cost inline retry with repair template (059 §3 R3)`);
+					const strike = await specTask.run(state, ctx);
+					if (strike.status === "cancelled") return strike;
+					if (strike.status === "ok") {
+						const retryTrace = await validateSpecTrace(state, ctx);
+						if (retryTrace.pass) {
+							ctx.log(`spec convergence: METADATA STRIKE-1 retry passed — no convergence round consumed`);
+							trace = retryTrace;
+						}
+					}
+				}
+			}
 			if (!trace.pass) {
 				lastErrors = trace.errors;
 				recordSpecTraceErrors(state, lastErrors);
@@ -371,6 +464,50 @@ export const specConvergenceNode: Node = {
 				continue;
 			}
 			ctx.log(`spec convergence: trace gate passed round ${round}`);
+
+			// 059 R1A D-R-B residual (§3 R3 DEFECT-1 — Stage 6-skip fallback): when
+			// design declared no amendmentFamily, the specification's own
+			// SpecificationData.amendmentFamily must pass the authoritative
+			// set-inclusion against the spec stage's contract slice. Blocking errors
+			// reject the round exactly like trace failures (metadata-shaped ones got
+			// their Strike-1 inside the helper first).
+			const familyFallback = await specFamilyFallbackAfterTrace(state, ctx, round);
+			if (familyFallback.cancelled) return { status: "cancelled" as const };
+			if (familyFallback.errors.length > 0) {
+				lastErrors = familyFallback.errors;
+				recordConvergenceFindings(state, lastErrors.map((error) => ({
+					detectedAtStage: "spec",
+					ownerStage: "spec",
+					severity: "high",
+					blocking: true,
+					title: error,
+					detail: error,
+					evidence: [error],
+					sourceGate: "spec-amendment-family",
+					recommendation: "Declare the amendment family for every touched shared surface (move each baseline pin or exempt it with a non-empty justification), or amend the plan so the pinned surfaces are not touched.",
+				})), { detectedAtStage: "spec", ownerStage: "spec", sourceGate: "spec-amendment-family" });
+				setSpecFeedback(state, "spec amendment-family gate", lastErrors);
+				ctx.log(`spec convergence: ✗ amendment-family gate failed round ${round}${lastErrors.length ? ` — ${lastErrors.slice(0, 2).join("; ")}` : ""}`);
+				prevOwnOpen = Number.POSITIVE_INFINITY;
+				lastOwnOpen = Number.POSITIVE_INFINITY;
+				continue;
+			}
+			// Adversarial S3 (v0.3.98 fix): the Strike-1 retry RE-RENDERED the spec
+			// doc — the trace gate validated the PREVIOUS render. A retry that fixed
+			// the metadata could have broken traceability/deliverables; re-run the
+			// deterministic trace gate before the doc reaches review.
+			if (familyFallback.strikeUsed) {
+				const recheck = await validateSpecTrace(state, ctx);
+				if (!recheck.pass) {
+					lastErrors = recheck.errors;
+					recordSpecTraceErrors(state, lastErrors);
+					setSpecFeedback(state, "deterministic trace gate", lastErrors);
+					ctx.log(`spec convergence: ✗ trace gate FAILED after metadata Strike-1 re-render round ${round} — ${lastErrors.slice(0, 2).join("; ")}`);
+					prevOwnOpen = Number.POSITIVE_INFINITY;
+					lastOwnOpen = Number.POSITIVE_INFINITY;
+					continue;
+				}
+			}
 
 			const resultsBeforeReview = ctx.results.length;
 			const reviewResult = await specReviewTask.run(state, ctx);
@@ -419,6 +556,32 @@ export const specConvergenceNode: Node = {
 			// are recorded only on the reject path below). Mirror
 			// artifact-convergence: verdict approval AND no blocking finding.
 			const specReviewControl = state.specReview as ControlObj | undefined;
+			// 059 R1A D-R-E residual: the ENGINE-WRITTEN contract-inventory
+			// reconciliation section — deterministic cross-check result stamped onto
+			// the review control post-return and re-rendered into the review doc
+			// (best-effort, B8 precedent) so D2's pass/fail cites machine findings,
+			// not self-derived ones. Never model-authored; no inventory / empty
+			// section ⇒ omitted (zero noise).
+			try {
+				const reconCtx = contractValidationContext(state as Record<string, unknown>, "spec", [ctx.task, JSON.stringify(state.requirements ?? {}), JSON.stringify(state.bdd ?? {}), JSON.stringify(state.research ?? {}), JSON.stringify(state.assessment ?? {}), JSON.stringify(state.design ?? {}), JSON.stringify(state.prototype ?? {})]);
+				if (reconCtx && state.setup && specReviewControl) {
+					const designControl = state.design as Record<string, unknown> | undefined;
+					const specControl = state.spec as Record<string, unknown> | undefined;
+					// The authoritative family mirrors specAmendmentFamilyFindings' policy:
+					// design's when it declared one, else the spec's own fallback declaration.
+					const authoritative = designControl?.amendmentFamily !== undefined && designControl?.amendmentFamily !== null ? designControl : specControl;
+					const { entries } = normalizeAmendmentFamily(authoritative?.amendmentFamily);
+					const mismatches = familyInclusionMismatches(authoritative, reconCtx.slice, reconCtx.inventory);
+					const section = contractInventoryReconciliationSection(reconCtx.inventory, entries, mismatches);
+					if (section) {
+						(specReviewControl as Record<string, unknown>).contractInventoryReconciliation = section;
+						renderAndWrite(state.setup, (m) => ctx.log(m), "specReview", specReviewControl as Record<string, unknown>);
+						ctx.log(`spec convergence: contract-inventory reconciliation stamped onto the spec-review doc (set-inclusion ${mismatches.length === 0 ? "OK" : `${mismatches.length} mismatch(es)`})`);
+					}
+				}
+			} catch (reconErr) {
+				ctx.log(`spec convergence: reconciliation stamping skipped (best-effort, 059 D-R-E) — ${reconErr instanceof Error ? reconErr.message : String(reconErr)}`);
+			}
 			// G1 (run 08-56 moving-target spiral): deterministic convergence-duty
 			// enforcement — from REVIEWER_DUTY_ROUND on, NEW non-High blocking
 			// findings become advisory before approval is decided (the prompt
@@ -428,7 +591,7 @@ export const specConvergenceNode: Node = {
 			// AC-17 (SCENARIO-038): FRESH review readings only — a replayed reading
 			// never arms the strict-progress extension.
 			const freshReviewReading = reviewRound > priorReviewRounds;
-			const downgraded = enforceReviewerConvergenceDuty(specReviewControl, reviewRound, {
+			const duty = enforceReviewerConvergenceDuty(specReviewControl, reviewRound, {
 				stage: "spec",
 				knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)),
 				// M22 (SCENARIO-068): verbatim restatements of live blocking ledger
@@ -436,7 +599,15 @@ export const specConvergenceNode: Node = {
 				// (the review findings recorded under the "spec-review" source gate).
 				knownBlockingFingerprints: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.fingerprint)),
 				reviewSourceGate: "spec-review",
+				// 059 §3 R4: evidence-pair exemption inputs — the slice the spec WRITER
+				// saw (stamped at prompt-build); absent ⇒ no eligibility (fail-closed).
+				worktreePath: state.setup?.worktreePath,
+				injectedSlice: readContractSliceStamp(state as Record<string, unknown>, "spec"),
 			});
+			const downgraded = duty.downgraded;
+			// 059 R1A D-R-B(g): the excess-exemption signal's consumer — judge with
+			// allowedRoutes ["replan-upstream"]; escalate-now is REFUSED (no FatalAbort).
+			if (duty.escalateToJudge) await consumeContractConflictEscalation({ ctx, state, from: "spec", reviewControl: specReviewControl, exemptCount: duty.exemptCount });
 			if (downgraded > 0) {
 				ctx.log(`spec convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
 				// B8 (fix-in-pass, SCENARIO-068): the enforcement MUTATED the spec-review

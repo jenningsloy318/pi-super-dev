@@ -50,3 +50,30 @@ Each paired generate/validate contract below ships its enumerated closure — de
 - **{{ a.decision }}**: chose {{ a.chosen }} — {{ a.rationale }}{% if a.alternatives and a.alternatives.length %} (alternatives rejected: {{ a.alternatives | join("; ") }}){% endif %}
 {% endfor %}
 {% endif %}
+{% if amendmentFamily and amendmentFamily.length > 0 %}
+
+## Amendment Family
+
+Baseline-pin reconciliation for every touched shared surface. A deterministic validator checks the family covers every inventory pin; exemptions carry their legal basis and are audited, not merely declared.
+
+{% for f in amendmentFamily %}
+### {{ f.sharedFile }}
+
+- **Pins moved**: {{ f.pinsMoved | join(", ") | default("(none)") }}
+{% for ex in f.exemptions %}
+- **Exemption**: {{ ex.pinId }}{% if ex.justification %} — {{ ex.justification }}{% else %} — (EMPTY justification — a non-empty legal basis is required){% endif %}
+{% endfor %}
+{% if not f.exemptions.length %}
+- **Exemptions**: (none)
+{% endif %}
+- **Doc updates**: {{ f.docUpdates | join(", ") | default("(none)") }}
+{% endfor %}
+{% endif %}
+{% if tradeoffs and tradeoffs.length > 0 %}
+
+## Tradeoffs (ATAM-lite)
+
+{% for t in tradeoffs %}
+- **{{ t.decision }}**: favors {{ t.favoredQuality }}, sacrifices {{ t.sacrificedQuality }} — {{ t.rationale }}
+{% endfor %}
+{% endif %}

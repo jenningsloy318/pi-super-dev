@@ -42,3 +42,22 @@
 {{ r.response }}
 {% endfor %}
 {% endif %}
+{% if amendmentFamily and amendmentFamily.length > 0 %}
+
+## Amendment Family
+
+The Stage 6-skip fallback declaration: design did not run, so the specification carries the concrete baseline-pin reconciliation for every touched shared surface. A deterministic validator checks the family covers every inventory pin; exemptions carry their legal basis and are audited, not merely declared.
+
+{% for f in amendmentFamily %}
+### {{ f.sharedFile }}
+
+- **Pins moved**: {{ f.pinsMoved | join(", ") | default("(none)") }}
+{% for ex in f.exemptions %}
+- **Exemption**: {{ ex.pinId }}{% if ex.justification %} — {{ ex.justification }}{% else %} — (EMPTY justification — a non-empty legal basis is required){% endif %}
+{% endfor %}
+{% if not f.exemptions.length %}
+- **Exemptions**: (none)
+{% endif %}
+- **Doc updates**: {{ f.docUpdates | join(", ") | default("(none)") }}
+{% endfor %}
+{% endif %}

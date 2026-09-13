@@ -189,7 +189,7 @@ function identifierAvailableAtHead(worktreePath: string, writableFiles: string[]
 	return false;
 }
 
-export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: string): PlanFeasibilityReport {
+export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: string, specDirectory?: string): PlanFeasibilityReport {
 	const contradictions: PlanFeasibilityFinding[] = [];
 	const advisories: PlanFeasibilityFinding[] = [];
 	const list = Array.isArray(phases) ? phases : [];
@@ -348,12 +348,26 @@ export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: strin
 		}
 	}
 	if (protectedClaims.length > 0) {
+		// 059 R1A (§6 handoff contract): the Check 3 amendmentFamily exemption
+		// consumer — an owner-approved amendment family (DesignData.amendmentFamily
+		// ?? SpecificationData.amendmentFamily, persisted by knowledge.ts at
+		// stages.design/stages.spec) exempts its declared sharedFile paths from
+		// protection-threat pairs, so an APPROVED amendment does not re-trigger the
+		// P1 scanner that fired on SCENARIO-014. Fail-closed on malformed knowledge
+		// (grill R8): ANY malformed shape ⇒ ZERO exemptions (P1 behavior unchanged);
+		// absent file/field ⇒ zero exemptions silently (nothing was declared).
+		const exemptSharedFiles = readAmendmentFamilySharedFiles(specDirectory, protectionScan);
 		const writeClaims = list.map((p) => [...new Set((p?.deliverables?.requireFiles ?? []).filter((f) => typeof f === "string" && f).map(norm))]);
 		const pairs = new Map<string, { protectingSource: string; writingPhase: string; paths: string[] }>();
 		for (let j = 0; j < list.length; j++) {
 			for (const f of writeClaims[j]) {
 				for (const c of protectedClaims) {
 					if (c.path !== f) continue;
+					if (exemptSharedFiles.has(f)) {
+						// P10 honest visibility: the pair is EXEMPTED, never silently dropped.
+						protectionScan.push(`check3 exemption: ${c.source} × ${phaseLabel(list[j], j)} on ${f} — owner-approved amendmentFamily (see stages.design/stages.spec .knowledge.json)`);
+						continue;
+					}
 					const writingPhase = phaseLabel(list[j], j);
 					const key = `${c.source}\u0000${writingPhase}`;
 					const pair = pairs.get(key) ?? { protectingSource: c.source, writingPhase, paths: [] };
@@ -417,6 +431,58 @@ export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: strin
 	}
 
 	return { contradictions, advisories, protectionScan };
+}
+
+/** 059 R1A: read the declared amendment family's sharedFile set from
+ *  `<specDirectory>/.knowledge.json` (knowledge.ts persists each stage's
+ *  control at stages.<id>.data). Resolution order is the 059 §6 handoff
+ *  contract: stages.design.data.amendmentFamily ?? stages.spec.data.
+ *  amendmentFamily — design is the authoritative home; spec is the Stage
+ *  6-skip fallback. FAIL-CLOSED (grill R8): unparseable JSON, wrong envelope,
+ *  or ANY malformed family entry ⇒ an EMPTY set (zero exemptions — Check 3
+ *  stays exactly as landed); absent file / absent field ⇒ empty set (nothing
+ *  was declared). Every non-empty outcome ALSO needs every entry's sharedFile
+ *  to survive claimPathUsable (P6: one containment spelling). */
+function readAmendmentFamilySharedFiles(specDirectory: string | undefined, protectionScan: string[]): Set<string> {
+	if (!specDirectory) return new Set();
+	const abs = resolveInsideWorktree(specDirectory.endsWith("/") ? specDirectory.slice(0, -1) : specDirectory, ".knowledge.json");
+	if (abs === null || !existsSync(abs)) return new Set();
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(abs, "utf8"));
+	} catch {
+		protectionScan.push(".knowledge.json: present but unparseable — zero Check 3 amendmentFamily exemptions (fail-closed)");
+		return new Set();
+	}
+	const stages = (parsed as { stages?: unknown } | null)?.stages;
+	if (!stages || typeof stages !== "object" || Array.isArray(stages)) {
+		protectionScan.push(".knowledge.json: malformed (expected {stages: {...}}) — zero Check 3 amendmentFamily exemptions (fail-closed)");
+		return new Set();
+	}
+	const familyOf = (stageId: string): unknown => {
+		const row = (stages as Record<string, unknown>)[stageId] as { data?: unknown } | undefined;
+		const data = row && typeof row === "object" && !Array.isArray(row) ? (row.data as { amendmentFamily?: unknown } | undefined) : undefined;
+		return data && typeof data === "object" ? (data as { amendmentFamily?: unknown }).amendmentFamily : undefined;
+	};
+	const raw = familyOf("design") ?? familyOf("spec");
+	if (raw === undefined || raw === null) return new Set(); // nothing declared
+	if (!Array.isArray(raw)) {
+		protectionScan.push(".knowledge.json: amendmentFamily is not an array — zero Check 3 exemptions (fail-closed)");
+		return new Set();
+	}
+	const out = new Set<string>();
+	for (const entry of raw) {
+		const sharedFile = (entry as { sharedFile?: unknown } | null)?.sharedFile;
+		if (typeof sharedFile !== "string" || !sharedFile.trim()) {
+			// One malformed entry poisons the WHOLE read (grill R8): an owner-
+			// approved exemption must never be inferred from a malformed family.
+			protectionScan.push(".knowledge.json: malformed amendmentFamily entry (sharedFile must be a non-empty string) — zero Check 3 exemptions (fail-closed)");
+			return new Set();
+		}
+		const usable = claimPathUsable(sharedFile);
+		if (usable) out.add(usable);
+	}
+	return out;
 }
 
 /** True when the later-owned file at HEAD makes `x` import-satisfiable:
@@ -489,7 +555,10 @@ const CODE_PATH_TOKEN_RE = /[A-Za-z0-9_.\-/]+\.(?:ts|py|md|json)\b/g;
  *  sit and still count as "near the match". */
 const NEAR_MATCH_WINDOW = 200;
 
-function claimPathUsable(raw: string): string | null {
+/** Repo-relative containment + normalization for a protected-path CLAIM
+ *  (exported for 059 D-R-A: the contract-surface extractor COMPOSES this —
+ *  P6, one spelling of the containment rule, never duplicated). */
+export function claimPathUsable(raw: string): string | null {
 	const p = norm(raw);
 	// F-12 containment (adv gate B-2): parent traversal and absolute/host paths
 	// are never repo-relative protected claims.

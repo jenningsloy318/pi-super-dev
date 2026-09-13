@@ -77,7 +77,7 @@ describe("v0.3.79 A2/A1 wiring source contracts", () => {
 
 	it("implementationStage validates plan feasibility at entry and routes contradictions to replan before executing phases", () => {
 		expect(impl).toMatch(/planFeasibilityFindings/);
-      		const entry = impl.indexOf("planFeasibilityFindings(phases, setup.worktreePath)");
+  		const entry = impl.indexOf("planFeasibilityFindings(phases, setup.worktreePath, setup.specDirectory)"); // v0.3.98: 3rd arg feeds the Check 3 amendmentFamily exemption consumer (059 R1A)
 		const window = impl.slice(entry, entry + 3000);
 		expect(window).toMatch(/triggerReplanForFindings/);
 		// advisories are surfaced honestly even when no contradiction fires

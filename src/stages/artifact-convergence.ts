@@ -3,6 +3,9 @@ import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFee
 import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewBlockingVerdictFindings } from "../review-findings.ts";
+import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
+import { readContractSliceStamp } from "../review/contract-surface.ts";
+import { bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
 import { priorFindingsForInjection } from "../convergence-ledger.ts";
@@ -116,6 +119,15 @@ function researchUnavailableDisclosure(r: Record<string, unknown>): boolean {
 
 export const requirementsComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
 	const base = await gateValidator("gate-requirements", "write-requirements", "requirements")(s, ctx);
+	// 059 R1A R3(c): affectsSharedSurfaces intent consistency — ADVISORY at 2B
+	// (HIGH-1: requirements legitimately may not know; blocking moves down-stack
+	// to design-review). Never blocks the loop.
+	const contractCtx = contractValidationContext(s as Record<string, unknown>, "requirements", [ctx.task, JSON.stringify(s.requirements ?? {})]);
+	if (contractCtx) {
+		for (const a of splitContractFindings(requirementsIntentFindings({ control: s.requirements as Record<string, unknown> | undefined, slice: contractCtx.slice })).advisory) {
+			ctx.log(`Requirements contract-validator (advisory): ${a}`);
+		}
+	}
 	const req = s.requirements as ({ openQuestions?: unknown[] } & Record<string, unknown>) | undefined;
 	const open = Array.isArray(req?.openQuestions) ? req.openQuestions : [];
 	if (open.length === 0) return base;
@@ -127,7 +139,19 @@ export const requirementsComplete: ArtifactValidator = async (s: PipelineState, 
 	};
 };
 
-export const bddComplete: ArtifactValidator = gateValidator("gate-bdd", "write-bdd", "bdd");
+export const bddComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
+	const base = await gateValidator("gate-bdd", "write-bdd", "bdd")(s, ctx);
+	// 059 R1A R3(b): pinOwnership AST validator — the typed control field,
+	// NEVER rendered-markdown regex (grill R6 HIGH-2, P1/P6). No context
+	// (no worktree / no stamp) ⇒ no-op (fail-open harmless).
+	const contractCtx = contractValidationContext(s as Record<string, unknown>, "bdd", [ctx.task, JSON.stringify(s.bdd ?? {})]);
+	if (contractCtx) {
+		const { blocking, advisory } = splitContractFindings(bddPinOwnershipFindings({ control: s.bdd as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory }));
+		for (const a of advisory) ctx.log(`BDD contract-validator (advisory): ${a}`);
+		if (blocking.length > 0) return { pass: false, errors: [...base.errors, ...blocking] };
+	}
+	return base;
+};
 
 /** A research report is complete only when it exists and leaves no answerable
  *  open issues. `openIssues` is reserved for concrete ambiguities that another
@@ -683,7 +707,39 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					if (addressed > 0) ctx.log(`${options.feedbackKey} convergence: writer response matrix addressed ${addressed} prior finding(s)`);
 				}
 
-				const result = options.validate ? await options.validate(state, ctx) : { pass: true, errors: [] };
+				const result0 = options.validate ? await options.validate(state, ctx) : { pass: true, errors: [] };
+				let result = result0;
+				// 059 R1A (§3 R3 Metadata strike-1, MED-3/P8): a W-metadata rejection
+				// (malformed amendmentFamily / missing pinOwnership shape) gets ONE
+				// zero-attempt-cost inline retry with a deterministic repair template
+				// BEFORE it counts as a convergence round (renderRetries precedent).
+				// State key writerMetadataRetryUsed:<stage> — exactly once per stage,
+				// disjoint from 058's planned phaseProtectionStrikes.
+				const stateRecStrike = state as Record<string, unknown>;
+				if (!result.pass && isWriterMetadataRejection(result.errors) && !stateRecStrike[writerMetadataStrikeKey(options.feedbackKey)]) {
+					stateRecStrike[writerMetadataStrikeKey(options.feedbackKey)] = true;
+					setRetryFeedback(stateRecStrike, options.feedbackKey, [{
+						stage: options.feedbackKey,
+						attempt: round,
+						gate: `${options.feedbackKey}-contract-metadata`,
+						location: "structured control (contract declarations)",
+						observed: "The control's contract declarations failed shape validation (metadata only — content was not judged).",
+						expected: "Well-formed contract-declaration fields (see the repair template below).",
+						missing: result.errors.slice(0, 8),
+						diagnostics: [writerMetadataRepairFeedback(options.feedbackKey, result.errors)],
+						nextAction: "Return the SAME control with only the contract-declaration fields repaired.",
+					}]);
+					ctx.log(`${options.feedbackKey} convergence: METADATA STRIKE-1 — contract-declaration shape rejected; one zero-cost inline retry with repair template (059 §3 R3)`);
+					const strike = await stageTask.run(state, ctx);
+					if (strike.status === "cancelled") return strike;
+					const retryRenderErrs = readRenderErrors(state);
+					if (stateRecStrike[options.feedbackKey] != null && retryRenderErrs.length === 0) {
+						result = options.validate ? await options.validate(state, ctx) : { pass: true, errors: [] };
+						if (result.pass) ctx.log(`${options.feedbackKey} convergence: METADATA STRIKE-1 retry passed — no convergence round consumed`);
+					} else {
+						result = { pass: false, errors: [...result.errors, ...retryRenderErrs] };
+					}
+				}
 				// v0.3.32: a writer control that PASSED validation but FAILED
 				// schema/render (writerTask returns the control and renderAndWrite
 				// returned null) means NO fresh doc on disk — the gates would keep
@@ -760,14 +816,24 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					// FRESH; a cache-replayed reading carries no fresh information and
 					// must never arm the strict-progress extension.
 					const freshReviewReading = reviewRound > priorReviewRounds;
-					const downgraded = enforceReviewerConvergenceDuty(reviewControl, reviewRound, {
+					const duty = enforceReviewerConvergenceDuty(reviewControl, reviewRound, {
 						stage: options.feedbackKey,
 						knownFindingIds: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.id)),
 						// M22 (SCENARIO-068): verbatim restatements of live blocking ledger
 						// findings are shielded from the downgrade by convergence fingerprint.
 						knownBlockingFingerprints: new Set(getConvergenceLedger(state).findings.filter((f) => f.blocking && !f.downgradeReason).map((f) => f.fingerprint)),
 						reviewSourceGate: `${options.feedbackKey}-review`,
+						// 059 §3 R4: evidence-pair exemption inputs — the slice the WRITER saw
+						// this stage (stamped at prompt-build). Absent stamp (pre-W/resume
+						// replay) ⇒ no eligibility, fail-closed harmless.
+						worktreePath: state.setup?.worktreePath,
+						injectedSlice: readContractSliceStamp(state as Record<string, unknown>, options.feedbackKey),
 					});
+					const downgraded = duty.downgraded;
+					// 059 R1A D-R-B(g): the excess-exemption SIGNAL's consumer — judge with
+					// allowedRoutes EXACTLY ["replan-upstream"]; escalate-now verdicts are
+					// REFUSED (no FatalAbort on this trigger — routes back / degrades).
+					if (duty.escalateToJudge) await consumeContractConflictEscalation({ ctx, state, from: options.feedbackKey, reviewControl, exemptCount: duty.exemptCount });
 					if (downgraded > 0) {
 						ctx.log(`${options.feedbackKey} convergence: convergence duty enforced — ${downgraded} new non-High blocking finding(s) downgraded to advisory (round ${round})`);
 						// B8 (fix-in-pass, SCENARIO-068): the enforcement MUTATED the review
@@ -1054,9 +1120,31 @@ export const researchConvergenceNode = artifactConvergenceNode({
 export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
 	const control = s.design as ControlObj | undefined;
 	const rawClaims = (control as { contracts?: unknown } | undefined)?.contracts;
-	if (!Array.isArray(rawClaims) || rawClaims.length === 0) return { pass: true, errors: [] };
+	if (!Array.isArray(rawClaims) || rawClaims.length === 0) {
+		// v0.3.2 no-claims fast path preserved — but the 059 family check still
+		// runs when a contract-surface context exists (touched surfaces may carry
+		// pins even when the design declares no contract claims).
+		const contractCtx = contractValidationContext(s as Record<string, unknown>, "design", [ctx.task, JSON.stringify(s.requirements ?? {})]);
+		if (contractCtx) {
+			const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory }));
+			for (const a of advisory) ctx.log(`Design contract-validator (advisory): ${a}`);
+			if (blocking.length > 0) {
+				ctx.log(`Design amendment-family: ${blocking.length} set-inclusion error(s): ${blocking.slice(0, 2).join("; ")}`);
+				return { pass: false, errors: blocking };
+			}
+		}
+		return { pass: true, errors: [] };
+	}
 	const worktreePath = s.setup?.worktreePath ?? "";
 	const errors = designContractsErrors(control, worktreePath);
+	// 059 R1A R3(a): DesignData.amendmentFamily ⊇ pins set-inclusion — the
+	// AUTHORITATIVE declaration check (blocking, ownerStage=design).
+	const contractCtx = contractValidationContext(s as Record<string, unknown>, "design", [ctx.task, JSON.stringify(s.requirements ?? {})]);
+	if (contractCtx) {
+		const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory }));
+			for (const a of advisory) ctx.log(`Design contract-validator (advisory): ${a}`);
+			errors.push(...blocking);
+	}
 	// Rendered-doc parity: the reviewer reads the RENDERED design — a contracts
 	// block the template dropped makes the reviewer blind and the loop spin.
 	const doc = readSpecDoc(s.setup?.specDirectory ?? "", control, "*-design.md");
@@ -1085,6 +1173,21 @@ export const designConvergenceNode = artifactConvergenceNode({
 	// NOT by `!s.design` — otherwise a designer that timed out (also leaving
 	// state.design undefined) would be mistaken for a skip and bypass the review
 	// gate. For a non-bug task, an absent design means the designer FAILED → retry.
-	skipped: (s) => s.classify?.taskType === "bug",
+	//
+	// 059 §3 R3 delta-5 NEW-3 (dual skip predicate, node arm): a bug
+	// classification only skips when the design stage's write-time touched-set
+	// stamp is EMPTY. A non-empty stamp means designStage routed the
+	// architecture-improver (it never skipped) — an absent design there is a
+	// designer FAILURE to retry, never a skip. An ABSENT stamp (pre-W resume,
+	// walk failure) = status-quo skip — backwards compatible.
+	skipped: (s) => {
+		if (s.classify?.taskType !== "bug") return false;
+		const stamp = readContractSliceStamp(s as Record<string, unknown>, "design");
+		// Adversarial S4b (v0.3.98): fail CLOSED — an absent stamp (extraction
+		// error, pre-W resume) must NOT skip design; running it is the safe
+		// direction (P5: more scrutiny, never less, when uncertain).
+		if (!stamp) return false;
+		return stamp.files.size === 0;
+	},
 	review: { stage: designReviewWriter, reviewStateKey: "designReview", ownerStage: "design" },
 });

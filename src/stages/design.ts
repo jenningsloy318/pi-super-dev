@@ -8,13 +8,36 @@ import type { Stage } from "../types.ts";
 import { buildDesignPrompt } from "../prompts.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS } from "../render/schemas.ts";
+// 059 R1A W1 + §3 R3 delta-5 NEW-3: the design stage's write-time contract
+// slice — computed and stamped BEFORE the skip decision so the dual design-skip
+// predicate (designConvergenceNode.skipped) and the R4 exemption both read it,
+// and so a shared-surface bug fix is DESIGNED instead of skipped.
+import { stampContractSlice, writerContractSlice } from "../review/contract-surface.ts";
 
 export const designStage: Stage = {
 	id: "design",
 	label: "Stage 6A — Design",
 	async run(state, ctx) {
 		const routing = await ctx.helper({ name: "route-designer", sources: { "classify-task": state.classify } });
-		const designerAgent = (routing.value.designerAgent as string) ?? null;
+		// 059 W1: the design write-time slice (task + upstream controls — the SAME
+		// texts designComplete's validator context evaluates). Fresh walk; stamped
+		// even on the skip path so the convergence node's skipped predicate can
+		// distinguish an empty touched-set from a routed improver run.
+		// Adversarial S4a (v0.3.98): task + requirements intent ONLY — the
+		// research/assessment corpus enumerates reconnaissance file lists, which
+		// the literal-token touched-set match would read as "will touch", forcing
+		// architecture-improver on unrelated bug fixes.
+		const slice = writerContractSlice(state.setup?.worktreePath, [ctx.task, JSON.stringify(state.requirements ?? {})]);
+		if (slice) stampContractSlice(state as Record<string, unknown>, "design", slice);
+		let designerAgent = (routing.value.designerAgent as string) ?? null;
+		if (!designerAgent && slice && slice.files.length > 0) {
+			// 059 §3 R3 delta-5 NEW-3 (dual skip predicate, stage arm): a bug
+			// classification only skips design when the write-time touched-set is
+			// EMPTY — a shared-surface bug fix must pass the authoritative
+			// amendment-family gate, so it routes the architecture-improver instead.
+			designerAgent = "architecture-improver";
+			ctx.log(`Design NOT skipped (059 dual predicate): bug classification touches shared surfaces (${slice.files.join(", ")}) — routing architecture-improver so the amendment family is declared`);
+		}
 		if (!designerAgent) {
 			// Intentional skip (bug fixes are not redesigned). Return null so
 			// state.design stays undefined; the convergence node's `skipped` predicate
@@ -32,7 +55,7 @@ export const designStage: Stage = {
 			id: "pipeline.design",
 			agent: designerAgent,
 			accessMode: "source-read-only",
-			prompt: buildDesignPrompt(setup, state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null, state.assessment ?? null, designerAgent),
+			prompt: buildDesignPrompt(setup, state.classify ?? null, ctx.task, state.requirements ?? null, state.research ?? null, state.assessment ?? null, designerAgent, slice?.block ?? ""),
 			schema: STAGE_MODELS["design"]?.schema,
 		});
 		if (!result.control) {

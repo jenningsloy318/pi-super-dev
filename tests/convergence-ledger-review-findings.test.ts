@@ -26,7 +26,7 @@ describe("AC-34 (SCENARIO-068/069): duty restatement shield + ledger merge stren
 			severity: "high", blocking: true, status: "open",
 		}, { detectedAtStage: "verification", ownerStage: "implementation", sourceGate: "gate-x" });
 		const review = { verdict: "Changes Requested", findings: [{ id: "NEW-1", ownerStage: "implementation", sourceGate: "gate-x", title: "T", detail: "D", severity: "medium", blocking: true, status: "open" }] };
-		const downgraded = enforceReviewerConvergenceDuty(review, 3, {
+		const { downgraded } = enforceReviewerConvergenceDuty(review, 3, {
 			stage: "spec",
 			knownFindingIds: ledgerBlockingIds(state),
 			knownBlockingFingerprints: ledgerBlockingFingerprints(state),
@@ -38,7 +38,7 @@ describe("AC-34 (SCENARIO-068/069): duty restatement shield + ledger merge stren
 
 	it("SCENARIO-068/B7: a re-flag whose OWN id is a known blocking ledger id is also shielded", () => {
 		const review = { verdict: "Changes Requested", findings: [{ id: "KNOWN-1", severity: "medium", title: "T", detail: "D", blocking: true, status: "open" }] };
-		const downgraded = enforceReviewerConvergenceDuty(review, 4, { stage: "spec", knownFindingIds: new Set(["KNOWN-1"]) });
+		const { downgraded } = enforceReviewerConvergenceDuty(review, 4, { stage: "spec", knownFindingIds: new Set(["KNOWN-1"]) });
 		expect(downgraded).toBe(0);
 		expect(review.findings![0]).toMatchObject({ blocking: true });
 	});
@@ -50,7 +50,7 @@ describe("AC-34 (SCENARIO-068/069): duty restatement shield + ledger merge stren
 			severity: "high", blocking: true, status: "open",
 		}, { detectedAtStage: "verification", ownerStage: "implementation", sourceGate: "gate-x" });
 		const review = { verdict: "Changes Requested", findings: [{ id: "NEW-2", ownerStage: "implementation", sourceGate: "gate-x", title: "DIFFERENT", detail: "D", severity: "medium", blocking: true, status: "open" }] };
-		const downgraded = enforceReviewerConvergenceDuty(review, 3, {
+		const { downgraded } = enforceReviewerConvergenceDuty(review, 3, {
 			stage: "spec",
 			knownFindingIds: ledgerBlockingIds(state),
 			knownBlockingFingerprints: ledgerBlockingFingerprints(state),
@@ -224,14 +224,14 @@ describe("enforceReviewerConvergenceDuty (G1)", () => {
 
 	it("does nothing before REVIEWER_DUTY_ROUND", () => {
 		const review = { verdict: "Changes Requested", findings: [medium("M-1")] };
-		expect(enforceReviewerConvergenceDuty(review, 2, { stage: "spec" })).toBe(0);
+		expect(enforceReviewerConvergenceDuty(review, 2, { stage: "spec" }).downgraded).toBe(0);
 		expect(review.findings![0]).toMatchObject({ blocking: true });
 	});
 
 	it("downgrades NEW non-High blocking findings at review round >= 3", () => {
 		const review = { verdict: "Changes Requested", findings: [medium("M-1"), medium("L-1", { severity: "low" })] };
 		const n = enforceReviewerConvergenceDuty(review, 3, { stage: "spec" });
-		expect(n).toBe(2);
+		expect(n.downgraded).toBe(2);
 		expect(review.findings![0]).toMatchObject({ blocking: false });
 		expect(String(review.findings![0].downgradeReason)).toContain("convergence-duty");
 		expect(review.findings![1]).toMatchObject({ blocking: false });
@@ -239,7 +239,7 @@ describe("enforceReviewerConvergenceDuty (G1)", () => {
 
 	it("keeps High/Critical-class findings blocking at late rounds", () => {
 		const review = { verdict: "Changes Requested", findings: [medium("H-1", { severity: "high" }), medium("C-1", { severity: "critical" })] };
-		expect(enforceReviewerConvergenceDuty(review, 5, { stage: "bdd" })).toBe(0);
+		expect(enforceReviewerConvergenceDuty(review, 5, { stage: "bdd" }).downgraded).toBe(0);
 		expect(review.findings![0]).toMatchObject({ blocking: true });
 		expect(review.findings![1]).toMatchObject({ blocking: true });
 	});
@@ -247,14 +247,14 @@ describe("enforceReviewerConvergenceDuty (G1)", () => {
 	it("keeps re-flags of KNOWN prior findings (priorFindingId validated against the ledger) blocking", () => {
 		const known = new Set(["PRIOR-9"]);
 		const review = { verdict: "Changes Requested", findings: [medium("R-1", { priorFindingId: "PRIOR-9" })] };
-		expect(enforceReviewerConvergenceDuty(review, 4, { stage: "spec", knownFindingIds: known })).toBe(0);
+		expect(enforceReviewerConvergenceDuty(review, 4, { stage: "spec", knownFindingIds: known }).downgraded).toBe(0);
 		expect(review.findings![0]).toMatchObject({ blocking: true });
 	});
 
 	it("an UNKNOWN priorFindingId cannot dodge the downgrade (hallucinated reference)", () => {
 		const known = new Set(["PRIOR-9"]);
 		const review = { verdict: "Changes Requested", findings: [medium("D-1", { priorFindingId: "REQ-999-DOES-NOT-EXIST" })] };
-		expect(enforceReviewerConvergenceDuty(review, 4, { stage: "spec", knownFindingIds: known })).toBe(1);
+		expect(enforceReviewerConvergenceDuty(review, 4, { stage: "spec", knownFindingIds: known }).downgraded).toBe(1);
 		expect(review.findings![0]).toMatchObject({ blocking: false });
 	});
 
@@ -297,7 +297,7 @@ describe("enforceReviewerConvergenceDuty (G1)", () => {
 		// re-earn blocking through High/Critical severity or be downgraded
 		const downgradedAdvisoryIds = new Set<string>(); // filtered out upstream
 		const review = { verdict: "Changes Requested", findings: [medium("RES-1", { priorFindingId: "ADVISORY-5" })] };
-		expect(enforceReviewerConvergenceDuty(review, 5, { stage: "spec", knownFindingIds: downgradedAdvisoryIds })).toBe(1);
+		expect(enforceReviewerConvergenceDuty(review, 5, { stage: "spec", knownFindingIds: downgradedAdvisoryIds }).downgraded).toBe(1);
 		expect(review.findings![0]).toMatchObject({ blocking: false });
 	});
 
@@ -308,19 +308,19 @@ describe("enforceReviewerConvergenceDuty (G1)", () => {
 			medium("MF-1", { severity: "must-fix" }),
 			medium("SR-1", { severity: "serious" }),
 		] };
-		expect(enforceReviewerConvergenceDuty(review, 5, { stage: "requirements" })).toBe(0);
+		expect(enforceReviewerConvergenceDuty(review, 5, { stage: "requirements" }).downgraded).toBe(0);
 		for (const f of review.findings as Array<Record<string, unknown>>) expect(f.blocking).toBe(true);
 	});
 
 	it("downgrades late needs-human findings that are not high-class", () => {
 		const review = { verdict: "Changes Requested", findings: [medium("NH-1", { status: "needs-human", severity: "medium" })] };
-		expect(enforceReviewerConvergenceDuty(review, 3, { stage: "spec" })).toBe(1);
+		expect(enforceReviewerConvergenceDuty(review, 3, { stage: "spec" }).downgraded).toBe(1);
 		expect(review.findings![0]).toMatchObject({ blocking: false });
 	});
 
 	it("leaves advisory and undefined controls untouched", () => {
 		const review = { verdict: "Changes Requested", findings: [medium("A-1", { blocking: false })] };
-		expect(enforceReviewerConvergenceDuty(review, 8, { stage: "spec" })).toBe(0);
-		expect(enforceReviewerConvergenceDuty(undefined, 8, { stage: "spec" })).toBe(0);
+		expect(enforceReviewerConvergenceDuty(review, 8, { stage: "spec" }).downgraded).toBe(0);
+		expect(enforceReviewerConvergenceDuty(undefined, 8, { stage: "spec" }).downgraded).toBe(0);
 	});
 });

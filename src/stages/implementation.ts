@@ -1876,7 +1876,11 @@ export const implementationStage: Stage = {
 		(state as Record<string, unknown>).__planFeasibilityChecked = true;
 		const feasibility = feasibilityOnce
 			? { contradictions: [], advisories: [], protectionScan: [] }
-			: planFeasibilityFindings(phases, setup.worktreePath);
+				// 059 R1A (§6 handoff contract): setup.specDirectory threads the Check 3
+				// amendmentFamily exemption consumer — planFeasibilityFindings reads
+				// .knowledge.json (design ?? spec family) and exempts owner-approved
+				// sharedFile paths; fail-closed on malformed knowledge (grill R8).
+			: planFeasibilityFindings(phases, setup.worktreePath, setup.specDirectory);
 		// Wave P1 D-A (P10 — silent-miss visibility): the immutability-idiom
 		// scanner's per-file hit list is logged at entry — a repo whose tests use
 		// an idiom OUTSIDE the enumerated grammar shows "0 hit(s)" here instead

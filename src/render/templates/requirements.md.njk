@@ -24,6 +24,14 @@
 {% for nfr in nonFunctional %}
 - {{ nfr }}
 {% endfor %}
+{% if affectsSharedSurfaces and affectsSharedSurfaces.length > 0 %}
+
+## Shared Surfaces (intent)
+
+{% for surface in affectsSharedSurfaces %}
+- {{ surface }}
+{% endfor %}
+{% endif %}
 {% if openQuestions %}
 
 ## Open Questions

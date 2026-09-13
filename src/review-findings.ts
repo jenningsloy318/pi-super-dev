@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 export type NormalizedReviewFindingStatus = "open" | "addressed" | "verified" | "deferred" | "needs-human" | string;
 
 export function compactReviewText(value: unknown): string {
@@ -238,10 +241,59 @@ export function reviewFindingFingerprint(ownerStage: string, sourceGate: string 
  *  is not high/critical-class severity, is downgraded in place to advisory
  *  (`blocking = false` + `downgradeReason`). Needs-human findings are included
  *  in the downgrade: a late-round non-high needs-human note is an attention
- *  request, not a loop-killer. Returns the number downgraded (0 = nothing to
- *  do / round too early). Mutates the control's findings so both the verdict
- *  layer (`reviewHasBlockingFinding`) and the ledger record see the advisory
+ *  request, not a loop-killer.
+ *
+ *  059 R1A (§3 R4, D-R-B): the EVIDENCE-PAIR EXEMPTION — a candidate finding
+ *  whose structured `evidenceLoci` has ≥2 loci existing on disk at the stated
+ *  file:line AND ≥1 locus in the stage's injected slice (protected file or
+ *  pinId ref) SURVIVES the suppression (stamped `evidencePairExempt`, never
+ *  downgraded). Bounded at ONE exempt finding per round; the excess is a
+ *  SIGNAL, not a call: the return carries `exemptCount` and
+ *  `escalateToJudge` (>1 eligible ⇒ true) for the async convergence loop to
+ *  consume at the round boundary. Absent worktreePath/injectedSlice opts ⇒
+ *  no exemption eligibility (fail-closed harmless). Mutates the control's
+ *  findings so both the verdict layer and the ledger record see the
  *  classification. */
+export interface ConvergenceDutyResult {
+	/** Findings downgraded to advisory this round. */
+	downgraded: number;
+	/** Findings ELIGIBLE for the evidence-pair exemption this round (the
+	 *  bound means only the first actually survives). */
+	exemptCount: number;
+	/** True iff exemptCount > 1 — the R4 excess-exemption signal. */
+	escalateToJudge: boolean;
+}
+
+/** One evidence locus as the Finding schema declares it (tolerant reader:
+ *  non-object/blank rows are dropped, `line` accepts number or numeric
+ *  string — the schema says number, drift costs eligibility only). */
+function normalizeEvidenceLoci(raw: unknown): Array<{ file: string; line?: number; ref?: string }> {
+	if (!Array.isArray(raw)) return [];
+	const out: Array<{ file: string; line?: number; ref?: string }> = [];
+	for (const row of raw) {
+		if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+		const r = row as { file?: unknown; line?: unknown; ref?: unknown };
+		if (typeof r.file !== "string" || !r.file.trim()) continue;
+		const line = typeof r.line === "number" ? r.line : typeof r.line === "string" && /^\d+$/.test(r.line.trim()) ? Number(r.line) : undefined;
+		out.push({ file: r.file.trim().replace(/\\/g, "/").replace(/^\.\//, ""), line, ref: typeof r.ref === "string" && r.ref.trim() ? r.ref.trim() : undefined });
+	}
+	return out;
+}
+
+/** F-12-shaped containment + disk existence at the stated file:line. */
+function locusExistsOnDisk(worktreePath: string, locus: { file: string; line?: number }): boolean {
+	const f = locus.file;
+	if (!f || f.startsWith("/") || f.startsWith("../") || f.includes("/../") || /^[A-Za-z]:/.test(f)) return false;
+	let text: string;
+	try {
+		text = readFileSync(join(worktreePath, f), "utf8");
+	} catch {
+		return false;
+	}
+	if (locus.line === undefined) return true;
+	return text.split("\n").length >= locus.line;
+}
+
 export function enforceReviewerConvergenceDuty(
 	review: { findings?: unknown; verdict?: unknown } | undefined,
 	reviewRound: number,
@@ -254,11 +306,18 @@ export function enforceReviewerConvergenceDuty(
 		/** The sourceGate the caller records review findings under (e.g.
 		 *  "requirements-review" / "spec-review") — fingerprint input. */
 		reviewSourceGate?: string;
+		/** 059 R4: worktree the evidence loci resolve against — absent ⇒ no
+		 *  exemption eligibility (fail-closed harmless). */
+		worktreePath?: string;
+		/** 059 R4: the stage's injected contract-surface slice (protected files
+		 *  + pinIds) — a locus belongs to it via file match or pinId ref. */
+		injectedSlice?: { files?: Set<string>; pinIds?: Set<string> };
 	},
-): number {
-	if (!review || reviewRound < REVIEWER_DUTY_ROUND) return 0;
+): ConvergenceDutyResult {
+	const result: ConvergenceDutyResult = { downgraded: 0, exemptCount: 0, escalateToJudge: false };
+	if (!review || reviewRound < REVIEWER_DUTY_ROUND) return result;
 	const findings = (review.findings as Array<Record<string, unknown>> | undefined) ?? [];
-	let downgraded = 0;
+	let exempted = 0;
 	for (const f of findings) {
 		if (!reviewFindingBlocks(f)) continue; // already advisory/verified
 		// Re-flag of a prior finding — a reviewer-verified regression stays
@@ -290,9 +349,33 @@ export function enforceReviewerConvergenceDuty(
 			if (opts.knownBlockingFingerprints.has(candidate)) continue;
 		}
 		if (reviewFindingHighSeverity(f)) continue; // High/Critical correctness defect may block late
+		// 059 §3 R4 — evidence-pair exemption (verified + bounded). Evaluated
+		// only for findings that WOULD be downgraded: the exemption exists to
+		// keep machine-verified cross-artifact contract findings alive through
+		// late-round suppression, not to shield anything else.
+		const loci = normalizeEvidenceLoci(f.evidenceLoci);
+		if (loci.length >= 2 && opts.worktreePath) {
+			const verified = loci.filter((l) => locusExistsOnDisk(opts.worktreePath!, l));
+			const sliceFiles = opts.injectedSlice?.files;
+			const slicePinIds = opts.injectedSlice?.pinIds;
+			const inSlice = verified.some((l) => sliceFiles?.has(l.file) === true || (l.ref !== undefined && slicePinIds?.has(l.ref) === true));
+			if (verified.length >= 2 && inSlice) {
+				result.exemptCount++;
+				if (exempted < 1) {
+					exempted = 1;
+					f.evidencePairExempt = true;
+					f.exemptionReason = `evidence-pair (${opts.stage}, review round ${reviewRound}): ≥2 cited loci verified on disk and ≥1 belongs to the injected contract slice — cross-artifact contract finding survives convergence-duty suppression (059 §3 R4)`;
+					continue; // survives — never downgraded
+				}
+				// Bound exceeded: this eligible finding falls through to the normal
+				// downgrade; the excess is counted in exemptCount and becomes the
+				// escalateToJudge signal below.
+			}
+		}
 		f.blocking = false;
 		f.downgradeReason = `convergence-duty (${opts.stage}, review round ${reviewRound}): new ${reviewFindingSeverity(f)} finding — late-round blocking is reserved for High/Critical correctness defects; recorded as advisory`;
-		downgraded++;
+		result.downgraded++;
 	}
-	return downgraded;
+	result.escalateToJudge = result.exemptCount > 1;
+	return result;
 }

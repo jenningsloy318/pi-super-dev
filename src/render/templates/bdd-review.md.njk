@@ -21,6 +21,8 @@
 {% endif %}{% if f.status %}- **Status**: {{ f.status }}
 {% endif %}{% if f.recommendation %}- **Recommendation**: {{ f.recommendation }}
 {% endif %}{% if f.priorFindingId %}- **Prior Finding**: {{ f.priorFindingId }}
+{% endif %}{% if f.evidenceLoci and f.evidenceLoci.length > 0 %}- **Loci**: {% for l in f.evidenceLoci %}{{ l.file }}{% if l.line %}:{{ l.line }}{% endif %}{% if l.ref %} ({{ l.ref }}){% endif %}{% if not loop.last %}; {% endif %}{% endfor %}
+{% endif %}{% if f.evidencePairExempt %}**[evidence-pair exempt]** — loci machine-verified on disk and in the stage's injected contract-surface slice; survives late-round convergence-duty suppression (059 §3 R4).
 {% endif %}
 {{ f.detail }}
 {% if f.evidence %}

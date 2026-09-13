@@ -25,6 +25,11 @@ export type ConvergenceOwnerStage =
 	| "merge"
 	| "environment";
 
+/** Runtime mirror of ConvergenceOwnerStage (single source — consumers narrow via .find, never casts). */
+export const CONVERGENCE_OWNER_STAGES = [
+	"setup", "classify", "requirements", "bdd", "research", "debug", "assessment", "design", "prototype", "spec", "specReview", "implementation", "verification", "docs", "cleanup", "merge", "environment",
+] as const;
+
 /** "superseded" (v0.3.97 / 058 D-E) is a DETERMINISTIC-only status — set by
  *  the injection seam when a finding's cited upstream anchor id vanished in
  *  an upstream replan rewrite. It is not part of the reviewer vocabulary in

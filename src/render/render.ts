@@ -456,6 +456,30 @@ function augmentData(stageId: string, data: Record<string, unknown>): Record<str
 		augmented.coveredAcCount = acSet.filter((id) => scenarioAcRefs.has(id)).length;
 		augmented.uncoveredAcIds = acSet.filter((id) => !scenarioAcRefs.has(id));
 	}
+	// 059 W-layer single-line clamp (adversarial S5): LLM-supplied single-line
+	// metadata must not carry newlines — a forged heading/scenario line inside a
+	// rendered doc would feed the downstream regex doc-validators fake anchors
+	// (section forgery). NJK syntax is safe (single-pass AST, no re-tokenize);
+	// only control characters are clamped here.
+	const singleLine = (v: unknown): string => String(v ?? "").replace(/[\r\n]+/g, " ").trim();
+	const clampStringList = (v: unknown): unknown => (Array.isArray(v) ? v.map((e) => (typeof e === "string" ? singleLine(e) : e)) : v);
+	const clampRecordStrings = (v: unknown): unknown => (Array.isArray(v) ? v.map((e) => {
+		if (e && typeof e === "object") { const r = e as Record<string, unknown>; for (const k of Object.keys(r)) if (typeof r[k] === "string") r[k] = singleLine(r[k]); }
+		return e;
+	}) : v);
+	if (stageId === "requirements") augmented.affectsSharedSurfaces = clampStringList(augmented.affectsSharedSurfaces);
+	if (stageId === "bdd") {
+		for (const f of Array.isArray(augmented.features) ? augmented.features as Array<{ scenarios?: unknown }> : []) {
+			for (const sc of Array.isArray(f?.scenarios) ? f.scenarios as Array<Record<string, unknown>> : []) {
+				const po = Array.isArray(sc?.pinOwnership) ? sc.pinOwnership as Array<Record<string, unknown>> : [];
+				for (const p of po) if (p && typeof p === "object") p.justification = singleLine(p.justification);
+			}
+		}
+	}
+	if (stageId === "design" || stageId === "specification") {
+		augmented.amendmentFamily = clampRecordStrings(augmented.amendmentFamily);
+		augmented.tradeoffs = clampRecordStrings(augmented.tradeoffs);
+	}
 	return augmented;
 }
 

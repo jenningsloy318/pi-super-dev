@@ -12,6 +12,42 @@ import { Type, type Static } from "typebox";
 
 const Priority = Type.String({ description: "priority: high, medium, low, critical, etc." });
 
+// ─── 059 Layer W / D-R-W: contract-surface declaration shapes ────────────────
+// All OPTIONAL (additive-only, DEC-5): pre-W artifacts simply omit them and
+// the R3 validators degrade to advisory with a located P10 banner (059 §3
+// "pre-W re-entry & resume compatibility"). No existing key is removed.
+
+/** Layer W control version stamp: artifacts authored under the W-layer
+ *  writer prompts carry `layerW: "1"`; absent = pre-W (validators degrade
+ *  to advisory — never a deterministic deadlock, never silent). */
+const LayerWStamp = Type.Optional(Type.String({ description: "Layer W control version — include the literal string '1'" }));
+
+/** 059 W3 (D-R-W): prospective pin ownership per scenario — the TYPED control
+ *  field (sole authority). `justification` is a required string; the bdd
+ *  validator enforces non-empty WHEN state=inherited-frozen (delta-4 DEFECT-3). */
+export const PinOwnershipEntry = Type.Object({
+	pinId: Type.String({ description: "pinId from the injected contract-surface slice (e.g. 'pin-pe-0abc123')" }),
+	state: Type.Union([
+		Type.Literal("owned"),
+		Type.Literal("inherited-frozen"),
+	], { description: "owned = this change amends/moves the pin (KAOS restore/weaken/guard-introduction); inherited-frozen = the pin stays frozen — non-empty justification required" }),
+	justification: Type.String({ description: "the legal basis for the ownership claim; MUST be non-empty when state=inherited-frozen (owner decision or upstream declaration)" }),
+});
+
+/** 059 W4/W5 (D-R-W): the concrete amendment family — one entry per shared
+ *  surface being amended. DesignData is the authoritative home (Stage 6 is
+ *  the first stage with codebase grounding); SpecificationData carries the
+ *  SAME SHAPE as the Stage 6-skip fallback (delta-5 NEW-1/DEFECT-1). */
+export const AmendmentFamilyEntry = Type.Object({
+	sharedFile: Type.String({ description: "repo-relative shared surface being amended (e.g. 'src/schemas.ts')" }),
+	pinsMoved: Type.Array(Type.String(), { description: "pinIds this amendment moves/re-baselines on the shared file" }),
+	exemptions: Type.Array(Type.Object({
+		pinId: Type.String(),
+		justification: Type.String({ description: "non-empty: the legal basis for leaving the pin frozen (owner decision or upstream declaration) — the reviewer audits the basis, not mere existence" }),
+	}), { description: "pins deliberately left frozen — each MUST carry a non-empty justification (delta-4 DEFECT-3)" }),
+	docUpdates: Type.Array(Type.String(), { description: "spec/doc artifacts to update alongside the family (e.g. the sibling spec carrying the pin)" }),
+});
+
 // ─── BDD scenarios ───────────────────────────────────────────────────────────
 
 // ─── Control schemas (v0.3.70 W3: stages that carry controlKeys but had no
@@ -102,6 +138,13 @@ export const BddScenario = Type.Object({
 	when: Type.String(),
 	then: Type.String(),
 	andClauses: Type.Optional(Type.Array(Type.String())),
+	// 059 Layer W3 (D-R-W, grill R6 HIGH-2): PROSPECTIVE pin ownership is a
+	// TYPED CONTROL FIELD — the single authoritative representation. The
+	// rendered @owned/@inherited tag is a passive human-readable projection
+	// with ZERO validation role; the bdd validator inspects THIS AST, never
+	// rendered markdown (P1/P6). Optional: pre-W scenarios omit it and the
+	// validator degrades to advisory (059 §3 pre-W re-entry).
+	pinOwnership: Type.Optional(Type.Array(PinOwnershipEntry)),
 });
 
 export const BddFeature = Type.Object({
@@ -113,6 +156,7 @@ export const BddData = Type.Object({
 	title: Type.String({ description: "feature/spec title, e.g. 'Core Types & Configuration'" }),
 	date: Type.String(),
 	source: Type.String({ description: "requirements doc path, e.g. './01-requirements.md'" }),
+	layerW: LayerWStamp,
 	features: Type.Array(BddFeature, { minItems: 1 }),
 	traceability: Type.Optional(
 		Type.Array(Type.Object({
@@ -145,9 +189,16 @@ export const RequirementsData = Type.Object({
 	date: Type.String(),
 	type: Type.String(),
 	priority: Priority,
+	layerW: LayerWStamp,
 	executiveSummary: Type.String(),
 	acceptanceCriteria: Type.Array(AcceptanceCriterion, { minItems: 2 }),
 	nonFunctional: Type.Array(Type.String(), { description: "performance / security / accessibility notes" }),
+	// 059 Layer W2 (D-R-W, grill R6 HIGH-1): HIGH-LEVEL INTENT ONLY —
+	// concept/shared-file hints, never pin reconciliation (Stage 2B cannot
+	// truthfully know file-level truth before research/assessment/design;
+	// concrete reconciliation is W4/Design's amendmentFamily). Absence is
+	// ADVISORY at 2B (059 §3 R3 requirements duty).
+	affectsSharedSurfaces: Type.Optional(Type.Array(Type.String(), { description: "intent-level shared-surface hints: concepts or shared-file paths the ACs touch — NOT pin reconciliation" })),
 	openQuestions: Type.Optional(Type.Array(Type.String())),
 });
 export type RequirementsData = Static<typeof RequirementsData>;
@@ -212,6 +263,16 @@ const Finding = Type.Object({
 	recommendation: Type.Optional(Type.String()),
 	evidence: Type.Optional(Type.Array(Type.String())),
 	priorFindingId: Type.Optional(Type.String()),
+	/** 059 D-R-E (Layer R4/R5): structured evidence loci for cross-artifact
+	 *  findings. Machine-verified by the convergence-duty seam (≥2 loci exist
+	 *  on disk at the stated file:line ∧ ≥1 locus ∈ the stage's injected slice
+	 *  ⇒ evidence-pair exemption); absent ⇒ no exemption eligibility
+	 *  (fail-closed harmless). Required by the R5 attribution scorer. */
+	evidenceLoci: Type.Optional(Type.Array(Type.Object({
+		file: Type.String({ description: "repo-relative file path of the evidence" }),
+		line: Type.Optional(Type.Number({ description: "1-based line number" })),
+		ref: Type.Optional(Type.String({ description: "pinId or symbol the locus cites" })),
+	}, { additionalProperties: false }), { description: "machine-checkable loci for both sides of a cross-artifact contradiction" })),
 	/** v0.3.1 F1: short stable name for the defect CLASS when the defect
 	 *  generalizes (e.g. "pattern-rejects-registry-keys") — drives the
 	 *  deterministic class-sweep directive at the 2nd instance. */
@@ -238,6 +299,12 @@ export const SpecReviewData = Type.Object({
 	summary: Type.String(),
 	findings: Type.Array(Finding),
 	priorFindingResolutions: Type.Optional(Type.Array(ReviewResponse)),
+	// 059 D-R-E: the ENGINE-WRITTEN deterministic cross-check result (contract
+	// inventory reconciliation, produced by the spec convergence loop from the
+	// Layer R1 extractor) — stamped onto the control post-return and rendered
+	// into the review doc; D2's pass/fail must cite it. Optional because it is
+	// never model-authored and absent on pre-W/legacy rounds.
+	contractInventoryReconciliation: Type.Optional(Type.String({ description: "engine-written section — never authored by the model" })),
 	dimensions: Type.Array(Type.Object({ name: Type.String(), status: Type.String(), notes: Type.String() }, { additionalProperties: false })),
 }, { additionalProperties: false });
 export type SpecReviewDataT = Static<typeof SpecReviewData>;
@@ -299,6 +366,7 @@ export const DebugData = Type.Object({
 export const DesignData = Type.Object({
 	title: Type.String(), date: Type.String(), summary: Type.String(),
 	designer: Type.String(),
+	layerW: LayerWStamp,
 	modules: Type.Array(Type.Object({ name: Type.String(), description: Type.String() })),
 	// Boolean control drift (run 2026-08-15T13-45-02 postmortem): these fields
 	// are semantically boolean but historically typed String-only — a model
@@ -326,6 +394,19 @@ export const DesignData = Type.Object({
 		chosen: Type.String(),
 		rationale: Type.String(),
 		alternatives: Type.Optional(Type.Array(Type.String())),
+	}))),
+	// 059 W4 (D-R-W): the CONCRETE amendment family — Stage 6 is the first stage
+	// with research/assessment/codebase grounding to know file-level truth
+	// (grill R6 HIGH-1). Family ⊇ pins stays the ENGINE validator's job (R3,
+	// blocking, ownerStage=design); the LLM audits exemption justifications.
+	amendmentFamily: Type.Optional(Type.Array(AmendmentFamilyEntry)),
+	// 059 W4: ATAM-lite tradeoff points as structured review objects (grill R6
+	// MED-4 — structured home chosen over prose).
+	tradeoffs: Type.Optional(Type.Array(Type.Object({
+		decision: Type.String({ description: "the design decision being traded off" }),
+		favoredQuality: Type.String({ description: "the quality attribute this decision favors" }),
+		sacrificedQuality: Type.String({ description: "the quality attribute it sacrifices" }),
+		rationale: Type.String({ description: "why the trade favors what it does" }),
 	}))),
 });
 export const PrototypeData = Type.Object({
@@ -480,6 +561,7 @@ export type ClassificationData = Static<typeof ClassificationData>;
 export const SpecificationData = Type.Object({
 	title: Type.String(),
 	date: Type.String(),
+	layerW: LayerWStamp,
 	summary: Type.String(),
 	architecture: Type.String(),
 	testingStrategy: Type.String(),
@@ -488,6 +570,12 @@ export const SpecificationData = Type.Object({
 	phases: Type.Array(SpecPhase, { minItems: 1 }),
 	tasks: Type.Array(Type.Object({ phase: Type.String(), description: Type.String(), scenarioRefs: Type.Optional(Type.Array(Type.String())) })),
 	reviewResponses: Type.Optional(Type.Array(ReviewResponse)),
+	// 059 W5 (D-R-W, delta-5 NEW-1): the Stage 6-skip FALLBACK home — when bug
+	// classification skips design, the specification carries the SAME-SHAPE
+	// concrete amendmentFamily and the spec validator runs the authoritative
+	// set-inclusion check there (blocking, ownerStage=spec). A shared-surface
+	// change can never reach implementation without one authoritative check.
+	amendmentFamily: Type.Optional(Type.Array(AmendmentFamilyEntry)),
 	// Layer D (AC-04..08): an OPTIONAL spec-declared cargo build-gate contract.
 	// The specification stage MAY declare it for backend/integration features; it
 	// is threaded into RunOptions.gate and becomes the top-precedence scope tier.
