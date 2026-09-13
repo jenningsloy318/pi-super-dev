@@ -80,6 +80,7 @@ Offline harness (NOT the in-pipeline eval stage): for each golden fixture (plant
 - **D-R-A** Inventory extractor (`src/review/contract-surface.ts` candidate): grammar-table-driven extraction (§3 table), traversal, per-file index, invariants.json + mapping file loading, unanchored/unmapped reporting; golden-fixture unit tests incl. the SCENARIO-014 shape.
 - **D-R-B** Validators + engine seam: amendment-family control schema + per-stage validators (R3), `enforceReviewerConvergenceDuty` verified-bounded exemption (R4); source-contract tests pin the seam.
 - **D-R-C** Prompt-builder deltas: slice injection + duty lines + order-neutrality line; tests pin injection shapes and additive-only property.
+- **D-R-E** Reviewer report schema delta (the ONLY strongly-typed addition): findings[] gains optional `evidenceLoci: Array<{file, line?, ref?}>` — machine-verified by the R4 seam (loci exist on disk ∧ ≥1 locus ∈ stage slice; absent ⇒ no exemption eligibility, fail-closed harmless) and required by the R5 attribution scorer. Rendered reports add the `Loci:` line, the engine-written Contract Inventory Reconciliation section (spec-review), and the `[evidence-pair exempt]` marker. Verdict vocabulary, controlKeys, dimensions structure, and all prose-inference helpers unchanged (additive-only, DEC-5 shape).
 - **D-R-D** Offline reviewer harness + golden fixtures + finding-level attribution scorer + additive `reviewer-harness` eval rows.
 
 ## 6. Non-goals
