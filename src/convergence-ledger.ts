@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { localTimestamp } from "./render/time.ts";
@@ -25,7 +25,12 @@ export type ConvergenceOwnerStage =
 	| "merge"
 	| "environment";
 
-export type ConvergenceFindingStatus = "open" | "addressed" | "verified" | "deferred" | "needs-human";
+/** "superseded" (v0.3.97 / 058 D-E) is a DETERMINISTIC-only status — set by
+ *  the injection seam when a finding's cited upstream anchor id vanished in
+ *  an upstream replan rewrite. It is not part of the reviewer vocabulary in
+ *  review-findings.ts; superseded rows are retained on disk (P10) but never
+ *  injected. */
+export type ConvergenceFindingStatus = "open" | "addressed" | "verified" | "deferred" | "needs-human" | "superseded";
 
 export interface ConvergenceFinding {
 	id: string;
@@ -261,14 +266,108 @@ export function persistConvergenceLedger(state: PipelineState): void {
 			persistedAt: localTimestamp(),
 			findings: store.findings,
 		};
-		const base = dir.endsWith("/") ? dir : dir + "/";
-		mkdirSync(dirname(base.slice(0, -1)), { recursive: true });
-		// sd33 CODE-SD33-7: atomic temp+rename — a torn write must never leave a
-		// corrupt ledger that kills the NEXT run's injection.
-		const tmp = `${base}${CONVERGENCE_LEDGER_FILE}.tmp`;
-		writeFileSync(tmp, JSON.stringify(payload), "utf8");
-		renameSync(tmp, `${base}${CONVERGENCE_LEDGER_FILE}`);
+		writePersistedLedger(dir.endsWith("/") ? dir : dir + "/", payload);
 	} catch { /* best-effort — resume then starts from an empty ledger, as today */ }
+}
+
+/** sd33 CODE-SD33-7: atomic temp+rename — a torn write must never leave a
+ *  corrupt ledger that kills the NEXT run's injection. Shared by the state
+ *  persist above and the injection seam's superseding reconcile (058 D-E). */
+function writePersistedLedger(base: string, payload: PersistedLedger): void {
+	mkdirSync(dirname(base.slice(0, -1)), { recursive: true });
+	const tmp = `${base}${CONVERGENCE_LEDGER_FILE}.tmp`;
+	writeFileSync(tmp, JSON.stringify(payload), "utf8");
+	renameSync(tmp, `${base}${CONVERGENCE_LEDGER_FILE}`);
+}
+
+// ─── v0.3.97 (058 §0 S-E / §5 D-E): deterministic superseding of orphaned anchors ──
+
+// \d+ + /i (adversarial gate Surface 1): superseding must be AT LEAST as
+// wide as what writers can cite — single-digit (AC-9) and lowercase
+// (scenario-030) citations must not escape reconciliation; anchorKey already
+// normalizes case/number, and the reason keeps the cited original form.
+const AC_ANCHOR_PATTERN = /\bAC-\d+\b/gi;
+const SCENARIO_ANCHOR_PATTERN = /\bSCENARIO-\d+\b/gi;
+
+/** The on-disk anchor ids of ONE family, read from its owning upstream
+ *  artifact (AC ← `*-requirements.md`, SCENARIO ← `*-bdd-scenarios.md`).
+ *  Returns null — the family is DISARMED — when no matching artifact exists,
+ *  none is readable, or none carries a single anchor: superseding must never
+ *  wipe findings against a missing/empty doc (P5 fail-open — the trace gate
+ *  only ever validates against an artifact that exists). */
+/** Semantic anchor identity: "SCENARIO-050" ≡ "SCENARIO-50" — ledger rows
+ *  and rendered docs pad ids differently (the live run cited 3-digit ids
+ *  against 2-digit docs), so membership is compared on the numeric form,
+ *  while reported reasons keep the CITED original form (located, P10). */
+function anchorKey(anchor: string): string {
+	const m = anchor.match(/^(AC|SCENARIO)-(\d+)$/i);
+	return m ? `${m[1].toLowerCase()}:${Number(m[2])}` : anchor.toLowerCase();
+}
+
+function upstreamAnchorSet(base: string, docGlob: string, pattern: RegExp): Set<string> | null {
+	try {
+		const matcher = new RegExp(`^${docGlob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i");
+		const names = readdirSync(base).filter((name) => matcher.test(name));
+		if (names.length === 0) return null;
+		const anchors = new Set<string>();
+		for (const name of names) {
+			for (const anchor of readFileSync(base + name, "utf8").match(pattern) ?? []) anchors.add(anchorKey(anchor));
+		}
+		return anchors.size > 0 ? anchors : null;
+	} catch {
+		return null;
+	}
+}
+
+/** The first family anchor cited in `text` but absent from `valid` — the
+ *  located orphan that supersedes the finding. A disarmed family (null)
+ *  never reports one. */
+function firstOrphanedAnchor(text: string, valid: Set<string> | null, pattern: RegExp): string | null {
+	if (!valid) return null;
+	for (const cited of text.match(pattern) ?? []) {
+		if (!valid.has(anchorKey(cited))) return cited;
+	}
+	return null;
+}
+
+/** 058 §0 S-E fix shape (run 2026-09-13T03-24-15-047Z): an upstream replan
+ *  rewrote the BDD into a NEW scenario-id space while pre-replan ledger
+ *  findings still cited the OLD ids; injecting them made every spec-writer
+ *  round re-echo ids the deterministic trace gate (validating against the
+ *  NEW doc) bounced — 5 consecutive rounds failed on SCENARIO-030. Re-anchoring
+ *  is unsound (renumbering is arbitrary — a vanished id may have no
+ *  successor; semantic inference is P4-forbidden), so this SUPERSEDES only:
+ *  an injectable finding citing an anchor that no longer exists in its
+ *  family's artifact flips to status "superseded" with a located reason and
+ *  is persisted (P10: rows retained on disk, visible, marked — never
+ *  deleted). Only findings the caller would inject participate —
+ *  verified/deferred/advisory rows are none of this path's business. The
+ *  persist is best-effort; a write failure degrades to an in-memory
+ *  exclusion this run and a re-supersede on the next call (idempotent). */
+function supersedeOrphanedAnchorFindings(base: string, taskHash: string, findings: ConvergenceFinding[]): void {
+	const acAnchors = upstreamAnchorSet(base, "*-requirements.md", AC_ANCHOR_PATTERN);
+	const scenarioAnchors = upstreamAnchorSet(base, "*-bdd-scenarios.md", SCENARIO_ANCHOR_PATTERN);
+	let changed = false;
+	for (const finding of findings) {
+		if (!finding || typeof finding !== "object" || finding.downgradeReason) continue;
+		const injectable = finding.status === "open" || finding.status === "needs-human"
+			? finding.blocking === true
+			: finding.status === "addressed";
+		if (!injectable) continue;
+		const cited = [finding.title, finding.detail, ...(Array.isArray(finding.evidence) ? finding.evidence : [])].join(" ");
+		const orphan = firstOrphanedAnchor(cited, scenarioAnchors, SCENARIO_ANCHOR_PATTERN)
+			?? firstOrphanedAnchor(cited, acAnchors, AC_ANCHOR_PATTERN);
+		if (!orphan) continue;
+		finding.status = "superseded";
+		finding.blocking = false;
+		finding.downgradeReason = `superseded: anchor ${orphan} missing after upstream replan`;
+		finding.lastSeenAt = localTimestamp();
+		changed = true;
+	}
+	if (!changed) return;
+	try {
+		writePersistedLedger(base, { version: 1, taskHash, persistedAt: localTimestamp(), findings });
+	} catch { /* best-effort — the filter below still excludes the row this run */ }
 }
 
 /** Unresolved BLOCKING findings from a prior run's persisted ledger, for
@@ -278,22 +377,31 @@ export function persistConvergenceLedger(state: PipelineState): void {
  *  non-blocking rows are skipped. v0.3.24 (review-2 F5): returns ALL
  *  unresolved rows — the recording side must see every open blocker (an
  *  own-owned row past a cap would otherwise stop pinning after a restart);
- *  prompt-size capping happens at the feedback-line seam in the callers. */
+ *  prompt-size capping happens at the feedback-line seam in the callers.
+ *  v0.3.97 (058 D-E): injectable rows citing AC-/SCENARIO- anchors that
+ *  vanished from the on-disk upstream artifacts are deterministically
+ *  SUPERSEDED (flip persisted, located reason) and never injected. */
 export function priorFindingsForInjection(specDir: string | undefined): { findings: ConvergenceFinding[]; omitted: number } {
 	try {
 		if (!specDir) return { findings: [], omitted: 0 };
-		const path = `${specDir.endsWith("/") ? specDir : specDir + "/"}${CONVERGENCE_LEDGER_FILE}`;
+		const base = specDir.endsWith("/") ? specDir : specDir + "/";
+		const path = `${base}${CONVERGENCE_LEDGER_FILE}`;
 		if (!existsSync(path)) return { findings: [], omitted: 0 };
 		const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<PersistedLedger>;
 		const anchor = anchorTaskHash(specDir);
 		if (anchor === null || raw?.version !== 1 || !Array.isArray(raw.findings) || raw.taskHash !== anchor) {
 			return { findings: [], omitted: 0 };
 		}
+		// 058 D-E: reconcile orphaned anchors BEFORE filtering — the status flip
+		// is persisted and the rows are excluded in one pass.
+		supersedeOrphanedAnchorFindings(base, anchor, raw.findings);
 		// Ledger semantics: "addressed" rows are writer claims awaiting reviewer
 		// verification — non-blocking in the ledger, but across a restart nobody
-		// will verify the claim, so they are injected as residue too.
+		// will verify the claim, so they are injected as residue too. "superseded"
+		// rows (058 D-E) are dead against the revised upstream and must never be
+		// re-echoed by a writer.
 		const unresolved = raw.findings.filter((f) =>
-			f && typeof f === "object" && !f.downgradeReason &&
+			f && typeof f === "object" && !f.downgradeReason && f.status !== "superseded" &&
 			(f.status === "open" || f.status === "needs-human"
 				? f.blocking === true
 				: f.status === "addressed"));

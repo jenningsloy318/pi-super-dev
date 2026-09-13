@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.3.97: 058 P3/D-E — 收敛账本孤儿锚点确定性作废（S-E 修复）
+
+- **D-E ledger superseding**：`priorFindingsForInjection` 注入前对账——扫描磁盘上游工件（`*-requirements.md` / `*-bdd-scenarios.md`）的有效 `AC-\d+` / `SCENARIO-\d+` 锚点；引用已消失锚点的可注入 finding 翻转为 `status: "superseded"` + 定位理由（保留被引原文），持久化（P10：保留可见、标记、永不删除）并排除注入。REPLAN 重编号上游工件后，旧 ledger findings 不再污染 writer（活体 S-E：SCENARIO-030 五连败）。
+- **分族 fail-open（P5）**：工件缺失/空/不可读 ⇒ 该族解除武装——绝不对着缺失文档清空 findings。
+- **anchorKey 语义归一化**：`SCENARIO-050` ≡ `SCENARIO-50`（数值等价、大小写不敏感）；`\d+` + `/i` 文法（对抗门 Surface 1：单位数/小写引用逃逸已封）。理由保留被引原文形式。
+- **双门**：Code PASS 8/8（含状态并集包含清单安全、closeAgentFailedFindings 模式比对、原子写提取零漂移）；Adversarial 7/8 EXPLICIT-DEFENSED + Surface 1 两 blocker 已修（夹具 (g)）。全套件 259 文件 / 3920 passed（+7）。
+
+
 ### Added — v0.3.96: Wave P1 — 跨相位契约矛盾架构（D-A 计划期可满足性 + D-C 进度分类迭代）
 
 - **D-A 计划期保护威胁检测**（`src/stages/plan-feasibility.ts` 文法 v2，Check 3 "protection-threat"）：机械式惯用预扫描器（`git status --porcelain` 与不可变措辞共现，对称引号边界；可选 `repo-invariants.json`）提取保护路径，与全部 phase 的 `requireFiles` 写集求交——保护 ⨯ 写入 = 吞噬威胁（POP 模型），**Stage 9 入口即 REPLAN**，命名每一对 (protectingSource ⨯ writingPhase)。根治 run-2026-09-13 SCENARIO-014（schemas.ts byte-untouched ⨯ 必须 edit）在实现期燃烧 3 小时的无解类。F-12 包含性全触点强制（逃逸/遍历/宿主路径永不成保护主张）；P10 逐文件命中清单（`protectionScan` 报告字段）。
