@@ -15,7 +15,10 @@ import { priorReplanConstraintBlock } from "../replan/replan.ts";
 // 059 R1A W1 (D-R-C plumbing): the write-time contract-surface slice — computed
 // per buildPrompt call (fresh walk, no cache) and stamped on the pipeline state
 // so the R4 exemption + R3 validators read what the writer saw.
-import { stampContractSlice, writerContractSlice } from "../review/contract-surface.ts";
+// 059 R1B (D-R-C reviewer portion): the reviewer-side slice — re-rendered from
+// the WRITER's stamp (readContractSliceStamp) so each reviewer sees the same
+// contract-surface pins its stage's writer saw.
+import { CONTRACT_INVENTORY_ERROR_BANNER, CONTRACT_SLICE_MAX_LINES, CONTRACT_SLICE_TRUNCATION_MARKER, extractContractInventory, readContractSliceStamp, stampContractSlice, writerContractSlice, type ContractSliceStamp } from "../review/contract-surface.ts";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
 
@@ -125,6 +128,62 @@ export const specWriter: Stage = writerTask({
 	normalizeControl: normalizeSpecControl,
 });
 
+/** 059 R1B (§3 R2, D-R-C reviewer portion): render the reviewer's
+ *  contract-surface section from the WRITER's stamp — the stamp carries the
+ *  slice identity (touched files + pinIds, exactly what the writer's prompt
+ *  saw), and pin detail (locus + statement) comes from a fresh inventory walk
+ *  (059 §3 R1 extraction timing: fresh read at each review dispatch; same tree
+ *  ⇒ same pins). No stamp / empty touched-set / absent worktree / any error ⇒
+ *  "" ⇒ the prompt section is omitted entirely — fail-closed harmless (the S5
+ *  degrade policy; pre-W/resume replays carry no stamp). Deterministic; never
+ *  throws. Exported so the R1B prompt tests exercise this exact function. */
+export function reviewerContractSliceBlock(state: PipelineState, stage: string): string {
+	try {
+		const stamp: ContractSliceStamp | undefined = readContractSliceStamp(state as Record<string, unknown>, stage);
+		if (!stamp || stamp.files.size === 0 || stamp.pinIds.size === 0) return "";
+		const worktreePath = state.setup?.worktreePath;
+		if (!worktreePath) return "";
+		const inventory = stamp.inventory ?? extractContractInventory(worktreePath);
+		const pinIds = new Set(stamp.pinIds);
+		// Same header the writer's block carries (the SAME slice, reviewer side).
+		const lines = ["## Contract Surface Slice — shared baseline pins this change may touch"];
+		// DEC-4 fail-loud: an extraction error on an existing tree must never
+		// silently shrink the review inputs. (When extraction failed there is
+		// nothing to drift-check — the banner IS the honest signal.)
+		const extractionFailed = inventory.errors.length > 0;
+		if (extractionFailed) {
+			lines.push(CONTRACT_INVENTORY_ERROR_BANNER, ...inventory.errors.slice(0, 4).map((e) => `- extraction: ${e}`));
+		}
+		const matched = new Set<string>();
+		for (const file of [...stamp.files].sort()) {
+			for (const pin of inventory.protectedFiles.get(file) ?? []) {
+				if (pinIds.has(pin.pinId)) {
+					matched.add(pin.pinId);
+					lines.push(`- ${file}: ${pin.pinId} ${pin.idiomFamily} @ ${pin.locus} — ${pin.statement}`);
+				}
+			}
+		}
+		// Stamp-fidelity drift guard (059 §3 R1: "same tree ⇒ same slice"):
+		// when the fresh walk can no longer account for EVERY pinned pinId the
+		// writer stamped, the tree drifted between write and review — emitting
+		// the residual would be silent skew. Fail closed to "" (the S5 degrade
+		// policy): no slice at all, never a partial one.
+		if (!extractionFailed && matched.size < pinIds.size) return "";
+		for (const pin of inventory.unanchored) {
+			lines.push(`unanchored: ${pin.pinId} "${pin.statement}" @ ${pin.locus} — ${pin.unanchoredReason ?? "unresolved"}`);
+		}
+		// The stamp's pinIds are already capped at 15 (they WERE the writer's
+		// slice); the line budget still bounds the whole section (P8/P10).
+		if (lines.length > CONTRACT_SLICE_MAX_LINES) {
+			lines.length = CONTRACT_SLICE_MAX_LINES - 1;
+			lines.push(CONTRACT_SLICE_TRUNCATION_MARKER);
+		}
+		return lines.length > 1 ? lines.join("\n") : "";
+	} catch {
+		return "";
+	}
+}
+
 /** Upstream Fagan-style reviewers (shift-left): each reviews the just-written
  *  artifact against its stage dimensions and returns a verdict + findings, so
  *  defects are caught at the source instead of cascading into the spec. The id
@@ -141,6 +200,8 @@ export const requirementsReviewWriter: Stage = writerTask({
 			docPath: (state.requirements?.docPath as string) ?? undefined,
 			upstream: [],
 			priorResponses: (state.requirements?.reviewResponses as Array<Record<string, unknown>>) ?? undefined,
+			// 059 R1B: the requirements writer's stamped slice (fail-closed when absent)
+			contractSliceBlock: reviewerContractSliceBlock(state, "requirements"),
 		}),
 });
 
@@ -156,6 +217,8 @@ export const bddReviewWriter: Stage = writerTask({
 			docPath: (state.bdd?.docPath as string) ?? undefined,
 			upstream: [{ label: "Requirements", path: (state.requirements?.docPath as string) ?? undefined }],
 			priorResponses: (state.bdd?.reviewResponses as Array<Record<string, unknown>>) ?? undefined,
+			// 059 R1B: the bdd writer's stamped slice (fail-closed when absent)
+			contractSliceBlock: reviewerContractSliceBlock(state, "bdd"),
 		}),
 });
 
@@ -175,6 +238,8 @@ export const designReviewWriter: Stage = writerTask({
 				{ label: "Code Assessment", path: (state.assessment?.docPath as string) ?? undefined },
 			],
 			priorResponses: (state.design?.reviewResponses as Array<Record<string, unknown>>) ?? undefined,
+			// 059 R1B: the design writer's stamped slice (fail-closed when absent)
+			contractSliceBlock: reviewerContractSliceBlock(state, "design"),
 		}),
 });
 
@@ -184,7 +249,8 @@ export const specReviewWriter: Stage = writerTask({
 	agent: "spec-reviewer",
 	accessMode: "source-read-only",
 	requires: ["*-specification.md", "*-implementation-plan.md", "*-task-list.md"],
-	buildPrompt: (state) => P.buildSpecReviewPrompt(S(state), state.classify ?? null, state.spec ?? null),
+	// 059 R1B: the spec writer's stamped slice rides the new additive 4th param.
+	buildPrompt: (state) => P.buildSpecReviewPrompt(S(state), state.classify ?? null, state.spec ?? null, reviewerContractSliceBlock(state, "spec")),
 });
 
 export const docsWriter: Stage = writerTask({

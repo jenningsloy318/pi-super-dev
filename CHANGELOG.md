@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.4.1: 059 R1B reviewer-side slice injection + R2 offline reviewer-measurement harness（最后一波）
+
+- **R1B reviewer 侧切片注入**：`buildUpstreamReviewPrompt`/`buildSpecReviewPrompt` 增加加法式 `contractSliceBlock`——评审者看到与 writer 相同的 contract-surface 切片（`reviewerContractSliceBlock`：读 writer stamp → stamp pinIds × fresh-walk 重渲染；stamp 缺席/空 touched-set/无 worktree/错误 ⇒ `""`（S5 fail-closed））+ 每评审者一条清单线（requirements amendment-family 意图级 / bdd owned-vs-inherited-frozen 理由 / design ⊇ set-inclusion / spec D2→引擎写就的 Contract Inventory Reconciliation 引用，绝不内联复制）+ R4 evidence-pair 指令 + artifact 顺序中立线。切片走 `fenceUntrusted`（AC-31——pin 陈述是 sibling-prose 敌意来源文本）；stamp 保真漂移守卫：fresh walk 无法重现全部 stamp pinIds ⇒ `""`（§3 R1 same-tree 语义违反时绝不给部分切片）。
+- **R2 offline 评审测量 harness**：`src/eval/reviewer-harness.ts`（镜像 src/evolution/ 评审层约定）——3 个金标矛盾夹具（fx-1 = SCENARIO-014 形态：AC-05 第 15 成员修正 vs exactly-14 成员 pin + porcelain byte-untouched pin；fx-2 porcelain-vs-BDD-edit；fx-3 no-Xth-vs-spec-phase）；薄 runner（夹具树物化 → inventory → slice → landed builders 渲染 prompt，**全程无 LLM**）；纯归因评分器——catch = **blocking** finding 覆盖 planted locus（§3 R5；verdict 字段绝不读——DEC-6），loci ±3 行容差 + pinId-ref 臂 + file:line prose 回退 + file-only=partial=miss；**A5 slice 接地**：pinId 不在注入切片 ⇒ 永不记 catch（截断/泄漏防护）；`aggregateEscapeRate`（escapeRate = (total−caught)/total + 零除守卫）；加法式 `scorerKind: "reviewer-harness"` eval rows（数据 only，eval 层不动）。
+- **44 个新确定性测试**（16 R1B + 25 R2 + 3 门修复轮）+ 41→44 期间双门修复（Code PASS 12/12；Adversarial PASS-conditional 3 EXPLOITED 全修：A2 fence、A5 接地、A1/A11 漂移守卫；Delta PASS 4/4）。
+- **门**：全套件 265 文件 / 4074 passed；tsc 干净。
+
+
 ### Added — v0.3.99: 058 P2 — 执行时保护两击防御 + git checkpoint 回滚（Layer 2 & 4）
 
 - **D-B 两击有界防御**：`src/stages/protection-interval.ts` — 入场保护集推导（P6 复合 `extractContractInventory`/`scanImmutabilityIdioms`；仅 porcelain-emptiness 家族为禁止性（grill R8：membership 可修订非禁止）；repo-invariants `protected` 臂 − 059 amendmentFamily 豁免（fail-closed）；`detectProtectionViolations`（porcelain ∪ 申报足迹）；`phaseProtectionStrikes` 计数器 + 教育块序列化。implementation.ts 同步 post-join pre-build-gate 检查点（NEW-1，非 watcher）：Strike-1 = 精确路径 restore + 尝试零消耗 + 一次性教育块；Strike-2 = judge（`stage9.protection-breach`，`[replan-upstream, challenge-test]`，escalate-now 拒执——`src/review/protection-breach-consumer.ts` 镜像 contract-conflict-consumer 模式），每个结局都终止当次尝试（P8 无三击循环）。
