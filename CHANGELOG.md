@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.3.99: 058 P2 — 执行时保护两击防御 + git checkpoint 回滚（Layer 2 & 4）
+
+- **D-B 两击有界防御**：`src/stages/protection-interval.ts` — 入场保护集推导（P6 复合 `extractContractInventory`/`scanImmutabilityIdioms`；仅 porcelain-emptiness 家族为禁止性（grill R8：membership 可修订非禁止）；repo-invariants `protected` 臂 − 059 amendmentFamily 豁免（fail-closed）；`detectProtectionViolations`（porcelain ∪ 申报足迹）；`phaseProtectionStrikes` 计数器 + 教育块序列化。implementation.ts 同步 post-join pre-build-gate 检查点（NEW-1，非 watcher）：Strike-1 = 精确路径 restore + 尝试零消耗 + 一次性教育块；Strike-2 = judge（`stage9.protection-breach`，`[replan-upstream, challenge-test]`，escalate-now 拒执——`src/review/protection-breach-consumer.ts` 镜像 contract-conflict-consumer 模式），每个结局都终止当次尝试（P8 无三击循环）。
+- **D-D checkpoint 回滚（Layer 4 替换）**：`src/stages/checkpoint-rollback.ts` — `captureStageEntryBaseline` / `latestGreenCommitBefore(K)`（NEW-3 回退 `?? stageEntryBaselineCommit`；walk 界定于本轮 `baseline..HEAD`，先前任一轮的 commits 绝不作为目标）/ `laterPhasesRan`（位置制谓词）/ `rollbackConvergenceReentry`（stash 下游未提交态（spec 目录豁免）→ `reset --hard` NEW-3 目标 → NEW-2 下游 green+partial 全失效 + abandoned-commit P10 日志；守卫：in-place/kill-switch/无目标诚实跳过；reset 失败 stash pop 恢复）/ `reapplyRollbackStash`（K 确定性 commit 后顺序重放；冲突 → 树回滚 + stash RETAINED 可恢复，绝不 LLM 冲突解决）。
+- **对抗/代码门修复轮**：FINDING-1 phantom-stash 捕获（干净树 push exit-0 "No local changes to save" × refs/stash 解析到无关旧 stash——现要求真实创建消息 AND refs/stash 变更，F-1 先例）+ 负测试；S4 冲突 stash RETAINED（不再不可逆 drop）+ partial 相位 pending stash 诚实保留（防覆盖孤儿化）；S5 下游 partial 一并失效（恢复单回滚不变量）+ laterPhasesRan 位置制；S7 行为测试补强（真实 git 状态迁移 ×30）。
+- **门**：Code 7/8 PASS + FINDING-1 修复；Adversarial 5 DEFENSED + 3 EXPLOITED 全修；Delta PASS（6/6 全 VERIFIED）。全套件 263 文件 / 4029 passed（+33）。
+
+
 ### Added — v0.3.98: 059 R1A — reviewer 质量架构（合同面清单 + writer 声明层 + R4 豁免缝）
 
 - **D-R-A 合同面抽取器**：`src/review/contract-surface.ts` — P6 复合 058 的 `scanImmutabilityIdioms`/`claimPathUsable`（不重推导文法）；§3 文法表 4 家族 × TS/Python/Markdown（porcelain-emptiness / exactly-N / no-Xth closure / ownership tables）；确定性排序遍历；repo-invariants.json 兼容信封（`protected` + `pins[]` 锚定遗留 prose pins）；unanchored 诚实上报（P10）；R2/W1 切片构建（15-pin/60 行上限 + 截断标记 + DEC-4 横幅）。

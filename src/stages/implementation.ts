@@ -53,6 +53,10 @@ import { phaseClauseFiles } from "./plan-feasibility.ts";
 import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../build-runner/runner-discovery.ts";
 import { deriveConventionsRunnerSpec } from "../build-runner/conventions.ts";
 import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../build-runner/coverage-gate.ts";
+// Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
+import { buildProtectionEducationBlock, bumpProtectionStrike, detectProtectionViolations, deriveProtectionInterval, PROTECTION_STRIKE_BOUND, resetProtectionStrike, reviveProtectionInterval, serializeProtectionInterval, type ProtectionInterval } from "./protection-interval.ts";
+import { consumeProtectionBreachEscalation } from "../review/protection-breach-consumer.ts";
+import { captureStageEntryBaseline, laterPhasesRan, reapplyRollbackStash, rollbackConvergenceReentry } from "./checkpoint-rollback.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red" | "weakened-preexisting-test";
 
@@ -1929,7 +1933,7 @@ export const implementationStage: Stage = {
 		// control). Green phases are skipped; a failed phase's prior reasons seed
 		// its next attempt 1 so iteration 2 targets the real failures.
 		const startInstructionFingerprint = runtimeInstructionFingerprint(state.setup?.specDirectory);
-		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[]; runtimeInstructionFingerprint?: string; invalidatedByRuntimeInstructions?: boolean; runStartDirt?: string[]; phaseStartDirt?: Record<string, string[]>; phaseGuidanceReentryUsed?: Record<string, true>; inheritedRedFlakeGrantUsed?: boolean; redAssistArmed?: Record<string, ResearchAssistRedArm>; phaseResearchAssistUsed?: Record<string, true> };
+		const priorImpl = (state.implementation ?? {}) as { phaseStatus?: PhaseStatusEntry[]; lastFailures?: PhaseFailureEntry[]; runtimeInstructionFingerprint?: string; invalidatedByRuntimeInstructions?: boolean; runStartDirt?: string[]; phaseStartDirt?: Record<string, string[]>; phaseGuidanceReentryUsed?: Record<string, true>; inheritedRedFlakeGrantUsed?: boolean; redAssistArmed?: Record<string, ResearchAssistRedArm>; phaseResearchAssistUsed?: Record<string, true>; phaseProtectionStrikes?: Record<string, number>; stageEntryBaselineCommit?: string; protectionInterval?: unknown; rollbackStash?: { phaseId?: unknown; stashSha?: unknown } };
 		const priorInstructionInvalidated = priorImpl.invalidatedByRuntimeInstructions === true || (typeof priorImpl.runtimeInstructionFingerprint === "string" && priorImpl.runtimeInstructionFingerprint !== startInstructionFingerprint);
 		const priorRunStart = (Array.isArray(priorImpl.runStartDirt) ? priorImpl.runStartDirt : undefined);
 		// v0.3.85 F2: per-phase FIRST-EVER porcelain snapshots (the attribution
@@ -1976,6 +1980,39 @@ export const implementationStage: Stage = {
 		// v0.2.6 G4 (adversarial sd26-F2): guidance-reentry grants persist per
 		// phase EVER across convergence iterations.
 		let phaseGuidanceReentryUsed: Record<string, true> = priorGuidanceReentryUsed ? { ...priorGuidanceReentryUsed } : {};
+		// ── Wave 3 D-B (058 §4): per-phase protection strike counters. State key
+		// `phaseProtectionStrikes: Record<phaseId, number>` on the implementation
+		// control — persisted across §D convergence iterations (the
+		// phaseGuidanceReentryUsed precedent), strictly disjoint from 059's
+		// `writerMetadataRetryUsed:<stage>` (different prefix, different lifetime:
+		// per phase vs per stage). Instruction invalidation resets it with the
+		// phase carry (fresh run semantics).
+		let phaseProtectionStrikes: Record<string, number> = priorInstructionInvalidated || !priorImpl.phaseProtectionStrikes || typeof priorImpl.phaseProtectionStrikes !== "object" ? {} : { ...priorImpl.phaseProtectionStrikes };
+		// ── Wave 3 D-D (058 Layer 4): the stage-entry baseline commit (the NEW-3
+		// fallback rollback target for K=1 / partial-predecessor cases) + the
+		// pending rollback stash (re-applied after the re-entered phase's
+		// re-execution). Both persist across §D iterations via the control.
+		let stageEntryBaselineCommit = typeof priorImpl.stageEntryBaselineCommit === "string" && priorImpl.stageEntryBaselineCommit ? priorImpl.stageEntryBaselineCommit : captureStageEntryBaseline(setup.worktreePath);
+		if (!stageEntryBaselineCommit) ctx.log("Implementation: stage-entry baseline commit unavailable (git rev-parse failed / no commits) — D-D rollback would degrade honestly (NEW-3 fallback unusable this run)");
+		const priorRollbackStash = priorImpl.rollbackStash && typeof priorImpl.rollbackStash === "object" && typeof priorImpl.rollbackStash.stashSha === "string" && typeof priorImpl.rollbackStash.phaseId === "string" ? { phaseId: priorImpl.rollbackStash.phaseId, stashSha: priorImpl.rollbackStash.stashSha } : null;
+		let pendingRollbackStash: { phaseId: string; stashSha: string } | null = priorRollbackStash;
+		// ── Wave 3 D-B (058 Layer 2): the mechanically-derived protection interval —
+		// computed ONCE per run at first entry from the entry-time Layer-1 sources
+		// (the landed inventory walk COMPOSES scanImmutabilityIdioms; do NOT
+		// re-scan per attempt or per §D re-entry), persisted on the control in
+		// serializable form. A malformed persisted form re-derives (fail-safe).
+		let protectionInterval: ProtectionInterval;
+		const revivedInterval = reviveProtectionInterval(priorImpl.protectionInterval);
+		if (revivedInterval) {
+			protectionInterval = revivedInterval;
+		} else {
+			protectionInterval = deriveProtectionInterval(setup.worktreePath, setup.specDirectory);
+			// P10 visibility (mirrors the Layer-1 protectionScan lines): the interval's
+			// inputs are logged at derivation — a protection the grammar misses is
+			// visible as a 0-path interval, never silently absent.
+			for (const scanLine of protectionInterval.scanLines) ctx.log(`Implementation protection-interval: ${scanLine}`);
+			ctx.log(`Implementation protection-interval: ${protectionInterval.protectedPaths.size} protected path(s)${protectionInterval.protectedPaths.size > 0 ? ` — ${[...protectionInterval.protectedPaths.keys()].join(", ")}` : ""} (two-strike defense armed, 058 §3 Layer 2)`);
+		}
 		let lastFailures: PhaseFailureEntry[] = priorInstructionInvalidated ? [] : (Array.isArray(priorImpl.lastFailures) ? priorImpl.lastFailures.map((f) => ({ ...f, reasons: [...f.reasons] })) : []);
 		if (priorInstructionInvalidated) ctx.log("Implementation: runtime user instructions changed — invalidating prior green phase carry and re-running phases");
 		if (phaseStatus.length) ctx.log(`Implementation: resuming convergence iteration (${phaseStatus.filter((p) => p.status === "green").length}/${phases.length} phases already green)`);
@@ -2143,6 +2180,43 @@ export const implementationStage: Stage = {
 					continue;
 				}
 			}
+			// ── Wave 3 D-D (058 Layer 4 — NEW-2/NEW-3): checkpoint rollback at
+			// convergence re-entry. The §D walk is RE-ENTERING this non-green phase K
+			// after later phases already ran (their artifacts contaminate K's
+			// convergence ground — the S-B class). Reset the worktree to
+			// latestGreenCommitBefore(K) ?? the stage-entry baseline, stash downstream
+			// uncommitted state, and INVALIDATE the green stamps of K+1..N (their
+			// detached deterministic commits are documented as abandoned; recovery is
+			// re-execution through the normal walk — never cherry-pick, which would
+		// hand conflict resolution to an LLM: the exact defect class this removes).
+			// Self-limiting: after the first rollback in a pass, the invalidated
+			// downstream entries are gone, so later non-green phases no longer match
+			// the laterPhasesRan predicate (at most one rollback per §D entry).
+			if (laterPhasesRan(phaseStatus, idx)) {
+				const rollback = rollbackConvergenceReentry({
+					worktreePath: setup.worktreePath,
+					worktreeCreated: (setup as { worktreeCreated?: boolean }).worktreeCreated,
+					specDirectory: setup.specDirectory,
+					phaseIndex: idx + 1,
+					totalPhases: phases.length,
+					phaseStatus,
+					baselineCommit: stageEntryBaselineCommit,
+					log: (line) => ctx.log(line),
+				});
+				if (rollback.status === "rolled-back") {
+					// Re-baseline phase K's first-ever dirt snapshot on the rolled-back
+				// ground (the K-1 tree): unlike the sd26-F1 case, a hard reset to a
+				// PREDECESSOR commit legitimately re-anchors the attribution boundary.
+				// Invalidated downstream phases lose their snapshots so their
+				// re-execution captures fresh (their old ground no longer exists).
+				delete phaseStartDirt[phaseId]; // dropped — the landed phase-entry capture below recaptures fresh on the rolled-back ground (unlike sd26-F1, a reset to a PREDECESSOR commit legitimately re-anchors the attribution boundary)
+					for (const inv of rollback.invalidated) {
+						delete phaseStartDirt[inv];
+						resetProtectionStrike(phaseProtectionStrikes, inv); // fresh protection interval on re-execution
+					}
+					pendingRollbackStash = rollback.stashSha ? { phaseId, stashSha: rollback.stashSha } : null;
+				}
+			}
 			let green = false;
 			let attemptErrors: string[] = [];
 			let attemptsRun = 0;
@@ -2222,6 +2296,10 @@ export const implementationStage: Stage = {
 			let implJudgeDiagnosis = "";
 			let implJudgeEvidenceLabel = "verified evidence";
 			let judgeGuidance = "";
+			// Wave 3 D-B (058 Layer 2): the strike-1 protection education block — set
+			// by the post-join pre-build-gate choke point, consumed ONCE by the next
+			// implementer re-prompt (the judgeGuidance consumed-on-use pattern).
+			let protectionEducation = "";
 			// AND-semantics (AC-03 → SCENARIO-011..015): the missing DELIVERABLE entries
 			// from the previous attempt, fed into the next implementer retry under a
 			// `## Deliverables still missing — create/wire these` block. Resets each
@@ -3206,6 +3284,14 @@ export const implementationStage: Stage = {
 				// whether the tests are CONFIRMED-red or unverified.
 				const basePrompt = buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null);
 				const implParts: string[] = [basePrompt];
+				// Wave 3 D-B (058 Layer 2): the protection education rides FIRST — a
+				// reverted protected-path edit is the same prominence class as the
+				// frozen-RED stop block below (the implementer must see it before any
+				// other retry guidance).
+				if (protectionEducation) {
+					implParts.push(protectionEducation);
+					protectionEducation = "";
+				}
 				if (judgeGuidance) {
 					implParts.push(judgeGuidance);
 					judgeGuidance = "";
@@ -3612,6 +3698,71 @@ export const implementationStage: Stage = {
 							break;
 						}
 						continue;
+					}
+				}
+				// ── Wave 3 D-B (058 Layer 2 — NEW-1): the protection-interval choke point.
+				// A SYNCHRONOUS engine seam evaluated strictly AFTER the implementer
+				// returned and the RED review joined, immediately BEFORE build-gate
+				// dispatch — never a filesystem watcher or concurrent hook (NEW-1: a
+				// watcher would re-introduce the S-C read-skew race inside the protection
+				// mechanism itself). Zero cost / zero false positives when the protected
+				// set is empty.
+				if (protectionInterval.protectedPaths.size > 0) {
+					const protectionChanged = new Set<string>();
+					for (const e of porcelainEntries(setup.worktreePath)) {
+						protectionChanged.add(e.path);
+						if (e.fromPath) protectionChanged.add(e.fromPath);
+					}
+					const protectionViolations = detectProtectionViolations(
+						[...protectionChanged],
+						[...projectStructured.filesCreated, ...projectStructured.filesModified, ...projectStructured.filesDeleted],
+						protectionInterval,
+					);
+					if (protectionViolations.length > 0) {
+						const strike = bumpProtectionStrike(phaseProtectionStrikes, phaseId);
+						const violationPaths = protectionViolations.map((v) => v.path);
+						// Mechanical protection holds while the breach is adjudicated: revert
+						// the violating paths to the phase's entry state (restorePaths covers
+						// the tracked restore AND the created-file clean — the deterministic
+						// checkpoint chain IS the entry state).
+						restorePaths(setup.worktreePath, violationPaths);
+						if (strike === 1) {
+							// STRIKE 1 (zero attempt cost — an environment-corrected dispatch,
+							// not a judged failure): re-prompt the implementer ONCE with the
+							// education block naming the protected files + the exact clause.
+							protectionEducation = buildProtectionEducationBlock({ phaseId, violations: protectionViolations, strike });
+							ctx.log(`Implementation ${phaseId} protection strike 1/${PROTECTION_STRIKE_BOUND}: attempt ${attempt} wrote protected path(s) ${violationPaths.join(", ")} — REVERTED to the phase entry state; attempt NOT counted; re-prompting once with the protection education block (058 §3 Layer 2)`);
+							attempt--; // zero attempt cost: the for-loop's ++ restores the SAME attempt number
+							continue;
+						}
+						// STRIKE 2 (same phase): route to the judge — the consumer REFUSES
+						// escalate-now (honest degrade + route-back only, the 059 §3 R4
+						// consumer policy mirrored). Every strike-2 outcome ENDS this attempt
+						// (replan / RED re-author / honest partial), so no third in-loop
+						// strike can loop (P8: strike 2 always routes).
+						const breach = await consumeProtectionBreachEscalation({
+							ctx,
+							state,
+							phaseId,
+							phaseName,
+							strike,
+							violations: protectionViolations,
+							specIdentifier: setup.specIdentifier ?? "unknown",
+						});
+						if (breach.action === "challenge-test") {
+							reauthorEvidence = `\n\n## Judge diagnosis (verified evidence — the RED must be re-authored)\n${breach.diagnosis}\nEvidence: ${breach.evidence}`;
+							attemptProgressHistory = [];
+							acceptedRed = null;
+							// The contract surface is being re-authored — a fresh protection
+							// interval for this phase (bounded downstream by the judge's
+							// challenge budget and the strike-2-always-routes rule).
+							resetProtectionStrike(phaseProtectionStrikes, phaseId);
+							ctx.log(`Implementation ${phaseId} protection strike ${strike}: breach routed to judge → challenge-test — RED re-authored with the verified diagnosis; protection strike counter reset for the re-authored contract surface`);
+							continue;
+						}
+						attemptErrors = [...attemptErrors, `protection-breach: protected path(s) ${violationPaths.join(", ")} written ${strike}× after the strike-1 education${breach.action === "replan-routed" ? " — judge routed replan-upstream (plan revision)" : ` — judge outcome degraded (${breach.reason.slice(0, 200)})`}; the violating path(s) stay protected (reverted)`];
+						terminalStopReason = "no-progress";
+						break;
 					}
 				}
 				// HARD test oracle: actually run build/test/typecheck instead of trusting
@@ -4892,6 +5043,15 @@ export const implementationStage: Stage = {
 					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : terminalStopReason === "phase-attempt-cap" ? " (phase-attempt-cap)" : terminalStopReason === "phase-wall" ? " (phase wall budget exhausted)" : terminalStopReason === "wall-fuse" ? " (wall-fuse — run wall budget exhausted; resumable by design)" : terminalStopReason === "inherited-red" ? " (inherited-red — declared handoff routed; the run ends status replan)" : terminalStopReason === "declared-handoff" ? " (declared-handoff (f4) — the run ends status replan)" : ""} — continuing to the next phase`); // review-2 F8
 				}
 				allGreen = false;
+				// Adversarial S4 (v0.3.99 fix): if THIS phase's rollback stash is still
+				// pending (the phase went partial before its re-apply point), preserve
+				// it honestly — nulling pendingRollbackStash here prevents a later
+				// phase's rollback from silently overwriting the SHA and orphaning the
+				// stash in git stash list (P10: named, never silently stranded).
+				if (pendingRollbackStash && pendingRollbackStash.phaseId === phaseId) {
+					ctx.log(`Implementation ${phaseId} went partial with a pending rollback stash (${pendingRollbackStash.stashSha.slice(0, 8)}) — the stash is RETAINED in git stash list for manual recovery; it will NOT be re-applied automatically on this pass`);
+					pendingRollbackStash = null;
+				}
 				if (worktreeGone) break; // v0.3.57 liveness: no further phase can run in a deleted worktree
 				continue;
 			}
@@ -4915,6 +5075,15 @@ export const implementationStage: Stage = {
 					ctx.log(`Implementation ${phaseId} deterministic commit fell back to the orchestrator agent: ${commitOutcome.reason}`);
 					await ctx.agent({ id: `pipeline.implementation.${phaseId}.commit`, agent: "orchestrator", prompt: buildCommitPrompt(setup, phase.name) });
 				}
+			}
+			// ── Wave 3 D-D (058 Layer 4): re-apply the rollback stash AFTER this
+			// phase's re-execution landed (its deterministic commit just ran — the
+			// stash's downstream uncommitted state returns on top of the fresh K
+			// tree, best-effort; a conflict DROPS it with an honest P10 log inside
+			// reapplyRollbackStash — never an LLM conflict-resolution step).
+			if (pendingRollbackStash && pendingRollbackStash.phaseId === phaseId) {
+				reapplyRollbackStash({ worktreePath: setup.worktreePath, stashSha: pendingRollbackStash.stashSha, phaseId, log: (line) => ctx.log(line) });
+				pendingRollbackStash = null;
 			}
 		}
 		// v0.3.80 B2 — stage-close re-verification (commit fusion): gate-window expiry
@@ -5001,6 +5170,16 @@ export const implementationStage: Stage = {
 			phaseResearchAssistUsed,
 			inheritedRedFlakeGrantUsed,
 			phaseGuidanceReentryUsed,
+			// Wave 3 (058 §4 D-B/D-D): per-phase protection strike counters
+			// (`phaseProtectionStrikes: Record<phaseId, number>` — disjoint from 059's
+			// writerMetadataRetryUsed:<stage>), the stage-entry baseline commit (the
+			// NEW-3 rollback fallback), the serialized protection interval (derived
+			// once per run — never re-scanned per §D entry), and the pending rollback
+			// stash — all persist across §D convergence iterations like phaseStatus.
+			phaseProtectionStrikes,
+			stageEntryBaselineCommit,
+			protectionInterval: serializeProtectionInterval(protectionInterval),
+			rollbackStash: pendingRollbackStash,
 			convergenceBlocked,
 			convergenceBlockReason,
 			runtimeInstructionFingerprint: runtimeInstructionFingerprint(state.setup?.specDirectory),
