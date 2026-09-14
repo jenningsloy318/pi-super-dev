@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.4.2: 收敛需求集三定律（live-abort 修复，pi-omisis run 2026-09-14T00-59-16-373Z）
+
+- **现场**：BDD 收敛 8 轮 whack-a-mole 后 abort——checker 每轮从全量 inventory 引用未覆盖 pin（含 2 个 sibling spec 文档 pin），writer 逐轮合规申报，但其声明散文本身被下一轮 walk 重铸为新 pin（round 2 引用的 pin locus 就是 BDD 自己的 :145 行），文档逐轮膨胀（18.5KB→26KB），需求集永不缩减；judge 诊断"cross-stage checker/author contract conflict"后 escalate-now。
+- **根因（三复合违反）**：V1 需求集=全量 inventory ≫ writer 可见 15-pin 切片（W5 grounding advisory 又禁止越界引用）→ 结构性不可收敛；V2 被编辑工件自身是 pin 铸造源（写补救=造新需求）→ 需求单调性 D(n+1)⊆D(n) 被破坏；V3 需求消息把 locus 文件误当 shared surface。
+- **修复（研究锚定：SonarQube new-code/Semgrep baseline 的 ratchet 模式、"verifier 必须是独立于循环动力学的函数"原则、Kildall 单调不动点终止性）**：`src/review/contract-validators.ts` 新增单一 choke point `demandablePins`——需求 ⊆ writer 切片 pinIds（对偶可见性：checker 只能要求 writer 看得见的）+ 自指排除（本 stage 自己工件 prose 铸的 pin 不可要求——`selfSpecArtifactMatcher` 桥接生产绝对路径 specDirectory（setup.ts:755）到 repo-relative loci，`docs/specifications/` 标记切片 + 前缀安全）；bdd/design/spec 三个收敛检查共用；越界 pin 改为单一诚实 advisory（不再谎称 design/spec 拥有全量——其切片同样 15 上限）；消息恢复 protectedFile surface 语义（pinId→protectedFile 索引）。
+- **三条 DEMAND LAW 回归测试**（有界可见性 / 自指排除 + 生产绝对路径形态 / 逐轮 fresh-walk 自铸夹具下的严格单调缩减 + legacy 反证臂——全部在修复前代码上必失败）；`/tmp/spec` 测试密闭性修复（beforeAll 供给 + 撤销破坏性 afterAll 清理，四个共享套件的并行竞态消除——stash 证明与热修无关的既有环境依赖缺陷）。
+- **门**：Code PASS 10/10（含单调性形式化证明）；Adversarial 4 BLOCKING（A1 matcher 旁路 / A3 surface 语义漂移 / A4 advisory 失实 / A7 清理竞态）+ A5 测试无力——全采纳修复；Delta PASS 6/6。全套件 265 文件 / 4076 passed。
+
+
 ### Added — v0.4.1: 059 R1B reviewer-side slice injection + R2 offline reviewer-measurement harness（最后一波）
 
 - **R1B reviewer 侧切片注入**：`buildUpstreamReviewPrompt`/`buildSpecReviewPrompt` 增加加法式 `contractSliceBlock`——评审者看到与 writer 相同的 contract-surface 切片（`reviewerContractSliceBlock`：读 writer stamp → stamp pinIds × fresh-walk 重渲染；stamp 缺席/空 touched-set/无 worktree/错误 ⇒ `""`（S5 fail-closed））+ 每评审者一条清单线（requirements amendment-family 意图级 / bdd owned-vs-inherited-frozen 理由 / design ⊇ set-inclusion / spec D2→引擎写就的 Contract Inventory Reconciliation 引用，绝不内联复制）+ R4 evidence-pair 指令 + artifact 顺序中立线。切片走 `fenceUntrusted`（AC-31——pin 陈述是 sibling-prose 敌意来源文本）；stamp 保真漂移守卫：fresh walk 无法重现全部 stamp pinIds ⇒ `""`（§3 R1 same-tree 语义违反时绝不给部分切片）。

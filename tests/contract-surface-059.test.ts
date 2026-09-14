@@ -24,6 +24,7 @@ import {
 	designAmendmentFamilyFindings,
 	isWriterMetadataRejection,
 	requirementsIntentFindings,
+	selfSpecArtifactMatcher,
 	splitContractFindings,
 } from "../src/review/contract-validators.ts";
 import { enforceReviewerConvergenceDuty } from "../src/review-findings.ts";
@@ -279,6 +280,121 @@ describe("059 D-R-B — validators (fixtures: pass/fail, AST, pre-W, Strike-1)",
 		expect(splitContractFindings(badState).blocking.some((b) => b.includes("[contract-metadata]"))).toBe(true);
 		const owned = bddPinOwnershipFindings({ control: { layerW: "1", features: [{ name: "f", scenarios: [{ id: "001", title: "t", acRef: "AC-01", priority: "high", given: "g", when: "w", then: "th", pinOwnership: [{ pinId, state: "owned", justification: "amend per AC-02" }] }] }] }, slice, inventory });
 		expect(splitContractFindings(owned).blocking).toHaveLength(0);
+	});
+
+	// ── class fix, run 2026-09-14T00-59-16-373Z: convergence demand-set laws ──
+	// Research grounding: ratchet/baseline pattern (SonarQube new-code, Semgrep
+	// --baseline-commit, detekt baseline.xml), verifier-is-a-function (the
+	// demand set must not depend on the artifact under edit), and monotone
+	// fixpoint frameworks (Kildall — termination needs D(n+1) ⊆ D(n)).
+
+	it("DEMAND LAW 1 (bounded visibility): pins beyond the injected-slice cap are NEVER blocking — one advisory discloses them", () => {
+		// 20 pinning test files on src/schemas.ts — the slice caps at 15.
+		for (let i = 0; i < 20; i++) writeWt(`tests/census-${i}.test.ts`, [
+			"import { describe, it, expect } from \"vitest\";",
+			"import { execSync } from \"node:child_process\";",
+			"describe(`census ${i}`, () => {",
+			"  it(`schemas.ts is porcelain-clean ${i}`, () => {",
+			"    const out = execSync(\"git status --porcelain -- src/schemas.ts\").toString().trim();",
+			`    expect(out, \"src/schemas.ts must stay byte-untouched ${i}\").toBe(\"\");`,
+			"  });",
+			"});",
+			"",
+		].join("\n"));
+		const { inventory, slice } = ctx059(["edit src/schemas.ts"]);
+		expect(inventory.protectedFiles.get("src/schemas.ts")!.length).toBe(20);
+		expect(slice.pinIds.length).toBeLessThanOrEqual(15);
+		const findings = bddPinOwnershipFindings({ control: { layerW: "1", features: [] }, slice, inventory });
+		const { blocking, advisory } = splitContractFindings(findings);
+		// Every blocking demand IS in the writer's slice (writer-visible).
+		const blockingIds = blocking.map((b) => b.match(/pin-[a-z]{2}-[0-9a-z]+/)?.[0]).filter(Boolean) as string[];
+		expect(blockingIds.length).toBeGreaterThan(0);
+		for (const id of blockingIds) expect(slice.pinIds).toContain(id);
+		expect(blockingIds.length).toBe(new Set(blockingIds).size);
+		// Exactly ONE advisory disclosing the beyond-cap remainder — never blocking.
+		expect(advisory.filter((x) => x.includes("exceed the injected slice cap"))).toHaveLength(1);
+	});
+
+	it("DEMAND LAW 2 (self-referential exclusion): pins minted from the stage's OWN artifact are not demandable — declaring them can never be required", () => {
+		// The spec's own BDD doc carries porcelain-idiom prose (what the writer's
+		// remediation looks like) — round 2 of the failed run demanded exactly
+		// such a pin (03-bdd-scenarios.md:145).
+		writeWt("tests/profitability-contract.test.ts", SCENARIO_14_TEST);
+		writeWt("docs/specifications/26-capability-backend-substrate/03-bdd-scenarios.md", [
+			"# BDD",
+			"",
+			"The registry in `src/schemas.ts` stays byte-untouched; `git status --porcelain -- src/schemas.ts` is empty after the change.",
+			"",
+		].join("\n"));
+		const { inventory, slice } = ctx059(["edit src/schemas.ts"]);
+		// Production shape: specDirectory is ABSOLUTE (setup.ts:755) while loci
+		// are repo-relative — the matcher must bridge (A1).
+		const selfMatcher = selfSpecArtifactMatcher("/home/u/repo/.worktrees/26-a/docs/specifications/26-capability-backend-substrate/", "-bdd-scenarios.md");
+		expect(selfMatcher!("docs/specifications/26-capability-backend-substrate/03-bdd-scenarios.md")).toBe(true); // file part only — demandablePins splits locus first
+		expect(selfMatcher!("docs/specifications/26-capability-backend-substrate/01-requirements.md")).toBe(false); // own spec, OTHER artifact family stays demandable
+		expect(selfMatcher!("docs/specifications/24-other/03-bdd-scenarios.md")).toBe(false);
+		const selfPin = (inventory.protectedFiles.get("src/schemas.ts") ?? []).find((p) => p.locus.startsWith("docs/specifications/26-capability-backend-substrate/03-bdd-scenarios.md:"));
+		expect(selfPin).toBeDefined();
+		const findings = bddPinOwnershipFindings({ control: { layerW: "1", features: [] }, slice, inventory, selfArtifactMatch: selfMatcher });
+		const { blocking } = splitContractFindings(findings);
+		expect(blocking.some((b) => b.includes(selfPin!.pinId))).toBe(false);
+		// Without the matcher (legacy callers), the pin stays demandable —
+		// the exclusion is an opt-in refinement, not a silent weakening.
+		const legacy = bddPinOwnershipFindings({ control: { layerW: "1", features: [] }, slice, inventory });
+		expect(splitContractFindings(legacy).blocking.some((b) => b.includes(selfPin!.pinId))).toBe(slice.pinIds.includes(selfPin!.pinId));
+	});
+
+	it("DEMAND LAW 3 (monotone progress + SELF-MINTING): per-round re-walk with a growing own-BDD-doc — declarations must SHRINK demands even though the writer's own prose re-mints pins (A5: fails on pre-fix code)", () => {
+		for (let i = 0; i < 4; i++) writeWt(`tests/prog-${i}.test.ts`, [
+			"import { describe, it, expect } from \"vitest\";",
+			"import { execSync } from \"node:child_process\";",
+			"describe(`p ${i}`, () => {",
+			"  it(`porcelain ${i}`, () => {",
+			"    const out = execSync(\"git status --porcelain -- src/schemas.ts\").toString().trim();",
+			`    expect(out, \"src/schemas.ts stays byte-untouched ${i}\").toBe(\"\");`,
+			"  });",
+			"});",
+			"",
+		].join("\n"));
+		const selfMatcher = selfSpecArtifactMatcher("/tmp/wt-a/docs/specifications/26-a/", "-bdd-scenarios.md"); // production shape: ABSOLUTE dir (setup.ts:755)
+		const demandIds = (control: Record<string, unknown>) => {
+			const inventory = extractContractInventory(wt); // FRESH walk each round — the live mechanism
+			const slice = buildContractSlice({ inventory, texts: ["edit src/schemas.ts"] });
+			const { blocking } = splitContractFindings(bddPinOwnershipFindings({ control, slice, inventory, selfArtifactMatch: selfMatcher }));
+			return { ids: blocking.map((b) => b.match(/pin-[a-z]{2}-[0-9a-z]+/)?.[0]).filter(Boolean) as string[] };
+		};
+		// Round 1: nothing declared → demands on the test-file pins.
+		const r1 = demandIds({ layerW: "1", features: [] });
+		expect(r1.ids.length).toBeGreaterThan(0);
+		// The writer declares r1 demands — its OWN BDD prose (ownership
+		// statements naming src/schemas.ts + baseline idioms) lands on disk,
+		// exactly like the failed run's 03-bdd-scenarios.md:145.
+		writeWt("docs/specifications/26-a/03-bdd-scenarios.md", [
+			"# BDD",
+			...r1.ids.map((id, i) => `${i + 3}. The registry in \`src/schemas.ts\` is pinned at exactly 14 members — ownership of ${id} declared here (byte-untouched after the guarded append).`),
+			"",
+		].join("\n"));
+		// Round 2: the writer DECLARES round-1's demands (honest compliance) in
+		// the artifact AND in the typed control, while its own prose re-mints
+		// new self-pins on disk. With the self-exclusion the demand set still
+		// SHRINKS (Kildall); pre-fix code (full-inventory demand) resurrects
+		// demands here — the whack-a-mole the failed run died in.
+		const declared = { layerW: "1", features: [{ name: "f", scenarios: r1.ids.map((pinId, j) => ({ id: String(100 + j), title: "t", acRef: "AC-01", priority: "high", given: "g", when: "w", then: "th", pinOwnership: [{ pinId, state: "owned", justification: "amend per AC-02" }] })) }] };
+		const r2 = demandIds(declared);
+		expect(r2.ids.length).toBeLessThan(r1.ids.length);
+		// Round 3: declare everything the slice surfaced → converged.
+		const inventory3 = extractContractInventory(wt);
+		const slice3 = buildContractSlice({ inventory: inventory3, texts: ["edit src/schemas.ts"] });
+		const allDeclared = { layerW: "1", features: [{ name: "f", scenarios: slice3.pinIds.map((pinId, j) => ({ id: String(200 + j), title: "t", acRef: "AC-01", priority: "high", given: "g", when: "w", then: "th", pinOwnership: [{ pinId, state: "owned", justification: "amend per AC-02" }] })) }] };
+		const r3 = demandIds(allDeclared);
+		expect(r3.ids).toHaveLength(0);
+		// Sanity: WITHOUT the matcher the self-minted pins WOULD be demanded —
+		// proving the fixture actually reproduces the live failure shape.
+		const inventory2 = extractContractInventory(wt);
+		const slice2 = buildContractSlice({ inventory: inventory2, texts: ["edit src/schemas.ts"] });
+		const legacy = splitContractFindings(bddPinOwnershipFindings({ control: { layerW: "1", features: [] }, slice: slice2, inventory: inventory2 })).blocking;
+		const legacyIds = legacy.map((b) => b.match(/pin-[a-z]{2}-[0-9a-z]+/)?.[0]).filter(Boolean) as string[];
+		expect(legacyIds.some((id) => !r1.ids.includes(id))).toBe(true);
 	});
 
 	it("requirements intent check is ADVISORY-only at 2B (HIGH-1)", () => {

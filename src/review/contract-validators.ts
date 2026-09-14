@@ -21,7 +21,7 @@
  */
 
 import { existsSync } from "node:fs";
-import type { ContractInventory, ContractSlice, NormalizedAmendmentFamilyEntry } from "./contract-surface.ts";
+import type { ContractInventory, ContractPin, ContractSlice, NormalizedAmendmentFamilyEntry } from "./contract-surface.ts";
 import { buildContractSlice, contractSliceView, extractContractInventory, normalizeAmendmentFamily, readContractSliceStamp } from "./contract-surface.ts";
 
 export const PRE_W_BANNER = "[layer-w: pre-W artifact — validation advisory; see 059 §3 R3]";
@@ -52,11 +52,58 @@ function degradeForPreW(findings: ContractValidatorFinding[], stage: string): Co
 /** The set-inclusion core shared by the design (authoritative) and spec
  *  (Stage 6-skip fallback) family checks: family ⊇ inventory pins on every
  *  touched shared surface (059 §3 R3, blocking, ownerStage=design|spec). */
+/** The DEMANDABLE pins for a stage's convergence check (059 R1A class fix;
+ *  live specimen run 2026-09-14T00-59-16-373Z — bdd convergence aborted after
+ *  8 rounds of whack-a-mole over dynamically-minted pin ids): (1) SLICE-
+ *  BOUNDED — only pins the writer's injected slice actually carried (≤ the
+ *  CONTRACT_SLICE_MAX_PINS cap). A demand for a pin the writer could never
+ *  see is structurally unconvergeable — the W5 grounding advisory forbids
+ *  citing ids outside the slice. (2) SELF-REFERENTIAL EXCLUSION — a pin
+ *  minted from the stage's OWN artifact prose is not demandable: each
+ *  ownership declaration re-mints further pins from the growing artifact
+ *  (round 2 cited a pin whose locus was the BDD's own line 145), which the
+ *  spec-26 judge correctly refused to arbitrate. */
+function demandablePins(slice: ContractSlice, inventory: ContractInventory, selfArtifactMatch?: (locusFile: string) => boolean): ContractPin[] {
+	const byId = new Map<string, ContractPin>();
+	for (const pins of inventory.protectedFiles.values()) for (const p of pins) byId.set(p.pinId, p);
+	const out: ContractPin[] = [];
+	for (const id of slice.pinIds) {
+		const pin = byId.get(id);
+		if (!pin) continue;
+		if (selfArtifactMatch && selfArtifactMatch(pin.locus.split(":")[0] ?? "")) continue;
+		out.push(pin);
+	}
+	return out;
+}
+
+/** Build the self-referential exclusion predicate for ONE stage: pins minted
+ *  from THIS spec's own copy of the stage's artifact doc are not demandable
+ *  (the writer's own remediation prose must not feed the demand set — see
+ *  demandablePins). Sibling specs' docs are unaffected (their pins stay
+ *  demandable — genuine cross-spec baselines). */
+export function selfSpecArtifactMatcher(specDirectory: string | undefined, docSuffix: string): ((locusFile: string) => boolean) | undefined {
+	if (!specDirectory) return undefined;
+	let norm = specDirectory.replace(/\\/g, "/");
+	// A1 (adversarial gate, run 2026-09-14T00-59-16-373Z follow-up): production
+	// specDirectory is ABSOLUTE — join(worktreePath, "docs", "specifications",
+	// specIdentifier) at src/setup.ts:755 — while pin loci are REPO-RELATIVE
+	// (extractContractInventory walks with a "" prefix). Bridge via the
+	// docs/specifications/ marker (fault-classification.ts path-normalization
+	// precedent); fall back to the normalized dir when the marker is absent.
+	const marker = "docs/specifications/";
+	const idx = norm.indexOf(marker);
+	if (idx !== -1) norm = norm.slice(idx);
+	norm = norm.replace(/^\.\//, "");
+	if (!norm.endsWith("/")) norm += "/"; // prefix-safety: "26-x" must not match sibling "26-x-other/"
+	return (locusFile: string) => locusFile.startsWith(norm) && locusFile.endsWith(docSuffix);
+}
+
 function familySetInclusionFindings(
 	stage: string,
 	control: Record<string, unknown> | undefined,
 	slice: ContractSlice,
 	inventory: ContractInventory,
+	selfArtifactMatch?: (locusFile: string) => boolean,
 ): ContractValidatorFinding[] {
 	const findings: ContractValidatorFinding[] = [];
 	const { entries, malformed } = normalizeAmendmentFamily(control?.amendmentFamily);
@@ -76,22 +123,32 @@ function familySetInclusionFindings(
 		findings.push({ kind: "blocking", message: `${stage} touches shared surfaces carrying baseline pins (${touchedWithPins.join(", ")}) but declares no amendmentFamily — every touched shared surface must declare its amendment family (059 §3 R3; see the injected contract-surface slice)` });
 		return findings;
 	}
-	for (const file of touchedWithPins) {
-		const covered = new Set<string>();
+	// Class fix (run 2026-09-14T00-59-16-373Z): the demand set is the SLICE's
+	// pins (what the writer saw), self-minted pins excluded — never the full
+	// per-file inventory, which is unbounded and structurally unconvergeable.
+	// A3 (adversarial gate): the shared surface is the INVENTORY's protected-
+	// file key (e.g. src/schemas.ts), NOT the pin's locus file (the test or
+	// spec doc that carries the assertion) — index pinId → protectedFile.
+	const pinToFile = new Map<string, string>();
+	for (const [file, pins] of inventory.protectedFiles.entries()) {
+		for (const p of pins) pinToFile.set(p.pinId, file);
+	}
+	const demandable = demandablePins(slice, inventory, selfArtifactMatch);
+	const uncovered = demandable.filter((pin) => {
+		const protectedFile = pinToFile.get(pin.pinId);
+		if (!protectedFile || !sliceFiles.has(protectedFile)) return false;
+		let covered = false;
 		for (const entry of entries) {
-			if (entry.sharedFile !== file) continue;
-			for (const id of entry.pinsMoved) covered.add(id);
-			for (const ex of entry.exemptions) covered.add(ex.pinId);
+			if (entry.sharedFile !== protectedFile) continue;
+			if (entry.pinsMoved.includes(pin.pinId) || entry.exemptions.some((ex) => ex.pinId === pin.pinId)) { covered = true; break; }
 		}
-		const missing = (inventory.protectedFiles.get(file) ?? []).filter((pin) => !covered.has(pin.pinId));
-		if (missing.length > 0) {
-			for (const pin of missing) {
-				findings.push({
-					kind: "blocking",
-					message: `${stage} amendmentFamily does not cover pin ${pin.pinId} (${pin.idiomFamily}) on touched shared surface ${file} — pin declared @ ${pin.locus}: move it (pinsMoved), exempt it with a non-empty justification, or amend the plan (059 §3 R3 set-inclusion)`,
-				});
-			}
-		}
+		return !covered;
+	});
+	for (const pin of uncovered) {
+		findings.push({
+			kind: "blocking",
+			message: `${stage} amendmentFamily does not cover pin ${pin.pinId} (${pin.idiomFamily}) on touched shared surface ${pinToFile.get(pin.pinId)} — pin declared @ ${pin.locus}: move it (pinsMoved), exempt it with a non-empty justification, or amend the plan (059 §3 R3 set-inclusion)`,
+		});
 	}
 	// delta-4 DEFECT-3: exemptions are STRUCTURED with mandatory non-empty
 	// justification — existence alone is not a legal basis.
@@ -112,8 +169,9 @@ export function designAmendmentFamilyFindings(input: {
 	control: Record<string, unknown> | undefined;
 	slice: ContractSlice;
 	inventory: ContractInventory;
+	selfArtifactMatch?: (locusFile: string) => boolean;
 }): ContractValidatorFinding[] {
-	const findings = familySetInclusionFindings("design", input.control, input.slice, input.inventory);
+	const findings = familySetInclusionFindings("design", input.control, input.slice, input.inventory, input.selfArtifactMatch);
 	return isPreW(input.control) ? degradeForPreW(findings, "design") : findings;
 }
 
@@ -128,10 +186,11 @@ export function specAmendmentFamilyFindings(input: {
 	/** Convergence round — from round 2 on, pre-W degradation is disabled
 	 *  (adversarial S7: retries run validators at full strength). */
 	round?: number;
+	selfArtifactMatch?: (locusFile: string) => boolean;
 }): ContractValidatorFinding[] {
 	const designFamily = (input.designControl as { amendmentFamily?: unknown } | undefined)?.amendmentFamily;
 	if (designFamily !== undefined && designFamily !== null) return []; // design owns the authoritative declaration
-	const findings = familySetInclusionFindings("spec", input.specControl, input.slice, input.inventory);
+	const findings = familySetInclusionFindings("spec", input.specControl, input.slice, input.inventory, input.selfArtifactMatch);
 	return isPreW(input.specControl, input.round) ? degradeForPreW(findings, "spec") : findings;
 }
 
@@ -167,6 +226,7 @@ export function bddPinOwnershipFindings(input: {
 	control: Record<string, unknown> | undefined;
 	slice: ContractSlice;
 	inventory: ContractInventory;
+	selfArtifactMatch?: (locusFile: string) => boolean;
 }): ContractValidatorFinding[] {
 	const findings: ContractValidatorFinding[] = [];
 	const entries = bddPinOwnershipEntries(input.control);
@@ -178,18 +238,42 @@ export function bddPinOwnershipFindings(input: {
 	}
 	const owned = new Set(entries.filter((e) => !e.malformed).map((e) => e.pinId));
 	const knownPinIds = new Set([...input.inventory.protectedFiles.values()].flat().map((p) => p.pinId));
-	const touchedWithPins = input.slice.files.filter((f) => (input.inventory.protectedFiles.get(f)?.length ?? 0) > 0);
-	if (touchedWithPins.length > 0) {
-		for (const file of touchedWithPins) {
-			for (const pin of input.inventory.protectedFiles.get(file) ?? []) {
-				if (owned.has(pin.pinId)) continue;
-				findings.push({
-					kind: "blocking",
-					message: `bdd scenario set leaves pin ${pin.pinId} (${pin.idiomFamily}) on touched shared surface ${file} UNOWNED — every baseline-pinning behavior must declare prospective ownership in the typed pinOwnership field ({pinId, state: 'owned'|'inherited-frozen', justification}; 059 §3 R3 bdd duty; pin @ ${pin.locus})`,
-				});
-			}
+	// Class fix (run 2026-09-14T00-59-16-373Z): the demand set is the WRITER'S
+	// SLICE (what the writer actually saw, ≤ the 15-pin cap), self-minted pins
+	// excluded — never the full per-file inventory. The full inventory is
+	// unbounded (dozens of pins across the test suite + sibling spec docs) and
+	// the W5 grounding advisory forbids citing ids beyond the slice, so
+	// inventory-wide demands are structurally unconvergeable.
+	const demandable = demandablePins(input.slice, input.inventory, input.selfArtifactMatch);
+	// A3 (adversarial gate): the surface slot is the protected-file key, not the
+	// pin's locus file (restores the pre-refactor message shape).
+	const bddPinToFile = new Map<string, string>();
+	for (const [file, pins] of input.inventory.protectedFiles.entries()) {
+		for (const p of pins) bddPinToFile.set(p.pinId, file);
+	}
+	for (const pin of demandable) {
+		if (owned.has(pin.pinId)) continue;
+		findings.push({
+			kind: "blocking",
+			message: `bdd scenario set leaves pin ${pin.pinId} (${pin.idiomFamily}) on touched shared surface ${bddPinToFile.get(pin.pinId)} UNOWNED — every baseline-pinning behavior must declare prospective ownership in the typed pinOwnership field ({pinId, state: 'owned'|'inherited-frozen', justification}; 059 §3 R3 bdd duty; pin @ ${pin.locus})`,
+		});
+	}
+	// P10 honesty: pins beyond the slice cap are invisible to the writer — one
+	// advisory line (never blocking), the design/spec amendment-family
+	// reconciliation owns the full inventory.
+	const sliceIds = new Set(input.slice.pinIds);
+	let beyondCap = 0;
+	for (const file of input.slice.files) {
+		for (const pin of input.inventory.protectedFiles.get(file) ?? []) {
+			if (sliceIds.has(pin.pinId)) continue;
+			if (input.selfArtifactMatch && input.selfArtifactMatch(pin.locus.split(":")[0] ?? "")) continue; // A4: self-minted pins are excluded, not "beyond cap"
+			beyondCap++;
 		}
 	}
+	// A4 (advisory honesty): design/spec slices are ALSO 15-pin-capped — no
+	// stage blocking-checks the full inventory. The residual is disclosed as
+	// advisory prose in the spec-review Contract Inventory Reconciliation.
+	if (beyondCap > 0) findings.push({ kind: "advisory", message: `bdd: ${beyondCap} further pin(s) on the touched surfaces exceed the injected slice cap — not demandable at this stage (writer cannot see them); full-inventory reconciliation is documented advisory-only in the spec-review report` });
 	for (const e of entries) {
 		if (e.malformed || !e.pinId) continue;
 		if (!knownPinIds.has(e.pinId)) findings.push({ kind: "advisory", message: `bdd ${e.scenario} pinOwnership cites unknown pinId ${e.pinId} — cite only pinIds present in the injected slice or upstream declarations (W5 grounding)` });

@@ -16,8 +16,8 @@
  *  - no escalate callback wired ⇒ the loop keeps looping (never blocks), and a
  *    later approval still converges (additive baseline).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, existsSync, readFileSync } from "node:fs";
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
+import { mkdtempSync, rmSync, readdirSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext, Escalate } from "../types.ts";
@@ -38,6 +38,20 @@ interface Script {
 	 *  (e.g. reviewResponses). Index = writerRounds-1, clamped to the last entry. */
 	writerExtras?: Array<Record<string, unknown>>;
 }
+
+// Hermeticity fix (run 2026-09-14T00-59-16-373Z investigation): these tests
+// relied on AMBIENT /tmp/spec files surviving between sessions — when /tmp was
+// cleaned, 8 tests failed with ENOENT unrelated to any code change. Create the
+// fixture docs the writers' control.docPath references, then clean up.
+beforeAll(() => {
+	mkdirSync("/tmp/spec", { recursive: true });
+	for (const f of ["01-requirements.md", "03-bdd.md"]) {
+		if (!existsSync(`/tmp/spec/${f}`)) writeFileSync(`/tmp/spec/${f}`, "# fixture\n\nplaceholder doc for the convergence-loop harness\n");
+	}
+});
+// A7 (adversarial gate): NO destructive cleanup — retry-feedback-coverage,
+// research-control-optional, classify-stage and post-mortem suites share
+// /tmp/spec; a parallel worker's afterAll must never wipe it mid-run.
 
 function makeState(): PipelineState {
 	return {

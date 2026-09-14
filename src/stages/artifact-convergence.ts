@@ -5,7 +5,7 @@ import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-err
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewBlockingVerdictFindings } from "../review-findings.ts";
 import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
 import { readContractSliceStamp } from "../review/contract-surface.ts";
-import { bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
+import { bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
 import { priorFindingsForInjection } from "../convergence-ledger.ts";
@@ -146,7 +146,7 @@ export const bddComplete: ArtifactValidator = async (s: PipelineState, ctx: Stag
 	// (no worktree / no stamp) ⇒ no-op (fail-open harmless).
 	const contractCtx = contractValidationContext(s as Record<string, unknown>, "bdd", [ctx.task, JSON.stringify(s.bdd ?? {})]);
 	if (contractCtx) {
-		const { blocking, advisory } = splitContractFindings(bddPinOwnershipFindings({ control: s.bdd as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory }));
+		const { blocking, advisory } = splitContractFindings(bddPinOwnershipFindings({ control: s.bdd as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-bdd-scenarios.md") }));
 		for (const a of advisory) ctx.log(`BDD contract-validator (advisory): ${a}`);
 		if (blocking.length > 0) return { pass: false, errors: [...base.errors, ...blocking] };
 	}
@@ -1126,7 +1126,7 @@ export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: S
 		// pins even when the design declares no contract claims).
 		const contractCtx = contractValidationContext(s as Record<string, unknown>, "design", [ctx.task, JSON.stringify(s.requirements ?? {})]);
 		if (contractCtx) {
-			const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory }));
+			const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-design.md") }));
 			for (const a of advisory) ctx.log(`Design contract-validator (advisory): ${a}`);
 			if (blocking.length > 0) {
 				ctx.log(`Design amendment-family: ${blocking.length} set-inclusion error(s): ${blocking.slice(0, 2).join("; ")}`);
@@ -1141,7 +1141,7 @@ export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: S
 	// AUTHORITATIVE declaration check (blocking, ownerStage=design).
 	const contractCtx = contractValidationContext(s as Record<string, unknown>, "design", [ctx.task, JSON.stringify(s.requirements ?? {})]);
 	if (contractCtx) {
-		const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory }));
+		const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-design.md") }));
 			for (const a of advisory) ctx.log(`Design contract-validator (advisory): ${a}`);
 			errors.push(...blocking);
 	}

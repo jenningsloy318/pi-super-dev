@@ -7,7 +7,7 @@ import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readC
 // 059 R1A D-R-B residual (§3 R3 DEFECT-1 + D-R-E): the spec-fallback family
 // validator, its validation context, the reconciliation section builder, and
 // the Metadata Strike-1 classifier/repair template.
-import { contractValidationContext, familyInclusionMismatches, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
+import { selfSpecArtifactMatcher,  contractValidationContext, familyInclusionMismatches, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import {
@@ -157,6 +157,7 @@ async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageCont
 			slice: contractCtx.slice,
 			inventory: contractCtx.inventory,
 			round,
+			selfArtifactMatch: selfSpecArtifactMatcher(state.setup?.specDirectory, "-specification.md"),
 		}));
 		for (const a of advisory) ctx.log(`spec convergence: contract-validator (advisory): ${a}`);
 		return blocking;
