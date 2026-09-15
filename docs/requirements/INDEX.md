@@ -82,14 +82,14 @@ Scope: 62 docs — 58 committed + 4 in flight (marked ⚠ below). Eras: **Jul** 
 | 09-13 | 059-reviewer-quality-architecture.md | architecture | Implemented — R1A **v0.3.98** (inventory + writer declaration + R4 exemption), R1B/R2 **v0.4.1** (reviewer slice injection + offline harness), **v0.4.2** (demand-set laws hotfix) |
 | 09-14 | 061-ai-workflow-vs-harness-engineering.md | reference | Saved from Medium (@june-in-exile) — AI 工作流 vs. Harness Engineering (11-step loop, test lock, attempt budget, 9 quality gates) + deepset grounding: 4 harness layers (observability = separate maxim), externalize memory/skills/protocols, 4-way failure classification (source's 2nd class is "constraint"), constrain-more-not-less |
 | 09-15 | 062-temporal.md | reference | Online research — Temporal durable execution vs. our resume/checkpoint/convergence machinery; 8 stealable patterns (L1–L8), Cursor case study with hard numbers |
-| 09-15 | 063-external-state-store.md | architecture | Draft — decouple state from the content tree (Option A, `~/.super-dev/state/<project-key>/<spec-id>/`); class-driven durability R/M/H/E; fixes the v0.4.3 truncation class + the $59 orphan class |
+| 09-15 | 063-external-state-store.md | architecture | Grilled round 2 (glm-5.3) NOT-READY(conditional) folded in full — decouple state from the content tree (Option A, `~/.super-dev/state/<project-key>/<spec-id>/`); class audit corrected (replan-requests/routing-journal → M); lock-aware mtime-aware migration; S1 = full .resume-cache toucher set; dotfiles-repo geometry guard |
 
 ## In flight
 
 | Doc | Note |
 |---|---|
-| ⚠ 060-communitcation-mechanism.md | Parallel-session draft — grounded against the OpenAI Agents SDK orchestration/handoffs guides: agents-as-tools vs handoffs, guardrail-scope asymmetry, code orchestration patterns |
-| ⚠ 064-cora-skill.md | COBRA-Skills paper study (arXiv:2609.11682) — contextual-bandit eval allocation, no-inherited-reward, scheduled log-spaced evolution; 4 transferable lessons |
+| 060-communitcation-mechanism.md | Grilled round 2 (glm-5.3) READY, 5 LOW folded — SDK quotes live-verified, never-handoffs confirmed (context:fresh delegation), audit candidate re-scoped to default-write accessMode + fail-open degradation |
+| 064-cora-skill.md | Grilled round 2 (glm-5.3) NOT-READY(conditional) folded, effectively READY — paper fidelity verified against full text; L3 attribution fixed (escape rates = 059 R5, not eval layer); bandit demoted to candidate mechanism with 3-part dependency |
 
 ---
 
