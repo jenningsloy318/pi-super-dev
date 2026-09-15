@@ -6,7 +6,7 @@ Numbering: every filename carries an `NNN-` prefix = its **global creation order
 
 Maintenance rule: when a new doc lands in `docs/requirements/`, take the next `NNN-` number, append one row to the right era; when a doc's Status changes (grill verdict, implementation wave), update its Outcome cell in the same commit. Outcome versions cite the implementing release (see `CHANGELOG.md` for wave detail).
 
-Scope: 60 docs — 58 committed + 2 in flight (marked ⚠ below). Eras: **Jul** research foundations → **Aug** postmortem-driven hardening (v0.1.x → v0.3.17) → **Sep** eval layer + live-run postmortems + architecture programs.
+Scope: 61 docs — 58 committed + 3 in flight (marked ⚠ below). Eras: **Jul** research foundations → **Aug** postmortem-driven hardening (v0.1.x → v0.3.17) → **Sep** eval layer + live-run postmortems + architecture programs.
 
 ---
 
@@ -81,6 +81,7 @@ Scope: 60 docs — 58 committed + 2 in flight (marked ⚠ below). Eras: **Jul** 
 | 09-13 | 058-cross-phase-contract-architecture.md | architecture | Implemented — P1 **v0.3.96** (D-A+D-C), P3 **v0.3.97** (D-E ledger superseding), P2 **v0.3.99** (D-B two-strike + D-D checkpoint rollback) |
 | 09-13 | 059-reviewer-quality-architecture.md | architecture | Implemented — R1A **v0.3.98** (inventory + writer declaration + R4 exemption), R1B/R2 **v0.4.1** (reviewer slice injection + offline harness), **v0.4.2** (demand-set laws hotfix) |
 | 09-14 | 061-ai-workflow-vs-harness-engineering.md | reference | Saved from Medium (@june-in-exile) — AI 工作流 vs. Harness Engineering (11-step loop, test lock, attempt budget, 9 quality gates) |
+| 09-15 | 062-temporal.md | reference | Online research — Temporal durable execution vs. our resume/checkpoint/convergence machinery; 8 stealable patterns (L1–L8), Cursor case study with hard numbers |
 
 ## In flight
 
