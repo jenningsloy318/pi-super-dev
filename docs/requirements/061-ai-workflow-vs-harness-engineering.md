@@ -213,11 +213,16 @@ protocol calls are subject to, surfaces the traces that let you debug.
 This is the *method*: **start with the improvement loop — classify failures by
 which layer broke — that's where the work is and where the results come from.**
 
-It maps onto our own `fault-classification.ts` almost exactly: our
-P-classes (agent-error / environment / boundary / convergence / tool) are the
-same idea, and our incident protocol (01-analysis.md) is the same "classify
-before fixing" discipline — **no fix without root cause → escape class →
-class-level fix**.
+It maps onto our own `fault-classification.ts` in *shape* but not in vocabulary — and that
+matters. Our real classes are `environmental-blocker | product-defect | unclassified`, with
+actuators `quarantine+re-gate | judge | implementer-retry`. deepset's four-way split
+(context / tool / verification / planning) is a finer-grained *diagnosis* axis, while ours
+is a coarser *who-acts* axis; the overlap is real but partial — `environmental-blocker`
+spans deepset's context AND tool layers, and our `product-defect` spans verification AND
+planning. The transferable thing is the **method** (classify by which layer broke before
+choosing a fix), which our incident protocol (01-analysis.md) already enforces as "no fix
+without root cause → escape class → class-level fix." We should NOT rename our classes to
+deepset's four — our axis is the one our actuators need.
 
 ### 4. Two design maxims
 
@@ -265,3 +270,22 @@ route + RED-shrink.
 - Mitchell Hashimoto — *My AI coding workflow*: https://mitchellh.com/writing (term popularization, cited by deepset)
 - 67AILab — *Agentic Harness Engineering white paper*: https://67ailab.com/posts/agentic-harness-engineering-white-paper/
 - Oracle — *Building an agent harness that survives production*: https://blogs.oracle.com/developers/building-an-agent-harness-that-survives-production
+
+### 7. Feature ownership & decoupling (2026-09-15)
+
+This doc is a **REFERENCE** — it owns NO implementable feature. Its job is to supply
+external rationale that other specs cite.
+
+- **Does NOT own:** any change to `fault-classification.ts`, the wall fuses, the
+  convergence governors, or the tool catalog. §3 and §6 are *analogies for
+  justification*, not deltas. (§3 was corrected on 2026-09-15: the 4-way taxonomy
+  maps in shape only — see above.)
+- **Does NOT own:** `.knowledge.json` externalization or the state-store feature
+  family — that is `063`'s. This doc's §5 cites 063's external store as the
+  analogue of deepset's "state schema outside the message stream"; 063 owns the
+  mechanism, this doc only supplies the why.
+- **Supplies rationale for (candidate future specs, not this one):** progressive
+  tool disclosure (§5) and the classify-by-layer method (§3).
+
+See INDEX.md § Feature ownership for the full cross-doc inventory and the
+sequential implementation order.

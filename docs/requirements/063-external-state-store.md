@@ -119,7 +119,7 @@ A setup-time sweep over `~/.super-dev/state/*/*`:
 - **DEC-2** No pointer file. Location is a pure function of (repo, spec-id). Trade: cannot relocate state without a migration — acceptable, relocation is not a use case.
 - **DEC-3** Class-driven durability: Class M and H get durability guarantees and GC protection; Class R is best-effort/fail-soft; Class E is ephemeral. One store, per-class semantics documented in the registry, not two stores.
 - **DEC-4** Rendered `*.md` reports stay tracked in the spec dir. They are content/evidence, not state.
-- **DEC-5** `.knowledge.json` moves external as Class R. It is derived from stage control objects and the pipeline re-injects from it; a missing file degrades to empty knowledge slices, it does not break the run. (Answer to the open question: externalizing it is safe precisely because agents never read the file — `knowledgeForAgent` is the only reader and it already returns `""` on missing.)
+- **DEC-5** `.knowledge.json` moves external as Class R. It is derived from stage control objects and the pipeline re-injects from it; a missing file degrades to empty knowledge slices, it does not break the run. (Answer to the open question: externalizing it is safe precisely because agents never read the file — `knowledgeForAgent` returns `""` on missing.) **Correction (2026-09-15):** `knowledgeForAgent` is the sole *agent-facing* reader, but the **engine** also reads the file in two places — `protection-interval.ts:94` and `plan-feasibility.ts:448` (both `join(specDirectory, ".knowledge.json")`) for Check-3 `amendmentFamily` exemptions. Those are `stateFile()`-shaped resolution sites and **must be redirected by D-S-B** along with the rest; they are not a counterexample to externalization, just two more sites the ~25 count has to include.
 - **DEC-6** Test hermeticity via `SUPER_DEV_STATE_DIR` env override; no test touches the real `~/.super-dev`. (Precedent: `SUPER_DEV_NO_CONFIG_ENV` pinning after the config-broke-tier-tests incident.)
 - **DEC-7** GC is detect-and-report first, delete never-below-floor. Orphans are named in the log, never silently cleaned.
 - **DEC-8** `runtime-state-git.ts` is retained for the residual in-tree set (rendered reports) and back-compat untracking; it is not deleted by this wave.
@@ -151,3 +151,29 @@ A setup-time sweep over `~/.super-dev/state/*/*`:
 - **Wave S1 = D-S-A + D-S-C + D-S-E** — the resolver, the registry split, and the gates, with exactly one migrated module (`.resume-cache.jsonl`, the Class M head) as the live proof. Deterministic tests only.
 - **Wave S2 = D-S-B remainder + D-S-D** — the remaining ~24 sites and migration/reconciliation/findResumableSpec. Largest diff, lowest risk per site (pure directory-argument swap).
 - **Sizing note:** S1 is spec-sized (like 058 P1); S2 is mechanical but wide. Splitting them keeps the invariant change reviewable separately from the bulk rename, per the 059 R1A/R1B precedent.
+
+---
+
+## 8. Feature ownership & decoupling (2026-09-15)
+
+This doc is the **only SPEC** of the four (060/061/064 are references). It owns
+the entire state-relocation feature family. Boundaries:
+
+- **OWNS:** external state location, the `stateFile()` resolver, the registry
+  split (`stateExternal` ∪ `renderedReport`), migration + orphan reconciliation,
+  and the `findResumableSpec` external scan. Deltas D-S-A … D-S-E.
+- **Does NOT own:** the two `.knowledge.json` **engine** readers' *semantics*
+  (Check-3 amendmentFamily exemption logic stays in `protection-interval.ts` /
+  `plan-feasibility.ts`) — 063 only relocates the file they read.
+- **Does NOT own:** communication-channel semantics (`messages.jsonl` bus
+  protocol, threading, double-write to the event ledger) — that is `060`'s
+  reference scope. 063 owns only where the bus file *lives* (Class H).
+- **Does NOT own:** reviewer/writer prompt content or the eval layer.
+
+**Sequence slots (see INDEX.md § Feature ownership):** this doc's own waves are
+the first two implementable units — S1 (resolver + registry split + gates, with
+`.resume-cache.jsonl` migrated as live proof) then S2 (the remaining resolution
+sites, including the two `.knowledge.json` engine reads, + migration +
+reconciliation + `findResumableSpec`). Nothing in 060/061/064 is implementable
+before S2 lands, because the candidate features they rationalize all consume
+relocated state.

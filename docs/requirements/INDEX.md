@@ -90,3 +90,43 @@ Scope: 62 docs — 58 committed + 4 in flight (marked ⚠ below). Eras: **Jul** 
 |---|---|
 | ⚠ 060-communitcation-mechanism.md | Parallel-session draft — grounded against the OpenAI Agents SDK orchestration/handoffs guides: agents-as-tools vs handoffs, guardrail-scope asymmetry, code orchestration patterns |
 | ⚠ 064-cora-skill.md | COBRA-Skills paper study (arXiv:2609.11682) — contextual-bandit eval allocation, no-inherited-reward, scheduled log-spaced evolution; 4 transferable lessons |
+
+---
+
+## Feature ownership (post-decoupling, 2026-09-15)
+
+The 09-15 doc family (060/061/063/064) overlaps on three things: `.knowledge.json`
+externalization, `messages.jsonl` as a state channel, and the
+attempt-budget/failure-classification machinery. A decoupling pass on 2026-09-15
+assigned every feature to exactly **one** owner so the units can be implemented
+sequizontally without contention. 060/061/064 are **references** (own nothing
+implementable, supply rationale); **063 is the only spec.**
+
+### Ownership table
+
+| Feature | Owner | Status | Consumers / rationale source |
+|---|---|---|---|
+| External state location + `stateFile()` resolver + registry split + migration + orphan reconciliation + `findResumableSpec` external scan | **063** (D-S-A…E) | spec, READY-pending-grill | 061 §5 ("state outside the message stream"), 060 §5 (channel descriptions) |
+| `.knowledge.json` *file location* | **063** (Class R) | part of the above | — |
+| `.knowledge.json` *extraction semantics* (control objects → prompt slices) | existing behavior (`knowledge.ts`) | not a feature | 060 §5 documents it |
+| `.knowledge.json` Check-3 `amendmentFamily` exemption *logic* | existing behavior (`protection-interval.ts:94`, `plan-feasibility.ts:448`) | not a feature — but 063 D-S-B must redirect these two reads | 063 DEC-5 (corrected) |
+| `messages.jsonl` *file location* | **063** (Class H) | part of the state family | — |
+| `messages.jsonl` *bus protocol* (sender/receiver/subject/`inReplyTo`, ledger double-write) | existing behavior (`team/messages.ts`) | not a feature | 060 documents it |
+| Wall fuses / `repeatedNoProgress` / two-strike intervals / fault classes | existing behavior + **058** | not in this family | 061 §6 supplies the external rationale; 061's "1:1 map" claim corrected to "shape only" |
+| Anchor superseding (no inherited green stamp) | **058/059** | existing | 064 lesson 2 is justification, not a feature |
+| Eval layer + 059 R5 reviewer harness | **059** | existing | 064 lesson 3 would consume it |
+| Guardrail-scope asymmetry audit | *candidate future spec* | rationale in 060 §2 | test-only wave; depends on nothing |
+| Progressive tool disclosure / prompt-slice budget | *candidate future spec* | rationale in 061 §5 | — |
+| Bandit-driven eval allocation | *candidate future spec* | rationale in 064 §5 | needs an embedding model; depends on 063 S2 |
+
+### Sequential implementation order
+
+1. **063 Wave S1** — `state-root.ts` + registry split + acceptance gates; `.resume-cache.jsonl` migrated as the live proof. (Class M, the incident class.)
+2. **063 Wave S2** — the remaining resolution sites (including the two `.knowledge.json` engine reads) + migration/reconciliation + `findResumableSpec`.
+3. **060-derived audit** (candidate) — guardrail-scope asymmetry; test-only, no dependency on 1–2.
+4. **061-derived** (candidate) — progressive tool disclosure.
+5. **064-derived** (candidate) — bandit-driven eval allocation; depends on 2.
+
+Units 3–5 are rationale-only in their source docs; each becomes a numbered spec
+before implementation. Nothing in the family is implementable before S2 except
+unit 3, which is test-only.

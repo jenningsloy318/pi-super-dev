@@ -75,3 +75,25 @@ Grounding against our own machinery (`src/nodes.ts`, `src/team/messages.ts`, `sr
 4. OpenAI API docs — *Orchestration*: https://developers.openai.com/api/docs/guides/agents/orchestration.md
 5. Microsoft ISE — *A2A context passing in multi-agent systems*: https://devblogs.microsoft.com/ise/a2a-context-passing-multi-agent-systems/
 6. DeepWiki — *Manager pattern vs handoffs* (LangGraph): https://deepwiki.com/openai/openai-agents-python/5.2-manager-pattern-vs-handoffs
+
+---
+
+## 6. Feature ownership & decoupling (2026-09-15)
+
+This doc is a **REFERENCE** — it owns NO implementable feature.
+
+- **Does NOT own:** where state files live (`.knowledge.json`, `messages.jsonl`
+  as files on disk). Storage location is `063`'s feature family. This doc owns
+  the **semantics** of `messages.jsonl` as the role-to-role bus (sender /
+  receiver / subject / `inReplyTo` threading, double-write to the event ledger)
+  and of `.knowledge.json` as the declarative extraction channel — both are
+  descriptions of existing behavior, not proposed changes.
+- **Does NOT own:** the node algebra or the agents-as-tools choice. §5
+  documents what the code already does; it is not a delta.
+- **Supplies rationale for (candidate future spec):** the **guardrail-scope
+  asymmetry audit** (§2) — verifying that no reviewer reachable through a chain
+  escapes boundary enforcement the way an SDK handoff chain would. This is a
+  test-only wave; it depends on nothing and can ship after 063's S2.
+
+See INDEX.md § Feature ownership for the full cross-doc inventory and the
+sequential implementation order.

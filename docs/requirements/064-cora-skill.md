@@ -83,3 +83,29 @@ The paper optimizes *one skill for a task distribution*; super-dev builds *one p
 4. SkillOpt (the baseline it beats): https://arxiv.org/pdf/2502.00728
 5. Contextual bandits — Li et al. 2010; Chu et al. 2011 (cited in the paper's background)
 6. Trace2Skill (baseline): cited as Ni et al. 2026
+
+---
+
+## 7. Feature ownership & decoupling (2026-09-15)
+
+This doc is a **REFERENCE** — it owns NO implementable feature.
+
+- **Does NOT own:** the anchor-superseding mechanism (058/059 own it). Lesson 2
+  ("no inherited reward") is an *analogy that justifies* the existing invariant,
+  not a new feature.
+- **Does NOT own:** the eval layer (v0.3.89–91) or 059's R5 reviewer harness.
+  Lesson 3 (bandit allocation) would *consume* their outputs; it does not
+  modify them.
+- **Does NOT own:** any change to the convergence loop's per-round re-prompting.
+  Lesson 4 (scheduled log-spaced evolution) is a candidate redesign, not a delta.
+- **Supplies rationale for (candidate future spec):** a bandit-driven
+  **eval-allocation** feature over the existing eval layer — allocating the next
+  eval run toward configurations that are promising or underexplored. Requires
+  an embedding model over the config space (a real dependency, not free) and
+  depends on 063's S2 (eval config is machine state).
+
+The four lessons in §5 are deliberately framed as *rationale for future specs*,
+not as implementable deltas in this doc.
+
+See INDEX.md § Feature ownership for the full cross-doc inventory and the
+sequential implementation order.
