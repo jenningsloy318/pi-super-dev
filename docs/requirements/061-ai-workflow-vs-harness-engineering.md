@@ -163,7 +163,13 @@ improvements in the system around the model are faster to iterate on, cheaper
 to maintain, and keep working regardless of which model runs next week —
 "where the real reliability gains are hiding anyway."
 
-The five harness layers map onto June's five interview answers one-to-one:
+deepset enumerates **four** harness layers (Context, Tools, Orchestration,
+Guardrails-and-verification); **observability is a separate maxim**
+("Instrument Everything"), not a fifth layer. The mapping onto June's five
+interview answers is therefore partial, not one-to-one — the four verbatim
+layer quotes below are faithful, and the fifth row is *our* restructure
+(observability answering “how to choose human-intervention points”), not
+deepset's taxonomy:
 
 | deepset harness layer | June's interview answer |
 |---|---|
@@ -171,7 +177,7 @@ The five harness layers map onto June's five interview answers one-to-one:
 | Tools (callable capabilities; how they're described; **progressive disclosure** so a large catalog doesn't flood the window) | 如何設計任務執行環境與工具權限 |
 | Orchestration (subagent spawning, handoffs, model routing, multi-step control flow) | 如何建立自動化回饋迴圈 |
 | Guardrails & verification (permission boundaries, schema validation, output parsers, deterministic test suites, secondary-model evaluation gating each step) | 如何設置護欄、停損 |
-| (Traces / observability) | 如何選擇人類介入的節點 (needs traces to know *where* the density is) |
+| *(ours, not deepset's: Traces / observability — a maxim in the source)* | 如何選擇人類介入的節點 (needs traces to know *where* the density is) |
 
 ### 2. Externalize memory, skills, protocols — the three things models do least reliably
 
@@ -206,7 +212,7 @@ protocol calls are subject to, surfaces the traces that let you debug.
 | Failure | Symptom | Fix lives in |
 |---|---|---|
 | **Context** | Didn't have the right information at the right time — hallucinated a schema because none was provided, lost the objective when history overflowed | context engineering: retrieval logic, memory management, what the model sees each step |
-| **Tool / guardrail** | Did something it shouldn't have — rewrote files out of scope, ignored architectural boundaries, called an unneeded tool | a guardrail: permission boundary, linter rule, scope limit that makes the bad action **structurally impossible** |
+| **Constraint** (the agent had the information but did something it shouldn't have) — the doc's earlier prose called this "tool"; the source's word is **constraint** | Did something it shouldn't have — rewrote files out of scope, ignored architectural boundaries, called an unneeded tool | a guardrail: permission boundary, linter rule, scope limit that makes the bad action **structurally impossible** |
 | **Verification** | Output looked plausible but was wrong, and nothing caught it | a feedback loop: test suite, format validator, or a second model reviewing before output is finalized |
 | **Planning** | Took the wrong approach entirely — one step where five were needed, or looped on a broken strategy | orchestration logic: break the task smaller, add checkpoints |
 
@@ -216,7 +222,7 @@ which layer broke — that's where the work is and where the results come from.*
 It maps onto our own `fault-classification.ts` in *shape* but not in vocabulary — and that
 matters. Our real classes are `environmental-blocker | product-defect | unclassified`, with
 actuators `quarantine+re-gate | judge | implementer-retry`. deepset's four-way split
-(context / tool / verification / planning) is a finer-grained *diagnosis* axis, while ours
+(context / constraint / verification / planning) is a finer-grained *diagnosis* axis, while ours
 is a coarser *who-acts* axis; the overlap is real but partial — `environmental-blocker`
 spans deepset's context AND tool layers, and our `product-defect` spans verification AND
 planning. The transferable thing is the **method** (classify by which layer broke before
@@ -255,7 +261,7 @@ deepset's four — our axis is the one our actuators need.
 ### 6. June's Step-5 attempt budget = our wall fuses and plateau governors
 
 June's 停損 ("same problem fixed N times — default 2-3 — and it still fails,
-stop patching, `git reset` to baseline and redo it differently") is exactly our
+stop patching, `git reset` to baseline and redo it differently") is the same instinct, mechanized differently — ours: per-phase attempt caps
 `SUPER_DEV_MAX_PHASE_ATTEMPTS` + the `repeatedNoProgress` governor + the
 two-strike protection intervals (058) + the wall fuses
 (`SUPER_DEV_MAX_RUN_WALL_MS` / `SUPER_DEV_MAX_PHASE_WALL_MS`). The same
@@ -267,7 +273,7 @@ route + RED-shrink.
 
 - deepset — *Harness Engineering: How to Build Reliable AI Agents by Engineering the System, Not the Model*: https://www.deepset.ai/blog/harness-engineering
 - Francis Okafor — *Harness Engineering: AI Agent Guardrails That Hold Up*: https://www.francisokafor.com/field-notes/harness-engineering-ai-agent-guardrails
-- Mitchell Hashimoto — *My AI coding workflow*: https://mitchellh.com/writing (term popularization, cited by deepset)
+- Mitchell Hashimoto — *My AI adoption journey*: https://mitchellh.com/writing/my-ai-adoption-journey (term popularization; deepset links this specific post)
 - 67AILab — *Agentic Harness Engineering white paper*: https://67ailab.com/posts/agentic-harness-engineering-white-paper/
 - Oracle — *Building an agent harness that survives production*: https://blogs.oracle.com/developers/building-an-agent-harness-that-survives-production
 

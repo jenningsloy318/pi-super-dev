@@ -80,7 +80,7 @@ Scope: 62 docs — 58 committed + 4 in flight (marked ⚠ below). Eras: **Jul** 
 | 09-13 | 057-run-2026-09-12T15-16-29-042Z-antigravity-model-exclusion-root-cause.md | postmortem | Postmortem complete — operator remediation (npm pi-antigravity); durable fixes in v0.3.95 (thinking-fidelity); upstream-watch errata 9b3bcd3b |
 | 09-13 | 058-cross-phase-contract-architecture.md | architecture | Implemented — P1 **v0.3.96** (D-A+D-C), P3 **v0.3.97** (D-E ledger superseding), P2 **v0.3.99** (D-B two-strike + D-D checkpoint rollback) |
 | 09-13 | 059-reviewer-quality-architecture.md | architecture | Implemented — R1A **v0.3.98** (inventory + writer declaration + R4 exemption), R1B/R2 **v0.4.1** (reviewer slice injection + offline harness), **v0.4.2** (demand-set laws hotfix) |
-| 09-14 | 061-ai-workflow-vs-harness-engineering.md | reference | Saved from Medium (@june-in-exile) — AI 工作流 vs. Harness Engineering (11-step loop, test lock, attempt budget, 9 quality gates) + deepset grounding: 5 harness layers, externalize memory/skills/protocols, 4-way failure classification, constrain-more-not-less |
+| 09-14 | 061-ai-workflow-vs-harness-engineering.md | reference | Saved from Medium (@june-in-exile) — AI 工作流 vs. Harness Engineering (11-step loop, test lock, attempt budget, 9 quality gates) + deepset grounding: 4 harness layers (observability = separate maxim), externalize memory/skills/protocols, 4-way failure classification (source's 2nd class is "constraint"), constrain-more-not-less |
 | 09-15 | 062-temporal.md | reference | Online research — Temporal durable execution vs. our resume/checkpoint/convergence machinery; 8 stealable patterns (L1–L8), Cursor case study with hard numbers |
 | 09-15 | 063-external-state-store.md | architecture | Draft — decouple state from the content tree (Option A, `~/.super-dev/state/<project-key>/<spec-id>/`); class-driven durability R/M/H/E; fixes the v0.4.3 truncation class + the $59 orphan class |
 
@@ -116,7 +116,7 @@ implementable, supply rationale); **063 is the only spec.**
 | Anchor superseding (no inherited green stamp) | **058/059** | existing | 064 lesson 2 is justification, not a feature |
 | Eval layer + 059 R5 reviewer harness | **059** | existing | 064 lesson 3 would consume it |
 | Guardrail-scope asymmetry audit | *candidate future spec* | rationale in 060 §2 | test-only wave; depends on nothing |
-| Progressive tool disclosure / prompt-slice budget | *candidate future spec* | rationale in 061 §5 | — |
+| Progressive tool disclosure (on-demand tool-definition loading — NOT static gating, which already exists: READ_ONLY_TOOLS/WRITER_TOOLS, extension packages, tool budgets, EXTERNAL_EXPLORATION_BLOCK_LIST) | *candidate future spec* | rationale in 061 §5; scoping verified by 2026-09-15 grill (finding 1.5) | real gap = no meta-tool that loads tool definitions when needed; allowlists are static |
 | Bandit-driven eval allocation | *candidate future spec* | rationale in 064 §5 | needs an embedding model; depends on 063 S2 |
 
 ### Sequential implementation order
