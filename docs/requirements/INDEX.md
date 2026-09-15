@@ -93,6 +93,8 @@ Scope: 62 docs — 58 committed + 4 in flight (marked ⚠ below). Eras: **Jul** 
 
 ---
 
+| 09-15 | 065-first-pass-satisfiability.md | architecture | Draft — write-claim spine: ONE typed extractor (verb-context + token validation) feeding four deterministic gates (writer closure, verdict-binding reconciliation, Stage-9 entry cross-product, interval inputs); kills the double-replan class (self-minted pin inversion + prose-orphaned exemptions + MISMATCH override); ALICE/PlanCompiler grounded |
+
 ## Feature ownership (post-decoupling, 2026-09-15)
 
 The 09-15 doc family (060/061/063/064) overlaps on three things: `.knowledge.json`
