@@ -57,8 +57,8 @@ The teaching model never scores its own candidates. Scoring is execution-grounde
 ## 4. Results
 
 - Best average across **six heterogeneous benchmarks** (SearchQA, SpreadsheetBench, DocVQA, LiveMath, SocialMaze-HRD, ALFWorld) for **every** target model: **+13.1 / +26.9 / +22.5** points over the no-skill baseline on Qwen3.6-35B-A3B / GPT-5.4-Nano / Gemma-4-26B-A4B-it.
-- vs **SkillOpt** (the prior SOTA iterative method): total optimization cost **reduced 55–58%**, cost per point of improvement **reduced 60–69%**, using **only 50 optimization examples** (vs SkillOpt's larger pool). Teaching-model tokens are ~3–4M vs SkillOpt's 12–15M — most of the saving is in *not* re-analyzing trajectories every round.
-- **Harness-independent**: same gains under **Claude Code** and **Codex** as external harnesses.
+- vs **SkillOpt** (the prior SOTA iterative method): total optimization cost **reduced 55–58%**, cost per point of improvement **reduced 60–69%**, using **only 50 optimization examples** (vs SkillOpt's larger pool). Teaching-model tokens are ~3–4M vs SkillOpt's 12–15M — the paper attributes this primarily to lower teaching-model usage, tied by design to scheduled (not per-round) evolution.
+- **Harness-independent**: consistent gains under **Claude Code** and **Codex** as external harnesses (+11.1 / +12.7 over baseline vs +13.1 native); the margin *over SkillOpt* narrows from +3.9 to +1.3 on Codex.
 - **Self-teaching works**: the target model itself can be the teaching model — gains are not tied to a stronger external teacher.
 
 ## 5. Lessons for super-dev (what is actually transferable)
@@ -69,9 +69,9 @@ The paper optimizes *one skill for a task distribution*; super-dev builds *one p
 
 2. **No inherited reward for new candidates.** A regenerated/mutated skill starts with **no reward prior** and must earn its own evidence. *Our analogue and its bug class:* the 058/059 anchor-superseding work — a re-rendered artifact must not inherit the green stamp of the artifact it replaced. Stale green stamps are false evidence (P5). COBRA makes "no inherited reward" a first-class rule of the search, not a cleanup.
 
-3. **Bandit allocation of a costly evaluation budget.** When evaluation is expensive (a full target-agent run), don't evaluate everything — prioritize by *predicted utility + exploration uncertainty over a semantic embedding*, so prior evaluations inform *unseen* candidates. *Where we could apply it:* our eval layer (v0.3.89–91) currently measures escape rates across a fixed suite; a bandit would allocate the next eval toward the configurations that are either promising or underexplored. The LinearUCB bonus is the principled fix for the "we keep testing what already passes" failure mode. **Cost note:** it needs an embedding model over the search space — a real dependency, not free.
+3. **Bandit allocation of a costly evaluation budget.** When evaluation is expensive (a full target-agent run), don't evaluate everything — prioritize by *predicted utility + exploration uncertainty over a semantic embedding*, so prior evaluations inform *unseen* candidates. *Where we could apply it:* escape-rate measurement is **059 Layer R5** (delivered v0.4.1, `src/eval/reviewer-harness.ts`) over golden fixtures; the older v0.3.89–91 eval layer (055) is golden cases + rubrics + validation gate. **Both are observational, non-allocating today** — no surface currently chooses what to evaluate next, so a bandit would be a new allocation decision, not a retrofit. Treat LinearUCB as a **candidate mechanism, not a principled fix**: the paper's own w/o-Bandit ablation is modest (−2.2 avg points, Table 4, one model), the "we keep testing what already passes" failure mode has no local incident evidence, and our eval surfaces run the full fixed suite per trigger rather than over-testing selectively. **Cost note:** the dependencies are real and plural — an embedding model over the search space, **plus** a candidate-generation stream (COBRA's arms come from its evolution operators; our configs are operator-chosen — no arm stream exists), **plus** an active eval-execution loop to point at chosen configs. Note also the tension with "What NOT to lift" below: semantic smoothness over config hashes is close to the architecture-choice case that rule flags as implausible.
 
-4. **Scheduled, log-spaced evolution instead of every-round refinement.** Evolution fires on `t − t_last ≥ d AND log(t/t_last) ≥ η`, and most of the token saving vs SkillOpt comes precisely from *not* re-analyzing trajectories every round. *Our analogue:* our convergence loops re-prompt every round; a scheduled-evolution design would bound the analysis cost. The log schedule is the boundedness mechanism (our P8: every retry loop has a proven bound).
+4. **Scheduled, log-spaced evolution instead of every-round refinement.** Evolution fires on `t − t_last ≥ d AND log(t/t_last) ≥ η`. The paper attributes its cost advantage primarily to **lower teaching-model usage** (67–80% fewer teaching tokens than SkillOpt), which its design ties to scheduled (not per-round) evolution — no ablation isolates the schedule's share, so read "most of the saving" as inference from the design, not a stated result. *Our analogue:* our convergence loops re-prompt every round; a scheduled-evolution design would bound the analysis cost. P8 caution: in COBRA, termination is bounded by the finite horizon T=30; the log schedule bounds *update frequency and cost growth*, not termination — a future spec must name its own horizon/cap as the bound.
 
 **What NOT to lift:** the paper's 50-example optimization set and single-skill object are too small a unit for a pipeline; and embedding-similarity transfer assumes the search space is *semantically smooth*, which is plausible for skill phrasing and much less plausible for architecture choices.
 
@@ -80,7 +80,7 @@ The paper optimizes *one skill for a task distribution*; super-dev builds *one p
 1. arXiv abstract: https://arxiv.org/abs/2609.11682
 2. arXiv HTML full text (read): https://arxiv.org/html/2609.11682v1
 3. Code: https://github.com/Jerry-LuP/COBRA-Skills
-4. SkillOpt (the baseline it beats): https://arxiv.org/pdf/2502.00728
+4. SkillOpt (the baseline it beats): https://arxiv.org/abs/2605.23904 (Yang et al. 2026; the earlier link here pointed at arXiv:2502.00728, a different paper by overlapping authors)
 5. Contextual bandits — Li et al. 2010; Chu et al. 2011 (cited in the paper's background)
 6. Trace2Skill (baseline): cited as Ni et al. 2026
 
@@ -102,7 +102,10 @@ This doc is a **REFERENCE** — it owns NO implementable feature.
   **eval-allocation** feature over the existing eval layer — allocating the next
   eval run toward configurations that are promising or underexplored. Requires
   an embedding model over the config space (a real dependency, not free) and
-  depends on 063's S2 (eval config is machine state).
+  depends on 063's S2 — not because eval config moves (it already lives in
+  `~/.super-dev/config.json`), but because eval allocation would *consume*
+  band/history state (σ-band baselines, run-metrics family) among the sites S2
+  relocates.
 
 The four lessons in §5 are deliberately framed as *rationale for future specs*,
 not as implementable deltas in this doc.

@@ -20,7 +20,7 @@ Status: reference — external research (2026-09-15). Saved from a parallel sess
 
 ### 1. The two orchestration patterns — "who owns the answer" is the design axis
 
-The SDK names exactly two patterns and the deciding question is **who owns the final user-facing answer at each branch**:
+The SDK says two orchestration patterns "come up most often" (not an exhaustive claim), and the deciding question is **who owns the final user-facing answer at each branch**:
 
 | Pattern | How it works | Best when |
 |---|---|---|
@@ -41,13 +41,13 @@ They **compose**: a triage agent can hand off to a specialist, and that speciali
 
 ### 3. Orchestrating via code — the deterministic alternative
 
-Two ways to orchestrate: **LLM-driven** (agent plans with tools + handoffs) and **code-driven** (deterministic, predictable in speed/cost/quality). Code patterns:
+Two ways to orchestrate: **LLM-driven** (agent plans with tools + handoffs) and **code-driven** (deterministic, predictable in speed/cost/performance — the SDK's word is "performance"). Code patterns:
 - **Structured outputs for routing** — classify the task into categories via structured output, then pick the next agent from the category. (Deterministic dispatch beats LLM transfer when the categories are enumerable.)
 - **Chaining** — transform one agent's output into the next's input (research → outline → draft → critique → improve).
 - **Evaluator + `while` loop** — run the task agent in a loop with an evaluator agent providing feedback until the output passes criteria. ← *this is the convergence loop*
 - **`Promise.all` parallel** — for tasks that don't depend on each other.
 
-The SDK's own advice for LLM-driven orchestration: (1) invest in good prompts, (2) monitor and iterate on where it goes wrong, (3) allow the agent to introspect and improve.
+The SDK's own advice for LLM-driven orchestration — five tactics, two of which the earlier draft dropped: (1) invest in good prompts, (2) monitor and iterate on where it goes wrong, (3) allow the agent to introspect and improve, (4) have specialized agents rather than one generalist, and (5) invest in evals.
 
 ### 4. Delegation vs handoff — topology and session (from multi-agent survey material)
 
@@ -62,7 +62,7 @@ Grounding against our own machinery (`src/nodes.ts`, `src/team/messages.ts`, `sr
 
 - **Our default is code orchestration**, not LLM orchestration: the node algebra (`sequence`/`parallel`/`branch`/`choose`/`loop`/`retry`/`gate`/`map`/`tryCatch`) is the deterministic control flow; `choose` is our structured-output routing; `parallel` is our `Promise.all`; convergence loops are our evaluator+while.
 - **We use delegation (agents-as-tools), not handoffs.** Reviewer/writer/judge agents are specialists that return structured results into `state`; the pipeline always owns the answer and enforces shared guardrails (boundary quarantine, concurrency writers, phase gates) in one place. There is no `transfer_to_*` — control never leaves the pipeline. This is the SDK's "agents as tools … enforce shared guardrails in one place" case, chosen deliberately.
-- **Our `messages.jsonl` is the shared-state channel** (`060`'s first bullet): role-to-role bus, sender/receiver/subject/inReplyTo, double-written to the event ledger. And `.knowledge.json` (`063`) is the declarative extraction channel — the pipeline extracts fields into prompts; agents never read the file.
+- **Our `messages.jsonl` is the WHO channel** (messages.ts's own framing: role-to-role bus — sender/receiver/subject/inReplyTo, double-written to the event ledger). The WHAT-channel analogue is pipeline state + `.knowledge.json` (`063` for location): the declarative extraction channel — the pipeline extracts fields into prompts; agents never read the file.
 - **The guardrail-scope asymmetry is a real hazard to remember:** if a reviewer is reached via a chain, input-side guardrails only hold for the first agent in the chain. Our equivalent — boundary/permission enforcement — is applied per task node, which is the tool-guardrail shape, not the handoff shape.
 
 ---
@@ -97,3 +97,27 @@ This doc is a **REFERENCE** — it owns NO implementable feature.
 
 See INDEX.md § Feature ownership for the full cross-doc inventory and the
 sequential implementation order.
+
+### Grill round 2 enrichment (2026-09-15, glm-5.3 — verdict READY)
+
+The audit candidate above should be **re-scoped** by what the grill verified in
+code: there are no handoff chains in this harness (every specialist call is a
+one-shot `context: "fresh"` delegation returning a parsed value), so the SDK's
+first-agent-only guardrail hazard **cannot arise via chain position**. The two
+real residual escapes are:
+
+1. **Default-write** — `accessMode` defaults to `"write"` (workflow.ts ~:688).
+   Any reviewer-family dispatch that omits `accessMode: "source-read-only"`
+   escapes boundary enforcement entirely. The audit's primary enumeration:
+   every reviewer dispatch site vs. the flag (code/adversarial/tests
+   reviewers, red-boundary-classifier, api/ui testers were all verified set
+   in stages/verify.ts — the audit is to keep it that way as sites are added).
+2. **Fail-open degradation** — when `git status` is unavailable, boundary
+   enforcement silently degrades to the prompt-only advisory (workflow.ts
+   ~:762 pre-call, ~:772–776 post-check: "relying on tool restrictions").
+   The audit should decide whether that degradation warrants a loud P10
+   notice rather than silence.
+
+Nested delegation (a child spawning its own subagents) still falls inside the
+outer before/after git diff — covered by construction; worth a pinning test,
+not a redesign.

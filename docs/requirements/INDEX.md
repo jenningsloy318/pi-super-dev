@@ -114,7 +114,7 @@ implementable, supply rationale); **063 is the only spec.**
 | `messages.jsonl` *bus protocol* (sender/receiver/subject/`inReplyTo`, ledger double-write) | existing behavior (`team/messages.ts`) | not a feature | 060 documents it |
 | Wall fuses / `repeatedNoProgress` / two-strike intervals / fault classes | existing behavior + **058** | not in this family | 061 §6 supplies the external rationale; 061's "1:1 map" claim corrected to "shape only" |
 | Anchor superseding (no inherited green stamp) | **058/059** | existing | 064 lesson 2 is justification, not a feature |
-| Eval layer + 059 R5 reviewer harness | **059** | existing | 064 lesson 3 would consume it |
+| Eval layer (055, delivered v0.3.89–91) + 059 Layer R5 reviewer harness (v0.4.1) | **055** (eval layer) and **059** (reviewer harness) respectively — both observational/non-allocating | existing | 064 lesson 3 would consume their outputs; it must not conflate them (grill D1 fix, 2026-09-15) |
 | Guardrail-scope asymmetry audit | *candidate future spec* | rationale in 060 §2 | test-only wave; depends on nothing |
 | Progressive tool disclosure (on-demand tool-definition loading — NOT static gating, which already exists: READ_ONLY_TOOLS/WRITER_TOOLS, extension packages, tool budgets, EXTERNAL_EXPLORATION_BLOCK_LIST) | *candidate future spec* | rationale in 061 §5; scoping verified by 2026-09-15 grill (finding 1.5) | real gap = no meta-tool that loads tool definitions when needed; allowlists are static |
 | Bandit-driven eval allocation | *candidate future spec* | rationale in 064 §5 | needs an embedding model; depends on 063 S2 |
