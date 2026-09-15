@@ -1,119 +1,147 @@
 # First-Pass Satisfiability — the Write-Claim Spine
 
-Status: draft — 2026-09-15, grounded in the omisis spec-26 double-replan investigation + ALICE/PlanCompiler research. Awaiting grill, then single-wave implementation.
-
-Parent lineage: 058 (protection intervals), 059 (reviewer quality / contract inventory). This spec is the **closure** of both: it makes write-vs-protect contradictions **deterministically detectable before any implementer runs**, which is the property whose absence caused both replans.
+Status: v2 — grill round 1 (2026-09-15, glm-5.3, run 19193102) verdict NOT-READY(conditional) folded in full: 3 HIGH + 5 MED + 1 LOW. Parent lineage: 058 (protection intervals), 059 (reviewer quality / contract inventory). This spec is the **closure** of both: it makes write-vs-protect contradictions **deterministically detectable before any implementer attempt burns**, which is the property whose absence caused both replans of run `2026-09-14T11-40-21-540Z`.
 
 ---
 
 ## 0. The incidents (one run, two replans, one root cause)
 
-Run `2026-09-14T11-40-21-540Z` (omisis spec-26, v0.4.2 — **with** 058 P2 two-strike + 059 R1A/R1B already landed) replanned twice, both owned by `spec` via `stage9.protection-breach`:
+Run `2026-09-14T11-40-21-540Z` (omisis spec-26, v0.4.2 — **with** 058 P2 + 059 R1A/R1B already landed) replanned twice, both owned by `spec` via `stage9.protection-breach`, conf 0.88, `resumeRowsDropped` 17/21:
 
-| Replan | Trigger (judge, conf 0.88) | Protected-path source |
+| Replan | Trigger | Protected-path source |
 |---|---|---|
-| 1 (13:10Z) | Phase-02 `requireFiles` mandates creating `python/tests/test_screen_ops.py` (plan :43) while the path is protected | A pin minted from the plan's **own** phase 3–5 prose: *"extends python/tests/test_screen_ops.py; … never touching the registry surface"* — the scanner's `pathTokens[0]` took the **write target** as the protected file |
-| 2 (15:34Z) | AC-14 + SCENARIO-021 + task-list :20 mandate editing `docs/requirements/22-public-interface.md` while the engine protects it | A pin minted from the **regenerated** task list (:22), and the spec's `amendmentFamily` declared the file only in `docUpdates` **prose** — the exemption set (built from `sharedFile` fields) never covered it |
+| 1 (13:10:13Z) | Phase-02 `requireFiles` mandates creating `python/tests/test_screen_ops.py` (plan :43) while the path is protected | A pin minted from the plan's **own** phase 3–5 prose: *"extends python/tests/test_screen_ops.py; … never touching the registry surface"* — `pathTokens[0]` took the **write target** as the protected file |
+| 2 (15:34:53Z) | AC-14 + SCENARIO-021 + task-list :20 mandate editing `docs/requirements/22-public-interface.md` while the engine protects it | A pin minted from the **regenerated task list** (11-task-list.md:22, written 22:19) — and the spec's `amendmentFamily` declared the file only in `docUpdates` **prose**, so the exemption set (built from `sharedFile`) missed it |
 
-Both judge diagnoses verbatim: *"Upstream … contradiction, not an executor fault"* / *"The implementer obeyed the plan both times; re-prompting cannot fix this."* Cost per replan: burned implementer attempts + a judge call + 17–21 resume-cache rows dropped.
-
-**The protection derivations across the run prove the set is a moving target minted from the pipeline's own prose:** pass 1 protected 8 paths (incl. the write target + phantoms `${wiredFile}`, `${pathspec}`); pass 2 protected 3 (incl. the prose-orphaned sibling doc); pass 3 finally exempted it — three spec passes to converge on what one deterministic check computes instantly.
+Both judge diagnoses verbatim: *"Upstream … contradiction, not an executor fault."* The three protection derivations across the run (run.log 20:30:38.300 / 22:22:25.651 / 01:29:23.744) prove the protected set is a moving target minted from the pipeline's own regenerated prose: pass 1 protected 8 paths (incl. the write target + phantoms `${wiredFile}`, `${pathspec}`); pass 2 protected 3 (incl. the prose-orphaned sibling doc); pass 3 finally exempted it.
 
 ## 1. Root cause — one sentence
 
-**Every seam where the pipeline needs typed paths/pinIds, it instead re-extracts them from untyped prose with a different heuristic — and no gate ever computes the one cross-product that defines the contradiction class: write-mandates × protected-paths ∖ exemptions.**
+**Every seam where the pipeline needs typed paths/pinIds it instead re-extracts them from untyped prose with a different heuristic — and no gate ever computes, over a fresh walk, the one cross-product that defines the contradiction class: write-mandates × protected-paths ∖ exemptions.**
 
-## 2. Defect table (all code-evidenced)
+## 2. Defect table (code-evidenced; amended per grill round 1)
 
 | # | Defect | Evidence |
 |---|---|---|
-| D1 | Protection interval enforces pins minted from the **spec's own artifacts** (`extractContractInventory` scans `docs/specifications/**/*.md`, including self); the validator side excludes self-minted pins from demands (`demandablePins(selfArtifactMatch)`) but `deriveProtectionInterval` has no locus filter | run.log derivations 461/1746 vs contract-validators.ts:131 |
-| D2 | `pathTokens[0]` over a ±200-char window mints pins from the wrong file: "extends X … never touching Y" protects **X**; template variables (`${wiredFile}`, `${pathspec}`) become phantom protected paths | contract-surface.ts:229 (`literalPathTokens(text, from-200, to+200)`), financials-contract.test.ts:843, prosperity-contract.test.ts:439 |
-| D3 | Exemptions apply only to `sharedFile`+pinId entries; writers naturally express amendments in `docUpdates` prose → exemption silently missing | spec-26 `.knowledge.json` entry[12]: `sharedFile: ".gitignore"` with `22-public-interface.md` buried in docUpdates |
-| D4 | The spec-review's mechanical reconciliation printed `set-inclusion: MISMATCH`; the LLM verdict still said "fully reconciled … Zero cross-artifact contradictions exist" | 12-spec-review.md:36 vs :123 |
-| D5 | Write-mandates × protections is never computed pre-implementation; contradictions surface only via two-strike + judge + replan | both replans routed from `stage9.protection-breach` mid-phase-02 |
-| D6 | Two idiom scanners with different grammars: Check 3 (`scanImmutabilityIdioms`, plan text) vs the interval (`extractContractInventory` md/py/ts forms) mint different pins — the entry gate can pass what enforcement enforces | plan-feasibility.ts vs protection-interval.ts |
+| D1 | Protection interval enforces pins minted from the spec's **own artifacts** with no locus filter, while the validator side excludes self-minted pins from demands | `deriveProtectionInterval` vs `demandablePins(selfArtifactMatch)`; run derivations 461/1746 |
+| D2 | Pin **resolution** takes the first path token from a wide window / bare pathspec arm: "extends X … never touching Y" protects **X**; template variables (`${wiredFile}`, `${pathspec}`) become phantom protected paths. **Arm correction (grill MED-1):** the phantoms enter via `porcelainPathspecAfter` (plan-feasibility.ts arm) AND `literalPathTokens(from-200, to+200)` (contract-surface.ts:229) — token validation must apply at **pin resolution** (`hit.pathTokens[0]` and the composed scanner path) to cover both arms | financials-contract.test.ts:843, prosperity-contract.test.ts:439 |
+| D3 | Exemptions apply only to `sharedFile`+pinId; writers express amendments in `docUpdates` prose → exemption silently missing (3 spec passes to converge) | spec-26 `.knowledge.json` stages.spec.data.amendmentFamily entry[12] |
+| **D4 (amended)** | "Approved with MISMATCH visible" was **three stacked sub-mechanisms**, of which reviewer-override is the least load-bearing (grill HIGH-1): (a) the reconciliation is **prose stamped after the gate** — the approval predicate never reads `mismatches.length` (spec-convergence.ts approval block: `approved = (review.pass \|\| …) && verdictBlocking === 0`, reconciliation stamped at 20:30:37.887, approval at .890); (b) `specAmendmentFamilyFindings` returns `[]` whenever **design declared a family** — the spec-side set-inclusion never ran; (c) **decisive:** the mismatch set is computed from the writer's INPUT-slice stamp (`contractValidationContext(state, "spec", [task, requirements, …])`, `readContractSliceStamp`) — the replan-2 pin was minted from the task list written at 22:19, after the ~20:30 stamp, so **no validator could see it**: at approval time the file was not an inventory key at all | spec-convergence.ts; contract-validators.ts design-declared skip; contract-surface.ts `touchedProtectedFiles`; derivation timeline |
+| D5 | The write×protect cross-product is computed nowhere pre-implementation; contradictions surface only via two-strike + judge + replan | both replans routed from `stage9.protection-breach` |
+| D6 | Two idiom grammars with different mint conditions: Check 3 requires porcelain+wording co-presence (test files) vs `scanPorcelainMd` minting on **wording alone** (prose) — the entry gate can pass what enforcement enforces | plan-feasibility.ts vs contract-surface.ts:214 |
+| D7 (new, grill MED-3) | The `.knowledge.json` `amendmentFamily` read is **already duplicated** across two fail-closed readers (`approvedAmendmentSharedFiles`, `readAmendmentFamilySharedFiles`) — a P6 drift this spec must absorb, not extend | protection-interval.ts, plan-feasibility.ts |
 
-## 3. Research grounding (why this design, not "better prompts")
+## 3. Research grounding
 
-- **ALICE** (Gärtner & Göhlich, *Autom Softw Eng* 31:49, 2024): decomposing requirements into `condition⇒effect` constituents and comparing **structurally** reaches 60–75% recall / 83–94% precision on contradiction pairs; **LLM-only review of the same pairs: 0–32% recall, 0% precision on the real-world set**. D4 is not a prompt defect — it is the measured ceiling of prose review.
-- **PlanCompiler** (arXiv:2604.13092): an LLM emitting a typed plan that passes deterministic compile-time checks, with **no repair loop**, achieves 92.67% first-pass success vs 62–67% for agentic execution and is 8–77× cheaper per success. The winning shape is *type the claims, check them mechanically, execute once* — exactly the "do it once" objective.
-- **Boehm's cost curve**: defect-removal cost escalates 10–100× with phase. Our discovery point (mid-implementation, post-judge) is the most expensive available; the fix moves it to render time.
+- **ALICE** (Gärtner & Göhlich, *Autom Softw Eng* 31:49, 2024): structural `condition⇒effect` decomposition reaches 60–75% recall / 83–94% precision on requirement contradiction pairs; LLM-only review: 0–32% recall (0% precision on the real-world set). D4 is a measured ceiling, not a prompt defect.
+- **PlanCompiler** (arXiv:2604.13092): typed plan + deterministic compile-time checks, **no repair loop**: 92.67% first-pass vs 62–67% agentic; 8–77× cheaper. The winning shape: type the claims, check mechanically, execute once.
+- **Boehm's cost curve**: defect-removal cost escalates 10–100× with phase; our discovery point (mid-implementation, post-judge) is the most expensive available.
 
-## 4. Architecture — one spine, four gates
+## 4. Architecture — one spine, four gates (timing pinned per grill HIGH-1)
 
-### 4.1 The spine (`src/review/claim-spine.ts` — new module, the single grammar)
+### 4.1 The spine (`src/review/claim-spine.ts` — the single grammar, P6)
 
 ```
-WriteClaim   { path, verb: create|extend|amend|delete, locus: "<file>:<line>", sourceStage }
+WriteClaim   { path, verb: create|extend|amend|delete, locus, sourceStage }
 ProtectClaim { path, locus, pinId?, family }   // wraps the existing ContractPin
 ```
 
-`extractWriteClaims(texts, loci)` — deterministic, pure:
-- Path tokens validated (`claimPathUsable` + reject `${…}` template forms, bare identifiers, non-path-looking strings — kills D2 phantoms).
-- **Verb-context classification**: a token governed by *extends / adds / gains / creates / writes / edits / amends / lands / ships* is a WRITE claim; a token governed by *byte-untouched / never touching / stays clean / immutable / porcelain* is a PROTECT claim. The two grammars never mint the same token in the same statement — the inversion ("extends X … never touching Y" protects X) becomes structurally impossible.
-- The SAME extractor feeds Check 3, the inventory, the slice builder, and the interval (kills D6).
+`extractWriteClaims(texts, loci, conceptMap)` — deterministic, pure; the **write side consumes `inventory.mapping`/`concepts`** (grill MED-2) so concept-references ("spec 22's package layout gains …") mint claims via the same mapping the protect side already uses.
 
-### 4.2 Gate W — writer gate (render-time, every stage)
+**Enumerated grammar table (P2 binding — all mainstream forms, verified against the run's own sentences):**
 
-After the writer renders, the engine extracts the draft's write-claims and cross-checks the typed closure rule:
+| Form | Example (verbatim from the run) | Classification |
+|---|---|---|
+| Verb-governed write | "22-public-interface.md §4 **gains** the data/cache note" | WRITE(22-public-interface.md) |
+| Verb-governed protect | "src/stages.ts, src/orchestrator.ts, src/screen-phase1.ts **stay byte-untouched**" | PROTECT(all three — **list governance**: the qualifier governs every token in its list/segment, not `pathTokens[0]`) |
+| Post-positioned protect qualifier | "the deliverable requireNotContains guard **pins** python/omisis/_fetchers.py **byte-untouched**" | PROTECT(_fetchers.py) — "pins … byte-untouched" added to the protect verb grammar; nearest-qualifier association, backward-looking |
+| Mixed single sentence | one WRITE ("gains") + one PROTECT ("pins … byte-untouched") in one sentence | **both** claims mint — §4.1 v1's "never the same token in one statement" claim withdrawn (grill MED-1): the grammars may co-occur; they just never govern the *same token* |
+| List context | "Files edited: src/runtime-dispatch.ts, src/tools/data_analyst.ts, tests/…test.ts (NEW), docs/…07-staged-execution.md" | WRITE(every listed token — list governance again) |
+| Negation | "must not gain", "without touching X" | no claim (guard: negated verb ⇒ token is NOT a write claim) |
+| Noun form | "the byte-untouched guard" | no protect claim from the noun alone (adjective must govern a path token) |
+| Concept reference | "spec 22's package layout gains the note" (no literal path) | WRITE(mapping["package layout"]) via conceptMap |
+| Template/invalid token | `${wiredFile}`, `${pathspec}`, bare identifiers | **rejected at pin resolution** — validation applies at `hit.pathTokens[0]` AND the `porcelainPathspecAfter` arm (D2 correction) |
 
-> **Every write-claim path that carries a foreign pin must appear as some `amendmentFamily` entry's `sharedFile`** — `docUpdates` prose paths count as claims (they are extracted), so hiding the file in prose no longer bypasses the exemption grammar (kills D3).
+### 4.2 Gate W — writer gate (authoring stages, **fresh post-render walk**)
 
-On violation: deterministic validation failure with a repair demand naming both loci (the write claim's locus + the pin's locus), riding the existing render-retry loop (`state.__feedback`). Zero agent cost, sub-second.
+Runs after render for **authoring stages only** (requirements/bdd/design/spec writers and the plan/task rendering inside the spec stage — **not review writers**, whose drafts quote plan prose; quoted write-mandates must not mint claims at the review stage — grill MED-5). The engine walks the just-written artifacts **fresh** (not the input-slice stamp — the grill HIGH-1(c) hole), extracts write-claims, and enforces the typed-closure rule:
 
-### 4.3 Gate R — reviewer gate (verdict-binding reconciliation)
+> Every write-claim path that carries a foreign pin must appear as some `amendmentFamily` entry's `sharedFile`.
 
-The engine-written Contract Inventory Reconciliation becomes **verdict-binding** (kills D4): while any set-inclusion MISMATCH residual is unresolved in typed form (`pinsMoved` / `exemptions[].pinId`), the stage's control **cannot validate as Approved** — the engine merges mechanical findings as blocking rows into the convergence, exactly like render-validation; the LLM reviewer's prose cannot clear them. The reviewer's role narrows to what ALICE shows LLMs are good at: auditing exemption *justifications* (the legal basis), not detecting the inconsistency.
+`docUpdates` prose paths count as claims (extracted), so prose cannot bypass the exemption grammar (kills D3). On violation: deterministic validation failure with a repair demand naming both loci (claim locus + pin locus), riding the existing render-retry loop (`state.__feedback`). **P8 bound (named, grill MED-4):** the convergence round cap (`MAX_CONVERGENCE_ROUNDS = 8`) with the strict-progress extension; two legal escapes for genuinely unsatisfiable closure — drop the write-claim (the spec stage owns the artifact) or declare the `sharedFile` entry with a justification (audited by Gate R).
 
-### 4.4 Gate E — entry gate (Stage 9 entry, the cross-product)
+### 4.3 Gate R — verdict-binding **demandable-set** validation (grill HIGH-3 scoped)
 
-At implementation entry, one deterministic assertion:
+The blocking scope is the **demandable set** — `demandablePins(slice, inventory, selfArtifactMatch)` semantics: self-minted pins excluded, slice-visible pins only (the 2026-09-14 whack-a-mole carve-outs preserved). Concretely:
+
+1. The approval predicate **reads the validator findings** (`specAmendmentFamilyFindings` / `designAmendmentFamilyFindings` kind:"blocking" rows) — Approved-with-unresolved-demandable-blocking becomes structurally impossible (fixes D4(a)).
+2. The **design-declared skip** in `specAmendmentFamilyFindings` is conditioned: design having declared a family skips the spec-side *declaration* demand only when the design family covers the spec's fresh write-claims (fixes D4(b)).
+3. The reconciliation prose remains an advisory rendering; the **binding set is the typed validator output**, refreshed with the Gate W post-render walk (fixes D4(c) jointly with Gate W).
+
+The reviewer's role narrows to auditing exemption **justifications** (ALICE: what LLMs are good at).
+
+### 4.4 Gate E — entry gate (Stage 9 entry, fresh walk, honest routing)
+
+One deterministic assertion over the entry-time fresh walk:
 
 ```
-writeClaims(all stages: requirements ACs, scenarios, design, spec, plan requireFiles, task bullets)
-  × protectClaims(inventory, unified grammar, phantoms rejected)
+writeClaims(requirements ACs, scenarios, design, spec, plan requireFiles, task bullets)
+  × protectClaims(fresh inventory, unified grammar, phantoms rejected, self-minted included)
   ∖ exemptions(sharedFile × pinId)
-  = ∅      — else HARD BLOCK naming both loci, routed to spec revision
+  = ∅   — else HARD BLOCK naming both loci
 ```
 
-This is the check whose absence caused both replans (kills D1, D5). It replaces nothing — Check 3's plan-text scan becomes a thin wrapper over the same extractor (D6 closure). Failures route as **spec revision with mechanical findings**, not replan: the spec stage re-renders with the two-locus contradiction injected as feedback (the render-retry path), costing seconds, not a replan cycle.
+Self-minted pins are **included** here (D1): a spec that writes X and protects X is caught at entry regardless of which artifact minted the pin. **Routing (DEC-3 amended per grill HIGH-2):** initially via the **existing replan machinery** (route replan-upstream with the two-locus mechanical finding) — correct though slower: no implementer attempt burns, no judge call needed for diagnosis (the finding IS the diagnosis), cost is the replan cycle itself. A follow-up routing wave wires `RouteBackSignal({from: "implementation", to: "spec"})` into the inline walker (`withInlineRouteBack` exists; the throw site is new) to trade the restart for an inline jump ("minutes not cycles" — never "seconds"; the v1 claim is withdrawn). **Scan-cap behavior (grill LOW):** when `MAX_SCAN_FILES` truncates the walk, Gate E emits a loud P10 scan line and treats protectClaims as partial-but-authoritative (no fail-open of the whole gate; contradictions found in the partial walk still block; the cap is surfaced, never silent).
 
 ### 4.5 Gate I — interval gate (unchanged enforcement, corrected inputs)
 
-`deriveProtectionInterval` keeps its semantics but consumes spine-validated protect-claims: phantoms rejected, self-minted pins only enforced when consistent with the spine (Gate E already guaranteed contradiction-freedom before the interval arms). Two-strike education/judge machinery unchanged — it now only sees genuine executor faults.
+`deriveProtectionInterval` consumes spine-validated protect-claims: phantoms rejected at resolution, list-governed multi-target protections correct. Two-strike education/judge machinery unchanged — it now only sees genuine executor faults.
 
-## 5. Decisions (DEC — owner-adjudicable)
+## 5. Decisions (amended per grill)
 
-- **DEC-1** One extractor, four consumers (P6 single grammar). Wrapping is preferred over rewriting: `extractContractInventory` internals adopt the token validator + verb-context classification; Check 3 calls the same functions.
-- **DEC-2** Prose is claim-evidence, not exemption-evidence: paths in `docUpdates`/task bullets/AC text are extracted as write-claims and thereby force typed coverage; they never themselves exempt anything (kills the D3 ambiguity from both directions).
-- **DEC-3** Gate E failures route to **spec revision** (render-retry, seconds) rather than replan (invalidation + judge + cache drops). Replan remains reserved for findings that need re-planning semantics (scope change, missing stage outputs) — a two-locus write/protect contradiction never does.
-- **DEC-4** Reviewer verdicts are prose over a mechanical floor (ALICE grounding): MISMATCH residuals are engine-owned blocking rows; the reviewer cannot approve past them. No reviewer prompt changes required — the floor is not advisory text, it is control validation.
-- **DEC-5** Fail-open boundaries preserved: absent inventory tree ⇒ empty protect-claims ⇒ gates W/E pass (zero false positives on clean trees), same DEC-4 posture as 059. Token-validation rejects are logged as scan lines (P10), never silently.
-- **DEC-6** Single wave (this is one cohesive invariant; splitting extractor from gates reintroduces the D6 mixed-grammar drift). Tests land with the wave.
+- **DEC-1** One extractor, four consumers; token validation applies at pin **resolution** (both arms); the grammar table in §4.1 is binding (P2).
+- **DEC-2** Prose is claim-evidence, never exemption-evidence.
+- **DEC-3 (amended)** Gate E routes via existing replan machinery first (correct, slower); the inline `RouteBackSignal` throw site is a follow-up routing wave. Cost honesty: entry-block ≈ one replan cycle *without* burned implementer attempts, judge diagnosis calls, or two-strike escalation; inline-jump follow-up reduces it further.
+- **DEC-4 (amended)** Verdict-binding binds the **demandable set** (validator output), not the raw reconciliation residual; raw-residual binding deadlocks clean runs (grill HIGH-3).
+- **DEC-5** Fail-open boundaries preserved (absent tree ⇒ empty claims ⇒ gates pass); token-validation rejects and scan caps are loud scan lines (P10).
+- **DEC-6 (amended)** Two waves: **core wave** (D-F-A…D-F-E — extractor + four gates + read unification; cohesion preserves the single-grammar invariant) and a **follow-up routing wave** (the walker throw site). The core wave lands as one version bump.
+- **DEC-7 (new)** D-F-A **unifies the `.knowledge.json` amendmentFamily read into one exported helper**, absorbing the two existing duplicated readers (D7) — this is the condition under which 065-before-063 minimizes rework (063 then redirects one site).
 
 ## 6. Non-goals
 
-- No SAT/SMT encoding of AC semantics (ALICE's propositional decomposition is over requirement *pairs*; our contradiction class is path-set algebra — set intersection suffices; formal logic would add machinery without catching more of THIS class).
-- No change to the judge, two-strike education, or replan machinery (they remain the executor-fault safety net).
-- No new agent roles; no prompt-side "be more careful" changes (P4: what must hold is enforced mechanically).
-- Not moving rendered reports or state storage (063 owns that family).
+- No SAT/SMT encoding of AC semantics (the contradiction class is path-set algebra; formal logic adds machinery without catching more of THIS class).
+- No change to judge, two-strike education, replan invalidation semantics, prompts, agent skills, or model routing.
+- Not moving rendered reports or state storage (063 owns that family; see §8).
 
 ## 7. Delta requirements
 
-- **D-F-A claim-spine module** — `extractWriteClaims` + token validator + verb-context classification; `extractContractInventory` internals refactored onto the validated extractor (phantom rejection, inversion guard); Check 3 becomes a consumer.
-- **D-F-B writer gate** — post-render typed-closure validation (write-claims ⊆ sharedFile coverage on pinned paths) with repair-demand feedback; runs in every writer's render-retry loop.
-- **D-F-C reviewer gate** — set-inclusion residuals become engine-owned blocking rows bound into control validation; Approved-with-MISMATCH becomes structurally impossible.
-- **D-F-D entry gate** — the Stage-9-entry cross-product assertion with two-locus findings routed to spec revision.
-- **D-F-E acceptance fixtures** (deterministic only, the 059 convention):
-  - **Fixture A (replan-1 shape)**: plan whose phase-3 text reads "extends tests/foo.py … never touching the registry" + phase-2 `requireFiles: tests/foo.py` ⇒ interval does NOT protect foo.py; entry gate passes; Gate W flags nothing. (The pin inversion is dead at birth.)
-  - **Fixture B (replan-2 shape)**: AC mandates editing a pinned sibling doc; writer declares it only in `docUpdates` prose ⇒ Gate W fails with the repair demand naming both loci; after the sharedFile entry is added ⇒ passes; a review artifact containing an unresolved MISMATCH cannot validate Approved.
-  - **Fixture C**: `${wiredFile}` / `${pathspec}` / bare-identifier tokens ⇒ rejected, logged, zero protected phantom.
-  - **Fixture D**: self-spec "X stays byte-untouched" with a write-claim also on X ⇒ Gate E blocks with both loci; without the write-claim ⇒ protection stands (legitimate self-protection preserved).
-  - **Fixture E (regression)**: the current passing behavior — sibling pins enforced, exemptions honored — byte-identical outcomes on the existing suite.
+- **D-F-A claim-spine module + read unification** — `extractWriteClaims` (grammar table above, conceptMap-fed) + resolution-time token validation + the single exported `.knowledge.json` amendmentFamily reader replacing both duplicated readers; `extractContractInventory` internals adopt the validated extractor; Check 3 becomes a consumer.
+- **D-F-B writer gate** — post-render fresh-walk typed-closure validation on authoring stages, repair-demand feedback, P8 bounds named.
+- **D-F-C reviewer gate** — approval predicate consumes validator blocking rows; design-declared skip conditioned; demandable-set scope.
+- **D-F-D entry gate** — the Stage-9-entry cross-product with two-locus findings via existing replan routing; scan-cap loud partial semantics.
+- **D-F-F plan compile-time checks (added post-grill, the implement/tdd-retry reducer)** — over the typed plan control: phase-DAG completeness (inputs are prior outputs; acyclic; no orphans), parallel-group write-set disjointness, requireFiles/requireScenarios resolvability (exist or are produced), AC write-set coverage (every AC-mandated file change appears in some phase). All mechanical, all at spec render + entry.
+- **D-F-E acceptance fixtures** (deterministic):
+  - **A** replan-1 shape: "extends tests/foo.py … never touching the registry" + phase-2 `requireFiles: tests/foo.py` ⇒ no protection mints on foo.py (inversion dead); entry gate passes.
+  - **B** replan-2 shape: AC mandates a pinned sibling doc declared only in `docUpdates` ⇒ Gate W fails with both loci; after the sharedFile entry ⇒ passes; Approved-with-unresolved-demandable-blocking impossible.
+  - **C** phantoms: `${wiredFile}` / `${pathspec}` / bare identifiers rejected at **both** resolution arms.
+  - **D** self-contradiction: self-spec "X stays byte-untouched" + write-claim on X ⇒ Gate E blocks with both loci; without the write-claim ⇒ protection stands.
+  - **E** regression: current passing behavior byte-identical.
+  - **F (new)** starved-slice temporal case: a pin minted from the task list *after* the input-slice stamp still reaches Gate W (fresh post-render walk) and Gate E (entry walk).
+  - **G (new)** concept-reference write claim via conceptMap.
+  - **H (new)** Gate R non-blocking residual: self-minted + beyond-slice-cap pins do NOT block (demandable-set scope).
+  - **I (new)** routing: Gate E finding rides the replan path with the mechanical two-locus diagnosis (no judge call).
+  - **J (new)** grammar rows: negation ("must not gain"), noun form, list context, post-positioned qualifier — each classified per the §4.1 table.
+  - **K (new)** scan-cap: truncated walk ⇒ loud partial semantics.
+  - **L (new)** D-F-F: forward-reference phase DAG, overlapping parallel write-sets, unresolvable requireScenarios, uncovered AC write-mandate — each blocked with loci.
 
-## 8. Feature ownership
+## 8. Sequencing (amended per grill MED-3; replaces v1's "no cross-dependency")
 
-Owns: the claim-spine extractor and its four gates (W/R/E/I inputs). Does NOT own: state storage/location (063), replan mechanics, judge routing, prompt content. Sequence: independent of 063's waves (operates over in-spec artifacts and repo tests either way); lands as its own version bump after (or alongside) 063 S1/S2 — no cross-dependency.
+The seam is real: Gates W/E read `.knowledge.json` `amendmentFamily`; 063 relocates that file. **DEC-7 is the condition**: with the read unified into one helper, 065-first leaves 063's D-S-B exactly one new site to redirect (the helper), and 063-first would leave 065 writing readers it must immediately re-point. Order:
 
-Sources: ALICE — Gärtner & Göhlich, *Automated requirement contradiction detection through formal logic and LLMs*, Autom Softw Eng 31:49 (2024), doi:10.1007/s10515-024-00452-x. PlanCompiler — arXiv:2604.13092 (typed plan + compile-time checks, no repair loop). Boehm — cost-of-change curve (RE/25 studies; NASA NTRS 20100036670).
+1. **060 mini-wave** (accessMode pin tests + fail-open loud notice) — only if touch-disjoint from the Gate E wiring; else after 065.
+2. **065 core wave** (D-F-A…D-F-E + D-F-F) — the active-cost-first priority: every complex run risks the replan class.
+3. **065 follow-up routing wave** (RouteBackSignal throw site).
+4. **063 S1 → S2** — redirecting the unified family-read helper in S2's census.
+5. Parked: 061 disclosure, 064 bandit (INDEX triggers).
+
+Sources: ALICE — doi:10.1007/s10515-024-00452-x. PlanCompiler — arXiv:2604.13092. Boehm — cost-of-change curve (NASA NTRS 20100036670).

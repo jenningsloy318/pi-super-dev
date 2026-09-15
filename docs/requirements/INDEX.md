@@ -93,7 +93,7 @@ Scope: 62 docs — 58 committed + 4 in flight (marked ⚠ below). Eras: **Jul** 
 
 ---
 
-| 09-15 | 065-first-pass-satisfiability.md | architecture | Draft — write-claim spine: ONE typed extractor (verb-context + token validation) feeding four deterministic gates (writer closure, verdict-binding reconciliation, Stage-9 entry cross-product, interval inputs); kills the double-replan class (self-minted pin inversion + prose-orphaned exemptions + MISMATCH override); ALICE/PlanCompiler grounded |
+| 09-15 | 065-first-pass-satisfiability.md | architecture | v2 — grill round 1 (glm-5.3, 3H+5M+1L) folded: D4 decomposed into 3 sub-mechanisms (post-stamp prose reconciliation, design-declared skip, input-slice temporal blindness); Gate W = fresh post-render walk on authoring stages; Gate R binds the DEMANDABLE set; Gate E routes via existing replan machinery (RouteBackSignal = follow-up wave); enumerated grammar table (P2); amendmentFamily read unified (D7); +D-F-F plan compile-time checks (phase-DAG/disjointness/resolvability/AC-coverage) |
 
 ## Feature ownership (post-decoupling, 2026-09-15)
 
