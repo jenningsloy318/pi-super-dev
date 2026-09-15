@@ -545,16 +545,15 @@ describe("F2 validator override — hard-fail ONLY for inherited-red restart sta
 		expect(hasLog(logs, "routing Tier 3 FatalAbort naming the validator findings (no retry loop; v0.3.85 F2 validator override)")).toBe(true);
 	}, 20_000);
 
-	it("WITHOUT pending inherited-red rows: today's log-and-proceed stands (pool exhausted, no throw, phases run)", async () => {
+	it("WITHOUT pending inherited-red rows: replan unavailable ⇒ 065 A5 HARD BLOCK (FatalAbort names the contradictions; no execution of a proven-contradictory plan)", async () => {
 		const wt = mkRepo(); repos.push(wt);
 		const specDir = mkSpecDir();
 		writeFileSync(join(specDir, REPLAN_REQUESTS_FILE), JSON.stringify({ version: 1, rounds: 1, requests: [] }));
 		gateQ = [PASS_GATE];
 		const { ctx, logs } = mkCtx(wt, [{ control: { filesModified: ["src/x.ts"] } }]);
 		const state = mkState(wt, specDir, contradictoryPhases());
-		const out = (await implementationStage.run(state, ctx)) as unknown as { phaseStatus: Array<{ id: string; status: string }> };
-		expect(hasLog(logs, "proceeding with the contradictions logged")).toBe(true);
-		expect(out.phaseStatus[0]).toMatchObject({ id: "phase-01", status: "green" });
+		await expect(implementationStage.run(state, ctx)).rejects.toThrow(/065 §4.4 HARD BLOCK/);
+		expect(hasLog(logs, "proceeding with the contradictions logged")).toBe(false);
 	}, 20_000);
 
 	it("pending inherited-red rows with the pool AVAILABLE → the contradictions route a normal replan (the override must not fire when replan can)", async () => {

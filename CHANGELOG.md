@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.4.4: 065 核心波——写声明脊柱 + 四个确定性门 + 计划编译期检查（首过可满足性）
+
+**English — 065 core wave: the write-claim spine + four deterministic gates + plan compile-time checks (first-pass satisfiability).** Closes the double-replan class from run 2026-09-14T11-40-21-540Z: both replans were write×protect contradictions present in the artifacts from birth, discovered only by burning implementer attempts + judge calls (write-mandates × protected-paths ∖ exemptions was computed nowhere pre-implementation).
+
+- **D-F-A claim-spine module** (`src/review/claim-spine.ts`): the §4.1 enumerated grammar (verb-governed writes both directions, list governance, post-positioned qualifiers, forward "never touching X", per-verb negation, concept-map references, template-token rejection at BOTH resolution arms) + the D7 unified `.knowledge.json` amendmentFamily reader (one exported helper replacing the two duplicated fail-closed readers).
+- **Gate W** (writer): fresh post-render walk on authoring stages (NOT the input-slice stamp — the temporal blindness hole), typed closure (write-claims carrying pins must appear as amendmentFamily sharedFile; prose docUpdates are claim-evidence, never exemption-evidence). Advisory at requirements/bdd, blocking at design/spec.
+- **Gate R** (reviewer): approval consumes validator blocking findings — Approved-with-unresolved-demandable-blocking is structurally impossible; the design-declared skip is conditioned on covering the spec's fresh write-claims; the demandable-set carve-outs (self-minted + slice scope) preserved.
+- **Gate E** (entry): Stage-9-entry cross-product over a fresh walk, self-minted pins INCLUDED, two-locus mechanical finding via the existing replan routing (no judge call); the replan-unavailable fallback is a FatalAbort HARD BLOCK (A5) instead of log-and-proceed.
+- **D-F-F plan compile-time checks**: forward-file-reference resolvability, requireScenarios resolvability, AC write-set coverage. Create-collision DROPPED (gate B3: sequential phases make create-then-extend the canonical handoff).
+- **Dual-gate folds (glm-5.3-flash: Code FAIL 1H+4 + Adversarial REJECT 3B+6)**: grammar between-guard hardened (a WRITE verb or sentence ender between token and qualifier breaks the protect association — the comma-mixed sentence no longer swallows the write claim); same-token both-governance mints BOTH (self-contradiction visible to Gate E); NEGATED_WRITE regex state leak fixed (non-global clones); P10 reject-sinks actually connected (phantoms named in scan lines — including the residual scanPorcelainTs hole where the phantoms really entered); python/ added to the rooted-prefix set; malformed family entries surface at Gate W (A6 unification).
+- 60 个新测试（claim-spine-065 + 更新）;267 文件 4132/4132 全绿。
+
+**中文摘要**:消灭双 replan 类——把「写指令 × 保护路径 − 豁免」的交叉积从"无处计算、实现中途靠 two-strike+judge+replan 发现"变成"渲染时秒级类型闭包 + 入口时确定性断言"。写手不改 prompt,审查者卸下做不到的矛盾检测职责(ALICE 实测 0–32% 召回),豁免语法闭合(散文藏不住),幻影钉在双臂被拒且响亮。
+
 ### Fixed — v0.4.3: resume-cache 耐久性——运行时状态文件永不 git-tracked（spec-26 run 2026-09-15T08-13-05-056Z）
 
 - **现场**：resume 重放被 prototype 卡住（「Stage 6C takes minutes?」）——`.resume-cache.jsonl` 里 pipeline.prototype 零行，但 14-prototype-report.md 存在；逐行考古发现 32 行现役缓存恰等于 phase-1 提交 5d613aa 的树内快照，phase-02..05 行、designReview#3-7、bddReview#2-4、specReview#2 全部丢失；worktree reflog 同日 12 次 `reset: moving to 5d613aa`。

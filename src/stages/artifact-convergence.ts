@@ -5,7 +5,7 @@ import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-err
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewBlockingVerdictFindings } from "../review-findings.ts";
 import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
 import { readContractSliceStamp } from "../review/contract-surface.ts";
-import { bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
+import { bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
 import { priorFindingsForInjection } from "../convergence-ledger.ts";
@@ -127,6 +127,11 @@ export const requirementsComplete: ArtifactValidator = async (s: PipelineState, 
 		for (const a of splitContractFindings(requirementsIntentFindings({ control: s.requirements as Record<string, unknown> | undefined, slice: contractCtx.slice })).advisory) {
 			ctx.log(`Requirements contract-validator (advisory): ${a}`);
 		}
+		// 065 D-F-B (Gate W, intent level — advisory at 2B per 059 W2: the typed
+		// family is a design/spec home; requirements findings feed forward).
+		for (const f of stageWriteClaimGate({ stage: "requirements", level: "intent", state: s as Record<string, unknown>, control: s.requirements as Record<string, unknown> | undefined, docGlobs: ["*-requirements.md"] })) {
+			ctx.log(`Requirements Gate-W (${f.kind}): ${f.message.slice(0, 200)}`);
+		}
 	}
 	const req = s.requirements as ({ openQuestions?: unknown[] } & Record<string, unknown>) | undefined;
 	const open = Array.isArray(req?.openQuestions) ? req.openQuestions : [];
@@ -148,6 +153,11 @@ export const bddComplete: ArtifactValidator = async (s: PipelineState, ctx: Stag
 	if (contractCtx) {
 		const { blocking, advisory } = splitContractFindings(bddPinOwnershipFindings({ control: s.bdd as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-bdd-scenarios.md") }));
 		for (const a of advisory) ctx.log(`BDD contract-validator (advisory): ${a}`);
+		// 065 D-F-B (Gate W, intent level — advisory at 2C; blocking moves to the
+		// concrete home at design/spec).
+		for (const f of stageWriteClaimGate({ stage: "bdd", level: "intent", state: s as Record<string, unknown>, control: s.bdd as Record<string, unknown> | undefined, docGlobs: ["*-bdd-scenarios.md"] })) {
+			ctx.log(`BDD Gate-W (${f.kind}): ${f.message.slice(0, 200)}`);
+		}
 		if (blocking.length > 0) return { pass: false, errors: [...base.errors, ...blocking] };
 	}
 	return base;
@@ -1133,6 +1143,15 @@ export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: S
 				return { pass: false, errors: blocking };
 			}
 		}
+		// 065 D-F-B (Gate W, CONCRETE — blocking at design, the typed-family home
+		// per 059 W4/grill R6 HIGH-1): fresh post-render walk over the design doc.
+		const designGateWNoClaims = stageWriteClaimGate({ stage: "design", level: "concrete", state: s as Record<string, unknown>, control: control as Record<string, unknown> | undefined, docGlobs: ["*-design.md"] });
+		for (const a of designGateWNoClaims.filter((f) => f.kind === "advisory")) ctx.log(`Design Gate-W (advisory): ${a.message.slice(0, 200)}`);
+		const designGateWNoClaimsBlocking = designGateWNoClaims.filter((f) => f.kind === "blocking").map((f) => f.message);
+		if (designGateWNoClaimsBlocking.length > 0) {
+			ctx.log(`Design Gate-W: ${designGateWNoClaimsBlocking.length} typed-closure error(s): ${designGateWNoClaimsBlocking.slice(0, 2).join("; ")}`);
+			return { pass: false, errors: designGateWNoClaimsBlocking };
+		}
 		return { pass: true, errors: [] };
 	}
 	const worktreePath = s.setup?.worktreePath ?? "";
@@ -1144,6 +1163,11 @@ export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: S
 		const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-design.md") }));
 			for (const a of advisory) ctx.log(`Design contract-validator (advisory): ${a}`);
 			errors.push(...blocking);
+	}
+	// 065 D-F-B (Gate W, CONCRETE — blocking at design; the with-claims path).
+	for (const f of stageWriteClaimGate({ stage: "design", level: "concrete", state: s as Record<string, unknown>, control: control as Record<string, unknown> | undefined, docGlobs: ["*-design.md"] })) {
+		if (f.kind === "advisory") ctx.log(`Design Gate-W (advisory): ${f.message.slice(0, 200)}`);
+		else errors.push(f.message);
 	}
 	// Rendered-doc parity: the reviewer reads the RENDERED design — a contracts
 	// block the template dropped makes the reviewer blind and the loop spin.

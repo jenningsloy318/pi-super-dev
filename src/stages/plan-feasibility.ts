@@ -47,6 +47,9 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+// 065 D7: the ONE amendmentFamily reader (claim-spine.ts) — this module's
+// previously duplicated fail-closed reader is retired to a delegation.
+import { amendmentExemptFiles } from "../review/claim-spine.ts";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Structural mirror of implementation.ts LeakPhase (no import edge — the
@@ -321,7 +324,10 @@ export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: strin
 			continue;
 		}
 		try {
-			const hits = scanImmutabilityIdioms(readFileSync(abs, "utf8"));
+			const { hits, rejects } = scanImmutabilityIdiomsWithRejects(readFileSync(abs, "utf8"));
+			// 065 D2/F-4 (grill round 1): rejects are LOUD (P10) — the observed
+			// phantoms (${wiredFile}, ${pathspec}) enter via this arm too.
+			for (const r of rejects.slice(0, 4)) protectionScan.push(`${normRel}: rejected token '${r}' (template/identifier form — not a repo path; 065 D2)`);
 			protectionScan.push(`${normRel}: ${hits.length} immutability idiom hit(s)${hits.length ? ` — ${hits.map((h) => `${h.path} (${h.via})`).join(", ")}` : ""}`);
 			for (const h of hits) protectedClaims.push({ path: h.path, source: `${normRel}:${h.wording}` });
 		} catch {
@@ -433,56 +439,18 @@ export function planFeasibilityFindings(phases: PlanPhase[], worktreePath: strin
 	return { contradictions, advisories, protectionScan };
 }
 
-/** 059 R1A: read the declared amendment family's sharedFile set from
- *  `<specDirectory>/.knowledge.json` (knowledge.ts persists each stage's
- *  control at stages.<id>.data). Resolution order is the 059 §6 handoff
- *  contract: stages.design.data.amendmentFamily ?? stages.spec.data.
- *  amendmentFamily — design is the authoritative home; spec is the Stage
- *  6-skip fallback. FAIL-CLOSED (grill R8): unparseable JSON, wrong envelope,
- *  or ANY malformed family entry ⇒ an EMPTY set (zero exemptions — Check 3
- *  stays exactly as landed); absent file / absent field ⇒ empty set (nothing
- *  was declared). Every non-empty outcome ALSO needs every entry's sharedFile
- *  to survive claimPathUsable (P6: one containment spelling). */
+/** 059 R1A (D7-unified, 065 DEC-7): read the declared amendment family's
+ *  sharedFile set from `<specDirectory>/.knowledge.json`. The READ is the ONE
+ *  exported helper `amendmentExemptFiles` (claim-spine.ts) — this previously
+ *  duplicated fail-closed reader is retired to a delegation. Resolution order
+ *  is the 059 §6 handoff contract: stages.design.data.amendmentFamily ??
+ *  stages.spec.data.amendmentFamily — design is the authoritative home; spec
+ *  is the Stage 6-skip fallback. FAIL-CLOSED (grill R8, preserved):
+ *  unparseable JSON, wrong envelope, or ANY malformed family entry => an
+ *  EMPTY set (zero exemptions — Check 3 stays exactly as landed); absent
+ *  file / absent field => empty set (nothing was declared). */
 function readAmendmentFamilySharedFiles(specDirectory: string | undefined, protectionScan: string[]): Set<string> {
-	if (!specDirectory) return new Set();
-	const abs = resolveInsideWorktree(specDirectory.endsWith("/") ? specDirectory.slice(0, -1) : specDirectory, ".knowledge.json");
-	if (abs === null || !existsSync(abs)) return new Set();
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(readFileSync(abs, "utf8"));
-	} catch {
-		protectionScan.push(".knowledge.json: present but unparseable — zero Check 3 amendmentFamily exemptions (fail-closed)");
-		return new Set();
-	}
-	const stages = (parsed as { stages?: unknown } | null)?.stages;
-	if (!stages || typeof stages !== "object" || Array.isArray(stages)) {
-		protectionScan.push(".knowledge.json: malformed (expected {stages: {...}}) — zero Check 3 amendmentFamily exemptions (fail-closed)");
-		return new Set();
-	}
-	const familyOf = (stageId: string): unknown => {
-		const row = (stages as Record<string, unknown>)[stageId] as { data?: unknown } | undefined;
-		const data = row && typeof row === "object" && !Array.isArray(row) ? (row.data as { amendmentFamily?: unknown } | undefined) : undefined;
-		return data && typeof data === "object" ? (data as { amendmentFamily?: unknown }).amendmentFamily : undefined;
-	};
-	const raw = familyOf("design") ?? familyOf("spec");
-	if (raw === undefined || raw === null) return new Set(); // nothing declared
-	if (!Array.isArray(raw)) {
-		protectionScan.push(".knowledge.json: amendmentFamily is not an array — zero Check 3 exemptions (fail-closed)");
-		return new Set();
-	}
-	const out = new Set<string>();
-	for (const entry of raw) {
-		const sharedFile = (entry as { sharedFile?: unknown } | null)?.sharedFile;
-		if (typeof sharedFile !== "string" || !sharedFile.trim()) {
-			// One malformed entry poisons the WHOLE read (grill R8): an owner-
-			// approved exemption must never be inferred from a malformed family.
-			protectionScan.push(".knowledge.json: malformed amendmentFamily entry (sharedFile must be a non-empty string) — zero Check 3 exemptions (fail-closed)");
-			return new Set();
-		}
-		const usable = claimPathUsable(sharedFile);
-		if (usable) out.add(usable);
-	}
-	return out;
+	return amendmentExemptFiles(specDirectory, protectionScan);
 }
 
 /** True when the later-owned file at HEAD makes `x` import-satisfiable:
@@ -566,6 +534,20 @@ export function claimPathUsable(raw: string): string | null {
 	return p;
 }
 
+/** 065 D2: template/interpolation tokens are NEVER protected paths — the
+ *  observed phantoms (`${wiredFile}` financials-contract.test.ts:843,
+ *  `${pathspec}` prosperity-contract.test.ts:439) entered via the porcelain
+ *  pathspec arm. Exported from THIS base module (the DAG root — no imports)
+ *  so both consumers (contract-surface's window arm, claim-spine's grammar)
+ *  share ONE spelling (P6). A bare identifier (no separator, no extension
+ *  dot) is likewise not a repo path. */
+export function isUsableProtectedToken(raw: string): boolean {
+	if (typeof raw !== "string" || raw.length === 0) return false;
+	if (raw.includes("${") || /\$\w+/.test(raw)) return false; // template / interpolation
+	if (!/[./]/.test(raw)) return false; // bare identifier
+	return true;
+}
+
 /** The `-- <path>` pathspec following a porcelain base match, on the same
  *  line (quoted or bare first token — a multi-path pathspec keeps its LEADING
  *  path, a documented bound). Null when the call carries none. */
@@ -588,22 +570,37 @@ function porcelainPathspecAfter(text: string, from: number): string | null {
  *  within ±200 chars of a wording match (deduped; the pathspec form is the
  *  authoritative `via` when both extract the same path). */
 export function scanImmutabilityIdioms(sourceText: string): ImmutabilityIdiomHit[] {
+	return scanImmutabilityIdiomsWithRejects(sourceText).hits;
+}
+
+/** 065 D2/P10 companion: the scanner plus its rejected-token list — the
+ *  protectionScan lines report every phantom pathspec (e.g. `${wiredFile}`)
+ *  so the reject is visible, never silent. */
+export function scanImmutabilityIdiomsWithRejects(sourceText: string): { hits: ImmutabilityIdiomHit[]; rejects: string[] } {
+	const rejects: string[] = [];
 	const text = String(sourceText ?? "");
-	if (!text) return [];
+	if (!text) return { hits: [], rejects };
 	PORCELAIN_BASE_RE.lastIndex = 0;
 	const porcelainEnds: number[] = [];
 	for (let m = PORCELAIN_BASE_RE.exec(text); m !== null; m = PORCELAIN_BASE_RE.exec(text)) {
 		porcelainEnds.push(m.index + m[0].length);
 	}
-	if (porcelainEnds.length === 0) return [];
+	if (porcelainEnds.length === 0) return { hits: [], rejects };
 	IMMUTABILITY_WORDING_RE.lastIndex = 0;
 	const wordings: Array<{ text: string; index: number }> = [];
 	for (let m = IMMUTABILITY_WORDING_RE.exec(text); m !== null; m = IMMUTABILITY_WORDING_RE.exec(text)) {
 		wordings.push({ text: m[0], index: m.index });
 	}
-	if (wordings.length === 0) return [];
+	if (wordings.length === 0) return { hits: [], rejects };
 	const byPath = new Map<string, ImmutabilityIdiomHit>();
 	const claim = (raw: string, via: ImmutabilityIdiomHit["via"], wording: string) => {
+		// 065 D2: template/interpolation pathspecs are REJECTED at resolution —
+		// `git status --porcelain -- ${wiredFile}` mints a phantom protected
+		// path (isUsableProtectedToken is the one spelling; same-process pure).
+		if (!isUsableProtectedToken(raw)) {
+			rejects.push(raw);
+			return;
+		}
 		const path = claimPathUsable(raw);
 		if (!path) return;
 		const prev = byPath.get(path);
@@ -634,7 +631,7 @@ export function scanImmutabilityIdioms(sourceText: string): ImmutabilityIdiomHit
 			if (symmetric) claim(t[0], "message-quoted-path", w.text);
 		}
 	}
-	return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+	return { hits: [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path)), rejects };
 }
 
 /**

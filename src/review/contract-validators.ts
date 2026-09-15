@@ -23,6 +23,10 @@
 import { existsSync } from "node:fs";
 import type { ContractInventory, ContractPin, ContractSlice, NormalizedAmendmentFamilyEntry } from "./contract-surface.ts";
 import { buildContractSlice, contractSliceView, extractContractInventory, normalizeAmendmentFamily, readContractSliceStamp } from "./contract-surface.ts";
+// 065 D-F-B/D-F-C: Gate W (fresh post-render write-claim closure) + the
+// design-declared skip conditioning input.
+import { readSpecDoc } from "../doc-validators.ts";
+import { extractWriteClaims, writeClaimClosureFindings, type ClaimFinding, type WriteClaim } from "./claim-spine.ts";
 
 export const PRE_W_BANNER = "[layer-w: pre-W artifact — validation advisory; see 059 §3 R3]";
 
@@ -177,7 +181,17 @@ export function designAmendmentFamilyFindings(input: {
 
 /** The Stage 6-skip FALLBACK check (blocking, ownerStage=spec, 059 §3 R3
  *  DEFECT-1): when design did not declare a family, the specification's own
- *  SpecificationData.amendmentFamily must pass the same set-inclusion. */
+ *  SpecificationData.amendmentFamily must pass the same set-inclusion.
+ *
+ *  065 D-F-C (grill HIGH-1(b) — the design-declared skip is CONDITIONED): when
+ *  design DID declare a family, the skip now only holds when the design family
+ *  covers the SPEC's fresh write-claims on pinned surfaces. Previously the skip
+ *  returned [] unconditionally — the spec-side set-inclusion never ran when
+ *  design declared anything, so a spec writing a pinned file the design family
+ *  never named passed silently (the replan-2 hole). The condition needs the
+ *  spec's FRESH write-claims (post-render, never the input-slice stamp); absent
+ *  claims (no worktree / pre-W replay) keep the historical [] — fail-open
+ *  identical to the landed behavior, never a new deadlock. */
 export function specAmendmentFamilyFindings(input: {
 	specControl: Record<string, unknown> | undefined;
 	designControl: Record<string, unknown> | undefined;
@@ -187,9 +201,29 @@ export function specAmendmentFamilyFindings(input: {
 	 *  (adversarial S7: retries run validators at full strength). */
 	round?: number;
 	selfArtifactMatch?: (locusFile: string) => boolean;
+	/** 065: the spec's fresh write-claims (design-declared skip conditioning). */
+	specWriteClaims?: WriteClaim[];
 }): ContractValidatorFinding[] {
 	const designFamily = (input.designControl as { amendmentFamily?: unknown } | undefined)?.amendmentFamily;
-	if (designFamily !== undefined && designFamily !== null) return []; // design owns the authoritative declaration
+	if (designFamily !== undefined && designFamily !== null) {
+		// design owns the authoritative declaration — but its family must COVER
+		// the spec's fresh write-claims on pinned surfaces (065 D-F-C).
+		if (!input.specWriteClaims || input.specWriteClaims.length === 0) return [];
+		const { entries } = normalizeAmendmentFamily(designFamily);
+		const familyFiles = new Set(entries.map((e) => e.sharedFile));
+		const findings: ContractValidatorFinding[] = [];
+		for (const claim of input.specWriteClaims) {
+			const pins = input.inventory.protectedFiles.get(claim.path);
+			if (!pins || pins.length === 0) continue;
+			if (familyFiles.has(claim.path)) continue;
+			const pin = pins[0];
+			findings.push({
+				kind: "blocking",
+				message: `spec writes ${claim.path} (@ ${claim.locus}) which carries pin ${pin.pinId} (${pin.idiomFamily} @ ${pin.locus}) but the DESIGN amendmentFamily does not declare sharedFile=${claim.path} — extend the design family (or the spec family, when design is skipped) to cover every spec write-claim on a pinned surface (065 §4.3 Gate R; the design-declared skip is conditioned on coverage).`,
+			});
+		}
+		return isPreW(input.specControl, input.round) ? degradeForPreW(findings, "spec") : findings;
+	}
 	const findings = familySetInclusionFindings("spec", input.specControl, input.slice, input.inventory, input.selfArtifactMatch);
 	return isPreW(input.specControl, input.round) ? degradeForPreW(findings, "spec") : findings;
 }
@@ -393,3 +427,78 @@ export function familyInclusionMismatches(
 }
 
 export type { NormalizedAmendmentFamilyEntry };
+
+// ─── 065 D-F-B — Gate W: the writer typed-closure stage helper ───────────────
+
+/** Read a stage's FRESH rendered artifact texts (the JUST-WRITTEN docs — never
+ *  the input-slice stamp; the 065 HIGH-1(c) temporal hole: a pin minted from a
+ *  task list written after the stamp is invisible to stamped validators but
+ *  NOT to this walk). Absent docs are skipped (fail-open). */
+export function freshStageDocTexts(specDirectory: string | undefined, control: Record<string, unknown> | undefined, globs: string[]): Array<{ text: string; locusPrefix: string }> {
+	if (!specDirectory) return [];
+	const out: Array<{ text: string; locusPrefix: string }> = [];
+	for (const glob of globs) {
+		try {
+			const doc = readSpecDoc(specDirectory, control as never, glob);
+			if (doc?.content) {
+				// F-2/A1 (grill round 1): repo-relative locus so claim.locus doc
+				// paths compare equal to pin.owningSpec (self-minted detection).
+				const idx = doc.path.indexOf("docs/specifications/");
+				const rel = idx !== -1 ? doc.path.slice(idx) : (doc.path.split("/").pop() ?? glob);
+				out.push({ text: doc.content, locusPrefix: rel });
+			}
+		} catch { /* unreadable — skipped (fail-open harmless) */ }
+	}
+	return out;
+}
+
+/** Gate W wiring (065 §4.2): fresh post-render walk → write-claims → typed
+ *  closure. Runs on AUTHORING stages only (the caller decides level: intent =
+ *  requirements/bdd ⇒ advisory; concrete = design/spec ⇒ blocking — 059 W2:
+ *  the typed family is a design/spec home). Absent worktree ⇒ [] (DEC-5
+ *  fail-open). Pre-W controls (round ≤ 1, no layerW stamp) degrade to advisory
+ *  with the banner — identical contract to the other validators. */
+export function stageWriteClaimGate(input: {
+	stage: string;
+	level: "intent" | "concrete";
+	state: Record<string, unknown>;
+	control: Record<string, unknown> | undefined;
+	docGlobs: string[];
+	round?: number;
+}): ContractValidatorFinding[] {
+	const setup = input.state.setup as { worktreePath?: string; specDirectory?: string } | undefined;
+	if (!setup?.worktreePath || !existsSync(setup.worktreePath)) return [];
+	try {
+		const inventory = extractContractInventory(setup.worktreePath);
+		const docTexts = freshStageDocTexts(setup.specDirectory, input.control, input.docGlobs);
+		if (docTexts.length === 0) return [];
+		const findings = writeClaimClosureFindings({
+			stage: input.stage,
+			control: input.control,
+			docTexts,
+			inventory,
+			conceptMap: inventory.mapping,
+			level: input.level,
+		} as Parameters<typeof writeClaimClosureFindings>[0]);
+		const cast: ContractValidatorFinding[] = findings.map((f: ClaimFinding) => ({ kind: f.kind, message: f.message }));
+		return isPreW(input.control, input.round) ? degradeForPreW(cast, input.stage) : cast;
+	} catch {
+		return []; // gate failure never punishes the work (P5) — fail-open
+	}
+}
+
+/** The spec stage's FRESH write-claims (Gate W's claim set + Gate R's
+ *  design-declared-skip conditioning input): extracted from the just-rendered
+ *  09/10/11 docs over a fresh inventory's concept map. */
+export function freshSpecWriteClaims(state: Record<string, unknown>): WriteClaim[] {
+	const setup = state.setup as { worktreePath?: string; specDirectory?: string } | undefined;
+	if (!setup?.worktreePath || !setup.specDirectory) return [];
+	try {
+		const inventory = extractContractInventory(setup.worktreePath);
+		const control = state.spec as Record<string, unknown> | undefined;
+		const docTexts = freshStageDocTexts(setup.specDirectory, control, ["*-specification.md", "*-implementation-plan.md", "*-task-list.md"]);
+		return extractWriteClaims(docTexts, "spec", inventory.mapping).claims;
+	} catch {
+		return [];
+	}
+}

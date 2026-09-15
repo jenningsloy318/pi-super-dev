@@ -42,7 +42,10 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { claimPathUsable, scanImmutabilityIdioms } from "../stages/plan-feasibility.ts";
+import { claimPathUsable, isUsableProtectedToken, scanImmutabilityIdioms, scanImmutabilityIdiomsWithRejects } from "../stages/plan-feasibility.ts";
+// 065 D-F-A: the claim grammar (verb-context classification + list governance)
+// governs pin resolution — `pathTokens[0]` by POSITION is retired.
+import { governedProtectedTokens } from "./claim-spine.ts";
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
@@ -118,12 +121,20 @@ export function mintPinId(family: IdiomFamily, locus: string, statement: string)
 const PATH_TOKEN_RE = /[A-Za-z0-9_.\-/]+\.(?:ts|tsx|js|jsx|mjs|cjs|cts|mts|py|json|md|markdown|rs|go|toml|yaml|yml)\b/g;
 /** Plain (unquoted) tokens count only when repo-rooted under a known source
  *  root — the HIGH-3 "literal path token" reading for prose/markdown. */
-const REPO_ROOTED_PREFIX_RE = /^(?:\.\/)?(?:src|tests|test|lib|libs|docs|scripts|internal|pkg|cmd|__tests__)\//;
+/** Single spelling with claim-spine REPO_ROOTED_RE (P6/065 grill F-4:
+ *  python/ tokens were invisible to the md arm). */
+const REPO_ROOTED_PREFIX_RE = /^(?:\.\/)?(?:src|tests|test|lib|libs|docs|python|scripts|internal|pkg|cmd|__tests__|tools|app|server|client)\//;
+
+/** 065 D2: template/interpolation tokens are NEVER protected paths — the
+ *  observed phantoms (`${wiredFile}` financials-contract.test.ts:843,
+ *  `${pathspec}` prosperity-contract.test.ts:439) entered via both the
+ *  porcelain-pathspec arm and this window arm. ONE spelling (P6):
+ *  isUsableProtectedToken from plan-feasibility (the DAG root). */
 
 /** Literal path tokens in text[from..to]: backtick/quote-symmetric tokens
  *  (mirrors the porcelain scanner's symmetric-quote guard) ∪ repo-rooted
  *  plain tokens. Every token must survive claimPathUsable (P6). */
-function literalPathTokens(text: string, from: number, to: number): string[] {
+function literalPathTokens(text: string, from: number, to: number, rejectSink?: string[]): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
 	const window = text.slice(Math.max(0, from), Math.min(text.length, to));
@@ -135,6 +146,13 @@ function literalPathTokens(text: string, from: number, to: number): string[] {
 		const after = afterIdx < text.length ? text[afterIdx] : "";
 		const symmetric = (before === '"' && after === '"') || (before === "'" && after === "'") || (before === "`" && after === "`");
 		if (!symmetric && !REPO_ROOTED_PREFIX_RE.test(m[0])) continue;
+		if (!isUsableProtectedToken(m[0])) {
+			// 065 D2/F-4 (grill round 1): rejects are LOUD (P10) — collected
+			// here, drained per file into inventory.scanLines by the walk.
+			if (!windowTokenRejects.includes(m[0])) windowTokenRejects.push(m[0]);
+			if (rejectSink && !rejectSink.includes(m[0])) rejectSink.push(m[0]);
+			continue;
+		}
 		const usable = claimPathUsable(m[0]);
 		if (usable && !seen.has(usable)) {
 			seen.add(usable);
@@ -143,6 +161,10 @@ function literalPathTokens(text: string, from: number, to: number): string[] {
 	}
 	return out;
 }
+
+/** 065 D2/F-4: the P10 reject accumulator — drained per file by
+ *  extractContractInventory into scanLines, never silently dropped. */
+const windowTokenRejects: string[] = [];
 
 // ─── grammar scanners (per family × form) ────────────────────────────────────
 
@@ -165,9 +187,15 @@ const clampStatement = (s: string): string => {
 	return t.length > 200 ? `${t.slice(0, 197)}…` : t;
 };
 
-/** porcelain-emptiness, TS/JS test form — COMPOSES the landed scanner (P6). */
+/** porcelain-emptiness, TS/JS test form — COMPOSES the landed scanner (P6).
+ *  065 grill F-4 residual hole: the OLD silent-dropping scanner fed the raw
+ *  pathspec (`${wiredFile}`) straight into pathTokens — the phantom entered
+ *  the inventory HERE, not via literalPathTokens. Compose the WithRejects
+ *  arm and reject unusable pathspecs loudly. */
 function scanPorcelainTs(_rel: string, text: string): RawHit[] {
-	const hits = scanImmutabilityIdioms(text);
+	const { hits: scanned, rejects } = scanImmutabilityIdiomsWithRejects(text);
+	for (const r of rejects) if (!windowTokenRejects.includes(r)) windowTokenRejects.push(r);
+	const hits = scanned.filter((h) => isUsableProtectedToken(h.path));
 	return hits.map((h) => {
 		const idx = text.indexOf(h.wording);
 		const line = idx >= 0 ? lineAt(text, idx) : 1;
@@ -211,9 +239,13 @@ function scanPorcelainPy(text: string): RawHit[] {
 	return out;
 }
 
-/** porcelain-emptiness, Markdown/prose form: "stays byte-untouched in git",
- *  "working tree clean for X". */
-const MD_PORCELAIN_RE = /\b(?:stays?|remain[sd]?|must (?:stay|remain|be))\s+byte[-\s]?untouched\b|\bbyte[-\s]?untouched\s+in\s+git\b|\bworking\s+tree\s+(?:is\s+|stays?\s+)?clean\b|\b(?:is|are|remains?|stays?)\s+immutable\b/gi;
+/** porcelain-emptiness, Markdown/prose form — THE protect-qualifier
+ *  grammar, single spelling (P6/065 A2): claim-spine imports this for
+ *  classifySegment, so md-prose protections in "pins X byte-untouched" /
+ *  "never touching" / "must not touch" wording mint pins HERE too (the
+ *  old narrower set re-opened the D6 split inward). */
+export const PROTECT_QUALIFIER_RE = /\b(?:stays?|remain[sd]?|must (?:stay|remain|be)|pins?|pinned)\s+(?:[\w./-]+\s+){0,3}?byte[-\s]?untouched\b|\bbyte[-\s]?untouched\s+in\s+git\b|\bworking\s+tree\s+(?:is\s+|stays?\s+|remains?\s+)?clean\b|\b(?:is|are|remains?|stays?)\s+immutable\b|\bnever\s+touch(?:es|ing)?\b|\bmust\s+not\s+(?:touch|edit|modify|change)\b/gi;
+const MD_PORCELAIN_RE = PROTECT_QUALIFIER_RE;
 
 function scanPorcelainMd(text: string): RawHit[] {
 	const out: RawHit[] = [];
@@ -622,6 +654,11 @@ export function extractContractInventory(worktreePath: string): ContractInventor
 		if (kind === "md") inventory.counts.specArtifacts++;
 		else inventory.counts.testFiles++;
 		inventory.scanLines.push(`${rel}: ${hits.length} pin(s)`);
+		// 065 D2/F-4: drain the window-arm rejects for THIS file (P10 — the
+		// phantoms are named, never silently dropped; capped at 4/file, P8).
+		for (const r of windowTokenRejects.splice(0).slice(0, 4)) {
+			inventory.scanLines.push(`${rel}: rejected token '${r}' (template/identifier form — not a repo path; 065 D2)`);
+		}
 		for (const h of hits) rawHits.push({ ...h, owningSpec: rel });
 	}
 
@@ -649,27 +686,30 @@ export function extractContractInventory(worktreePath: string): ContractInventor
 			statement: hit.statement,
 			via: hit.via,
 		};
-		let protectedFile = hit.pathTokens.length > 0 ? hit.pathTokens[0] : null;
-		if (!protectedFile) {
+		// 065 D2 (the core fix): a pin's protected files are the tokens its
+		// statement GOVERNS (protect qualifier + list governance), never
+		// pathTokens[0] by position. "extends X … never touching Y" can never
+		// protect X (the write target); "A, B, C stay byte-untouched" protects
+		// ALL THREE. Multi-token resolution mints one pin per governed file.
+		const governed = governedProtectedTokens(hit.statement, hit.pathTokens);
+		if (governed.length === 0) {
 			const declared = inv.declaredPins.find((d) => hit.statement.includes(d.pin) || pinId === d.pin);
 			if (declared) {
-				protectedFile = declared.protectedFile;
 				// The envelope supplied the anchoring — provenance is the envelope,
 				// not the scanner form (honest via; P10/P6).
 				pin.via = "repo-invariants";
 				pin.declaredPin = declared.pin;
 				declaredUnused.delete(declared);
+				addPin(pin, declared.protectedFile);
+			} else {
+				pin.resolutionState = "unanchored";
+				pin.unanchoredReason = "no protect-governed path token in the pinning statement and no matching repo-invariants.json pins[] entry";
+				addPin(pin, null);
 			}
-		} else {
-			for (const d of inv.declaredPins) if (d.protectedFile === protectedFile && hit.statement.includes(d.pin)) { pin.declaredPin = d.pin; declaredUnused.delete(d); }
+			continue;
 		}
-		if (protectedFile) {
-			addPin(pin, protectedFile);
-		} else {
-			pin.resolutionState = "unanchored";
-			pin.unanchoredReason = "no literal path token in the pinning statement and no matching repo-invariants.json pins[] entry";
-			addPin(pin, null);
-		}
+		for (const d of inv.declaredPins) if (governed.includes(d.protectedFile) && hit.statement.includes(d.pin)) { pin.declaredPin = d.pin; declaredUnused.delete(d); }
+		for (const file of governed) addPin(pin, file);
 	}
 	// Declared pins never matched by a scanned statement: anchor them directly
 	// (the file must exist and contain the pin text), else honest `unanchored:`.

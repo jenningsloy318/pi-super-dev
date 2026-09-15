@@ -1,6 +1,6 @@
 # First-Pass Satisfiability — the Write-Claim Spine
 
-Status: v2 — grill round 1 (2026-09-15, glm-5.3, run 19193102) verdict NOT-READY(conditional) folded in full: 3 HIGH + 5 MED + 1 LOW. Parent lineage: 058 (protection intervals), 059 (reviewer quality / contract inventory). This spec is the **closure** of both: it makes write-vs-protect contradictions **deterministically detectable before any implementer attempt burns**, which is the property whose absence caused both replans of run `2026-09-14T11-40-21-540Z`.
+Status: v3 — implementer wave landed + dual gates (glm-5.3-flash: Code FAIL 1H+4, Adversarial REJECT 3B+6A) folded; all deterministic, 4132/4132 green. (Prior: grill round 1 NOT-READY(conditional) 3H+5M+1L folded.) Parent lineage: 058 (protection intervals), 059 (reviewer quality / contract inventory). This spec is the **closure** of both: it makes write-vs-protect contradictions **deterministically detectable before any implementer attempt burns**, which is the property whose absence caused both replans of run `2026-09-14T11-40-21-540Z`.
 
 ---
 
@@ -52,10 +52,11 @@ ProtectClaim { path, locus, pinId?, family }   // wraps the existing ContractPin
 
 | Form | Example (verbatim from the run) | Classification |
 |---|---|---|
-| Verb-governed write | "22-public-interface.md §4 **gains** the data/cache note" | WRITE(22-public-interface.md) |
+| Verb-governed write | "**docs/requirements/22-public-interface.md** §4 **gains** the data/cache note" (the verbatim rooted form — F-5 fold: the v2 table abbreviated the path; bare ambiguous tokens are dropped conservatively) | WRITE(docs/requirements/22-public-interface.md) |
+| Path-token precondition | a token counts only when repo-rooted (src/, tests/, docs/, python/, …) or symmetrically quoted | bare ambiguous tokens mint nothing (precision over recall) |
 | Verb-governed protect | "src/stages.ts, src/orchestrator.ts, src/screen-phase1.ts **stay byte-untouched**" | PROTECT(all three — **list governance**: the qualifier governs every token in its list/segment, not `pathTokens[0]`) |
 | Post-positioned protect qualifier | "the deliverable requireNotContains guard **pins** python/omisis/_fetchers.py **byte-untouched**" | PROTECT(_fetchers.py) — "pins … byte-untouched" added to the protect verb grammar; nearest-qualifier association, backward-looking |
-| Mixed single sentence | one WRITE ("gains") + one PROTECT ("pins … byte-untouched") in one sentence | **both** claims mint — §4.1 v1's "never the same token in one statement" claim withdrawn (grill MED-1): the grammars may co-occur; they just never govern the *same token* |
+| Mixed single sentence | one WRITE ("gains") + one PROTECT ("pins … byte-untouched") in one sentence (comma or semicolon) | **both** claims mint; the between-guard rejects a protect association when a WRITE VERB or sentence ender sits between token and qualifier (B1 fold). **Same token both-governed ⇒ BOTH mint** (A3 fold): the self-contradiction stays visible to Gate E instead of being hidden by a protect-only resolution |
 | List context | "Files edited: src/runtime-dispatch.ts, src/tools/data_analyst.ts, tests/…test.ts (NEW), docs/…07-staged-execution.md" | WRITE(every listed token — list governance again) |
 | Negation | "must not gain", "without touching X" | no claim (guard: negated verb ⇒ token is NOT a write claim) |
 | Noun form | "the byte-untouched guard" | no protect claim from the noun alone (adjective must govern a path token) |
@@ -119,7 +120,7 @@ Self-minted pins are **included** here (D1): a spec that writes X and protects X
 - **D-F-B writer gate** — post-render fresh-walk typed-closure validation on authoring stages, repair-demand feedback, P8 bounds named.
 - **D-F-C reviewer gate** — approval predicate consumes validator blocking rows; design-declared skip conditioned; demandable-set scope.
 - **D-F-D entry gate** — the Stage-9-entry cross-product with two-locus findings via existing replan routing; scan-cap loud partial semantics.
-- **D-F-F plan compile-time checks (added post-grill, the implement/tdd-retry reducer)** — over the typed plan control: phase-DAG completeness (inputs are prior outputs; acyclic; no orphans), parallel-group write-set disjointness, requireFiles/requireScenarios resolvability (exist or are produced), AC write-set coverage (every AC-mandated file change appears in some phase). All mechanical, all at spec render + entry.
+- **D-F-F plan compile-time checks (added post-grill, the implement/tdd-retry reducer)** — over the typed plan control: forward-file-reference resolvability (clause targets exist on disk or are an earlier/equal phase's requireFiles output), requireScenarios resolvability, AC write-set coverage. **D-F-F(b) create-collision DROPPED (gate B3)**: phases execute strictly sequentially, so two phases declaring the same NEW file is the canonical create-then-extend TDD handoff — the check banned a legal plan shape. Revisit only when the plan grows a parallel-groups field. All mechanical, all at spec render + entry.
 - **D-F-E acceptance fixtures** (deterministic):
   - **A** replan-1 shape: "extends tests/foo.py … never touching the registry" + phase-2 `requireFiles: tests/foo.py` ⇒ no protection mints on foo.py (inversion dead); entry gate passes.
   - **B** replan-2 shape: AC mandates a pinned sibling doc declared only in `docUpdates` ⇒ Gate W fails with both loci; after the sharedFile entry ⇒ passes; Approved-with-unresolved-demandable-blocking impossible.
@@ -143,5 +144,12 @@ The seam is real: Gates W/E read `.knowledge.json` `amendmentFamily`; 063 reloca
 3. **065 follow-up routing wave** (RouteBackSignal throw site).
 4. **063 S1 → S2** — redirecting the unified family-read helper in S2's census.
 5. Parked: 061 disclosure, 064 bandit (INDEX triggers).
+
+### Gate-fold rulings (2026-09-15, dual glm-5.3-flash gates)
+
+- **A4 (documented decision):** Gate W runs ADVISORY at requirements/bdd (intent stages — 059 W2: the typed family is a design/spec home) and BLOCKING at design/spec. The W-strict (full-inventory closure; repair = declare sharedFile, satisfiable without slice visibility) vs R-loose (demandable set) asymmetry is deliberate: W's repair never needs pin-level visibility, R's verdict does.
+- **A5:** Gate E's replan-unavailable fallback is a **FatalAbort HARD BLOCK** naming the contradictions — executing a proven-contradictory plan punishes everything downstream. (The v0.3.85 log-and-proceed fallback is superseded for this gate.)
+- **A6:** a malformed amendmentFamily entry surfaces at Gate W as a blocking repair demand ("while ANY entry is malformed, Gate E honors ZERO exemptions") — the two fail-closed semantics unified toward strict-void-all with the repair at the writer.
+- **F-4 residual hole (found by the fix round's own fixtures):** `scanPorcelainTs` composed the OLD silent-dropping scanner and fed the raw pathspec straight into pathTokens — the `${wiredFile}` phantoms entered the inventory through THAT arm, not literalPathTokens. Fixed: the ts arm composes `scanImmutabilityIdiomsWithRejects`, filters unusable pathspecs, and surfaces rejects as P10 scan lines; `python/` added to the md arm's rooted-prefix set (single spelling with the spine).
 
 Sources: ALICE — doi:10.1007/s10515-024-00452-x. PlanCompiler — arXiv:2604.13092. Boehm — cost-of-change curve (NASA NTRS 20100036670).

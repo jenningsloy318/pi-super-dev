@@ -127,7 +127,8 @@ describe("Wave P1 D-A — protection-threat (feasibility grammar v2, Check 3)", 
 		// contradictions array these findings land in (plan-contradiction-fastfail
 		// pins the triggerReplanForFindings wiring; this pins the gate itself).
 		const impl = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
-		expect(impl).toContain("if (feasibility.contradictions.length > 0)");
+		// 065 D-F-D: the entry gate's findings merge into the same routing gate.
+	expect(impl).toContain("if (feasibility.contradictions.length > 0 || entryGateFindings.length > 0)");
 	});
 
 	it("(d) every (protectingSource × writingPhase) pair is named — mixed sources and writers produce distinct findings, all blocking ownerStage=spec", () => {
@@ -221,6 +222,8 @@ describe("Wave P1 D-A — protection-threat (feasibility grammar v2, Check 3)", 
 
 	it("P6 source pin: the scanner is the module-planFeasibilityFindings consumes (one grammar module, exported for Wave-P2 Layer 2)", () => {
 		const src = readFileSync(new URL("../src/stages/plan-feasibility.ts", import.meta.url), "utf8");
-		expect(src).toContain("scanImmutabilityIdioms(readFileSync(abs, \"utf8\"))");
+		// 065 F-4: Check 3 consumes the WithRejects composition (same single
+		// grammar module — the P6 pin tracks the seam, not the wrapper name).
+		expect(src).toContain("scanImmutabilityIdiomsWithRejects(readFileSync(abs, \"utf8\"))");
 	});
 });

@@ -36,6 +36,11 @@ import { INHERITED_RED_SOURCE, appendInheritedRedEvent, countInheritedRedOccurre
 // research-agent, no agent file is created.
 import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, runResearchAssist, type NeedsResearchEntry, type ResearchAssistRedArm, type ResearchAssistGreenTrigger } from "./research-assist.ts";
 import { planFeasibilityFindings, contradictionFastFailFrame } from "./plan-feasibility.ts";
+// 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
+// plan compile-time checks) — two-locus mechanical findings routed through
+// the SAME replan circuit plan-feasibility uses (no judge call needed).
+import { stage9EntryGate, type EntryGateFinding } from "../review/claim-spine.ts";
+import { freshStageDocTexts } from "../review/contract-validators.ts";
 import { isNoEditCompletion } from "../agent-errors.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA, TddCoverageControlData, FileClassifyControlData } from "../render/schemas.ts";
@@ -1899,6 +1904,36 @@ export const implementationStage: Stage = {
 				// .knowledge.json (design ?? spec family) and exempts owner-approved
 				// sharedFile paths; fail-closed on malformed knowledge (grill R8).
 			: planFeasibilityFindings(phases, setup.worktreePath, setup.specDirectory);
+		// 065 D-F-D + D-F-F (the entry gate): ONE fresh cross-product pass —
+		// write-claims (rendered 09/10/11 + AC statements + phase requireFiles)
+		// × protect-claims (fresh inventory, unified grammar, phantoms rejected,
+		// SELF-MINTED pins included — D1) ∖ file-level exemptions; plus the plan
+		// compile-time checks (forward refs, create collisions, scenario
+		// resolvability, AC write-coverage). Same once-per-run guard as Check 3.
+		let entryGateFindings: EntryGateFinding[] = [];
+		if (!feasibilityOnce) {
+			const bddScenarioIds = new Set<string>();
+			const bddControl = state.bdd as { features?: unknown } | undefined;
+			if (Array.isArray(bddControl?.features)) {
+				for (const feature of bddControl!.features as Array<Record<string, unknown>>) {
+				for (const sc of (Array.isArray(feature?.scenarios) ? feature.scenarios : []) as Array<Record<string, unknown>>) {
+					if (typeof sc?.id === "string" && sc.id.trim()) bddScenarioIds.add(`SCENARIO-${sc.id.trim()}`);
+				}
+			}
+			}
+			const docTexts = freshStageDocTexts(setup.specDirectory, state.spec as Record<string, unknown> | undefined, ["*-specification.md", "*-implementation-plan.md", "*-task-list.md"]);
+			const entryGate = stage9EntryGate({
+				worktreePath: setup.worktreePath,
+				specDirectory: setup.specDirectory,
+				phases: phases as Parameters<typeof stage9EntryGate>[0]["phases"],
+				requirementsControl: state.requirements as Record<string, unknown> | undefined,
+				bddScenarioIds,
+				docTexts,
+			});
+			for (const line of entryGate.scanLines) ctx.log(`Implementation entry-gate: ${line}`);
+			entryGateFindings = entryGate.findings;
+			for (const f of entryGateFindings) ctx.log(`Implementation entry-gate CONTRADICTION (${f.kind}): ${f.title}`);
+		}
 		// Wave P1 D-A (P10 — silent-miss visibility): the immutability-idiom
 		// scanner's per-file hit list is logged at entry — a repo whose tests use
 		// an idiom OUTSIDE the enumerated grammar shows "0 hit(s)" here instead
@@ -1909,13 +1944,13 @@ export const implementationStage: Stage = {
 		for (const advisory of feasibility.advisories) {
 			ctx.log(`Implementation plan advisory: ${advisory.title}`);
 		}
-		if (feasibility.contradictions.length > 0) {
+		if (feasibility.contradictions.length > 0 || entryGateFindings.length > 0) {
 			for (const c of feasibility.contradictions) {
 				ctx.log(`Implementation plan CONTRADICTION: ${c.title} — ${c.detail}`);
 			}
 			let planReplanned = false;
 			try {
-				planReplanned = await triggerReplanForFindings(state, ctx, feasibility.contradictions.map((c) => ({ file: null, severity: "high", title: c.title, detail: c.detail, ownerStage: c.ownerStage })), "implementation", setup.specIdentifier ?? "unknown");
+				planReplanned = await triggerReplanForFindings(state, ctx, [...feasibility.contradictions.map((c) => ({ file: null, severity: "high", title: c.title, detail: c.detail, ownerStage: c.ownerStage })), ...entryGateFindings.map((c) => ({ file: null, severity: "high", title: c.title, detail: c.detail, ownerStage: "spec" as const }))], "implementation", setup.specIdentifier ?? "unknown");
 			} catch { planReplanned = false; }
 			if (planReplanned) {
 				ctx.log(`Implementation: plan infeasible (${feasibility.contradictions.length} contradiction(s)) — routed to REPLAN before executing any phase`);
@@ -1933,14 +1968,18 @@ export const implementationStage: Stage = {
 				// kind + title + EVIDENCE lines (the evidence carries the clause text,
 				// e.g. `P1 requireContains src/x.ts: FOO`, so the failing clause form
 				// is machine-readable in the terminal reason, not just the prose title).
-				const validatorFindings = feasibility.contradictions
+				const validatorFindings = [...feasibility.contradictions, ...entryGateFindings.map((c) => ({ kind: c.kind, title: c.title, detail: c.detail, evidence: [] as string[] }))]
 					.slice(0, 6)
 					.map((c) => `[${c.kind}] ${c.title} — evidence: ${c.evidence.join("; ")}`)
 					.join(" | ");
 				ctx.log(`Implementation: plan validation FAILED after an inherited-red declared handoff (${pendingIrRows.length} pending row(s): ${pendingIrRows.map((r) => r.id).join(", ")}) — routing Tier 3 FatalAbort naming the validator findings (no retry loop; v0.3.85 F2 validator override): ${validatorFindings}`);
 				throw new FatalAbort(`inherited-red restart failed plan validation (v0.3.85 F2, ADR 8/9): the spec dir still carries ${pendingIrRows.length} pending source:"inherited-red" handoff row(s) (${pendingIrRows.map((r) => r.id).join(", ")}) while the amended plan contradicts the zero-LLM plan-feasibility validator — validator findings: ${validatorFindings}. A declared handoff's amended plan must pass the validator before execution; no retry loop.`);
 			}
-			ctx.log("Implementation: plan contradictions detected but replan unavailable (budget/marker) — proceeding with the contradictions logged");
+			// 065 A5 (grill round 1): HARD BLOCK per spec §4.4 — executing a plan
+			// the gate PROVED contradictory punishes everything downstream; fail
+			// loud (the contradictions are named; the human decides).
+			const gateDetail = entryGateFindings.slice(0, 3).map((f) => `${f.title} — ${f.detail}`).join(" | ");
+			throw new FatalAbort(`Stage 9 entry gate found write×protect plan contradictions and the replan route is unavailable (budget/marker exhausted): ${gateDetail}. Fix the spec artifacts (declare the amendment, drop the write, or drop the protection) and re-run — no execution of a proven-contradictory plan (065 §4.4 HARD BLOCK).`);
 		}
 		// §D auto-iterate: carry per-phase green state + failure reasons from the
 		// PRIOR convergence iteration (state.implementation holds the last run's

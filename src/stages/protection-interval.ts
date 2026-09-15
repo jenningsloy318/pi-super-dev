@@ -27,7 +27,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { extractContractInventory, normalizeAmendmentFamily } from "../review/contract-surface.ts";
+import { extractContractInventory } from "../review/contract-surface.ts";
+import { amendmentExemptFiles } from "../review/claim-spine.ts";
 import { claimPathUsable } from "./plan-feasibility.ts";
 
 /** P8: exactly two strikes, then a judged route (never a third in-loop strike). */
@@ -85,32 +86,15 @@ export function reviveProtectionInterval(data: unknown): ProtectionInterval | nu
 
 // ─── derivation (once per run at first stage entry — do NOT re-scan) ────────
 
-/** The 059-R1A seam: an owner-approved amendment family (design ?? spec,
- *  persisted by knowledge.ts) exempts its declared sharedFile paths from the
- *  protection interval. FAIL-CLOSED (grill R8): unparseable JSON, wrong
+/** The 059-R1A seam, D7-unified (065 DEC-7): an owner-approved amendment
+ *  family (design ?? spec, persisted by knowledge.ts) exempts its declared
+ *  sharedFile paths from the protection interval. The READ is the ONE
+ *  exported helper `amendmentExemptFiles` (claim-spine.ts) — the previously
+ *  duplicated fail-closed reader here and in plan-feasibility are retired to
+ *  delegations. FAIL-CLOSED (grill R8, preserved): unparseable JSON, wrong
  *  envelope, or ANY malformed family entry ⇒ an EMPTY exemption set. */
-function approvedAmendmentSharedFiles(specDirectory: string | undefined): Set<string> {
-	if (!specDirectory) return new Set();
-	const abs = join(specDirectory.endsWith("/") ? specDirectory.slice(0, -1) : specDirectory, ".knowledge.json");
-	if (!existsSync(abs)) return new Set();
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(readFileSync(abs, "utf8"));
-	} catch {
-		return new Set();
-	}
-	const stages = (parsed as { stages?: unknown } | null)?.stages;
-	if (!stages || typeof stages !== "object" || Array.isArray(stages)) return new Set();
-	const familyOf = (stageId: string): unknown => {
-		const row = (stages as Record<string, unknown>)[stageId] as { data?: unknown } | undefined;
-		const data = row && typeof row === "object" && !Array.isArray(row) ? (row.data as { amendmentFamily?: unknown } | undefined) : undefined;
-		return data && typeof data === "object" ? (data as { amendmentFamily?: unknown }).amendmentFamily : undefined;
-	};
-	const raw = familyOf("design") ?? familyOf("spec");
-	if (raw === undefined || raw === null) return new Set();
-	const { entries, malformed } = normalizeAmendmentFamily(raw);
-	if (malformed.length > 0) return new Set(); // fail-closed: zero exemptions
-	return new Set(entries.map((e) => e.sharedFile));
+function approvedAmendmentSharedFiles(specDirectory: string | undefined, scanLines?: string[]): Set<string> {
+	return amendmentExemptFiles(specDirectory, scanLines);
 }
 
 /** The repo-invariants.json `protected` arm (the Layer-1 explicit-declaration
@@ -141,7 +125,7 @@ function declaredInvariantPaths(worktreePath: string): { paths: string[]; malfor
  */
 export function deriveProtectionInterval(worktreePath: string, specDirectory: string | undefined): ProtectionInterval {
 	const interval: ProtectionInterval = { protectedPaths: new Map(), scanLines: [] };
-	const exempt = approvedAmendmentSharedFiles(specDirectory);
+	const exempt = approvedAmendmentSharedFiles(specDirectory, interval.scanLines);
 	const declared = declaredInvariantPaths(worktreePath);
 	if (declared.malformed) interval.scanLines.push("repo-invariants.json: present but malformed (expected {protected: string[]}) — declared paths unavailable");
 	// P6: the porcelain/wording scanner is COMPOSED via the landed inventory

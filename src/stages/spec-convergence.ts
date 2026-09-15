@@ -7,7 +7,7 @@ import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readC
 // 059 R1A D-R-B residual (§3 R3 DEFECT-1 + D-R-E): the spec-fallback family
 // validator, its validation context, the reconciliation section builder, and
 // the Metadata Strike-1 classifier/repair template.
-import { selfSpecArtifactMatcher,  contractValidationContext, familyInclusionMismatches, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
+import { selfSpecArtifactMatcher, contractValidationContext, familyInclusionMismatches, freshSpecWriteClaims, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import {
@@ -151,14 +151,29 @@ async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageCont
 		// writer's stamp exists, contractValidationContext reuses it (no re-walk).
 		const contractCtx = contractValidationContext(state as Record<string, unknown>, "spec", [ctx.task, JSON.stringify(state.requirements ?? {}), JSON.stringify(state.bdd ?? {}), JSON.stringify(state.research ?? {}), JSON.stringify(state.assessment ?? {}), JSON.stringify(state.design ?? {}), JSON.stringify(state.prototype ?? {})]);
 		if (!contractCtx) return []; // absent/unwalkable worktree — every validator no-ops (fail-open harmless)
-		const { blocking, advisory } = splitContractFindings(specAmendmentFamilyFindings({
+		// 065 D-F-B (Gate W): the FRESH post-render walk over the just-written
+		// 09/10/11 docs — typed closure (prose docUpdates paths are claims, never
+		// exemptions) + the self-contradiction deduction. The input-slice stamp
+		// stays for the set-inclusion demandable set; the closure walk is fresh.
+		const gateW = stageWriteClaimGate({
+			stage: "spec",
+			level: "concrete",
+			state: state as Record<string, unknown>,
+			control: state.spec as Record<string, unknown> | undefined,
+			docGlobs: ["*-specification.md", "*-implementation-plan.md", "*-task-list.md"],
+			round,
+		});
+		const { blocking, advisory } = splitContractFindings([...specAmendmentFamilyFindings({
 			specControl: state.spec as Record<string, unknown> | undefined,
 			designControl: state.design as Record<string, unknown> | undefined,
 			slice: contractCtx.slice,
 			inventory: contractCtx.inventory,
 			round,
 			selfArtifactMatch: selfSpecArtifactMatcher(state.setup?.specDirectory, "-specification.md"),
-		}));
+			// 065 D-F-C: the design-declared skip is conditioned on the spec's FRESH
+			// write-claims (grill HIGH-1(b)) — computed post-render, never stamped.
+			specWriteClaims: freshSpecWriteClaims(state as Record<string, unknown>),
+		}), ...gateW]);
 		for (const a of advisory) ctx.log(`spec convergence: contract-validator (advisory): ${a}`);
 		return blocking;
 	};
