@@ -511,7 +511,11 @@ describe("F2 validator override — hard-fail ONLY for inherited-red restart sta
 	// FIX ROUND 1 (E): pin the replan pool size so "pool exhausted" is
 	// DETERMINISTIC regardless of any ambient SUPER_DEV_MAX_REPLAN_ROUNDS —
 	// with rounds=cap the trigger returns false and the override must fire.
-	beforeEach(() => { process.env.SUPER_DEV_MAX_REPLAN_ROUNDS = "1"; });
+	// 065 routing follow-up: the entry-gate ladder is INLINE jump (default) →
+	// replan (kill-switch SUPER_DEV_NO_INLINE_ROUTEBACK=1) → FatalAbort
+	// (kill-switch + exhausted pool). Tests pin the switch explicitly.
+	beforeEach(() => { process.env.SUPER_DEV_MAX_REPLAN_ROUNDS = "1"; process.env.SUPER_DEV_NO_INLINE_ROUTEBACK = "1"; });
+	afterEach(() => { delete process.env.SUPER_DEV_NO_INLINE_ROUTEBACK; });
 	/** requireContains + requireNotContents on the same file+pattern → a
 	 *  deterministic plan-feasibility contradiction (plan-feasibility Check 1). */
 	const contradictoryPhases = (): Array<Record<string, unknown>> => [{
@@ -554,6 +558,19 @@ describe("F2 validator override — hard-fail ONLY for inherited-red restart sta
 		const state = mkState(wt, specDir, contradictoryPhases());
 		await expect(implementationStage.run(state, ctx)).rejects.toThrow(/065 §4.4 HARD BLOCK/);
 		expect(hasLog(logs, "proceeding with the contradictions logged")).toBe(false);
+	}, 20_000);
+
+	it("065 routing follow-up ladder — kill-switch OFF ⇒ the entry-gate contradictions throw the INLINE RouteBackSignal (implementation→spec, no restart)", async () => {
+		delete process.env.SUPER_DEV_NO_INLINE_ROUTEBACK;
+		const wt = mkRepo(); repos.push(wt);
+		const specDir = mkSpecDir();
+		writeFileSync(join(specDir, REPLAN_REQUESTS_FILE), JSON.stringify({ version: 1, rounds: 0, requests: [] }));
+		gateQ = [PASS_GATE];
+		const { ctx, logs } = mkCtx(wt, [{ control: { filesModified: ["src/x.ts"] } }]);
+		const state = mkState(wt, specDir, contradictoryPhases());
+		await expect(implementationStage.run(state, ctx)).rejects.toSatisfy((err: unknown) => err instanceof Error && err.constructor.name === "RouteBackSignal");
+		expect(hasLog(logs, "INLINE route-back implementation→spec")).toBe(true);
+		expect(hasLog(logs, "routed to REPLAN")).toBe(false);
 	}, 20_000);
 
 	it("pending inherited-red rows with the pool AVAILABLE → the contradictions route a normal replan (the override must not fire when replan can)", async () => {

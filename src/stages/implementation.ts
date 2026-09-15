@@ -26,6 +26,8 @@ import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, 
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../prompts.ts";
 import { firstCitedTestFile, runJudge, type JudgeRoute } from "./judge.ts";
 import { triggerReplanForFindings, replanPending, countInheritedRedRows, pendingInheritedRedRows } from "../replan/replan.ts";
+import { planInlineRouteBack } from "../routing/walker.ts";
+import { RouteBackSignal } from "../routing/router.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { FatalAbort } from "../nodes.ts";
@@ -1947,6 +1949,18 @@ export const implementationStage: Stage = {
 		if (feasibility.contradictions.length > 0 || entryGateFindings.length > 0) {
 			for (const c of feasibility.contradictions) {
 				ctx.log(`Implementation plan CONTRADICTION: ${c.title} — ${c.detail}`);
+			}
+			// 065 routing follow-up (grill HIGH-2): the INLINE route-back jump
+			// FIRST — the walker re-enters at the spec convergence node (minutes:
+			// spec re-render + re-review), trading the replan restart (invalidation
+			// + process re-entry) for an in-process sub-walk. Declines (owner
+			// geometry, per-edge budget, kill-switch) fall through to the replan
+			// route below unchanged.
+			const routingFindings = [...feasibility.contradictions.map((c) => ({ id: `gateE-feas-${c.title.slice(0, 24)}`, ownerStage: c.ownerStage, blocking: true, title: c.title })), ...entryGateFindings.map((c, i) => ({ id: `gateE-${c.kind}-${i}`, ownerStage: "spec" as const, blocking: true, title: c.title }))];
+			const inlineCmd = planInlineRouteBack(setup.specDirectory, "implementation", routingFindings);
+			if (inlineCmd) {
+				ctx.log(`Implementation: entry-gate contradictions — INLINE route-back ${inlineCmd.from}→${inlineCmd.to} (${routingFindings.length} blocking finding(s); the spec re-converges in-process, no restart) — throwing RouteBackSignal for the walker (065 §4.4 follow-up)`);
+				throw new RouteBackSignal(inlineCmd);
 			}
 			let planReplanned = false;
 			try {

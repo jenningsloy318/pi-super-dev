@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.4.5: 065 routing follow-up — Gate E 入口矛盾走 INLINE route-back（分钟级内联跳转替代 replan 重启）
+
+**English**: Stage-9-entry contradictions now route inline-jump-first: `planInlineRouteBack(specDir, "implementation", findings)` → `throw new RouteBackSignal` — the walker re-enters at the spec convergence node in-process (spec re-render + re-review, minutes), trading the replan restart (invalidation + process re-entry + cache drops) for a sub-walk. Declines (owner geometry, per-edge journal budget, `SUPER_DEV_NO_INLINE_ROUTEBACK=1` kill-switch) fall through to the existing replan route; replan-unavailable keeps the v0.4.4 FatalAbort HARD BLOCK. The full ladder: inline (default) → replan (kill-switch) → FatalAbort (kill-switch + exhausted pool). Tests re-based onto the ladder (kill-switch pinned in the inherited-red suite; a new ladder test asserts the RouteBackSignal shape and the `INLINE route-back implementation→spec` log).
+
+**中文**:入口门矛盾现在优先内联跳转——walker 在进程内从 spec 收敛节点重入(spec 重渲染+重审,分钟级),替代 replan 重启。被拒时(几何/预算/kill-switch)回退既有 replan 路由;replan 不可用时保留 v0.4.4 的 FatalAbort 硬阻断。完整阶梯:inline(默认)→ replan(kill-switch)→ FatalAbort(kill-switch+池尽)。
+
 ### Added — v0.4.4: 065 核心波——写声明脊柱 + 四个确定性门 + 计划编译期检查（首过可满足性）
 
 **English — 065 core wave: the write-claim spine + four deterministic gates + plan compile-time checks (first-pass satisfiability).** Closes the double-replan class from run 2026-09-14T11-40-21-540Z: both replans were write×protect contradictions present in the artifacts from birth, discovered only by burning implementer attempts + judge calls (write-mandates × protected-paths ∖ exemptions was computed nowhere pre-implementation).
