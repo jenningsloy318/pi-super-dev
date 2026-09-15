@@ -6,7 +6,7 @@ Numbering: every filename carries an `NNN-` prefix = its **global creation order
 
 Maintenance rule: when a new doc lands in `docs/requirements/`, take the next `NNN-` number, append one row to the right era; when a doc's Status changes (grill verdict, implementation wave), update its Outcome cell in the same commit. Outcome versions cite the implementing release (see `CHANGELOG.md` for wave detail).
 
-Scope: 61 docs — 58 committed + 3 in flight (marked ⚠ below). Eras: **Jul** research foundations → **Aug** postmortem-driven hardening (v0.1.x → v0.3.17) → **Sep** eval layer + live-run postmortems + architecture programs.
+Scope: 62 docs — 58 committed + 4 in flight (marked ⚠ below). Eras: **Jul** research foundations → **Aug** postmortem-driven hardening (v0.1.x → v0.3.17) → **Sep** eval layer + live-run postmortems + architecture programs.
 
 ---
 
@@ -82,9 +82,11 @@ Scope: 61 docs — 58 committed + 3 in flight (marked ⚠ below). Eras: **Jul** 
 | 09-13 | 059-reviewer-quality-architecture.md | architecture | Implemented — R1A **v0.3.98** (inventory + writer declaration + R4 exemption), R1B/R2 **v0.4.1** (reviewer slice injection + offline harness), **v0.4.2** (demand-set laws hotfix) |
 | 09-14 | 061-ai-workflow-vs-harness-engineering.md | reference | Saved from Medium (@june-in-exile) — AI 工作流 vs. Harness Engineering (11-step loop, test lock, attempt budget, 9 quality gates) |
 | 09-15 | 062-temporal.md | reference | Online research — Temporal durable execution vs. our resume/checkpoint/convergence machinery; 8 stealable patterns (L1–L8), Cursor case study with hard numbers |
+| 09-15 | 063-external-state-store.md | architecture | Draft — decouple state from the content tree (Option A, `~/.super-dev/state/<project-key>/<spec-id>/`); class-driven durability R/M/H/E; fixes the v0.4.3 truncation class + the $59 orphan class |
 
 ## In flight
 
 | Doc | Note |
 |---|---|
 | ⚠ 060-communitcation-mechanism.md | Parallel-session draft — untracked (intentional filename), numbered by position not git history |
+| ⚠ 064-cora-skill.md | Research note — COBRA-Skills paper study (contextual-bandit skill evolution); untracked |
