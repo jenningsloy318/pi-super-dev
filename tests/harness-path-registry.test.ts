@@ -61,6 +61,12 @@ const GOLDEN_RED_BOUNDARY_SPEC_SCOPED = [
 	// P2 (v0.3.90): eval-stage run report — usage-report.md parity (close-out
 	// render only).
 	"eval-report.md",
+	// v0.4.3: the replan trigger audit ledger (engine-appended, spec-scoped —
+	// events.jsonl parity; found unregistered in run 2026-09-15T08-13-05-056Z).
+	".replan.jsonl",
+	// v0.4.3: the environmental-fault ledger (fault-classification.ts — same
+	// sweep; events.jsonl parity + neverGitTracked).
+	".environment-faults.jsonl",
 ] as const;
 
 const GOLDEN_TRACKER_ADVISORY_NOISE = [
@@ -75,6 +81,8 @@ const GOLDEN_TRACKER_ADVISORY_NOISE = [
 	"tool-usage.jsonl",
 	".inherited-red.jsonl",
 	"research-assists.jsonl",
+	// v0.4.3: the environmental-fault ledger (same sweep; events.jsonl parity).
+	".environment-faults.jsonl",
 ] as const;
 
 const GOLDEN_INTERNAL_RUNTIME_CLAIM = [".resume-cache.jsonl", ".run-lock"] as const;
@@ -96,9 +104,49 @@ const GOLDEN_SPEC_DIR_BOOKKEEPING = [
 	".inherited-red.jsonl",
 	"research-assists.jsonl",
 	"eval-report.md",
+	// v0.4.3: found unregistered in the run 2026-09-15T08-13-05-056Z worktree —
+	// engine-written but invisible to every role consumer until now.
+	".task",
+	".complete",
+	"messages.jsonl",
+	".environment-faults.jsonl",
 ] as const;
 
 const GOLDEN_PHASE_COMMIT_EXCLUDED = [".judge.jsonl", "test-runner.json", "research-assists.jsonl"] as const;
+
+// v0.4.3 — resume-cache durability: every basename whose loss corrupts run
+// state must never be git-tracked (the 2026-09-15T08-13-05-056Z incident: a
+// tracked .resume-cache.jsonl was reverted by the checkpoint rollback's
+// `git reset --hard` to a phase-commit snapshot, silently discarding every
+// row appended after it). Rendered *.md reports are deliberately NOT here:
+// they re-render from cached controls on every replay.
+const GOLDEN_NEVER_GIT_TRACKED = [
+	".resume-cache.jsonl",
+	".convergence-ledger.json",
+	".judge.jsonl",
+	".replan.jsonl",
+	".environment-faults.jsonl",
+	".inherited-red.jsonl",
+	".knowledge.json",
+	".run-lock",
+	".task",
+	".complete",
+	".user-notes.json",
+	"events.jsonl",
+	"change-tracker.jsonl",
+	"tool-usage.jsonl",
+	"usage-calls.jsonl",
+	"run-metrics.jsonl",
+	"implementation-evidence.jsonl",
+	"research-assists.jsonl",
+	"audit.jsonl",
+	"routing-journal.jsonl",
+	"routing-epoch.json",
+	"replan-requests.json",
+	"artifact-revisions.json",
+	"messages.jsonl",
+	"test-runner.json",
+] as const;
 
 const roleNames = (flag: keyof (typeof HARNESS_FILE_ROLES)[string]): string[] =>
 	Object.entries(HARNESS_FILE_ROLES)
@@ -131,6 +179,10 @@ describe("v0.3.74 P1-a — harness-file registry is the single source of truth",
 		expect(roleNames("phaseCommitExcluded")).toEqual([...GOLDEN_PHASE_COMMIT_EXCLUDED].sort());
 	});
 
+	it("v0.4.3: registry flags reproduce the never-git-tracked set (golden — resume-cache durability)", () => {
+		expect(roleNames("neverGitTracked")).toEqual([...GOLDEN_NEVER_GIT_TRACKED].sort());
+	});
+
 	it("v0.3.87 S4(b): research-assists.jsonl carries the NOVEL four-role combo (specDirBookkeeping + redBoundarySpecScoped + trackerAdvisoryNoise + phaseCommitExcluded — per-attempt scratch that must never ride phase commits)", () => {
 		// The v0.3.85 grill fold flagged this combo as NOVEL: .judge.jsonl carries
 		// four roles but redBoundaryAnywhere rather than SpecScoped; test-runner.json
@@ -142,6 +194,7 @@ describe("v0.3.74 P1-a — harness-file registry is the single source of truth",
 			trackerAdvisoryNoise: true,
 			specDirBookkeeping: true,
 			phaseCommitExcluded: true,
+			neverGitTracked: true,
 		});
 	});
 

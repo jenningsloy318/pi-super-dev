@@ -68,7 +68,7 @@ Scope: 60 docs — 58 committed + 2 in flight (marked ⚠ below). Eras: **Jul** 
 | 08-24 | 050-red-timeout-honesty-v0.3.16.md | spec | Implemented — v0.3.16 (eeb8d3e6) |
 | 08-26 | 051-conftest-hollow-guard-exemption-v0.3.17.md | spec | Implemented — v0.3.17 (3427bc51) |
 
-## Era 4 — 2026-09 · Eval layer + live-run postmortems + architecture programs (8)
+## Era 4 — 2026-09 · Eval layer + live-run postmortems + architecture programs (9)
 
 | Created | Doc | Kind | Outcome |
 |---|---|---|---|
@@ -78,12 +78,12 @@ Scope: 60 docs — 58 committed + 2 in flight (marked ⚠ below). Eras: **Jul** 
 | 09-11 | 053-code-review-full-codebase-2026-09-10.md | review report | 18 findings (2C/6H/7M/3L) — input to subsequent waves |
 | 09-11 | 055-sdlc-tips-adoption.md | spec | Implemented — **v0.3.89 / v0.3.90 / v0.3.91** (P1 eval-layer, P2 dual scorers, P3 flywheel+firewall) |
 | 09-13 | 057-run-2026-09-12T15-16-29-042Z-antigravity-model-exclusion-root-cause.md | postmortem | Postmortem complete — operator remediation (npm pi-antigravity); durable fixes in v0.3.95 (thinking-fidelity); upstream-watch errata 9b3bcd3b |
-| 09-13 | 058-cross-phase-contract-architecture.md | architecture | P1 implemented **v0.3.96** (4d45025a, D-A+D-C); **P2 (D-B+D-D) pending**; v4 adds S-E (REPLAN ledger-identity drift, live-observed) → D-E / wave P3 proposed |
-| 09-13 | 059-reviewer-quality-architecture.md | architecture | **READY** (v8) — 6 gates closed (grill R1 + grill R6/W-layer + delta-1..5); R1A unblocked: D-R-A/B/E/W + writer prompts atomically, v0.3.97 candidate |
+| 09-13 | 058-cross-phase-contract-architecture.md | architecture | Implemented — P1 **v0.3.96** (D-A+D-C), P3 **v0.3.97** (D-E ledger superseding), P2 **v0.3.99** (D-B two-strike + D-D checkpoint rollback) |
+| 09-13 | 059-reviewer-quality-architecture.md | architecture | Implemented — R1A **v0.3.98** (inventory + writer declaration + R4 exemption), R1B/R2 **v0.4.1** (reviewer slice injection + offline harness), **v0.4.2** (demand-set laws hotfix) |
+| 09-14 | 061-ai-workflow-vs-harness-engineering.md | reference | Saved from Medium (@june-in-exile) — AI 工作流 vs. Harness Engineering (11-step loop, test lock, attempt budget, 9 quality gates) |
 
 ## In flight
 
 | Doc | Note |
 |---|---|
 | ⚠ 060-communitcation-mechanism.md | Parallel-session draft — untracked (intentional filename), numbered by position not git history |
-| 059-reviewer-quality-architecture.md | v2 committed (grill R1 folded); delta re-gate in flight |

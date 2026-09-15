@@ -237,9 +237,15 @@ export function rollbackWorktreeTo(worktreePath: string | undefined, commit?: st
 	// default "HEAD" or a validated ref; anything option-shaped is refused rather
 	// than handed to git. `--end-of-options` below is belt-and-braces for the rest.
 	if (/^-/.test(target)) return { ok: false, commit: null, error: `refusing option-like rollback target '${target}'` };
-	// Exclude the spec dir (untracked artifacts: docs/specifications/*, .resume-cache,
-	// .user-notes.json, change-tracker.jsonl) from the clean so a rollback doesn't
-		// destroy completed stage artifacts the retry still needs (B-1 fix).
+	// Exclude the spec dir from the clean (v0.3.x intent: "untracked artifacts"
+	// must survive a rollback; v0.4.3 reality note: these names are UNTRACKED BY
+	// SETUP since v0.4.3 — runtime-state-git.ts — so `clean -fd` skips them as
+	// untracked anyway; the -e list below is belt-and-braces for pre-v0.4.3
+	// worktrees where they may still be tracked-and-ignored-adjacent).
+	// A rollback must not destroy completed stage artifacts the retry still
+	// needs (B-1 fix). NOTE the deeper hazard this function shares with the
+	// checkpoint rollback: `git reset --hard` reverts TRACKED spec-dir files to
+	// the target commit — untracking at setup is the actual protection.
 	const specExcludes = ["docs/specifications/", ".resume-cache.jsonl", ".user-notes.json", "change-tracker.jsonl", "stagnation-report.md", "escalation-report.md"];
 	const cleanArgs = ["-C", worktreePath, "clean", "-fd", ...specExcludes.flatMap((e) => ["-e", e])];
 	try {

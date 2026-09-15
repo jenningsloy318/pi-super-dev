@@ -12,6 +12,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, 
 // quarantine source so setup and the Stage 9 loop cannot drift).
 import { collectDirtPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "./fault-classification.ts";
 import { isResumable } from "./resume.ts";
+import { ensureRuntimeStateUntracked } from "./runtime-state-git.ts";
 import { clearKnowledge } from "./render/knowledge.ts";
 import { clearUserNotes } from "./render/user-notes.ts";
 import { dirname, join, relative, resolve } from "node:path";
@@ -839,6 +840,25 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 		if (priorFaults !== null) {
 			options.log?.(`Setup prior environmental faults on track ${specIdentifier}: ${priorFaults} (ledger: .environment-faults.jsonl — class=environment; next=none, informational)`);
 		}
+	}
+
+	// v0.4.3 — resume-cache durability (run 2026-09-15T08-13-05-056Z class):
+	// super-dev runtime state files must never be git-tracked, or the engine's
+	// own checkpoint rollback (`git reset --hard` to a phase commit that
+	// snapshotted them) silently truncates the resume cache and later replays
+	// converged stages live. Untrack + info/exclude-ignore them (worktree runs;
+	// in-place runs warn only). Best-effort, never throws.
+	try {
+		const state = ensureRuntimeStateUntracked({ worktreePath, specDirectory, worktreeCreated, log: options.log });
+		if (state.status === "applied") {
+			if (state.untracked.length > 0) options.log?.(`Setup untracked ${state.untracked.length} runtime state file(s) from git — resume ledgers must survive checkpoint rollbacks (reset --hard otherwise reverts them to a phase-commit snapshot; run 2026-09-15T08-13-05-056Z class): ${state.untracked.join(", ")}`);
+			if (state.ignored.length > 0) options.log?.(`Setup git-ignored ${state.ignored.length} runtime state path(s) via $GIT_DIR/info/exclude (project .gitignore untouched): ${state.ignored.length > 3 ? `${state.ignored.slice(0, 3).join(", ")}, …` : state.ignored.join(", ")}`);
+			for (const e of state.errors) options.log?.(`Setup runtime-state untrack partial failure (continuing): ${e}`);
+		} else {
+			options.log?.(`Setup runtime-state untrack skipped — ${state.reason}`);
+		}
+	} catch (err) {
+		options.log?.(`Setup runtime-state untrack failed (continuing — best-effort by contract): ${err instanceof Error ? err.message : String(err)}`);
 	}
 
 	return { worktreePath, specDirectory, defaultBranch, language, isWebUi, specIdentifier, worktreeCreated, initializedRepo, copiedEnvFiles, reusedTrack };

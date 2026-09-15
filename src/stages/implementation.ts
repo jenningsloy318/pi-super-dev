@@ -1785,7 +1785,16 @@ export function discardGreenWork(worktreePath: string, keepTestFiles: Set<string
  *  runner spec are per-attempt scratch, not durable phase evidence). */
 // v0.3.74 dual review F3: derived from the canonical registry (role
 // `phaseCommitExcluded`) — was a sixth parallel basename literal.
-const PHASE_COMMIT_EXCLUDED_BASENAMES = harnessBasenames("phaseCommitExcluded");
+const PHASE_COMMIT_EXCLUDED_BASENAMES = (() => {
+	// v0.4.3: union with neverGitTracked — defense in depth. After setup
+	// untracks + ignores the runtime state (runtime-state-git.ts), `git add -A`
+	// skips them via info/exclude; if any path is ever tracked again (a foreign
+	// `git add -f`, an older worktree created before v0.4.3 whose untrack pass
+	// failed), the committer still must not snapshot resume ledgers into phase
+	// commits — a committed ledger is a rollback-revertable ledger (the
+	// 2026-09-15T08-13-05-056Z cache-truncation class).
+	return new Set([...harnessBasenames("phaseCommitExcluded"), ...harnessBasenames("neverGitTracked")]);
+})();
 
 /** v0.3.43 throughput fix (RC4 — LLM doing deterministic work): the per-phase
  *  commit step ran an `orchestrator` agent whose ENTIRE job was `git add -A &&
@@ -1817,7 +1826,12 @@ export function deterministicPhaseCommit(
 	if (entries.length === 0) return { status: "skipped", reason: "tree already clean — nothing to commit" };
 	const committable = entries.filter((e) => {
 		const base = e.path.split("/").pop() ?? e.path;
-		return !PHASE_COMMIT_EXCLUDED_BASENAMES.has(base);
+		if (!PHASE_COMMIT_EXCLUDED_BASENAMES.has(base)) return true;
+		// v0.4.3: a staged DELETION of an excluded basename is the runtime-state
+		// UNTRACKING (runtime-state-git.ts; its own setup commit is best-effort) —
+		// it MUST ride this commit, or the path stays in HEAD and every later
+		// `git reset --hard` re-tracks and reverts the ledger.
+		return e.status[0] === "D";
 	});
 	if (committable.length === 0) return { status: "skipped", reason: `only runtime-scratch files changed (${entries.length} entr${entries.length === 1 ? "y" : "ies"}) — nothing durable to commit` };
 	const add = git("add", "-A");
@@ -1831,7 +1845,7 @@ export function deterministicPhaseCommit(
 	// not by git).
 	for (const e of entries) {
 		const base = e.path.split("/").pop() ?? e.path;
-		if (PHASE_COMMIT_EXCLUDED_BASENAMES.has(base)) git("reset", "--", `:(literal)${e.path}`);
+		if (PHASE_COMMIT_EXCLUDED_BASENAMES.has(base) && e.status[0] !== "D") git("reset", "--", `:(literal)${e.path}`);
 	}
 	const title = `phase ${opts.phaseIndex}/${opts.totalPhases}: ${opts.phaseName}`;
 	const message = [`${title}`, "", `Deterministic super-dev phase commit (v0.3.43+; engine-side, no LLM).`, ``, `Gates: ${opts.gateSummary}`, ``, `[super-dev: deterministic-phase-commit]`].join("\n");

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.4.3: resume-cache 耐久性——运行时状态文件永不 git-tracked（spec-26 run 2026-09-15T08-13-05-056Z）
+
+- **现场**：resume 重放被 prototype 卡住（「Stage 6C takes minutes?」）——`.resume-cache.jsonl` 里 pipeline.prototype 零行，但 14-prototype-report.md 存在；逐行考古发现 32 行现役缓存恰等于 phase-1 提交 5d613aa 的树内快照，phase-02..05 行、designReview#3-7、bddReview#2-4、specReview#2 全部丢失；worktree reflog 同日 12 次 `reset: moving to 5d613aa`。
+- **根因（双子系统假设矛盾）**：deterministicPhaseCommit 的 `git add -A` 把 10 个运行时状态文件提交进 phase commit；checkpoint-rollback 收敛重入时 `git reset --hard` 回到该快照，tracked 状态文件被静默回滚——每次回滚都截断 resume cache，下次 resume 全部 live 重跑。三处消费方（checkpoint-rollback stash 排除、tracking.ts clean 排除、RED 边界）都早已假设这些文件 untracked，只有 committer 把它们当内容。git 事实（P6 实证钉死）：`reset --hard` 只还原 tracked 文件；`rm --cached` 后 HEAD 仍含该路径，后续 reset 依然还原并重新 tracked——只有「提交删除」才真正耐久。
+- **修复**：① harness-paths 注册表新增 `neverGitTracked` 角色（25 个状态文件：resume cache、convergence ledger、judge/replan/inherited-red 台账、telemetry 五件套、.task/.complete/.run-lock 等；渲染 *.md 报告故意不标记——replay 时从缓存 control 重渲染）；② 新模块 `src/runtime-state-git.ts` `ensureRuntimeStateUntracked`：setup 时 `git rm --cached` + 提交删除（pathspec commit 会取工作树内容、必须把文件挪开再提交——已钉死）+ 写 `$GIT_DIR/info/exclude`（项目 .gitignore 不动；worktree 运行限定，in-place 只警告不变更索引）；③ deterministicPhaseCommit 排除集 = phaseCommitExcluded ∪ neverGitTracked，但 staged deletion（解除跟踪本身）放行；④ 三处消费方注释改为诚实语义。
+- **测试**：incident 回归（tracked cache → 追加行 → untrack → `reset --hard` → 行存活）、`git add -A` 不可重跟踪、幂等、in-place 守卫、git 后端全失败降级、真实 linked worktree 的 COMMON-dir info/exclude（Code-Gate BLOCK-1：git 从不读 per-worktree exclude）、P6 registry 漂移守卫（golden 25 名单）+ phase-commit 并集行为钉——全套件 266 文件 / 4084 passed，tsc 清。
+- **门**：Code Gate（同主会话模型）8/8 PASS，零 blocking——单条 test-infra 发现已修（P6 漂移守卫测试把 `import("…/implementation.ts")` 提到模块顶层，避免 vitest 5000ms 默认 testTimeout 在冷启动下 flake）；Adversarial Gate（同模型）6/6 攻击全 PASS，零 blocking（两条 residual：`.run-lock` 在 info/exclude 两种写法共存无害冗余；`rm --cached`→exclude 写入之间的理论 TOCTOU 由串行 setup + run lock + committer 并集三层覆盖）。修一个连带回归：setup-env-exclude SCENARIO-017 的 `.run-lock` 断言从 `git status --porcelain --ignored` 子串改为权威 `git check-ignore`——v0.4.3 后 spec 目录全部状态文件被 ignore，git 把整树折叠成单行 `!! docs/`，叶路径不再出现在输出里（折叠本身是正确的新行为）。
+
 ### Fixed — v0.4.2: 收敛需求集三定律（live-abort 修复，pi-omisis run 2026-09-14T00-59-16-373Z）
 
 - **现场**：BDD 收敛 8 轮 whack-a-mole 后 abort——checker 每轮从全量 inventory 引用未覆盖 pin（含 2 个 sibling spec 文档 pin），writer 逐轮合规申报，但其声明散文本身被下一轮 walk 重铸为新 pin（round 2 引用的 pin locus 就是 BDD 自己的 :145 行），文档逐轮膨胀（18.5KB→26KB），需求集永不缩减；judge 诊断"cross-stage checker/author contract conflict"后 escalate-now。

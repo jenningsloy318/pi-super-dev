@@ -87,7 +87,12 @@ export function laterPhasesRan(phaseStatus: Array<{ id: string; status: string }
 }
 
 /** The spec dir (relative to the worktree) excluded from the rollback stash —
- *  harness bookkeeping must survive the reset. "." guards a weird root. */
+ *  harness bookkeeping must survive the reset. "." guards a weird root.
+ *  v0.4.3 honesty note: this exclusion only keeps the paths OUT OF THE STASH;
+ *  the real protection for the resume cache is setup-time untracking
+ *  (runtime-state-git.ts) — a TRACKED spec-dir file is reverted by the
+ *  `git reset --hard` below regardless of this exclusion (the
+ *  2026-09-15T08-13-05-056Z cache-truncation class). */
 function stashExcludedSpecDir(worktreePath: string, specDirectory: string | undefined): string {
 	if (!specDirectory) return "docs/specifications";
 	const rel = specDirectory.startsWith(worktreePath) ? specDirectory.slice(worktreePath.length + 1) : specDirectory;

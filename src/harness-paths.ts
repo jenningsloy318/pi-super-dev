@@ -28,6 +28,22 @@
  *                             claimedNotChanged (the false-green killer).
  * - `internalRuntimeClaim`  — claim-exempt: git-untrackable runtime artifacts
  *                             a claim may legitimately name (tracking).
+ * - `neverGitTracked`       — v0.4.3: MUST never be git-tracked inside a
+ *                             worktree. super-dev's own git machinery resets
+ *                             tracked files (`deterministicPhaseCommit`'s
+ *                             `git add -A` snapshots them; the checkpoint
+ *                             rollback's `git reset --hard` restores their
+ *                             committed content), so a tracked ledger is a
+ *                             silently truncated ledger — run
+ *                             2026-09-15T08-13-05-056Z lost the prototype
+ *                             round + phases-02..05 resume rows exactly this
+ *                             way. Setup untracks + info/exclude-ignores
+ *                             every basename carrying this flag (worktree
+ *                             runs only; in-place runs warn and mutate
+ *                             nothing). Rendered *.md reports are DELIBERATELY
+ *                             not flagged: they re-render from cached controls
+ *                             on every replay, and riding the phase commits
+ *                             keeps the human-readable evidence trail.
  */
 
 export interface HarnessFileRole {
@@ -39,10 +55,15 @@ export interface HarnessFileRole {
 	trackerAdvisoryNoise?: boolean;
 	/** Claim-exempt for git-untrackable runtime artifacts. */
 	internalRuntimeClaim?: boolean;
-	/** helpers.ts verify write-boundary / merge-verify exemption set: names the
+	/** helpers.ts verify write-boundary / merge-verify exclusion set: names the
 	 *  harness writes INSIDE the run's spec directory (a same-named file
 	 *  elsewhere is NOT exempt — position-aware, checked at the consumer). */
 	specDirBookkeeping?: boolean;
+	/** v0.4.3: setup untracks + git-ignores this basename (worktree runs) —
+	 *  see the role semantics above. Consumers: runtime-state-git.ts
+	 *  (untrack+ignore), implementation.ts deterministicPhaseCommit
+	 *  (defense-in-depth commit exclusion). */
+	neverGitTracked?: boolean;
 	/** Phase commits never ride these basenames (per-attempt scratch, not
 	 *  durable phase evidence — implementation.ts deterministic committer). */
 	phaseCommitExcluded?: boolean;
@@ -50,14 +71,16 @@ export interface HarnessFileRole {
 
 export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// ── RED-boundary, any path (run-owned evidence/scratch written mid-RED) ──
-	"implementation-evidence.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
-	"change-tracker.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
-	".resume-cache.jsonl": { redBoundaryAnywhere: true, internalRuntimeClaim: true, specDirBookkeeping: true },
-	".run-lock": { internalRuntimeClaim: true, specDirBookkeeping: true },
-	".user-notes.json": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true },
-	".judge.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true },
-	".knowledge.json": { trackerAdvisoryNoise: true, specDirBookkeeping: true },
-	"test-runner.json": { redBoundaryAnywhere: true, specDirBookkeeping: true, phaseCommitExcluded: true },
+	"implementation-evidence.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	"change-tracker.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	".resume-cache.jsonl": { redBoundaryAnywhere: true, internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true },
+	".run-lock": { internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true },
+	".task": { specDirBookkeeping: true, neverGitTracked: true },
+	".complete": { specDirBookkeeping: true, neverGitTracked: true },
+	".user-notes.json": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, neverGitTracked: true },
+	".judge.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
+	".knowledge.json": { trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	"test-runner.json": { redBoundaryAnywhere: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
 	"stagnation-report.md": { redBoundaryAnywhere: true },
 	"escalation-report.md": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true },
 	"escalation-report-stagnation.md": { redBoundaryAnywhere: true },
@@ -70,13 +93,14 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	//    stays flagged for RED (position-aware — pinned by tests). Note
 	//    events.jsonl is ALSO trackerAdvisoryNoise-anywhere: the tracker
 	//    advisory filter has no position semantics of its own for this name.
-	"events.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
-	"run-metrics.jsonl": { redBoundarySpecScoped: true },
-	"audit.jsonl": { redBoundarySpecScoped: true },
-	"routing-journal.jsonl": { redBoundarySpecScoped: true },
-	"routing-epoch.json": { redBoundarySpecScoped: true },
-	"replan-requests.json": { redBoundarySpecScoped: true },
-	"artifact-revisions.json": { redBoundarySpecScoped: true },
+	"events.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	"run-metrics.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
+	"audit.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
+	"routing-journal.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
+	"routing-epoch.json": { redBoundarySpecScoped: true, neverGitTracked: true },
+	"replan-requests.json": { redBoundarySpecScoped: true, neverGitTracked: true },
+	".replan.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
+	"artifact-revisions.json": { redBoundarySpecScoped: true, neverGitTracked: true },
 	"completion-audit.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
 	// v0.3.75 W1 usage-attribution artifacts. Dual-review BLOCKER (both
 	// reviewers, independent): shipping these WITHOUT registry entries
@@ -88,7 +112,7 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// Parity: usage-calls.jsonl == events.jsonl (per-call append mid-RED,
 	// tracker advisory noise anywhere); usage-report.md == completion-audit.md
 	// (close-out render only).
-	"usage-calls.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
+	"usage-calls.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
 	"usage-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
 	// P2 (v0.3.90, D5): the eval-stage run report — usage-report.md parity
 	// (close-out render only, inside the spec dir; the dataset rows live
@@ -96,11 +120,18 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	"eval-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
 	// v0.3.76 L2: per-call tool-tick telemetry (events.jsonl parity — appended
 	// mid-RED on every delegation update tick).
-	"tool-usage.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
+	"tool-usage.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
 	// v0.3.85 F2/F4: the inherited-red ladder's append-only tally/audit ledger
 	// (events.jsonl parity — engine-appended inside the spec dir at phase
 	// boundaries and handoffs; rides phase commits as durable evidence).
-	".inherited-red.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true },
+	// v0.4.3: that "rides phase commits" convention is precisely what let the
+	// checkpoint rollback revert it — neverGitTracked supersedes the old
+	// comment (the ledger belongs to the RUN, not to the repo history).
+	".inherited-red.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	// v0.4.3: the environmental-fault ledger (fault-classification.ts, engine-
+	// appended inside the spec dir — found unregistered in the
+	// 2026-09-15T08-13-05-056Z sweep; events.jsonl parity + neverGitTracked).
+	".environment-faults.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
 	// v0.3.87 S4(b) (decision 9): the research-assist ledger — the NOVEL four-role
 	// combo the v0.3.85 grill fold flagged (accuracy note: .judge.jsonl carries
 	// redBoundaryAnywhere rather than SpecScoped; test-runner.json carries three
@@ -109,8 +140,12 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// trackerAdvisoryNoise), but it is PER-ATTEMPT SCRATCH, never durable phase
 	// evidence — phaseCommitExcluded keeps it off the deterministic phase commit
 	// (the .judge.jsonl/test-runner.json precedent).
-	"research-assists.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true },
-	".convergence-ledger.json": { specDirBookkeeping: true },
+	"research-assists.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
+	".convergence-ledger.json": { specDirBookkeeping: true, neverGitTracked: true },
+	// v0.4.3: found unregistered in the 2026-09-15T08-13-05-056Z worktree —
+	// engine-written but invisible to every role consumer. Registered here so
+	// the untrack/ignore sweep covers them too (P6: one canonical registry).
+	"messages.jsonl": { specDirBookkeeping: true, neverGitTracked: true },
 };
 
 /** Derive the basename set for one role — the ONLY way consumers build sets. */

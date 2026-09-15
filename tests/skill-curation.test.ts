@@ -236,6 +236,9 @@ describe("v0.3.76 — tool-usage.jsonl is registered harness bookkeeping (M1 les
 		const { HARNESS_FILE_ROLES } = await import("../src/harness-paths.ts");
 		expect(HARNESS_FILE_ROLES["tool-usage.jsonl"]).toEqual({
 			redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true,
+			// v0.4.3: never git-tracked — the checkpoint rollback reverts tracked
+			// ledgers (run 2026-09-15T08-13-05-056Z class).
+			neverGitTracked: true,
 		});
 	});
 });

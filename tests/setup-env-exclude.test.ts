@@ -70,7 +70,12 @@ describe("copied env files are excluded from staging (AC-08, ISS-01)", () => {
 			expect(sh(s.worktreePath, "git ls-files").includes(".env.development")).toBe(false);
 			const ignored = sh(s.worktreePath, "git status --porcelain --ignored");
 			expect(ignored.includes("!! .env.development")).toBe(true);
-			expect(ignored.includes(".run-lock")).toBe(true); // spec-28 review F-04: lock never staged either // ignored, not staged
+			// spec-28 review F-04: the run lock is ignored too, so a pipeline `git
+			// add -A` can never stage it. Asserted via check-ignore (the authoritative
+			// test) rather than a `git status --ignored` substring: since v0.4.3 every
+			// spec-dir state file is ignored, so git collapses the whole tree to a
+			// single `!! docs/` line and the leaf path never appears in the output.
+			expect(checkIgnore(s.worktreePath, ".run-lock")).toBe(0);
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
