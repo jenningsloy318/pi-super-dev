@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { findingsSignature, reviewLoopUntil, reviewStageNode } from "../src/stages/verify.ts";
+import { findingsSignature, reviewLoopUntil, reviewStageNode } from "../src/stages/verify/index.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { PipelineState, StageContext, AgentCall } from "../src/types.ts";
 
@@ -279,7 +279,7 @@ describe("R-1 fix routing through the full review loop", () => {
 
 describe("R-2 tests/validation third review angle", () => {
 	it("specDeclaresTestDeliverables keys on structured spec fields only", async () => {
-		const { specDeclaresTestDeliverables } = await import("../src/stages/verify.ts");
+		const { specDeclaresTestDeliverables } = await import("../src/stages/verify/index.ts");
 		expect(specDeclaresTestDeliverables(null)).toBe(false);
 		expect(specDeclaresTestDeliverables({})).toBe(false);
 		expect(specDeclaresTestDeliverables({ phases: [{ name: "p" }] })).toBe(false);
@@ -353,7 +353,7 @@ describe("R-2 tests/validation third review angle", () => {
 
 			// Round 1: both primary reviewers approve but the tests angle blocks on a
 			// missing scenario binding → merged verdict must be Changes Requested.
-			const { reviewStep } = await import("../src/stages/verify.ts");
+			const { reviewStep } = await import("../src/stages/verify/index.ts");
 			await reviewStep.run(state, ctx);
 			expect(testsReviewCalls).toBe(1);
 			expect(prompts[0]).toContain("TESTS AND VALIDATION");
@@ -408,7 +408,7 @@ describe("R-2 third reviewer skip path", () => {
 					return { text: "", control: {} };
 				},
 			};
-			const { reviewStep } = await import("../src/stages/verify.ts");
+			const { reviewStep } = await import("../src/stages/verify/index.ts");
 			await reviewStep.run(state, ctx);
 			expect(agentIds).not.toContain("pipeline.verify.tests-review");
 			expect((state.review as { verdict?: string }).verdict).toBe("Approved");
@@ -467,7 +467,7 @@ describe("R-5 finding location verification", () => {
 					return { text: "", control: {} };
 				},
 			};
-			const { reviewStep } = await import("../src/stages/verify.ts");
+			const { reviewStep } = await import("../src/stages/verify/index.ts");
 			await reviewStep.run(state, ctx);
 			const review = state.review as { findings?: Array<{ id?: string }>; deferredFindings?: Array<{ id?: string; deferralReason?: string }> };
 			expect(review?.findings?.map((f) => f.id)).toEqual(["OK-1"]);

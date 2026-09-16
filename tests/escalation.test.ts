@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reviewLoopUntil } from "../src/stages/verify.ts";
+import { reviewLoopUntil } from "../src/stages/verify/index.ts";
 import { handleStagnation } from "../src/extension.ts";
 import type { PipelineState, RunSummary, StageContext } from "../src/types.ts";
 

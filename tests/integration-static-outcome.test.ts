@@ -9,7 +9,7 @@
  * that misreported 10h of green deterministic work as PARTIAL.
  */
 import { describe, it, expect } from "vitest";
-import { integrationOutcome } from "../src/stages/verify.ts";
+import { integrationOutcome } from "../src/stages/verify/index.ts";
 import type { PipelineState } from "../src/types.ts";
 
 const uiUnavailable = { pass: false, skipped: true, failures: [{ reason: "service(s) not ready: ui" }], summary: "service(s) not ready: ui" };

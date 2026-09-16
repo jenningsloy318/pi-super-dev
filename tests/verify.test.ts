@@ -9,10 +9,10 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { integrationTestsGreen, integrationOutcome, expectedIntegrationRoles, integrationLoopNode, reviewLoopNode, reviewLoopUntil, verificationConvergenceNode, findingsSignature } from "../src/stages/verify.ts";
+import { integrationTestsGreen, integrationOutcome, expectedIntegrationRoles, integrationLoopNode, reviewLoopNode, reviewLoopUntil, verificationConvergenceNode, findingsSignature } from "../src/stages/verify/index.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext } from "../src/types.ts";
-import { implementationSources } from "./helpers/implementation-source.ts";
+import { implementationSources, verifySources } from "./helpers/implementation-source.ts";
 
 describe("reviewLoopNode (Phase 1)", () => {
 	it("is a loop node (review → fix, iterating until approved)", () => {
@@ -26,7 +26,7 @@ describe("reviewLoopNode (Phase 1)", () => {
 // bound-less `continue` cannot be added silently.
 describe("F-18 — P8 bound-naming at every verify.ts continue", () => {
 	it("each `continue;` has a `Bound (P8)` comment within the preceding 8 lines", () => {
-		const src = readFileSync(new URL("../src/stages/verify.ts", import.meta.url), "utf8");
+		const src = verifySources();
 		const lines = src.split("\n");
 		const missing: string[] = [];
 		lines.forEach((line, i) => {
@@ -353,7 +353,7 @@ describe("M5 verify — emulation retired", () => {
 	});
 
 	it("source pin: maybeTriggerReplan is gone; triggerReplanForFindings lives in implementation (SIX legal sites: plan-feasibility entry + RED-site + contradiction valve + v0.3.85 F2 inherited-red Tier-2 declared handoff + v0.3.85 F4 door-in-the-fence handoff + v0.3.85 F5 red-weakening exhaustion escalation) and verify (v0.3.79 stagnation REPLAN adjudication) — never in the convergence loops", () => {
-		const verifySrc = readFileSync("src/stages/verify.ts", "utf8");
+		const verifySrc = verifySources();
 		expect(verifySrc).not.toContain("maybeTriggerReplan");
 		// v0.3.79 A3: verify routes stagnation replans via DYNAMIC import only
 		// (no static edge; the stagnation stop stays fail-open when replan fails)

@@ -116,7 +116,7 @@ describe("DEFAULT_TIMEOUT_MS resolution-site JSDoc (AC-09 / SCENARIO-013)", () =
 
 describe("Stage call sites unchanged (SCENARIO-012)", () => {
 	const stageFiles = [
-		"src/stages/verify.ts",
+		"src/stages/verify/steps.ts",
 		"src/stages/implementation/stage.ts",
 		"src/stages/index.ts",
 	];

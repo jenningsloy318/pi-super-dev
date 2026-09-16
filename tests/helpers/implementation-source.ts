@@ -22,3 +22,11 @@ export function implementationSources(root = process.cwd()): string {
 export function implementationStageSource(root = process.cwd()): string {
 	return readFileSync(join(root, "src", "stages", "implementation", "stage.ts"), "utf8");
 }
+
+// ─── verify (v0.4.17c split: evidence/boundary/steps/nodes) ───────────────
+const VERIFY_PARTS = ["evidence.ts", "boundary.ts", "steps.ts", "nodes.ts"];
+
+/** Concatenated source of the verify stage, in pre-split order. */
+export function verifySources(root = process.cwd()): string {
+	return VERIFY_PARTS.map((p) => readFileSync(join(root, "src", "stages", "verify", p), "utf8")).join("\n");
+}

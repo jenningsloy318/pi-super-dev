@@ -1,4 +1,4 @@
-import { implementationStageSource } from "./helpers/implementation-source.ts";
+import { implementationStageSource, verifySources } from "./helpers/implementation-source.ts";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,7 +23,7 @@ describe("v0.3.73 M2 — tests-review artifact is rendered", () => {
 	});
 
 	it("the testsReview verify task calls renderAndWrite (source contract)", () => {
-		const verify = src("../src/stages/verify.ts");
+		const verify = verifySources(join(import.meta.dirname, ".."));
 		const taskStart = verify.indexOf('id: "testsReview"');
 		expect(taskStart).toBeGreaterThan(-1);
 		// v0.3.73 dual review CR-73-02: EXACT-call anchor — the previous slice ran
@@ -59,12 +59,12 @@ describe("v0.3.73 M3 — agent-failed findings close on later review success", (
 	});
 
 	it("verify.ts closes on successful controls for all three kinds (source contract)", () => {
-		const verify = src("../src/stages/verify.ts");
+		const verify = verifySources(join(import.meta.dirname, ".."));
 		expect(verify).toContain("closeAgentFailedFindings");
 	});
 
 	it("closure notes are engine-authored bounded constants — no agent verdict text in the duty-prefixed downgradeReason (AR-73-03)", () => {
-		const verify = src("../src/stages/verify.ts");
+		const verify = verifySources(join(import.meta.dirname, ".."));
 		const calls = verify.match(/closeAgentFailedFindings\(s, "[a-zA-Z]+", [^\n]+\)/g) ?? [];
 		expect(calls.length).toBe(3);
 		for (const call of calls) {

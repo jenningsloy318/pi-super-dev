@@ -23,7 +23,7 @@ import {
 	integrationLoopNode,
 	verificationConvergenceNode,
 	testFailuresSignature,
-} from "../src/stages/verify.ts";
+} from "../src/stages/verify/index.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { AgentCall, PipelineState, StageContext } from "../src/types.ts";
 

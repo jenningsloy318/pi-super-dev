@@ -12,12 +12,13 @@
  * the user had to hand-drop the pipeline.verify.* cache rows).
  */
 
+import { verifySources } from "./helpers/implementation-source.ts";
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { reviewLoopUntil, classifyIntegrationObservation } from "../src/stages/verify.ts";
+import { reviewLoopUntil, classifyIntegrationObservation } from "../src/stages/verify/index.ts";
 import type { PipelineState, StageContext } from "../src/types.ts";
 
 const findings = (file: string, severity: string, title: string) => ({ id: "x", severity, title, detail: "d", file });
@@ -237,7 +238,7 @@ describe("V1 — Stage 11 integration loop classification", () => {
 	});
 
 	it("T7b (source pin): recordTestStagnation consults the integration classification — replayed observations skip the arming push", async () => {
-		const src = readFileSync(new URL("../src/stages/verify.ts", import.meta.url), "utf8");
+		const src = verifySources();
 		expect(src).toMatch(/__integrationReplayArms/);
 		expect(src).toMatch(/classifyIntegrationObservation/);
 		// the review path consults its own classifier and skips the arming push
@@ -278,7 +279,7 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 			const mk = () => WITH_FIX(STAGNANT_STATE(d));
 			// ctx.options carries the resume marker (the production-populated field)
 			const ctx = { ...fakeCtx(), options: { resumeSpecIdentifier: "04-dimension-contract" } } as unknown as StageContext;
-			const { recordVerificationStagnation } = await import("../src/stages/verify.ts");
+			const { recordVerificationStagnation } = await import("../src/stages/verify/index.ts");
 			const results: boolean[] = [];
 			let s = mk();
 			for (const attempt of [1, 2, 3, 4]) {
@@ -296,7 +297,7 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 		try {
 			const mk = () => WITH_FIX(STAGNANT_STATE(d));
 			const ctx = { ...fakeCtx(), options: {} } as unknown as StageContext;
-			const { recordVerificationStagnation } = await import("../src/stages/verify.ts");
+			const { recordVerificationStagnation } = await import("../src/stages/verify/index.ts");
 			let s = mk();
 			const r1 = await recordVerificationStagnation(s, ctx, rec(1));
 			s = carryW(s, mk());
@@ -309,7 +310,7 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 		const d = specDirWithVerifyRounds(2);
 		try {
 			const ctx = { ...fakeCtx(), options: { resumeSpecIdentifier: "x" } } as unknown as StageContext;
-			const { recordVerificationStagnation } = await import("../src/stages/verify.ts");
+			const { recordVerificationStagnation } = await import("../src/stages/verify/index.ts");
 			let s = WITH_FIX(STAGNANT_STATE(d));
 			const r1 = await recordVerificationStagnation(s, ctx, rec(1));
 			s = carryW(s, WITH_FIX(STAGNANT_STATE(d)));
@@ -321,7 +322,7 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 		const d = specDirWithVerifyRounds(2);
 		try {
 			const ctx = { ...fakeCtx(), options: { resumeSpecIdentifier: "x" } } as unknown as StageContext;
-			const { recordVerificationStagnation, verificationReplayArms } = await import("../src/stages/verify.ts");
+			const { recordVerificationStagnation, verificationReplayArms } = await import("../src/stages/verify/index.ts");
 			// First entry: attempts 1-2 replayed (suppressed), 3-4 fresh → the node
 			// stagnated or routed back; the attempts ledger now holds 4 records.
 			const afterEntry1 = WITH_FIX(STAGNANT_STATE(d));
@@ -342,7 +343,7 @@ describe("V1 — the WIRED Stage 10 node (verificationConvergence stagnation cho
 		try {
 			const ctx = { ...fakeCtx(), options: {} } as unknown as StageContext; // no marker on ctx…
 			let s = WITH_FIX(STAGNANT_STATE(d)); // …and none on state
-			const { recordVerificationStagnation, verificationReplayArms } = await import("../src/stages/verify.ts");
+			const { recordVerificationStagnation, verificationReplayArms } = await import("../src/stages/verify/index.ts");
 			expect(verificationReplayArms(s, ctx)).toBe(0);
 			const r1 = await recordVerificationStagnation(s, ctx, rec(1));
 			s = carryW(s, WITH_FIX(STAGNANT_STATE(d)));

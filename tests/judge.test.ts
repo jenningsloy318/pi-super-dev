@@ -504,7 +504,7 @@ describe("judge prompt control contracts", () => {
 
 // ─── J10: judge diagnosis at the Stage 10 break boundaries ──────────────────
 
-import { reviewLoopUntil } from "../src/stages/verify.ts";
+import { reviewLoopUntil } from "../src/stages/verify/index.ts";
 import type { PipelineState } from "../src/types.ts";
 
 describe("J10 stage10 stagnation diagnosis", () => {
@@ -540,7 +540,7 @@ describe("J10 stage10 stagnation diagnosis", () => {
 		}));
 		const s = mkState(true); // prior signatures identical to current → stagnant
 		// seed identical history so the CURRENT signature repeats
-		const cur = (await import("../src/stages/verify.ts")).findingsSignature(s);
+		const cur = (await import("../src/stages/verify/index.ts")).findingsSignature(s);
 		(s as Record<string, unknown>).__reviewSignatures = [cur, cur];
 		const broke = await reviewLoopUntil(s, ctx);
 		expect(broke).toBe(true);
@@ -552,7 +552,7 @@ describe("J10 stage10 stagnation diagnosis", () => {
 	it("J10 degraded (judge fails) keeps the break without a diagnosis finding", async () => {
 		const { ctx } = makeCtx(() => ({ control: null, error: "infra down" }));
 		const s = mkState(true);
-		const cur = (await import("../src/stages/verify.ts")).findingsSignature(s);
+		const cur = (await import("../src/stages/verify/index.ts")).findingsSignature(s);
 		(s as Record<string, unknown>).__reviewSignatures = [cur, cur];
 		const broke = await reviewLoopUntil(s, ctx);
 		expect(broke).toBe(true);

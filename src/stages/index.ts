@@ -29,7 +29,7 @@ import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { appendGateChecked } from "../runlog.ts";
 import { implementationStage } from "./implementation/index.ts";
-import { verificationConvergenceNode, reviewApproved } from "./verify.ts";
+import { verificationConvergenceNode, reviewApproved } from "./verify/index.ts";
 import { specConvergenceNode } from "./spec-convergence.ts";
 import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence.ts";
 import { replanPending } from "../replan/replan.ts";

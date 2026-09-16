@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { commitWorktreeChanges } from "../src/helpers.ts";
-import { runVerificationFix } from "../src/stages/verify.ts";
+import { runVerificationFix } from "../src/stages/verify/index.ts";
 import type { Node, NodeResult, PipelineState, StageContext } from "../src/types.ts";
 
 const sh = (cwd: string, cmd: string): string => { try { return execSync(cmd, { cwd, encoding: "utf-8" }); } catch { return ""; } };

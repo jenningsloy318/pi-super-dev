@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Refactor — v0.4.17b: build-runner/gates.ts 拆分(3 模块)
+### Refactor — v0.4.17c: stages/verify.ts 拆分(4 模块)+ 两处真实缺陷修复
+
+**English — the third big file, split + two real defects found by reading.** `src/stages/verify.ts` (1,832 lines) becomes `src/stages/verify/{evidence,boundary,steps,nodes}.ts` re-exported by `index.ts`; the stages barrel repoints at it. Pure code motion, 4200/4200 green.
+- **Defect 1 (indentation)**: a 100-line liveness block (`if (!reviewApproved && reviewFindings === 0 && ...)`) sat one tab too deep inside the convergence node — its whole body over-indented relative to its siblings. De-indented.
+- **Defect 2 (shadowed helper)**: `integrationLoopNode` re-defined a local `testFailureCount` byte-identical to the module-level one at line 311, silently shadowing the canonical helper. The local is removed; the node now calls the module-level function.
+- **Split-tooling lessons (paid in iterations, all fixed in the script)**: `tsc` writes errors to **stdout** (capturing `.stderr` silently wires zero symbols); the module regex needed `\w-` for hyphenated filenames; and slice boundaries must align to the `/**` doc opener or the cut leaves a comment's opener in one file and its body in the next. `tests/helpers/implementation-source.ts` gained `verifySources()` so source-contract tests read the pre-split body.
+
+### Refactor — v0.4.17b: build-runner/gates.ts 拆分(3 模块) build-runner/gates.ts 拆分(3 模块)
 
 **English — the second-largest source file, split the same way.** `src/build-runner/gates.ts` (1,998 lines) becomes `src/build-runner/gates/{build-gate,red-check,deliverable}.ts` re-exported by a new `index.ts`; the `build-runner.ts` barrel points at it, so every `import { ... } from "../build-runner.ts"` still resolves. Pure code motion, 4200/4200 green.
 - **Cluster boundaries** (chosen by cohesion, not line count): `build-gate.ts` = the command-plan/bootstrapping machinery + `runBuildGate`; `red-check.ts` = the RED oracle (`runRedCheck`, status classification, diagnostics); `deliverable.ts` = the deliverable/symbol/change gates.

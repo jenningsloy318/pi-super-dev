@@ -43,7 +43,7 @@ vi.mock("../src/stages/judge.ts", async (importOriginal) => {
 	};
 });
 
-import { recordVerificationStagnation } from "../src/stages/verify.ts";
+import { recordVerificationStagnation } from "../src/stages/verify/index.ts";
 import type { PipelineState, StageContext } from "../src/types.ts";
 
 const specDir = () => mkdtempSync(join(tmpdir(), "sd-vstagn-"));

@@ -1,0 +1,6 @@
+// v0.4.17c: verify.ts split into 4 modules (pure code motion — every name
+// below keeps its pre-split resolution path "../stages/verify").
+export { setupOf, VerificationAttemptRecord, snapshotStatusFiles, changedSinceSnapshot, workingTreeSignature, ensureVerificationAttempts, buildErrors, summarizeReviewFindings, summarizeTestFailures, recordVerificationConvergenceFinding, verificationRetryFeedbackBlock, verificationFailureSignature, recordAttemptEnd, recordVerificationReviewFindings, verificationReplayArms, recordVerificationStagnation } from "./evidence.ts";
+export { runVerificationFix, reviewApproved, IntegrationOutcomeStatus, IntegrationOutcome, expectedIntegrationRoles, integrationTestsGreen, integrationOutcome, setIntegrationOutcome, buildGreen, failedReviewControl, validReviewControl, failedTestControl, resetIntegrationAttemptState, markIntegrationNotApplicable, markIntegrationPassed, specDeclaresTestDeliverables } from "./boundary.ts";
+export { reviewStep, buildGateStep, fixStepReview, testFailuresSignature, detectStagnation, classifyIntegrationObservation, findingsSignature, reviewLoopUntil, reviewLoopNode, reviewStageNode, testBlock, fixStepIntegration, inconclusiveIntegrationMessage } from "./steps.ts";
+export { verificationConvergenceNode, integrationLoopNode } from "./nodes.ts";

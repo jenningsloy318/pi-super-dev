@@ -12,6 +12,7 @@
  * Also pins the reviewStep WIRING (verify.ts reserves all three review docs at
  * step start, before the parallel spawn) via the repo's source-contract idiom.
  */
+import { verifySources } from "./helpers/implementation-source.ts";
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,7 +75,7 @@ describe("F-09 — doc-number reservations (prompts.ts registry)", () => {
 
 describe("F-09 — reviewStep wiring (source contract)", () => {
 	it("reviewStep reserves all three review docs BEFORE delegating to the parallel reviewers", () => {
-		const src = readFileSync(new URL("../src/stages/verify.ts", import.meta.url), "utf8");
+		const src = verifySources();
 		const wrapper = src.slice(src.indexOf("export const reviewStep: Node"), src.indexOf("export const reviewStep: Node") + 900);
 		expect(wrapper).toContain("reserveStageDocs(setup, stageId)");
 		expect(wrapper).toContain('"codeReview", "adversarialReview", "testsReview"');

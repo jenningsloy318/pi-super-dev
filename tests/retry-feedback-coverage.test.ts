@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildPrototypePrompt } from "../src/prompts.ts";
-import { implementationSources } from "./helpers/implementation-source.ts";
+import { implementationSources, verifySources } from "./helpers/implementation-source.ts";
 
 const root = process.cwd();
 const src = (path: string) => readFileSync(join(root, path), "utf8");
@@ -14,7 +14,7 @@ describe("shared retry-feedback coverage", () => {
 		const artifactConvergence = src("src/stages/artifact-convergence.ts");
 		const specConvergence = src("src/stages/spec-convergence.ts");
 		const implementation = implementationSources();
-		const verify = src("src/stages/verify.ts");
+		const verify = verifySources();
 		const delegation = src("src/agents/delegation-backend.ts");
 
 		// Foundational artifact convergence: requirements, BDD, research.
