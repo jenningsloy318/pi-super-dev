@@ -31,3 +31,8 @@ docs/references/plandex/
 docs/references/superpowers/
 docs/references/swe-factory/
 docs/references/gotestsum/
+
+# reference doc clones (external repos, never tracked — git add -A swept them in as gitlinks)
+docs/references/SoL-Pi/
+docs/references/cursor-plugins/
+docs/references/designing-multiagent-systems/
