@@ -52,10 +52,20 @@ export function appendToKnowledge(specDir: string, stageId: string, control: Rec
 	const path = knowledgePath(specDir);
 	let knowledge: KnowledgeFile;
 	try { knowledge = JSON.parse(readFileSync(path, "utf8")); } catch { knowledge = { stages: {} }; }
+	// v0.4.14 (dual-gate F1/B1): the render path REPLACES data wholesale, but
+	// contract-surface's persisted write-time slice stamp
+	// (__contractSliceStamp) is written to the SAME entry BEFORE the render runs
+	// (memoizer onLiveAppend → persist → render → this). Without preservation
+	// the stamp survives only on rounds that produced NO artifact — inverting
+	// the contract ("last live round's write-time truth") and re-opening the
+	// resume temporal hole the stamp exists to close. Render owns the control
+	// object; the stamp is engine-owned, so it is carried across the replace.
+	const existing = knowledge.stages[stageId];
+	const persistedStamp = existing?.data?.__contractSliceStamp;
 	knowledge.stages[stageId] = {
 		timestamp: new Date().toISOString(),
 		agent: String(control.agent ?? stageId),
-		data: control,
+		data: persistedStamp ? { ...control, __contractSliceStamp: persistedStamp } : control,
 	};
 	try {
 		// Sweep-3 G31: ATOMIC write (tmp + rename) — a torn write reset the whole

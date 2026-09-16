@@ -697,7 +697,9 @@ describe("065 v0.4.11 — spec gate union feedback (no serialized whack-a-mole)"
 		const fallbackIdx = src.indexOf("async function specFamilyFallbackAfterTrace");
 		expect(pureIdx).toBeGreaterThan(-1);
 		expect(fallbackIdx).toBeGreaterThan(pureIdx);
-		expect(src).toContain("const evaluate = (): string[] => specFamilyPureErrors(state, ctx);");
+		// v0.4.14: the fallback threads the REAL round (the extraction had hardcoded 0,
+		// permanently disarming isPreW's round > 1 degradation rule for layerW-less controls)
+		expect(src).toContain("const evaluate = (): string[] => specFamilyPureErrors(state, ctx, round);");
 	});
 
 	it("behavioral: a spec with BOTH a phantom scenario ref AND an uncovered family write surfaces both classes in one validation round", async () => {
@@ -769,9 +771,12 @@ describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", ()
 			const specDir = join(repo, "docs", "specifications", "26-x");
 			mkdirSync(specDir, { recursive: true });
 			const state = { setup: { specDirectory: `${specDir}/` } };
-			const { stampContractSlice, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
+			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
 			stampContractSlice(state, "spec", { empty: false, block: "b", pinCount: 1, truncated: false, unmappedConcepts: [], files: ["a.ts"], pinIds: ["pin-1"] } as never);
-			// persisted: the external .knowledge.json carries the stamp
+			// v0.4.13: persistence happens at the memoizer's LIVE-append moment
+			// (persistCurrentStateStamp), NOT at prompt build (replay rounds
+			// re-stamp state — persisting there poisoned the bootstrap).
+			persistCurrentStateStamp(state, "spec");
 			const { stateFileFor } = await import("../src/state/state-root.ts");
 			const kpath = stateFileFor(`${specDir}/`, ".knowledge.json");
 			expect(existsSync(kpath)).toBe(true);
@@ -784,6 +789,103 @@ describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", ()
 			// state-present path unchanged (inventory passthrough wins)
 			const live = readContractSliceStamp(state, "spec");
 			expect([...live!.files]).toEqual(["a.ts"]);
+		} finally {
+			delete process.env.SUPER_DEV_STATE_DIR;
+			try { rmSync(home, { recursive: true, force: true }); } catch { /* tmp */ }
+		}
+	});
+
+
+	it("v0.4.14 F1: the stamp SURVIVES the render append — persist → appendToKnowledge → disk-first read (the live-round order)", async () => {
+		// The live round order is: prompt-build stamps state -> memoizer
+		// onLiveAppend persists to .knowledge.json -> writerTask RENDERS ->
+		// appendToKnowledge replaces stages.<stage>.data wholesale -> validators
+		// read DISK FIRST. Before v0.4.14 the replace dropped __contractSliceStamp
+		// before any validator ran, so the disk-first branch was unreachable on
+		// EVERY round that produced an artifact and the resume temporal hole the
+		// stamp exists to close stayed open (dual-gate F1/B1).
+		const { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const { tmpdir } = await import("node:os");
+		const { execFileSync } = await import("node:child_process");
+		const home = mkdtempSync(join(tmpdir(), "sd-stamp-f1-"));
+		try {
+			const repo = join(home, "r");
+			mkdirSync(repo, { recursive: true });
+			execFileSync("git", ["init", "-q", repo]);
+			process.env.SUPER_DEV_STATE_DIR = join(home, "state");
+			const specDir = join(repo, "docs", "specifications", "26-f1");
+			mkdirSync(specDir, { recursive: true });
+			const state = { setup: { specDirectory: `${specDir}/` } };
+			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
+			const { appendToKnowledge } = await import("../src/render/knowledge.ts");
+			const { stateFileFor } = await import("../src/state/state-root.ts");
+			stampContractSlice(state, "spec", { empty: false, block: "b", pinCount: 2, truncated: false, unmappedConcepts: [], files: ["a.ts", "b.ts"], pinIds: ["pin-1", "pin-2"] } as never);
+			persistCurrentStateStamp(state, "spec");
+			// the render's own append (runs AFTER persist in the live order)
+			appendToKnowledge(`${specDir}/`, "spec", { phases: [{ id: "P1" }], summary: "rendered" });
+			// the control landed ...
+			const kpath = stateFileFor(`${specDir}/`, ".knowledge.json");
+			const onDisk = JSON.parse(readFileSync(kpath, "utf8"));
+			expect(onDisk.stages.spec.data.phases).toHaveLength(1);
+			// ... and the engine's stamp SURVIVED the wholesale data replace
+			expect(onDisk.stages.spec.data.__contractSliceStamp.pinIds).toEqual(["pin-1", "pin-2"]);
+			// a resumed process (fresh state) still reads disk-first truth
+			const recovered = readContractSliceStamp({ setup: { specDirectory: `${specDir}/` } }, "spec");
+			expect([...recovered!.files]).toEqual(["a.ts", "b.ts"]);
+			expect([...recovered!.pinIds]).toEqual(["pin-1", "pin-2"]);
+			// and a SECOND render (a replay round with no new persist) keeps it
+			appendToKnowledge(`${specDir}/`, "spec", { phases: [{ id: "P1" }, { id: "P2" }], summary: "re-rendered" });
+			const again = JSON.parse(readFileSync(kpath, "utf8"));
+			expect(again.stages.spec.data.__contractSliceStamp.pinIds).toEqual(["pin-1", "pin-2"]);
+			expect(existsSync(`${kpath}.tmp-stamp-${process.pid}-`)).toBe(false); // no tmp residue (atomic rename)
+		} finally {
+			delete process.env.SUPER_DEV_STATE_DIR;
+			try { rmSync(home, { recursive: true, force: true }); } catch { /* tmp */ }
+		}
+	});
+
+	it("v0.4.14 F3: selfTrackPrefixFor and selfTrackMatcher agree (Gate W's string prefix and the demand predicate are one spelling)", async () => {
+		const { selfTrackPrefixFor, selfTrackMatcher } = await import("../src/review/contract-validators.ts");
+		const specDir = "/repo/docs/specifications/26-x/";
+		const prefix = selfTrackPrefixFor(specDir);
+		expect(prefix).toBe("docs/specifications/26-x/");
+		const matcher = selfTrackMatcher(specDir)!;
+		expect(matcher("docs/specifications/26-x/09-specification.md")).toBe(true);
+		expect(matcher("docs/specifications/27-y/09-specification.md")).toBe(false);
+		// a spec dir outside the marker degrades to a whole-path prefix
+		expect(selfTrackPrefixFor(undefined)).toBeUndefined();
+	});
+});
+
+describe("065 v0.4.13 — stamp persistence timing (live-append only, disk-first reads)", () => {
+	it("a memo-HIT replay round does NOT overwrite the persisted stamp (the pollution path)", async () => {
+		const { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const { tmpdir } = await import("node:os");
+		const { execFileSync } = await import("node:child_process");
+		const home = mkdtempSync(join(tmpdir(), "sd-stamp13-"));
+		try {
+			const repo = join(home, "r");
+			mkdirSync(repo, { recursive: true });
+			execFileSync("git", ["init", "-q", repo]);
+			process.env.SUPER_DEV_STATE_DIR = join(home, "state");
+			const specDir = `${join(repo, "docs", "specifications", "26-x")}/`;
+			mkdirSync(specDir, { recursive: true });
+			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
+			const state = { setup: { specDirectory: specDir } };
+			// round 1 LIVE: stamp (state) then persist (the memoizer's live-append hook)
+			stampContractSlice(state, "bdd", { empty: false, block: "", pinCount: 1, truncated: false, unmappedConcepts: [], files: ["a.ts"], pinIds: ["pin-live"] } as never);
+			persistCurrentStateStamp(state, "bdd");
+			// round 2 REPLAY: the prompt-build path re-stamps state (pollution)…
+			stampContractSlice(state, "bdd", { empty: false, block: "", pinCount: 2, truncated: false, unmappedConcepts: [], files: ["b.ts"], pinIds: ["pin-fresh"] } as never);
+			// …but the reader prefers the PERSISTED truth (live round's stamp)
+			const read = readContractSliceStamp(state, "bdd");
+			expect([...read!.files]).toEqual(["a.ts"]);
+			expect([...read!.pinIds]).toEqual(["pin-live"]);
+			// the disk copy still carries the live stamp
+			const { stateFileFor } = await import("../src/state/state-root.ts");
+			expect(existsSync(stateFileFor(specDir, ".knowledge.json"))).toBe(true);
 		} finally {
 			delete process.env.SUPER_DEV_STATE_DIR;
 			try { rmSync(home, { recursive: true, force: true }); } catch { /* tmp */ }

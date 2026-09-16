@@ -63,8 +63,8 @@ import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
 import { isNonRetryableAgentError } from "./agent-errors.ts";
 import { freshRunWallFuseState, readRunWallFuseMarker, runWallFusePreCallError } from "./wall-fuse.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
+import { persistCurrentStateStamp } from "./review/contract-surface.ts";
 import type {
-
 	AgentCall,
 	AgentResult,
 	Budget,
@@ -1031,7 +1031,17 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	// The lazy getSpecDir is because state.setup is populated only after the setup
 	// stage runs (the first node).
 	const agent = options.resumeCache
-		? createMemoizingAgent(realAgent, options.resumeCache, () => state.setup?.specDirectory ?? "", log, () => scopeAls.getStore() ?? [])
+		? createMemoizingAgent(realAgent, options.resumeCache, () => state.setup?.specDirectory ?? "", log, () => scopeAls.getStore() ?? [], (callId) => {
+			// v0.4.13 (resume temporal hole): a completed LIVE writer round is
+			// the only moment to persist the stage's write-time slice stamp —
+			// the prompt-build path re-stamps on memo-hit replay rounds too,
+			// which pollutes state; validators therefore read DISK first.
+			const stage = callId.startsWith("pipeline.") ? callId.slice("pipeline.".length) : undefined;
+			if (!stage) return;
+			try {
+				persistCurrentStateStamp(state as unknown as Record<string, unknown>, stage);
+			} catch { /* best-effort; a lost stamp degrades to the fresh re-walk */ }
+		})
 		: realAgent;
 	async function helper(call: HelperCall): Promise<HelperResult> {
 		return runHelper(call);

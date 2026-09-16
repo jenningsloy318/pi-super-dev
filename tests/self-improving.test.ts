@@ -166,3 +166,42 @@ describe("cleanup + stats", () => {
 		expect(() => updateStats()).not.toThrow();
 	});
 });
+
+// ─── v0.4.14 dual-gate folds (F1 clobber, F2 atomic, F3 prefix parity) ───────
+
+describe("v0.4.14 — persisted stamp survives the render append", () => {
+	let dir: string;
+	beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "sd-knowledge-14-")); clearKnowledge(dir); });
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+	it("F1: appendToKnowledge PRESERVES an engine-written __contractSliceStamp (the render runs after persist and replaced data wholesale — the resume temporal hole)", () => {
+		// the live-round order: persist stamps entry.data → render appends the
+		// control → validators read DISK FIRST and must find the stamp.
+		const stamp = { files: ["docs/requirements/22-public-interface.md"], pinIds: ["pin-abc123"] };
+		const raw = JSON.parse(readFileSync(knowledgePath(dir), "utf8"));
+		raw.stages.bdd = { timestamp: "t0", agent: "a", data: { features: [], __contractSliceStamp: stamp } };
+		writeFileSync(knowledgePath(dir), JSON.stringify(raw));
+		// the render's own append:
+		appendToKnowledge(dir, "bdd", { features: [{ name: "F1", scenarios: [] }], summary: "s" });
+		const after = JSON.parse(readFileSync(knowledgePath(dir), "utf8"));
+		expect(after.stages.bdd.data.features).toHaveLength(1); // the control landed
+		expect(after.stages.bdd.data.__contractSliceStamp).toEqual(stamp); // and the stamp SURVIVED
+	});
+
+	it("F1: a stage with NO persisted stamp is untouched (no phantom stamp injected)", () => {
+		appendToKnowledge(dir, "spec", { phases: [], summary: "s" });
+		const after = JSON.parse(readFileSync(knowledgePath(dir), "utf8"));
+		expect(after.stages.spec.data.__contractSliceStamp).toBeUndefined();
+	});
+
+	it("F2: a fresh control REPLACES a prior control's fields (the stamp is the only carried key)", () => {
+		const stamp = { files: [], pinIds: [] };
+		const raw = JSON.parse(readFileSync(knowledgePath(dir), "utf8"));
+		raw.stages.spec = { timestamp: "t0", agent: "a", data: { oldField: 1, __contractSliceStamp: stamp } };
+		writeFileSync(knowledgePath(dir), JSON.stringify(raw));
+		appendToKnowledge(dir, "spec", { phases: [{ id: "P1" }] });
+		const after = JSON.parse(readFileSync(knowledgePath(dir), "utf8"));
+		expect(after.stages.spec.data.oldField).toBeUndefined(); // stale control fields do NOT leak
+		expect(after.stages.spec.data.__contractSliceStamp).toEqual(stamp);
+	});
+});

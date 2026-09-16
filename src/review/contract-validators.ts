@@ -93,8 +93,11 @@ function demandablePins(slice: ContractSlice, inventory: ContractInventory, self
  *  inventory that now includes pins minted from that later-written doc —
  *  the replay was REJECTED and round 2 burned live (the D1 self-scan
  *  instability class hitting the resume path). Track-level exclusion makes
- *  the demandable set stable across the track's own doc growth. */
-export function selfTrackMatcher(specDirectory: string | undefined): ((locusFile: string) => boolean) | undefined {
+ *  the demandable set stable across the track's own doc growth.
+ *  v0.4.14 (gate F3): the prefix derivation lives HERE as the single spelling —
+ *  Gate W's selfTrackPrefix string and this predicate must normalize identically
+ *  (marker slice, backslashes, leading ./, trailing slash). */
+export function selfTrackPrefixFor(specDirectory: string | undefined): string | undefined {
 	if (!specDirectory) return undefined;
 	let norm = specDirectory.replace(/\\/g, "/");
 	const marker = "docs/specifications/";
@@ -102,7 +105,12 @@ export function selfTrackMatcher(specDirectory: string | undefined): ((locusFile
 	if (idx !== -1) norm = norm.slice(idx);
 	norm = norm.replace(/^\.\//, "");
 	if (!norm.endsWith("/")) norm += "/";
-	return (locusFile: string) => locusFile.startsWith(norm);
+	return norm || undefined;
+}
+
+export function selfTrackMatcher(specDirectory: string | undefined): ((locusFile: string) => boolean) | undefined {
+	const prefix = selfTrackPrefixFor(specDirectory);
+	return prefix ? (locusFile: string) => locusFile.startsWith(prefix) : undefined;
 }
 
 /** @deprecated v0.4.12 — use selfTrackMatcher (the suffix restriction is the
@@ -496,13 +504,10 @@ export function stageWriteClaimGate(input: {
 		if (docTexts.length === 0) return [];
 		// v0.4.12 (D1): the repo-relative track dir — pins minted from the
 		// track's OWN docs are skipped by Gate W's foreign arm (not baselines).
-		const selfTrackPrefix = (() => {
-			const marker = "docs/specifications/";
-			const norm = (setup?.specDirectory ?? "").replace(/\\/g, "/");
-			const idx = norm.indexOf(marker);
-			const rel = idx !== -1 ? norm.slice(idx) : norm;
-			return rel ? (rel.endsWith("/") ? rel : `${rel}/`) : undefined;
-		})();
+		// v0.4.14 (gate F3): one spelling — selfTrackMatcher is the same
+		// derivation; the inline copy had silently drifted (marker-slice,
+		// backslash, and trailing-slash handling must stay identical).
+		const selfTrackPrefix = selfTrackPrefixFor(setup?.specDirectory);
 		const findings = writeClaimClosureFindings({
 			stage: input.stage,
 			control: input.control,

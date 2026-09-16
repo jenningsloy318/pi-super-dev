@@ -222,6 +222,10 @@ export function createMemoizingAgent(
 	getSpecDir: () => string,
 	log?: (m: string) => void,
 	getScope: () => string[] = () => [],
+	/** v0.4.13: fired AFTER a LIVE call's result is appended (never on a memo
+	 *  hit) — the only moment whose write-time slice is truth worth persisting
+	 *  (contract-surface's persistCurrentStateStamp consumer). */
+	onLiveAppend?: (callId: string) => void,
 ): (call: AgentCall) => Promise<AgentResult> {
 	const occ = new Map<string, number>();
 	// NOTE (F3 design decision): the occurrence counter is deliberately NOT
@@ -300,6 +304,7 @@ export function createMemoizingAgent(
 		if (persistable) {
 			cache.set(key, persistRow);
 			appendResumeResult(getSpecDir(), key, persistRow);
+			try { onLiveAppend?.(id); } catch { /* best-effort persistence (P5) */ }
 		} else {
 			// v0.3.83 r2 (adv-F4): a pass whose every call pure-fails would never
 			// create the cache file — isResumable/findReusableSpec then skip the

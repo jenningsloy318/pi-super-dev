@@ -150,9 +150,12 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
  *  one-gate-per-round pattern burned 6 live rounds: the writer patched the
  *  trace finding, resubmitted, and only THEN learned the family gate flagged
  *  three more files). */
-export function specFamilyPureErrors(state: PipelineState, ctx: StageContext): string[] {
-	{ // round 0 = pure evaluation context (no strike machinery consumes it)
-	const round = 0;
+export function specFamilyPureErrors(state: PipelineState, ctx: StageContext, round = 0): string[] {
+	{ // round 0 (default) = pure evaluation context (no strike machinery consumes it);
+	//   v0.4.14 (gate F4): the live callers thread the REAL round — isPreW's
+	//   round > 1 degradation rule was permanently disarmed by the v0.4.11
+	//   extraction hardcoding 0, so a control lacking layerW kept advisory-only
+	//   family/Gate-W validation on EVERY round instead of round 1 only.
 		// The SAME write-time texts specWriter evaluates (writers.ts) — when the
 		// writer's stamp exists, contractValidationContext reuses it (no re-walk).
 		const contractCtx = contractValidationContext(state as Record<string, unknown>, "spec", [ctx.task, JSON.stringify(state.requirements ?? {}), JSON.stringify(state.bdd ?? {}), JSON.stringify(state.research ?? {}), JSON.stringify(state.assessment ?? {}), JSON.stringify(state.design ?? {}), JSON.stringify(state.prototype ?? {})]);
@@ -186,7 +189,7 @@ export function specFamilyPureErrors(state: PipelineState, ctx: StageContext): s
 }
 
 async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageContext, round: number): Promise<{ errors: string[]; cancelled: boolean; strikeUsed: boolean }> {
-	const evaluate = (): string[] => specFamilyPureErrors(state, ctx);
+	const evaluate = (): string[] => specFamilyPureErrors(state, ctx, round);
 	let errors = evaluate();
 	if (errors.length === 0) return { errors, cancelled: false, strikeUsed: false };
 	const stateRec = state as Record<string, unknown>;
@@ -486,7 +489,7 @@ export const specConvergenceNode: Node = {
 				// runs on this round's artifact and its findings ride the SAME
 				// rejection, so the writer fixes every deterministic violation in
 				// one rewrite instead of discovering them one gate per round.
-				const familyPreview = specFamilyPureErrors(state, ctx);
+				const familyPreview = specFamilyPureErrors(state, ctx, round);
 				if (familyPreview.length > 0) {
 					lastErrors = [...lastErrors, ...familyPreview.slice(0, 4).map((e) => `[amendment-family gate — fix in the SAME rewrite] ${e}`)];
 					ctx.log(`spec convergence: union — the amendment-family gate flags ${familyPreview.length} more error(s) in THIS round's artifact (folded into the feedback)`);
