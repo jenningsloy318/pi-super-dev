@@ -46,6 +46,7 @@ import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 import { resolveToolBudget } from "../agents/agent-runtime.ts";
 import type { StageContext } from "../types.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 // ── constants (§13: research-assist is a config role key ONLY) ───────────────
 
@@ -339,7 +340,7 @@ export interface ResearchAssistLedgerRow {
 }
 
 export function researchAssistLedgerPath(specDir: string): string {
-	return join(specDir, RESEARCH_ASSIST_BASENAME);
+	return stateFileFor(specDir, RESEARCH_ASSIST_BASENAME); // 063 S2
 }
 
 /** Append ONE ledger row. Never throws: a failure degrades to a warning

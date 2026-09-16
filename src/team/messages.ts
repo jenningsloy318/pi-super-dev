@@ -19,6 +19,7 @@
 import { appendFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { appendRunEvent } from "../runlog.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 export const MESSAGES_FILE = "messages.jsonl";
 
@@ -34,7 +35,9 @@ export interface TeamMessage {
 }
 
 function messagesPath(specDir: string): string {
-	return join(isAbsolute(specDir) ? specDir : join(process.cwd(), specDir), MESSAGES_FILE);
+	// 063 S2: the census cwd-normalizing form — normalize FIRST (the
+	// fail-closed fallback must preserve the legacy absolute-path behavior).
+	return stateFileFor(isAbsolute(specDir) ? specDir : join(process.cwd(), specDir), MESSAGES_FILE);
 }
 
 function readAll(specDir: string): TeamMessage[] {

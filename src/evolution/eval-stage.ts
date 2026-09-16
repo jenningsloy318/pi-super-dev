@@ -101,6 +101,7 @@ import { appendRunEvent } from "../runlog.ts";
 import { getConfig, getSuperDevDir, superDevEnv, type SuperDevConfig } from "../render/super-dev-dir.ts";
 import { runsDir } from "./eval-shared.ts";
 import { resolveToolBudget } from "../agents/agent-runtime.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 // ── constants ───────────────────────────────────────────────────────────────
 
@@ -486,9 +487,13 @@ export function buildEvalScorerPrompt(input: {
 			["usage ledger", "usage-calls.jsonl"],
 			["completion audit", "completion-audit.md"],
 		];
-		const verified = candidates.filter(([, basename]) => existsSync(join(dir, basename)));
+		// Gate F3 fold (063 S2): events.jsonl and usage-calls.jsonl are
+		// stateExternal — resolve through the funnel; completion-audit.md is a
+		// rendered report and STAYS in-tree (renderedReport role).
+		const resolveFor = (basename: string): string => basename === "completion-audit.md" ? join(dir, basename) : stateFileFor(dir, basename);
+		const verified = candidates.filter(([, basename]) => existsSync(resolveFor(basename)));
 		const paths = verified.length > 0
-			? verified.map(([label, basename]) => `- ${label}: ${join(dir, basename)}`).join("\n")
+			? verified.map(([label, basename]) => `- ${label}: ${resolveFor(basename)}`).join("\n")
 			: "- (no ledger files were present in the spec directory)";
 		lines.push("## Run evidence paths (read-only)", paths, `- final deliverables: the documents directly under ${dir}`);
 	} else {

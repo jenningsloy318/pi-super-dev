@@ -37,6 +37,7 @@ import { sendMessage, replyTo, pendingMessagesFor } from "../team/messages.ts";
 import { appendRunEvent, readRunEvents } from "../runlog.ts";
 import type { PipelineState, StageContext } from "../types.ts";
 import { resumeCachePath } from "../resume.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 export const REPLAN_REQUESTS_FILE = "replan-requests.json";
 export const ARTIFACT_REVISIONS_FILE = "artifact-revisions.json";
@@ -103,7 +104,9 @@ export interface ReplanRequestsFile {
 // ─── small fs helpers (best-effort, never throw) ────────────────────────────
 
 function specPath(specDir: string, name: string): string {
-	return join(isAbsolute(specDir) ? specDir : join(process.cwd(), specDir), name);
+	// 063 S2: the census cwd-normalizing form — normalize FIRST (the
+	// fail-closed fallback preserves the legacy absolute-path behavior).
+	return stateFileFor(isAbsolute(specDir) ? specDir : join(process.cwd(), specDir), name);
 }
 
 function readJson<T>(path: string, fallback: T): T {
@@ -291,8 +294,10 @@ function fingerprintFinding(f: Record<string, unknown>, targetOwner?: string): s
 function appendAudit(specDir: string, entry: Record<string, unknown>): void {
 	try {
 		const dir = isAbsolute(specDir) ? specDir : join(process.cwd(), specDir);
-		mkdirSync(dir, { recursive: true });
-		appendFileSync(join(dir, REPLAN_AUDIT_FILE), JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
+		// Gate F3 fold (063 S2): the audit append is a stateExternal toucher —
+		// routing through stateFileFor avoids re-creating an in-spec
+		// .replan.jsonl that the next setup migration ping-pongs.
+		appendFileSync(stateFileFor(`${dir}/`, REPLAN_AUDIT_FILE), JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
 	} catch { /* best-effort */ }
 }
 

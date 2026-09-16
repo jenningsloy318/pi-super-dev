@@ -10,7 +10,7 @@
 
 import { runWorkflow } from "./workflow.ts";
 import { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
-import { loadResumeCache, clearResumeCache, specDirFor, findResumableSpec, RESUME_CACHE_BASENAME } from "./resume.ts";
+import { loadResumeCache, loadResumeCacheFromPath, clearResumeCache, specDirFor, findResumableSpec, RESUME_CACHE_BASENAME } from "./resume.ts";
 import { releaseHeldRunLock } from "./setup.ts";
 import type { RunOptions, RunSummary } from "./types.ts";
 
@@ -29,11 +29,43 @@ export async function runPipelineTask(task: string, optionsIn: RunOptions = {}):
 			// 063-S1 gate B1: migrate the pre-S1 in-spec cache BEFORE loading —
 			// the setup-stage migration runs later (inside runWorkflow) and the
 			// rows would be invisible to this load (silent full re-run).
+			// Gate ADV-5 fold: the migration's decision lines (incl. discard /
+			// replace verdicts) go to the operator — they are never re-said by
+			// the later setup migration (it sees nothing-to-do).
 			try {
 				const { migrateInSpecState } = await import("./state/state-root.ts");
-				await migrateInSpecState(specDirFor(cwd, resumeId), [RESUME_CACHE_BASENAME]);
-			} catch { /* migration is best-effort here; load falls back below */ }
-			options.resumeCache = loadResumeCache(specDirFor(cwd, resumeId));
+				const report = await migrateInSpecState(specDirFor(cwd, resumeId), [RESUME_CACHE_BASENAME], (line) => console.warn(`[063-resume] ${line}`));
+				if (report.migrations.length > 0) console.warn(`[063-resume] pre-load migration: ${report.migrations.map((m) => `${m.basename}:${m.action}`).join(", ")}`);
+			} catch (err) {
+				// ADV-5: name the failure — a swallowed migration hides which
+				// home the subsequent load actually reads.
+				console.warn(`[063-resume] pre-load migration FAILED (best-effort; load falls back to the funnel path): ${err instanceof Error ? err.message : String(err)}`);
+			}
+			// Gate B2 fold: an ORPHAN resume (worktree died, branch + external
+			// state survived) has no spec dir yet — specDirFor gives a
+			// nonexistent in-tree path, the funnel fail-closes, and the normal
+			// loader reads the in-spec fallback (empty). Load the external
+			// cachePath directly when the resume id came from the orphan scan.
+			let orphanCachePath: string | undefined;
+			try {
+				const { externalResumeCandidates } = await import("./state/state-root.ts");
+				orphanCachePath = externalResumeCandidates(cwd).find((c) => c.id === resumeId)?.cachePath;
+			} catch { /* the scan is advisory here */ }
+			options.resumeCache = orphanCachePath
+				? loadResumeCacheFromPath(orphanCachePath)
+				: loadResumeCache(specDirFor(cwd, resumeId));
+			if ((options.resumeCache as Map<string, unknown>)?.size === 0) {
+				// B2 honesty: 0 loaded rows with a NON-EMPTY external cache is
+				// the silent-full-rerun signature — name it loudly.
+				try {
+					const { existsSync, readFileSync } = await import("node:fs");
+					const { stateFileFor } = await import("./state/state-root.ts");
+					const ext = stateFileFor(specDirFor(cwd, resumeId), RESUME_CACHE_BASENAME);
+					if (existsSync(ext) && readFileSync(ext, "utf8").trim() !== "") {
+						console.warn(`[063-resume] resume loaded 0 rows but the external cache is NON-EMPTY (${ext}) — the memoized stages of this track will re-run live; if this persists the cache keys no longer match the call graph`);
+					}
+				} catch { /* best-effort naming */ }
+			}
 		} else {
 			// nothing to resume → fall through to a fresh run
 			options.resume = undefined;

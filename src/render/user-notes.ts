@@ -14,6 +14,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RuntimeInstruction, RuntimeInstructionImage } from "../types.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 interface StoredRuntimeInstruction {
 	id: string;
@@ -51,7 +52,11 @@ export function capUserNoteBytes(text: string): string {
 
 /** Path to `.user-notes.json` in a spec directory. */
 export function userNotesPath(specDir: string): string {
-	return join(specDir, ".user-notes.json");
+	// 063 S2: .user-notes.json externalizes (Class H). The user-input/ ASSETS
+	// directory deliberately does NOT (spec M3 ruling — agents receive
+	// RELATIVE attachment paths; userInputDir/outputImagePath below keep the
+	// in-tree join; enumerated in the census, never moved).
+	return stateFileFor(specDir, ".user-notes.json");
 }
 
 export function userInputDir(specDir: string): string {

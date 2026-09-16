@@ -239,6 +239,8 @@ describe("v0.3.76 — tool-usage.jsonl is registered harness bookkeeping (M1 les
 			// v0.4.3: never git-tracked — the checkpoint rollback reverts tracked
 			// ledgers (run 2026-09-15T08-13-05-056Z class).
 			neverGitTracked: true,
+			// 063 S2: the durable external home (Class R/M) — full census in tests/state-root-s2.test.ts.
+			stateExternal: true,
 		});
 	});
 });

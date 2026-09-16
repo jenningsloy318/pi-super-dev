@@ -405,6 +405,8 @@ describe("the research-assists.jsonl ledger", () => {
 			// reverted by the checkpoint rollback's `git reset --hard` (the
 			// run 2026-09-15T08-13-05-056Z cache-truncation class).
 			neverGitTracked: true,
+			// 063 S2: the durable external home (Class R/M) — full census in tests/state-root-s2.test.ts.
+			stateExternal: true,
 		});
 		// phase-commit exclusion: the deterministic committer derives its set from
 		// the same registry role (implementation.ts PHASE_COMMIT_EXCLUDED_BASENAMES).

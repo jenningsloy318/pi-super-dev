@@ -37,6 +37,7 @@ import { join, isAbsolute, sep } from "node:path";
 import { buildJudgePrompt } from "../prompts.ts";
 import { appendRunEvent } from "../runlog.ts";
 import type { StageContext } from "../types.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 export const JUDGE_ROUTES = ["re-author-tests", "challenge-test", "fix-environment", "implementer-retry", "replan-upstream", "allow-scaffold", "continue", "escalate-now"] as const;
 export type JudgeRoute = (typeof JUDGE_ROUTES)[number];
@@ -363,7 +364,7 @@ function appendAudit(req: JudgeRequest, entry: Record<string, unknown>): void {
 	try {
 		const dir = isAbsolute(req.specDirectory) ? req.specDirectory : join(req.worktreePath, req.specDirectory);
 		mkdirSync(dir, { recursive: true });
-		appendFileSync(join(dir, ".judge.jsonl"), JSON.stringify({ ts: new Date().toISOString(), scope: req.scope, ...entry }) + "\n");
+		appendFileSync(stateFileFor(dir, ".judge.jsonl"), JSON.stringify({ ts: new Date().toISOString(), scope: req.scope, ...entry }) + "\n");
 	} catch { /* best-effort audit */ }
 }
 

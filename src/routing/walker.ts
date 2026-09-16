@@ -71,6 +71,7 @@ import {
 	persistedBudget,
 	startRunEpoch,
 } from "./journal.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 // ─── Pilot go/no-go (used by the artifact-convergence throw site) ───────────
 
@@ -122,7 +123,11 @@ export function planInlineRouteBack(
  *  for that owner stale, so the revision-gate fast-forward cannot skip the
  *  owner's loop when carried debt is waiting for its round 1. */
 export function bumpOwnerRevision(specDir: string, owner: string): number {
-	const path = join(specDir, ARTIFACT_REVISIONS_FILE);
+	// Gate F1 fold (063 S2): route through stateFileFor — replan's
+	// invalidation bump (replan.ts) already writes the EXTERNAL copy; a raw
+	// in-spec join here made the revision-gate read a STALE view and
+	// green-skip the owner the replan just invalidated.
+	const path = stateFileFor(specDir, ARTIFACT_REVISIONS_FILE);
 	let revisions: Record<string, number> = {};
 	if (existsSync(path)) {
 		try {

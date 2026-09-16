@@ -150,6 +150,7 @@ import { runRedCheck, runBuildGate, runDeliverableCheck, resetDeliverableCheckCa
 import { clearBaselineCache } from "../src/build-runner/baseline.ts";
 import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates.ts";
 import { resetJudgeBudgets } from "../src/stages/judge.ts";
+import { stateFileFor, specStateDir } from "../src/state/state-root.ts";
 
 const redCheck = vi.mocked(runRedCheck);
 const buildGate = vi.mocked(runBuildGate);
@@ -409,7 +410,7 @@ function realGitCtx(opts: Parameters<typeof mkCtx>[0] = {}): { ctx: StageContext
 }
 
 function readLedger(specDir: string): Array<Record<string, unknown>> {
-	const text = readFileSync(join(specDir, ".environment-faults.jsonl"), "utf8");
+	const text = readFileSync(stateFileFor(specDir, ".environment-faults.jsonl"), "utf8"); // 063 S2
 	return text.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
@@ -731,7 +732,7 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 	it("FIX (RED pre-fix; v0.2.6 kill-switch entry): pre-seeded ledger (3 lines) ⇒ the one-line prior-fault count in the judge context (OQ-3/D-8)", async () => {
 		const { wt: repo, specDir } = mkEnvBlockerWorktree();
 		repos.push(repo);
-		writeFileSync(join(specDir, ".environment-faults.jsonl"), `${JSON.stringify({ kind: "quarantine", paths: [], stashRef: "x", reason: "r" })}\n`.repeat(3));
+		writeFileSync(stateFileFor(specDir, ".environment-faults.jsonl"), `${JSON.stringify({ kind: "quarantine", paths: [], stashRef: "x", reason: "r" })}\n`.repeat(3)); // 063 S2
 		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]);
 		redThenGreen();
@@ -821,7 +822,7 @@ describe("T4.1 — single judge hand-off with both evidence packets + prior-faul
 		expect(git(repo, "reflog").split("\n").some((l) => /reset:/.test(l))).toBe(false);
 		// Kill-switch: NOTHING was ever stashed (detection only).
 		expect(git(repo, "stash", "list").trim()).toBe("");
-		expect(existsSync(join(specDir, ".user-notes.json"))).toBe(true);
+		expect(existsSync(stateFileFor(specDir, ".user-notes.json"))).toBe(true); // 063 S2: external home
 		expect(calls.logs.some((l) => /retry-with-guidance: guidance persisted to track user-notes/.test(l))).toBe(true);
 		// …the decision itself is still LOGGED only, and the implementer is never
 		// re-spawned THIS PASS — the outer convergence loop owns re-entry.
@@ -1149,7 +1150,7 @@ describe("T6.2 — judge-environmental verdict records (SCENARIO-026 · AC-12)",
 			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
 		}
 
-		const ledgerPath = join(repo, "docs", "specifications", "env-blk", ".environment-faults.jsonl");
+		const ledgerPath = stateFileFor(join(repo, "docs", "specifications", "env-blk"), ".environment-faults.jsonl"); // 063 S2
 		const lines = readFileSync(ledgerPath, "utf8").split("\n").filter((l) => l.trim() !== "");
 		expect(lines).toHaveLength(1); // no dirt ⇒ no quarantine record; one verdict record
 		const record = JSON.parse(lines[0]!) as Record<string, unknown>;
@@ -1178,7 +1179,7 @@ describe("T6.2 — judge-environmental verdict records (SCENARIO-026 · AC-12)",
 
 		expect(calls.judge).toHaveLength(0);
 		// No quarantine happened (kill-switch) and no verdict exists ⇒ no ledger at all.
-		expect(existsSync(join(specDir, ".environment-faults.jsonl"))).toBe(false);
+		expect(existsSync(stateFileFor(specDir, ".environment-faults.jsonl"))).toBe(false); // 063 S2
 	}, 20_000);
 });
 
@@ -1192,6 +1193,13 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 		if (typeof process.getuid === "function" && process.getuid() === 0) return; // root ignores 0o555
 		const { wt: repo, specDir } = mkEnvBlockerWorktree();
 		repos.push(repo);
+		// 063 S2: the verdict ledger lives EXTERNAL now — chmod BOTH homes (the
+		// external dir is where the append actually goes; the specDir chmod
+		// keeps the original in-tree-fallback premise for any fail-closed
+		// derivation). The test's INTENT — unwritable LEDGER, degrade, never
+		// throw — is unchanged.
+		const externalLedgerDir = specStateDir(specDir);
+		if (externalLedgerDir) { mkdirSync(externalLedgerDir, { recursive: true }); chmodSync(externalLedgerDir, 0o555); }
 		chmodSync(specDir, 0o555);
 		process.env.SUPER_DEV_NO_DIRTY_QUARANTINE = "1";
 		gateSeq([envBlockerGate()]); // foreign dirt + kill-switch → judge directly
@@ -1211,6 +1219,7 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 			threw = true;
 		} finally {
 			chmodSync(specDir, 0o755); // restore for the asserts + cleanup
+			if (externalLedgerDir) chmodSync(externalLedgerDir, 0o755);
 			delete process.env.SUPER_DEV_NO_DIRTY_QUARANTINE;
 		}
 
@@ -1222,7 +1231,7 @@ describe("T6.3 — unwritable ledger in-loop: the branch still completes through
 		// Kill-switch: nothing was stashed (detection only)…
 		expect(git(repo, "stash", "list").trim()).toBe("");
 		// …and the verdict record could not be written: the append degraded, never threw.
-		expect(existsSync(join(specDir, ".environment-faults.jsonl"))).toBe(false);
+		expect(existsSync(stateFileFor(specDir, ".environment-faults.jsonl"))).toBe(false); // 063 S2
 		// The degrade warning through the log sink (the primitive's exact literal).
 		expect(calls.logs.filter((l) => /ledger append failed/.test(l)).length).toBeGreaterThanOrEqual(1);
 		expect(calls.logs.some((l) => l.startsWith("environment-fault ledger append failed (continuing; never fatal):"))).toBe(true);

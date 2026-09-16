@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isAbsolute, join, resolve } from "node:path";
 import { harvestJUnitXml, sumHarvestedXml, parseTapCounts, type TestResultCounts } from "./result-parse.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 export interface TestRunnerSpec {
 	version: 1;
@@ -90,7 +91,7 @@ export function insertNpmExecGuard(argv: string[]): string[] {
 export function readCachedTestRunner(specDir: string | undefined): TestRunnerSpec | null {
 	if (!specDir) return null;
 	try {
-		const p = join(specDir, CACHE_BASENAME);
+		const p = stateFileFor(specDir, CACHE_BASENAME);
 		if (!existsSync(p)) return null;
 		const raw = JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
 		const command = typeof raw.command === "string" ? raw.command.trim() : "";
@@ -113,7 +114,7 @@ export function writeCachedTestRunner(specDir: string | undefined, spec: TestRun
 	if (!specDir) return false;
 	try {
 		mkdirSync(specDir, { recursive: true });
-		writeFileSync(join(specDir, CACHE_BASENAME), JSON.stringify(spec, null, "\t") + "\n");
+		writeFileSync(stateFileFor(specDir, CACHE_BASENAME), JSON.stringify(spec, null, "\t") + "\n");
 		return true;
 	} catch { return false; }
 }

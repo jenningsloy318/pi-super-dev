@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { abbreviatePath } from "../agents/agent-runtime.ts";
 import { summarizeSlug } from "../agents/agent-runtime.ts";
 import { ChangeTracker, setActiveTracker } from "../tracking.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 export const setupStage: Stage = {
 	id: "setup",
@@ -34,7 +35,7 @@ export const setupStage: Stage = {
 		if (setup.reusedTrack) {
 			let anchorPreview = "";
 			try {
-				anchorPreview = readFileSync(join(setup.specDirectory, ".task"), "utf8").slice(0, 100).replace(/\s+/g, " ");
+				anchorPreview = readFileSync(stateFileFor(setup.specDirectory, ".task"), "utf8").slice(0, 100).replace(/\s+/g, " "); // 063 S2
 			} catch { /* anchor absent — containment-only match */ }
 			ctx.log(`Setup: reusing spec track ${setup.specIdentifier} (task similarity match${anchorPreview ? `; anchor: \"${anchorPreview}\"…` : ""}) — prior docs, knowledge and user notes preserved; convergence ledger restarts; the STALE resume cache was truncated for this fresh entry (sweep-3 SETUP-4 honesty: use --resume to REPLAY a dead run instead); set SUPER_DEV_NO_SPEC_REUSE=1 to force a fresh track`);
 		}

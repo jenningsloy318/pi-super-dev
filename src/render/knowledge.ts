@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { stateFileFor } from "../state/state-root.ts";
 
 interface KnowledgeFile {
 	stages: Record<string, {
@@ -28,7 +29,7 @@ const EMPTY: KnowledgeFile = { stages: {} };
 
 /** Path to .knowledge.json in a spec directory. */
 export function knowledgePath(specDir: string): string {
-	return join(specDir, ".knowledge.json");
+	return stateFileFor(specDir, ".knowledge.json");
 }
 
 /** Clear knowledge at pipeline start (fresh run). */

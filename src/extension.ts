@@ -49,6 +49,7 @@ export * as nodes from "./nodes.ts";
 export { runWorkflow } from "./workflow.ts";
 export { SUPER_DEV_VERSION_METADATA, SUPER_DEV_EXTENSION_VERSION, SUPER_DEV_VERSION_POLICY, superDevVersionLabel } from "./version.ts";
 import { checkServingFreshness, SERVING_EXTENSION_DIR, servingVersionLine } from "./serving-freshness.ts";
+import { eventsPath } from "./runlog.ts";
 
 const SUPER_DEV_TOOL = "super_dev";
 const SUPER_DEV_COMMAND = "super-dev";
@@ -1061,7 +1062,7 @@ export default function activate(pi: ExtensionAPI): void {
 								metricsRow: frame,
 								artifactPaths: {
 									runLog: logPath,
-									eventsJsonl: summary.specDirectory ? `${summary.specDirectory}/events.jsonl` : undefined,
+									eventsJsonl: summary.specDirectory ? eventsPath(summary.specDirectory) : undefined, // 063 S2 — the ONE resolution (external store)
 									specDir: summary.specDirectory || undefined,
 								},
 							});

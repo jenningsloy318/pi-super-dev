@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.4.7: 063 Wave S2 — census 全量重定向 + 迁移/对账 + 外部 resume 扫描
+
+**English — 063 Wave S2: the full census redirect.** Every spec-dir state resolution site now routes through `stateFileFor` — plain joins, string concat (runlog `${base}${FILE}`), `.tmp` siblings (convergence-ledger), nested `user-input/` (stays in-tree per M3), containment-guarded and cwd-normalizing forms — 24 census rows, each pinned by a mechanical reader-sweep gate that caught 3 real misses during implementation and was extended (gate F3) with a const-indirection arm + nested-paren window so the drift class stays dead.
+
+- **D-S-D**: migration covers the full durable set (stateExternal − `.run-lock`, user-input/ excluded); orphan sweep wired at setup — P10-named, never deletes, `(projectKey, specId)`-scoped, `.complete`-bearing finished tracks exempt (ADV-1); external `findResumableSpec` scan with the §3.5 layout/content re-check — the branch TIP must contain the spec dir (`cat-file -e`, F5/ADV-2: branch-existence alone false-positives on runs that died before their first phase commit).
+- **Dual-gate folds (glm-5.3-flash: Code 1H+4M, Adversarial 2B+5A)**: **F1** — `artifact-revisions.json` split-brain closed (walker `bumpOwnerRevision` + revision-gate `revisionsFor` now read/write the same external home replan bumps; the raw in-spec join could green-skip the owner a replan just invalidated); **F2** — the revision-gate's journal existence precheck reads the funnel path (was permanently false post-migration, silently killing the MP4 fast-forward); **B1** — facts derive from `cwd` itself (the joined `docs/specifications` path ENOENT'd on every worktree-only repo — the default geometry — silently killing orphan discovery where the $59 class lives); **B2** — orphan resumes load the external `cachePath` directly (the funnel fail-closed on the absent spec dir ⇒ empty map ⇒ silent full re-run, the v0.4.3 cost shape resurrected), with a loud line when a resume loads 0 rows while the external cache is non-empty; **F4/ADV-1** — sweep/candidate layouts resolve under the MAIN checkout root (a run worktree checking its own tree false-named every sibling track on every setup); ADV-3 — post-move lock re-stat names the check-then-move race; ADV-5 — the pipeline pre-load migration's decisions reach the operator.
+
+**中文**:census 全量重定向收口——reader-sweep 机械门钉住 24 行(实现中抓到 3 个真漏网点，门语法随后加臂)。双 gate 抓出的两个 BLOCKER:worktree-only 仓库(默认几何！)的孤儿发现被 ENOENT 静默杀死(B1)、孤儿恢复读不到外部缓存导致静默全量重跑(B2,正是 v0.4.3 的成本形态复活)——均已修复并配 fixture。
+
 ### Added — v0.4.6: 063 Wave S1 — 外部状态存储地基（state-root + registry split + .resume-cache 全 toucher 原子迁移）
 
 **English — 063 Wave S1: the external state-store foundation.** Closes the v0.4.3 truncation class at its head: `.resume-cache.jsonl` now lives at `~/.super-dev/state/<project-key>/<spec-id>/`, out of reach of `git add -A` / `reset --hard` by construction (real-git fixture reproduces the incident and asserts the external cache survives byte-identical).

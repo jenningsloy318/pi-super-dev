@@ -64,6 +64,7 @@ import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../
 import { buildProtectionEducationBlock, bumpProtectionStrike, detectProtectionViolations, deriveProtectionInterval, PROTECTION_STRIKE_BOUND, resetProtectionStrike, reviveProtectionInterval, serializeProtectionInterval, type ProtectionInterval } from "./protection-interval.ts";
 import { consumeProtectionBreachEscalation } from "../review/protection-breach-consumer.ts";
 import { captureStageEntryBaseline, laterPhasesRan, reapplyRollbackStash, rollbackConvergenceReentry } from "./checkpoint-rollback.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red" | "weakened-preexisting-test";
 
@@ -489,7 +490,7 @@ function appendImplementationEvidence(specDir: string | undefined, evidence: Red
 	if (!specDir) return;
 	try {
 		mkdirSync(specDir, { recursive: true });
-		appendFileSync(join(specDir, "implementation-evidence.jsonl"), JSON.stringify({ ts: localTimestamp(), ...evidence }) + "\n");
+		appendFileSync(stateFileFor(specDir, "implementation-evidence.jsonl"), JSON.stringify({ ts: localTimestamp(), ...evidence }) + "\n");
 	} catch { /* evidence is best-effort */ }
 }
 
@@ -2716,7 +2717,7 @@ export const implementationStage: Stage = {
 							ctx.log(`Implementation ${phaseId} runner-cache: cached runner does not execute this phase's test files (${testFiles.join(", ")}) — cache invalidated; runner-discovery will re-propose`);
 							runnerSpec = null;
 							runnerDiscoveryTried = false;
-							try { rmSync(join(setup.specDirectory, "test-runner.json"), { force: true }); } catch { /* best effort */ }
+							try { rmSync(stateFileFor(setup.specDirectory, "test-runner.json"), { force: true }); } catch { /* best effort */ }
 						}
 						redStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, redDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
 						ctx.log(`Implementation ${phaseId} red-oracle: ${redStatus} (ran: ${testFiles.join(",") || "n/a"})`);
@@ -2872,7 +2873,7 @@ export const implementationStage: Stage = {
 						// cache and surfaces honestly as red-unverified instead.
 						if (runnerSpec && redStatus === "unknown" && redDiagnostics.some((d) => d.error)) {
 							runnerSpec = null;
-							try { rmSync(join(setup.specDirectory, "test-runner.json"), { force: true }); } catch { /* best effort */ }
+							try { rmSync(stateFileFor(setup.specDirectory, "test-runner.json"), { force: true }); } catch { /* best effort */ }
 							ctx.log(`Implementation ${phaseId} runner-cache: cached runner failed to spawn — cache invalidated; a later phase may rediscover`);
 						}
 						if (redEvidence.status === "red-behavior-failure" && expectedScenarios.length > 0) {

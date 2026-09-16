@@ -162,13 +162,34 @@ const failClosedWarned = new Set<string>();
  */
 export function stateFileFor(specDirectory: string, fileBasename: string): string {
 	const dir = specStateDir(specDirectory);
-	if (dir !== null) return join(dir, fileBasename);
+	if (dir !== null) {
+		// 063 S2: the external home is born lazily — writers historically
+		// relied on the spec dir pre-existing (setup always created it), but
+		// the external dir only exists after a migration or a prior write.
+		// One spelling (P6): mkdir HERE instead of pairing every writer with
+		// a manual mkdir (idempotent recursive mkdir, ~2 syscalls when warm;
+		// documented deviation from purity — the fail-closed fallback below
+		// needs no mkdir, spec dirs pre-exist).
+		if (!existsSync(dir)) { try { mkdirSync(dir, { recursive: true }); } catch { /* read callers proceed; the write's own error is honest */ } }
+		return join(dir, fileBasename);
+	}
 	const norm = specDirectory.replace(/\\/g, "/").replace(/\/+$/, "");
 	if (!failClosedWarned.has(norm)) {
 		failClosedWarned.add(norm);
 		console.warn(`[state-root] external state UNAVAILABLE for ${specDirectory} (git resolution failed — fail-closed per 063 M5): runtime state stays IN-SPEC at ${join(specDirectory, fileBasename)}`);
 	}
 	return join(specDirectory, fileBasename);
+}
+
+/**
+ * 063 S2: the LEGACY in-spec home spelling — for the pre-S1 read-side bridge
+ * (resume.ts B1) which deliberately reads the file WHERE OLD RUNS LEFT IT,
+ * not the funnel target. The funnel module owns this spelling so the
+ * reader-sweep gate can stay strict (zero raw joins outside state-root).
+ */
+export function legacyInSpecPath(specDirectory: string, fileBasename: string): string {
+	const norm = specDirectory.replace(/\\/g, "/").replace(/\/+$/, "");
+	return join(norm, fileBasename);
 }
 
 /** Whether the external store is active for this spec dir (migration + geometry callers). */
@@ -357,6 +378,18 @@ export function migrateInSpecState(specDirectory: string, basenames: string[], l
 		out.migrations.push({ basename: fileBasename, action: "refused-content-tie" });
 		say(`state migration REFUSED for ${fileBasename}: equal mtime, DIFFERING bytes — ambiguous recency, refusing to merge or discard. Both files kept; external is the live read path. Resolve manually: ${inSpec} vs ${external}`);
 	}
+	// Gate ADV-3 fold: the lock precondition is check-then-move, not atomic —
+	// an old-code run can acquire the IN-SPEC lock inside the move window and
+	// its appends would land in a file the rename already consumed. We cannot
+	// undo that, but we can NAME it (P10): if an in-spec lock appeared while
+	// we were moving, say so loudly.
+	if (out.migrations.length > 0) {
+		try {
+			if (existsSync(join(specDirectory, ".run-lock"))) {
+				say(`state migration WARNING: in-spec .run-lock appeared DURING the move window — a pre-S1 code path may have been writing concurrently; check that run before trusting the migrated rows (063 H2 accepted race, now named)`);
+			}
+		} catch { /* best-effort naming */ }
+	}
 	return out;
 }
 
@@ -365,11 +398,11 @@ export function migrateInSpecState(specDirectory: string, basenames: string[], l
 /**
  * Walk <stateRoot>/<projectKey>/<specId> and NAME every spec-id whose spec
  * directory is absent (the $59 orphan made visible). Never deletes anything.
- * The existsSpecDir predicate is the caller's (S2 wires the real layout check
- * AND rescopes this to (projectKey, specId) — adversarial A7: a bare specId
- * predicate is unanswerable for a multi-project root; no S1 caller by design).
+ * A7 (adversarial, S2): the predicate is (projectKey, specId) — a bare
+ * specId is unanswerable for a multi-project root (two repos may share a
+ * spec-id string); the project key disambiguates.
  */
-export function sweepStateOrphans(stateRoot: string, existsSpecDir: (specId: string) => boolean): { orphans: string[]; lines: string[] } {
+export function sweepStateOrphans(stateRoot: string, existsSpecDir: (projectKey: string, specId: string) => boolean): { orphans: string[]; lines: string[] } {
 	const orphans: string[] = [];
 	const lines: string[] = [];
 	if (!existsSync(stateRoot)) return { orphans, lines };
@@ -380,9 +413,13 @@ export function sweepStateOrphans(stateRoot: string, existsSpecDir: (specId: str
 			projects++;
 			const specIds = readdirSync(join(stateRoot, p.name), { withFileTypes: true }).filter((d) => d.isDirectory());
 			for (const s of specIds) {
-				if (!existsSpecDir(s.name)) {
+				// P10/noise guard: an EMPTY state dir is not state — read-probes
+				// through stateFileFor lazily mkdir, so a mere isResumable check
+				// on a never-run track leaves a hollow dir behind. Never name it.
+				try { if (readdirSync(join(stateRoot, p.name, s.name)).length === 0) continue; } catch { /* unreadable — treat as candidate below */ }
+				if (!existsSpecDir(p.name, s.name)) {
 					orphans.push(`${p.name}/${s.name}`);
-					lines.push(`state orphan: ${join(stateRoot, p.name, s.name)} — external state exists but no spec directory matches spec-id "${s.name}" (a deleted worktree's run? NOT deleted; potentially re-attachable — 063 §3.5, DEC-7)`);
+					lines.push(`state orphan: ${join(stateRoot, p.name, s.name)} — external state exists but no spec directory matches (project ${p.name}, spec-id "${s.name}" — a deleted worktree's run? NOT deleted; potentially re-attachable — 063 §3.5, DEC-7)`);
 				}
 			}
 		}
@@ -391,6 +428,103 @@ export function sweepStateOrphans(stateRoot: string, existsSpecDir: (specId: str
 	}
 	lines.push(`state orphan sweep: ${projects} project(s), ${orphans.length} orphan(s) named`);
 	return { orphans, lines };
+}
+
+/**
+ * 063 S2 (D-S-D): the repo-scoped sweep entry point — derives THIS repo's
+ * project key from `cwd` and names orphans whose spec dir is absent from BOTH
+ * layouts (<cwd>/.worktree/<id>/docs/specifications/<id> and
+ * <cwd>/docs/specifications/<id>). Detect-and-report ONLY (DEC-7): no
+ * deletion, no archival — the log line IS the deliverable.
+ */
+export function sweepStateOrphansForRepo(cwd: string, log?: (line: string) => void): { orphans: string[]; lines: string[] } {
+	// Gate F4/B1 fold: derive facts from cwd ITSELF — joining a maybe-absent
+	// docs/specifications made git -C fail (ENOENT) on every worktree-only
+	// repo (the DEFAULT geometry), silently disabling the sweep.
+	const facts = repoFactsFor(cwd);
+	const root = stateRootBase();
+	const key = facts?.projectKey;
+	if (!key) {
+		const line = `state orphan sweep: skipped — external state unavailable for ${cwd} (git resolution fail-closed; 063 M5)`;
+		log?.(line);
+		return { orphans: [], lines: [line] };
+	}
+	// Gate F4/ADV-1 fold: layouts live under the MAIN checkout, not the run's
+	// worktree — with cwd = a run worktree, sibling tracks' spec dirs are in
+	// the main tree and EVERY one false-named as an orphan. NOTE:
+	// commonDirCanonical is ALREADY the main checkout root (repoFactsFor
+	// stores dirname(.git)); no further dirname.
+	const mainRoot = facts.commonDirCanonical;
+	const existsSpecDir = (projectKey: string, specId: string): boolean => {
+		if (projectKey !== key) return true; // another repo's tracks are NOT this repo's orphans
+		// ADV-1: a state dir bearing an external .complete is a FINISHED track
+		// whose spec dir was legitimately cleaned — never an orphan.
+		if (existsSync(join(root, projectKey, specId, ".complete"))) return true;
+		return existsSync(join(mainRoot, ".worktree", specId, "docs", "specifications", specId)) || existsSync(join(mainRoot, "docs", "specifications", specId));
+	};
+	const out = sweepStateOrphans(root, existsSpecDir);
+	for (const l of out.lines) log?.(l);
+	return out;
+}
+
+/**
+ * 063 S2 (D-S-D): external resume candidates for THIS repo — spec-ids with a
+ * non-empty external resume cache, no external .complete, and NO spec dir
+ * found by the normal scans. Layout/content re-check (spec §3.5 / grill M4):
+ * a candidate surfaces ONLY with layout-consistent evidence — the spec
+ * branch <spec-id> exists in the repo (the worktree can be re-created:
+ * createOrReuseWorktree re-adds it from the branch, L3's "resumable when the
+ * branch survived"); branch-less candidates are visible-only orphans (named
+ * by the sweep, never surfaced as resumable — no false resumes).
+ */
+export function externalResumeCandidates(cwd: string): { id: string; externalDir: string; cachePath: string; notes: string[] }[] {
+	// Gate B1 fold: facts from cwd ITSELF — a worktree-only repo (the default)
+	// has no <root>/docs/specifications parent, and git -C on the joined path
+	// failed ENOENT → [] silently, killing orphan discovery exactly where the
+	// $59 class lives.
+	const notes: string[] = [];
+	const facts = repoFactsFor(cwd);
+	if (!facts) return [];
+	const dir = join(stateRootBase(), facts.projectKey);
+	if (!existsSync(dir)) return [];
+	const out: { id: string; externalDir: string; cachePath: string; notes: string[] }[] = [];
+	for (const e of readdirSync(dir, { withFileTypes: true })) {
+		if (!e.isDirectory()) continue;
+		const specDir = join(dir, e.name);
+		const cache = join(specDir, ".resume-cache.jsonl");
+		const complete = join(specDir, ".complete");
+		try {
+			if (existsSync(complete)) continue;
+			if (!existsSync(cache) || readFileSync(cache, "utf8").trim() === "") continue;
+			// covered by the normal scans? (either layout — under the MAIN
+			// checkout root, gate F4 fold: a run worktree checking its own tree
+			// would miss every sibling; commonDirCanonical IS that root)
+			const mainRoot = facts.commonDirCanonical;
+			if (existsSync(join(mainRoot, ".worktree", e.name, "docs", "specifications", e.name))) continue;
+			if (existsSync(join(mainRoot, "docs", "specifications", e.name))) continue;
+			// Layout/content re-check (spec §3.5, gate F5/ADV-2 fold): branch
+			// existence alone is too weak — a run that died BEFORE its first
+			// phase commit leaves the branch at the default tip (no spec dir in
+			// its tree) and would surface a false-positive resume. The branch
+			// TIP must contain the spec dir: that is createOrReuseWorktree's
+			// actual re-creation source, so tip-content ≡ recoverable content.
+			const specDirInBranchTip = (() => {
+				try {
+					execFileSync("git", ["-C", cwd, "cat-file", "-e", `refs/heads/${e.name}:docs/specifications/${e.name}`], { stdio: ["ignore", "pipe", "ignore"] });
+					return true;
+				} catch { return false; }
+			})();
+			if (!specDirInBranchTip) {
+				notes.push(`external resume candidate ${e.name}: branch exists but its tip lacks docs/specifications/${e.name} — visible-only (no first phase commit); not surfaced for resume (063 §3.5 content re-check)`);
+				continue;
+			}
+			out.push({ id: e.name, externalDir: specDir, cachePath: cache, notes });
+		} catch (err) {
+			// ADV-5 fold: silent drops are P10 violations — name the skip.
+			notes.push(`external resume candidate skipped (unreadable state dir): ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	return out;
 }
 
 /** Test seam: clear the one-time fail-closed warn set between fixtures. */

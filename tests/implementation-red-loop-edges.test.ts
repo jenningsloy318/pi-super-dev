@@ -76,6 +76,7 @@ vi.mock("../src/render/render.ts", () => ({
 
 import { implementationStage } from "../src/stages/implementation.ts";
 import { runRedCheck, runBuildGate } from "../src/build-runner.ts";
+import { stateFileFor } from "../src/state/state-root.ts";
 
 const redCheck = runRedCheck as unknown as ReturnType<typeof vi.fn>;
 const buildGate = runBuildGate as unknown as ReturnType<typeof vi.fn>;
@@ -612,7 +613,7 @@ describe("P3 edges — RED pollution is detected and rolled back", () => {
 			expect(res.allGreen).toBe(false);
 			expect(logs.some((l) => /red-polluted/i.test(l))).toBe(true);
 			expect(existsSync(join(dir, "src", "prod.ts"))).toBe(false);
-			const evidence = readFileSync(join(state.setup!.specDirectory, "implementation-evidence.jsonl"), "utf8");
+			const evidence = readFileSync(stateFileFor(state.setup!.specDirectory, "implementation-evidence.jsonl"), "utf8");
 			expect(evidence).toMatch(/"status":"polluted-red"/);
 			expect(evidence).toMatch(/src\/prod\.ts/);
 		} finally {
@@ -637,7 +638,7 @@ describe("P3 edges — RED pollution is detected and rolled back", () => {
 			expect(res.allGreen).toBe(true);
 			expect(res.phasesCompleted).toBe(1);
 			expect(logs.some((l) => /RED already-satisfied: build=true, deliverables=true/i.test(l))).toBe(true);
-			const evidence = readFileSync(join(state.setup!.specDirectory, "implementation-evidence.jsonl"), "utf8");
+			const evidence = readFileSync(stateFileFor(state.setup!.specDirectory, "implementation-evidence.jsonl"), "utf8");
 			expect(evidence).toMatch(/"status":"green-already-satisfied"/);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

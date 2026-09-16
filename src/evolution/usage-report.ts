@@ -22,6 +22,7 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UsageAccumulator, UsageCallRow } from "../types.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 type Bucket = NonNullable<UsageAccumulator["byAgent"][string]>;
 
@@ -48,7 +49,7 @@ export function stageKey(id: string): string {
 export function appendUsageCallRows(specDir: string | undefined, rows: UsageCallRow[]): void {
 	if (!specDir || rows.length === 0) return;
 	try {
-		appendFileSync(join(specDir, "usage-calls.jsonl"), rows.map((r) => JSON.stringify(r) + "\n").join(""), "utf8");
+		appendFileSync(stateFileFor(specDir, "usage-calls.jsonl"), rows.map((r) => JSON.stringify(r) + "\n").join(""), "utf8"); // 063 S2
 	} catch { /* best-effort observability (P5) */ }
 }
 

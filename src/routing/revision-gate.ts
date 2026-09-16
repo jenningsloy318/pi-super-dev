@@ -30,7 +30,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PipelineState, StageContext } from "../types.ts";
 import { ARTIFACT_REVISIONS_FILE, pendingReplanRequests } from "../replan/replan.ts";
-import { readRoutingJournal, ROUTING_JOURNAL_FILE } from "./journal.ts";
+import { readRoutingJournal, ROUTING_JOURNAL_FILE,  routingJournalPath } from "./journal.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 /** Recorded at genuine approval (incl. duty-override; NOT accept-limitation —
  *  that is a user-forced pass with open blockers and must re-converge). */
@@ -39,7 +40,9 @@ export interface ConvergedRevision {
 }
 
 function revisionsFor(specDir: string): Record<string, number> {
-	const path = join(specDir, ARTIFACT_REVISIONS_FILE);
+	// Gate F1 fold (063 S2): same home as bumpOwnerRevision (walker) and
+	// replan's external bump — a raw in-spec join read a stale view.
+	const path = stateFileFor(specDir, ARTIFACT_REVISIONS_FILE);
 	if (!existsSync(path)) return {};
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, number>;
@@ -79,7 +82,11 @@ export function revisionGateFastForward(
 	if (!specDir) return false;
 	// (1) inert without a jump on this track (G8 byte-identity for fresh and
 	// kill-switch runs — those never journal).
-	if (!existsSync(join(specDir, ROUTING_JOURNAL_FILE))) return false;
+	// Gate F2 fold (063 S2): the existence precheck must look at the SAME
+	// home the reader uses (the funnel/external path) — the raw in-spec join
+	// was permanently false post-migration, silently killing the MP4
+	// fast-forward on every migrated track.
+	if (!existsSync(routingJournalPath(specDir))) return false;
 	const journal = readRoutingJournal(specDir);
 	if (journal.entries.length === 0) return false;
 	// (2) converged earlier in THIS process?

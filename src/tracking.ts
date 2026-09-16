@@ -43,6 +43,7 @@ import { join } from "node:path";
 
 import { dedupePreservingOrder, resolveTimeoutMs } from "./build-runner.ts";
 import { harnessBasenames } from "./harness-paths.ts";
+import { stateFileFor } from "./state/state-root.ts";
 
 /** Bracketing granularity: a pipeline `stage` or an implementation `phase`. */
 export type TrackerUnit = "stage" | "phase";
@@ -619,7 +620,7 @@ export class ChangeTracker {
 	private appendRecord(record: ChangeRecord): void {
 		try {
 			mkdirSync(this.specDir, { recursive: true });
-			appendFileSync(join(this.specDir, TRACKER_FILENAME), `${JSON.stringify(record)}\n`, "utf8");
+			appendFileSync(stateFileFor(this.specDir, TRACKER_FILENAME), `${JSON.stringify(record)}\n`, "utf8"); // 063 S2 (the mkdir above covers the in-tree fallback; the external funnel mkdirs its own)
 		} catch {
 			// Append-only persistence is best-effort: NEVER throw from the
 			// tracker (the in-memory record returned to the caller is still

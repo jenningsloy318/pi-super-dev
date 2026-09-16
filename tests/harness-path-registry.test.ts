@@ -195,6 +195,8 @@ describe("v0.3.74 P1-a — harness-file registry is the single source of truth",
 			specDirBookkeeping: true,
 			phaseCommitExcluded: true,
 			neverGitTracked: true,
+			// 063 S2: the durable external home (Class R/M) — full census in tests/state-root-s2.test.ts.
+			stateExternal: true,
 		});
 	});
 

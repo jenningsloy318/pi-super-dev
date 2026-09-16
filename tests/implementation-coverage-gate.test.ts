@@ -30,6 +30,7 @@ vi.mock("../src/build-runner.ts", async (importOriginal) => {
 vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 
 import { implementationStage } from "../src/stages/implementation.ts";
+import { stateFileFor } from "../src/state/state-root.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) { try { rmSync(d, { recursive: true, force: true }); } catch { /* ok */ } } });
@@ -47,7 +48,7 @@ function makeRepo(): { repo: string; specDir: string } {
 	const specDir = join(repo, "docs", "specifications", "covit") + "/";
 	mkdirSync(specDir, { recursive: true });
 	// The validated runner cache (normally written by runner-discovery).
-	writeFileSync(join(specDir, "test-runner.json"), JSON.stringify({
+	writeFileSync(stateFileFor(specDir, "test-runner.json"), JSON.stringify({
 		version: 1,
 		command: "node --test --test-reporter=tap tests/big.test.mjs",
 		resultFormat: "tap",
@@ -164,7 +165,7 @@ describe("v0.3.49 — coverage hard gate inside the implementation stage (real r
 	it("unmeasurable runner family: phase still greens (fail-open) with a loud ledger advisory", async () => {
 		const { repo, specDir } = makeRepo();
 		mkdirSync(join(repo, "src"), { recursive: true });
-		writeFileSync(join(specDir, "test-runner.json"), JSON.stringify({
+		writeFileSync(stateFileFor(specDir, "test-runner.json"), JSON.stringify({
 			version: 1,
 			command: "pytest tests/",
 			resultFormat: "console",

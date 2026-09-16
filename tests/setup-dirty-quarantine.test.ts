@@ -57,6 +57,7 @@ import { runSetup, releaseHeldRunLock } from "../src/setup.ts";
 import { HARNESS_BOOKKEEPING_FILES } from "../src/helpers.ts";
 import { DIRTY_QUARANTINE_KILL_SWITCH } from "../src/fault-classification.ts";
 import { stateFileFor } from "../src/state/state-root.ts";
+import { externalMigrateBasenames } from "../src/harness-paths.ts";
 
 /** Pass-through child_process argv recorder (T1.5 / rc8-rc12 cpMock pattern):
  *  every spawnSync AND execFileSync call is recorded, then delegated to the
@@ -171,7 +172,7 @@ function reenter(d: string, opts: { resume?: boolean } = {}): { setup: ReturnTyp
 }
 
 function readLedger(wt: string): Array<Record<string, unknown>> {
-	const text = readFileSync(join(wt, SPEC_DIR_REL, ".environment-faults.jsonl"), "utf8");
+	const text = readFileSync(stateFileFor(join(wt, SPEC_DIR_REL), ".environment-faults.jsonl"), "utf8"); // 063 S2
 	return text.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
@@ -270,10 +271,10 @@ describe("T5.2 — exclusions preserved; fresh tracks and the main checkout unto
 			// 063 S1: stateExternal members (.resume-cache.jsonl, .run-lock) live at
 			// the EXTERNAL state root post-migration — assert survival THERE; the
 			// in-tree members keep their in-dir assertion.
-			// S1 scope: only the PROOF basename (.resume-cache.jsonl) migrates in
-			// this wave; the rest of the stateExternal set keeps its in-tree home
-			// until S2 redirects their resolution sites (spec §7 Wave S1).
-			const migrated = new Set([".resume-cache.jsonl"]);
+			// 063 S2: the FULL durable set migrates (externalMigrateBasenames —
+			// stateExternal minus .run-lock; user-input/ is a directory, never a
+			// basename, and stays in-tree per the M3 ruling).
+			const migrated = new Set(externalMigrateBasenames());
 			for (const name of HARNESS_BOOKKEEPING_FILES) {
 				if (migrated.has(name)) {
 					expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(false); // migrated out
@@ -398,7 +399,7 @@ describe("T5.4 — kill-switch at setup: detection warning, worktree untouched (
 			expect(warn).toContain("scratch.txt");
 			expect(logs.some((l) => l.includes("Setup quarantined foreign uncommitted state"))).toBe(false);
 			// detection only — no ledger record was minted
-			expect(existsSync(join(wt, SPEC_DIR_REL, ".environment-faults.jsonl"))).toBe(false);
+			expect(existsSync(stateFileFor(join(wt, SPEC_DIR_REL), ".environment-faults.jsonl"))).toBe(false); // 063 S2
 		} finally {
 			releaseHeldRunLock();
 			rmSync(d, { recursive: true, force: true });
@@ -428,10 +429,10 @@ describe("T5.5 — end-to-end pathspec safety (SCENARIO-028 · AC-13)", () => {
 			// 063 S1: stateExternal members (.resume-cache.jsonl, .run-lock) live at
 			// the EXTERNAL state root post-migration — assert survival THERE; the
 			// in-tree members keep their in-dir assertion.
-			// S1 scope: only the PROOF basename (.resume-cache.jsonl) migrates in
-			// this wave; the rest of the stateExternal set keeps its in-tree home
-			// until S2 redirects their resolution sites (spec §7 Wave S1).
-			const migrated = new Set([".resume-cache.jsonl"]);
+			// 063 S2: the FULL durable set migrates (externalMigrateBasenames —
+			// stateExternal minus .run-lock; user-input/ is a directory, never a
+			// basename, and stays in-tree per the M3 ruling).
+			const migrated = new Set(externalMigrateBasenames());
 			for (const name of HARNESS_BOOKKEEPING_FILES) {
 				if (migrated.has(name)) {
 					expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(false); // migrated out
@@ -442,7 +443,7 @@ describe("T5.5 — end-to-end pathspec safety (SCENARIO-028 · AC-13)", () => {
 				}
 			}
 			expect(readFileSync(join(wt, ".env"), "utf8")).toBe("SECRET=1\n");
-			expect(existsSync(join(wt, SPEC_DIR_REL, ".task"))).toBe(true);
+			expect(existsSync(stateFileFor(join(wt, SPEC_DIR_REL), ".task"))).toBe(true); // 063 S2: external home
 		} finally {
 			releaseHeldRunLock();
 			rmSync(d, { recursive: true, force: true });
@@ -494,7 +495,7 @@ describe("T6.1 — setup surfaces the prior-fault count iff the ledger exists (S
 	it("FIX (RED pre-fix): re-entry with a pre-seeded 3-line ledger ⇒ the informational count line with the correct N", () => {
 		// Clean re-entry (no dirt ⇒ no quarantine) isolates the count line.
 		const { d, wt } = enteredTrack({ dirt: false });
-		const ledgerPath = join(wt, SPEC_DIR_REL, ".environment-faults.jsonl");
+		const ledgerPath = stateFileFor(join(wt, SPEC_DIR_REL), ".environment-faults.jsonl"); // 063 S2
 		writeFileSync(ledgerPath, `${JSON.stringify({ kind: "quarantine", paths: ["a"], stashRef: "s", reason: "r" })}\n`.repeat(3));
 		try {
 			const { setup, logs } = reenter(d);
@@ -555,7 +556,7 @@ describe("T6.3 — unwritable ledger at setup: the run proceeds plainly, never f
 	it("PIN: re-entry with dirt where the ledger is unwritable (chmod 0o444, skipped as root) ⇒ runSetup completes normally, the quarantine still succeeded (stash exists), the /ledger append failed/ warning is logged, and the ledger is left uncorrupted", () => {
 		if (process.getuid?.() === 0) return; // root ignores 0o444
 		const { d, wt } = enteredTrack({ dirt: true });
-		const ledgerPath = join(wt, SPEC_DIR_REL, ".environment-faults.jsonl");
+		const ledgerPath = stateFileFor(join(wt, SPEC_DIR_REL), ".environment-faults.jsonl"); // 063 S2
 		writeFileSync(ledgerPath, `${JSON.stringify({ kind: "quarantine", paths: ["seed"], stashRef: "seed", reason: "seed" })}\n`);
 		chmodSync(ledgerPath, 0o444);
 		try {

@@ -21,7 +21,7 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statS
 import { dirname, join } from "node:path";
 import type { AgentCall, AgentResult } from "./types.ts";
 import { extractControl } from "./control.ts";
-import { stateFileFor } from "./state/state-root.ts";
+import { stateFileFor, externalResumeCandidates, legacyInSpecPath } from "./state/state-root.ts";
 
 /** 063 S1: the cache basename's ONE canonical spelling at its funnel (the
  *  literal consolidation root — replan.ts and setup.ts import THIS, never
@@ -90,10 +90,19 @@ export function ensureResumeCacheTombstone(specDir: string): void {
 }
 
 export function loadResumeCache(specDir: string): Map<string, AgentResult> {
+	return loadResumeCacheFromPath(resumeCachePath(specDir));
+}
+
+/** Gate B2 fold (063 S2): load rows from an EXPLICIT cache path — an orphan
+ *  candidate's spec dir is absent (that is its defining condition), so the
+ *  funnel fail-closes and the normal loader would read a nonexistent in-spec
+ *  path (empty map ⇒ silent full re-run, the v0.4.3 cost shape resurrected).
+ *  The external cachePath is threaded here instead. */
+export function loadResumeCacheFromPath(cachePath: string): Map<string, AgentResult> {
 	const map = new Map<string, AgentResult>();
 	let raw: string;
 	try {
-		raw = readFileSync(resumeCachePath(specDir), "utf8");
+		raw = readFileSync(cachePath, "utf8");
 	} catch {
 		return map; // no cache → nothing to resume
 	}
@@ -115,8 +124,9 @@ export function loadResumeCache(specDir: string): Map<string, AgentResult> {
 export function clearResumeCache(specDir: string): void {
 	try {
 		if (existsSync(resumeCachePath(specDir))) writeFileSync(resumeCachePath(specDir), "");
-		if (existsSync(join(specDir, COMPLETE_FILE))) return; // already marked
-		writeFileSync(join(specDir, COMPLETE_FILE), new Date().toISOString());
+		const completePath = stateFileFor(specDir, COMPLETE_FILE); // 063 S2
+		if (existsSync(completePath)) return; // already marked
+		writeFileSync(completePath, new Date().toISOString());
 	} catch { /* best-effort */ }
 }
 
@@ -124,7 +134,7 @@ export function clearResumeCache(specDir: string): void {
 
 /** A spec dir is complete (don't resume) if it has a `.complete` marker. */
 export function isComplete(specDir: string): boolean {
-	return existsSync(join(specDir, COMPLETE_FILE));
+	return existsSync(stateFileFor(specDir, COMPLETE_FILE)); // 063 S2
 }
 
 /** Resumable = has a non-empty cache AND no completion marker.
@@ -139,7 +149,7 @@ export function isResumable(specDir: string): boolean {
 		return raw.trim().length > 0;
 	} catch { /* external absent — try the pre-S1 in-spec home (read-only) */
 		try {
-			const raw = readFileSync(join(specDir.endsWith("/") ? specDir.slice(0, -1) : specDir, RESUME_CACHE_BASENAME), "utf8");
+			const raw = readFileSync(legacyInSpecPath(specDir, RESUME_CACHE_BASENAME), "utf8");
 			return raw.trim().length > 0;
 		} catch {
 			return false;
@@ -157,7 +167,7 @@ export function findResumableSpec(cwd: string): string | undefined {
 				candidates.push({ id, mtime: statSync(resumeCachePath(specDir)).mtimeMs });
 			} catch {
 				// B1 bridge: pre-S1 in-spec cache — stat that for recency
-				try { candidates.push({ id, mtime: statSync(join(specDir.endsWith("/") ? specDir.slice(0, -1) : specDir, RESUME_CACHE_BASENAME)).mtimeMs }); } catch { /* ignore */ }
+				try { candidates.push({ id, mtime: statSync(legacyInSpecPath(specDir, RESUME_CACHE_BASENAME)).mtimeMs }); } catch { /* ignore */ }
 			}
 		}
 	};
@@ -170,6 +180,16 @@ export function findResumableSpec(cwd: string): string | undefined {
 	const specsRoot = join(cwd, "docs", "specifications");
 	if (existsSync(specsRoot)) {
 		for (const id of readdirSync(specsRoot)) consider(`${join(specsRoot, id)}/`, id);
+	}
+	// 063 S2 (D-S-D): the EXTERNAL scan — a run whose spec dir died with its
+	// worktree but whose state (and branch) survived. Candidates carry the
+	// layout/content re-check INSIDE externalResumeCandidates (the branch is
+	// the recoverable-content evidence — createOrReuseWorktree re-creates the
+	// tree from it; branch-less orphans are named by the sweep, never resumed).
+	for (const cand of externalResumeCandidates(cwd)) {
+		if (!candidates.some((c) => c.id === cand.id)) {
+			try { candidates.push({ id: cand.id, mtime: statSync(cand.cachePath).mtimeMs }); } catch { /* ignore */ }
+		}
 	}
 	if (candidates.length === 0) return undefined;
 	candidates.sort((a, b) => b.mtime - a.mtime);

@@ -391,9 +391,13 @@ describe("063 S1 dual-gate folds", () => {
 		expect(existsSync(src)).toBe(false);
 	});
 
-	it("MED-2 — golden role sets: stateExternal = {resume-cache, run-lock}; renderedReport = the 5+1 report basenames", async () => {
+	it("MED-2 — golden role sets: stateExternal seeds + the renderedReport residual (S2 grew stateExternal — golden in s2 tests)", async () => {
 		const { harnessBasenames } = await import("../src/harness-paths.ts");
-		expect([...harnessBasenames("stateExternal")].sort()).toEqual([".resume-cache.jsonl", ".run-lock"]);
+		// S2 grew the set to the full durable class (R+M+H+E = 25); the golden
+	// copy lives in state-root-s2.test.ts — pin the S1 seeds remain.
+	expect([...harnessBasenames("stateExternal")].length).toBeGreaterThanOrEqual(25);
+	expect(harnessBasenames("stateExternal").has(".resume-cache.jsonl")).toBe(true);
+	expect(harnessBasenames("stateExternal").has(".run-lock")).toBe(true);
 		expect([...harnessBasenames("renderedReport")].sort()).toEqual([
 			"completion-audit.md",
 			"escalation-report-stagnation.md",

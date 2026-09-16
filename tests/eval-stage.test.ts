@@ -819,6 +819,11 @@ describe("tripwires (P4/P6/§7 部分 5 — deterministic source contracts)", ()
 		const allowed = new Set([
 			"node:crypto", "node:fs", "node:path", "typebox",
 			"./sigma-bands.ts", "./eval-layer.ts", "./eval-shared.ts", "../runlog.ts", "../render/super-dev-dir.ts", "../agents/agent-runtime.ts",
+			// 063 S2 gate F3: PATH RESOLUTION ONLY — stateFileFor locates the
+			// external home for read-only existence checks/display (its lazy
+			// mkdir of the state dir is the resolution side effect, not loop
+			// state mutation; eval writes nothing through it).
+			"../state/state-root.ts",
 		]);
 		for (const s of specifiers) expect(allowed.has(s), `unexpected import ${s} in eval-stage.ts (observational allowlist)`).toBe(true);
 		// Belt and braces: the mutation-suspect modules are named and banned.

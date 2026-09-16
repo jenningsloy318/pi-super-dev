@@ -37,6 +37,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TOOL_USAGE_BASENAME, type ToolUsageRow } from "./tool-usage.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 /** N (DEC-12): aggregate calls on one injected path beyond this count fire
  *  the advisory. A named constant, NOT an env key (README-documented). */
@@ -142,7 +143,7 @@ function normPath(p: string): string {
 export function readToolUsageRows(specDir: string): { rows: ToolUsageRow[]; malformedRows: number } {
 	let text: string;
 	try {
-		text = readFileSync(join(specDir, TOOL_USAGE_BASENAME), "utf8");
+		text = readFileSync(stateFileFor(specDir, TOOL_USAGE_BASENAME), "utf8"); // 063 S2
 	} catch {
 		return { rows: [], malformedRows: 0 };
 	}

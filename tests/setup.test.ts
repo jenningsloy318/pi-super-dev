@@ -200,16 +200,16 @@ describe("referenced-spec entry preserves the track (AC-02)", () => {
 			writeFileSync(join(d, "docs", "specifications", "24-auth-flow", "06-specification.md"), "# Spec\n");
 			const knowledgeBefore = JSON.stringify({ stages: { spec: { timestamp: "2026-08-16T00:00:00.000Z", summary: "token refresh uses rotating refresh tokens" } } }, null, 2) + "\n";
 			const notesBefore = JSON.stringify({ notes: ["keep the refresh TTL at 15m"] }, null, 2) + "\n";
-			writeFileSync(join(d, "docs", "specifications", "24-auth-flow", ".knowledge.json"), knowledgeBefore);
-			writeFileSync(join(d, "docs", "specifications", "24-auth-flow", ".user-notes.json"), notesBefore);
+			writeFileSync(stateFileFor(join(d, "docs", "specifications", "24-auth-flow"), ".knowledge.json"), knowledgeBefore); // 063 S2: external home
+			writeFileSync(stateFileFor(join(d, "docs", "specifications", "24-auth-flow"), ".user-notes.json"), notesBefore); // 063 S2
 			git(["add", "."], d);
 			git(["commit", "-m", "seed spec"], d);
 
 			const s = runSetup("implement @docs/specifications/24-auth-flow/ the token refresh changes", { cwd: d, skipWorktree: true });
 			expect(s.specIdentifier).toBe("24-auth-flow");
 			expect(s.reusedTrack).toBe(true); // H2: a referenced-spec entry is a continuation
-			expect(readFileSync(join(s.specDirectory, ".knowledge.json"), "utf8")).toBe(knowledgeBefore); // byte-identical
-			expect(readFileSync(join(s.specDirectory, ".user-notes.json"), "utf8")).toBe(notesBefore); // byte-identical
+			expect(readFileSync(stateFileFor(s.specDirectory, ".knowledge.json"), "utf8")).toBe(knowledgeBefore); // byte-identical (063 S2: external home)
+			expect(readFileSync(stateFileFor(s.specDirectory, ".user-notes.json"), "utf8")).toBe(notesBefore); // byte-identical (063 S2)
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -225,14 +225,14 @@ describe("referenced-spec entry preserves the track (AC-02)", () => {
 			// notes — a fresh track wipes them.
 			const specDir = join(d, ".worktree", "01-fresh-notes", "docs", "specifications", "01-fresh-notes");
 			mkdirSync(specDir, { recursive: true });
-			writeFileSync(join(specDir, ".knowledge.json"), JSON.stringify({ stages: { stale: { summary: "stale insight" } } }));
-			writeFileSync(join(specDir, ".user-notes.json"), JSON.stringify({ notes: ["stale human guidance"] }));
+			writeFileSync(stateFileFor(specDir, ".knowledge.json"), JSON.stringify({ stages: { stale: { summary: "stale insight" } } })); // 063 S2
+			writeFileSync(stateFileFor(specDir, ".user-notes.json"), JSON.stringify({ notes: ["stale human guidance"] })); // 063 S2
 
 			const s = runSetup("build a car theory html animation page", { cwd: d, slug: "fresh-notes" });
 			expect(s.specIdentifier).toBe("01-fresh-notes");
 			expect(s.reusedTrack ?? false).toBe(false); // fresh: the clear branch runs
-			expect(readFileSync(join(s.specDirectory, ".knowledge.json"), "utf8")).not.toContain("stale insight");
-			expect(readFileSync(join(s.specDirectory, ".user-notes.json"), "utf8")).not.toContain("stale human guidance");
+			expect(readFileSync(stateFileFor(s.specDirectory, ".knowledge.json"), "utf8")).not.toContain("stale insight"); // 063 S2
+			expect(readFileSync(stateFileFor(s.specDirectory, ".user-notes.json"), "utf8")).not.toContain("stale human guidance"); // 063 S2
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });
@@ -447,7 +447,7 @@ describe("spec-track reuse (G2)", () => {
 	function seedTrack(cwd: string, id: string, anchor?: string) {
 		const dir = join(cwd, ".worktree", id, "docs", "specifications", id);
 		mkdirSync(dir, { recursive: true });
-		if (anchor !== undefined) writeFileSync(join(dir, ".task"), anchor);
+		if (anchor !== undefined) writeFileSync(stateFileFor(dir, ".task"), anchor); // 063 S2
 		// reuse requires recorded progress (isResumable): a dead run's cache
 		writeFileSync(join(dir, ".resume-cache.jsonl"), JSON.stringify({ key: `pipeline.spec@root#1`, result: {} }) + "\n");
 		return dir;
@@ -532,7 +532,7 @@ describe("spec-track reuse (G2)", () => {
 		try {
 			const dir = join(d, "docs", "specifications", "12-step-e2e-dashboard");
 			mkdirSync(dir, { recursive: true });
-			writeFileSync(join(dir, ".task"), ORIG_TASK);
+			writeFileSync(stateFileFor(dir, ".task"), ORIG_TASK); // 063 S2
 			writeFileSync(join(dir, ".resume-cache.jsonl"), JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
 			// in-place tracks are only eligible for in-place (skipWorktree) runs
 			expect(findReusableSpec(d, REPHRASED_A, { worktree: false })).toBe("12-step-e2e-dashboard");
@@ -562,8 +562,9 @@ describe("spec-track reuse (G2)", () => {
 			execFileSync("git", ["init", "-b", "main"], { cwd: d, stdio: "ignore" });
 			execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: d, stdio: "ignore" });
 			const first = runSetup(ORIG_TASK, { cwd: d });
-			expect(existsSync(join(first.specDirectory, ".task"))).toBe(true);
-			expect(readFileSync(join(first.specDirectory, ".task"), "utf8")).toBe(ORIG_TASK);
+			// 063 S2: .task lives at the external home (this fixture is a real git repo).
+			expect(existsSync(stateFileFor(first.specDirectory, ".task"))).toBe(true);
+			expect(readFileSync(stateFileFor(first.specDirectory, ".task"), "utf8")).toBe(ORIG_TASK);
 			// simulate the run dying mid-flight (the motivating scenario) so the
 			// track is resumable
 			seedCache(first.specDirectory, JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
@@ -574,7 +575,7 @@ describe("spec-track reuse (G2)", () => {
 			expect(second.specDirectory).toBe(first.specDirectory);
 			expect(second.reusedTrack).toBe(true);
 			// anchor is NOT overwritten by the re-phrased run
-			expect(readFileSync(join(second.specDirectory, ".task"), "utf8")).toBe(ORIG_TASK);
+			expect(readFileSync(stateFileFor(second.specDirectory, ".task"), "utf8")).toBe(ORIG_TASK); // 063 S2
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -624,10 +625,10 @@ describe("spec-track reuse (G2)", () => {
 			execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: d, stdio: "ignore" });
 			const first = runSetup(ORIG_TASK, { cwd: d });
 			seedCache(first.specDirectory, JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
-			writeFileSync(join(first.specDirectory, ".user-notes.json"), JSON.stringify({ notes: ["human guidance from the dead run"] }));
+			writeFileSync(stateFileFor(first.specDirectory, ".user-notes.json"), JSON.stringify({ notes: ["human guidance from the dead run"] })); // 063 S2
 			const second = runSetup(REPHRASED_B, { cwd: d, slug: "step-e2e-dashboard" });
 			expect(second.reusedTrack).toBe(true);
-			expect(readFileSync(join(second.specDirectory, ".user-notes.json"), "utf8")).toContain("human guidance from the dead run");
+			expect(readFileSync(stateFileFor(second.specDirectory, ".user-notes.json"), "utf8")).toContain("human guidance from the dead run"); // 063 S2
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 

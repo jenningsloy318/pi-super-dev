@@ -36,6 +36,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isHarnessBookkeepingPath } from "./helpers.ts";
 import { BASELINE_VERIFY_ERROR_PREFIX } from "./build-runner/gates.ts";
+import { stateFileFor } from "./state/state-root.ts";
 
 // ── PRA: deterministic classification floor (no LLM) ────────────────────────
 
@@ -454,7 +455,7 @@ export interface EnvironmentFaultRecord {
 /** `<specDir>/.environment-faults.jsonl` — mirroring the `.resume-cache.jsonl`
  *  in-spec-dir precedent (setup.ts) and `.judge.jsonl` (judge.ts). */
 export function environmentFaultLedgerPath(specDir: string): string {
-	return join(specDir, ".environment-faults.jsonl");
+	return stateFileFor(specDir, ".environment-faults.jsonl");
 }
 
 /**

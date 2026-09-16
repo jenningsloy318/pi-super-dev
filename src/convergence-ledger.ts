@@ -5,6 +5,7 @@ import { localTimestamp } from "./render/time.ts";
 import { inferReviewFindingStatus, reviewFindingBlocks, reviewFindingFingerprint, reviewFindingHighSeverity } from "./review-findings.ts";
 import type { RetryFeedback } from "./retry-feedback.ts";
 import type { ControlObj, PipelineState } from "./types.ts";
+import { stateFileFor } from "./state/state-root.ts";
 
 export type ConvergenceOwnerStage =
 	| "setup"
@@ -246,7 +247,7 @@ function anchorTaskHash(specDir: string): string | null {
 	// fixtures sharing a fixed spec dir) must never cross-inject through the
 	// hash("") collision; no anchor ⇒ no keying ⇒ no injection.
 	try {
-		const text = readFileSync(`${specDir.endsWith("/") ? specDir : specDir + "/"}.task`, "utf8");
+		const text = readFileSync(stateFileFor(specDir, ".task"), "utf8");
 		return createHash("sha256").update(text).digest("hex").slice(0, 16);
 	} catch {
 		return null;
@@ -271,18 +272,21 @@ export function persistConvergenceLedger(state: PipelineState): void {
 			persistedAt: localTimestamp(),
 			findings: store.findings,
 		};
-		writePersistedLedger(dir.endsWith("/") ? dir : dir + "/", payload);
+		writePersistedLedger(dir, payload);
 	} catch { /* best-effort — resume then starts from an empty ledger, as today */ }
 }
 
 /** sd33 CODE-SD33-7: atomic temp+rename — a torn write must never leave a
  *  corrupt ledger that kills the NEXT run's injection. Shared by the state
  *  persist above and the injection seam's superseding reconcile (058 D-E). */
-function writePersistedLedger(base: string, payload: PersistedLedger): void {
-	mkdirSync(dirname(base.slice(0, -1)), { recursive: true });
-	const tmp = `${base}${CONVERGENCE_LEDGER_FILE}.tmp`;
+function writePersistedLedger(specDir: string, payload: PersistedLedger): void {
+	// 063 S2: the census concat form (base-with-trailing-slash + FILE) is
+	// replaced by the funnel; the .tmp sibling lives NEXT TO the final file so
+	// the atomic rename stays same-filesystem.
+	const final = stateFileFor(specDir, CONVERGENCE_LEDGER_FILE);
+	const tmp = `${final}.tmp`;
 	writeFileSync(tmp, JSON.stringify(payload), "utf8");
-	renameSync(tmp, `${base}${CONVERGENCE_LEDGER_FILE}`);
+	renameSync(tmp, final);
 }
 
 // ─── v0.3.97 (058 §0 S-E / §5 D-E): deterministic superseding of orphaned anchors ──
@@ -390,7 +394,7 @@ export function priorFindingsForInjection(specDir: string | undefined): { findin
 	try {
 		if (!specDir) return { findings: [], omitted: 0 };
 		const base = specDir.endsWith("/") ? specDir : specDir + "/";
-		const path = `${base}${CONVERGENCE_LEDGER_FILE}`;
+		const path = stateFileFor(specDir, CONVERGENCE_LEDGER_FILE);
 		if (!existsSync(path)) return { findings: [], omitted: 0 };
 		const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<PersistedLedger>;
 		const anchor = anchorTaskHash(specDir);

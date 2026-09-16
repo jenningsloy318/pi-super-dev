@@ -23,6 +23,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UsageAccumulator } from "../types.ts";
 import { getSuperDevDir, superDevEnv } from "../render/super-dev-dir.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 let warnedGlobalMetricsOff = false;
 
@@ -123,7 +124,7 @@ export function appendRunMetrics(specDir: string | undefined, row: RunMetricsRow
 	const line = JSON.stringify(row) + "\n";
 	if (specDir) {
 		try {
-			appendFileSync(join(specDir, "run-metrics.jsonl"), line, "utf8");
+			appendFileSync(stateFileFor(specDir, "run-metrics.jsonl"), line, "utf8"); // 063 S2 spec-dir arm (the global ledger below is NOT state)
 		} catch { /* best-effort observability (P5: never punishes the run) */ }
 	}
 	// v0.3.73 M5 (run 2026-09-05T23-09-55-596Z): the global append is env-guarded
@@ -344,7 +345,7 @@ export function renderSigmaLines(report: SigmaReport): string[] {
 export function readLastMetricsRow(specDir: string | undefined): RunMetricsRow | undefined {
 	if (!specDir) return undefined;
 	try {
-		const lines = readFileSync(join(specDir, "run-metrics.jsonl"), "utf8").split("\n").filter((l) => l.trim().length > 0);
+		const lines = readFileSync(stateFileFor(specDir, "run-metrics.jsonl"), "utf8").split("\n").filter((l) => l.trim().length > 0);
 		const last = lines[lines.length - 1];
 		return last ? (JSON.parse(last) as RunMetricsRow) : undefined;
 	} catch {

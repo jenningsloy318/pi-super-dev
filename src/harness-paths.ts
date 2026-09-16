@@ -81,16 +81,16 @@ export interface HarnessFileRole {
 
 export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// ── RED-boundary, any path (run-owned evidence/scratch written mid-RED) ──
-	"implementation-evidence.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
-	"change-tracker.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	"implementation-evidence.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
+	"change-tracker.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	".resume-cache.jsonl": { redBoundaryAnywhere: true, internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	".run-lock": { internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
-	".task": { specDirBookkeeping: true, neverGitTracked: true },
-	".complete": { specDirBookkeeping: true, neverGitTracked: true },
-	".user-notes.json": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, neverGitTracked: true },
-	".judge.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
-	".knowledge.json": { trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
-	"test-runner.json": { redBoundaryAnywhere: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
+	".task": { specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
+	".complete": { specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
+	".user-notes.json": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, neverGitTracked: true, stateExternal: true },
+	".judge.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true, stateExternal: true },
+	".knowledge.json": { trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
+	"test-runner.json": { redBoundaryAnywhere: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true, stateExternal: true },
 	"stagnation-report.md": { redBoundaryAnywhere: true, renderedReport: true },
 	"escalation-report.md": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, renderedReport: true },
 	"escalation-report-stagnation.md": { redBoundaryAnywhere: true, renderedReport: true },
@@ -103,14 +103,14 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	//    stays flagged for RED (position-aware — pinned by tests). Note
 	//    events.jsonl is ALSO trackerAdvisoryNoise-anywhere: the tracker
 	//    advisory filter has no position semantics of its own for this name.
-	"events.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
-	"run-metrics.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
-	"audit.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
-	"routing-journal.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
-	"routing-epoch.json": { redBoundarySpecScoped: true, neverGitTracked: true },
-	"replan-requests.json": { redBoundarySpecScoped: true, neverGitTracked: true },
-	".replan.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
-	"artifact-revisions.json": { redBoundarySpecScoped: true, neverGitTracked: true },
+	"events.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
+	"run-metrics.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true, stateExternal: true },
+	"audit.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true, stateExternal: true },
+	"routing-journal.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true, stateExternal: true },
+	"routing-epoch.json": { redBoundarySpecScoped: true, neverGitTracked: true, stateExternal: true },
+	"replan-requests.json": { redBoundarySpecScoped: true, neverGitTracked: true, stateExternal: true },
+	".replan.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true, stateExternal: true },
+	"artifact-revisions.json": { redBoundarySpecScoped: true, neverGitTracked: true, stateExternal: true },
 	"completion-audit.md": { redBoundarySpecScoped: true, specDirBookkeeping: true , renderedReport: true },
 	// v0.3.75 W1 usage-attribution artifacts. Dual-review BLOCKER (both
 	// reviewers, independent): shipping these WITHOUT registry entries
@@ -122,7 +122,7 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// Parity: usage-calls.jsonl == events.jsonl (per-call append mid-RED,
 	// tracker advisory noise anywhere); usage-report.md == completion-audit.md
 	// (close-out render only).
-	"usage-calls.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	"usage-calls.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	"usage-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true , renderedReport: true },
 	// P2 (v0.3.90, D5): the eval-stage run report — usage-report.md parity
 	// (close-out render only, inside the spec dir; the dataset rows live
@@ -130,18 +130,18 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	"eval-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true , renderedReport: true },
 	// v0.3.76 L2: per-call tool-tick telemetry (events.jsonl parity — appended
 	// mid-RED on every delegation update tick).
-	"tool-usage.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	"tool-usage.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	// v0.3.85 F2/F4: the inherited-red ladder's append-only tally/audit ledger
 	// (events.jsonl parity — engine-appended inside the spec dir at phase
 	// boundaries and handoffs; rides phase commits as durable evidence).
 	// v0.4.3: that "rides phase commits" convention is precisely what let the
 	// checkpoint rollback revert it — neverGitTracked supersedes the old
 	// comment (the ledger belongs to the RUN, not to the repo history).
-	".inherited-red.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	".inherited-red.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	// v0.4.3: the environmental-fault ledger (fault-classification.ts, engine-
 	// appended inside the spec dir — found unregistered in the
 	// 2026-09-15T08-13-05-056Z sweep; events.jsonl parity + neverGitTracked).
-	".environment-faults.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
+	".environment-faults.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	// v0.3.87 S4(b) (decision 9): the research-assist ledger — the NOVEL four-role
 	// combo the v0.3.85 grill fold flagged (accuracy note: .judge.jsonl carries
 	// redBoundaryAnywhere rather than SpecScoped; test-runner.json carries three
@@ -150,15 +150,31 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// trackerAdvisoryNoise), but it is PER-ATTEMPT SCRATCH, never durable phase
 	// evidence — phaseCommitExcluded keeps it off the deterministic phase commit
 	// (the .judge.jsonl/test-runner.json precedent).
-	"research-assists.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
-	".convergence-ledger.json": { specDirBookkeeping: true, neverGitTracked: true },
+	"research-assists.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true, stateExternal: true },
+	".convergence-ledger.json": { specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	// v0.4.3: found unregistered in the 2026-09-15T08-13-05-056Z worktree —
 	// engine-written but invisible to every role consumer. Registered here so
 	// the untrack/ignore sweep covers them too (P6: one canonical registry).
-	"messages.jsonl": { specDirBookkeeping: true, neverGitTracked: true },
+	"messages.jsonl": { specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 };
 
 /** Derive the basename set for one role — the ONLY way consumers build sets. */
+
+/**
+ * 063 S2 (D-S-D): the one-time in-spec→external migration list — the full
+ * stateExternal set MINUS the documented exclusions:
+ * - `.run-lock` (Class E): a stale in-spec lock is already stolen harmlessly
+ *   by acquireRunLock's dead-pid path; migrating a LIVE one would race the
+ *   version-flip window the lock precondition exists to guard.
+ * - `user-input/` (spec M3 ruling): assets stay IN-TREE (relative-path
+ *   attachment design); it is a directory, not a basename, and is never in
+ *   this registry.
+ * Every member is a registry basename (drift-proof: the unit test pins
+ * stateExternal membership == the spec's Class R+M+H+E durable set).
+ */
+export function externalMigrateBasenames(): string[] {
+	return [...harnessBasenames("stateExternal")].filter((b) => b !== ".run-lock").sort();
+}
 export function harnessBasenames(role: keyof HarnessFileRole): Set<string> {
 	const out = new Set<string>();
 	for (const [name, roles] of Object.entries(HARNESS_FILE_ROLES)) {

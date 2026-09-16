@@ -82,7 +82,7 @@ describe("F2 — merge-verify pass writes .complete + clears the cache", () => {
 			const ctx = { log: (m: string) => logs.push(m) } as never;
 			const r = await mergeVerifyTask.run(state, ctx);
 			expect((r as { status?: string }).status).toBe("ok");
-			expect(existsSync(join(specDir, ".complete"))).toBe(true);
+			expect(existsSync(stateFileFor(specDir, ".complete"))).toBe(true); // 063 S2: external home
 			// 063 S1: the cache's durable home is EXTERNAL — the clear must empty THAT file.
 			expect(readFileSync(stateFileFor(specDir, ".resume-cache.jsonl"), "utf8")).toBe("");
 			expect(logs.some((m) => m.includes("track closed"))).toBe(true);

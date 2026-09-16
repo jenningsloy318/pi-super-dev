@@ -35,6 +35,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claimPathUsable, isUsableProtectedToken } from "../stages/plan-feasibility.ts";
 import { extractContractInventory, normalizeAmendmentFamily, PROTECT_QUALIFIER_RE, type ContractInventory, type NormalizedAmendmentFamilyEntry } from "./contract-surface.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
@@ -334,7 +335,9 @@ export function extractWriteClaims(texts: Array<{ text: string | undefined | nul
 export function readAmendmentFamilyEntries(specDirectory: string | undefined, notes?: string[]): NormalizedAmendmentFamilyEntry[] {
 	const note = (msg: string): void => { if (notes) notes.push(msg); };
 	if (!specDirectory) return [];
-	const abs = join(specDirectory.endsWith("/") ? specDirectory.slice(0, -1) : specDirectory, ".knowledge.json");
+	// 063 S2: the census trailing-slash-trim form — the ONE .knowledge.json
+	// reader funnels (protection-interval + plan-feasibility delegate here).
+	const abs = stateFileFor(specDirectory, ".knowledge.json");
 	if (!existsSync(abs)) return [];
 	let parsed: unknown;
 	try {

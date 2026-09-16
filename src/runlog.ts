@@ -15,6 +15,7 @@
 
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { stateFileFor } from "./state/state-root.ts";
 
 export const RUN_LOG_VERSION = 1;
 export const RUN_LOG_FILENAME = "events.jsonl";
@@ -102,8 +103,11 @@ export type RunEventInput = Omit<RunEvent, "seq" | "time"> & { seq?: never; time
 
 // ─── Append ─────────────────────────────────────────────────────────────────
 
-function eventsPath(specDir: string): string {
-	return isAbsolute(specDir) ? join(specDir, RUN_LOG_FILENAME) : specDir.endsWith("/") ? `${specDir}${RUN_LOG_FILENAME}` : `${specDir}/${RUN_LOG_FILENAME}`;
+/** 063 S2: the ONE events-ledger resolution (the census form was concat) —
+ *  exported because extension.ts surfaces the path in post-mortem
+ *  artifactPaths and must not rebuild it. */
+export function eventsPath(specDir: string): string {
+	return stateFileFor(specDir, RUN_LOG_FILENAME);
 }
 
 /** The first event of a run carries the ledger version (schema-evolution tripwire). */

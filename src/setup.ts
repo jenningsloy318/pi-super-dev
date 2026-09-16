@@ -12,7 +12,8 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, 
 // quarantine source so setup and the Stage 9 loop cannot drift).
 import { collectDirtPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "./fault-classification.ts";
 import { isResumable, resumeCachePath } from "./resume.ts";
-import { externalStateAvailable, migrateInSpecState, stateFileFor, stateRootInsideRepo } from "./state/state-root.ts";
+import { externalStateAvailable, migrateInSpecState, stateFileFor, stateRootInsideRepo, sweepStateOrphansForRepo } from "./state/state-root.ts";
+import { externalMigrateBasenames } from "./harness-paths.ts";
 import { ensureRuntimeStateUntracked } from "./runtime-state-git.ts";
 import { clearKnowledge } from "./render/knowledge.ts";
 import { clearUserNotes } from "./render/user-notes.ts";
@@ -410,7 +411,7 @@ export function findReusableSpec(cwd: string, task: string, opts: { worktree?: b
 		if (!isResumable(specDir)) return;
 		let anchor: string | undefined;
 		try {
-			anchor = readFileSync(join(specDir, SPEC_TASK_ANCHOR), "utf8");
+			anchor = readFileSync(stateFileFor(specDir, SPEC_TASK_ANCHOR), "utf8"); // 063 S2
 		} catch { /* no anchor — containment-only scoring */ }
 		const slug = id.replace(/^\d+-/, "");
 		const refusedNumeral = anchorNumeralRefusal(anchor, task);
@@ -422,7 +423,7 @@ export function findReusableSpec(cwd: string, task: string, opts: { worktree?: b
 		if (score <= 0) return;
 		let mtime = 0;
 		try {
-			mtime = statSync(join(specDir, SPEC_TASK_ANCHOR)).mtimeMs;
+			mtime = statSync(stateFileFor(specDir, SPEC_TASK_ANCHOR)).mtimeMs; // 063 S2
 		} catch { /* fallback mtime 0 — score still discriminates */ }
 		candidates.push({ id, dir: specDir, score, mtime });
 	};
@@ -772,13 +773,21 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	// byte-compare; differing-tie refuses loudly), EXDEV-safe. Runs under the
 	// lock, BEFORE any reader (the M11 truncation below and every stage).
 	try {
-		const report = migrateInSpecState(specDirectory, [".resume-cache.jsonl"], options.log);
+		// 063 S2 (D-S-D): the FULL durable set (stateExternal minus .run-lock —
+		// stale in-spec locks are stolen harmlessly by the dead-pid path; the
+		// live-lock case is the migration precondition's own refusal). user-input/
+		// never migrates (spec M3 — assets stay in-tree).
+		const report = migrateInSpecState(specDirectory, externalMigrateBasenames(), options.log);
 		for (const line of report.lines) options.log?.(line);
 	} catch (err) {
 		// A live foreign holder: proceeding would race two writers over one
 		// store — fail the setup loudly (the message names the lock + action).
 		throw new Error(`Setup state migration refused: ${err instanceof Error ? err.message : String(err)}`);
 	}
+	// 063 S2 (D-S-D): the orphan sweep — external state whose spec dir is gone
+	// is NAMED (P10), never deleted (DEC-7). Detect-and-report only.
+	try { sweepStateOrphansForRepo(worktreePath, options.log); } catch { /* never fatal */ }
+
 	// 063 S1 geometry guard (spec H4 — blocker): a repo rooted at/containing
 	// $HOME puts the state store INSIDE the worktree; git add -A can snapshot
 	// it and reset --hard revert it. Detection only here — the exclusion set
@@ -798,7 +807,7 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	// G2: persist the anchor task at first allocation of a track (never
 	// overwritten) so later re-phrased runs can deterministically find and
 	// re-enter this track instead of fragmenting into siblings.
-	const anchorPath = join(specDirectory, SPEC_TASK_ANCHOR);
+	const anchorPath = stateFileFor(specDirectory, SPEC_TASK_ANCHOR) // 063 S2;
 	if (!existsSync(anchorPath)) {
 		try {
 			writeFileSync(anchorPath, task, "utf8");

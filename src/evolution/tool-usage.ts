@@ -25,6 +25,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { stateFileFor } from "../state/state-root.ts";
 
 /** The telemetry basename (shared with the P3 reread-check reader). */
 export const TOOL_USAGE_BASENAME = "tool-usage.jsonl";
@@ -57,6 +58,6 @@ export function toolArgHead(args: string | undefined): string {
 export function appendToolUsageRows(specDir: string | undefined, rows: ToolUsageRow[]): void {
 	if (!specDir || rows.length === 0) return;
 	try {
-		appendFileSync(join(specDir, TOOL_USAGE_BASENAME), rows.map((r) => JSON.stringify(r) + "\n").join(""), "utf8");
+		appendFileSync(stateFileFor(specDir, TOOL_USAGE_BASENAME), rows.map((r) => JSON.stringify(r) + "\n").join(""), "utf8"); // 063 S2
 	} catch { /* best-effort observability (P5) */ }
 }

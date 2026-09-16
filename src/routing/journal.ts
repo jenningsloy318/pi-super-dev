@@ -20,6 +20,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { superDevEnv } from "../render/super-dev-dir.ts";
 import { join } from "node:path";
+import { stateFileFor } from "../state/state-root.ts";
 import {
 	type RouteStageId,
 	type RoutingJournal,
@@ -62,8 +63,15 @@ export function maxInlineJumps(): number {
 	return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 4;
 }
 
+/** Gate F2 fold (063 S2): exported so existence prechecks read the SAME
+ *  home as the journal reader (raw in-spec existsSync was permanently false
+ *  post-migration). */
+export function routingJournalPath(specDir: string): string {
+	return journalPath(specDir);
+}
+
 function journalPath(specDir: string): string {
-	return join(specDir, ROUTING_JOURNAL_FILE);
+	return stateFileFor(specDir, ROUTING_JOURNAL_FILE); // 063 S2 — Class M control authority, durable external
 }
 
 /** Read the journal (tolerant: unparseable/torn lines are skipped, never
@@ -203,7 +211,7 @@ export function startRunEpoch(): string {
 export const ROUTING_EPOCH_FILE = "routing-epoch.json";
 
 function epochPath(specDir: string): string {
-	return join(specDir, ROUTING_EPOCH_FILE);
+	return stateFileFor(specDir, ROUTING_EPOCH_FILE); // 063 S2
 }
 
 function writeEpochFile(specDir: string, epoch: string): void {

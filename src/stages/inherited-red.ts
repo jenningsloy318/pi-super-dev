@@ -28,6 +28,7 @@ import type { BuildGateResult } from "../build-runner.ts";
 import { isBaselineVerifySyntheticError } from "../fault-classification.ts";
 import { parseFailingNpmTestFiles, parseFailingPythonTestFiles } from "../build-runner/scope.ts";
 import { phaseClauseFiles } from "./plan-feasibility.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 /** §13: the declared-handoff row tag. Distinct from `classificationSource`
  *  (that is R2 routing provenance); never overloaded. */
@@ -238,7 +239,7 @@ export function f4ScopeMatch(
  *  both persist across resume because the file does. Rows are NEVER rewritten
  *  (append-only). */
 export function inheritedRedLedgerPath(specDir: string): string {
-	return join(specDir, ".inherited-red.jsonl");
+	return stateFileFor(specDir, ".inherited-red.jsonl");
 }
 
 /** Append ONE ledger row. Never throws: a failure degrades to a warning
