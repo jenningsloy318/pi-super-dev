@@ -920,20 +920,34 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
  *  timeout SUPER_DEV_BOOTSTRAP_TIMEOUT_MS (default 10min). Non-JS projects and
  *  pre-installed worktrees no-op. Failures log a warning and never throw —
  *  the pipeline keeps going exactly as before (observable, not blocking). */
+/** v0.4.9 test seam (the arm is otherwise module-private). */
+export function bootstrapDependenciesForTests(
+	cwd: string, worktreePath: string, worktreeCreated: boolean, log?: (m: string) => void,
+): void {
+	bootstrapDependencies(cwd, worktreePath, worktreeCreated, log);
+}
+
 function bootstrapDependencies(cwd: string, worktreePath: string, worktreeCreated: boolean, log?: (m: string) => void): void {
 	if (superDevEnv("SUPER_DEV_NO_BOOTSTRAP") === "1") return;
 	if (!worktreeCreated || worktreePath === cwd) return;
 	const wt = (m: string) => { if (log) log(m); };
 	try {
-		if (existsSync(join(worktreePath, "node_modules"))) return;
+		// v0.4.9 (live-run prototype-timeout class, 2026-09-16): the node arm's
+		// early return is now ARM-scoped — a present node_modules must not skip
+		// the python arm below (both run independently).
+		let nodeDone = false;
+		const timeoutMs = Number.parseInt(superDevEnv("SUPER_DEV_BOOTSTRAP_TIMEOUT_MS") ?? "", 10) || 600_000;
+		if (!existsSync(join(worktreePath, "node_modules"))) {
 		const pm = existsSync(join(worktreePath, "pnpm-lock.yaml")) ? "pnpm"
 			: existsSync(join(worktreePath, "yarn.lock")) ? "yarn"
 			: existsSync(join(worktreePath, "bun.lockb")) || existsSync(join(worktreePath, "bun.lock")) ? "bun"
 			: existsSync(join(worktreePath, "package-lock.json")) ? "npm"
 			: null;
-		if (!pm) return;
-		if (!existsSync(join(worktreePath, "package.json"))) return;
-		const timeoutMs = Number.parseInt(superDevEnv("SUPER_DEV_BOOTSTRAP_TIMEOUT_MS") ?? "", 10) || 600_000;
+		// v0.4.9: arm-scoped skips (never `return` — the python arm below must
+		// still run).
+		if (!pm) { wt("Setup node bootstrap skipped (no node lockfile in the worktree)"); }
+		else if (!existsSync(join(worktreePath, "package.json"))) { wt("Setup node bootstrap skipped (lockfile without package.json)"); }
+		if (pm && existsSync(join(worktreePath, "package.json"))) {
 		// Reviewer F-5/F-6: `--immutable` is Yarn BERRY only — classic yarn (the
 		// common yarn.lock case) needs `--frozen-lockfile`. Distinguish by the
 		// Berry config marker `.yarnrc.yml`. maxBuffer 64MB: the default 1MB
@@ -946,6 +960,44 @@ function bootstrapDependencies(cwd: string, worktreePath: string, worktreeCreate
 		wt(`Setup bootstrapping dependencies in the fresh worktree (${argv.join(" ")}; timeout ${timeoutMs}ms)`);
 		const r = execFileSync(argv[0], argv.slice(1), { cwd: worktreePath, timeout: timeoutMs, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
 		wt(`Setup dependency bootstrap finished${r ? ` (tail: ${String(r).trim().slice(-200)})` : ""}`);
+		nodeDone = true;
+		}
+		} // end node arm
+		// ── v0.4.9: the PYTHON arm — dependency cold-start inside a bounded
+		// agent slot is the top prototype-timeout cause (3 of the last ~10
+		// runs: attempt 1 burns its whole 20-min delegation slot on
+		// uv/akshare/pandas installs; attempt 2 inherits the warm wheel cache
+		// and passes — one full slot wasted per affected run). Same contract
+		// as the node arm: best-effort, never fatal, every skip LOUD.
+		// Detection is deliberately narrow: uv-locked projects only (root or
+		// the python/ subdir convention); requirements.txt-only repos get a
+		// named skip (add them when measured).
+		const pyTimeout = timeoutMs; // same budget knob: SUPER_DEV_BOOTSTRAP_TIMEOUT_MS
+		const pyDirs = [worktreePath, join(worktreePath, "python")].filter((d) => existsSync(join(d, "pyproject.toml")));
+		if (pyDirs.length > 0) {
+			const uvAvailable = (() => { try { execFileSync("uv", ["--version"], { stdio: ["ignore", "ignore", "ignore"], timeout: 10_000 }); return true; } catch { return false; } })();
+			if (!uvAvailable) {
+				wt("Setup python bootstrap skipped (pyproject.toml present but uv is not on PATH — install uv to enable pre-warmed python envs; prototype/implementation agents will otherwise pay dependency cold-start inside their own bounded slots)");
+			} else {
+				for (const pyDir of pyDirs) {
+					const rel = pyDir === worktreePath ? "." : relative(worktreePath, pyDir);
+					if (!existsSync(join(pyDir, "uv.lock"))) { wt(`Setup python bootstrap skipped (${rel}: pyproject.toml without uv.lock — lock the project to enable pre-warm)`); continue; }
+					if (existsSync(join(pyDir, ".venv"))) { wt(`Setup python bootstrap skipped (${rel}/.venv already exists — reused as-is)`); continue; }
+					try {
+						wt(`Setup python bootstrap starting (uv sync --frozen) in ${rel} (timeout ${pyTimeout}ms)`);
+						const pr = execFileSync("uv", ["sync", "--frozen"], { cwd: pyDir, timeout: pyTimeout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+						wt(`Setup python bootstrap finished${pr ? ` (tail: ${String(pr).trim().slice(-200)})` : ""} — pre-warmed env at ${rel}/.venv`);
+					} catch (perr) {
+						const pmsg = perr instanceof Error ? perr.message : String(perr);
+						wt(`Setup python bootstrap FAILED for ${rel} (continuing without it — agents will install inside their own slots): ${pmsg.slice(0, 400)}`);
+					}
+				}
+			}
+		}
+		if (!nodeDone && !existsSync(join(worktreePath, "package.json"))) {
+			// No node project and no python project detected — the original
+			// arm-skips stay silent; nothing to bootstrap.
+		}
 	} catch (err) {
 		// Never block: a failed bootstrap degrades to today's behavior, but the
 		// warning makes the later build-gate failure attributable.

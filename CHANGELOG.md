@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.4.9: python bootstrap 预热臂(依赖冷启动超时类,3/~10 近期 run 实测)
+
+**English — move python dependency cold-start out of bounded agent slots.** The first v0.4.7 live run's prototype round 1 burned its ENTIRE 20-min delegation slot on environment setup (TickFlow 404 → akshare install → install timeout → agent killed); round 2 inherited the warm wheel cache and was environment-ready in ~3 minutes. The class recurs in 3 of the last ~10 runs — the retry machinery masks it at the cost of one wasted slot + duplicate tokens per affected run. Fixes: (1) `bootstrapDependencies` gains a PYTHON arm — uv-locked projects (root or `python/` subdir pyproject.toml + uv.lock) get `uv sync --frozen` at SETUP with the same SUPER_DEV_BOOTSTRAP_TIMEOUT_MS budget; best-effort, never fatal, every skip LOUD (uv missing / no lock / .venv exists → reused); the node arm's early returns are now arm-scoped so both arms run independently; (2) the prototype and implementation prompts carry the PYTHON ENV lesson — use the pre-synced `.venv`, never install inside the bounded slot, cache under /tmp if you must.
+
+**中文**:把 python 依赖冷启动搬出有界 agent 槽。实测 v0.4.7 首个 run 的 prototype r01 整个 20 分钟槽烧在环境搭建上,重试 r02 因轮子缓存已热 3 分钟就绪——每中招 run 浪费一个整槽。修复:setup 增 python 预热臂(uv 锁定项目 `uv sync --frozen`,响亮跳过),node 臂早退改为臂内作用域;prototype/implementation 提示词加环境使用纪律。
+
 ### Added — v0.4.8: write-claim grammar 教学(实测 spec-26 连烧 5 轮的教训)
 
 **English — teach the grammar the gates read.** The first v0.4.7 live run burned FIVE design-convergence rounds on contract-grammar failures (not design-quality failures — round 6's content passed an anchor-verified review). Round 4/5's trap: the writer's EXEMPTION justification restated the byte-untouched wording next to the path, re-minting the protect pin its own write-claim collided with — and only reading the claim-spine source taught it the wording discipline. Fixes: (1) buildDesignPrompt + buildSpecPrompt gain a WRITE-CLAIM GRAMMAR block (mention-classification semantics; same-file-both-ways = unlicensable self-contradiction; exemption prose cites pinId + legal basis only, never the frozen wording; sibling contracts referenced by pinId); (2) the claim-spine self-contradiction finding now names the exemption-restate trap with a concrete compliant example. Gates unchanged (P4 intact — machinery stays the enforcement; this teaches the writer the grammar the machinery reads).
