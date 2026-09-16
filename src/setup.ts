@@ -11,7 +11,8 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, 
 // duplicated (D-7: src/fault-classification.ts is the canonical exclusion/
 // quarantine source so setup and the Stage 9 loop cannot drift).
 import { collectDirtPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount } from "./fault-classification.ts";
-import { isResumable } from "./resume.ts";
+import { isResumable, resumeCachePath } from "./resume.ts";
+import { externalStateAvailable, migrateInSpecState, stateFileFor, stateRootInsideRepo } from "./state/state-root.ts";
 import { ensureRuntimeStateUntracked } from "./runtime-state-git.ts";
 import { clearKnowledge } from "./render/knowledge.ts";
 import { clearUserNotes } from "./render/user-notes.ts";
@@ -542,7 +543,14 @@ function readLockHolderWithBackoff(path: string): { pid: number; startedAt?: str
 }
 
 function acquireRunLock(specDirectory: string): void {
-	const lockPath = join(specDirectory, RUN_LOCK_BASENAME);
+	// 063 S1 (spec §3.4 H2 concurrency ruling): the lock resolves through the
+	// state funnel — EXTERNAL when derivable, so two worktrees/checkouts of one
+	// repo running the SAME spec-id serialize on one lock instead of silently
+	// racing over the shared external store (previously-parallel duplicate-spec
+	// runs now hard-fail with the message below — the deliberate trade). The
+	// fail-closed degradation keeps the legacy in-spec lock.
+	const lockPath = stateFileFor(specDirectory, RUN_LOCK_BASENAME);
+	if (externalStateAvailable(specDirectory)) mkdirSync(dirname(lockPath), { recursive: true });
 	for (let attempt = 0; attempt < 3; attempt++) {
 		let fd: number | undefined;
 		try {
@@ -758,6 +766,35 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	// AC-30: serialize same-track runs (live-pid check + stale steal) —
 	// immediately after the spec dir exists.
 	acquireRunLock(specDirectory);
+	// 063 S1 (§3.4): one-time migration of the proof basename's in-spec state —
+	// lock-aware (we hold one location; a live FOREIGN holder on either throws
+	// a named, actionable refusal), mtime-aware (newest wins; ties
+	// byte-compare; differing-tie refuses loudly), EXDEV-safe. Runs under the
+	// lock, BEFORE any reader (the M11 truncation below and every stage).
+	try {
+		const report = migrateInSpecState(specDirectory, [".resume-cache.jsonl"], options.log);
+		for (const line of report.lines) options.log?.(line);
+	} catch (err) {
+		// A live foreign holder: proceeding would race two writers over one
+		// store — fail the setup loudly (the message names the lock + action).
+		throw new Error(`Setup state migration refused: ${err instanceof Error ? err.message : String(err)}`);
+	}
+	// 063 S1 geometry guard (spec H4 — blocker): a repo rooted at/containing
+	// $HOME puts the state store INSIDE the worktree; git add -A can snapshot
+	// it and reset --hard revert it. Detection only here — the exclusion set
+	// (runtime-state-git, below) still covers the basenames, and the loud line
+	// tells the operator which geometry they are in.
+	let geometryStateExclude: string | undefined;
+	if (externalStateAvailable(specDirectory) && stateRootInsideRepo(specDirectory)) {
+		options.log?.(`Setup GEOMETRY WARNING (063 H4): the external state root resolves INSIDE this repo's worktree (dotfiles-style repo) — git add -A can snapshot it and reset --hard revert it, and git clean -fdx would REMOVE ignored-untracked state outright. The runtime-state exclusion set stays ACTIVE for this run (exclusion prevents tracking); orphan visibility still applies; AVOID git clean in this repo`);
+		// A5 (grill): exclude the WHOLE state-root base subtree (not just this
+		// run's key/spec dir) — sibling tracks' state lives under it too — and
+		// the warning names the clean hazard (ignored ≠ clean-safe).
+		const stateRootAbs = stateFileFor(specDirectory, ".run-lock");
+		const stateBaseAbs = dirname(dirname(stateRootAbs)); // <stateRoot>/<key>/<spec> → <stateRoot>
+		const candidate = stateBaseAbs.startsWith(worktreePath) ? stateBaseAbs : dirname(stateRootAbs);
+		if (candidate.startsWith(worktreePath)) geometryStateExclude = relative(worktreePath, candidate).replace(/\\/g, "/");
+	}
 	// G2: persist the anchor task at first allocation of a track (never
 	// overwritten) so later re-phrased runs can deterministically find and
 	// re-enter this track instead of fragmenting into siblings.
@@ -773,7 +810,11 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	// NOT clearResumeCache, which also writes the .complete marker).
 	// findReusableSpec already read the cache — truncation happens strictly
 	// AFTER selection. Resume keeps the cache intact (SCENARIO-046).
-	const staleResumeCachePath = join(specDirectory, ".resume-cache.jsonl");
+	// 063 S1: the M11 truncation routes through the resume.ts funnel (the old
+	// INLINE literal bypassed it — setup.ts:776 was the H1 third toucher; a
+	// split-brain here would mix a dead run's occurrence keys into the fresh
+	// external cache).
+	const staleResumeCachePath = resumeCachePath(specDirectory);
 	if (!options.resumeSpecIdentifier && (reusedTrack || taskSpecIdentifier) && existsSync(staleResumeCachePath)) {
 		try { writeFileSync(staleResumeCachePath, ""); } catch { /* best-effort */ }
 	}
@@ -849,7 +890,7 @@ export function runSetup(task: string, options: SetupOptions = {}): SetupControl
 	// converged stages live. Untrack + info/exclude-ignore them (worktree runs;
 	// in-place runs warn only). Best-effort, never throws.
 	try {
-		const state = ensureRuntimeStateUntracked({ worktreePath, specDirectory, worktreeCreated, log: options.log });
+		const state = ensureRuntimeStateUntracked({ worktreePath, specDirectory, worktreeCreated, log: options.log, extraExcludePaths: geometryStateExclude ? [geometryStateExclude] : [] });
 		if (state.status === "applied") {
 			if (state.untracked.length > 0) options.log?.(`Setup untracked ${state.untracked.length} runtime state file(s) from git — resume ledgers must survive checkpoint rollbacks (reset --hard otherwise reverts them to a phase-commit snapshot; run 2026-09-15T08-13-05-056Z class): ${state.untracked.join(", ")}`);
 			if (state.ignored.length > 0) options.log?.(`Setup git-ignored ${state.ignored.length} runtime state path(s) via $GIT_DIR/info/exclude (project .gitignore untouched): ${state.ignored.length > 3 ? `${state.ignored.slice(0, 3).join(", ")}, …` : state.ignored.join(", ")}`);

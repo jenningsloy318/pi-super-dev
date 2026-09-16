@@ -56,6 +56,7 @@ import { dirname, join } from "node:path";
 import { runSetup, releaseHeldRunLock } from "../src/setup.ts";
 import { HARNESS_BOOKKEEPING_FILES } from "../src/helpers.ts";
 import { DIRTY_QUARANTINE_KILL_SWITCH } from "../src/fault-classification.ts";
+import { stateFileFor } from "../src/state/state-root.ts";
 
 /** Pass-through child_process argv recorder (T1.5 / rc8-rc12 cpMock pattern):
  *  every spawnSync AND execFileSync call is recorded, then delegated to the
@@ -266,7 +267,22 @@ describe("T5.2 — exclusions preserved; fresh tracks and the main checkout unto
 			expect(logs.some((l) => /Setup quarantined foreign uncommitted state/.test(l))).toBe(false);
 			// every excluded path preserved as-is (state preserved, not quarantined)
 			expect(readFileSync(join(wt, SPEC_DIR_REL, "06-specification.md"), "utf8")).toContain("# Spec (modified in spec dir)");
-			for (const name of HARNESS_BOOKKEEPING_FILES) expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(true);
+			// 063 S1: stateExternal members (.resume-cache.jsonl, .run-lock) live at
+			// the EXTERNAL state root post-migration — assert survival THERE; the
+			// in-tree members keep their in-dir assertion.
+			// S1 scope: only the PROOF basename (.resume-cache.jsonl) migrates in
+			// this wave; the rest of the stateExternal set keeps its in-tree home
+			// until S2 redirects their resolution sites (spec §7 Wave S1).
+			const migrated = new Set([".resume-cache.jsonl"]);
+			for (const name of HARNESS_BOOKKEEPING_FILES) {
+				if (migrated.has(name)) {
+					expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(false); // migrated out
+					const external = stateFileFor(join(wt, SPEC_DIR_REL), name);
+					expect(existsSync(external)).toBe(true); // survived the quarantine externally
+				} else {
+					expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(true);
+				}
+			}
 			expect(readFileSync(join(wt, ".env"), "utf8")).toBe("SECRET=1\n");
 			// the spec-dir mod still shows as a modification (not stashed)
 			expect(gitRun(wt, ["status", "--porcelain"])).toContain(`${SPEC_DIR_REL}/06-specification.md`);
@@ -409,7 +425,22 @@ describe("T5.5 — end-to-end pathspec safety (SCENARIO-028 · AC-13)", () => {
 			expect(stashed).toEqual([SNOW, "scratch.txt"]);
 			// every excluded class survives the quarantine untouched
 			expect(readFileSync(join(wt, SPEC_DIR_REL, "06-specification.md"), "utf8")).toContain("# Spec (modified in spec dir)");
-			for (const name of HARNESS_BOOKKEEPING_FILES) expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(true);
+			// 063 S1: stateExternal members (.resume-cache.jsonl, .run-lock) live at
+			// the EXTERNAL state root post-migration — assert survival THERE; the
+			// in-tree members keep their in-dir assertion.
+			// S1 scope: only the PROOF basename (.resume-cache.jsonl) migrates in
+			// this wave; the rest of the stateExternal set keeps its in-tree home
+			// until S2 redirects their resolution sites (spec §7 Wave S1).
+			const migrated = new Set([".resume-cache.jsonl"]);
+			for (const name of HARNESS_BOOKKEEPING_FILES) {
+				if (migrated.has(name)) {
+					expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(false); // migrated out
+					const external = stateFileFor(join(wt, SPEC_DIR_REL), name);
+					expect(existsSync(external)).toBe(true); // survived the quarantine externally
+				} else {
+					expect(existsSync(join(wt, SPEC_DIR_REL, name))).toBe(true);
+				}
+			}
 			expect(readFileSync(join(wt, ".env"), "utf8")).toBe("SECRET=1\n");
 			expect(existsSync(join(wt, SPEC_DIR_REL, ".task"))).toBe(true);
 		} finally {

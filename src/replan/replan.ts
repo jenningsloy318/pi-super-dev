@@ -36,11 +36,17 @@ import { downstreamOf } from "../graph/edges.ts";
 import { sendMessage, replyTo, pendingMessagesFor } from "../team/messages.ts";
 import { appendRunEvent, readRunEvents } from "../runlog.ts";
 import type { PipelineState, StageContext } from "../types.ts";
+import { resumeCachePath } from "../resume.ts";
 
 export const REPLAN_REQUESTS_FILE = "replan-requests.json";
 export const ARTIFACT_REVISIONS_FILE = "artifact-revisions.json";
 export const REPLAN_AUDIT_FILE = ".replan.jsonl";
-const RESUME_CACHE_FILE = ".resume-cache.jsonl";
+// 063 S1 literal consolidation (spec §3.2 step 0 / H1): the resume-cache
+// basename is declared ONCE in resume.ts (the funnel) — this module imports
+// it; the old local RESUME_CACHE_FILE literal is deleted. Partial migration
+// (redirecting resume.ts but not this file) would leave invalidateResumeCache
+// reading the absent in-spec path → 0 rows dropped → the B6 guard passes
+// VACUOUSLY → replan restarts replay a stale downstream suffix.
 
 /** R5: replan restarts per spec (beside MAX_CHALLENGE_REAUTHORS=2 and
  *  ESCALATION_RETRY_CAP=2). Lazy env read (defensive rule #5). */
@@ -224,7 +230,7 @@ export const STAGE_CALL_PREFIXES: Record<string, string[]> = {
  *  short-circuits to 0. */
 export function invalidateResumeCache(specDir: string, stages: string[]): number {
 	try {
-		const path = specPath(specDir, RESUME_CACHE_FILE);
+		const path = resumeCachePath(specDir); // 063 S1: the external-state funnel (H1 full-toucher-set)
 		if (!existsSync(path)) return 0;
 		const prefixes = [...new Set([...stages.flatMap((s) => STAGE_CALL_PREFIXES[s] ?? []), ...ALWAYS_INVALIDATED_PREFIXES])];
 		const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim());
@@ -298,7 +304,7 @@ function appendAudit(specDir: string, entry: Record<string, unknown>): void {
  *  invalidation that dropped 0 rows while matching rows exist is a FAILURE. */
 export function resumeCacheHasRowsFor(specDir: string, stages: string[]): boolean {
 	try {
-		const path = specPath(specDir, RESUME_CACHE_FILE);
+		const path = resumeCachePath(specDir); // 063 S1: the external-state funnel (H1 full-toucher-set)
 		if (!existsSync(path)) return false;
 		const prefixes = [...new Set(stages.flatMap((s) => STAGE_CALL_PREFIXES[s] ?? []))];
 		if (prefixes.length === 0) return false;

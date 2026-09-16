@@ -76,6 +76,11 @@ export function ensureRuntimeStateUntracked(args: {
 	worktreeCreated?: boolean;
 	log?: (line: string) => void;
 	git?: GitRunner;
+	/** 063 S1 (H4 geometry guard): EXTRA in-tree paths to info/exclude — the
+	 *  state-subtree relative path when the external store resolves INSIDE the
+	 *  worktree (dotfiles repos). Exclusion prevents tracking, so the store
+	 *  keeps its worktree-death durability there. */
+	extraExcludePaths?: string[];
 }): RuntimeStateUntrackReport {
 	const report: RuntimeStateUntrackReport = { status: "applied", untracked: [], ignored: [], errors: [] };
 	if (args.worktreeCreated === false) {
@@ -170,6 +175,9 @@ export function ensureRuntimeStateUntracked(args: {
 				const existing = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
 				const lines = new Set(existing.split("\n").map((l) => l.trim()));
 				const wanted = basenames.map((base) => `${relSpec}/${base}`);
+				// 063 S1 (H4): the geometry guard's extra paths ride the same
+				// exclude write (the state subtree when it resolves in-tree).
+				for (const extra of args.extraExcludePaths ?? []) if (!wanted.includes(extra)) wanted.push(extra);
 				const missing = wanted.filter((p) => !lines.has(p));
 				if (missing.length > 0) {
 					const block = [`# super-dev runtime state (v0.4.3) — machine-ledgers, never project content`, ...missing, ""];

@@ -7,8 +7,9 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { findReusableSpec, SPEC_TASK_ANCHOR } from "../src/setup.ts";
+import { stateFileFor } from "../src/state/state-root.ts";
 
 // the REAL incident texts (05 track anchor vs the 06 task that was absorbed):
 // measured Jaccard 0.643 >= 0.6 on unpatched main.
@@ -66,7 +67,12 @@ describe("F2 — merge-verify pass writes .complete + clears the cache", () => {
 			git(["add", "-A"]); git(["commit", "-q", "-m", "init"]);
 			const specDir = join(root, "docs", "specifications", "05-track");
 			mkdirSync(specDir, { recursive: true });
-			writeFileSync(join(specDir, ".resume-cache.jsonl"), "row1\n");
+			// 063 S1: seed at the EXTERNAL home (merge-verify's clear targets it).
+			{
+				const external = stateFileFor(specDir, ".resume-cache.jsonl");
+				mkdirSync(dirname(external), { recursive: true });
+				writeFileSync(external, "row1\n");
+			}
 			const { mergeVerifyTask } = await import("../src/stages/writers.ts");
 			const state = {
 				merge: { merged: true, commitSha: "" },
@@ -77,7 +83,8 @@ describe("F2 — merge-verify pass writes .complete + clears the cache", () => {
 			const r = await mergeVerifyTask.run(state, ctx);
 			expect((r as { status?: string }).status).toBe("ok");
 			expect(existsSync(join(specDir, ".complete"))).toBe(true);
-			expect(readFileSync(join(specDir, ".resume-cache.jsonl"), "utf8")).toBe("");
+			// 063 S1: the cache's durable home is EXTERNAL — the clear must empty THAT file.
+			expect(readFileSync(stateFileFor(specDir, ".resume-cache.jsonl"), "utf8")).toBe("");
 			expect(logs.some((m) => m.includes("track closed"))).toBe(true);
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});

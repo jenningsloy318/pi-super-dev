@@ -14,6 +14,8 @@
  * source-contract test in tests/config-env.test.ts (the internal config path
  * cannot be exercised in-process under this mock).
  */
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { vi } from "vitest";
 
 vi.mock("../../src/render/super-dev-dir.ts", async (importOriginal) => {
@@ -55,6 +57,11 @@ process.env.SUPER_DEV_NO_GLOBAL_METRICS = "1";
 // reread check deliberately does NOT (always on — read-only + event-on-
 // findings only, zero writes when no findings).
 process.env.SUPER_DEV_NO_EVAL_STAGE = "1";
+// 063 S1 (DEC-6): the external state root redirects to a per-worker tmp dir —
+// a test whose spec dir lives in a real (tmp) git repo would otherwise derive
+// a project key and write state into the DEVELOPER'S real ~/.super-dev/state/.
+// Non-git spec dirs are unaffected (fail-closed → in-spec legacy behavior).
+process.env.SUPER_DEV_STATE_DIR = join(tmpdir(), `sd-state-hermetic-${process.pid}`);
 // v0.3.81 adv-F1: activation's fire-and-forget git fetch must never do real
 // network I/O (or mutate remote-tracking refs) from inside the unit suite.
 process.env.SUPER_DEV_NO_FRESHNESS_CHECK = "1";

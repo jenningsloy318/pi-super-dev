@@ -10,7 +10,7 @@
 
 import { runWorkflow } from "./workflow.ts";
 import { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
-import { loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";
+import { loadResumeCache, clearResumeCache, specDirFor, findResumableSpec, RESUME_CACHE_BASENAME } from "./resume.ts";
 import { releaseHeldRunLock } from "./setup.ts";
 import type { RunOptions, RunSummary } from "./types.ts";
 
@@ -26,6 +26,13 @@ export async function runPipelineTask(task: string, optionsIn: RunOptions = {}):
 		const resumeId = options.resume === true ? findResumableSpec(cwd) : String(options.resume);
 		if (resumeId) {
 			options.resumeSpecIdentifier = resumeId;
+			// 063-S1 gate B1: migrate the pre-S1 in-spec cache BEFORE loading —
+			// the setup-stage migration runs later (inside runWorkflow) and the
+			// rows would be invisible to this load (silent full re-run).
+			try {
+				const { migrateInSpecState } = await import("./state/state-root.ts");
+				await migrateInSpecState(specDirFor(cwd, resumeId), [RESUME_CACHE_BASENAME]);
+			} catch { /* migration is best-effort here; load falls back below */ }
 			options.resumeCache = loadResumeCache(specDirFor(cwd, resumeId));
 		} else {
 			// nothing to resume → fall through to a fresh run

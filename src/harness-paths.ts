@@ -64,6 +64,16 @@ export interface HarnessFileRole {
 	 *  (untrack+ignore), implementation.ts deterministicPhaseCommit
 	 *  (defense-in-depth commit exclusion). */
 	neverGitTracked?: boolean;
+	/** 063 S1 (D-S-C): the basename's DURABLE home is the EXTERNAL state root
+	 *  (~/.super-dev/state/<project-key>/<spec-id>/) — the neverGitTracked
+	 *  UNION contract is unchanged in S1 (the fail-closed in-spec fallback and
+	 *  the H4 contained-geometry case still need in-tree exclusion); S2
+	 *  derives the exclusion set from stateExternal ∪ renderedReport and the
+	 *  membership shrinks to the residual in-tree set. */
+	stateExternal?: boolean;
+	/** 063 S1 (D-S-C): rendered report that stays IN-TREE (content/evidence,
+	 *  DEC-4) — the residual exclusion set once S2 completes the split. */
+	renderedReport?: boolean;
 	/** Phase commits never ride these basenames (per-attempt scratch, not
 	 *  durable phase evidence — implementation.ts deterministic committer). */
 	phaseCommitExcluded?: boolean;
@@ -73,17 +83,17 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// ── RED-boundary, any path (run-owned evidence/scratch written mid-RED) ──
 	"implementation-evidence.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
 	"change-tracker.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
-	".resume-cache.jsonl": { redBoundaryAnywhere: true, internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true },
-	".run-lock": { internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true },
+	".resume-cache.jsonl": { redBoundaryAnywhere: true, internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
+	".run-lock": { internalRuntimeClaim: true, specDirBookkeeping: true, neverGitTracked: true, stateExternal: true },
 	".task": { specDirBookkeeping: true, neverGitTracked: true },
 	".complete": { specDirBookkeeping: true, neverGitTracked: true },
 	".user-notes.json": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, neverGitTracked: true },
 	".judge.jsonl": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
 	".knowledge.json": { trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
 	"test-runner.json": { redBoundaryAnywhere: true, specDirBookkeeping: true, phaseCommitExcluded: true, neverGitTracked: true },
-	"stagnation-report.md": { redBoundaryAnywhere: true },
-	"escalation-report.md": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true },
-	"escalation-report-stagnation.md": { redBoundaryAnywhere: true },
+	"stagnation-report.md": { redBoundaryAnywhere: true, renderedReport: true },
+	"escalation-report.md": { redBoundaryAnywhere: true, trackerAdvisoryNoise: true, renderedReport: true },
+	"escalation-report-stagnation.md": { redBoundaryAnywhere: true, renderedReport: true },
 	"api-test-report.md": { redBoundaryAnywhere: true },
 	"ui-test-report.md": { redBoundaryAnywhere: true },
 
@@ -101,7 +111,7 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	"replan-requests.json": { redBoundarySpecScoped: true, neverGitTracked: true },
 	".replan.jsonl": { redBoundarySpecScoped: true, neverGitTracked: true },
 	"artifact-revisions.json": { redBoundarySpecScoped: true, neverGitTracked: true },
-	"completion-audit.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
+	"completion-audit.md": { redBoundarySpecScoped: true, specDirBookkeeping: true , renderedReport: true },
 	// v0.3.75 W1 usage-attribution artifacts. Dual-review BLOCKER (both
 	// reviewers, independent): shipping these WITHOUT registry entries
 	// regressed the exact M6 class this registry exists to kill — merge-verify
@@ -113,11 +123,11 @@ export const HARNESS_FILE_ROLES: Record<string, HarnessFileRole> = {
 	// tracker advisory noise anywhere); usage-report.md == completion-audit.md
 	// (close-out render only).
 	"usage-calls.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },
-	"usage-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
+	"usage-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true , renderedReport: true },
 	// P2 (v0.3.90, D5): the eval-stage run report — usage-report.md parity
 	// (close-out render only, inside the spec dir; the dataset rows live
 	// user-local under ~/.super-dev/evals/, never in the repo worktree).
-	"eval-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true },
+	"eval-report.md": { redBoundarySpecScoped: true, specDirBookkeeping: true , renderedReport: true },
 	// v0.3.76 L2: per-call tool-tick telemetry (events.jsonl parity — appended
 	// mid-RED on every delegation update tick).
 	"tool-usage.jsonl": { redBoundarySpecScoped: true, trackerAdvisoryNoise: true, specDirBookkeeping: true, neverGitTracked: true },

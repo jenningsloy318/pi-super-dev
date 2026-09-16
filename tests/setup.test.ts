@@ -9,8 +9,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { runSetup, detectLanguage, referencedSpecIdentifier, findReusableSpec, slugTokenContainment, taskSimilarity, specReuseEnabled, releaseHeldRunLock, RUN_LOCK_BASENAME } from "../src/setup.ts";
+import { resumeCachePath } from "../src/resume.ts";
+import { stateFileFor } from "../src/state/state-root.ts";
 import { isHarnessBookkeepingPath } from "../src/helpers.ts";
 import { isInternalRuntimeClaim } from "../src/tracking.ts";
 
@@ -239,6 +241,22 @@ describe("referenced-spec entry preserves the track (AC-02)", () => {
 // EXISTING track must truncate the stale resume cache — this run's fresh #1
 // occurrence keys must never mix with the dead run's #2/#3 rows. A RESUME
 // entry keeps the cache intact (durable continuation).
+// 063 S1: seeds/assertions derive the SAME paths the runtime uses (the state
+// funnel) — in-spec literals go stale the moment a spec dir sits in a git repo.
+function seedCache(specDir: string, rows: string): void {
+	const p = resumeCachePath(specDir);
+	mkdirSync(dirname(p), { recursive: true });
+	writeFileSync(p, rows);
+}
+function seedLock(specDir: string, content: string): string {
+	// the spec dir must exist for git -C (the funnel's repo facts)
+	mkdirSync(specDir, { recursive: true });
+	const p = stateFileFor(specDir, ".run-lock");
+	mkdirSync(dirname(p), { recursive: true });
+	writeFileSync(p, content);
+	return p;
+}
+
 describe("fresh entry truncates the stale resume cache (AC-21)", () => {
 	const STALE_ROWS = [
 		'{"key":"pipeline.requirements@root#2","result":{"text":"","control":{}}}',
@@ -251,8 +269,7 @@ describe("fresh entry truncates the stale resume cache (AC-21)", () => {
 		git(["config", "user.email", "t@example.com"], d);
 		git(["config", "user.name", "T"], d);
 		git(["commit", "--allow-empty", "-m", "base"], d);
-		mkdirSync(join(d, "docs", "specifications", "24-auth-flow"), { recursive: true });
-		writeFileSync(join(d, "docs", "specifications", "24-auth-flow", ".resume-cache.jsonl"), STALE_ROWS);
+		seedCache(`${join(d, "docs", "specifications", "24-auth-flow")}/`, STALE_ROWS);
 		return d;
 	}
 
@@ -261,7 +278,7 @@ describe("fresh entry truncates the stale resume cache (AC-21)", () => {
 		try {
 			const s = runSetup("implement @docs/specifications/24-auth-flow/ the token refresh changes", { cwd: d, skipWorktree: true });
 			expect(s.reusedTrack).toBe(true);
-			expect(readFileSync(join(s.specDirectory, ".resume-cache.jsonl"), "utf8")).toBe(""); // truncated (clearKnowledge semantics, NOT clearResumeCache — no .complete marker)
+			expect(readFileSync(resumeCachePath(s.specDirectory), "utf8")).toBe(""); // truncated (clearKnowledge semantics, NOT clearResumeCache — no .complete marker)
 			expect(existsSync(join(s.specDirectory, ".complete"))).toBe(false);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
@@ -274,13 +291,13 @@ describe("fresh entry truncates the stale resume cache (AC-21)", () => {
 			git(["config", "user.name", "T"], d);
 			git(["commit", "--allow-empty", "-m", "init"], d);
 			const first = runSetup("we want to add step e2e test dashboard at e2e-automation/step-dashboard", { cwd: d });
-			writeFileSync(join(first.specDirectory, ".resume-cache.jsonl"), STALE_ROWS);
+			seedCache(first.specDirectory, STALE_ROWS);
 			// the re-phrased run re-enters the SAME track (findReusableSpec read the
 		// cache first) and then truncates the stale rows
 			const second = runSetup("implement @docs/requirements/step-e2e-dashboard.md", { cwd: d, slug: "step-e2e-dashboard" });
 			expect(second.specIdentifier).toBe(first.specIdentifier);
 			expect(second.reusedTrack).toBe(true);
-			expect(readFileSync(join(second.specDirectory, ".resume-cache.jsonl"), "utf8")).toBe("");
+			expect(readFileSync(resumeCachePath(second.specDirectory), "utf8")).toBe("");
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -288,7 +305,7 @@ describe("fresh entry truncates the stale resume cache (AC-21)", () => {
 		const d = seededReferencedTrack();
 		try {
 			const s = runSetup("continue the auth work", { cwd: d, skipWorktree: true, resumeSpecIdentifier: "24-auth-flow" });
-			expect(readFileSync(join(s.specDirectory, ".resume-cache.jsonl"), "utf8")).toBe(STALE_ROWS); // intact
+			expect(readFileSync(resumeCachePath(s.specDirectory), "utf8")).toBe(STALE_ROWS); // intact
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -300,7 +317,7 @@ describe("fresh entry truncates the stale resume cache (AC-21)", () => {
 			git(["config", "user.name", "T"], d);
 			git(["commit", "--allow-empty", "-m", "base"], d);
 			const s = runSetup("build a car theory html animation page", { cwd: d, skipWorktree: true, slug: "fresh" });
-			expect(existsSync(join(s.specDirectory, ".resume-cache.jsonl"))).toBe(false);
+			expect(existsSync(resumeCachePath(s.specDirectory))).toBe(false);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });
@@ -320,12 +337,38 @@ describe("spec-dir run lock (AC-30)", () => {
 		return d;
 	}
 
+	it("063 H2/MED-4: two worktrees of ONE repo sharing a spec id — the SECOND setup hard-fails on the shared EXTERNAL lock (deliberate serialization)", () => {
+		const d = seededInPlaceTrack();
+		try {
+			// Holder A: a live process holding the EXTERNAL lock for (repo, 24-auth-flow)
+			const holder = spawn("sleep", ["30"], { stdio: "ignore" });
+			try {
+				const specDir = `${join(d, "docs", "specifications", "24-auth-flow")}/`;
+				const externalLock = stateFileFor(specDir, ".run-lock");
+				mkdirSync(dirname(externalLock), { recursive: true });
+				writeFileSync(externalLock, JSON.stringify({ pid: holder.pid, startedAt: new Date().toISOString() }));
+				// A DIFFERENT spec directory of the SAME repo+spec-id (the worktree
+				// layout form) must collide on the same external lock path.
+				const wtSpecDir = `${join(d, ".worktree", "24-auth-flow", "docs", "specifications", "24-auth-flow")}/`;
+				mkdirSync(wtSpecDir, { recursive: true }); // the dir must exist for git -C to resolve the repo (fail-closed otherwise; NB dirname of a trailing-slash path drops the last component)
+				const wtLock = stateFileFor(wtSpecDir, ".run-lock");
+				expect(wtLock).toBe(externalLock); // one shared home per (project-key, spec-id)
+				expect(() => runSetup("implement @docs/specifications/24-auth-flow/ the token refresh changes", { cwd: d, skipWorktree: true }))
+					.toThrow(new RegExp(`is locked by another super-dev run \\(pid ${holder.pid}, started `));
+			} finally {
+				holder.kill("SIGKILL");
+			}
+		} finally {
+			rmSync(d, { recursive: true, force: true });
+		}
+	});
+
 	it("SCENARIO-061: a live-pid lock produces an actionable setup error naming the holder pid", () => {
 		const d = seededInPlaceTrack();
 		const holder = spawn("sleep", ["30"], { stdio: "ignore" });
 		try {
-			const lockPath = join(d, "docs", "specifications", "24-auth-flow", ".run-lock");
-			writeFileSync(lockPath, JSON.stringify({ pid: holder.pid, startedAt: new Date().toISOString() }));
+			const specDir = `${join(d, "docs", "specifications", "24-auth-flow")}/`;
+			const lockPath = seedLock(specDir, JSON.stringify({ pid: holder.pid, startedAt: new Date().toISOString() }));
 			expect(() => runSetup("implement @docs/specifications/24-auth-flow/ the token refresh changes", { cwd: d, skipWorktree: true }))
 				.toThrow(new RegExp(`is locked by another super-dev run \\(pid ${holder.pid}, started `));
 			expect(readFileSync(lockPath, "utf8")).toContain(String(holder.pid)); // the live holder's lock is NOT stolen
@@ -338,9 +381,7 @@ describe("spec-dir run lock (AC-30)", () => {
 	it("SCENARIO-062: a stale (dead-pid) lock is stolen and replaced; the lock is absent after release", () => {
 		const d = seededInPlaceTrack();
 		try {
-			const lockPath = join(d, "docs", "specifications", "24-auth-flow", ".run-lock");
-			const dead = spawnSync("true"); // exited synchronously — its pid is gone
-			writeFileSync(lockPath, JSON.stringify({ pid: dead.pid, startedAt: "2020-01-01T00:00:00.000Z" }));
+			const lockPath = seedLock(`${join(d, "docs", "specifications", "24-auth-flow")}/`, JSON.stringify({ pid: 999_999_999, startedAt: "2020-01-01T00:00:00.000Z" })); // a pid that never existed — dead
 			const s = runSetup("implement @docs/specifications/24-auth-flow/ the token refresh changes", { cwd: d, skipWorktree: true });
 			expect(s.specIdentifier).toBe("24-auth-flow"); // setup proceeded
 			const held = JSON.parse(readFileSync(lockPath, "utf8")) as { pid: number };
@@ -355,10 +396,10 @@ describe("spec-dir run lock (AC-30)", () => {
 		try {
 			expect(RUN_LOCK_BASENAME).toBe(".run-lock");
 			const s1 = runSetup("implement @docs/specifications/24-auth-flow/ first entry", { cwd: d, skipWorktree: true });
-			const lockPath = join(s1.specDirectory, RUN_LOCK_BASENAME);
+			const lockPath = stateFileFor(s1.specDirectory, RUN_LOCK_BASENAME);
 			expect(existsSync(lockPath)).toBe(true);
 			const s2 = runSetup("implement @docs/specifications/24-auth-flow/ same process re-entry", { cwd: d, skipWorktree: true });
-			expect(existsSync(join(s2.specDirectory, RUN_LOCK_BASENAME))).toBe(true); // pid === process.pid ⇒ always stolen
+			expect(existsSync(stateFileFor(s2.specDirectory, RUN_LOCK_BASENAME))).toBe(true); // pid === process.pid ⇒ always stolen
 			releaseHeldRunLock();
 			expect(existsSync(lockPath)).toBe(false);
 		} finally { rmSync(d, { recursive: true, force: true }); }
@@ -371,8 +412,7 @@ describe("spec-dir run lock (AC-30)", () => {
 	it("F-10: an empty lock file gets a bounded backoff BEFORE the steal (not an instant rmSync)", () => {
 		const d = seededInPlaceTrack();
 		try {
-			const lockPath = join(d, "docs", "specifications", "24-auth-flow", ".run-lock");
-			writeFileSync(lockPath, ""); // empty: the TOCTOU window shape
+			const lockPath = seedLock(`${join(d, "docs", "specifications", "24-auth-flow")}/`, ""); // empty: the TOCTOU window shape
 			const before = Date.now();
 			const s = runSetup("implement @docs/specifications/24-auth-flow/ the token refresh changes", { cwd: d, skipWorktree: true });
 			const elapsed = Date.now() - before;
@@ -526,7 +566,7 @@ describe("spec-track reuse (G2)", () => {
 			expect(readFileSync(join(first.specDirectory, ".task"), "utf8")).toBe(ORIG_TASK);
 			// simulate the run dying mid-flight (the motivating scenario) so the
 			// track is resumable
-			writeFileSync(join(first.specDirectory, ".resume-cache.jsonl"), JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
+			seedCache(first.specDirectory, JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
 			// the pipeline stage ALWAYS passes an LLM-summarized slug — reuse must
 			// still fire (code-review G2-PROD-DEAD-PATH regression pin)
 			const second = runSetup(REPHRASED_B, { cwd: d, slug: "step-e2e-dashboard" });
@@ -546,7 +586,7 @@ describe("spec-track reuse (G2)", () => {
 			execFileSync("git", ["config", "user.name", "T"], { cwd: d, stdio: "ignore" });
 			execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: d, stdio: "ignore" });
 			const first = runSetup(ORIG_TASK, { cwd: d });
-			writeFileSync(join(first.specDirectory, ".resume-cache.jsonl"), JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
+			seedCache(first.specDirectory, JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
 			// a slug alone does NOT bypass reuse (production shape)
 			const withSlug = runSetup(REPHRASED_B, { cwd: d, slug: "brand-new-name" });
 			expect(withSlug.specIdentifier).toBe(first.specIdentifier);
@@ -583,7 +623,7 @@ describe("spec-track reuse (G2)", () => {
 			execFileSync("git", ["config", "user.name", "T"], { cwd: d, stdio: "ignore" });
 			execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: d, stdio: "ignore" });
 			const first = runSetup(ORIG_TASK, { cwd: d });
-			writeFileSync(join(first.specDirectory, ".resume-cache.jsonl"), JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
+			seedCache(first.specDirectory, JSON.stringify({ key: "pipeline.spec@root#1", result: {} }) + "\n");
 			writeFileSync(join(first.specDirectory, ".user-notes.json"), JSON.stringify({ notes: ["human guidance from the dead run"] }));
 			const second = runSetup(REPHRASED_B, { cwd: d, slug: "step-e2e-dashboard" });
 			expect(second.reusedTrack).toBe(true);

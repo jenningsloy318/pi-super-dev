@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.4.6: 063 Wave S1 — 外部状态存储地基（state-root + registry split + .resume-cache 全 toucher 原子迁移）
+
+**English — 063 Wave S1: the external state-store foundation.** Closes the v0.4.3 truncation class at its head: `.resume-cache.jsonl` now lives at `~/.super-dev/state/<project-key>/<spec-id>/`, out of reach of `git add -A` / `reset --hard` by construction (real-git fixture reproduces the incident and asserts the external cache survives byte-identical).
+
+- **D-S-A `src/state/state-root.ts`**: `projectStateRoot`/`specStateDir`/`stateFileFor` with realpath-canonicalized common-dir project keys (M5 — alias splits impossible), fail-closed git resolution (null + loud P10, never guesses, never merges repos), `SUPER_DEV_STATE_DIR` test override, 64-entry FIFO memo.
+- **D-S-C registry split**: `stateExternal` ∪ `renderedReport` roles added (union contract unchanged in S1); geometry guard (H4): state root inside repo root (dotfiles repos) ⇒ exclusions stay ACTIVE + loud warning incl. the git-clean hazard + the whole state-root subtree excluded (A5).
+- **H1 full-toucher atomic migration**: ALL `.resume-cache.jsonl` touchers (resume.ts funnel, replan/replan.ts invalidate/hasRows, setup.ts M11 inline literal, pipeline.ts clear) route through `stateFileFor`; the B6 vacuous-0-drop hazard has a regression test.
+- **H2 migration**: lock-aware (both locations, foreign holder ⇒ named refusal incl. pid-recycle hint), mtime/content matrix (newest wins; tie ⇒ byte-compare; differing tie ⇒ refuse loudly — external-wins dead), EXDEV copy→tmp→verify→atomic-rename→delete (crash-safe, A2), same-repo-same-spec serialization via the externalized `.run-lock` (deliberate hard-fail, MED-4 fixture).
+- **Dual-gate folds (glm-5.3-flash: Code 1H+3M, Adversarial 1B+8A)**: **B1** — pre-S1 tracks are visible to auto-resume/spec-reuse/`--resume` (read-side in-spec bridge + pipeline migrates BEFORE loadResumeCache — the silent full-rerun hole); HIGH-1 — containment compares canonicalized paths (macOS alias roots); A3 — row-count delta named in the newest-wins P10 line; MED-2 — renderedReport golden set (6 basenames incl. escalation-report-stagnation.md).
+
+**中文**:状态外置地基——`.resume-cache.jsonl` 搬到 `~/.super-dev/state/<项目键>/<spec-id>/`,从构造上脱离 `reset --hard` 的触及范围。全 toucher 原子迁移、lock/mtime 感知、EXDEV 安全、同 spec 串行化;双 gate 抓出的 B1(旧轨道对 resume 不可见的静默重跑洞)已桥接修复。
+
 ### Added — v0.4.5: 065 routing follow-up — Gate E 入口矛盾走 INLINE route-back（分钟级内联跳转替代 replan 重启）
 
 **English**: Stage-9-entry contradictions now route inline-jump-first: `planInlineRouteBack(specDir, "implementation", findings)` → `throw new RouteBackSignal` — the walker re-enters at the spec convergence node in-process (spec re-render + re-review, minutes), trading the replan restart (invalidation + process re-entry + cache drops) for a sub-walk. Declines (owner geometry, per-edge journal budget, `SUPER_DEV_NO_INLINE_ROUTEBACK=1` kill-switch) fall through to the existing replan route; replan-unavailable keeps the v0.4.4 FatalAbort HARD BLOCK. The full ladder: inline (default) → replan (kill-switch) → FatalAbort (kill-switch + exhausted pool). Tests re-based onto the ladder (kill-switch pinned in the inherited-red suite; a new ladder test asserts the RouteBackSignal shape and the `INLINE route-back implementation→spec` log).

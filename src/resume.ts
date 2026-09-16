@@ -17,18 +17,27 @@
  * cache-misses that call (still correct, less efficient).
  */
 
-import { appendFileSync, readFileSync, existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AgentCall, AgentResult } from "./types.ts";
 import { extractControl } from "./control.ts";
+import { stateFileFor } from "./state/state-root.ts";
 
-const CACHE_FILE = ".resume-cache.jsonl";
+/** 063 S1: the cache basename's ONE canonical spelling at its funnel (the
+ *  literal consolidation root — replan.ts and setup.ts import THIS, never
+ *  re-declare it; tests/harness-path-registry pins the registry entry). */
+export const RESUME_CACHE_BASENAME = ".resume-cache.jsonl";
 const COMPLETE_FILE = ".complete";
 
 // ─── paths ──────────────────────────────────────────────────────────────────
 
+/** 063 S1 (D-S-B): the funnel now resolves through the external state root —
+ *  `~/.super-dev/state/<project-key>/<spec-id>/.resume-cache.jsonl` when the
+ *  repo is derivable (realpath-canonicalized common-dir key), else the legacy
+ *  in-spec path (fail-closed degradation, one-time P10 line). EVERY reader and
+ *  writer of the cache goes through here (the H1 full-toucher-set rule). */
 export function resumeCachePath(specDir: string): string {
-	return join(specDir, CACHE_FILE);
+	return stateFileFor(specDir, RESUME_CACHE_BASENAME);
 }
 
 /** The spec dir for a given spec identifier, preferring the (persisted) worktree. */
@@ -49,6 +58,8 @@ export function specDirFor(cwd: string, specIdentifier: string): string {
 export function appendResumeResult(specDir: string, key: string, result: AgentResult): void {
 	try {
 		const path = resumeCachePath(specDir);
+		// 063 S1: the external dir may not exist yet (first write this run).
+		mkdirSync(dirname(path), { recursive: true });
 		try {
 			const st = statSync(path);
 			if (st.size > 0) {
@@ -116,14 +127,23 @@ export function isComplete(specDir: string): boolean {
 	return existsSync(join(specDir, COMPLETE_FILE));
 }
 
-/** Resumable = has a non-empty cache AND no completion marker. */
+/** Resumable = has a non-empty cache AND no completion marker.
+ *  063-S1 gate B1 bridge: a PRE-S1 track carries its rows IN-SPEC (external
+ *  absent) — read-side fallback so auto-resume / spec-reuse can still SEE it;
+ *  the setup migration then moves it to the external home (write side stays
+ *  external-only, no dual-write). */
 export function isResumable(specDir: string): boolean {
 	if (isComplete(specDir)) return false;
 	try {
 		const raw = readFileSync(resumeCachePath(specDir), "utf8");
 		return raw.trim().length > 0;
-	} catch {
-		return false;
+	} catch { /* external absent — try the pre-S1 in-spec home (read-only) */
+		try {
+			const raw = readFileSync(join(specDir.endsWith("/") ? specDir.slice(0, -1) : specDir, RESUME_CACHE_BASENAME), "utf8");
+			return raw.trim().length > 0;
+		} catch {
+			return false;
+		}
 	}
 }
 
@@ -135,7 +155,10 @@ export function findResumableSpec(cwd: string): string | undefined {
 		if (isResumable(specDir)) {
 			try {
 				candidates.push({ id, mtime: statSync(resumeCachePath(specDir)).mtimeMs });
-			} catch { /* ignore */ }
+			} catch {
+				// B1 bridge: pre-S1 in-spec cache — stat that for recency
+				try { candidates.push({ id, mtime: statSync(join(specDir.endsWith("/") ? specDir.slice(0, -1) : specDir, RESUME_CACHE_BASENAME)).mtimeMs }); } catch { /* ignore */ }
+			}
 		}
 	};
 	// worktree-based specs: <cwd>/.worktree/<id>/docs/specifications/<id>

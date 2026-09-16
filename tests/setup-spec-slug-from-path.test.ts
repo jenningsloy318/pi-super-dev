@@ -24,6 +24,8 @@ import {
 	slugifyTask,
 	specRefNumerals,
 } from "../src/setup.ts";
+import { stateFileFor } from "../src/state/state-root.ts";
+import { dirname } from "node:path";
 
 const INCIDENT_TASK = "implement @docs/requirements/26-capability-backends.md";
 
@@ -174,7 +176,12 @@ describe("runSetup end-to-end — path-referenced spec id composition (no LLM sl
 			expect(first.specIdentifier).toBe("26-capability-backends");
 			// seed progress so the track is resumable (a bare setup writes no
 			// resume rows — the setup.test.ts SCENARIO-045 pattern)
-			writeFileSync(join(first.specDirectory, ".resume-cache.jsonl"), '{"key":"pipeline.requirements@root#1","result":{"text":"","control":{}}}');
+			// 063 S1: the cache's durable home is the EXTERNAL state root — seed there.
+			{
+				const external = stateFileFor(first.specDirectory, ".resume-cache.jsonl");
+				mkdirSync(dirname(external), { recursive: true });
+				writeFileSync(external, '{"key":"pipeline.requirements@root#1","result":{"text":"","control":{}}}');
+			}
 			const second = runSetup(INCIDENT_TASK, { cwd: d, skipWorktree: true });
 			expect(second.specIdentifier).toBe("26-capability-backends");
 			expect(second.reusedTrack).toBe(true); // same slug → containment 1 → G2 re-entry
