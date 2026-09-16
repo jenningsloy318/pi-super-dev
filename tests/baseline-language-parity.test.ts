@@ -8,7 +8,7 @@ import {
 	resolveGoModuleForPackages,
 	parseFailingPythonTestFiles,
 } from "../src/build-runner/scope.ts";
-import { resolveInScopePassWithBaseline } from "../src/build-runner/gates.ts";
+import { resolveInScopePassWithBaseline } from "../src/build-runner/gates/index.ts";
 import type { BaselineVerifyInput, BaselineCheckResult } from "../src/build-runner/baseline.ts";
 
 // v0.2.9 G6 (run 2026-08-19T08-32-47-962Z): the env-blocker baseline check must

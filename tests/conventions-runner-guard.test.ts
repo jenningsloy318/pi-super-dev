@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { insertNpmExecGuard } from "../src/build-runner/runner-discovery.ts";
 import { pmExec, deriveConventionsRunnerSpec } from "../src/build-runner/conventions.ts";
-import { runRedCheck, type RedCheckPlan, type RedCheckDiagnostic } from "../src/build-runner/gates.ts";
+import { runRedCheck, type RedCheckPlan, type RedCheckDiagnostic } from "../src/build-runner/gates/index.ts";
 import type { TestRunnerSpec } from "../src/build-runner/runner-discovery.ts";
 
 describe("insertNpmExecGuard — the ONE shared exec-family guard (P2)", () => {

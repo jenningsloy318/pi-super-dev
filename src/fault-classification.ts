@@ -35,7 +35,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isHarnessBookkeepingPath } from "./helpers.ts";
-import { BASELINE_VERIFY_ERROR_PREFIX } from "./build-runner/gates.ts";
+import { BASELINE_VERIFY_ERROR_PREFIX } from "./build-runner/gates/index.ts";
 import { stateFileFor } from "./state/state-root.ts";
 
 // ── PRA: deterministic classification floor (no LLM) ────────────────────────

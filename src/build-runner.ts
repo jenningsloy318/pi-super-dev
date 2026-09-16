@@ -10,4 +10,4 @@
 export * from "./build-runner/detect.ts";
 export * from "./build-runner/coverage-gate.ts";
 export * from "./build-runner/scope.ts";
-export * from "./build-runner/gates.ts";
+export * from "./build-runner/gates/index.ts"; // v0.4.17: gates.ts -> {build-gate,red-check,deliverable}.ts

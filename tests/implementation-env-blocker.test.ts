@@ -118,7 +118,7 @@ import type {
 // gates module import), and the cache reset delegates to the real resetter.
 vi.mock("../src/build-runner.ts", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>;
-	const gates = await vi.importActual<typeof import("../src/build-runner/gates.ts")>("../src/build-runner/gates.ts");
+	const gates = await vi.importActual<typeof import("../src/build-runner/gates/index.ts")>("../src/build-runner/gates/index.ts");
 	return {
 		...actual,
 		runRedCheck: vi.fn((): string => "unknown"),
@@ -148,7 +148,7 @@ vi.mock("../src/build-runner/baseline.ts", async (importOriginal) => {
 import { implementationStage } from "../src/stages/implementation/index.ts";
 import { runRedCheck, runBuildGate, runDeliverableCheck, resetDeliverableCheckCache } from "../src/build-runner.ts";
 import { clearBaselineCache } from "../src/build-runner/baseline.ts";
-import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates.ts";
+import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates/index.ts";
 import { resetJudgeBudgets } from "../src/stages/judge.ts";
 import { stateFileFor, specStateDir } from "../src/state/state-root.ts";
 

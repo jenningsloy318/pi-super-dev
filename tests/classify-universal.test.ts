@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { classifyFromEvidence } from "../src/build-runner/gates.ts";
+import { classifyFromEvidence } from "../src/build-runner/gates/index.ts";
 
 const CASES: Array<{ name: string; exitOk: boolean; counts: { tests: number; failures: number; errors: number; skipped: number } | null; want: string }> = [
 	// Structured red: tests ran and failed/errored (error = stub-throw RED, F4 semantics).

@@ -117,7 +117,8 @@ describe("superDevEnv (config.json env channel)", () => {
 	});
 
 	it("tier-(ii) escape hatch preserved: set-but-empty SUPER_DEV_BUILD_TEST_PACKAGES still skips auto-detect (source contract)", async () => {
-		const src = await import("node:fs").then((fs) => fs.readFileSync("src/build-runner/gates.ts", "utf8"));
+		// v0.4.17: gates.ts split — the asserted site moved into the build-gate part
+const src = await import("node:fs").then((fs) => fs.readFileSync("src/build-runner/gates/red-check.ts", "utf8"));
 		const site = src.slice(src.indexOf("SUPER_DEV_BUILD_TEST_PACKAGES") !== -1 ? src.indexOf("process.env.SUPER_DEV_BUILD_TEST_PACKAGES !== undefined") : -1);
 		expect(site).toContain("process.env.SUPER_DEV_BUILD_TEST_PACKAGES !== undefined");
 		// parseTestPackages("") => [] => workspace-wide, and the tier-(iii) auto-detect branch is unreachable when env is defined

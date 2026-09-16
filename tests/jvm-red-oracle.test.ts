@@ -20,7 +20,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectProjectCommands } from "../src/build-runner/detect.ts";
-import { classifyFromEvidence, runRedCheck } from "../src/build-runner/gates.ts";
+import { classifyFromEvidence, runRedCheck } from "../src/build-runner/gates/index.ts";
 import { conventionPlansFor } from "../src/build-runner/conventions.ts";
 
 let root = "";

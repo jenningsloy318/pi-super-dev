@@ -29,7 +29,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { BuildGateResult } from "../src/build-runner.ts";
-import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates.ts";
+import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates/index.ts";
 import type { AgentCall, AgentResult, HelperResult, PipelineState, RunOptions, StageContext } from "../src/types.ts";
 
 vi.mock("../src/build-runner.ts", async (orig) => {

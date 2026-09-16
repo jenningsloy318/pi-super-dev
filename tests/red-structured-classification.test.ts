@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRedCheck } from "../src/build-runner/gates.ts";
+import { runRedCheck } from "../src/build-runner/gates/index.ts";
 
 let root = "";
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "sd-xmlrun-")); });

@@ -8,8 +8,8 @@ import {
 	clearBaselineCache,
 	type BaselineRunner,
 } from "../src/build-runner/baseline.ts";
-import { resolveInScopePassWithBaseline } from "../src/build-runner/gates.ts";
-import * as gatesNs from "../src/build-runner/gates.ts";
+import { resolveInScopePassWithBaseline } from "../src/build-runner/gates/index.ts";
+import * as gatesNs from "../src/build-runner/gates/index.ts";
 
 /** Real throwaway git repo helper (B-6 fixtures). */
 function mkGitRepo(): string {

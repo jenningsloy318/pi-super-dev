@@ -34,10 +34,10 @@ vi.mock("node:child_process", async (importOriginal) => {
 	};
 });
 
-import { runRedCheck } from "../src/build-runner/gates.ts";
+import { runRedCheck } from "../src/build-runner/gates/index.ts";
 import { resolveIntegrationStems } from "../src/build-runner/detect.ts";
 import { classifyObviousRedPath } from "../src/test-artifacts.ts";
-import { tolerantMatch, stripCommentsAndBlanks } from "../src/build-runner/gates.ts";
+import { tolerantMatch, stripCommentsAndBlanks } from "../src/build-runner/gates/index.ts";
 
 function gitInit(dir: string): void {
 	for (const args of [["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]]) {

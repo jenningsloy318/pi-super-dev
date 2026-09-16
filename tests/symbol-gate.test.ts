@@ -1,5 +1,5 @@
 /**
- * Unit tests for `computeSymbolGate` (src/build-runner/gates.ts) — the
+ * Unit tests for `computeSymbolGate` (src/build-runner/gates/index.ts) — the
  * silent-empty-success / hollow-file killer. A claimed source deliverable that
  * EXISTS but contains only comments/whitespace (no language symbols) must FAIL
  * the gate and be listed in `hollowFiles`; real code, unknown languages, and

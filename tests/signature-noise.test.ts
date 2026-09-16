@@ -85,7 +85,7 @@ vi.mock("../src/render/render.ts", () => ({
 import { implementationStage } from "../src/stages/implementation/index.ts";
 import { runRedCheck, runBuildGate, type RedCheckDiagnostic } from "../src/build-runner.ts";
 import { stripVolatileNoise } from "../src/fault-classification.ts";
-import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates.ts";
+import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates/index.ts";
 import { resetJudgeBudgets } from "../src/stages/judge.ts";
 
 const redCheck = vi.mocked(runRedCheck);

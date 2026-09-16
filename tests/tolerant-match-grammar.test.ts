@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { tolerantMatch } from "../src/build-runner/gates.ts";
+import { tolerantMatch } from "../src/build-runner/gates/index.ts";
 
 describe("tolerantMatch — literal-first grammar (F-14)", () => {
 	it("row 1: plain literal both polarities", () => {

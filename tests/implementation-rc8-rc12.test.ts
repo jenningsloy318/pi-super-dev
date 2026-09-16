@@ -70,7 +70,7 @@ vi.mock("../src/build-runner.ts", async (importOriginal) => {
 
 import { implementationStage } from "../src/stages/implementation/index.ts";
 import { runRedCheck, runBuildGate } from "../src/build-runner.ts";
-import { runDeliverableCheck, runRedCheck as runRedCheckRealGo } from "../src/build-runner/gates.ts";
+import { runDeliverableCheck, runRedCheck as runRedCheckRealGo } from "../src/build-runner/gates/index.ts";
 import { ChangeTracker, setActiveTracker } from "../src/tracking.ts";
 import { buildTddPrompt, buildRedReviewPrompt } from "../src/prompts.ts";
 

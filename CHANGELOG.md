@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Refactor — v0.4.17: implementation.ts 拆分(4 模块)+ 复审修复
+### Refactor — v0.4.17b: build-runner/gates.ts 拆分(3 模块)
+
+**English — the second-largest source file, split the same way.** `src/build-runner/gates.ts` (1,998 lines) becomes `src/build-runner/gates/{build-gate,red-check,deliverable}.ts` re-exported by a new `index.ts`; the `build-runner.ts` barrel points at it, so every `import { ... } from "../build-runner.ts"` still resolves. Pure code motion, 4200/4200 green.
+- **Cluster boundaries** (chosen by cohesion, not line count): `build-gate.ts` = the command-plan/bootstrapping machinery + `runBuildGate`; `red-check.ts` = the RED oracle (`runRedCheck`, status classification, diagnostics); `deliverable.ts` = the deliverable/symbol/change gates.
+- **Wiring bug found and fixed in my own tooling**: the cross-module symbol-wiring script captured only `.stderr` from `tsc`, which actually writes errors to **stdout** — so it silently wired zero symbols twice before the capture was corrected. The same script's module regex missed hyphenated filenames (`\w` excludes `-`), hiding the real missing set. Both are fixed in the script, not worked around.
+- **Source-contract tests**: the two that build the module text from an array (`["detect","scope","gates"]`) now list the three parts; the env-channel pin reads `red-check.ts` where the asserted site actually lives (verified by grep of the exact string, not by the module name).
+
+### Refactor — v0.4.17: implementation.ts 拆分(4 模块)+ 复审修复 implementation.ts 拆分(4 模块)+ 复审修复
 
 **English — the largest file in the repo, split into four cohesive modules (pure code motion).** `src/stages/implementation.ts` (5,274 lines) became `src/stages/implementation/{red-evidence,phase-reentry,phase-status,stage}.ts` re-exported by `index.ts`, preserving every pre-split resolution path. The 3,409-line stage body is now navigable gate-by-gate. Behavior is unchanged — 4200/4200 tests green, tsc clean.
 - **Split discipline**: no `noUnusedLocals` in tsconfig, so the full import block could be copied into every part, making this pure code motion. Cross-boundary private helpers (38) were exported from their owning module and imported at the single consumer (stage.ts), never duplicated. `tests/helpers/implementation-source.ts` gives source-contract tests the concatenated pre-split text so pins that span parts keep reading one body.

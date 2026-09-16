@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
 import { detectProjectCommands } from "../src/build-runner/detect.ts";
-import { runBuildGate } from "../src/build-runner/gates.ts";
+import { runBuildGate } from "../src/build-runner/gates/index.ts";
 
 const spawn = spawnSync as unknown as ReturnType<typeof vi.fn>;
 

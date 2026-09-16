@@ -23,7 +23,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BuildGateResult } from "../src/build-runner.ts";
-import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates.ts";
+import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates/index.ts";
 import {
 	INHERITED_RED_SOURCE,
 	appendInheritedRedEvent,
