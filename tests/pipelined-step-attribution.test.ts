@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs";
 import { runInStepScope, currentStepScope } from "../src/step-scope.ts";
 import { stepOccurrenceStamp } from "../src/render/stage-occurrence.ts";
 import { createLiveStream } from "../src/render/live-stream.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -139,13 +140,15 @@ describe("live-stream stamp grouping (the incident regression)", () => {
 });
 
 describe("wiring source contract (class-E: the seam cannot silently regress)", () => {
-	const implementationSrc = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+	const implementationSrc = implementationSources();
 	const workflowSrc = readFileSync(new URL("../src/workflow.ts", import.meta.url), "utf8");
 	const extensionSrc = readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8");
 
 	it("implementation runStep wraps its body in runInStepScope", () => {
 		expect(implementationSrc).toContain("runInStepScope({ stageId: `implementation.${phaseId}.step-${pad(seq)}`");
-		expect(implementationSrc).toContain('import { runInStepScope } from "../step-scope.ts";');
+		// v0.4.16: the stage split moved the import line into the sibling modules
+		// (each part imports it from "../../step-scope.ts"); assert the import still resolves.
+		expect((implementationSrc.match(/from "\.\.\/\.\.\/step-scope\.ts";/g) ?? []).length).toBeGreaterThanOrEqual(1);
 	});
 
 	it("v0.3.59 review P1 (class fix): ALL concurrency-critical step sites attribute per-chain — runStep wrap + the manual TDD RED and Implementation sites via inStepScope", () => {

@@ -1,3 +1,4 @@
+import { implementationStageSource } from "./helpers/implementation-source.ts";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -163,12 +164,12 @@ describe("v0.3.73 M7 — implementer self-commit prohibition + detector", () => 
 	});
 
 	it("implementation stage detects HEAD drift across the implementer call (source contract)", () => {
-		const impl = src("../src/stages/implementation.ts");
+		const impl = implementationStageSource(join(import.meta.dirname, ".."));
 		expect(impl).toContain("self-commit");
 	});
 
 	it("HEAD-drift detection brackets BOTH writer windows with pinned timeouts (AR-73-05)", () => {
-		const impl = src("../src/stages/implementation.ts");
+		const impl = implementationStageSource(join(import.meta.dirname, ".."));
 		// The implementer window…
 		expect(impl).toContain("implementer self-commit detected");
 		// …and the RED authoring (tdd-guide) window — the incident's 5d4790d was a

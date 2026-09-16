@@ -52,7 +52,7 @@ vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn() }));
 vi.mock("../src/render/user-notes.ts", () => ({ userNotesForAgent: vi.fn(() => "") }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import { runBuildGate } from "../src/build-runner.ts";
 import { deriveRunStatus } from "../src/workflow.ts";
 import { REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";

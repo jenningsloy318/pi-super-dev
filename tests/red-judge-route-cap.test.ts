@@ -11,7 +11,7 @@
  * failing) — stop resampling the creative routes, start diagnosing.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { MAX_RED_JUDGE_ROUTES, restrictRedJudgeRoutes } from "../src/stages/implementation.ts";
+import { MAX_RED_JUDGE_ROUTES, restrictRedJudgeRoutes } from "../src/stages/implementation/index.ts";
 
 const ROUTES = ["re-author-tests", "fix-environment", "replan-upstream", "allow-scaffold"] as const;
 

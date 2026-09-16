@@ -9,7 +9,7 @@
  * the advisory site can BLOCK it.
  */
 import { describe, it, expect } from "vitest";
-import { laterPhaseDeliverableHits } from "../src/stages/implementation.ts";
+import { laterPhaseDeliverableHits } from "../src/stages/implementation/index.ts";
 
 const phases = [
 	{ name: "phase-01", deliverables: { requireFiles: ["src/a.js"] } },

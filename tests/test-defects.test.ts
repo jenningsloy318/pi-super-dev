@@ -5,7 +5,7 @@
  * (untrusted agent control) and must never throw.
  */
 import { describe, it, expect } from "vitest";
-import { parseTestDefects } from "../src/stages/implementation.ts";
+import { parseTestDefects } from "../src/stages/implementation/index.ts";
 
 describe("parseTestDefects (defensive parse of untrusted control)", () => {
 	it("returns [] for null/undefined/non-object/array input", () => {

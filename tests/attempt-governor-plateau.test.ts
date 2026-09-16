@@ -58,7 +58,7 @@ vi.mock("../src/render/render.ts", () => ({
 	renderAndWrite: vi.fn(),
 }));
 
-import { implementationStage, maxPhaseAttempts } from "../src/stages/implementation.ts";
+import { implementationStage, maxPhaseAttempts } from "../src/stages/implementation/index.ts";
 import { runRedCheck, runBuildGate, type RedCheckDiagnostic } from "../src/build-runner.ts";
 import { resetJudgeBudgets } from "../src/stages/judge.ts";
 
@@ -335,7 +335,7 @@ describe("Wave P1 D-C — attempt governor plateau + cross-scope routing", () =>
 	// ── pure helpers (exported; the stage wiring above exercises them live) ──
 
 	it("landedFootprintIsEmpty: all-empty change classes ⇒ true; anything else ⇒ false (never throws)", async () => {
-		const { landedFootprintIsEmpty, crossScopeTestCitations, crossScopeContractConflictFrame } = await import("../src/stages/implementation.ts");
+		const { landedFootprintIsEmpty, crossScopeTestCitations, crossScopeContractConflictFrame } = await import("../src/stages/implementation/index.ts");
 		expect(landedFootprintIsEmpty('{"created":[],"modified":[],"deleted":[]}')).toBe(true);
 		expect(landedFootprintIsEmpty('{"created":["a.ts"],"modified":[],"deleted":[]}')).toBe(false);
 		expect(landedFootprintIsEmpty('{"modified":["a.ts"],"created":[],"deleted":[]}')).toBe(false);
@@ -349,7 +349,7 @@ describe("Wave P1 D-C — attempt governor plateau + cross-scope routing", () =>
 	});
 
 	it("crossScopeTestCitations (pure): cross-phase requireTests ownership, co-declared files are same-scope, indices respected", async () => {
-		const { crossScopeTestCitations } = await import("../src/stages/implementation.ts");
+		const { crossScopeTestCitations } = await import("../src/stages/implementation/index.ts");
 		const phases = [
 			{ name: "p1", deliverables: { requireTests: ["tests/own.test.ts"], requireContains: [{ file: "src/shared.ts", pattern: "X" }] } },
 			{ name: "p2", deliverables: { requireTests: ["tests/foreign.test.ts"] } },
@@ -373,7 +373,7 @@ describe("Wave P1 D-C — attempt governor plateau + cross-scope routing", () =>
 	});
 
 	it("crossScopeContractConflictFrame (pure): names the phase, every citation and owning phase; offers replan-upstream", async () => {
-		const { crossScopeContractConflictFrame } = await import("../src/stages/implementation.ts");
+		const { crossScopeContractConflictFrame } = await import("../src/stages/implementation/index.ts");
 		const frame = crossScopeContractConflictFrame({
 			phaseId: "phase-01",
 			phaseName: "wiring",

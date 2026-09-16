@@ -8,7 +8,7 @@
  * agent-returned array field into a genuine string[].
  */
 import { describe, it, expect } from "vitest";
-import { normalizeStringArray } from "../src/stages/implementation.ts";
+import { normalizeStringArray } from "../src/stages/implementation/index.ts";
 
 describe("normalizeStringArray — agent-shape defense", () => {
 	it("passes a real string[] through (filtered to strings)", () => {

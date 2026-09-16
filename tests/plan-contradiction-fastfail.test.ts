@@ -17,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { contradictionFastFailFrame } from "../src/stages/plan-feasibility.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 describe("v0.3.79 A2 contradiction fast-fail frame (pure)", () => {
 	it("builds the judge context naming both phases, the reverted files, and the failure reasons", () => {
@@ -45,7 +46,7 @@ describe("v0.3.79 A2 contradiction fast-fail frame (pure)", () => {
 });
 
 describe("v0.3.79 A2/A1 wiring source contracts", () => {
-	const impl = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+	const impl = implementationSources();
 
 	it("the BLOCKING phase-boundary leak site counts reverts per phase (boundaryRevertHits)", () => {
 		expect(impl).toMatch(/boundaryRevertHits/);

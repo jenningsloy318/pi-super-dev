@@ -38,7 +38,7 @@ vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 
 import { replanPending } from "../src/replan/replan.ts";
 import { shouldIterateImplementation, shouldRunVerification, verificationSkippedReplanStage } from "../src/stages/index.ts";
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 
 describe("F9-C — replanPending", () => {
 	it("true iff the marker is set on state", () => {

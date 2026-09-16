@@ -36,7 +36,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { implementationStage, MAX_PARTIAL_REENTRIES } from "../src/stages/implementation.ts";
+import { implementationStage, MAX_PARTIAL_REENTRIES } from "../src/stages/implementation/index.ts";
 import type { PipelineState, StageContext, RunOptions, AgentResult, AgentCall, ControlObj, HelperResult } from "../src/types.ts";
 
 const gateQ = gateQRef.q;

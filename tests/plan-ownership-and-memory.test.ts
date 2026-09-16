@@ -7,8 +7,10 @@ import { readFileSync } from "node:fs";
 import { planFeasibilityFindings } from "../src/stages/plan-feasibility.ts";
 import { priorReplanConstraintBlock } from "../src/replan/replan.ts";
 import { buildSpecPrompt } from "../src/prompts.ts";
+import { implementationSources, implementationStageSource } from "./helpers/implementation-source.ts";
 
-const impl = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+const impl = implementationSources();
+const implStage = implementationStageSource();
 const writersSrc = readFileSync(new URL("../src/stages/writers.ts", import.meta.url), "utf8");
 const promptsSrc = readFileSync(new URL("../src/prompts.ts", import.meta.url), "utf8");
 
@@ -70,7 +72,7 @@ describe("v0.3.80 B1 — ownership grammar (validator + enforcement alignment)",
 
 describe("v0.3.80 B2 — stage-close re-verification (commit fusion)", () => {
 	it("reverifyPartialPhases flips a partial phase whose deliverables are satisfied at close; unsatisfied and empty contracts stay partial (fail-closed)", async () => {
-		const { reverifyPartialPhases } = await import("../src/stages/implementation.ts");
+		const { reverifyPartialPhases } = await import("../src/stages/implementation/index.ts");
 		const { wt, clean } = mkWt();
 		try {
 			mkdirSync(join(wt, "docs"), { recursive: true });
@@ -93,7 +95,7 @@ describe("v0.3.80 B2 — stage-close re-verification (commit fusion)", () => {
 	});
 
 	it("review pins: exclude set bypasses judge-owned env-blocked phases; notContains-only contracts never flip (vacuous guard); pre-existing content with an empty changed-set input stays partial when the set is provided", async () => {
-		const { reverifyPartialPhases } = await import("../src/stages/implementation.ts");
+		const { reverifyPartialPhases } = await import("../src/stages/implementation/index.ts");
 		const { wt, clean } = mkWt();
 		try {
 			mkdirSync(join(wt, "docs"), { recursive: true });
@@ -128,7 +130,7 @@ describe("v0.3.80 B2 — stage-close re-verification (commit fusion)", () => {
 	});
 
 	it("a green phase is never re-verified and a phase with no deliverable clauses is fail-closed partial", async () => {
-		const { reverifyPartialPhases } = await import("../src/stages/implementation.ts");
+		const { reverifyPartialPhases } = await import("../src/stages/implementation/index.ts");
 		const { wt, clean } = mkWt();
 		try {
 			const phases = [
@@ -158,7 +160,7 @@ describe("v0.3.80 B2 — stage-close re-verification (commit fusion)", () => {
 	// ── F-04 (v0.3.86): requireTests counts as an AFFIRMATIVE clause — pre-fix a
 	// test-only phase was swallowed by the "(no affirmative clause)" vacuous guard.
 	it("F-04: a requireTests-only contract is affirmative — flippable when the test name exists, partial when it does not", async () => {
-		const { reverifyPartialPhases } = await import("../src/stages/implementation.ts");
+		const { reverifyPartialPhases } = await import("../src/stages/implementation/index.ts");
 		const { wt, clean } = mkWt();
 		try {
 			mkdirSync(join(wt, "tests"), { recursive: true });
@@ -181,11 +183,15 @@ describe("v0.3.80 B2 — stage-close re-verification (commit fusion)", () => {
 	// ── F-17 (v0.3.86): the misspelled export is renamed; the old spelling stays
 	// as a deprecated re-export alias of the SAME function object.
 	it("F-17: attributeQuarantinedViolations is the canonical export; attributQuarantinedViolations aliases it", async () => {
-		const implMod = await import("../src/stages/implementation.ts");
+		const implMod = await import("../src/stages/implementation/index.ts");
 		expect(typeof implMod.attributeQuarantinedViolations).toBe("function");
 		expect(implMod.attributQuarantinedViolations).toBe(implMod.attributeQuarantinedViolations);
-		// internal call sites use the corrected spelling only
-		expect(impl.match(/attributQ(?!uarantinedViolations =)/g) ?? []).toHaveLength(0);
+		// internal call sites use the corrected spelling only. v0.4.16 moved
+		// the alias with the function into phase-status.ts; the only misspelling
+		// allowed anywhere is its own definition + re-export, never a call.
+		const phaseStatus = readFileSync(new URL("../src/stages/implementation/phase-status.ts", import.meta.url), "utf8");
+		expect(phaseStatus.match(/attributQuarantinedViolations(?![A-Za-z])/g) ?? []).toHaveLength(1); // the alias definition only
+		expect(phaseStatus.match(/attributQuarantinedViolations\(/g) ?? []).toHaveLength(0); // never CALLED by the misspelling
 	});
 });
 

@@ -230,7 +230,7 @@ describe("v0.3.74 P1-a — harness-file registry is the single source of truth",
 		// v0.3.74 dual review F3: the scan covers ALL FOUR consumer files —
 		// helpers.ts (fifth literal) and implementation.ts (sixth) had survived
 		// the two-file scan while claiming the class was dead.
-		for (const rel of ["../src/test-artifacts.ts", "../src/tracking.ts", "../src/helpers.ts", "../src/stages/implementation.ts"]) {
+		for (const rel of ["../src/test-artifacts.ts", "../src/tracking.ts", "../src/helpers.ts", "../src/stages/implementation/index.ts"]) {
 			const src = readFileSync(join(import.meta.dirname, rel), "utf8");
 			expect(src.includes("BASENAMES = new Set("), `${rel} must derive its basename sets from harness-paths.ts`).toBe(false);
 			expect(src.includes("HARNESS_BOOKKEEPING_FILES = new Set(["), `${rel} must derive its basename sets from harness-paths.ts`).toBe(false);

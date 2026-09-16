@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { planFeasibilityFindings, scanImmutabilityIdioms } from "../src/stages/plan-feasibility.ts";
 import type { PlanPhase, PlanFeasibilityFinding } from "../src/stages/plan-feasibility.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 let wt: string;
 beforeEach(() => {
@@ -126,7 +127,7 @@ describe("Wave P1 D-A — protection-threat (feasibility grammar v2, Check 3)", 
 		// REPLAN routing pin: the entry site's route condition is exactly the
 		// contradictions array these findings land in (plan-contradiction-fastfail
 		// pins the triggerReplanForFindings wiring; this pins the gate itself).
-		const impl = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+		const impl = implementationSources();
 		// 065 D-F-D: the entry gate's findings merge into the same routing gate.
 	expect(impl).toContain("if (feasibility.contradictions.length > 0 || entryGateFindings.length > 0)");
 	});

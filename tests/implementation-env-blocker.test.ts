@@ -145,7 +145,7 @@ vi.mock("../src/build-runner/baseline.ts", async (importOriginal) => {
 	};
 });
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import { runRedCheck, runBuildGate, runDeliverableCheck, resetDeliverableCheckCache } from "../src/build-runner.ts";
 import { clearBaselineCache } from "../src/build-runner/baseline.ts";
 import { BASELINE_VERIFY_ERROR_PREFIX } from "../src/build-runner/gates.ts";

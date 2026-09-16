@@ -1,3 +1,4 @@
+import { implementationSources } from "./helpers/implementation-source.ts";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import {
 	attributeQuarantinePaths,
 	attributQuarantinedViolations,
 	type BoundaryQuarantinePayload,
-} from "../src/stages/implementation.ts";
+} from "../src/stages/implementation/index.ts";
 
 /**
  * v0.3.73 M1 — the concurrent-writer quarantine (v0.3.54) must not discard a
@@ -64,7 +65,7 @@ describe("v0.3.73 M1 — salvaged verdict flows through the pipelined red-review
 	});
 
 	it("source contract: the join consumes salvagedControl behind full attribution", () => {
-		const src = readFileSync(join(import.meta.dirname, "../src/stages/implementation.ts"), "utf8");
+		const src = implementationSources();
 		// The join must consult the salvaged control AND the pure classifier, and
 		// log the salvage honestly.
 		expect(src).toContain("attributeQuarantinePaths");
@@ -92,7 +93,7 @@ describe("v0.3.73 dual review AR-73-01 — salvage predicate rests on DECLARED c
 	});
 
 	it("source contract: the salvage gate passes testFilesAsClaims=false", () => {
-		const src = readFileSync(join(import.meta.dirname, "../src/stages/implementation.ts"), "utf8");
+		const src = implementationSources();
 		expect(src).toContain("testFilesAsClaims: false");
 	});
 });

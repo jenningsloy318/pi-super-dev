@@ -49,7 +49,7 @@ vi.mock("../src/build-runner.ts", async (importOriginal) => {
 
 vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import { runRedCheck, runBuildGate, type RedCheckDiagnostic, type RedStatus } from "../src/build-runner.ts";
 import { resetJudgeBudgets } from "../src/stages/judge.ts";
 

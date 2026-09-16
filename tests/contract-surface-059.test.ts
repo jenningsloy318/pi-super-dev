@@ -32,6 +32,7 @@ import { planFeasibilityFindings } from "../src/stages/plan-feasibility.ts";
 import type { PlanPhase } from "../src/stages/plan-feasibility.ts";
 import { CONTRACT_CONFLICT_SCOPE } from "../src/review/contract-conflict-consumer.ts";
 import { readFileSync } from "node:fs";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 let wt: string;
 beforeEach(() => {
@@ -576,7 +577,7 @@ describe("059 — Check 3 amendmentFamily exemption consumer (.knowledge.json se
 	});
 
 	it("implementation call site passes setup.specDirectory (059 §6 handoff contract)", () => {
-		const src = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+		const src = implementationSources();
 		expect(src).toContain("planFeasibilityFindings(phases, setup.worktreePath, setup.specDirectory)");
 	});
 });

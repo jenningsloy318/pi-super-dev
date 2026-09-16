@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redEvidenceSignature } from "../src/stages/implementation.ts";
+import { redEvidenceSignature } from "../src/stages/implementation/index.ts";
 
 /** Structural stand-in for the module-private RedEvidence interface — the
  * signature function only reads these fields. */

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { resolveRedBoundary } from "../src/stages/implementation.ts";
+import { resolveRedBoundary } from "../src/stages/implementation/index.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { AgentCall, AgentResult, Budget, HelperCall, PipelineState, StageContext } from "../src/types.ts";
 

@@ -11,8 +11,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { classifyRedEvidence, redEvidenceFailureReasons, redGenerationRetryHint } from "../src/stages/implementation.ts";
-import type { RedEvidence } from "../src/stages/implementation.ts";
+import { classifyRedEvidence, redEvidenceFailureReasons, redGenerationRetryHint } from "../src/stages/implementation/index.ts";
+import type { RedEvidence } from "../src/stages/implementation/index.ts";
 
 const BOUNDARY_OK = { classifications: [], forbiddenFiles: [], ambiguousFiles: [], allAllowed: true };
 

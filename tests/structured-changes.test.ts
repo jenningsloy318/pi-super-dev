@@ -34,7 +34,7 @@ import type { SetupControl, ControlObj } from "../src/types.ts";
 // RED target — does NOT exist yet in Phase 1. Phase 2 adds it. Importing a
 // non-existent named export resolves to `undefined` under vitest/esbuild, so
 // `parseStructuredChanges(...)` throws at call time → these tests fail (RED).
-import { parseStructuredChanges } from "../src/stages/implementation.ts";
+import { parseStructuredChanges } from "../src/stages/implementation/index.ts";
 
 // ─── Mocks (hoisted before the module under test loads) ─────────────────────
 const mock = vi.hoisted(() => ({ implControl: null as Record<string, unknown> | null }));
@@ -68,7 +68,7 @@ vi.mock("../src/render/render.ts", () => ({
 	renderAndWrite: vi.fn(),
 }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import type { Stage, StageContext, AgentCall, AgentResult, HelperResult, Budget, RunOptions, PipelineState } from "../src/types.ts";
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────

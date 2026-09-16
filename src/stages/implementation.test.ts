@@ -57,7 +57,7 @@ vi.mock("../build-runner.ts", async (importOriginal) => {
 	};
 });
 
-import { implementationStage } from "./implementation.ts";
+import { implementationStage } from "./implementation/index.ts";
 
 // --- fixture gate results ---------------------------------------------------
 /** A clean PASS (gate.pass true) — normal GREEN path. SCENARIO-014. */

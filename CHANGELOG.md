@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — v0.4.16: 四 gate 折叠(atria CONTEST + gemini 双 gate + code APPROVE)
+### Refactor — v0.4.17: implementation.ts 拆分(4 模块)+ 复审修复
+
+**English — the largest file in the repo, split into four cohesive modules (pure code motion).** `src/stages/implementation.ts` (5,274 lines) became `src/stages/implementation/{red-evidence,phase-reentry,phase-status,stage}.ts` re-exported by `index.ts`, preserving every pre-split resolution path. The 3,409-line stage body is now navigable gate-by-gate. Behavior is unchanged — 4200/4200 tests green, tsc clean.
+- **Split discipline**: no `noUnusedLocals` in tsconfig, so the full import block could be copied into every part, making this pure code motion. Cross-boundary private helpers (38) were exported from their owning module and imported at the single consumer (stage.ts), never duplicated. `tests/helpers/implementation-source.ts` gives source-contract tests the concatenated pre-split text so pins that span parts keep reading one body.
+- **Review fixes found by READING the whole file** (not grep): the `convergenceBlocked` comment claimed "DEPRECATED — never set to true anymore" while the wall-fuse paths set it true twice — corrected to describe the real v0.3.85 semantics; a duplicate `rootAbs`/`rootAbsNorm` pair (identical expressions) collapsed to one; an orphaned doc block (`laterPhaseDeliverableHits`'s, sitting ahead of `reverifyPartialPhases`) reattached to its function; and a 33-line indentation drift in the coverage-gate block (the `if (covRunnerSpec)` body sat at the `if`'s tab level).
+- **Honesty**: the split surfaced that several source-contract tests pinned import *lines*, which moved with the modules — those pins were retargeted to the contract they actually assert (the call site, the defining module) rather than the line.
+
+### Fixed — v0.4.16: 四 gate 折叠(atria CONTEST + gemini 双 gate + code APPROVE) 四 gate 折叠(atria CONTEST + gemini 双 gate + code APPROVE)
 
 **English — the quad-gate fold of the v0.4.14 stamp fix.** Four independent gates ran over the fold; the two blockers it targeted were verified closed end-to-end, and the remaining findings folded here:
 - **AV4 (atria, the one real catch)**: v0.4.14's preservation newly activated a DISK-FIRST read inside a ROUTING decision — the design-skip predicate (`artifact-convergence.ts`) calls `readContractSliceStamp`, which now returns the persisted stamp and discards the fresh one `designStage` had just stamped. Two unsafe directions: a stale EMPTY disk stamp could bypass design review for an artifact that landed, and a stale NON-empty one could burn a null-producing stage to the cap. Fix: new `readStateSliceStamp` (state-only) serves routing predicates; disk-first stays with `contractValidationContext`, the consumer that legitimately needs the last-live round's truth. The `injectedSlice` exemption consumer keeps disk-first (same class as contractValidationContext).

@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 // ─── stage mocks (the implementation-bounds.test.ts harness pattern) ───────
 
@@ -55,7 +56,7 @@ vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn() }));
 vi.mock("../src/render/user-notes.ts", () => ({ userNotesForAgent: vi.fn(() => "") }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import {
 	RESEARCH_ASSIST_ARCHIVE_CAP,
 	RESEARCH_ASSIST_BASENAME,
@@ -410,7 +411,7 @@ describe("the research-assists.jsonl ledger", () => {
 		});
 		// phase-commit exclusion: the deterministic committer derives its set from
 		// the same registry role (implementation.ts PHASE_COMMIT_EXCLUDED_BASENAMES).
-		const implSrc = readFileSync("src/stages/implementation.ts", "utf8");
+		const implSrc = implementationSources();
 		expect(implSrc).toContain('harnessBasenames("phaseCommitExcluded")');
 	});
 });

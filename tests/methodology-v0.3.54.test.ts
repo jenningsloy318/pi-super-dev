@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { extractControl, extractControlKeys, drainControlDrift, noteControlDrift } from "../src/control.ts";
-import { attributQuarantinedViolations } from "../src/stages/implementation.ts";
+import { attributQuarantinedViolations } from "../src/stages/implementation/index.ts";
 import { normalizeProseArrays, renderStage, validateData } from "../src/render/render.ts";
 import { STAGE_MODELS } from "../src/render/schemas.ts";
 import { boundaryQuarantinePayload, formatBoundaryQuarantineError, sweepStaleQuarantineDirs } from "../src/workflow.ts";

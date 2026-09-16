@@ -38,7 +38,7 @@ vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn() }));
 vi.mock("../src/render/user-notes.ts", () => ({ userNotesForAgent: vi.fn(() => "") }));
 
-import { implementationStage, maxPhaseAttempts, phaseWallBudgetMs, faultRecurrenceLimit } from "../src/stages/implementation.ts";
+import { implementationStage, maxPhaseAttempts, phaseWallBudgetMs, faultRecurrenceLimit } from "../src/stages/implementation/index.ts";
 import { runWallFuseMs, trailingMedian, runFuseWindDown, freshRunWallFuseState, markRunWallFuseTripped, readRunWallFuseMarker, type RunWallFuseState } from "../src/wall-fuse.ts";
 import { deriveRunStatus, makeContext } from "../src/workflow.ts";
 import type { PipelineState, StageContext, RunOptions, AgentResult, AgentCall, ControlObj, HelperResult } from "../src/types.ts";

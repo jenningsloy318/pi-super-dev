@@ -63,7 +63,7 @@ import type { AgentCall, AgentResult, Budget, ControlObj, HelperResult, Pipeline
 // deliberately NOT mocked: this is the golden path through real machinery.
 vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import { resetJudgeBudgets } from "../src/stages/judge.ts";
 import { appendRunEvent, readRunEvents } from "../src/runlog.ts";
 import { deriveS3Counters } from "../src/evolution/run-observability.ts";

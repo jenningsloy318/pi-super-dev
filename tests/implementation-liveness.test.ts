@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import type { PipelineState, StageContext } from "../src/types.ts";
 
 function mkCtx() {

@@ -33,8 +33,9 @@ import {
 	PROTECTION_BREACH_ALLOWED_ROUTES,
 	PROTECTION_BREACH_SCOPE,
 } from "../src/review/protection-breach-consumer.ts";
-import { restorePaths } from "../src/stages/implementation.ts";
+import { restorePaths } from "../src/stages/implementation/index.ts";
 import type { AgentCall, AgentResult, PipelineState, StageContext } from "../src/types.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
@@ -189,7 +190,7 @@ describe("058 D-B — strike state: phaseProtectionStrikes (per phase, disjoint 
 	});
 
 	it("the state key is phaseProtectionStrikes on the implementation control (disjoint from 059's writerMetadataRetryUsed)", () => {
-		const impl = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+		const impl = implementationSources();
 		const validators = readFileSync(new URL("../src/review/contract-validators.ts", import.meta.url), "utf8");
 		expect(impl).toContain("phaseProtectionStrikes");
 		expect(impl).toContain("phaseProtectionStrikes,"); // persisted on the control across §D iterations
@@ -252,7 +253,7 @@ describe("058 D-B — strike 1: revert to the phase entry state + education bloc
 	});
 
 	it("strike-1 stage wiring: attempt NOT counted (zero attempt cost) + the education re-prompt is consumed once", () => {
-		const impl = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+		const impl = implementationSources();
 		// zero attempt cost: the loop counter is decremented so the for-loop's ++ restores the SAME number
 		expect(impl).toContain("attempt--; // zero attempt cost");
 		expect(impl).toMatch(/protection strike 1\/\$\{PROTECTION_STRIKE_BOUND\}/); // the strike-1 log

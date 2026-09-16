@@ -59,7 +59,7 @@ vi.mock("../src/render/render.ts", () => ({
 	renderAndWrite: vi.fn(),
 }));
 
-import { implementationStage, classifyRedEvidence } from "../src/stages/implementation.ts";
+import { implementationStage, classifyRedEvidence } from "../src/stages/implementation/index.ts";
 import { runRedCheck, deliverablesAlreadyMet } from "../src/build-runner.ts";
 
 const redCheck = runRedCheck as unknown as ReturnType<typeof vi.fn>;

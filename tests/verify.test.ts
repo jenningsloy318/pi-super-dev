@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { integrationTestsGreen, integrationOutcome, expectedIntegrationRoles, integrationLoopNode, reviewLoopNode, reviewLoopUntil, verificationConvergenceNode, findingsSignature } from "../src/stages/verify.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext } from "../src/types.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 describe("reviewLoopNode (Phase 1)", () => {
 	it("is a loop node (review → fix, iterating until approved)", () => {
@@ -361,7 +362,7 @@ describe("M5 verify — emulation retired", () => {
 		expect(artifactSrc).not.toContain("triggerReplanForFindings");
 		const specSrc = readFileSync("src/stages/spec-convergence.ts", "utf8");
 		expect(specSrc).not.toContain("triggerReplanForFindings");
-		const implSrc = readFileSync("src/stages/implementation.ts", "utf8");
+		const implSrc = implementationSources();
 		// v0.3.85 Group 3 raised the count 3 → 5 CONSCIOUSLY (the F2 Tier-2
 		// inherited-red handoff at the partial boundary + the F4 restored-test-file
 		// door at the GREEN boundary); v0.3.85 Group 4 (F5) raised it 5 → 6: the

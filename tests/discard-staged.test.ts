@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
-import { discardGreenWork, restorePaths } from "../src/stages/implementation.ts";
+import { discardGreenWork, restorePaths } from "../src/stages/implementation/index.ts";
 
 function git(cwd: string, ...args: string[]): string {
 	return execSync(`git ${args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`, { cwd, encoding: "utf8" });
@@ -76,7 +76,7 @@ describe("restore-class parity — attributQuarantinedViolations vs discardGreen
 	it("both fully revert a staged modification (same end state)", async () => {
 		// attributQuarantinedViolations takes the structured BoundaryQuarantinePayload
 		// (v0.3.55 contract) + the implementer control; drive it with a real payload.
-		const { attributQuarantinedViolations } = await import("../src/stages/implementation.ts");
+		const { attributQuarantinedViolations } = await import("../src/stages/implementation/index.ts");
 		const makeStaged = (): string => {
 			const root = makeRepo();
 			writeFileSync(join(root, "tracked.txt"), "changed\n");

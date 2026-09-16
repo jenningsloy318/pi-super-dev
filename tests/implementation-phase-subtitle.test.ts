@@ -23,7 +23,7 @@ vi.mock("../src/build-runner.ts", () => ({
 	computeSymbolGate: () => ({ pass: true, hollowFiles: [] }),
 }));
 
-const { implementationStage } = await import("../src/stages/implementation.ts");
+const { implementationStage } = await import("../src/stages/implementation/index.ts");
 
 const mkState = (phases: Array<{ name?: string }>): PipelineState =>
 	({

@@ -26,7 +26,7 @@ import { harnessBasenames } from "../src/harness-paths.ts";
 // transforms/evaluates at COLLECTION time, outside any per-test timer
 // (Code-Gate review: a dynamic import inside the test flaked at vitest's 5000ms
 // default testTimeout on cold/loaded runs).
-import { deterministicPhaseCommit } from "../src/stages/implementation.ts";
+import { deterministicPhaseCommit } from "../src/stages/implementation/index.ts";
 
 const SPEC = "docs/specifications/26-x";
 

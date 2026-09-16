@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deterministicPhaseCommit, discardGreenWork, porcelainEntries, gitStatusPaths } from "../src/stages/implementation.ts";
+import { deterministicPhaseCommit, discardGreenWork, porcelainEntries, gitStatusPaths } from "../src/stages/implementation/index.ts";
 
 const ENV_KEYS = ["SUPER_DEV_LLM_COMMITS"];
 
@@ -129,8 +129,8 @@ describe("discardGreenWork (v0.3.43 RC2 — fail-closed join discard)", () => {
 	afterEach(() => { for (const k of ENV_KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
 
 	it("restores tracked modifications and removes untracked GREEN files while keeping test files and harness bookkeeping", async () => {
-		const { deterministicPhaseCommit } = await import("../src/stages/implementation.ts");
-		const { discardGreenWork } = await import("../src/stages/implementation.ts");
+		const { deterministicPhaseCommit } = await import("../src/stages/implementation/index.ts");
+		const { discardGreenWork } = await import("../src/stages/implementation/index.ts");
 		const { repo, git } = makeRepo();
 		// Tracked production file modified by the implementer.
 		writeFileSync(join(repo, "seed.txt"), "modified-by-implementer\n");
@@ -156,7 +156,7 @@ describe("discardGreenWork (v0.3.43 RC2 — fail-closed join discard)", () => {
 	});
 
 	it("restores tracked files DELETED by the implementer", async () => {
-		const { discardGreenWork } = await import("../src/stages/implementation.ts");
+		const { discardGreenWork } = await import("../src/stages/implementation/index.ts");
 		const { repo, git } = makeRepo();
 		spawnSync("rm", [join(repo, "seed.txt")]);
 		const discarded = discardGreenWork(repo, new Set());
@@ -169,7 +169,7 @@ describe("discardGreenWork (v0.3.43 RC2 — fail-closed join discard)", () => {
 		// Pre-fix, `git restore --worktree -- ':(top)*'` parsed magic `top` + a
 		// cross-directory `*` pattern and reverted EVERY tracked modified file —
 		// including keep-listed RED test files the per-path iteration protects.
-		const { discardGreenWork } = await import("../src/stages/implementation.ts");
+		const { discardGreenWork } = await import("../src/stages/implementation/index.ts");
 		const { repo, git } = makeRepo();
 		mkdirSync(join(repo, "tests"), { recursive: true });
 		writeFileSync(join(repo, "tests", "red.test.ts"), "it('red', () => {});\n");

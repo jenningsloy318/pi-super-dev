@@ -59,7 +59,7 @@ import {
 	type JudgeVerdictWire,
 } from "../src/stages/judge.ts";
 import { buildRedBoundaryPrompt, redBoundaryResultFromAgent } from "../src/test-artifacts.ts";
-import { resolveTddScenarioCoverage } from "../src/stages/implementation.ts";
+import { resolveTddScenarioCoverage } from "../src/stages/implementation/index.ts";
 import type { StageContext, AgentResult } from "../src/types.ts";
 
 // ─── minimal-instance machinery (schema-derived, never hand-built) ──────────

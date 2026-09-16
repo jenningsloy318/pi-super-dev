@@ -11,12 +11,13 @@
  * after rollback. Mirrors tests/contract-writers-059.test.ts style.
  */
 
+import { implementationSources } from "./helpers/implementation-source.ts";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { deterministicPhaseCommit } from "../src/stages/implementation.ts";
+import { deterministicPhaseCommit } from "../src/stages/implementation/index.ts";
 import {
 	captureStageEntryBaseline,
 	reapplyRollbackStash,
@@ -345,7 +346,7 @@ describe("058 D-D — the deterministic phase-commit chain stays intact after ro
 	});
 
 	it("source pin: the stage wiring resets the walk to the NEW-3 target and re-baselines the phase-start dirt snapshot", () => {
-		const impl = readFileSync(new URL("../src/stages/implementation.ts", import.meta.url), "utf8");
+		const impl = implementationSources();
 		expect(impl).toContain("if (laterPhasesRan(phaseStatus, idx)) {"); // the re-entry trigger
 		expect(impl).toContain("rollbackConvergenceReentry({"); // the Layer-4 seam
 		expect(impl).toContain("reapplyRollbackStash({ worktreePath: setup.worktreePath, stashSha: pendingRollbackStash.stashSha"); // post-re-execution re-apply

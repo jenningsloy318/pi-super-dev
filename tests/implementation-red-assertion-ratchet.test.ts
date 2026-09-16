@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { BuildGateResult } from "../src/build-runner.ts";
 import type { AgentCall, AgentResult, HelperResult, PipelineState, RunOptions, Stage, StageContext } from "../src/types.ts";
-import type { RedEvidence } from "../src/stages/implementation.ts";
+import type { RedEvidence } from "../src/stages/implementation/index.ts";
 
 vi.mock("../src/build-runner.ts", async (orig) => {
 	const a = (await orig()) as Record<string, unknown>;
@@ -45,7 +45,7 @@ vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 vi.mock("../src/render/reflection.ts", () => ({ runReflectionAsync: vi.fn() }));
 vi.mock("../src/render/user-notes.ts", () => ({ userNotesForAgent: vi.fn(() => "") }));
 
-import { assertionSurfaceCount, weakenedAssertionSurfaces, redGenerationRetryHint, redEvidenceFailureReasons, implementationStage } from "../src/stages/implementation.ts";
+import { assertionSurfaceCount, weakenedAssertionSurfaces, redGenerationRetryHint, redEvidenceFailureReasons, implementationStage } from "../src/stages/implementation/index.ts";
 import { runRedCheck, deliverablesAlreadyMet } from "../src/build-runner.ts";
 import { deriveRunStatus } from "../src/workflow.ts";
 import { REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";

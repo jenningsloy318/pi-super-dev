@@ -87,7 +87,7 @@ vi.mock("../src/render/render.ts", () => ({
 	renderAndWrite: vi.fn(),
 }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 

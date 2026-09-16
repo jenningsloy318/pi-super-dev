@@ -36,8 +36,9 @@ vi.mock("../src/build-runner.ts", async (importOriginal) => {
 });
 vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 import { runRedCheck } from "../src/build-runner.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 const redCheck = runRedCheck as unknown as ReturnType<typeof vi.fn>;
 
 function mkState(): PipelineState {
@@ -255,7 +256,7 @@ describe("v0.3.53 F1 — AST call-site parity: every oracle call passes the cach
 // occurrence inside the source passes `runnerSpec ?? undefined` as its runner
 	// argument (5th), and every `runRedCheck(` site passes a redCheckOptions(...) 3rd arg.
 	it("every runRedCheck/redCheckOptions call site passes the runner capability", async () => {
-		const src = await import("node:fs").then((fs) => fs.promises.readFile(new URL("../src/stages/implementation.ts", import.meta.url), "utf8"));
+		const src = implementationSources(join(import.meta.dirname, ".."));
 		const callSites = [...src.matchAll(/redCheckOptions\(ctx,/g)].length; // excludes the definition
 		const withRunner = [...src.matchAll(/redCheckOptions\(ctx,[^)]*runnerSpec \?\? undefined\)/g)].length;
 		expect(callSites).toBeGreaterThan(0);

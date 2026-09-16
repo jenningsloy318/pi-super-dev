@@ -15,6 +15,7 @@ import { buildJudgePrompt } from "../src/prompts.ts";
 import { extractControlKeys } from "../src/control.ts";
 import { readRunEvents } from "../src/runlog.ts";
 import type { StageContext, AgentResult } from "../src/types.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 function makeCtx(agentImpl?: (call: { id: string; agent: string; prompt: string }) => Partial<AgentResult>) {
 	const logs: string[] = [];
@@ -594,7 +595,7 @@ describe("M4 G3 fold — classifyJudgeRoute drives the override arms", () => {
 		expect(classifyJudgeRoute("implementer-retry")).toBe("retry");
 		expect(classifyJudgeRoute("fix-environment")).toBe("escalate");
 		// source pin: the implementation override arm requires the classifier's "retry"
-		const src = readFileSync("src/stages/implementation.ts", "utf8");
+		const src = implementationSources();
 		expect(src).toContain('classifyJudgeRoute(judgeOut.verdict.route) === "retry"');
 	});
 });

@@ -7,7 +7,7 @@ import type { AgentCall, AgentResult, Budget, ControlObj, HelperResult, Pipeline
 
 vi.mock("../src/render/render.ts", () => ({ renderAndWrite: vi.fn() }));
 
-import { implementationStage } from "../src/stages/implementation.ts";
+import { implementationStage } from "../src/stages/implementation/index.ts";
 
 function makeTinyProject(): { root: string; specDir: string } {
 	const root = mkdtempSync(join(tmpdir(), "sd-stage9-smoke-"));

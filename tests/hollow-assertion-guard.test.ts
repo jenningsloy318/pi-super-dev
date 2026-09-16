@@ -6,7 +6,7 @@
  * present assertions are Tier 2's job — this only catches TRULY hollow tests.)
  */
 import { describe, it, expect } from "vitest";
-import { assertionPresenceGaps } from "../src/stages/implementation.ts";
+import { assertionPresenceGaps } from "../src/stages/implementation/index.ts";
 
 const snap = (entries: Record<string, string | null>) => new Map(Object.entries(entries));
 
