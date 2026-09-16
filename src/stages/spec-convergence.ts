@@ -145,8 +145,14 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
  *  per run — the artifact-convergence Strike-1 precedent applied at the trace
  *  seam, MED-3/P8). Returns the blocking errors that REMAIN after any retry
  *  ([] = pass) plus a cancellation flag that propagates as the node result. */
-async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageContext, round: number): Promise<{ errors: string[]; cancelled: boolean; strikeUsed: boolean }> {
-	const evaluate = (): string[] => {
+/** v0.4.11: the PURE family evaluator (no strike side effects) — extracted so
+ *  the trace-failure branch can run it for the UNION feedback (the serialized
+ *  one-gate-per-round pattern burned 6 live rounds: the writer patched the
+ *  trace finding, resubmitted, and only THEN learned the family gate flagged
+ *  three more files). */
+export function specFamilyPureErrors(state: PipelineState, ctx: StageContext): string[] {
+	{ // round 0 = pure evaluation context (no strike machinery consumes it)
+	const round = 0;
 		// The SAME write-time texts specWriter evaluates (writers.ts) — when the
 		// writer's stamp exists, contractValidationContext reuses it (no re-walk).
 		const contractCtx = contractValidationContext(state as Record<string, unknown>, "spec", [ctx.task, JSON.stringify(state.requirements ?? {}), JSON.stringify(state.bdd ?? {}), JSON.stringify(state.research ?? {}), JSON.stringify(state.assessment ?? {}), JSON.stringify(state.design ?? {}), JSON.stringify(state.prototype ?? {})]);
@@ -176,7 +182,11 @@ async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageCont
 		}), ...gateW]);
 		for (const a of advisory) ctx.log(`spec convergence: contract-validator (advisory): ${a}`);
 		return blocking;
-	};
+	}
+}
+
+async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageContext, round: number): Promise<{ errors: string[]; cancelled: boolean; strikeUsed: boolean }> {
+	const evaluate = (): string[] => specFamilyPureErrors(state, ctx);
 	let errors = evaluate();
 	if (errors.length === 0) return { errors, cancelled: false, strikeUsed: false };
 	const stateRec = state as Record<string, unknown>;
@@ -471,6 +481,15 @@ export const specConvergenceNode: Node = {
 				} else {
 					lastTraceError = null;
 					sameTraceErrorCount = 0;
+				}
+				// v0.4.11 (live 6-round burn): UNION feedback — the family gate ALSO
+				// runs on this round's artifact and its findings ride the SAME
+				// rejection, so the writer fixes every deterministic violation in
+				// one rewrite instead of discovering them one gate per round.
+				const familyPreview = specFamilyPureErrors(state, ctx);
+				if (familyPreview.length > 0) {
+					lastErrors = [...lastErrors, ...familyPreview.slice(0, 4).map((e) => `[amendment-family gate — fix in the SAME rewrite] ${e}`)];
+					ctx.log(`spec convergence: union — the amendment-family gate flags ${familyPreview.length} more error(s) in THIS round's artifact (folded into the feedback)`);
 				}
 				setSpecFeedback(state, "deterministic trace gate", lastErrors);
 				ctx.log(`spec convergence: ✗ trace gate failed round ${round}${lastErrors.length ? ` — ${lastErrors.join("; ")}` : ""}`);

@@ -682,3 +682,29 @@ describe("065 v0.4.8 — write-claim grammar teaching (live-run 5-round burn)", 
 		expect(src).toContain(`never quoting the immutability idiom`);
 	});
 });
+
+// ─── v0.4.11 (live spec 6-round burn): UNION deterministic feedback ───
+
+describe("065 v0.4.11 — spec gate union feedback (no serialized whack-a-mole)", () => {
+	it("the trace-failure branch runs the family evaluator in the SAME round (source contract)", async () => {
+		const { readFileSync } = await import("node:fs");
+		const src = readFileSync("src/stages/spec-convergence.ts", "utf8");
+		expect(src).toContain("specFamilyPureErrors");
+		expect(src).toContain("union — the amendment-family gate flags");
+		// the pure extractor exists WITHOUT strike side effects and the
+		// fallback delegates to it
+		const pureIdx = src.indexOf("export function specFamilyPureErrors");
+		const fallbackIdx = src.indexOf("async function specFamilyFallbackAfterTrace");
+		expect(pureIdx).toBeGreaterThan(-1);
+		expect(fallbackIdx).toBeGreaterThan(pureIdx);
+		expect(src).toContain("const evaluate = (): string[] => specFamilyPureErrors(state, ctx);");
+	});
+
+	it("behavioral: a spec with BOTH a phantom scenario ref AND an uncovered family write surfaces both classes in one validation round", async () => {
+		const { specFamilyPureErrors } = await import("../src/stages/spec-convergence.ts");
+		// absent worktree/contract context → the pure evaluator fail-opens to []
+		// (never blocks, never strikes) — pinned so the union branch stays
+		// side-effect-free when the walk cannot run
+		expect(specFamilyPureErrors({ setup: { specDirectory: "/nonexistent" } } as never, { task: "t", log: () => {} } as never)).toEqual([]);
+	});
+});
