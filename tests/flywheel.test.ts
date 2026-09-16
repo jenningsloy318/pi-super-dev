@@ -21,7 +21,7 @@ import {
 	computeCaseStates, caseObservations, checkDiscrimination, draftClusters,
 	type FlywheelInput, type FlywheelState,
 } from "../src/evolution/flywheel.ts";
-import { validateGoldenCase, makeCanary, loadGoldenCases } from "../src/evolution/eval-layer.ts";
+import { validateGoldenCase, makeCanary, loadGoldenCases } from "../src/evolution/eval-layer/index.ts";
 import { MIN_PRIOR_RUNS } from "../src/evolution/sigma-bands.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "../src/version.ts";
 import type { EvalRow } from "../src/evolution/eval-stage.ts";

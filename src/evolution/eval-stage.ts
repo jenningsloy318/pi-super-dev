@@ -96,7 +96,7 @@ import {
 	loadGoldenCases, loadRubrics, loadGateLabels,
 	computeGateAgreement, gatePasses,
 	type GateAgreement, type GateDecision, type GateLabels, type GoldenCase, type LoadedGoldenCases, type LoadedRubrics, type Rubric, type ScorerVerdictRow,
-} from "./eval-layer.ts";
+} from "./eval-layer/index.ts";
 import { appendRunEvent } from "../runlog.ts";
 import { getConfig, getSuperDevDir, superDevEnv, type SuperDevConfig } from "../render/super-dev-dir.ts";
 import { runsDir } from "./eval-shared.ts";

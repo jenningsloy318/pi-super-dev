@@ -65,7 +65,7 @@ import {
 	TARGET_AGENTS, TARGET_SEPARATOR, TARGET_STAGES, VERDICT_CLOSURE, allowedVerdictsForTarget,
 	loadGateLabels, loadGoldenCases, makeCanary, validateGoldenCase,
 	type GoldenCase,
-} from "./eval-layer.ts";
+} from "./eval-layer/index.ts";
 import { runGate, EVAL_DATASET_BASENAME, type EvalRow } from "./eval-stage.ts";
 import {
 	casesDir, contaminationLedgerPath, flywheelStatePath, labelsDir, proposalsDir,

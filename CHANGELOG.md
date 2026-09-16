@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.20: evolution/eval-layer.ts 拆分(5 模块)
+
+**English — the P1 eval layer is split.** `src/evolution/eval-layer.ts` (1,187 lines) → `src/evolution/eval-layer/{closure,cases,rubrics,bands,agreement}.ts` + index barrel, following the file's own section seams: the DEC-6 verdict-closure table and the F6 target→verdict-family mapping; golden-case schema/validation/loader; rubric schema/validation/loader plus the seed-scaffolding template writers; the σ-band baseline key; and the validation-gate machinery (hand labels, bootstrap-calibrated agreement, gatePasses policy). Runtime dependency graph is acyclic (bands holds only a type-only import of GoldenCase).
+
+**Two intentional path redepths** (the only code deltas — proven by a line-multiset diff against the pre-split monolith): the `makeCanary` re-export and `repoRoot()`, which resolves `../../..` now that the module sits one directory deeper. The P6 single-grammar tripwire test reads the concatenated parts and its owner-module specifiers are redepthed to match.
+
+
 ### Refactor — v0.4.17e + v0.4.19: stages/artifact-convergence.ts 拆分(5 模块)
 
 **English — the last >1k convergence driver is split.** `src/stages/artifact-convergence.ts` (1,225 lines) → `src/stages/artifact-convergence/{validators,feedback,rounds,node,nodes}.ts` + index barrel. The five parts follow the file's own cohesion seams: the three deterministic validators (requirements/bdd/research), the retry-feedback + review-compaction + carried-debt helpers, the round-cap arithmetic, the `artifactConvergenceNode` state machine, and the four stage wirings. Every consumer repointed; three source-contract tests now read the concatenation (`tests/helpers/artifact-convergence-source.ts`) instead of the 7-line barrel.

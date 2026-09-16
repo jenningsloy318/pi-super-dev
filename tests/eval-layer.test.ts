@@ -30,6 +30,7 @@
  * caseSetOf derivation.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { evalLayerSources } from "./helpers/eval-layer-source.ts";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,7 +47,7 @@ import {
 	TARGET_VERDICT_FAMILIES, VERDICT_FAMILY_VALUES, targetVerdictFamilies, allowedVerdictsForTarget,
 	GATE_MIN_AGREEMENT, GATE_MIN_MATCHED_PAIRS, GATE_BOOTSTRAP_RESAMPLES, GATE_BOOTSTRAP_SEED,
 	type ScorerVerdictRow, type MaintainerVerdict,
-} from "../src/evolution/eval-layer.ts";
+} from "../src/evolution/eval-layer/index.ts";
 // The REAL vocabularies, imported from their owners — the closure table must
 // be composed of exactly these (P6).
 import { REVIEW_VERDICT_VALUES } from "../src/helpers.ts";
@@ -182,13 +183,13 @@ describe("verdict closure table (DEC-6)", () => {
 	});
 
 	it("source-scan tripwire: eval-layer imports the real vocabularies and never re-types a closure literal (P6)", () => {
-		const src = readFileSync(fileURLToPath(new URL("../src/evolution/eval-layer.ts", import.meta.url)), "utf8");
+		const src = evalLayerSources();
 		// The closure is COMPOSED from the imported family constants…
 		for (const spread of ["...REVIEW_VERDICT_VALUES", "...PROTOTYPE_VERDICT_VALUES", "...JUDGE_EVAL_VERDICT_VALUES", "...FAULT_CLASS_VALUES"]) {
 			expect(src).toContain(spread);
 		}
 		// …which come from their owner modules…
-		for (const specifier of ['"../helpers.ts"', '"../stages/prototype.ts"', '"../stages/judge.ts"', '"../fault-classification.ts"', '"../graph/edges.ts"', '"../agents/register-agents.ts"', '"./sigma-bands.ts"']) {
+		for (const specifier of ['"../../helpers.ts"', '"../../stages/prototype.ts"', '"../../stages/judge.ts"', '"../../fault-classification.ts"', '"../../graph/edges.ts"', '"../../agents/register-agents.ts"', '"../sigma-bands.ts"']) {
 			expect(src).toContain(specifier);
 		}
 		for (const symbol of ["REVIEW_VERDICT_VALUES", "PROTOTYPE_VERDICT_VALUES", "JUDGE_EVAL_VERDICT_VALUES", "FAULT_CLASS_VALUES", "STAGE_IDS", "REGISTERED_AGENTS", "MIN_PRIOR_RUNS"]) {
