@@ -35,7 +35,7 @@ export interface ContractValidatorFinding {
 	message: string;
 }
 
-const isPreW = (control: Record<string, unknown> | undefined, round?: number): boolean => {
+export const isPreW = (control: Record<string, unknown> | undefined, round?: number): boolean => {
 	// Adversarial S7 (v0.3.98): degradation is a LEGACY-artifact accommodation,
 	// never a fresh-run escape hatch — from round 2 on (any retry), validators
 	// run at full strength regardless of the stamp.
@@ -115,21 +115,13 @@ export function selfTrackMatcher(specDirectory: string | undefined): ((locusFile
 
 /** @deprecated v0.4.12 — use selfTrackMatcher (the suffix restriction is the
  *  D1 temporal hole); kept for source-contract pins that reference it. */
+/** @deprecated v0.4.12 — use selfTrackMatcher (the suffix restriction is the
+ *  D1 temporal hole); kept for source-contract pins that reference it.
+ *  v0.4.16 (code gate F1): the prefix normalization DELEGATES to
+ *  selfTrackPrefixFor — the duplicated inline copy had no parity guarantee. */
 export function selfSpecArtifactMatcher(specDirectory: string | undefined, docSuffix: string): ((locusFile: string) => boolean) | undefined {
-	if (!specDirectory) return undefined;
-	let norm = specDirectory.replace(/\\/g, "/");
-	// A1 (adversarial gate, run 2026-09-14T00-59-16-373Z follow-up): production
-	// specDirectory is ABSOLUTE — join(worktreePath, "docs", "specifications",
-	// specIdentifier) at src/setup.ts:755 — while pin loci are REPO-RELATIVE
-	// (extractContractInventory walks with a "" prefix). Bridge via the
-	// docs/specifications/ marker (fault-classification.ts path-normalization
-	// precedent); fall back to the normalized dir when the marker is absent.
-	const marker = "docs/specifications/";
-	const idx = norm.indexOf(marker);
-	if (idx !== -1) norm = norm.slice(idx);
-	norm = norm.replace(/^\.\//, "");
-	if (!norm.endsWith("/")) norm += "/"; // prefix-safety: "26-x" must not match sibling "26-x-other/"
-	return (locusFile: string) => locusFile.startsWith(norm) && locusFile.endsWith(docSuffix);
+	const prefix = selfTrackPrefixFor(specDirectory);
+	return prefix ? (locusFile: string) => locusFile.startsWith(prefix) && locusFile.endsWith(docSuffix) : undefined;
 }
 
 function familySetInclusionFindings(

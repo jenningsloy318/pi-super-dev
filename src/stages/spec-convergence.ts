@@ -151,7 +151,7 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
  *  trace finding, resubmitted, and only THEN learned the family gate flagged
  *  three more files). */
 export function specFamilyPureErrors(state: PipelineState, ctx: StageContext, round = 0): string[] {
-	{ // round 0 (default) = pure evaluation context (no strike machinery consumes it);
+	// round 0 (default) = pure evaluation context (no strike machinery consumes it);
 	//   v0.4.14 (gate F4): the live callers thread the REAL round — isPreW's
 	//   round > 1 degradation rule was permanently disarmed by the v0.4.11
 	//   extraction hardcoding 0, so a control lacking layerW kept advisory-only
@@ -185,7 +185,6 @@ export function specFamilyPureErrors(state: PipelineState, ctx: StageContext, ro
 		}), ...gateW]);
 		for (const a of advisory) ctx.log(`spec convergence: contract-validator (advisory): ${a}`);
 		return blocking;
-	}
 }
 
 async function specFamilyFallbackAfterTrace(state: PipelineState, ctx: StageContext, round: number): Promise<{ errors: string[]; cancelled: boolean; strikeUsed: boolean }> {

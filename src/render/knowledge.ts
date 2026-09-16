@@ -52,6 +52,10 @@ export function appendToKnowledge(specDir: string, stageId: string, control: Rec
 	const path = knowledgePath(specDir);
 	let knowledge: KnowledgeFile;
 	try { knowledge = JSON.parse(readFileSync(path, "utf8")); } catch { knowledge = { stages: {} }; }
+	// v0.4.16 (code gate F5): a VALID-but-shapeless file on disk (e.g. "{}")
+	// parses yet has no `stages` — indexing it below would TypeError. Same
+	// defense persistStampToKnowledge already applies.
+	knowledge.stages ??= {};
 	// v0.4.14 (dual-gate F1/B1): the render path REPLACES data wholesale, but
 	// contract-surface's persisted write-time slice stamp
 	// (__contractSliceStamp) is written to the SAME entry BEFORE the render runs

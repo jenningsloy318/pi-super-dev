@@ -4,7 +4,7 @@ import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stag
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewBlockingVerdictFindings } from "../review-findings.ts";
 import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
-import { readContractSliceStamp } from "../review/contract-surface.ts";
+import { readContractSliceStamp, readStateSliceStamp } from "../review/contract-surface.ts";
 import {  bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
@@ -1206,7 +1206,15 @@ export const designConvergenceNode = artifactConvergenceNode({
 	// walk failure) = status-quo skip — backwards compatible.
 	skipped: (s) => {
 		if (s.classify?.taskType !== "bug") return false;
-		const stamp = readContractSliceStamp(s as Record<string, unknown>, "design");
+		// v0.4.16 (atria gate AV4): this is a ROUTING decision about the CURRENT
+		// tree — read the FRESH state stamp the design stage just stamped (it
+		// stamps even on its skip path, design.ts:30), NOT the persisted disk
+		// stamp. v0.4.14's preservation made readContractSliceStamp disk-first,
+		// which newly routed this predicate off a possibly-stale persisted stamp
+		// (unsafe direction: a stale EMPTY stamp skips design REVIEW for an
+		// artifact that landed; a stale NON-empty one burns a null-producing
+		// stage to the cap). Disk-first stays with contractValidationContext.
+		const stamp = readStateSliceStamp(s as Record<string, unknown>, "design");
 		// Adversarial S4b (v0.3.98): fail CLOSED — an absent stamp (extraction
 		// error, pre-W resume) must NOT skip design; running it is the safe
 		// direction (P5: more scrutiny, never less, when uncertain).

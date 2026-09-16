@@ -40,7 +40,7 @@
  * failed — review slice incomplete]` banner carried by the slice.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { claimPathUsable, isUsableProtectedToken, scanImmutabilityIdioms, scanImmutabilityIdiomsWithRejects } from "../stages/plan-feasibility.ts";
 // 065 D-F-A: the claim grammar (verb-context classification + list governance)
@@ -988,6 +988,7 @@ export function persistCurrentStateStamp(state: Record<string, unknown>, stage: 
 let stampTmpSeq = 0;
 
 function persistStampToKnowledge(state: Record<string, unknown>, stage: string, slice: ContractSlice): void {
+	let tmpWritten: string | undefined;
 	try {
 		const specDir = (state.setup as { specDirectory?: string } | undefined)?.specDirectory;
 		if (!specDir) return;
@@ -1006,11 +1007,19 @@ function persistStampToKnowledge(state: Record<string, unknown>, stage: string, 
 		// appendToKnowledge would reset it to {stages:{}} and every reader
 		// (amendmentExemptFiles, loadPersistedStamp) fails closed to zero
 		// exemptions/stamps. Same-process interleaving is impossible (both writers
-		// synchronous), so the window is cross-process only — closed cheaply.
-		const tmp = `${path}.tmp-stamp-${process.pid}-${Date.now()}-${stampTmpSeq++}`;
-		wf(tmp, JSON.stringify(knowledge), "utf8");
-		rn(tmp, path);
-	} catch { /* best-effort — a lost stamp degrades to the fresh re-walk (pre-v0.4.12 behavior) */ }
+		// synchronous), so the surviving window is cross-process only, and THAT is
+		// serialized by the run lock (setup.ts), not by this rename — rename closes
+		// TORN writes, not concurrent lost updates (dual-gate v0.4.16 nit).
+		tmpWritten = `${path}.tmp-stamp-${process.pid}-${Date.now()}-${stampTmpSeq++}`;
+		wf(tmpWritten, JSON.stringify(knowledge), "utf8");
+		rn(tmpWritten, path);
+		tmpWritten = undefined; // renamed — nothing to clean
+	} catch (err) {
+		// P10 (dual-gate F2/v0.4.16): name WHAT was lost and WHY — a silent catch
+		// made an ENOSPC/EACCES stamp loss undiagnosable on the next resume.
+		console.error(`[super-dev] persistStampToKnowledge: writing the slice stamp for stage "${stage}" FAILED (${err instanceof Error ? err.message : String(err)}) — the stamp degrades to the fresh re-walk (pre-v0.4.12 behavior)`);
+		if (tmpWritten) { try { unlinkSync(tmpWritten); } catch { /* best-effort cleanup of the orphaned tmp */ } }
+	}
 }
 
 function loadPersistedStamp(state: Record<string, unknown>, stage: string): ContractSliceStamp | undefined {
@@ -1025,19 +1034,34 @@ function loadPersistedStamp(state: Record<string, unknown>, stage: string): Cont
 	} catch { return undefined; }
 }
 
+/** Read the STATE-ONLY slice stamp — the fresh write-time walk the stage just
+ *  stamped (design.ts stamps even on its skip path). v0.4.16 (atria gate AV4):
+ *  ROUTING decisions about the CURRENT tree must read the fresh state stamp,
+ *  NOT the persisted one — disk-first serves `contractValidationContext` (the
+ *  consumer that needs the last-live round's truth for replay coherence), but
+ *  a routing predicate reading a stale persisted stamp can bypass design
+ *  review or burn a null-producing stage to the cap. */
+export function readStateSliceStamp(state: Record<string, unknown>, stage: string): ContractSliceStamp | undefined {
+	const v = state[`${SLICE_STAMP_PREFIX}${stage}`] as { files?: unknown; pinIds?: unknown; inventory?: ContractInventory } | undefined;
+	if (!v || !Array.isArray(v.files) || !Array.isArray(v.pinIds)) return undefined;
+	return { files: new Set(v.files as string[]), pinIds: new Set(v.pinIds as string[]), inventory: v.inventory };
+}
+
 /** Read a stage's stamped slice identity (absent on pre-W/resume replays —
  *  callers treat that as no exemption eligibility, fail-closed harmless). */
 export function readContractSliceStamp(state: Record<string, unknown>, stage: string): ContractSliceStamp | undefined {
 	// v0.4.13: DISK FIRST — the prompt-build path re-stamps state on memo-hit
 	// replay rounds (fresh walk = temporal pollution); the persisted stamp is
-	// the LAST LIVE round's write-time truth. State is the fallback (pre-
-	// v0.4.12 tracks have no persisted stamp; live in-process rounds keep the
-	// state shape with its inventory passthrough).
+	// the LAST LIVE round's write-time truth. State is the fallback for
+	// pre-v0.4.12 tracks and for the inventory passthrough.
+	// v0.4.16 note: the `inventory` passthrough is DEAD IN PRODUCTION — all four
+	// stampContractSlice call sites (writers.ts x3, design.ts) pass a 3-arg slice
+	// with no inventory, so contractValidationContext always re-walks; the field
+	// survives as a test seam. Not a v0.4.14 regression (verified against both
+	// the concurrency gate's claim and the call sites).
 	const persisted = loadPersistedStamp(state, stage);
 	if (persisted) return persisted;
-	const v = state[`${SLICE_STAMP_PREFIX}${stage}`] as { files?: unknown; pinIds?: unknown; inventory?: ContractInventory } | undefined;
-	if (!v || !Array.isArray(v.files) || !Array.isArray(v.pinIds)) return undefined;
-	return { files: new Set(v.files as string[]), pinIds: new Set(v.pinIds as string[]), inventory: v.inventory };
+	return readStateSliceStamp(state, stage);
 }
 
 /** A minimal slice VIEW over a stamp (validators only need .files). */

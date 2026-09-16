@@ -596,7 +596,7 @@ export function renderAndWrite(
 			control.specificationPath = docPath;
 			control.phaseCount = String((control.phases as unknown[])?.length ?? 0);
 		}
-		// Auto-accumulate this stage's raw data to .knowledge.md
+		// Auto-accumulate this stage's raw data to .knowledge.json
 		appendToKnowledge(setup.specDirectory, stageId, control);
 		return docPath;
 	}

@@ -23,7 +23,9 @@ import {
 	isUsablePathToken,
 } from "../src/review/claim-spine.ts";
 import { extractContractInventory } from "../src/review/contract-surface.ts";
-import { specAmendmentFamilyFindings } from "../src/review/contract-validators.ts";
+import { specAmendmentFamilyFindings ,
+	isPreW,
+} from "../src/review/contract-validators.ts";
 import { scanImmutabilityIdiomsWithRejects } from "../src/stages/plan-feasibility.ts";
 
 let wt: string;
@@ -708,6 +710,21 @@ describe("065 v0.4.11 — spec gate union feedback (no serialized whack-a-mole)"
 		// (never blocks, never strikes) — pinned so the union branch stays
 		// side-effect-free when the walk cannot run
 		expect(specFamilyPureErrors({ setup: { specDirectory: "/nonexistent" } } as never, { task: "t", log: () => {} } as never)).toEqual([]);
+		// v0.4.16 (gemini gate nit 1): the BEHAVIORAL F4 contract — a control
+		// lacking layerW degrades to advisory at round 1 but runs at FULL
+		// STRENGTH from round 2 on (adversarial S7). The source-parity pin above
+		// can't see this; hardcoding round 0 (the v0.4.11 bug) made BOTH rounds
+		// advisory forever.
+		const preWcontrol = { summary: "no layerW" }; // layerW absent
+		expect(isPreW(preWcontrol, 1)).toBe(true); // round 1 degrades
+		expect(isPreW(preWcontrol, 2)).toBe(false); // round 2+ full strength
+		expect(isPreW(preWcontrol, 0)).toBe(true); // default (pure evaluation)
+		// layerW PRESENT = a MODERN (post-W) artifact — never degraded, any round
+		// (the predicate asks "is this a pre-W artifact"; layerW present ⇒ no)
+		expect(isPreW({ layerW: "1" }, 1)).toBe(false);
+		expect(isPreW({ layerW: "1" }, 2)).toBe(false);
+		// the S7 rule itself: round > 1 is full strength regardless of the stamp
+		expect(isPreW({ layerW: "" }, 9)).toBe(false);
 	});
 });
 
@@ -758,7 +775,7 @@ describe("065 v0.4.12 — selfTrackMatcher (the resume temporal hole)", () => {
 
 describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", () => {
 	it("stampContractSlice persists files+pinIds to the external .knowledge.json; readContractSliceStamp recovers them after state loss", async () => {
-		const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = await import("node:fs");
+		const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } = await import("node:fs");
 		const { join } = await import("node:path");
 		const { tmpdir } = await import("node:os");
 		const { execFileSync } = await import("node:child_process");
@@ -804,8 +821,8 @@ describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", ()
 		// before any validator ran, so the disk-first branch was unreachable on
 		// EVERY round that produced an artifact and the resume temporal hole the
 		// stamp exists to close stayed open (dual-gate F1/B1).
-		const { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync } = await import("node:fs");
-		const { join } = await import("node:path");
+		const { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, readdirSync } = await import("node:fs");
+		const { join, dirname, basename } = await import("node:path");
 		const { tmpdir } = await import("node:os");
 		const { execFileSync } = await import("node:child_process");
 		const home = mkdtempSync(join(tmpdir(), "sd-stamp-f1-"));
@@ -838,7 +855,11 @@ describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", ()
 			appendToKnowledge(`${specDir}/`, "spec", { phases: [{ id: "P1" }, { id: "P2" }], summary: "re-rendered" });
 			const again = JSON.parse(readFileSync(kpath, "utf8"));
 			expect(again.stages.spec.data.__contractSliceStamp.pinIds).toEqual(["pin-1", "pin-2"]);
-			expect(existsSync(`${kpath}.tmp-stamp-${process.pid}-`)).toBe(false); // no tmp residue (atomic rename)
+			// v0.4.16: GLOB the tmp pattern (the prior existsSync checked a PREFIX of
+			// the real name — `.tmp-stamp-<pid>-<ms>-<seq>` — which can never exist
+			// as a file, so a leaked tmp passed undetected).
+			const tmps = readdirSync(dirname(kpath)).filter((f) => f.startsWith(`${basename(kpath)}.tmp-stamp-`) || f.startsWith(`${basename(kpath)}.tmp-`));
+			expect(tmps).toEqual([]); // no tmp residue (atomic rename + catch cleanup)
 		} finally {
 			delete process.env.SUPER_DEV_STATE_DIR;
 			try { rmSync(home, { recursive: true, force: true }); } catch { /* tmp */ }
