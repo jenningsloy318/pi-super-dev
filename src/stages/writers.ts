@@ -19,6 +19,7 @@ import { priorReplanConstraintBlock } from "../replan/replan.ts";
 // the WRITER's stamp (readContractSliceStamp) so each reviewer sees the same
 // contract-surface pins its stage's writer saw.
 import { CONTRACT_INVENTORY_ERROR_BANNER, CONTRACT_SLICE_MAX_LINES, CONTRACT_SLICE_TRUNCATION_MARKER, extractContractInventory, readContractSliceStamp, stampContractSlice, writerContractSlice, type ContractSliceStamp } from "../review/contract-surface.ts";
+import { readFileSync } from "node:fs";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;
 
@@ -115,7 +116,29 @@ export function specWriterBuildPrompt(state: PipelineState, ctx: StageContext): 
 	// stamped slice and the validator context agree.
 	const slice = writerContractSlice(S(state).worktreePath, [ctx.task, JSON.stringify(state.requirements ?? {}), JSON.stringify(state.bdd ?? {}), JSON.stringify(state.research ?? {}), JSON.stringify(state.assessment ?? {}), JSON.stringify(state.design ?? {}), JSON.stringify(state.prototype ?? {})]);
 	if (slice) stampContractSlice(state as Record<string, unknown>, "spec", slice);
-	return P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null, priorReplanConstraintBlock((state as { setup?: { specDirectory?: string } | undefined }).setup?.specDirectory), slice?.block ?? "");
+	// v0.4.10 (live-run trace-gate burn, 2026-09-16): the realized scenario-id
+	// space is a MECHANICAL fact of the BDD artifact — extract it and put it in
+	// the writer's prompt so the first attempt cites only existing ids (the
+	// 0.4.2-era spec-26 run burned FOUR ~13-min rounds on phantom ids; today's
+	// run burned one ~11-min round — the class is the writer deriving ids by
+	// reading prose instead of being handed the deterministic list).
+	const scenarioBlock = realizedScenarioSpaceBlock(state.bdd);
+	return P.buildSpecPrompt(S(state), state.classify ?? null, ctx.task, state.requirements ?? null, state.bdd ?? null, state.research ?? null, state.assessment ?? null, state.design ?? null, state.prototype ?? null, priorReplanConstraintBlock((state as { setup?: { specDirectory?: string } | undefined }).setup?.specDirectory), [slice?.block ?? "", scenarioBlock].filter(Boolean).join("\n\n"));
+}
+
+/** v0.4.10: engine-extract the BDD doc's realized SCENARIO ids for the spec
+ *  writer's prompt (P4: mechanical facts are injected, never re-derived by
+ *  the writer). Absent/unreadable doc ⇒ no block (the trace gate still
+ *  backstops); P8: >80 ids collapse to a range + count line. */
+export function realizedScenarioSpaceBlock(bdd: { docPath?: unknown } | null | undefined): string {
+	const docPath = typeof bdd?.docPath === "string" ? bdd.docPath : "";
+	if (!docPath) return "";
+	let text: string;
+	try { text = readFileSync(docPath, "utf8"); } catch { return ""; }
+	const ids = [...new Set(text.match(/SCENARIO-\d{3,4}/g) ?? [])].sort();
+	if (ids.length === 0) return "";
+	const listing = ids.length > 80 ? `${ids[0]}..${ids[ids.length - 1]} (${ids.length} scenarios — cite only ids you can point to in the BDD doc)` : ids.join(", ");
+	return `REALIZED BDD SCENARIO SPACE (engine-extracted from the BDD artifact — the deterministic trace gate checks every SCENARIO token you write against this list): the BDD artifact defines exactly ${ids.length} scenario id(s): ${listing}. Cite ONLY ids from this list — any other SCENARIO-xxx token in your document fails the round.`;
 }
 
 export const specWriter: Stage = writerTask({

@@ -6,6 +6,7 @@
  * best-effort, never fatal, every skip LOUD.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -55,27 +56,43 @@ describe("v0.4.9 python bootstrap arm", () => {
 	});
 
 	it("runs uv sync --frozen for a locked project and reuses an existing .venv loudly", async () => {
-		const wt = join(home, "wt3");
-		mkdirSync(join(wt, "node_modules"), { recursive: true });
-		mkdirSync(join(wt, "python"), { recursive: true });
-		writeFileSync(join(wt, "python", "pyproject.toml"), `[project]\nname = "sd-pyboot-test"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n`);
-		writeFileSync(join(wt, "python", "uv.lock"), "version = 1\nrequires-dist = []\n");
-		const { bootstrapDependenciesForTests } = await import("../src/setup.ts");
-		bootstrapDependenciesForTests(home, wt, true, (m) => log.push(m));
-		// uv present in this environment → the sync either finished or failed
-		// LOUDLY; both are contract-valid, silent is not.
-		const py = log.filter((l) => l.includes("python bootstrap"));
-		expect(py.length).toBeGreaterThanOrEqual(1);
-		if (existsSync(join(wt, "python", ".venv"))) {
-			// uv may create .venv BEFORE failing on a bad lock — either outcome
-			// is contract-valid as long as it is LOUD (P10).
-			expect(py.some((l) => l.includes("finished") || l.includes("FAILED"))).toBe(true);
-			// second call: reuse path is loud
-			log.length = 0;
+		// Adversarial F4 fold: red-without-uv guard + hermetic caches.
+		let uvOk = false;
+		try { execFileSync("uv", ["--version"], { stdio: "ignore" }); uvOk = true; } catch { uvOk = false; }
+		if (!uvOk) {
+			const wt = join(home, "wt3-noenv");
+			mkdirSync(join(wt, "python"), { recursive: true });
+			writeFileSync(join(wt, "python", "pyproject.toml"), "[project]\n");
+			writeFileSync(join(wt, "python", "uv.lock"), "version = 1\n");
+			const { bootstrapDependenciesForTests } = await import("../src/setup.ts");
 			bootstrapDependenciesForTests(home, wt, true, (m) => log.push(m));
-			expect(log.some((l) => l.includes(".venv already exists"))).toBe(true);
-		} else {
-			expect(py.some((l) => l.includes("FAILED"))).toBe(true);
+			expect(log.some((l) => l.includes("uv is not on PATH"))).toBe(true);
+			return;
+		}
+		const realCache = process.env.UV_CACHE_DIR;
+		process.env.UV_CACHE_DIR = join(home, "uv-cache");
+		try {
+			const wt = join(home, "wt3");
+			mkdirSync(join(wt, "node_modules"), { recursive: true });
+			mkdirSync(join(wt, "python"), { recursive: true });
+			writeFileSync(join(wt, "python", "pyproject.toml"), `[project]\nname = "sd-pyboot-test"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n`);
+			writeFileSync(join(wt, "python", "uv.lock"), "version = 1\nrequires-dist = []\n");
+			const { bootstrapDependenciesForTests } = await import("../src/setup.ts");
+			bootstrapDependenciesForTests(home, wt, true, (m) => log.push(m));
+			const py = log.filter((l) => l.includes("python bootstrap"));
+			expect(py.length).toBeGreaterThanOrEqual(1);
+			if (existsSync(join(wt, "python", ".venv"))) {
+				// uv may create .venv BEFORE failing on a bad lock — either outcome
+				// is contract-valid as long as it is LOUD (P10).
+				expect(py.some((l) => l.includes("finished") || l.includes("FAILED"))).toBe(true);
+				log.length = 0;
+				bootstrapDependenciesForTests(home, wt, true, (m) => log.push(m));
+				expect(log.some((l) => l.includes(".venv already exists"))).toBe(true);
+			} else {
+				expect(py.some((l) => l.includes("FAILED"))).toBe(true);
+			}
+		} finally {
+			if (realCache !== undefined) process.env.UV_CACHE_DIR = realCache; else delete process.env.UV_CACHE_DIR;
 		}
 	});
 
@@ -88,11 +105,67 @@ describe("v0.4.9 python bootstrap arm", () => {
 	});
 });
 
+describe("v0.4.9 arm independence (code-gate MED-2)", () => {
+	it("no node_modules + no node lockfile + a python/ uv project → node skip AND python-arm lines in ONE call", async () => {
+		const wt = join(home, "wt-mixed");
+		mkdirSync(join(wt, "python"), { recursive: true });
+		writeFileSync(join(wt, "python", "pyproject.toml"), "[project]\n");
+		writeFileSync(join(wt, "python", "uv.lock"), "version = 1\n");
+		const { bootstrapDependenciesForTests } = await import("../src/setup.ts");
+		bootstrapDependenciesForTests(home, wt, true, (m) => log.push(m));
+		expect(log.some((l) => l.includes("Setup node bootstrap skipped (no node lockfile"))).toBe(true);
+		expect(log.some((l) => l.includes("python bootstrap"))).toBe(true);
+	});
+
+	it("F1 — a FAILED sync REMOVES the partial .venv (no poisoned reuse)", async () => {
+		const wt = join(home, "wt-f1");
+		mkdirSync(join(wt, "python"), { recursive: true });
+		// pyproject WITHOUT uv.lock would skip; with a BAD lock the sync fails
+		writeFileSync(join(wt, "python", "pyproject.toml"), "[project]\n");
+		writeFileSync(join(wt, "python", "uv.lock"), "NOT VALID TOML [[[\n");
+		const realCache = process.env.UV_CACHE_DIR;
+		process.env.UV_CACHE_DIR = join(home, "uv-cache-f1");
+		try {
+			const { bootstrapDependenciesForTests } = await import("../src/setup.ts");
+			bootstrapDependenciesForTests(home, wt, true, (m) => log.push(m));
+			expect(log.some((l) => l.includes("FAILED") && l.includes("REMOVED"))).toBe(true);
+			expect(existsSync(join(wt, "python", ".venv"))).toBe(false); // the partial venv is gone
+		} finally {
+			if (realCache !== undefined) process.env.UV_CACHE_DIR = realCache; else delete process.env.UV_CACHE_DIR;
+		}
+	});
+});
+
 describe("v0.4.9 python-env prompt pins", () => {
-	it("prototype AND implementation prompts carry the PYTHON ENV lesson", async () => {
+	it("prototype AND implementation prompts carry the PYTHON ENV lesson IN THE JOINED OUTPUT (code-gate MED-1)", async () => {
 		const { readFileSync } = await import("node:fs");
 		const src = readFileSync("src/prompts.ts", "utf8");
-		expect(src.match(/PYTHON ENV \(v0\.4\.9/g)?.length).toBe(2);
-		expect(src).toContain("dependency cold-start inside a bounded agent slot is the #1 delegation-timeout cause");
+		expect(src.match(/PYTHON ENV \(v0\.4\.9/g)?.length).toBe(2); // secondary: both builders own it
+		const { buildPrototypePrompt, buildImplementPrompt } = await import("../src/prompts.ts");
+		const stub = { specDirectory: "/tmp/s", defaultBranch: "main", language: "python", isWebUi: false, specIdentifier: "x", worktreePath: "/tmp/w", worktreeCreated: true, initializedRepo: false, copiedEnvFiles: [] } as never;
+		const proto = buildPrototypePrompt(stub, null, "do it", { docPath: "/tmp/d", docs: [] } as never, ["c"], 1, null);
+		expect(proto).toContain("PYTHON ENV (v0.4.9");
+		expect(proto).toContain("dependency cold-start inside a bounded agent slot is the #1 delegation-timeout cause");
+		const impl = buildImplementPrompt(stub, null, { name: "p1" }, { languageInstructions: "" } as never, { specificationPath: "/tmp/sp" } as never);
+		expect(impl).toContain("PYTHON ENV (v0.4.9");
+	});
+});
+
+describe("v0.4.10 realized scenario-space injection (live spec trace-gate burn)", () => {
+	it("extracts the id list from the BDD doc and names the trace-gate contract", async () => {
+		const { writeFileSync: wf, mkdirSync: md } = await import("node:fs");
+		const doc = join(home, "03-bdd-scenarios.md");
+		md(home, { recursive: true });
+		wf(doc, "# BDD\n\n## SCENARIO-050 first\n## SCENARIO-051 second\n## SCENARIO-069 last\n");
+		const { realizedScenarioSpaceBlock } = await import("../src/stages/writers.ts");
+		const block = realizedScenarioSpaceBlock({ docPath: doc });
+		expect(block).toContain("exactly 3 scenario id(s): SCENARIO-050, SCENARIO-051, SCENARIO-069");
+		expect(block).toContain("Cite ONLY ids from this list");
+	});
+
+	it("absent or unreadable BDD doc ⇒ empty block (trace gate still backstops)", async () => {
+		const { realizedScenarioSpaceBlock } = await import("../src/stages/writers.ts");
+		expect(realizedScenarioSpaceBlock(null)).toBe("");
+		expect(realizedScenarioSpaceBlock({ docPath: "/nonexistent/bdd.md" })).toBe("");
 	});
 });
