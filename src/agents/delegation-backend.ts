@@ -51,7 +51,7 @@ import {
 	splitModelThinking,
 	type ThinkingLevel,
 	type ThinkingSource,
-} from "./agent-runtime.ts";
+} from "./agent-runtime/index.ts";
 import { toolArgHead } from "../evolution/tool-usage.ts";
 import { agentTerminalLine } from "../progress-lines.ts";
 import { mergeUsage } from "../types.ts";
@@ -245,7 +245,7 @@ export interface DelegationAgentOptions {
 	 *  ?? ["research-agent"] ?? commonToolBudget ?? none) and carried onto the
 	 *  delegation request BELOW the agent's registered default. Absent = no
 	 *  override on the wire. */
-	toolBudget?: import("./agent-runtime.ts").ResolvedToolBudget;
+	toolBudget?: import("./agent-runtime/index.ts").ResolvedToolBudget;
 	/** Optional-by-contract keys whose empty-array value counts as present
 	 *  (same semantics the legacy session backend's corrective check had). */
 	allowEmptyArraysFor?: string[];
@@ -264,7 +264,7 @@ export interface DelegationAgentOptions {
 	onToolUse?: (tool: string, argHead: string) => void;
 	/** Inherited main-session defaults (SCENARIO-001 parity): applied BELOW an
 	 *  explicit model/thinking param (the rule the legacy backends applied). */
-	inheritedModelObject?: import("./agent-runtime.ts").SessionModelOption;
+	inheritedModelObject?: import("./agent-runtime/index.ts").SessionModelOption;
 	inheritedThinking?: string;
 	onProgress?: AgentProgress;
 	/** pi's in-process event bus (RunOptions.events, threaded from the
@@ -340,7 +340,7 @@ export function clampThinkingForDispatch(input: DispatchThinkingInput, warn: (me
 	if (slash <= 0 || slash === bare.length - 1) return input.level; // no provider/id split → nothing to look up
 	const provider = bare.slice(0, slash);
 	const modelId = bare.slice(slash + 1);
-	let outcome: import("./agent-runtime.ts").ThinkingClampOutcome;
+	let outcome: import("./agent-runtime/index.ts").ThinkingClampOutcome;
 	try {
 		outcome = clampThinkingToModel(provider, modelId, input.level, opts);
 	} catch {

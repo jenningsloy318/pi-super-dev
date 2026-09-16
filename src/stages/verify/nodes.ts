@@ -1,8 +1,20 @@
 import {buildGreen, detectIntegrationWriteViolations, expectedIntegrationRoles, markIntegrationNotApplicable, markIntegrationPassed, resetIntegrationAttemptState, reviewApproved, runVerificationFix, setIntegrationOutcome} from "./boundary.ts";
 import {buildGateStep, classifyIntegrationObservation, detectStagnation, fixStepIntegration, fixStepReview, inconclusiveIntegrationMessage, reviewStep, testBlock, testFailuresSignature} from "./steps.ts";
-import {VerificationAttemptRecord, buildErrors, ensureVerificationAttempts, recordAttemptEnd, recordVerificationConvergenceFinding, recordVerificationReviewFindings, recordVerificationStagnation, snapshotStatusFiles, summarizeReviewFindings, summarizeTestFailures, verificationReplayArms, workingTreeSignature} from "./evidence.ts";
+import {VerificationAttemptRecord, buildErrors, ensureVerificationAttempts, recordAttemptEnd, recordVerificationConvergenceFinding, recordVerificationReviewFindings, recordVerificationStagnation, snapshotStatusFiles, summarizeReviewFindings, summarizeTestFailures, testFailureCount, verificationReplayArms, workingTreeSignature} from "./evidence.ts";
 /**
- * Stage 10 — Verification Convergence (review → fix → integration).
+ * Stage 10 — Verification Convergence
+ * (review → fix → review → integration → fix → review → integration).
+ *
+ * The main pipeline uses one convergence state machine so every product fix
+ * invalidates downstream evidence: a review/build fix must be reviewed before
+ * integration; an integration fix must be reviewed before integration is run
+ * again. Success means review + build + integration are fresh on the same code
+ * state. The older split review/integration nodes are kept as compatibility
+ * exports for direct callers and existing tests.
+ *
+ * Research basis (SWE-bench agent): tight, feedback-driven loops where
+ * observable results are the convergence signal.
+ *
  * Split at v0.4.17c into evidence / boundary / steps / nodes.
  */
 import { execFileSync } from "node:child_process";
@@ -94,107 +106,107 @@ export const verificationConvergenceNode: Node = {
 				// no build errors + gate absent/green → nothing in this loop can
 				// change state (fixer has no work, stagnation needs non-empty
 				// items). Stop for the human boundary instead of spinning forever.
-					if (!reviewApproved(state) && record.reviewFindings === 0 && record.buildErrors === 0 && (state.buildGate === undefined || buildGreen(state))) {
-					// Sweep-3 G2 (E-code E-1): the outer convergence boundary (inline
-					// route-back throw + blocked-on-decisions marker) must obey the SAME
-					// replay discipline as the inner stagnation classifier (v0.3.10).
-					// On a resumed run the review agents replay from the memoized cache
-					// and reproduce the prior deferred findings — replayed evidence must
-					// not arm a terminal exit. The attempt sequence is cumulative via the
-					// persisted __verificationAttempts ledger; when this attempt is still
-					// inside the replay-arm budget, skip the boundary and let the loop
-					// proceed (each replayed attempt advances the sequence, so this
-					// terminates exactly when genuinely fresh evidence arrives).
-					const replaySeq = Math.max(attempt, attempts.length);
-					if (replaySeq <= verificationReplayArms(state, ctx)) {
-						ctx.log(`Stage 10: attempt ${attempt} boundary evidence is replay-derived (resume cache) — inline route-back/blocked-on-decisions deferred until fresh evidence`);
-						recordAttemptEnd(state, record, false);
-						// Bound (P8): same replay-sequence bound as the replayEarly arm —
-						// replaySeq is monotonically increasing per attempt and bounded by
-						// verificationReplayArms; the outer budget check caps everything else.
-						continue;
-					}
-					const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
-					// R3 (dsh-09 v3): before falling to the human boundary, try routing the
-					// residue back to its OWNING stages — a bounded replan restart re-runs
-					// the owning convergence loops and everything downstream they
-					// invalidate. When nothing is routable or the budget is exhausted this
-					// returns false and today's honest blocked-on-decisions path runs.
-					// M4: inline-first — deferred findings carry ownerStage (cross-stage
-					// ownership is exactly why they were deferred), so the shared
-					// planner can jump instead of restarting the process. Exactly one
-					// routable strictly-upstream owner + edge budget → RouteBackSignal
-					// for the walker (verify needs no addressable id: the TARGET is the
-					// owner). The replan emulation stays the multi-owner/kill-switch/
-					// budget-exhausted fallback.
-					const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, "verify", deferred);
-					if (inlineCmd) {
-						// Review round-1 M4-H1: the walker's MP1 protocol injects LEDGER
-						// findings matched by cmd.findingIds — deferred findings live only
-						// in state.review.deferredFindings. Record them FIRST so the
-						// owner's round 1 carries them (and the walker's decline fallback
-						// finds them too); without this the owner re-enters BLIND.
-						recordConvergenceFindings(state, deferred
-							.filter((f) => typeof f.id === "string" && inlineCmd.findingIds.includes(f.id as string))
-							.map((f) => ({
-								id: String(f.id),
-								ownerStage: typeof f.ownerStage === "string" ? f.ownerStage : inlineCmd.to,
-								title: String(f.title ?? "deferred finding"),
-								detail: String(f.detail ?? f.deferralReason ?? "cross-stage deferred finding"),
-								severity: typeof f.severity === "string" ? f.severity : "medium",
-								evidence: Array.isArray((f as { evidence?: unknown }).evidence) ? ((f as { evidence: unknown[] }).evidence as unknown[]).map(String) : [],
-								recommendation: String((f as { recommendation?: unknown }).recommendation ?? "revise the owning artifact"),
-								blocking: true,
-							})), { detectedAtStage: "verify", ownerStage: inlineCmd.to, sourceGate: "verify-deferred" });
-						ctx.log(`Stage 10: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} for ${inlineCmd.findingIds.length} deferred finding(s) (budget checked; recorded to the ledger for round-1 injection) — throwing RouteBackSignal for the walker`);
-						throw new RouteBackSignal(inlineCmd);
-					}
-					// M5: the emulation is retired for routing — a declined inline
-					// plan (multi-owner / kill-switch / budget / OWNER-LESS residue)
-					// lands on the honest blocked-on-decisions human boundary below
-					// instead of an automatic process restart. (Disposition: deferred
-					// findings WITHOUT ownerStage could once be resolved by the replan
-					// LEAD (the deleted verify wrapper); M5 narrows routing to structured
-					// owners — owner-less residue is surfaced to the human boundary
-					// where the [deferred: …] titles carry it; the lead remains
-					// reachable from the RED-site exception and genuine resume.)
-					(state as Record<string, unknown>).__stagnated = {
-						kind: "blocked-on-decisions",
-						rounds: attempts.length,
-						verdict: (state.review as { verdict?: string } | undefined)?.verdict,
-						// D5 (AC-20): the COMPLETE deferred list — no slice(0, 6) cap.
-						findings: deferred.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}` })),
-					};
-					// Sweep-3 G35 (E-code E-4): the human boundary leaves a durable
-					// convergence-ledger record (a resume finds it — state alone is
-					// volatile) and marks THIS attempt terminal in the persisted
-					// attempt ledger so a resume does not treat it as in-flight.
-					try {
-						recordVerificationConvergenceFinding(state, {
-							title: `Blocked on human decision (${deferred.length} deferred finding(s))`,
-							detail: `review=${String((state.review as { verdict?: string } | undefined)?.verdict ?? "unknown")}, no build driver; deferred: ${deferred.map((f) => String(f.title ?? "?")).slice(0, 8).join("; ")}`,
-							evidence: deferred.map((f) => String(f.deferralReason ?? f.title ?? "")),
-							sourceGate: "blocked-on-decisions",
-							// AR1-2: the boundary record is a TRACE (the human's queue),
-							// not a loop-killer — blocking=true would poison the next
-							// run's round-1 injection with an unfixable-by-code blocker.
-							severity: "low",
-						});
-						// The writer hard-codes blocking for non-environment owners;
-						// demote this one row post-hoc (it is surfaced to the human via
-						// __stagnated + the escalation report, not via the blocking set).
-						const lastRow = getConvergenceLedger(state).findings[getConvergenceLedger(state).findings.length - 1];
-						if (lastRow && lastRow.sourceGate === "blocked-on-decisions") {
-							lastRow.blocking = false;
-							// round-2 CR-R2-2/ARR2-2: PERSIST the demotion — memory-only let
-							// the next run's round-1 injection read blocking=true from disk.
-							persistConvergenceLedger(state);
-						}
-					} catch { /* ledger best-effort */ }
-					recordAttemptEnd(state, record, true); // sweep-3 G35: TRUE terminal — survives the end-write (pre-fix the write clobbered the marker)
-					ctx.log(`Stage 10: no actionable findings remain after triage (${deferred.length} deferred) and no build driver — stopping for human decision (non-fatal; attempt ${attempt}; ledger record + terminal attempt marker written)`);
-					return { status: "ok" };
+				if (!reviewApproved(state) && record.reviewFindings === 0 && record.buildErrors === 0 && (state.buildGate === undefined || buildGreen(state))) {
+				// Sweep-3 G2 (E-code E-1): the outer convergence boundary (inline
+				// route-back throw + blocked-on-decisions marker) must obey the SAME
+				// replay discipline as the inner stagnation classifier (v0.3.10).
+				// On a resumed run the review agents replay from the memoized cache
+				// and reproduce the prior deferred findings — replayed evidence must
+				// not arm a terminal exit. The attempt sequence is cumulative via the
+				// persisted __verificationAttempts ledger; when this attempt is still
+				// inside the replay-arm budget, skip the boundary and let the loop
+				// proceed (each replayed attempt advances the sequence, so this
+				// terminates exactly when genuinely fresh evidence arrives).
+				const replaySeq = Math.max(attempt, attempts.length);
+				if (replaySeq <= verificationReplayArms(state, ctx)) {
+					ctx.log(`Stage 10: attempt ${attempt} boundary evidence is replay-derived (resume cache) — inline route-back/blocked-on-decisions deferred until fresh evidence`);
+					recordAttemptEnd(state, record, false);
+					// Bound (P8): same replay-sequence bound as the replayEarly arm —
+					// replaySeq is monotonically increasing per attempt and bounded by
+					// verificationReplayArms; the outer budget check caps everything else.
+					continue;
 				}
+				const deferred = ((state.review as { deferredFindings?: Array<Record<string, unknown>> } | undefined)?.deferredFindings) ?? [];
+				// R3 (dsh-09 v3): before falling to the human boundary, try routing the
+				// residue back to its OWNING stages — a bounded replan restart re-runs
+				// the owning convergence loops and everything downstream they
+				// invalidate. When nothing is routable or the budget is exhausted this
+				// returns false and today's honest blocked-on-decisions path runs.
+				// M4: inline-first — deferred findings carry ownerStage (cross-stage
+				// ownership is exactly why they were deferred), so the shared
+				// planner can jump instead of restarting the process. Exactly one
+				// routable strictly-upstream owner + edge budget → RouteBackSignal
+				// for the walker (verify needs no addressable id: the TARGET is the
+				// owner). The replan emulation stays the multi-owner/kill-switch/
+				// budget-exhausted fallback.
+				const inlineCmd = planInlineRouteBack(state.setup?.specDirectory, "verify", deferred);
+				if (inlineCmd) {
+					// Review round-1 M4-H1: the walker's MP1 protocol injects LEDGER
+					// findings matched by cmd.findingIds — deferred findings live only
+					// in state.review.deferredFindings. Record them FIRST so the
+					// owner's round 1 carries them (and the walker's decline fallback
+					// finds them too); without this the owner re-enters BLIND.
+					recordConvergenceFindings(state, deferred
+						.filter((f) => typeof f.id === "string" && inlineCmd.findingIds.includes(f.id as string))
+						.map((f) => ({
+							id: String(f.id),
+							ownerStage: typeof f.ownerStage === "string" ? f.ownerStage : inlineCmd.to,
+							title: String(f.title ?? "deferred finding"),
+							detail: String(f.detail ?? f.deferralReason ?? "cross-stage deferred finding"),
+							severity: typeof f.severity === "string" ? f.severity : "medium",
+							evidence: Array.isArray((f as { evidence?: unknown }).evidence) ? ((f as { evidence: unknown[] }).evidence as unknown[]).map(String) : [],
+							recommendation: String((f as { recommendation?: unknown }).recommendation ?? "revise the owning artifact"),
+							blocking: true,
+						})), { detectedAtStage: "verify", ownerStage: inlineCmd.to, sourceGate: "verify-deferred" });
+					ctx.log(`Stage 10: INLINE route-back ${inlineCmd.from}→${inlineCmd.to} for ${inlineCmd.findingIds.length} deferred finding(s) (budget checked; recorded to the ledger for round-1 injection) — throwing RouteBackSignal for the walker`);
+					throw new RouteBackSignal(inlineCmd);
+				}
+				// M5: the emulation is retired for routing — a declined inline
+				// plan (multi-owner / kill-switch / budget / OWNER-LESS residue)
+				// lands on the honest blocked-on-decisions human boundary below
+				// instead of an automatic process restart. (Disposition: deferred
+				// findings WITHOUT ownerStage could once be resolved by the replan
+				// LEAD (the deleted verify wrapper); M5 narrows routing to structured
+				// owners — owner-less residue is surfaced to the human boundary
+				// where the [deferred: …] titles carry it; the lead remains
+				// reachable from the RED-site exception and genuine resume.)
+				(state as Record<string, unknown>).__stagnated = {
+					kind: "blocked-on-decisions",
+					rounds: attempts.length,
+					verdict: (state.review as { verdict?: string } | undefined)?.verdict,
+					// D5 (AC-20): the COMPLETE deferred list — no slice(0, 6) cap.
+					findings: deferred.map((f) => ({ file: f.file ?? null, severity: f.severity ?? null, title: `[deferred: ${String(f.deferralReason ?? "advisory")}] ${String(f.title ?? "")}` })),
+				};
+				// Sweep-3 G35 (E-code E-4): the human boundary leaves a durable
+				// convergence-ledger record (a resume finds it — state alone is
+				// volatile) and marks THIS attempt terminal in the persisted
+				// attempt ledger so a resume does not treat it as in-flight.
+				try {
+					recordVerificationConvergenceFinding(state, {
+						title: `Blocked on human decision (${deferred.length} deferred finding(s))`,
+						detail: `review=${String((state.review as { verdict?: string } | undefined)?.verdict ?? "unknown")}, no build driver; deferred: ${deferred.map((f) => String(f.title ?? "?")).slice(0, 8).join("; ")}`,
+						evidence: deferred.map((f) => String(f.deferralReason ?? f.title ?? "")),
+						sourceGate: "blocked-on-decisions",
+						// AR1-2: the boundary record is a TRACE (the human's queue),
+						// not a loop-killer — blocking=true would poison the next
+						// run's round-1 injection with an unfixable-by-code blocker.
+						severity: "low",
+					});
+					// The writer hard-codes blocking for non-environment owners;
+					// demote this one row post-hoc (it is surfaced to the human via
+					// __stagnated + the escalation report, not via the blocking set).
+					const lastRow = getConvergenceLedger(state).findings[getConvergenceLedger(state).findings.length - 1];
+					if (lastRow && lastRow.sourceGate === "blocked-on-decisions") {
+						lastRow.blocking = false;
+						// round-2 CR-R2-2/ARR2-2: PERSIST the demotion — memory-only let
+						// the next run's round-1 injection read blocking=true from disk.
+						persistConvergenceLedger(state);
+					}
+				} catch { /* ledger best-effort */ }
+				recordAttemptEnd(state, record, true); // sweep-3 G35: TRUE terminal — survives the end-write (pre-fix the write clobbered the marker)
+				ctx.log(`Stage 10: no actionable findings remain after triage (${deferred.length} deferred) and no build driver — stopping for human decision (non-fatal; attempt ${attempt}; ledger record + terminal attempt marker written)`);
+				return { status: "ok" };
+			}
 				if (await recordVerificationStagnation(state, ctx, record)) return { status: "failed", error: "verification convergence stagnant" };
 				if (!ctx.budget.check()) {
 					record.terminal = true;
@@ -342,9 +354,6 @@ export const integrationLoopNode: Node = {
 		const testCountHist = ((state as Record<string, unknown>).__testCounts as number[] | undefined) ?? [];
 		(state as Record<string, unknown>).__testSignatures = testSigHist;
 		(state as Record<string, unknown>).__testCounts = testCountHist;
-		const testFailureCount = (s: PipelineState): number =>
-			(((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length +
-			(((s.uiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length;
 		const recordTestStagnation = (): boolean => {
 			// V1 (v0.3.10): replay-derived integration observations (resume cache
 			// hits) reconstruct state but never arm test stagnation — same contract

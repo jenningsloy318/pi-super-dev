@@ -173,7 +173,7 @@ export interface AgentCall {
 	/** Optional per-call thinking override (Phase 2). Highest precedence; when
 	 *  absent the resolved level falls back to SUPER_DEV_THINKING then the role
 	 *  default. Threaded into `common` (historically for both backends). */
-	thinking?: import("./agents/agent-runtime.ts").ThinkingLevel;
+	thinking?: import("./agents/agent-runtime/index.ts").ThinkingLevel;
 	/** Optional per-call model override ("provider/id"). Highest precedence — wins
 	 *  over config.agentModels and the global --model/SUPER_DEV_MODEL. Rarely set by
 	 *  stages; the usual cross-model policy is declared in ~/.super-dev config. */
@@ -187,7 +187,7 @@ export interface AgentCall {
 	 *  config-resolved assist budget (agentToolBudget["research-assist"] ??
 	 *  ["research-agent"] ?? commonToolBudget ?? none) is tighter than
 	 *  research-agent's own registration default, so it must ride the CALL. */
-	toolBudget?: import("./agents/agent-runtime.ts").ResolvedToolBudget;
+	toolBudget?: import("./agents/agent-runtime/index.ts").ResolvedToolBudget;
 }
 
 export type AgentAccessMode = "write" | "source-read-only";
@@ -569,11 +569,11 @@ export interface RunOptions {
 	 *  subprocess backend derived
 	 *  the qualified `provider/id` for `--model`. ADDITIVE — never clobbers `model`
 	 *  or a SUPER_DEV_MODEL env override; wins over the SDK/settings default. */
-	inheritedModelObject?: import("./agents/agent-runtime.ts").SessionModelOption;
+	inheritedModelObject?: import("./agents/agent-runtime/index.ts").SessionModelOption;
 	/** Phase 1 (Feature 1): DEFAULT thinking level inherited from the live main
 	 *  session (ctx.thinkingLevel). ADDITIVE — never clobbers a per-call override
 	 *  or a SUPER_DEV_THINKING env var, but wins over the role default. */
-	inheritedThinking?: import("./agents/agent-runtime.ts").ThinkingLevel;
+	inheritedThinking?: import("./agents/agent-runtime/index.ts").ThinkingLevel;
 	maxAgents?: number;
 	maxConcurrency?: number;
 	progress?: ProgressSink;

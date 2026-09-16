@@ -36,7 +36,7 @@ import { runPipelineTask } from "./pipeline.ts";
 import { maxReplanRounds, pendingHumanReplanRequests } from "./replan/replan.ts";
 import { releaseHeldRunLock } from "./setup.ts";
 import { appendRunEvent } from "./runlog.ts";
-import { abbreviatePath, type ThinkingLevel } from "./agents/agent-runtime.ts";
+import { abbreviatePath, type ThinkingLevel } from "./agents/agent-runtime/index.ts";
 import { setActiveTracker } from "./tracking.ts";
 import { registerSuperDevAgentsDeferred } from "./agents/register-agents.ts";
 import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
@@ -950,7 +950,7 @@ export default function activate(pi: ExtensionAPI): void {
 				// provider's same-named model (the opencode mis-resolution bug).
 				// try/catch + a ctx guard — an older/non-TUI ctx exposes neither and
 				// degrades byte-identically to today (SCENARIO-002).
-				let inheritedModelObject: import("./agents/agent-runtime.ts").SessionModelOption | undefined;
+				let inheritedModelObject: import("./agents/agent-runtime/index.ts").SessionModelOption | undefined;
 				let inheritedThinking: ThinkingLevel | undefined;
 				try {
 					if (ctx?.model?.id && ctx.model.provider) inheritedModelObject = ctx.model;

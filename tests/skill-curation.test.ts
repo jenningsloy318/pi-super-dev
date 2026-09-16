@@ -36,7 +36,7 @@ import {
 	ambientSkillsForced,
 	explicitSkillConfigured,
 	resetAmbientSkillsForcedForTests,
-} from "../src/agents/agent-runtime.ts";
+} from "../src/agents/agent-runtime/index.ts";
 import { appendToolUsageRows } from "../src/evolution/tool-usage.ts";
 import { ClassificationData } from "../src/render/schemas.ts";
 import { buildClassifyPrompt } from "../src/prompts.ts";

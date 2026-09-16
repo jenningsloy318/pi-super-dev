@@ -21,7 +21,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { resolveThinking, splitModelThinking } from "./agents/agent-runtime.ts";
+import { resolveThinking, splitModelThinking } from "./agents/agent-runtime/index.ts";
 import { buildRunMetricsRow, appendRunMetrics, checkSigmaBands } from "./evolution/sigma-bands.ts";
 import { deriveS3Counters, type S3ImplementationState } from "./evolution/run-observability.ts";
 // P2 (v0.3.90): the in-pipeline fail-open eval surface (D5+D3) — strictly
@@ -42,7 +42,7 @@ import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
 import { runHelper } from "./helpers.ts";
 import { mergeUsage } from "./types.ts";
-import { skillsForCall } from "./agents/agent-runtime.ts";
+import { skillsForCall } from "./agents/agent-runtime/index.ts";
 import { appendToolUsageRows } from "./evolution/tool-usage.ts";
 import { toBool } from "./doc-validators.ts";
 import { createMemoizingAgent, loadResumeCache, clearResumeCache, specDirFor, findResumableSpec } from "./resume.ts";

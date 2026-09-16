@@ -33,7 +33,7 @@ import {
 	checkBashCommand as hostCheckBashCommand,
 	checkProtectedWrite as hostCheckProtectedWrite,
 } from "../src/safety.ts";
-import { safetyGuardExtensionPath, extensionsForAgent } from "../src/agents/agent-runtime.ts";
+import { safetyGuardExtensionPath, extensionsForAgent } from "../src/agents/agent-runtime/index.ts";
 
 describe("F-13 — child-module checkers", () => {
 	it("blocks the dangerous shapes the denylist was ported for", () => {

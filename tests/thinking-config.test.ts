@@ -13,8 +13,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { thinkingForAgent, resolveThinking, type ThinkingLevel } from "../src/agents/agent-runtime.ts";
-import { applyThinkingLevel } from "../src/agents/agent-runtime.ts";
+import { thinkingForAgent, resolveThinking, type ThinkingLevel } from "../src/agents/agent-runtime/index.ts";
+import { applyThinkingLevel } from "../src/agents/agent-runtime/index.ts";
 vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	// v0.3.44 hermetic pin: resolveThinking now reads config.agentThinking
 	// lazily; pin getConfig to DEFAULT_CONFIG so these precedence tests never

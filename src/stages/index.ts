@@ -150,7 +150,7 @@ export const verificationSkippedReplanStage: Stage = {
 };
 
 // ─── Verify: fresh-evidence convergence loop ────────────────────────────────
-// Extracted to src/stages/verify.ts. Each attempt runs fresh review + build
+// Extracted to src/stages/verify/ (v0.4.17c split). Each attempt runs fresh review + build
 // evidence before integration. Any fix invalidates downstream evidence and the
 // next attempt starts at review again: review → fix → review → integration →
 // fix → review → integration, bounded by the verification loop's safety policy.

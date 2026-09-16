@@ -1,5 +1,5 @@
 export type { BoundaryQuarantinePayload } from "./red-evidence.ts";
-// v0.4.16: implementation.ts split into 4 cohesive modules (pure code motion —
+// v0.4.17: implementation.ts split into 4 cohesive modules (pure code motion —
 // every name below keeps its exact pre-split resolution path "../stages/implementation").
 export { RedEvidence, landedFootprintIsEmpty, CrossScopeCitation, crossScopeTestCitations, crossScopeContractConflictFrame, signatureStableChangedFiles, redEvidenceSignature, PorcelainEntry, porcelainEntries, gitStatusPaths, restorePaths, classifyRedEvidence, redEvidenceFailureReasons, redGenerationRetryHint, resolveTddScenarioCoverage, resolveRedBoundary, assertionPresenceGaps, assertionSurfaceCount, AssertionSurfaceRow, WeakenedAssertionSurface, weakenedAssertionSurfaces, MAX_RED_JUDGE_ROUTES, restrictRedJudgeRoutes } from "./red-evidence.ts";
 export { LeakPhase, reverifyPartialPhases, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, MAX_PARTIAL_REENTRIES, maxPhaseAttempts, phaseWallBudgetMs, faultRecurrenceLimit, TestDefect, parseRedContradictions, parseTestDefects, runtimeInstructionFingerprint, redCheckOptions, parseStructuredChanges, normalizeStringArray } from "./phase-reentry.ts";

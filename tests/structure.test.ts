@@ -44,7 +44,9 @@ describe("self-contained engine structure", () => {
 		expect(existsSync(join(ROOT, "src", "agents", "delegation-backend.ts"))).toBe(true);
 		expect(existsSync(join(ROOT, "src", "pi-spawn.ts"))).toBe(false);
 		expect(existsSync(join(ROOT, "src", "session-agent.ts"))).toBe(false);
-		expect(existsSync(join(ROOT, "src", "agents", "agent-runtime.ts"))).toBe(true);
+		// v0.4.17d: agent-runtime.ts was split into src/agents/agent-runtime/
+		// (extensions / config-extensions / thinking / runtime + index barrel).
+		expect(existsSync(join(ROOT, "src", "agents", "agent-runtime", "index.ts"))).toBe(true);
 		// v0.3.88: the session backend's bench copy (src/bench/) is deleted too —
 		// delegation is the sole executor anywhere under src/.
 		expect(existsSync(join(ROOT, "src", "bench"))).toBe(false);

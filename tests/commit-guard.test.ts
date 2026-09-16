@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isCommitClassGitCommand, default as guardFactory } from "../src/child-guards/commit-guard.ts";
-import { commitGuardExtensionPath, extensionsForAgent } from "../src/agents/agent-runtime.ts";
+import { commitGuardExtensionPath, extensionsForAgent } from "../src/agents/agent-runtime/index.ts";
 
 describe("v0.3.74 P2-e — commit-class git command classifier", () => {
 	it("blocks the incident shapes (2e92da3 / 5d4790d)", () => {

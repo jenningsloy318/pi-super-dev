@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { HARNESS_FILE_ROLES } from "../src/harness-paths.ts";
 import { isRuntimeEvidencePath, isSpecScopedRuntimeEvidencePath } from "../src/test-artifacts.ts";
 import { isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../src/tracking.ts";
+import { implementationSources } from "./helpers/implementation-source.ts";
 
 // ── Golden sets — captured verbatim from the four pre-refactor literals ──────
 
@@ -230,10 +231,16 @@ describe("v0.3.74 P1-a — harness-file registry is the single source of truth",
 		// v0.3.74 dual review F3: the scan covers ALL FOUR consumer files —
 		// helpers.ts (fifth literal) and implementation.ts (sixth) had survived
 		// the two-file scan while claiming the class was dead.
-		for (const rel of ["../src/test-artifacts.ts", "../src/tracking.ts", "../src/helpers.ts", "../src/stages/implementation/index.ts"]) {
+		// v0.4.17d: implementation.ts was split into src/stages/implementation/ —
+		// scan the concatenated PARTS, not the re-export barrel (the barrel is 8
+		// lines of `export {} from` and would hollow the no-drift contract).
+		for (const rel of ["../src/test-artifacts.ts", "../src/tracking.ts", "../src/helpers.ts"]) {
 			const src = readFileSync(join(import.meta.dirname, rel), "utf8");
 			expect(src.includes("BASENAMES = new Set("), `${rel} must derive its basename sets from harness-paths.ts`).toBe(false);
 			expect(src.includes("HARNESS_BOOKKEEPING_FILES = new Set(["), `${rel} must derive its basename sets from harness-paths.ts`).toBe(false);
 		}
+		const implSrc = implementationSources();
+		expect(implSrc.includes("BASENAMES = new Set(")).toBe(false);
+		expect(implSrc.includes("HARNESS_BOOKKEEPING_FILES = new Set([")).toBe(false);
 	});
 });

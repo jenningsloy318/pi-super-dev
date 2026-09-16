@@ -20,7 +20,7 @@
  */
 
 import { loadAgentBasePrompt } from "../agents.ts";
-import { commitGuardExtensionPath, safetyGuardExtensionPath, buildToolIndex, configExtensionEntriesForAgent, configExtensionToolsForAgent, toolsWildcardForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured, resolveToolBudget, type ResolvedToolBudget } from "./agent-runtime.ts";
+import { commitGuardExtensionPath, safetyGuardExtensionPath, buildToolIndex, configExtensionEntriesForAgent, configExtensionToolsForAgent, toolsWildcardForAgent, extensionsForAgent, skillsEnabled, curatedSkillsRole, ambientSkillsForced, explicitSkillConfigured, resolveToolBudget, type ResolvedToolBudget } from "./agent-runtime/index.ts";
 import { getConfig } from "../render/super-dev-dir.ts";
 import type { DelegationEventBus } from "./delegation-backend.ts";
 

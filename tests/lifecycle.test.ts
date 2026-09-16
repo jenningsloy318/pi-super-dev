@@ -18,7 +18,7 @@ import {
 	serviceCmdAllowed,
 	sanitizeServiceEnv,
 } from "../src/stages/lifecycle.ts";
-import { SIGTERM_GRACE_MS } from "../src/agents/agent-runtime.ts";
+import { SIGTERM_GRACE_MS } from "../src/agents/agent-runtime/index.ts";
 import { createServer } from "node:net";
 import type { Node, PipelineState, ServiceHandle } from "../src/types.ts";
 

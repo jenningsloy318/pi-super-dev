@@ -78,7 +78,7 @@ import {
 	researchAssistLedgerPath,
 	runResearchAssist,
 } from "../src/stages/research-assist.ts";
-import { EXTERNAL_EXPLORATION_BLOCK_LIST } from "../src/agents/agent-runtime.ts";
+import { EXTERNAL_EXPLORATION_BLOCK_LIST } from "../src/agents/agent-runtime/index.ts";
 import type { AgentCall, AgentResult, ControlObj, HelperResult, PipelineState, RunOptions, StageContext } from "../src/types.ts";
 
 // ─── pure-helper fixtures ───────────────────────────────────────────────────

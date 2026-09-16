@@ -13,7 +13,10 @@ import { join } from "node:path";
 
 const PARTS = ["red-evidence.ts", "phase-reentry.ts", "phase-status.ts", "stage.ts"];
 
-/** Concatenated source of the implementation stage, in pre-split order. */
+/** Concatenated source of the implementation stage. Part order follows the
+ * pre-split file layout; the v0.4.17 orphaned-doc fix re-attached one comment
+ * block, so a two-line region around that seam is reordered relative to the
+ * monolith — no current pin spans it (verified by the adversarial gate). */
 export function implementationSources(root = process.cwd()): string {
 	return PARTS.map((p) => readFileSync(join(root, "src", "stages", "implementation", p), "utf8")).join("\n");
 }

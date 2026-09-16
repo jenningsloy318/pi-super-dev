@@ -11,7 +11,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
  */
 
 import { registerSuperDevAgents, registerSuperDevAgentsDeferred, READ_ONLY_AGENTS, READ_ONLY_TOOLS, WRITER_TOOLS } from "../src/agents/register-agents.ts";
-import { resetAmbientSkillsForcedForTests, resetConfigExtensionWarnsForTests } from "../src/agents/agent-runtime.ts";
+import { resetAmbientSkillsForcedForTests, resetConfigExtensionWarnsForTests } from "../src/agents/agent-runtime/index.ts";
 
 /** v0.3.76 dual-review R1/AR-2: registration reads config.agentSkills via
  * getConfig() — deterministic in-file mock (mutable holder; other exports
@@ -369,7 +369,7 @@ describe("v0.3.59 — skills are a capability on the delegation backend too (cro
  * entries union onto the commit guard + the v0.3.86 safety-guard floor (never
  * replace), empty + kill switch → key omitted, every agent consulted once. */
 const configExtStub = vi.hoisted(() => ({ entries: [] as string[], tools: [] as string[], calls: [] as string[], toolCalls: [] as string[] }));
-vi.mock("../src/agents/agent-runtime.ts", async (importOriginal) => {
+vi.mock("../src/agents/agent-runtime/index.ts", async (importOriginal) => {
 	const real = await importOriginal<Record<string, unknown>>();
 	return {
 		...real,

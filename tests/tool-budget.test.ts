@@ -21,7 +21,7 @@ vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	return { ...real, getConfig: () => getConfigImpl.impl() };
 });
 
-import { EXTERNAL_EXPLORATION_BLOCK_LIST, resetConfigExtensionWarnsForTests, resolveToolBudget } from "../src/agents/agent-runtime.ts";
+import { EXTERNAL_EXPLORATION_BLOCK_LIST, resetConfigExtensionWarnsForTests, resolveToolBudget } from "../src/agents/agent-runtime/index.ts";
 import { MECHANICAL_CLASSIFIER_ROLES } from "../src/agents/skill-domains.ts";
 
 describe("v0.3.87 — resolveToolBudget resolution chain", () => {

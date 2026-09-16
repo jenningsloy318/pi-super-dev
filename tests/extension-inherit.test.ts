@@ -73,8 +73,8 @@ vi.mock("../src/workflow.ts", () => ({ runWorkflow: vi.fn(() => ({})) }));
 vi.mock("../src/nodes.ts", () => ({}));
 vi.mock("../src/stages/index.ts", () => ({ SUPER_DEV_WORKFLOW: {} }));
 
-vi.mock("../src/agents/agent-runtime.ts", async (importOriginal) => ({
-	...await importOriginal<typeof import("../src/agents/agent-runtime.ts")>(),
+vi.mock("../src/agents/agent-runtime/index.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/agent-runtime/index.ts")>(),
 	// v0.3.88: only LIVE exports are overridden — the dead `spawnAgent` key from
 	// the deleted backends was removed (agent-runtime.ts exports no spawnAgent;
 	// the real executor is delegation-backend's runAgentViaDelegation).

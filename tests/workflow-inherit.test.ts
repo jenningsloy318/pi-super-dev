@@ -64,7 +64,7 @@ describe("realAgent threads inherited model/thinking into the delegation backend
 	});
 
 	it("SCENARIO-001: options.inheritedModelObject flows into the delegation backend's common object", async () => {
-		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/agents/agent-runtime.ts").SessionModelOption;
+		const m = { provider: "openai", id: "gpt-4o" } as unknown as import("../src/agents/agent-runtime/index.ts").SessionModelOption;
 		await mkCtx({}, { inheritedModelObject: m }).agent(BASE_CALL);
 		expect(captured.delegation).toBeDefined();
 		expect(captured.delegation!.inheritedModelObject).toBe(m);
@@ -73,7 +73,7 @@ describe("realAgent threads inherited model/thinking into the delegation backend
 	it("SCENARIO-006: inherited model AND thinking reach the delegation backend TOGETHER through the same common seam", async () => {
 		// v0.3.64: the subprocess backend is gone; the combined-model case pins
 		// the single delegation seam instead.
-		const m = { provider: "glm", id: "glm-5.2" } as unknown as import("../src/agents/agent-runtime.ts").SessionModelOption;
+		const m = { provider: "glm", id: "glm-5.2" } as unknown as import("../src/agents/agent-runtime/index.ts").SessionModelOption;
 		await mkCtx({}, { inheritedModelObject: m, inheritedThinking: "high" }).agent(BASE_CALL);
 		expect(captured.delegation).toBeDefined();
 		expect(captured.delegation!.inheritedModelObject).toBe(m);

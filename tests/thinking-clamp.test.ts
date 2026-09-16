@@ -52,7 +52,7 @@ import {
 	resolveThinkingDetailed,
 	THINKING_LEVELS,
 	type ThinkingLevel,
-} from "../src/agents/agent-runtime.ts";
+} from "../src/agents/agent-runtime/index.ts";
 import {
 	clampThinkingForDispatch,
 	DELEGATION_REQUEST_EVENT,

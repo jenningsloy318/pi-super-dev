@@ -17,7 +17,7 @@ vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	return { ...real, superDevEnv };
 });
 
-import { ambientSkillsForced, resetAmbientSkillsForcedForTests } from "../src/agents/agent-runtime.ts";
+import { ambientSkillsForced, resetAmbientSkillsForcedForTests } from "../src/agents/agent-runtime/index.ts";
 
 describe("v0.3.76 R3/AR-1 — SUPER_DEV_SKILLS resolves via the superDevEnv channel (config env map, GUI sessions)", () => {
 	beforeEach(() => { resetAmbientSkillsForcedForTests(); delete process.env.SUPER_DEV_SKILLS; });

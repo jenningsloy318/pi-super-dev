@@ -44,7 +44,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
-import { resolveToolBudget } from "../agents/agent-runtime.ts";
+import { resolveToolBudget } from "../agents/agent-runtime/index.ts";
 import type { StageContext } from "../types.ts";
 import { stateFileFor } from "../state/state-root.ts";
 

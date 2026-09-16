@@ -296,7 +296,7 @@ export function verificationRetryFeedbackBlock(s: PipelineState, kind: "review" 
 	return renderRetryFeedbackBlock(feedback, "Verification retry evidence for this fix");
 }
 
-function testFailureCount(s: PipelineState): number {
+export function testFailureCount(s: PipelineState): number {
 	return (((s.apiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length +
 		(((s.uiTest as { failures?: unknown[] } | undefined)?.failures) ?? []).length;
 }

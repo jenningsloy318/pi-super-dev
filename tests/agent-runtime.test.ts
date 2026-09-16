@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveExtensionEntries, summarizeToolCall, resolveThinking, buildToolIndexFromTools } from "../src/agents/agent-runtime.ts";
+import { isCodeWritingAgent, defaultAgentTimeoutMs, needsWebResearch, resolveExtensionEntry, resolveExtensionEntries, summarizeToolCall, resolveThinking, buildToolIndexFromTools } from "../src/agents/agent-runtime/index.ts";
 
 vi.mock("../src/render/super-dev-dir.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/render/super-dev-dir.ts")>();

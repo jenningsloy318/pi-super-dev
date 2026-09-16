@@ -2295,31 +2295,31 @@ export const implementationStage: Stage = {
 				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
 					if (covRunnerSpec) {
 						const phaseProductionFiles = Array.from(new Set([
-						...projectStructured.filesCreated,
-						...projectStructured.filesModified,
-						...declaredScope,
-						...(bridgedDeliverables.requireFiles ?? []),
-						]));
+							...projectStructured.filesCreated,
+							...projectStructured.filesModified,
+							...declaredScope,
+							...(bridgedDeliverables.requireFiles ?? []),
+							]));
 						announceActivity("Coverage gate", attemptDetail(attempt));
 						coverageResult = runCoverageGate(setup.worktreePath, {
-						runnerSpec: covRunnerSpec,
-						phaseFiles: phaseProductionFiles,
-						testFiles,
-						log: (m) => ctx.log(`Implementation ${phaseId} coverage: ${m}`),
-						});
+							runnerSpec: covRunnerSpec,
+							phaseFiles: phaseProductionFiles,
+							testFiles,
+							log: (m) => ctx.log(`Implementation ${phaseId} coverage: ${m}`),
+							});
 						ctx.log(`Implementation ${phaseId} coverage-gate ${coverageResult.status.toUpperCase()}${coverageResult.linesPct !== undefined ? ` (${coverageResult.linesPct.toFixed(1)}% lines vs ≥${coverageResult.threshold}%)` : ""} — ${coverageResult.detail}`);
 						if (coverageResult.status === "below-threshold") {
-						coverageGap = [
-						`${(coverageResult.linesPct ?? 0).toFixed(1)}% lines vs the ≥${coverageResult.threshold}% hard floor (recipe: ${coverageResult.recipe ?? "n/a"})`,
-						...[...coverageResult.perFile].sort((a, b) => a.linesPct - b.linesPct).slice(0, 8)
+							coverageGap = [
+							`${(coverageResult.linesPct ?? 0).toFixed(1)}% lines vs the ≥${coverageResult.threshold}% hard floor (recipe: ${coverageResult.recipe ?? "n/a"})`,
+							...[...coverageResult.perFile].sort((a, b) => a.linesPct - b.linesPct).slice(0, 8)
 							.map((f) => `${f.file}: ${f.linesPct.toFixed(1)}% lines${f.uncoveredHint ? ` (uncovered ${f.uncoveredHint})` : ""}${typeof f.functionsPct === "number" ? `, funcs ${f.functionsPct.toFixed(1)}%` : ""}`),
-						];
-						} else if (coverageResult.status === "unmeasurable") {
-						// Loud carried debt — the phase still goes green (the gate cannot
-						// invent a recipe for an unwired family), but the ledger records it
-						// for review/verification to see.
-						try {
-						recordConvergenceFindings(state, {
+							];
+							} else if (coverageResult.status === "unmeasurable") {
+							// Loud carried debt — the phase still goes green (the gate cannot
+							// invent a recipe for an unwired family), but the ledger records it
+							// for review/verification to see.
+							try {
+							recordConvergenceFindings(state, {
 							detectedAtStage: "implementation",
 							ownerStage: "implementation",
 							severity: "medium",

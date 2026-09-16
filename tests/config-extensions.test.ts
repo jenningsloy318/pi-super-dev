@@ -26,7 +26,7 @@ import {
 	configExtensionEntriesForAgent,
 	configExtensionToolsForAgent,
 	resetConfigExtensionWarnsForTests,
-} from "../src/agents/agent-runtime.ts";
+} from "../src/agents/agent-runtime/index.ts";
 import { MECHANICAL_CLASSIFIER_ROLES } from "../src/agents/skill-domains.ts";
 
 /** Fixture agent dir with two fake extension packages (manifest + entry) and
@@ -187,20 +187,20 @@ describe("v0.3.82 — explicit tool-name keys REMOVED; allTools boolean mode", (
 	});
 
 	it("toolsWildcardForAgent: allTools true → wildcard (capability agents)", async () => {
-		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime/index.ts");
 		expect(toolsWildcardForAgent("implementer", { config: { allTools: true } })).toBe(true);
 		expect(toolsWildcardForAgent("spec-reviewer", { config: { allTools: true } })).toBe(true);
 	});
 
 	it("toolsWildcardForAgent: mechanical classifiers scoped out of allTools; per-role explicit beats scope", async () => {
-		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime/index.ts");
 		expect(toolsWildcardForAgent("task-classifier", { config: { allTools: true } })).toBe(false);
 		expect(toolsWildcardForAgent("task-classifier", { config: { agentAllTools: { "task-classifier": true } } })).toBe(true);
 		expect(toolsWildcardForAgent("ui-tester", { config: { agentAllTools: { "sd-ui-tester": true } } })).toBe(true);
 	});
 
 	it("toolsWildcardForAgent: false/absent/malformed → false, never throws", async () => {
-		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime/index.ts");
 		expect(toolsWildcardForAgent("implementer", { config: {} })).toBe(false);
 		expect(toolsWildcardForAgent("implementer", { config: { allTools: "yes" as never } })).toBe(false);
 		expect(toolsWildcardForAgent("implementer", { config: { agentAllTools: { implementer: "nope" as never } } })).toBe(false);
@@ -264,7 +264,7 @@ describe("v0.3.82 — mechanical tool-index merge (declaring an extension suffic
 	});
 
 	it("extensionPackagesForAgent: role ∪ common ∪ perRole, npm: normalized, classifiers scoped", async () => {
-		const { extensionPackagesForAgent } = await import("../src/agents/agent-runtime.ts");
+		const { extensionPackagesForAgent } = await import("../src/agents/agent-runtime/index.ts");
 		getConfigImpl.impl = () => ({ commonExtensions: ["npm:pi-lsp", "pi-blackhole"], agentExtensions: { "qa-agent": ["pi-extra"] } });
 		expect(extensionPackagesForAgent("spec-reviewer")).toEqual(["pi-lsp", "pi-blackhole"]);
 		expect(extensionPackagesForAgent("qa-agent")).toEqual(["pi-browser-cdp-extension", "pi-lsp", "pi-blackhole", "pi-extra"]); // qa-agent is a browser role
@@ -330,7 +330,7 @@ describe("v0.3.82 dual-review fixes — index build, zero-contribution WARN, mal
 	});
 
 	it("malformed allTools / agentAllTools values warn ONCE per key and degrade to false (code-F4 loud-fallback contract)", async () => {
-		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime.ts");
+		const { toolsWildcardForAgent } = await import("../src/agents/agent-runtime/index.ts");
 		const warns: string[] = [];
 		const w = (m: string) => warns.push(m);
 		expect(toolsWildcardForAgent("spec-reviewer", { config: { allTools: "yes" } as never, warn: w })).toBe(false);

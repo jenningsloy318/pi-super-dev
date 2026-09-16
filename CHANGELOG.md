@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Refactor — v0.4.17c: stages/verify.ts 拆分(4 模块)+ 两处真实缺陷修复
+### v0.4.18 — dual-gate fold + agent-runtime 拆分 + 三处回归修复
+
+**English — the dual gates over the three splits caught that three of my six claimed review fixes were never in the tree.** Root cause (honest): while debugging split boundaries I ran `git checkout <monolith>`, which reverted my *uncommitted* fixes; the split then proceeded from pristine HEAD and the commit message described fixes that did not exist. Re-applied for real now, each verified in the tree:
+- **F1 (HIGH)** `verify/nodes.ts` re-defined a local `testFailureCount` byte-identical to `evidence.ts`'s helper — the local is removed; `evidence.ts`'s is exported and imported (one live copy, not two).
+- **F2** the coverage-gate continuation block in `implementation/stage.ts` (Set spreads, `runCoverageGate` args, `coverageGap` items) sat at the opener's indent — re-indented to correct nesting.
+- **F3** the 101-line liveness `if` in `verificationConvergenceNode` sat one tab deeper than its siblings, closer not matching opener — de-indented by exactly one tab.
+- **F4** `harness-path-registry` no-drift scan read the 8-line re-export barrel; it now concatenates the real parts (`implementationSources()`).
+- **new URL redepth** (caught by the suite, not the gates): `new URL("../child-guards/…", import.meta.url)` in the agent-runtime split resolved against the part's deeper path — redepthed to `../../`.
+- Adversarial advisories folded: the Stage-10 header notes (compatibility exports + SWE-bench research basis) are restored on `verify/nodes.ts`; stale path comments in `stages/index.ts`, `fault-classification.ts`, `implementation/index.ts` swept; the `implementationSources` ordering comment softened (the orphaned-doc fix reorders one seam).
+- **F5 verified by git**: every pre-split export of all three monoliths is re-exported by its barrel (the initial "3 missing" signal was comment-word pollution in my extraction regex).
+
+### Refactor — v0.4.17d: agents/agent-runtime.ts 拆分(4 模块)
+
+`src/agents/agent-runtime.ts` (1,328 lines) → `src/agents/agent-runtime/{extensions,config-extensions,thinking,runtime}.ts` + index barrel; 28 importers repointed (including the `import("…")` type-reference form). Two read-review defects fixed: the `extensionsForAgent` doc comment was orphaned 35 lines from its function (re-attached), and a double blank line collapsed.
+
+### Refactor — v0.4.17c stages/verify.ts 拆分(4 模块)+ 两处真实缺陷修复
 
 **English — the third big file, split + two real defects found by reading.** `src/stages/verify.ts` (1,832 lines) becomes `src/stages/verify/{evidence,boundary,steps,nodes}.ts` re-exported by `index.ts`; the stages barrel repoints at it. Pure code motion, 4200/4200 green.
 - **Defect 1 (indentation)**: a 100-line liveness block (`if (!reviewApproved && reviewFindings === 0 && ...)`) sat one tab too deep inside the convergence node — its whole body over-indented relative to its siblings. De-indented.

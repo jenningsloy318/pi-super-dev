@@ -818,7 +818,7 @@ describe("tripwires (P4/P6/§7 部分 5 — deterministic source contracts)", ()
 		expect(specifiers.length).toBeGreaterThan(0);
 		const allowed = new Set([
 			"node:crypto", "node:fs", "node:path", "typebox",
-			"./sigma-bands.ts", "./eval-layer.ts", "./eval-shared.ts", "../runlog.ts", "../render/super-dev-dir.ts", "../agents/agent-runtime.ts",
+			"./sigma-bands.ts", "./eval-layer.ts", "./eval-shared.ts", "../runlog.ts", "../render/super-dev-dir.ts", "../agents/agent-runtime/index.ts",
 			// 063 S2 gate F3: PATH RESOLUTION ONLY — stateFileFor locates the
 			// external home for read-only existence checks/display (its lazy
 			// mkdir of the state dir is the resolution side effect, not loop

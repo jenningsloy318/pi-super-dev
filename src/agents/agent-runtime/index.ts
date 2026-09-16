@@ -1,0 +1,8 @@
+// v0.4.17d: agent-runtime.ts split into 4 modules (pure code motion —
+// every name below keeps its pre-split resolution path "../agents/agent-runtime").
+export { isBrowserAgent, needsWebResearch, RESEARCH_EXTENSION_PACKAGES, BROWSER_EXTENSION_PACKAGES, piAgentDir, resolveExtensionEntries, resolveExtensionEntry, researchExtensions, browserExtensions, commitGuardExtensionPath, extensionsForAgent, safetyGuardExtensionPath } from "./extensions.ts";
+export { normalizeExtensionPackageName, configExtensionEntriesForAgent, extensionPackagesForAgent, configExtensionToolsForAgent, buildToolIndexFromTools, buildToolIndex, toolsWildcardForAgent, EXTERNAL_EXPLORATION_BLOCK_LIST, ResolvedToolBudget, resolveToolBudget, resetConfigExtensionWarnsForTests, isCodeWritingAgent } from "./config-extensions.ts";
+export { THINKING_LEVELS, ThinkingLevel, thinkingForAgent, hasThinkingTier, splitModelThinking, agentModelThinkingFromConfig, agentThinkingFromConfig, ThinkingSource, ResolvedThinking, resolveThinkingDetailed, resolveThinking, ThinkingClampOutcome, clampThinkingToModel, resolveExplicitThinking, resolveModel } from "./thinking.ts";
+export { SIGTERM_GRACE_MS, defaultAgentTimeoutMs, skillsEnabled, summarizeToolCall, abbreviatePath, applyThinkingLevel, SessionModelOption, taskFilePaths, taskFileExcerpts, summarizeSlug, ambientSkillsForced, resetAmbientSkillsForcedForTests, skillsForCall, curatedSkillsRole, explicitSkillConfigured } from "./runtime.ts";
+export { MECHANICAL_CLASSIFIER_ROLES, DEFAULT_RESEARCH_SKILLS, SKILL_DOMAINS } from "../skill-domains.ts";
+export type { SkillDomainDescriptor } from "../skill-domains.ts";

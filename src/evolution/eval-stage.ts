@@ -100,7 +100,7 @@ import {
 import { appendRunEvent } from "../runlog.ts";
 import { getConfig, getSuperDevDir, superDevEnv, type SuperDevConfig } from "../render/super-dev-dir.ts";
 import { runsDir } from "./eval-shared.ts";
-import { resolveToolBudget } from "../agents/agent-runtime.ts";
+import { resolveToolBudget } from "../agents/agent-runtime/index.ts";
 import { stateFileFor } from "../state/state-root.ts";
 
 // ── constants ───────────────────────────────────────────────────────────────

@@ -100,14 +100,14 @@ describe("v0.3.73 M3 — agent-failed findings close on later review success", (
 
 describe("v0.3.73 M4 — reviewer roles get the 30-minute timeout tier", () => {
 	it("every reviewer role resolves to 1_800_000ms", async () => {
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		for (const role of ["code-reviewer", "adversarial-reviewer", "spec-reviewer", "requirements-reviewer", "bdd-reviewer", "design-reviewer"]) {
 			expect(defaultAgentTimeoutMs(role), role).toBe(1_800_000);
 		}
 	});
 
 	it("non-review non-writing roles keep the 20-minute default", async () => {
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("task-classifier")).toBe(1_200_000);
 	});
 });
@@ -207,21 +207,21 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 
 	it("SUPER_DEV_REVIEW_TIMEOUT_MS overrides the reviewer tier", async () => {
 		setEnv("SUPER_DEV_REVIEW_TIMEOUT_MS", "900000");
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("code-reviewer")).toBe(900000);
 		expect(defaultAgentTimeoutMs("spec-reviewer")).toBe(900000);
 	});
 
 	it("SUPER_DEV_CODE_TIMEOUT_MS overrides the code-writing tier", async () => {
 		setEnv("SUPER_DEV_CODE_TIMEOUT_MS", "2400000");
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("implementer")).toBe(2400000);
 		expect(defaultAgentTimeoutMs("tdd-guide")).toBe(2400000);
 	});
 
 	it("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS overrides the default tier only", async () => {
 		setEnv("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS", "600000");
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("task-classifier")).toBe(600000);
 		expect(defaultAgentTimeoutMs("code-reviewer")).toBe(1_800_000);
 	});
@@ -229,7 +229,7 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 	it("tier precedence: the agent's OWN tier key wins over the default key", async () => {
 		setEnv("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS", "600000");
 		setEnv("SUPER_DEV_REVIEW_TIMEOUT_MS", "900000");
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("code-reviewer")).toBe(900000);
 	});
 
@@ -239,7 +239,7 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 		try {
 			setEnv("SUPER_DEV_REVIEW_TIMEOUT_MS", "30 min");
 			setEnv("SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS", "250k");
-			const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+			const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 			expect(defaultAgentTimeoutMs("code-reviewer")).toBe(1_800_000);
 			expect(defaultAgentTimeoutMs("task-classifier")).toBe(1_200_000);
 			expect(warn.mock.calls.some((a) => String(a[0]).includes("SUPER_DEV_REVIEW_TIMEOUT_MS"))).toBe(true);
@@ -251,13 +251,13 @@ describe("v0.3.74 — timeout env knobs (M4 design gap: static tiers, no operato
 
 	it("sub-second values are unit mistakes (seconds typed as ms) — rejected like garbage (dual review F6)", async () => {
 		setEnv("SUPER_DEV_REVIEW_TIMEOUT_MS", "30");
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("code-reviewer")).toBe(1_800_000);
 	});
 
 	it("non-positive values (0 / -5) are rejected like garbage", async () => {
 		setEnv("SUPER_DEV_CODE_TIMEOUT_MS", "0");
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("implementer")).toBe(1_800_000);
 	});
 });
@@ -273,12 +273,12 @@ describe("v0.3.84 — heavy-writer timeout tier (incident 2026-09-08T23-27-36: s
 	beforeEach(() => { delete process.env[KEY]; delete process.env.SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS; });
 
 	it("spec-writer gets the 30-min writer tier (observed worst 20.3m + 50% headroom, M4 calibration)", async () => {
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("spec-writer")).toBe(1_800_000);
 	});
 
 	it("the tier is surgical: other doc writers stay on the 20-min default", async () => {
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		// N1 (dual review 2026-09-09): pin REAL pipeline roles — bdd-scenario-writer
 		// and handoff-writer exist in agents/; the previously pinned
 		// requirements-writer/design-writer do not.
@@ -290,7 +290,7 @@ describe("v0.3.84 — heavy-writer timeout tier (incident 2026-09-08T23-27-36: s
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS = "600000";
-			const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+			const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 			expect(defaultAgentTimeoutMs("task-classifier")).toBe(600000);
 			expect(warn.mock.calls.some((a) => String(a[0]).includes("DEPRECATED"))).toBe(true);
 		} finally {
@@ -302,7 +302,7 @@ describe("v0.3.84 — heavy-writer timeout tier (incident 2026-09-08T23-27-36: s
 it("SUPER_DEV_WRITER_TIMEOUT_MS overrides the writer tier; SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS must NOT leak into it", async () => {
 		process.env[KEY] = "2400000";
 		process.env.SUPER_DEV_DEFAULT_TIMEOUT_MS = "3600000";
-		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime.ts");
+		const { defaultAgentTimeoutMs } = await import("../src/agents/agent-runtime/index.ts");
 		expect(defaultAgentTimeoutMs("spec-writer")).toBe(2_400_000);
 		// the default-tier override still applies to default-tier roles
 		expect(defaultAgentTimeoutMs("task-classifier")).toBe(3_600_000);

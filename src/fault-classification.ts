@@ -26,7 +26,7 @@
  *
  * Imports: node builtins + `isHarnessBookkeepingPath` (src/helpers.ts —
  * imported, never modified) + `BASELINE_VERIFY_ERROR_PREFIX`
- * (src/build-runner/gates.ts). No stage imports — no cycles (06-code-
+ * (src/build-runner/gates/ (v0.4.17b split)). No stage imports — no cycles (06-code-
  * assessment proposed module surface). Everything here is unit-testable with
  * no LLM and no stage context.
  */
