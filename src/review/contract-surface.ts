@@ -40,12 +40,13 @@
  * failed — review slice incomplete]` banner carried by the slice.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { claimPathUsable, isUsableProtectedToken, scanImmutabilityIdioms, scanImmutabilityIdiomsWithRejects } from "../stages/plan-feasibility.ts";
 // 065 D-F-A: the claim grammar (verb-context classification + list governance)
 // governs pin resolution — `pathTokens[0]` by POSITION is retired.
 import { governedProtectedTokens } from "./claim-spine.ts";
+import { stateFileFor } from "../state/state-root.ts";
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
@@ -958,16 +959,57 @@ export interface ContractSliceStamp {
 }
 
 /** Stamp a stage's slice identity on the pipeline state (the R4 exemption's
- *  `injectedSlice` source — the review loop reads what the writer saw). */
+ *  `injectedSlice` source — the review loop reads what the writer saw).
+ *  v0.4.12 (live resume incident): the stamp ALSO persists to the track's
+ *  external .knowledge.json (files + pinIds only) — the state copy dies with
+ *  the process, and a resume re-walking fresh validated REPLAYED artifacts
+ *  against a LATER inventory (pins minted by docs written after the artifact)
+ *  — the temporal hole that rejected a replayed BDD round live. */
 export function stampContractSlice(state: Record<string, unknown>, stage: string, slice: ContractSlice, inventory?: ContractInventory): void {
 	state[`${SLICE_STAMP_PREFIX}${stage}`] = { files: slice.files, pinIds: slice.pinIds, ...(inventory ? { inventory } : {}) };
+	persistStampToKnowledge(state, stage, slice);
+}
+
+function persistStampToKnowledge(state: Record<string, unknown>, stage: string, slice: ContractSlice): void {
+	try {
+		const specDir = (state.setup as { specDirectory?: string } | undefined)?.specDirectory;
+		if (!specDir) return;
+		const rf = readFileSync, wf = writeFileSync, md = mkdirSync;
+		const path = stateFileFor(specDir, ".knowledge.json");
+		md(dirname(path), { recursive: true });
+		let knowledge: Record<string, unknown> = {};
+		try { knowledge = JSON.parse(rf(path, "utf8") as string) as Record<string, unknown>; } catch { /* absent — create */ }
+		const stages = (knowledge.stages as Record<string, { data?: Record<string, unknown> }> | undefined) ?? {};
+		const entry = stages[stage] ?? {};
+		entry.data = { ...(entry.data ?? {}), __contractSliceStamp: { files: [...slice.files], pinIds: [...slice.pinIds] } };
+		stages[stage] = entry;
+		knowledge.stages = stages;
+		wf(path, JSON.stringify(knowledge), "utf8");
+	} catch { /* best-effort — a lost stamp degrades to the fresh re-walk (pre-v0.4.12 behavior) */ }
+}
+
+function loadPersistedStamp(state: Record<string, unknown>, stage: string): ContractSliceStamp | undefined {
+	try {
+		const specDir = (state.setup as { specDirectory?: string } | undefined)?.specDirectory;
+		if (!specDir) return undefined;
+		const rf = readFileSync;
+		const knowledge = JSON.parse(rf(stateFileFor(specDir, ".knowledge.json"), "utf8") as string) as { stages?: Record<string, { data?: { __contractSliceStamp?: { files?: unknown; pinIds?: unknown } } }> };
+		const stamp = knowledge.stages?.[stage]?.data?.__contractSliceStamp;
+		if (!stamp || !Array.isArray(stamp.files) || !Array.isArray(stamp.pinIds)) return undefined;
+		return { files: new Set(stamp.files as string[]), pinIds: new Set(stamp.pinIds as string[]) };
+	} catch { return undefined; }
 }
 
 /** Read a stage's stamped slice identity (absent on pre-W/resume replays —
  *  callers treat that as no exemption eligibility, fail-closed harmless). */
 export function readContractSliceStamp(state: Record<string, unknown>, stage: string): ContractSliceStamp | undefined {
 	const v = state[`${SLICE_STAMP_PREFIX}${stage}`] as { files?: unknown; pinIds?: unknown; inventory?: ContractInventory } | undefined;
-	if (!v || !Array.isArray(v.files) || !Array.isArray(v.pinIds)) return undefined;
+	if (!v || !Array.isArray(v.files) || !Array.isArray(v.pinIds)) {
+		// v0.4.12: state-miss on a resumed process — the persisted stamp (if
+		// any) is the ORIGINAL write-time slice; using it keeps replayed
+		// validations temporally consistent with the artifact's own round.
+		return loadPersistedStamp(state, stage);
+	}
 	return { files: new Set(v.files as string[]), pinIds: new Set(v.pinIds as string[]), inventory: v.inventory };
 }
 

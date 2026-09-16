@@ -85,6 +85,28 @@ function demandablePins(slice: ContractSlice, inventory: ContractInventory, self
  *  (the writer's own remediation prose must not feed the demand set — see
  *  demandablePins). Sibling specs' docs are unaffected (their pins stay
  *  demandable — genuine cross-spec baselines). */
+/** v0.4.12 (live resume incident, 2026-09-16): TRACK-LEVEL self-exclusion — a
+ *  pin minted from ANY doc under this track's own directory is the track's
+ *  own regenerated prose, not a baseline protection. The suffix-restricted
+ *  matcher left a temporal hole: on resume, a REPLAYED artifact (validated
+ *  when 09-specification.md did not exist yet) was re-validated against an
+ *  inventory that now includes pins minted from that later-written doc —
+ *  the replay was REJECTED and round 2 burned live (the D1 self-scan
+ *  instability class hitting the resume path). Track-level exclusion makes
+ *  the demandable set stable across the track's own doc growth. */
+export function selfTrackMatcher(specDirectory: string | undefined): ((locusFile: string) => boolean) | undefined {
+	if (!specDirectory) return undefined;
+	let norm = specDirectory.replace(/\\/g, "/");
+	const marker = "docs/specifications/";
+	const idx = norm.indexOf(marker);
+	if (idx !== -1) norm = norm.slice(idx);
+	norm = norm.replace(/^\.\//, "");
+	if (!norm.endsWith("/")) norm += "/";
+	return (locusFile: string) => locusFile.startsWith(norm);
+}
+
+/** @deprecated v0.4.12 — use selfTrackMatcher (the suffix restriction is the
+ *  D1 temporal hole); kept for source-contract pins that reference it. */
 export function selfSpecArtifactMatcher(specDirectory: string | undefined, docSuffix: string): ((locusFile: string) => boolean) | undefined {
 	if (!specDirectory) return undefined;
 	let norm = specDirectory.replace(/\\/g, "/");
@@ -472,6 +494,15 @@ export function stageWriteClaimGate(input: {
 		const inventory = extractContractInventory(setup.worktreePath);
 		const docTexts = freshStageDocTexts(setup.specDirectory, input.control, input.docGlobs);
 		if (docTexts.length === 0) return [];
+		// v0.4.12 (D1): the repo-relative track dir — pins minted from the
+		// track's OWN docs are skipped by Gate W's foreign arm (not baselines).
+		const selfTrackPrefix = (() => {
+			const marker = "docs/specifications/";
+			const norm = (setup?.specDirectory ?? "").replace(/\\/g, "/");
+			const idx = norm.indexOf(marker);
+			const rel = idx !== -1 ? norm.slice(idx) : norm;
+			return rel ? (rel.endsWith("/") ? rel : `${rel}/`) : undefined;
+		})();
 		const findings = writeClaimClosureFindings({
 			stage: input.stage,
 			control: input.control,
@@ -479,6 +510,7 @@ export function stageWriteClaimGate(input: {
 			inventory,
 			conceptMap: inventory.mapping,
 			level: input.level,
+			selfTrackPrefix,
 		} as Parameters<typeof writeClaimClosureFindings>[0]);
 		const cast: ContractValidatorFinding[] = findings.map((f: ClaimFinding) => ({ kind: f.kind, message: f.message }));
 		return isPreW(input.control, input.round) ? degradeForPreW(cast, input.stage) : cast;

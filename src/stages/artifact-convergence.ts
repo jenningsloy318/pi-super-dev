@@ -5,7 +5,7 @@ import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-err
 import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewBlockingVerdictFindings } from "../review-findings.ts";
 import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
 import { readContractSliceStamp } from "../review/contract-surface.ts";
-import { bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
+import {  bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
 import { priorFindingsForInjection } from "../convergence-ledger.ts";

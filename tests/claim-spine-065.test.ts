@@ -708,3 +708,85 @@ describe("065 v0.4.11 — spec gate union feedback (no serialized whack-a-mole)"
 		expect(specFamilyPureErrors({ setup: { specDirectory: "/nonexistent" } } as never, { task: "t", log: () => {} } as never)).toEqual([]);
 	});
 });
+
+// ─── v0.4.12 (live resume incident): track-level self-exclusion ───
+
+describe("065 v0.4.12 — selfTrackMatcher (the resume temporal hole)", () => {
+	it("excludes EVERY doc under the track dir regardless of suffix; keeps siblings demandable", async () => {
+		const { selfTrackMatcher } = await import("../src/review/contract-validators.ts");
+		const m = selfTrackMatcher("/abs/wt/docs/specifications/26-cap/");
+		expect(m).toBeTruthy();
+		expect(m!("docs/specifications/26-cap/09-specification.md")).toBe(true);   // the resume incident's minting doc
+		expect(m!("docs/specifications/26-cap/01-requirements.md")).toBe(true);
+		expect(m!("docs/specifications/26-cap/11-task-list.md")).toBe(true);       // the 0.4.2 replan-2 minting doc
+		expect(m!("docs/specifications/26-capability-other/07-design.md")).toBe(false); // sibling track stays demandable
+		expect(m!("tests/omisis.test.ts")).toBe(false);                            // test-file pins stay demandable
+	});
+
+	it("v0.4.12 final semantics: family validators keep SUFFIX matchers; Gate W's foreign arm skips track-minted pins (D1)", async () => {
+		const { writeClaimClosureFindings } = await import("../src/review/claim-spine.ts");
+		const { selfSpecArtifactMatcher, selfTrackMatcher } = await import("../src/review/contract-validators.ts");
+		// 1. the suffix matcher still demands upstream-intent pins (01-requirements) at design time
+		const suffixM = selfSpecArtifactMatcher("/wt/docs/specifications/26-cap/", "-design.md");
+		expect(suffixM!("docs/specifications/26-cap/01-requirements.md")).toBe(false); // upstream intent stays demandable
+		expect(suffixM!("docs/specifications/26-cap/07-design.md")).toBe(true);      // own doc excluded
+		// 2. Gate W foreign arm: a design write-claim vs a pin minted from the track's OWN 09-spec doc is SKIPPED
+		const claim = { path: "src/stages.ts", verb: "extends", locus: "docs/specifications/26-cap/07-design.md:26", sourceStage: "design" };
+		const pin = {
+			pinId: "pin-pe-05rh8zh", idiomFamily: "porcelain-emptiness" as const,
+			owningSpec: "docs/specifications/26-cap/09-specification.md",
+			locus: "docs/specifications/26-cap/09-specification.md:11",
+			statement: "src/stages.ts stays byte-untouched",
+			pathTokens: ["src/stages.ts"],
+		};
+		const protectedFiles = new Map<string, unknown[]>();
+		protectedFiles.set("src/stages.ts", [pin]);
+		const inventory = { mapping: new Map(), concepts: new Map(), protectedFiles, scanLines: [] };
+		const docTexts = [{ text: "The design extends src/stages.ts with the new dispatch row.", locusPrefix: "docs/specifications/26-cap/07-design.md" }];
+		const withSkip = writeClaimClosureFindings({ stage: "design", level: "concrete", control: {}, docTexts, inventory: inventory as never, selfTrackPrefix: "docs/specifications/26-cap/" });
+		expect(withSkip.some((f) => f.message.includes("foreign pin") || f.message.includes("pin-pe-05rh8zh"))).toBe(false);
+		const withoutSkip = writeClaimClosureFindings({ stage: "design", level: "concrete", control: {}, docTexts, inventory: inventory as never });
+		expect(withoutSkip.some((f) => f.message.includes("pin-pe-05rh8zh"))).toBe(true);
+		// 3. selfTrackMatcher (exported helper) covers every doc under the track
+		const tm = selfTrackMatcher("/wt/docs/specifications/26-cap/");
+		expect(tm!("docs/specifications/26-cap/09-specification.md")).toBe(true);
+		expect(tm!("docs/specifications/26-capability-other/07-design.md")).toBe(false);
+	});
+});
+
+describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", () => {
+	it("stampContractSlice persists files+pinIds to the external .knowledge.json; readContractSliceStamp recovers them after state loss", async () => {
+		const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const { tmpdir } = await import("node:os");
+		const { execFileSync } = await import("node:child_process");
+		const home = mkdtempSync(join(tmpdir(), "sd-stamp-"));
+		try {
+			const repo = join(home, "r");
+			mkdirSync(repo, { recursive: true });
+			execFileSync("git", ["init", "-q", repo]);
+			process.env.SUPER_DEV_STATE_DIR = join(home, "state");
+			const specDir = join(repo, "docs", "specifications", "26-x");
+			mkdirSync(specDir, { recursive: true });
+			const state = { setup: { specDirectory: `${specDir}/` } };
+			const { stampContractSlice, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
+			stampContractSlice(state, "spec", { empty: false, block: "b", pinCount: 1, truncated: false, unmappedConcepts: [], files: ["a.ts"], pinIds: ["pin-1"] } as never);
+			// persisted: the external .knowledge.json carries the stamp
+			const { stateFileFor } = await import("../src/state/state-root.ts");
+			const kpath = stateFileFor(`${specDir}/`, ".knowledge.json");
+			expect(existsSync(kpath)).toBe(true);
+			// state loss (a resumed process): a FRESH state still reads the stamp
+			const fresh = { setup: { specDirectory: `${specDir}/` } };
+			const recovered = readContractSliceStamp(fresh, "spec");
+			expect(recovered).toBeTruthy();
+			expect([...recovered!.files]).toEqual(["a.ts"]);
+			expect([...recovered!.pinIds]).toEqual(["pin-1"]);
+			// state-present path unchanged (inventory passthrough wins)
+			const live = readContractSliceStamp(state, "spec");
+			expect([...live!.files]).toEqual(["a.ts"]);
+		} finally {
+			delete process.env.SUPER_DEV_STATE_DIR;
+			try { rmSync(home, { recursive: true, force: true }); } catch { /* tmp */ }
+		}
+	});
+});

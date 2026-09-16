@@ -389,6 +389,13 @@ export interface WriterGateInput {
 	 *  stages (design/spec) get BLOCKING (059 W2: the typed family is a
 	 *  design/spec home). */
 	level: "intent" | "concrete";
+	/** v0.4.12 (D1 ruling, live resume incident): the repo-relative track dir
+	 *  (docs/specifications/<id>/). Pins minted from ANY doc under it are the
+	 *  track's OWN regenerated prose — the foreign-pin arm SKIPS them (they are
+	 *  not baselines); the same-artifact self-contradiction arm is unchanged,
+	 *  and the spec stage's own gates police the spec's docs when spec
+	 *  validates. Absent ⇒ today's behavior (every non-self pin is foreign). */
+	selfTrackPrefix?: string;
 }
 
 /** Gate W finding shape — reuses ContractValidatorFinding for gate wiring. */
@@ -440,6 +447,11 @@ export function writeClaimClosureFindings(input: WriterGateInput): ClaimFinding[
 		if (familyFiles.has(claim.path)) continue; // covered — closure holds for this claim
 		for (const pin of pins.slice(0, 3)) {
 			if (selfPins.includes(pin)) continue;
+			// v0.4.12 (D1): a pin minted from the track's OWN docs is not a
+			// foreign baseline — the spec stage's gates own those docs. Skipping
+			// here also closes the replay temporal hole (a replayed design
+			// artifact judged against pins minted by the LATER-written spec doc).
+			if (input.selfTrackPrefix && pin.owningSpec.startsWith(input.selfTrackPrefix)) continue;
 			const key = `${claim.path}\u0000${pin.pinId}`;
 			if (seen.has(key)) continue;
 			seen.add(key);
