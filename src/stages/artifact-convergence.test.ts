@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync, readdirSync, existsSync, readFileSync, mkdirSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext, Escalate } from "../types.ts";
-import { requirementsConvergenceNode, designConvergenceNode, bddConvergenceNode, MAX_CONVERGENCE_ROUNDS } from "./artifact-convergence.ts";
+import { requirementsConvergenceNode, designConvergenceNode, bddConvergenceNode, MAX_CONVERGENCE_ROUNDS } from "./artifact-convergence/index.ts";
 import { RouteBackSignal } from "../routing/router.ts";
 
 // The reviewer's control object lands under state.requirementsReview via the

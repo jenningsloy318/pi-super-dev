@@ -1,10 +1,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { artifactConvergenceSources } from "./helpers/artifact-convergence-source.ts";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, effectiveRoundCap, MAX_CONVERGENCE_ROUNDS, PROGRESS_EXTENSION_ROUNDS } from "../src/stages/artifact-convergence.ts";
-import { reviewVerdictApproves } from "../src/stages/artifact-convergence.ts";
+import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, effectiveRoundCap, MAX_CONVERGENCE_ROUNDS, PROGRESS_EXTENSION_ROUNDS } from "../src/stages/artifact-convergence/index.ts";
+import { reviewVerdictApproves } from "../src/stages/artifact-convergence/index.ts";
 import { NEGATED_APPROVAL_RE } from "../src/review-findings.ts";
 import { runHelper } from "../src/helpers.ts";
 import { renderRetryFeedbackBlock, type RetryFeedbackInput } from "../src/retry-feedback.ts";
@@ -214,7 +215,7 @@ describe("round-budget math (F2/F3)", () => {
 
 // ─── Phase 6 / T6.4 (AC-17): round-cap clamp + fresh-round arming ────────────
 
-import * as artifactConv from "../src/stages/artifact-convergence.ts";
+import * as artifactConv from "../src/stages/artifact-convergence/index.ts";
 import { resetJudgeBudgets } from "../src/stages/judge.ts";
 import { isFatalAbort } from "../src/nodes.ts";
 
@@ -523,8 +524,7 @@ describe("M3 G4 wiring (revision-gate green-skip in artifactConvergenceNode)", (
 		expect(calls.length).toBeGreaterThan(0);
 		// Design source-pin: designConvergenceNode does NOT set fastForwardable
 		// (designComplete is a contract-claims sensor, not a cross-doc gate).
-		const src = readFileSync("src/stages/artifact-convergence.ts", "utf8");
-		const designNode = src.slice(src.indexOf("export const designConvergenceNode"));
+		const designNode = artifactConvergenceSources();
 		expect(designNode.slice(0, 1200)).not.toContain("fastForwardable: true");
 	});
 });

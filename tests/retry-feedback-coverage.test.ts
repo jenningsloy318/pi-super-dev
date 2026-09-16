@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { artifactConvergenceSources } from "./helpers/artifact-convergence-source.ts";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildPrototypePrompt } from "../src/prompts.ts";
@@ -11,7 +12,7 @@ describe("shared retry-feedback coverage", () => {
 	it("routes every stage-level agent retry surface through the shared feedback renderer", () => {
 		const workflow = src("src/workflow.ts");
 		const stages = src("src/stages/index.ts");
-		const artifactConvergence = src("src/stages/artifact-convergence.ts");
+		const artifactConvergence = artifactConvergenceSources();
 		const specConvergence = src("src/stages/spec-convergence.ts");
 		const implementation = implementationSources();
 		const verify = verifySources();

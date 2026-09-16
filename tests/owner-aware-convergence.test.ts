@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requirementsConvergenceNode, judgeEscalateEvidencePresent } from "../src/stages/artifact-convergence.ts";
+import { requirementsConvergenceNode, judgeEscalateEvidencePresent } from "../src/stages/artifact-convergence/index.ts";
 import { reviewBlockingVerdictFindings } from "../src/review-findings.ts";
 import { carriedConvergenceFindings, getConvergenceLedger, isActionableOwnerStage, persistConvergenceLedger, priorFindingsForInjection, recordConvergenceFindings } from "../src/convergence-ledger.ts";
 import { ARTIFACT_REVISIONS_FILE, pendingReplanRequests } from "../src/replan/replan.ts";

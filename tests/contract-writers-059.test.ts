@@ -19,6 +19,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { artifactConvergenceSources } from "./helpers/artifact-convergence-source.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -422,7 +423,7 @@ describe("059 §3 R3 delta-5 NEW-3 — dual design-skip predicate (stage arm)", 
 
 describe("059 R1A residual wiring — source-contract pins", () => {
 	it("designConvergenceNode.skipped consults the write-time touched-set stamp (node arm of the dual predicate)", () => {
-		const src = readFileSync("src/stages/artifact-convergence.ts", "utf8");
+		const src = artifactConvergenceSources();
 		const node = src.slice(src.indexOf("export const designConvergenceNode"));
 		expect(node).toContain("readContractSliceStamp");
 		expect(node).toContain("stamp.files.size === 0"); // touched-empty ⇒ skip; absent stamp ⇒ status-quo skip

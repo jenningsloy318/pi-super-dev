@@ -1,408 +1,27 @@
-import { AGENT_ERROR_FATAL_CONSECUTIVE, agentErrorTextsSince, FatalAbort, gateValidator, task } from "../nodes.ts";
-import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
-import type { ControlObj, Escalate, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../types.ts";
-import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
-import { enforceReviewerConvergenceDuty, NEGATED_APPROVAL_RE, reviewBlockingVerdictFindings } from "../review-findings.ts";
-import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
-import { readContractSliceStamp, readStateSliceStamp } from "../review/contract-surface.ts";
-import {  bddPinOwnershipFindings, contractValidationContext, designAmendmentFamilyFindings, isWriterMetadataRejection, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
-import { renderAndWrite } from "../render/render.ts";
-import { designContractsErrors, readSpecDoc } from "../doc-validators.ts";
-import { priorFindingsForInjection } from "../convergence-ledger.ts";
-import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../escalation.ts";
-import { runJudge } from "./judge.ts";
-import { countStageRounds } from "../resume.ts";
-import {
-	blockingConvergenceFindings,
-	carriedConvergenceFindings,
-	classSweepRetryFeedback,
-	convergenceRetryFeedback,
-	isActionableOwnerStage,
-	markConvergenceFindingsAddressedFromResponses,
-	markConvergenceFindingsVerified,
-	normalizeConvergenceStage,
-	ownerPrecedes,
-	recordConvergenceFindings,
-	recordReviewFindingsFromControl,
-	type ConvergenceOwnerStage,
-	getConvergenceLedger,
-} from "../convergence-ledger.ts";
-import { pendingReplanRequests, consumeReplanRequests, appendRouteBackRequests } from "../replan/replan.ts";
-import { RouteBackSignal, isRoutableOwnerStage } from "../routing/router.ts";
-import { appendUserNotes } from "../render/user-notes.ts";
-import { fastForwardGate, recordConvergedRevision } from "../routing/revision-gate.ts";
-import { planInlineRouteBack, bumpOwnerRevision } from "../routing/walker.ts";
-import { autoRouteBackEnabled, routeBackReentry } from "../routing/journal.ts";
-import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "./writers.ts";
-import { designStage } from "./design.ts";
-
-type ArtifactValidator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
-
-/** Hard liveness ceiling for every artifact-convergence loop (requirements, bdd,
- *  research, design). Termination normally comes from reviewer approval, the
- *  stall/HITL escalation path, or the global run budget — but a stochastic
- *  reviewer that never approves (and never stalls) would otherwise loop until the
- *  global budget exhausts (and a test with budget.check=()=>true loops forever →
- *  OOM). This cap is the unconditional floor: it FatalAborts exactly like the
- *  global-budget-exhaustion path, deliberately WITHOUT consuming the shared
- *  `stagnation:<feedbackKey>` escalation budget. See
- *  docs/requirements/008-convergence-loop-unbounded-cap-fix.md. */
-export const MAX_CONVERGENCE_ROUNDS = 8;
-
-/** Optional Fagan-style LLM review step layered on top of the deterministic
- *  validate (shift-left): after the artifact passes its deterministic gate, a
- *  reviewer agent judges CONTENT quality across stage-specific dimensions and
- *  returns a verdict. A non-approved verdict (or any blocking finding) feeds the
- *  review findings back into the next writer attempt — same convergence loop, so
- *  a reviewer-only retry can never masquerade as a fix. When the SAME blocking
- *  findings recur unchanged (a stall), the run escalates to the user (HITL). */
-interface ArtifactReviewOptions {
-	/** The reviewer writer stage (e.g. requirementsReviewWriter). */
-	stage: Stage;
-	/** State key its control object lands under (e.g. "requirementsReview"). */
-	reviewStateKey: string;
-	/** Owning stage for recorded findings (e.g. "requirements"). */
-	ownerStage: ConvergenceOwnerStage;
-}
-
-interface ArtifactConvergenceOptions {
-	stage: Stage;
-	feedbackKey: "requirements" | "bdd" | "research" | "design";
-	/** Deterministic validator. OPTIONAL: since v0.3.2 the design stage carries
-	 *  `designComplete` (contract-claims sensor — a no-op when the design
-	 *  declares no contracts); research still omits this. */
-	validate?: ArtifactValidator;
-	expected: string;
-	nextAction: string;
-	ownerForError?: (error: string) => ConvergenceOwnerStage;
-	/** OPTIONAL upstream review+fix step. Absent ⇒ deterministic-validate-only
-	 *  (byte-identical to today, e.g. research). */
-	review?: ArtifactReviewOptions;
-	/** OPTIONAL skip predicate: when it returns true after the writer runs, the
-	 *  stage produced no artifact (e.g. design skipped for a bug fix) and the node
-	 *  converges immediately without review. */
-	skipped?: (state: PipelineState) => boolean;
-	/** OPTIONAL override of the hard round ceiling (default MAX_CONVERGENCE_ROUNDS).
-	 *  Tests use a small value to assert the cap fires; production leaves it unset.
-	 *  The cap is a liveness floor, not a quality target. */
-	maxRounds?: number;
-	/** M3 G4 (review round-1): OPT-IN to the revision-gate fast-forward. Set
-	 *  ONLY where `validate` is a genuine CROSS-DOC trace gate that re-reads
-	 *  CURRENT upstream state (requirements/bdd). research has no validator;
-	 *  design's designComplete is a contract-claims sensor that does NOT
-	 *  re-check against upstream — both stay OUT (conservative re-run). */
-	fastForwardable?: boolean;
-}
-
-function validResearchSourceCount(r: { sources?: unknown }): number {
-	const sources = Array.isArray(r.sources) ? r.sources : [];
-	return sources.filter((source) => {
-		if (!source || typeof source !== "object" || Array.isArray(source)) return false;
-		const url = (source as { url?: unknown }).url;
-		return typeof url === "string" && /^https?:\/\//i.test(url.trim());
-	}).length;
-}
-
-function researchUnavailableDisclosure(r: Record<string, unknown>): boolean {
-	const options = Array.isArray(r.options) ? r.options : [];
-	const text = [
-		r.summary,
-		...options.map((o) => typeof o === "object" && o !== null ? `${(o as { name?: unknown }).name ?? ""} ${(o as { tradeoffs?: unknown }).tradeoffs ?? ""}` : o),
-	]
-		.map((v) => String(v ?? ""))
-		.join("\n")
-		.toLowerCase();
-	const unavailable = /(?:web|search|mcp|firecrawl|anysearch|tavily|tinyfish|network|provider|tool)[\w\s/-]{0,80}(?:unavailable|not configured|unauthorized|failed|blocked|disabled)/i.test(text);
-	const unverified = /\bunverified\b|\bnot verified\b|\bunsupported by sources\b/i.test(text);
-	return unavailable && unverified;
-}
-
-export const requirementsComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
-	const base = await gateValidator("gate-requirements", "write-requirements", "requirements")(s, ctx);
-	// 059 R1A R3(c): affectsSharedSurfaces intent consistency — ADVISORY at 2B
-	// (HIGH-1: requirements legitimately may not know; blocking moves down-stack
-	// to design-review). Never blocks the loop.
-	const contractCtx = contractValidationContext(s as Record<string, unknown>, "requirements", [ctx.task, JSON.stringify(s.requirements ?? {})]);
-	if (contractCtx) {
-		for (const a of splitContractFindings(requirementsIntentFindings({ control: s.requirements as Record<string, unknown> | undefined, slice: contractCtx.slice })).advisory) {
-			ctx.log(`Requirements contract-validator (advisory): ${a}`);
-		}
-		// 065 D-F-B (Gate W, intent level — advisory at 2B per 059 W2: the typed
-		// family is a design/spec home; requirements findings feed forward).
-		for (const f of stageWriteClaimGate({ stage: "requirements", level: "intent", state: s as Record<string, unknown>, control: s.requirements as Record<string, unknown> | undefined, docGlobs: ["*-requirements.md"] })) {
-			ctx.log(`Requirements Gate-W (${f.kind}): ${f.message.slice(0, 200)}`);
-		}
-	}
-	const req = s.requirements as ({ openQuestions?: unknown[] } & Record<string, unknown>) | undefined;
-	const open = Array.isArray(req?.openQuestions) ? req.openQuestions : [];
-	if (open.length === 0) return base;
-	const preview = open.slice(0, 3).map((o) => String(o).slice(0, 100)).join("; ");
-	ctx.log(`Requirements: ${open.length} open question(s) remain; continuing requirements clarification: ${preview}`);
-	return {
-		pass: false,
-		errors: [...base.errors, `requirements left ${open.length} open question(s): ${preview}`],
-	};
-};
-
-export const bddComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
-	const base = await gateValidator("gate-bdd", "write-bdd", "bdd")(s, ctx);
-	// 059 R1A R3(b): pinOwnership AST validator — the typed control field,
-	// NEVER rendered-markdown regex (grill R6 HIGH-2, P1/P6). No context
-	// (no worktree / no stamp) ⇒ no-op (fail-open harmless).
-	const contractCtx = contractValidationContext(s as Record<string, unknown>, "bdd", [ctx.task, JSON.stringify(s.bdd ?? {})]);
-	if (contractCtx) {
-		const { blocking, advisory } = splitContractFindings(bddPinOwnershipFindings({ control: s.bdd as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-bdd-scenarios.md") }));
-		for (const a of advisory) ctx.log(`BDD contract-validator (advisory): ${a}`);
-		// 065 D-F-B (Gate W, intent level — advisory at 2C; blocking moves to the
-		// concrete home at design/spec).
-		for (const f of stageWriteClaimGate({ stage: "bdd", level: "intent", state: s as Record<string, unknown>, control: s.bdd as Record<string, unknown> | undefined, docGlobs: ["*-bdd-scenarios.md"] })) {
-			ctx.log(`BDD Gate-W (${f.kind}): ${f.message.slice(0, 200)}`);
-		}
-		if (blocking.length > 0) return { pass: false, errors: [...base.errors, ...blocking] };
-	}
-	return base;
-};
-
-/** A research report is complete only when it exists and leaves no answerable
- *  open issues. `openIssues` is reserved for concrete ambiguities that another
- *  research pass should try to resolve; generic caveats and unresolvable limits
- *  belong in the summary/options instead. It must also include real researched
- *  sources unless the report explicitly records unavailable web/search tooling
- *  and marks its claims unverified. */
-export const researchComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
-	const r = s.research as ({ docPath?: string; openIssues?: unknown[]; sources?: unknown } & Record<string, unknown>) | undefined;
-	if (!r || !r.docPath) {
-		ctx.log("Research: no report produced (agent returned nothing or timed out)");
-		return { pass: false, errors: ["no research report produced (agent returned nothing or timed out)"] };
-	}
-	const sourceCount = validResearchSourceCount(r);
-	if (sourceCount === 0 && !researchUnavailableDisclosure(r)) {
-		ctx.log("Research: no real source URLs and no explicit web-tool-unavailable/unverified disclosure");
-		return { pass: false, errors: ["research must include at least one real http(s) source URL, or explicitly disclose that web/search tools were unavailable and mark claims unverified"] };
-	}
-	const open = (r.openIssues as unknown[]) ?? [];
-	if (open.length > 0) {
-		const preview = open.slice(0, 3).map((o) => String(o).slice(0, 80)).join("; ");
-		ctx.log(`Research: ${open.length} answerable open issue(s) remain; continuing research: ${preview}`);
-		return { pass: false, errors: [`research left ${open.length} answerable open issue(s): ${preview}`] };
-	}
-	return { pass: true, errors: [] };
-};
-
-function setArtifactFeedback(options: ArtifactConvergenceOptions, state: PipelineState, errors: string[]): void {
-	const feedback: RetryFeedback = {
-		stage: options.feedbackKey,
-		gate: `${options.feedbackKey}-convergence`,
-		observed: `The latest ${options.feedbackKey} artifact did not pass external validation.`,
-		expected: options.expected,
-		missing: errors.slice(0, 8),
-		diagnostics: withOmissionNotice(errors.slice(8, 12), errors),
-		nextAction: options.nextAction,
-	};
-	setRetryFeedback(state as Record<string, unknown>, options.feedbackKey, [feedback]);
-}
-
-/** v0.3.32 (runs 2026-08-30T00-10-34-032Z / 03-23-40-576Z): the writer stages
- *  (design.ts, writerTask) record the EXACT schema/render validation errors on
- *  the state here when renderAndWrite rejects a control. Read-and-clear, so a
- *  slot never leaks into a later round. */
-function readRenderErrors(state: PipelineState): string[] {
-	const stateRec = state as Record<string, unknown>;
-	const v = stateRec.__renderErrors;
-	delete stateRec.__renderErrors;
-	return Array.isArray(v) ? v.map(String).slice(0, 8) : [];
-}
-
-function defaultOwnerForError(feedbackKey: ArtifactConvergenceOptions["feedbackKey"], error: string): ConvergenceOwnerStage {
-	if (feedbackKey === "bdd" && /No requirements doc|requirements doc has no AC-NN/i.test(error)) return "requirements";
-	return normalizeConvergenceStage(feedbackKey, feedbackKey);
-}
-
-function recordArtifactErrors(options: ArtifactConvergenceOptions, state: PipelineState, errors: string[], sourceGate: string): void {
-	recordConvergenceFindings(state, errors.map((error) => {
-		const ownerStage = options.ownerForError?.(error) ?? defaultOwnerForError(options.feedbackKey, error);
-		return {
-			detectedAtStage: options.feedbackKey,
-			ownerStage,
-			severity: "high",
-			blocking: true,
-			title: error,
-			detail: error,
-			evidence: [error],
-			sourceGate,
-			recommendation: options.nextAction,
-		};
-	}), { detectedAtStage: options.feedbackKey, ownerStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), sourceGate });
-}
-
-/** Compact a reviewer control object into feedback lines the next writer attempt
- *  can act on (mirrors spec-convergence.compactReviewFindings). */
-export function compactReviewFindings(review: ControlObj | undefined): string[] {
-	const lines: string[] = [];
-	if (typeof review?.verdict === "string" && review.verdict.trim()) lines.push(`review verdict: ${review.verdict.trim()}`);
-	if (typeof review?.summary === "string" && review.summary.trim()) lines.push(`review summary: ${review.summary.trim()}`);
-	const findings = Array.isArray(review?.findings) ? review.findings as Array<Record<string, unknown>> : [];
-	for (const finding of findings.slice(0, 8)) {
-		const id = typeof finding.id === "string" ? finding.id : "finding";
-		const severity = typeof finding.severity === "string" ? finding.severity : "unspecified";
-		const title = typeof finding.title === "string" ? finding.title : "untitled";
-		const detail = typeof finding.detail === "string" ? finding.detail : "";
-		const owner = typeof finding.ownerStage === "string" ? ` owner=${finding.ownerStage}` : "";
-		const status = typeof finding.status === "string" ? ` status=${finding.status}` : "";
-		const cls = typeof finding.defectClass === "string" && finding.defectClass.trim() ? ` class=${finding.defectClass.trim()}` : "";
-		const recommendation = typeof finding.recommendation === "string" ? ` recommendation=${finding.recommendation}` : "";
-		lines.push(`review ${id} severity=${severity}${owner}${status}${cls}: ${title}${detail ? ` — ${detail}` : ""}${recommendation}`);
-		// v0.3.1 F1: evidence passthrough — the writer can re-verify the way the
-		// reviewer falsified it (grounding the revision restores forward movement).
-		const evidence = Array.isArray(finding.evidence) ? finding.evidence.filter((e): e is string => typeof e === "string") : [];
-		for (const item of evidence.slice(0, 2)) {
-			const capped = item.length > 240 ? `${item.slice(0, 240)}…(+${item.length - 240} chars)` : item;
-			lines.push(`  evidence: ${capped}`);
-		}
-	}
-	// v0.3.1 F1 (cumora truncation accounting): announce every eviction with its
-	// exact count — silent drops make the loss unrecoverable for the writer.
-	if (findings.length > 8) lines.push(`…(+${findings.length - 8} more findings omitted from this compact view — read the full review document before revising)`);
-	return lines;
-}
-
-/** Set the writer's retry feedback for a rejected REVIEW round: the compacted
- *  review findings PLUS the convergence-ledger's blocking items, so upstream-owned
- *  findings are threaded (not silently retried on the current stage alone). */
-function setReviewFeedback(options: ArtifactConvergenceOptions, state: PipelineState, source: string, errors: string[]): void {
-	const feedback: RetryFeedback = {
-		stage: options.feedbackKey,
-		gate: source,
-		observed: `The latest ${options.feedbackKey} artifact was rejected by ${source}.`,
-		expected: options.expected,
-		// v0.3.1 F1 (sd31-SD31-3/F-01): re-attach the compact view's truncation
-		// announcement so the slice cannot silence it a second time.
-		missing: withOmissionNotice(errors.slice(0, 8), errors),
-		diagnostics: errors.slice(8, 12),
-		nextAction: options.nextAction,
-	};
-	setRetryFeedback(state as Record<string, unknown>, options.feedbackKey, [
-		feedback,
-		...convergenceRetryFeedback(state, { stage: options.feedbackKey, currentStage: normalizeConvergenceStage(options.feedbackKey, options.feedbackKey), gate: source }),
-		// v0.3.1 F1: class-sweep directive fires on review-rejected rounds when a
-		// defect class has recurred (2nd instance, not stagnation round 4).
-		...classSweepRetryFeedback(state, { stage: options.feedbackKey, gate: source }),
-	]);
-}
-
-/** A stable signature of this stage's still-active blocking findings. When two
- *  consecutive review rounds produce the SAME signature the reviewer keeps
- *  flagging the same defects the writer cannot fix — a stall worth escalating. */
-function blockingSignature(state: PipelineState, owner: ConvergenceOwnerStage): string {
-	return blockingConvergenceFindings(state)
-		.filter((f) => f.ownerStage === owner || ownerPrecedes(f.ownerStage, owner))
-		.map((f) => f.fingerprint)
-		.sort()
-		.join("|");
-}
-
-/** Read the inline HITL escalate callback threaded through ctx.options. */
-function getEscalate(ctx: StageContext): Escalate | undefined {
-	return (ctx as { options?: { escalate?: Escalate } }).options?.escalate;
-}
-
-/** Review-verdict approval for the upstream reviewers. Unlike the strict
- *  `isApprovedVerdict` (which rejects ANY verdict containing "revision"), this
- *  honors the reviewer contract that "APPROVED WITH REVISIONS" is a SUGGESTION-
- *  ONLY pass — approved when the verdict affirmatively approves and is not an
- *  explicit rejection. "REVISIONS NEEDED" / "Changes Requested" / "Rejected"
- *  stay rejected. AND-ed with `!reviewHasBlockingFinding` at the call site so a
- *  blocking finding still blocks regardless of verdict wording.
- *  Exported for the AC-28 verdict tables (tests/artifact-convergence.test.ts). */
-export function reviewVerdictApproves(verdict: unknown): boolean {
-	const v = String(verdict ?? "").trim().toLowerCase();
-	if (!v) return false;
-	// M17 (SCENARIO-057): negated approvals ("not approved", "does not pass",
-	// "approved: no", …) never approve — the guard fires BEFORE the approve-family
-	// match, so the \b(approved|pass|accept)\b heuristic cannot match the word
-	// inside the negation.
-	if (NEGATED_APPROVAL_RE.test(v)) return false;
-	if (/(changes?\s+requested|revisions?\s+needed|reject|contest|blocked|fail|declined)/i.test(v)) return false;
-	return /\b(approved|pass|accept)/i.test(v);
-}
-
-/** v0.3.24 S2 (review-2 F1): the CONVERGED-CARRIED exit's delivery half —
- *  persist the carried rows as PENDING REPLAN REQUESTS for each routable
- *  owner and bump the owner's revision counter. Without this, the
- *  revision-gate fast-forward could skip the owner's round 1 entirely
- *  (journal + owner converged earlier + revision unchanged + no pending
- *  requests), so the "re-injects at the owner's round 1" contract was not
- *  deterministic. The replan requests defeat fast-forward condition (4) and
- *  ARE the round-1 injection; the revision bump defeats condition (3). The
- *  caller must NOT recordConvergedRevision for the exiting stage (that
- *  would defeat condition (2) the WRONG way — green-skipping a
- *  never-approved artifact in later sub-walks). */
-export function deliverCarriedDebt(
-	state: PipelineState,
-	ownStage: ConvergenceOwnerStage,
-	log: (line: string) => void,
-): void {
-	const specDir = state.setup?.specDirectory;
-	const carried = carriedConvergenceFindings(state, ownStage);
-	if (specDir && carried.length > 0) {
-		const byOwner = new Map<string, typeof carried>();
-		for (const f of carried) {
-			const owner = normalizeConvergenceStage(String(f.ownerStage), ownStage);
-			if (!byOwner.has(owner)) byOwner.set(owner, []);
-			byOwner.get(owner)!.push(f);
-		}
-		const runId = state.setup?.specIdentifier ?? "unknown";
-		for (const [owner, rows] of byOwner) {
-			if (!isRoutableOwnerStage(owner)) {
-				// e.g. a downstream loop-less stage (implementation/verification): the
-				// ledger rows still inject into every subsequent agent prompt via the
-				// workflow seam — disclose that this is the delivery path.
-				log(`CONVERGED-CARRIED delivery: ${rows.length} finding(s) owned by non-routable stage ${owner} stay in the convergence ledger (injected into subsequent agent prompts); no replan request persisted`);
-				continue;
-			}
-			const injected = appendRouteBackRequests(specDir, owner, rows.map((f) => f as unknown as Record<string, unknown>), runId);
-			const revision = bumpOwnerRevision(specDir, owner);
-			log(`CONVERGED-CARRIED delivery: ${injected} replan request(s) persisted for owner ${owner}; its revision counter bumped to ${revision} (fast-forward disabled — the owner loop re-runs and receives the debt at round 1)`);
-		}
-	}
-}
-
-/** v0.3.24 S4-4: does a judge escalate-now verdict carry actionable evidence?
- * B4 (D10) required a non-empty `evidence[].quote`, but the judge's
- * degrade-to-escalate path legitimately emits notes/text instead — run
- * 2026-08-28T13-04-28-485Z round 6 discarded a correct escalation diagnosis
- * ("route to the bdd stage") purely on the missing `.quote` shape. Accept any
- * non-empty verbatim-ish field on the evidence entries. */
-export function judgeEscalateEvidencePresent(evidence: unknown): boolean {
-	const rows = Array.isArray(evidence) ? evidence as Array<Record<string, unknown>> : [];
-	return rows.some((e) => ["quote", "note", "text", "detail", "finding", "fact"]
-		.some((field) => String(e?.[field] ?? "").trim().length > 0));
-}
-
-/** F2 (RC1, run 2026-08-17T02-16-49-478Z): one bounded extension when the loop
- *  is still making STRICT progress at the cap. Research grounding — Refine-n-Judge
- *  (arXiv 2508.01543) and verification-loop practice: a hard cap alone kills
- *  loops that resolve prior findings every round but keep meeting one NEW
- *  reviewer finding; strict-progress detection (open-blocking count strictly
- *  decreasing) separates those from true stalls. */
-export const PROGRESS_EXTENSION_ROUNDS = 4;
-/** F3: hard cumulative ceiling — replayed + fresh rounds across resumes. Each
- *  resume grants maxRounds fresh rounds (durable-execution continuation), but
- *  the total is bounded at 3× the base cap so a deterministic false-positive
- *  gate cannot ping-pong forever (replan/HITL owns the terminal state by then). */
-export const MAX_TOTAL_ROUND_MULTIPLE = 3;
-
-export function effectiveRoundCap(maxRounds: number, priorRounds: number): number {
-	return Math.min(priorRounds + maxRounds, maxRounds * MAX_TOTAL_ROUND_MULTIPLE);
-}
-
-/** AC-17 (SCENARIO-037): the one-shot strict-progress extension, re-clamped to
- *  the 3× cumulative ceiling — effectiveCap can NEVER exceed maxRounds × 3
- *  (from 10 it yields 14; from 22 or 24 it yields 24; never 28). */
-export function extendedRoundCap(effectiveCap: number, maxRounds: number): number {
-	return Math.min(effectiveCap + PROGRESS_EXTENSION_ROUNDS, maxRounds * MAX_TOTAL_ROUND_MULTIPLE);
-}
-
+import { blockingSignature, compactReviewFindings, deliverCarriedDebt, getEscalate, judgeEscalateEvidencePresent, readRenderErrors, recordArtifactErrors, reviewVerdictApproves, setArtifactFeedback, setReviewFeedback } from "./feedback.ts";
+import { MAX_TOTAL_ROUND_MULTIPLE, effectiveRoundCap, extendedRoundCap } from "./rounds.ts";
+import { ArtifactConvergenceOptions, MAX_CONVERGENCE_ROUNDS } from "./validators.ts";
+/** node — the artifactConvergenceNode state machine (split from artifact-convergence.ts at v0.4.17e). */
+import { AGENT_ERROR_FATAL_CONSECUTIVE, agentErrorTextsSince, FatalAbort, task } from "../../nodes.ts";
+import { clearRetryFeedback, setRetryFeedback } from "../../retry-feedback.ts";
+import type { ControlObj, EscalationFailure, Node, PipelineState, Stage, StageContext } from "../../types.ts";
+import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../../agent-errors.ts";
+import { enforceReviewerConvergenceDuty, reviewBlockingVerdictFindings } from "../../review-findings.ts";
+import { consumeContractConflictEscalation } from "../../review/contract-conflict-consumer.ts";
+import { readContractSliceStamp } from "../../review/contract-surface.ts";
+import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../../review/contract-validators.ts";
+import { renderAndWrite } from "../../render/render.ts";
+import { priorFindingsForInjection } from "../../convergence-ledger.ts";
+import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../../escalation.ts";
+import { runJudge } from "../judge.ts";
+import { countStageRounds } from "../../resume.ts";
+import { blockingConvergenceFindings, carriedConvergenceFindings, isActionableOwnerStage, markConvergenceFindingsAddressedFromResponses, markConvergenceFindingsVerified, normalizeConvergenceStage, ownerPrecedes, recordConvergenceFindings, recordReviewFindingsFromControl, getConvergenceLedger } from "../../convergence-ledger.ts";
+import { pendingReplanRequests, consumeReplanRequests } from "../../replan/replan.ts";
+import { RouteBackSignal, isRoutableOwnerStage } from "../../routing/router.ts";
+import { appendUserNotes } from "../../render/user-notes.ts";
+import { fastForwardGate, recordConvergedRevision } from "../../routing/revision-gate.ts";
+import { planInlineRouteBack } from "../../routing/walker.ts";
+import { autoRouteBackEnabled, routeBackReentry } from "../../routing/journal.ts";
 export function artifactConvergenceNode(options: ArtifactConvergenceOptions): Node {
 	const stageTask = task(options.stage);
 	const reviewTask = options.review ? task(options.review.stage) : null;
@@ -922,14 +541,14 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						//  (b) a STALL — the same blocking signature recurred across rounds.
 						// v0.3.48 non-routable-owner downgrade: ownerPrecedes accepts ANY
 						// strictly-upstream stage, but the routing graph can only re-enter
-					// the closed REPLAN_OWNER_STAGES set. A blocker owned by a
-					// NON-routable upstream stage (classify is the live case —
-					// run 2026-08-31T02-56: task-classifier's deterministic fallback
-					// wrote uiScope=none for a UI-heavy app; the reviewer correctly
-					// flagged owner=classify; planInlineRouteBack can NEVER route it;
-					// headless HITL then aborted the run on a defect the artifact
-					// cannot fix). Such findings become carried advisory debt with a
-					// loud log — the run continues on its real (routable/own) blockers.
+						// the closed REPLAN_OWNER_STAGES set. A blocker owned by a
+						// NON-routable upstream stage (classify is the live case —
+						// run 2026-08-31T02-56: task-classifier's deterministic fallback
+						// wrote uiScope=none for a UI-heavy app; the reviewer correctly
+						// flagged owner=classify; planInlineRouteBack can NEVER route it;
+						// headless HITL then aborted the run on a defect the artifact
+						// cannot fix). Such findings become carried advisory debt with a
+						// loud log — the run continues on its real (routable/own) blockers.
 						const routableUpstream = blockingConvergenceFindings(state).filter((f) => isRoutableOwnerStage(f.ownerStage) && ownerPrecedes(f.ownerStage, ownStage));
 						const nonRoutableUpstream = blockingConvergenceFindings(state).filter((f) => !isRoutableOwnerStage(f.ownerStage) && ownerPrecedes(f.ownerStage, ownStage));
 						if (nonRoutableUpstream.length > 0) {
@@ -961,7 +580,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 								routeBackOwner: [...new Set(upstreamOwned.map((f) => f.ownerStage))]
 									.filter((o, _i, arr) => arr.length === 1 && isRoutableOwnerStage(o))[0],
 							};
-							let decision: import("../types.ts").EscalationDecision | undefined;
+							let decision: import("../../types.ts").EscalationDecision | undefined;
 							// v0.3.19 AUTO-ROUTE: when the blocker analysis itself already
 							// resolves the fix path — exactly ONE routable strictly-upstream
 							// owner and a per-edge jump budget that allows it — route DIRECTLY,
@@ -980,9 +599,9 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 									// machine-taken (route-back-auto), so the auto-jump is never
 									// silent. Best-effort — a report failure must not block recovery.
 									try {
-									const { writeEscalationReport } = await import("../render/escalation-report.ts");
-									writeEscalationReport({ ...failure, message: `[auto-route: single upstream owner "${autoCmd.to}" — routed without HITL; kill-switch SUPER_DEV_NO_AUTO_ROUTEBACK=1 restores the human prompt]\n\n${failure.message}` }, { choice: "route-back-auto" }, state.setup?.specDirectory);
-								} catch { /* best-effort audit */ }
+										const { writeEscalationReport } = await import("../../render/escalation-report.ts");
+										writeEscalationReport({ ...failure, message: `[auto-route: single upstream owner "${autoCmd.to}" — routed without HITL; kill-switch SUPER_DEV_NO_AUTO_ROUTEBACK=1 restores the human prompt]\n\n${failure.message}` }, { choice: "route-back-auto" }, state.setup?.specDirectory);
+									} catch { /* best-effort audit */ }
 								ctx.log(`${options.feedbackKey} convergence: UPSTREAM-OWNED blocker detected — AUTO-ROUTE ${autoCmd.from}→${autoCmd.to} (single routable owner, budget checked, no HITL; SUPER_DEV_NO_AUTO_ROUTEBACK=1 restores the prompt)`);
 								ctx.log(`  blocker: ${failure.message}`);
 								throw new RouteBackSignal(autoCmd);
@@ -1087,139 +706,3 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 		},
 	};
 }
-
-export const requirementsConvergenceNode = artifactConvergenceNode({
-	fastForwardable: true,
-	stage: requirementsWriter,
-	feedbackKey: "requirements",
-	validate: requirementsComplete,
-	expected: "An implementation-ready requirements document with concrete AC-NN acceptance criteria, non-functional requirements, and no unresolved open questions.",
-	nextAction: "Rewrite the requirements artifact to resolve every open question into explicit acceptance criteria or non-functional constraints before calling structured_output.",
-	review: { stage: requirementsReviewWriter, reviewStateKey: "requirementsReview", ownerStage: "requirements" },
-});
-
-export const bddConvergenceNode = artifactConvergenceNode({
-	fastForwardable: true,
-	stage: bddWriter,
-	feedbackKey: "bdd",
-	validate: bddComplete,
-	expected: "BDD scenarios that cover every requirements AC-NN with no dangling acceptance-criteria references.",
-	nextAction: "Rewrite the complete BDD artifact so every AC-NN has scenario coverage, preserving valid scenarios and adding the missing edge/error paths before calling structured_output.",
-	review: { stage: bddReviewWriter, reviewStateKey: "bddReview", ownerStage: "bdd" },
-});
-
-export const researchConvergenceNode = artifactConvergenceNode({
-	stage: researchWriter,
-	feedbackKey: "research",
-	validate: researchComplete,
-	expected: "A source-backed research report with every answerable open issue resolved before downstream assessment/spec work starts.",
-	nextAction: "Continue online research until each open issue is answered with source evidence. If a question is genuinely unresolvable because tools are unavailable, explicitly disclose that and mark affected claims unverified instead of leaving it in openIssues.",
-});
-
-/** v0.3.2 C1: the design stage's deterministic sensor. Historically the design
- *  had NO deterministic gate (quality judged only by the reviewer) — which is
- *  exactly how run 2026-08-20T06-19-50-494Z died: a machine-checkable contract
- *  inconsistency (over-restrictive artifact-name validation) was discovered by
- *  the reviewer one filename family per round across 4 rounds. When the design
- *  control DECLARES contract claims, this validator checks internal consistency
- *  (pattern compiles; every enumerated value matches its own pattern — ALL
- *  violations at once; source anchor exists; uniqueness holds) AND that the
- *  rendered doc actually carries the Contract Claims section (the
- *  control-had-data-the-template-dropped class, run 2026-08-12). No claims ⇒
- *  pass unchanged (backward-compatible). */
-export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
-	const control = s.design as ControlObj | undefined;
-	const rawClaims = (control as { contracts?: unknown } | undefined)?.contracts;
-	if (!Array.isArray(rawClaims) || rawClaims.length === 0) {
-		// v0.3.2 no-claims fast path preserved — but the 059 family check still
-		// runs when a contract-surface context exists (touched surfaces may carry
-		// pins even when the design declares no contract claims).
-		const contractCtx = contractValidationContext(s as Record<string, unknown>, "design", [ctx.task, JSON.stringify(s.requirements ?? {})]);
-		if (contractCtx) {
-			const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-design.md") }));
-			for (const a of advisory) ctx.log(`Design contract-validator (advisory): ${a}`);
-			if (blocking.length > 0) {
-				ctx.log(`Design amendment-family: ${blocking.length} set-inclusion error(s): ${blocking.slice(0, 2).join("; ")}`);
-				return { pass: false, errors: blocking };
-			}
-		}
-		// 065 D-F-B (Gate W, CONCRETE — blocking at design, the typed-family home
-		// per 059 W4/grill R6 HIGH-1): fresh post-render walk over the design doc.
-		const designGateWNoClaims = stageWriteClaimGate({ stage: "design", level: "concrete", state: s as Record<string, unknown>, control: control as Record<string, unknown> | undefined, docGlobs: ["*-design.md"] });
-		for (const a of designGateWNoClaims.filter((f) => f.kind === "advisory")) ctx.log(`Design Gate-W (advisory): ${a.message.slice(0, 200)}`);
-		const designGateWNoClaimsBlocking = designGateWNoClaims.filter((f) => f.kind === "blocking").map((f) => f.message);
-		if (designGateWNoClaimsBlocking.length > 0) {
-			ctx.log(`Design Gate-W: ${designGateWNoClaimsBlocking.length} typed-closure error(s): ${designGateWNoClaimsBlocking.slice(0, 2).join("; ")}`);
-			return { pass: false, errors: designGateWNoClaimsBlocking };
-		}
-		return { pass: true, errors: [] };
-	}
-	const worktreePath = s.setup?.worktreePath ?? "";
-	const errors = designContractsErrors(control, worktreePath);
-	// 059 R1A R3(a): DesignData.amendmentFamily ⊇ pins set-inclusion — the
-	// AUTHORITATIVE declaration check (blocking, ownerStage=design).
-	const contractCtx = contractValidationContext(s as Record<string, unknown>, "design", [ctx.task, JSON.stringify(s.requirements ?? {})]);
-	if (contractCtx) {
-		const { blocking, advisory } = splitContractFindings(designAmendmentFamilyFindings({ control: control as Record<string, unknown> | undefined, slice: contractCtx.slice, inventory: contractCtx.inventory, selfArtifactMatch: selfSpecArtifactMatcher(s.setup?.specDirectory, "-design.md") }));
-			for (const a of advisory) ctx.log(`Design contract-validator (advisory): ${a}`);
-			errors.push(...blocking);
-	}
-	// 065 D-F-B (Gate W, CONCRETE — blocking at design; the with-claims path).
-	for (const f of stageWriteClaimGate({ stage: "design", level: "concrete", state: s as Record<string, unknown>, control: control as Record<string, unknown> | undefined, docGlobs: ["*-design.md"] })) {
-		if (f.kind === "advisory") ctx.log(`Design Gate-W (advisory): ${f.message.slice(0, 200)}`);
-		else errors.push(f.message);
-	}
-	// Rendered-doc parity: the reviewer reads the RENDERED design — a contracts
-	// block the template dropped makes the reviewer blind and the loop spin.
-	const doc = readSpecDoc(s.setup?.specDirectory ?? "", control, "*-design.md");
-	if (doc && !doc.content.includes("## Contract Claims")) {
-		errors.push("design declares contract claims but the rendered design doc has no '## Contract Claims' section — the enumeration must be visible to the reviewer");
-	}
-	if (errors.length) ctx.log(`Design contracts: ${errors.length} contract-claim error(s): ${errors.slice(0, 2).join("; ")}`);
-	return { pass: errors.length === 0, errors };
-};
-
-/** Stage 6 design convergence: since v0.3.2 the design carries ONE deterministic
- *  sensor (`designComplete` — contract-claims consistency; a no-op when the
- *  design declares no contracts); overall quality is judged by the
- *  design-reviewer's Fagan-style inspection, and it may be
- *  SKIPPED entirely for bug fixes — in which case it produces no artifact and
- *  converges immediately. Otherwise it loops write → review → fix until the
- *  design-reviewer approves (or a stall escalates to the user). */
-export const designConvergenceNode = artifactConvergenceNode({
-	stage: designStage,
-	feedbackKey: "design",
-	// v0.3.2 C1: contract-claims sensor (no-op when the design declares none).
-	validate: designComplete,
-	expected: "A design with defined interface contracts, grounded/feasible architecture, and no requirement/design conflicts, ready for the spec to consume.",
-	nextAction: "Revise the design so every module has a defined input/output/error contract, every referenced integration point is grounded in the actual codebase, and it satisfies every requirement without unjustified complexity, before calling structured_output.",
-	// Intentional skip is decided by CLASSIFICATION (bug fixes are not redesigned),
-	// NOT by `!s.design` — otherwise a designer that timed out (also leaving
-	// state.design undefined) would be mistaken for a skip and bypass the review
-	// gate. For a non-bug task, an absent design means the designer FAILED → retry.
-	//
-	// 059 §3 R3 delta-5 NEW-3 (dual skip predicate, node arm): a bug
-	// classification only skips when the design stage's write-time touched-set
-	// stamp is EMPTY. A non-empty stamp means designStage routed the
-	// architecture-improver (it never skipped) — an absent design there is a
-	// designer FAILURE to retry, never a skip. An ABSENT stamp (pre-W resume,
-	// walk failure) = status-quo skip — backwards compatible.
-	skipped: (s) => {
-		if (s.classify?.taskType !== "bug") return false;
-		// v0.4.16 (atria gate AV4): this is a ROUTING decision about the CURRENT
-		// tree — read the FRESH state stamp the design stage just stamped (it
-		// stamps even on its skip path, design.ts:30), NOT the persisted disk
-		// stamp. v0.4.14's preservation made readContractSliceStamp disk-first,
-		// which newly routed this predicate off a possibly-stale persisted stamp
-		// (unsafe direction: a stale EMPTY stamp skips design REVIEW for an
-		// artifact that landed; a stale NON-empty one burns a null-producing
-		// stage to the cap). Disk-first stays with contractValidationContext.
-		const stamp = readStateSliceStamp(s as Record<string, unknown>, "design");
-		// Adversarial S4b (v0.3.98): fail CLOSED — an absent stamp (extraction
-		// error, pre-W resume) must NOT skip design; running it is the safe
-		// direction (P5: more scrutiny, never less, when uncertain).
-		if (!stamp) return false;
-		return stamp.files.size === 0;
-	},
-	review: { stage: designReviewWriter, reviewStateKey: "designReview", ownerStage: "design" },
-});

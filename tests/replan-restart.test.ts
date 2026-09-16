@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { triggerReplanForFindings, appendRouteBackRequests, pendingReplanRequests, pendingHumanReplanRequests, consumeReplanRequests, invalidateResumeCache, REPLAN_REQUESTS_FILE, ARTIFACT_REVISIONS_FILE, maxReplanRounds } from "../src/replan/replan.ts";
-import { requirementsConvergenceNode } from "../src/stages/artifact-convergence.ts";
+import { requirementsConvergenceNode } from "../src/stages/artifact-convergence/index.ts";
 import { getConvergenceLedger } from "../src/convergence-ledger.ts";
 import { getRetryFeedback } from "../src/retry-feedback.ts";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext } from "../src/types.ts";

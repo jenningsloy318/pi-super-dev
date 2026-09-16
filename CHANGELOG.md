@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.17e + v0.4.19: stages/artifact-convergence.ts 拆分(5 模块)
+
+**English — the last >1k convergence driver is split.** `src/stages/artifact-convergence.ts` (1,225 lines) → `src/stages/artifact-convergence/{validators,feedback,rounds,node,nodes}.ts` + index barrel. The five parts follow the file's own cohesion seams: the three deterministic validators (requirements/bdd/research), the retry-feedback + review-compaction + carried-debt helpers, the round-cap arithmetic, the `artifactConvergenceNode` state machine, and the four stage wirings. Every consumer repointed; three source-contract tests now read the concatenation (`tests/helpers/artifact-convergence-source.ts`) instead of the 7-line barrel.
+
+**Two indentation defects found by the full read and fixed:**
+- the `v0.3.48 non-routable upstream` comment continuation ran one tab short of its own header;
+- the auto-route audit `try { … } catch` block had its body at the SAME depth as the `try` and its catch one tab shallower — inverted nesting.
+
 ### v0.4.18 — dual-gate fold + agent-runtime 拆分 + 三处回归修复
 
 **English — the dual gates over the three splits caught that three of my six claimed review fixes were never in the tree.** Root cause (honest): while debugging split boundaries I ran `git checkout <monolith>`, which reverted my *uncommitted* fixes; the split then proceeded from pristine HEAD and the commit message described fixes that did not exist. Re-applied for real now, each verified in the tree:

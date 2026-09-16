@@ -28,7 +28,7 @@ import {
 import { pendingReplanRequests, consumeReplanRequests } from "../replan/replan.ts";
 import { priorFindingsForInjection } from "../convergence-ledger.ts";
 import { specReviewWriter, specWriter } from "./writers.ts";
-import { MAX_CONVERGENCE_ROUNDS, effectiveRoundCap, extendedRoundCap, judgeEscalateEvidencePresent, deliverCarriedDebt } from "./artifact-convergence.ts";
+import { MAX_CONVERGENCE_ROUNDS, effectiveRoundCap, extendedRoundCap, judgeEscalateEvidencePresent, deliverCarriedDebt } from "./artifact-convergence/index.ts";
 import { countStageRounds } from "../resume.ts";
 
 const specTask = task(specWriter);

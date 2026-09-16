@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext } from "../src/types.ts";
-import { requirementsConvergenceNode } from "../src/stages/artifact-convergence.ts";
+import { requirementsConvergenceNode } from "../src/stages/artifact-convergence/index.ts";
 
 let specDir = "";
 let worktree = "";

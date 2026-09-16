@@ -23,7 +23,7 @@ import {
 	deliverablesPreflightErrors,
 	type NormalizedPhase,
 } from "../src/doc-validators.ts";
-import { designComplete } from "../src/stages/artifact-convergence.ts";
+import { designComplete } from "../src/stages/artifact-convergence/index.ts";
 import { buildDesignPrompt, buildRequirementsPrompt, buildUpstreamReviewPrompt } from "../src/prompts.ts";
 import type { ControlObj, PipelineState, SetupControl, StageContext } from "../src/types.ts";
 import { EventEmitter } from "node:events";
@@ -215,7 +215,7 @@ describe("C4 + prompts + template", () => {
 });
 
 // ── sd32 dual-review remediation pins ─────────────────────────────────────────
-import { designConvergenceNode } from "../src/stages/artifact-convergence.ts";
+import { designConvergenceNode } from "../src/stages/artifact-convergence/index.ts";
 import type { AgentCall, AgentResult, HelperCall } from "../src/types.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { RetryFeedbackInput } from "../src/retry-feedback.ts";

@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { artifactConvergenceSources } from "./helpers/artifact-convergence-source.ts";
 import {
 	DEFAULT_EDGE_BUDGET,
 	RouteBackSignal,
@@ -731,8 +732,8 @@ describe("M2 round-3 remediation pins", () => {
 	});
 
 	it("pre-existing replan terminals carry the canonical literal (adversarial round-3 F-2)", async () => {
-		const ac = readFileSync("src/stages/artifact-convergence.ts", "utf8");
-		const sc = readFileSync("src/stages/spec-convergence.ts", "utf8");
+		const ac = artifactConvergenceSources();
+		const sc = readFileSync("src/routing/walker.ts", "utf8");
 		for (const m of ac.matchAll(/throw new FatalAbort\(`([^`]*REPLAN[^`]*)`/g)) {
 			expect(m[1]).toContain("REPLAN at round cap");
 		}

@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { artifactConvergenceSources } from "./helpers/artifact-convergence-source.ts";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -511,7 +512,7 @@ describe("059 D-R-B(g) — consumer wiring source pins (routes + refusal)", () =
 	});
 
 	it("both convergence loops consume the flag and thread worktreePath + injectedSlice into the duty seam", () => {
-		const ac = readFileSync(new URL("../src/stages/artifact-convergence.ts", import.meta.url), "utf8");
+		const ac = artifactConvergenceSources();
 		const sc = readFileSync(new URL("../src/stages/spec-convergence.ts", import.meta.url), "utf8");
 		for (const src of [ac, sc]) {
 			expect(src).toContain("duty.escalateToJudge) await consumeContractConflictEscalation");

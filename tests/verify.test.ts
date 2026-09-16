@@ -5,6 +5,7 @@
  * drop a reviewer or break the loop shape.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { artifactConvergenceSources } from "./helpers/artifact-convergence-source.ts";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -358,7 +359,7 @@ describe("M5 verify — emulation retired", () => {
 		// v0.3.79 A3: verify routes stagnation replans via DYNAMIC import only
 		// (no static edge; the stagnation stop stays fail-open when replan fails)
 		expect(verifySrc).toContain('triggerReplanForFindings(s, ctx, replanFindings');
-		const artifactSrc = readFileSync("src/stages/artifact-convergence.ts", "utf8");
+		const artifactSrc = artifactConvergenceSources();
 		expect(artifactSrc).not.toContain("triggerReplanForFindings");
 		const specSrc = readFileSync("src/stages/spec-convergence.ts", "utf8");
 		expect(specSrc).not.toContain("triggerReplanForFindings");

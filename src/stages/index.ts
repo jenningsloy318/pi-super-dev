@@ -31,7 +31,7 @@ import { appendGateChecked } from "../runlog.ts";
 import { implementationStage } from "./implementation/index.ts";
 import { verificationConvergenceNode, reviewApproved } from "./verify/index.ts";
 import { specConvergenceNode } from "./spec-convergence.ts";
-import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence.ts";
+import { bddConvergenceNode, requirementsConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence/index.ts";
 import { replanPending } from "../replan/replan.ts";
 
 // ─── Predicates ─────────────────────────────────────────────────────────────
@@ -243,6 +243,6 @@ export {
 export { designStage } from "./design.ts";
 export { prototypeStage } from "./prototype.ts";
 export { specConvergenceNode } from "./spec-convergence.ts";
-export { requirementsConvergenceNode, bddConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence.ts";
+export { requirementsConvergenceNode, bddConvergenceNode, researchConvergenceNode, researchComplete, designConvergenceNode } from "./artifact-convergence/index.ts";
 export { implementationStage } from "./implementation/index.ts";
 export type { ControlObj };

@@ -20,7 +20,7 @@ import {
 	recordReviewFindingsFromControl,
 } from "../src/convergence-ledger.ts";
 import { compactReviewFindings as compactSpec } from "../src/stages/spec-convergence.ts";
-import { compactReviewFindings as compactArtifact } from "../src/stages/artifact-convergence.ts";
+import { compactReviewFindings as compactArtifact } from "../src/stages/artifact-convergence/index.ts";
 import {
 	buildDesignPrompt,
 	buildFixPrompt,

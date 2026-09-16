@@ -633,7 +633,7 @@ describe("specConvergenceNode", () => {
 
 // ─── Phase 6 / T6.4 (AC-17): shared round-cap clamp + fresh-round arming ─────
 
-import { extendedRoundCap, MAX_TOTAL_ROUND_MULTIPLE } from "../src/stages/artifact-convergence.ts";
+import { extendedRoundCap, MAX_TOTAL_ROUND_MULTIPLE } from "../src/stages/artifact-convergence/index.ts";
 
 /** Seed `.resume-cache.jsonl` with recorded occurrences per callId. */
 function seedSpecStageRounds(specDir: string, seeds: Array<[callId: string, rounds: number]>): void {

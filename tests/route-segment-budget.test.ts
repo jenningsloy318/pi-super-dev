@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requirementsConvergenceNode } from "../src/stages/artifact-convergence.ts";
+import { requirementsConvergenceNode } from "../src/stages/artifact-convergence/index.ts";
 import { routeBackReentry } from "../src/routing/journal.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { AgentCall, AgentResult, Budget, ControlObj, HelperCall, PipelineState, SetupControl, StageContext } from "../src/types.ts";
