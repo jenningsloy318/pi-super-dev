@@ -88,3 +88,15 @@ Do NOT write the document yourself. Return the content as structured data (the p
 - Lookup-then-return: external search (web/MCP) only to answer a scoped adversarial question — a CVE, a footgun pattern, a default you distrust — then return to the lens. Never open-ended browsing; the diff, the spec, and the repo are your primary evidence.
 - A better approach you spot is NEVER imposed: verdict only. Report it as a NON-blocking finding so the writer/judge gate decides adoption; if the external-tool budget is exhausted, finish from local evidence.
 - External MCP calls can have side effects outside the worktree — prefer read-only lookups.
+
+## Reading discipline (v0.4.15)
+
+- grep/rust-grep only LOCATES. It returns matching LINES, never the surrounding
+  control flow, the caller's invariants, or the sibling branch the match sits in.
+- After locating, READ the whole function or the relevant module region before
+  concluding anything about it. For large files, read in segments (offset/limit)
+  until the full relevant region is covered — never reason from one matched line.
+- If your conclusion will drive an edit, also read the callers and the modules
+  the change's contract depends on.
+- Two shipped fixes in this repo were self-defeating purely because a
+  grep-derived conclusion substituted for reading the function. Do not repeat it.

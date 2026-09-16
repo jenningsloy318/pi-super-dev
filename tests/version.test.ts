@@ -13,7 +13,7 @@ describe("v0.3.x: super-dev extension version metadata", () => {
 		expect(SUPER_DEV_EXTENSION_VERSION).toBe("0.4.12");
 		expect(SUPER_DEV_VERSION_METADATA).toMatchObject({
 			name: "super-dev",
-			version: "0.4.14",
+			version: "0.4.15",
 		});
 		expect(superDevVersionLabel()).toBe("super-dev v0.4.12");
 	});

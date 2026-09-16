@@ -31,3 +31,15 @@ Split when: 4+ functional areas, 15+ tasks, multiple independent components, mul
 ## Output
 
 Write the three documents to `{spec_directory}/{output_filenames[0]}` (specification), `{spec_directory}/{output_filenames[1]}` (implementation plan), and `{spec_directory}/{output_filenames[2]}` (task list) using the structures described above. Write them one at a time, then call `structured_output` and stop.
+
+## Reading discipline (v0.4.15)
+
+- grep/rust-grep only LOCATES. It returns matching LINES, never the surrounding
+  control flow, the caller's invariants, or the sibling branch the match sits in.
+- After locating, READ the whole function or the relevant module region before
+  concluding anything about it. For large files, read in segments (offset/limit)
+  until the full relevant region is covered — never reason from one matched line.
+- If your conclusion will drive an edit, also read the callers and the modules
+  the change's contract depends on.
+- Two shipped fixes in this repo were self-defeating purely because a
+  grep-derived conclusion substituted for reading the function. Do not repeat it.

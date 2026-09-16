@@ -34,6 +34,7 @@ Non-negotiables distilled from 415 commits / 20 fix releases in 3 days:
 - Cross-module contracts get dynamic cross-check tests; shared values live at common-ancestor scope (P6).
 - Every retry loop has a proven bound + a test that provokes it (P8).
 - Logs are honest: located errors, `(ran: …)`, unknowns stay unknown, discards named (P10).
+- **Read before edit — grep only locates (P11).** grep/rust-grep finds matching LINES, never the surrounding control flow, the caller's invariants, or the sibling branch the match sits in. Two shipped fixes in this repo were self-defeating purely because a grep-derived conclusion substituted for reading the function ('design never stamps' — false; a full read showed `design.ts:29-30` stamps on every dispatch). Binding discipline in this repo: (1) grep to FIND the file/line, (2) then READ the whole function or module region (offset/limit in segments for large files — never rely on the match alone), (3) read the callers and the referenced modules when the change touches a contract, (4) only then edit. The extension's specialist agents carry the same instruction in their prompts and definitions (see `READING DISCIPLINE` in `src/prompts.ts` and the `## Reading discipline` section in each `agents/*.md`) — prompts are advisory (P4), so this rule is about cutting the bug-introduction rate, not a hard gate.
 
 ## Versioning (existing rules)
 

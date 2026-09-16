@@ -37,3 +37,15 @@ Only report findings with >80% confidence. Zero findings is valid.
 ## Output
 
 Do NOT write the document yourself. Return the content as structured data (the pipeline renders the review deterministically). Output `<control>` JSON with: title, date, verdict, summary, findings, dimensions.
+
+## Reading discipline (v0.4.15)
+
+- grep/rust-grep only LOCATES. It returns matching LINES, never the surrounding
+  control flow, the caller's invariants, or the sibling branch the match sits in.
+- After locating, READ the whole function or the relevant module region before
+  concluding anything about it. For large files, read in segments (offset/limit)
+  until the full relevant region is covered — never reason from one matched line.
+- If your conclusion will drive an edit, also read the callers and the modules
+  the change's contract depends on.
+- Two shipped fixes in this repo were self-defeating purely because a
+  grep-derived conclusion substituted for reading the function. Do not repeat it.

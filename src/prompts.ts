@@ -200,8 +200,19 @@ function existingDocForSlug(specDir: string, slug: string): string | null {
 	} catch { return null; }
 }
 
+/** v0.4.14 (owner directive, 2026-09-16 — "grep misses key info"): the shared
+ *  reading discipline EVERY specialist prompt carries. Grep shows matching
+ *  LINES, not structure — it misses the code between matches, the guard three
+ *  lines above, the early return that explains the shape. Two live incidents
+ *  this week (the supervisor's own design.ts stamp miss; the design writer's
+ *  exemption-restate trap) were both grep-shaped reads of files that needed
+ *  sequential reading. */
+const READING_DISCIPLINE = [
+	"READING DISCIPLINE (binding for any file you cite or modify): grep finds MATCHING LINES, not understanding — it cannot see the guard above the match, the branch that returns early, or the structure between hits. Before making any claim about a file's behavior, READ the file sequentially: use the read tool with offset/limit in SEGMENTS (e.g. 300 lines per read, continuing until you have covered the region that matters — for a file under ~600 lines, read it whole). Cite line numbers from your reads, not from grep output. If a file is too large to read fully, read the imports + the exported functions' full bodies for every symbol you discuss, and say which regions you did NOT read.",
+].join("\n");
+
 function ctxBlock(setup: SetupControl, c: Classification | null): string {
-	return ["## Context", `- Worktree: ${setup.worktreePath}`, `- Spec Directory: ${setup.specDirectory}`, `- Language: ${c?.language ?? setup.language}`, `- Task Type: ${c?.taskType ?? "unknown"}`, `- UI Scope: ${c?.uiScope ?? "none"}`, `- Default Branch: ${setup.defaultBranch ?? "main"}`].join("\n");
+	return ["## Context", `- Worktree: ${setup.worktreePath}`, `- Spec Directory: ${setup.specDirectory}`, `- Language: ${c?.language ?? setup.language}`, `- Task Type: ${c?.taskType ?? "unknown"}`, `- UI Scope: ${c?.uiScope ?? "none"}`, `- Default Branch: ${setup.defaultBranch ?? "main"}`, "", READING_DISCIPLINE].join("\n");
 }
 
 /** LLM task classifier (Stage 2A). Replaces the brittle keyword regex with an

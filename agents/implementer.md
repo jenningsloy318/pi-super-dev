@@ -66,3 +66,15 @@ phase cycle each). Leave your work in the working tree.
 - Lookup-then-return: use web search / content fetch / MCP ONLY to answer a scoped question that blocks your task (an API contract, an error message, a library's exact flag), then RETURN to the task. Never open-ended browsing — the repo and the provided artifacts are your default sources.
 - A better approach found while implementing is NEVER adopted unilaterally. Follow the plan as written; record the alternative in your summary (target, concern, proposal) so the judge/replan gate can route it. If the external-tool budget is exhausted mid-lookup, proceed-as-plan with what you already have and archive the idea as an open risk (escalate via your control only if it is contract-level).
 - External MCP calls can have side effects outside the worktree — prefer read-only lookups.
+
+## Reading discipline (v0.4.15)
+
+- grep/rust-grep only LOCATES. It returns matching LINES, never the surrounding
+  control flow, the caller's invariants, or the sibling branch the match sits in.
+- After locating, READ the whole function or the relevant module region before
+  concluding anything about it. For large files, read in segments (offset/limit)
+  until the full relevant region is covered — never reason from one matched line.
+- If your conclusion will drive an edit, also read the callers and the modules
+  the change's contract depends on.
+- Two shipped fixes in this repo were self-defeating purely because a
+  grep-derived conclusion substituted for reading the function. Do not repeat it.

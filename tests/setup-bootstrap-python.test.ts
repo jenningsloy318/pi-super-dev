@@ -169,3 +169,22 @@ describe("v0.4.10 realized scenario-space injection (live spec trace-gate burn)"
 		expect(realizedScenarioSpaceBlock({ docPath: "/nonexistent/bdd.md" })).toBe("");
 	});
 });
+
+describe("v0.4.14 reading discipline (owner directive — read by segments, not grep)", () => {
+	it("every ctxBlock-carrying builder ships the READING DISCIPLINE in its JOINED output", async () => {
+		const { buildRequirementsPrompt, buildDesignPrompt, buildSpecPrompt, buildImplementPrompt, buildPrototypePrompt } = await import("../src/prompts.ts");
+		const stub = { worktreePath: "/tmp/w", specDirectory: "/tmp/s", language: "python", isWebUi: false, specIdentifier: "x", defaultBranch: "main" } as never;
+		const c = { language: "python", taskType: "feature", uiScope: "none" } as never;
+		for (const [name, text] of [
+			["requirements", buildRequirementsPrompt(stub, c, "t", "")],
+			["design", buildDesignPrompt(stub, c, "t", null, null, null, "architecture-designer", "")],
+			["spec", buildSpecPrompt(stub, c, "t", null, null, null, null, null)],
+			["implement", buildImplementPrompt(stub, c, { name: "p" }, { languageInstructions: "" } as never, { specificationPath: "/tmp/sp" } as never)],
+			["prototype", buildPrototypePrompt(stub, c, "t", { docPath: "/tmp/d" } as never, [], 1, null)],
+		] as Array<[string, string]>) {
+			expect(text, name).toContain("READING DISCIPLINE");
+			expect(text, name).toContain("offset/limit in SEGMENTS");
+			expect(text, name).toContain("grep finds MATCHING LINES, not understanding");
+		}
+	});
+});
