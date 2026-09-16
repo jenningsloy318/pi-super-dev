@@ -657,3 +657,28 @@ describe("065 grill round 1 folds", () => {
 		expect(inv.scanLines.some((l) => l.includes("wiredFile") && l.includes("rejected token"))).toBe(true);
 	});
 });
+
+// ─── v0.4.8 (live spec-26 post-mortem): the grammar lesson is prompt-pinned ───
+
+describe("065 v0.4.8 — write-claim grammar teaching (live-run 5-round burn)", () => {
+	it("design AND spec prompts carry the WRITE-CLAIM GRAMMAR block (3 rules + exemption trap)", async () => {
+		const { readFileSync } = await import("node:fs");
+		const src = readFileSync("src/prompts.ts", "utf8");
+		for (const fn of ["buildDesignPrompt", "buildSpecPrompt"]) {
+			const body = src.slice(src.indexOf(`function ${fn}`));
+			const end = body.indexOf("\nexport function");
+			const seg = body.slice(0, end > 0 ? end : 4000);
+			expect(seg).toContain("WRITE-CLAIM GRAMMAR (065");
+			expect(seg).toContain("self-contradiction no amendmentFamily entry can license");
+			expect(seg).toContain("re-mints the pin");
+			expect(seg).toContain("cite it by pinId");
+		}
+	});
+
+	it("the self-contradiction finding names the exemption-restate trap (round-4/5 fix)", async () => {
+		const { readFileSync } = await import("node:fs");
+		const src = readFileSync("src/review/claim-spine.ts", "utf8");
+		expect(src).toContain("TRAP: if this pin sits inside an exemption/justification you wrote");
+		expect(src).toContain(`never quoting the immutability idiom`);
+	});
+});

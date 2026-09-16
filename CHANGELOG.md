@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.4.8: write-claim grammar 教学(实测 spec-26 连烧 5 轮的教训)
+
+**English — teach the grammar the gates read.** The first v0.4.7 live run burned FIVE design-convergence rounds on contract-grammar failures (not design-quality failures — round 6's content passed an anchor-verified review). Round 4/5's trap: the writer's EXEMPTION justification restated the byte-untouched wording next to the path, re-minting the protect pin its own write-claim collided with — and only reading the claim-spine source taught it the wording discipline. Fixes: (1) buildDesignPrompt + buildSpecPrompt gain a WRITE-CLAIM GRAMMAR block (mention-classification semantics; same-file-both-ways = unlicensable self-contradiction; exemption prose cites pinId + legal basis only, never the frozen wording; sibling contracts referenced by pinId); (2) the claim-spine self-contradiction finding now names the exemption-restate trap with a concrete compliant example. Gates unchanged (P4 intact — machinery stays the enforcement; this teaches the writer the grammar the machinery reads).
+
+**中文**:第一次 v0.4.7 实测里 design 连烧 5 轮——全是契约语法失败而非设计质量问题(轮 6 内容过了锚点级审查)。最毒的陷阱:豁免辩护文本复述"byte-untouched"措辞 → 就地重铸 pin → 与自己的 write-claim 相撞,家族豁免救不了(writer 最终靠读门源码才学会措辞纪律)。修复:design/spec 提示词加语法块(提及即分类/同文件禁双向/豁免只引 pinId),自相矛盾 finding 点名陷阱并给出合规示例。门不变(P4)。
+
 ### Added — v0.4.7: 063 Wave S2 — census 全量重定向 + 迁移/对账 + 外部 resume 扫描
 
 **English — 063 Wave S2: the full census redirect.** Every spec-dir state resolution site now routes through `stateFileFor` — plain joins, string concat (runlog `${base}${FILE}`), `.tmp` siblings (convergence-ledger), nested `user-input/` (stays in-tree per M3), containment-guarded and cwd-normalizing forms — 24 census rows, each pinned by a mechanical reader-sweep gate that caught 3 real misses during implementation and was extended (gate F3) with a const-indirection arm + nested-paren window so the drift class stays dead.

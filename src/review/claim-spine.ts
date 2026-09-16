@@ -434,7 +434,7 @@ export function writeClaimClosureFindings(input: WriterGateInput): ClaimFinding[
 		for (const pin of selfPins.slice(0, 3)) {
 			findings.push({
 				kind: input.level === "concrete" ? "blocking" : "advisory",
-				message: `${input.stage} write-claim on ${claim.path} (@ ${claim.locus}) contradicts a pin in ${input.stage}'s OWN artifact (@ ${pin.locus}: "${pin.statement.slice(0, 120)}") — the same artifact declares the file written AND immutable. Remove one side: drop the write-claim, or drop the immutability wording (no family declaration licenses this — it is a self-contradiction).`,
+				message: `${input.stage} write-claim on ${claim.path} (@ ${claim.locus}) contradicts a pin in ${input.stage}'s OWN artifact (@ ${pin.locus}: "${pin.statement.slice(0, 120)}") — the same artifact declares the file written AND immutable. Remove one side: drop the write-claim, or drop the immutability wording (no family declaration licenses this — it is a self-contradiction). TRAP: if this pin sits inside an exemption/justification you wrote, the justification RESTATED the frozen wording next to the path — re-write it citing the pinId and the legal basis ONLY (e.g. "pin ${pin.pinId} exempted: owner decision AC-N"), never quoting the immutability idiom.`,
 			});
 		}
 		if (familyFiles.has(claim.path)) continue; // covered — closure holds for this claim
