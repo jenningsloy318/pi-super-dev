@@ -1,5 +1,7 @@
-import {AcceptedRedContext, MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, ProgressSignature, RED_WEAKENING_SOURCE, RedEvidence, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, preexistingTestSurfaceRows, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, restrictRedJudgeRoutes, setDiff, snapshotFiles, trackerOutofScopeEdits, weakenedAssertionSurfaces} from "./red-evidence.ts";
-import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, TestDefect, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseRedContradictions, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
+import {MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, preexistingTestSurfaceRows, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, restrictRedJudgeRoutes, setDiff, snapshotFiles, trackerOutofScopeEdits, weakenedAssertionSurfaces} from "./red-evidence.ts";
+import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
+import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseRedContradictions, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
+import type {TestDefect} from "./phase-reentry.ts";
 import { attributeQuarantinePaths, attributeQuarantinedViolations, deterministicPhaseCommit, discardGreenWork, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 /**
@@ -154,11 +156,17 @@ export const implementationStage: Stage = {
 			// Self-limiting: after the first rollback in a pass, the invalidated
 			// downstream entries are gone, so later non-green phases no longer match
 			// the laterPhasesRan predicate (at most one rollback per §D entry).
-			pendingRollbackStash = handleConvergenceRollback({
+			// v0.4.29 gate fold (adv F2 / code F1): rebind ONLY when the module actually
+			// stashed. The parent assigned inside the `rolled-back` branch; an unconditional
+			// assign is equivalent today (the binding is null at every call — proven by
+			// both gates), but it would silently clobber a revived mid-flight stash with no
+			// P10 log the day one is ever persisted across a pass boundary.
+			const rollbackStash = handleConvergenceRollback({
 				setup, idx, totalPhases: phases.length, phaseStatus, phaseId,
 				baselineCommit: stageEntryBaselineCommit, phaseStartDirt, phaseProtectionStrikes,
 				log: (line) => ctx.log(line),
 			});
+			if (rollbackStash) pendingRollbackStash = rollbackStash;
 			let green = false;
 			let attemptErrors: string[] = [];
 			let attemptsRun = 0;
