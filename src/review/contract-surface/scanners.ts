@@ -138,12 +138,12 @@ function scanExactlyNTs(text: string): RawHit[] {
 			const ch = text[i];
 			if (ch === "[" || ch === "{" || ch === "(") {
 				depth++;
-			if (depth === 1) continue;
-		} else if (ch === "]" || ch === "}" || ch === ")") {
+				if (depth === 1) continue;
+			} else if (ch === "]" || ch === "}" || ch === ")") {
 				if (depth === 1 && ch === "]") {
-				closedAt = i;
-				break;
-			}
+					closedAt = i;
+					break;
+				}
 				depth--;
 				continue;
 			}

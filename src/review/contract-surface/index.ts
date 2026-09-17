@@ -1,4 +1,4 @@
-// v0.4.21: contract-surface.ts split into 7 modules (pure code motion — every
+// v0.4.22: contract-surface.ts split into 7 modules (pure code motion — every
 // name below keeps its pre-split resolution path). The layer's doctrine doc
 // lives at the head of ./types.ts.
 //

@@ -34,6 +34,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claimPathUsable, isUsableProtectedToken } from "../stages/plan-feasibility.ts";
+// Single spelling of the protect grammar (P6/065 A2): the SAME regex object
+// the md-arm scanner uses, imported from the part that owns it.
 import { PROTECT_QUALIFIER_RE } from "./contract-surface/scanners.ts";
 import { extractContractInventory } from "./contract-surface/inventory.ts";
 import { normalizeAmendmentFamily } from "./contract-surface/reconcile.ts";
@@ -108,10 +110,6 @@ export function governedProtectedTokens(statement: string, windowTokens: readonl
  *  ("22-public-interface.md §4 gains the note"), while list/prose forms put
  *  the verb first ("extends X", "Files edited: …"). */
 const WRITE_VERB_RE = /\b(gains?|gained|extends?|extended|adds?|added|creates?|created|writes?|wrote|edits?|edited|amends?|amended|lands?|landed|ships?|shipped|modifies?|modified|updates?|updated|introduces?|introduced|fixes?|fixed)\b/gi;
-
-/** Protect qualifiers — imported from contract-surface (single spelling,
- *  P6/065 A2 — same regex object as the md-arm scanner). */
-
 
 /** Negation guard (row 6): a negated write verb mints nothing. */
 const NEGATED_WRITE_RE = /\b(?:must\s+not|never|without)\s+(?:gains?|gain|extends?|extend|adds?|add|creates?|create|writes?|write|edits?|edit|amends?|amend|lands?|land|ships?|ship|modifies?|modify|updates?|update|touch(?:es|ing)?)\b|\bwithout\s+touching\b/gi;
