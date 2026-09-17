@@ -1,4 +1,4 @@
-import {MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, restrictRedJudgeRoutes, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
+import {MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
 import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseRedContradictions, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
@@ -976,6 +976,8 @@ export const implementationStage: Stage = {
 									retries, redJudgeRoutes, redEnvRestarts,
 									redEvidence, testFiles, redChangedFiles,
 									retryHint,
+									redJudgeDiagnosis, redJudgeEvidenceLabel,
+									incomingStopReason: terminalStopReason,
 									tddText: tdd?.text ?? "",
 									worktreePath: setup.worktreePath,
 									specDirectory: setup.specDirectory,
@@ -988,9 +990,9 @@ export const implementationStage: Stage = {
 								redEnvRestarts = judgeRoute.routing.redEnvRestarts;
 								redJudgeDiagnosis = judgeRoute.routing.redJudgeDiagnosis;
 								redJudgeEvidenceLabel = judgeRoute.routing.redJudgeEvidenceLabel;
-								if (judgeRoute.routing.attemptErrorsAppend) attemptErrors = [...attemptErrors, judgeRoute.routing.attemptErrorsAppend];
 								if (judgeRoute.kind === "restart") {
 									redHint = judgeRoute.routing.redHint;
+									terminalStopReason = judgeRoute.routing.terminalStopReason;
 									continue;
 								}
 								terminalStopReason = judgeRoute.routing.terminalStopReason;

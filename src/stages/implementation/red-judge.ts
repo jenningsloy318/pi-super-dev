@@ -14,9 +14,15 @@
  * becomes `return { kind: "restart" … }` and every `break` becomes
  * `return { kind: "terminal" … }`. The reads that were scoped mutable bindings
  * become typed params; the WRITES become the returned JudgeRouting record
- * (by-ref object params for the two collections). No behavior change: the
- * route set, the counters, the log text, the escalation paths and the terminal
- * reasons are byte-identical to the inlined block.
+ * (by-ref object params for the two collections). The route set, the counters,
+ * the log text, the escalation paths and the terminal reasons match the inlined
+ * block — but two cross-iteration semantics are NOT expressible in a returned
+ * record without help, and v0.4.33 restores both (v0.4.32 shipped without them):
+ * a parent `continue` implicitly preserved the phase-scoped `terminalStopReason`
+ * (which the parent had set to "no-progress" before the HITL block, so a
+ * guided-retry leaked it forward) and the phase-scoped `redJudgeDiagnosis` /
+ * `redJudgeEvidenceLabel`. Both are now carried in as params and echoed on the
+ * restart paths; the caller rebinds the reason unconditionally.
  *
  * The caller interprets exactly two outcomes:
  *   restart  → rebind the scalars from `out`, then `continue` the RED loop
@@ -49,6 +55,12 @@ export interface JudgeRoutingInput extends JudgeCollections {
 	redJudgeRoutes: number;
 	/** fix-environment restarts granted so far (v0.3.30 F3). */
 	redEnvRestarts: number;
+	/** The diagnosis carried in from before this call (preserved across restarts). */
+	redJudgeDiagnosis: string;
+	/** The evidence label carried in from before this call. */
+	redJudgeEvidenceLabel: string;
+	/** The phase-scoped stop reason carried in (restored on restart paths). */
+	incomingStopReason: JudgeRouting["terminalStopReason"];
 	redEvidence: RedEvidence;
 	testFiles: string[];
 	redChangedFiles: string[];
@@ -70,8 +82,6 @@ export interface JudgeRouting {
 	/** fix-environment restarts granted after this call (v0.3.30 F3). */
 	redEnvRestarts: number;
 	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening";
-	/** Only present on the terminal replan-upstream route. */
-	attemptErrorsAppend?: string;
 }
 
 export type JudgeRoutingOutcome =
@@ -86,7 +96,12 @@ export type JudgeRoutingOutcome =
  */
 export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRoutingOutcome> {
 	const { ctx, state, phaseId, phaseName, signature, seenBefore, attempt, redEvidence, testFiles, redChangedFiles, retryHint, tddText } = input;
+	// Carried-in state (L2/M1 restore): restart paths echo these back so the
+	// extraction preserves the parent's cross-iteration semantics exactly.
 	let { retries, redJudgeRoutes, redEnvRestarts } = input;
+	let diagnosis = input.redJudgeDiagnosis;
+	let evidenceLabel = input.redJudgeEvidenceLabel;
+	let stopReason = input.incomingStopReason;
 
 	const judgeOut = await runJudge(ctx, {
 		scope: `stage9.red-no-progress.${phaseId}`,
@@ -124,7 +139,7 @@ export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRout
 		const redHint = `\n\n## Judge approved your scaffolding (allow-scaffold)\n${judgeOut.verdict.diagnosis}\nKeep the declaration-only scaffolding you created (do NOT implement the behavior); make the test COMPILE and still FAIL on its assertion (a valid RED). Evidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
 		ctx.log(`Implementation ${phaseId} judge route=allow-scaffold: approved declaration-only scaffolding (${redChangedFiles.length} path(s)) — re-admitting through the RED boundary; oracle still guards`);
 		return { kind: "restart", routing: { retries,
-				redJudgeRoutes, redEnvRestarts, redHint, redJudgeDiagnosis: "", redJudgeEvidenceLabel: "", terminalStopReason: "failed" } };
+				redJudgeRoutes, redEnvRestarts, redHint, redJudgeDiagnosis: diagnosis, redJudgeEvidenceLabel: evidenceLabel, terminalStopReason: stopReason } };
 	}
 
 	// v0.2.8 G1 (replan-upstream): an UPSTREAM artifact is defective. Route back
@@ -142,13 +157,18 @@ export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRout
 		let replanned = false;
 		// M5 documented exception: NO structured ownerStage — the owner is
 		// resolved by the replan LEAD (an LLM call) the inline planner can't serve.
-		const { triggerReplanForFindings } = await import("../../replan/replan.ts");
-		try { replanned = await triggerReplanForFindings(state, ctx, [finding], "implementation-red", input.specIdentifier); } catch { replanned = false; }
+		// The import is inside the try: a module-resolution failure must NOT escape
+		// (the original called this statically, so "never throws" held; the
+		// extraction's dynamic import needs the guard to preserve it).
+		try {
+			const { triggerReplanForFindings } = await import("../../replan/replan.ts");
+			replanned = await triggerReplanForFindings(state, ctx, [finding], "implementation-red", input.specIdentifier);
+		} catch { replanned = false; }
 		if (replanned) {
-			const redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${finding.recommendation}`;
+			const diagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${finding.recommendation}`;
 			ctx.log(`Implementation ${phaseId} judge route=replan-upstream: routed the upstream-artifact defect back via REPLAN — the run will revise the owning stage and re-enter — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
 			return { kind: "terminal", routing: { retries,
-				redJudgeRoutes, redEnvRestarts, redHint: "", redJudgeDiagnosis, redJudgeEvidenceLabel: "", terminalStopReason: "no-progress" } };
+				redJudgeRoutes, redEnvRestarts, redHint: "", redJudgeDiagnosis: diagnosis, redJudgeEvidenceLabel: evidenceLabel, terminalStopReason: "no-progress" } };
 		}
 		ctx.log(`Implementation ${phaseId} judge route=replan-upstream: no routable owner / replan budget exhausted — falling through to the human boundary with the diagnosis`);
 	}
@@ -158,10 +178,10 @@ export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRout
 		// in-repo repairs; a SECOND means the fix is outside the RED loop's reach
 		// — terminate honestly instead of burning budget.
 		if (judgeOut.verdict.route === "fix-environment" && redEnvRestarts >= MAX_RED_ENV_RESTARTS) {
-			const redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+			const diagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
 			ctx.log(`Implementation ${phaseId} RED generation stopped — environment-blocked: ${redEnvRestarts} fix-environment restart(s) granted without progress; the fix is outside the RED loop's reach — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
 			return { kind: "terminal", routing: { retries,
-				redJudgeRoutes, redEnvRestarts, redHint: "", redJudgeDiagnosis, redJudgeEvidenceLabel: "", terminalStopReason: "environment-blocked" } };
+				redJudgeRoutes, redEnvRestarts, redHint: "", redJudgeDiagnosis: diagnosis, redJudgeEvidenceLabel: evidenceLabel, terminalStopReason: "environment-blocked" } };
 		}
 		if (judgeOut.verdict.route === "fix-environment") redEnvRestarts++;
 		input.redProgressHistory.length = 0;
@@ -169,7 +189,7 @@ export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRout
 		const redHint = `\n\n## Judge diagnosis (verified evidence — act on it)\n${judgeOut.verdict.diagnosis}\n${judgeOut.verdict.route === "fix-environment" ? "The judge classified this as an ENVIRONMENT problem. Repair it INSIDE this worktree only (install dependencies, fix toolchain/config files that live in this repository), then author the RED test. If the fix requires anything OUTSIDE this repository (a capability the harness itself lacks), do NOT hunt for, read, or modify external files — state the limitation in your result and stop; the harness will escalate." : "The judge classified the RED tests themselves as contradictory or unsatisfiable: re-author the affected tests into a satisfiable form that still pins the same behavior."}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
 		ctx.log(`Implementation ${phaseId} judge route=${judgeOut.verdict.route}: restarting RED with the diagnosis`);
 		return { kind: "restart", routing: { retries,
-				redJudgeRoutes, redEnvRestarts, redHint, redJudgeDiagnosis: "", redJudgeEvidenceLabel: "", terminalStopReason: "failed" } };
+				redJudgeRoutes, redEnvRestarts, redHint, redJudgeDiagnosis: diagnosis, redJudgeEvidenceLabel: evidenceLabel, terminalStopReason: stopReason } };
 	}
 
 	// v0.2.8 G1 fall-through / escalate-now / discarded / degraded: the terminal
@@ -177,8 +197,8 @@ export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRout
 	let redJudgeDiagnosis = "";
 	let redJudgeEvidenceLabel = "";
 	if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
-		redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-		redJudgeEvidenceLabel = judgeOut.status === "escalate" && judgeOut.verdict.evidence.length === 0 ? "escalated — evidence unverified" : "verified evidence";
+		diagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+		evidenceLabel = judgeOut.status === "escalate" && judgeOut.verdict.evidence.length === 0 ? "escalated — evidence unverified" : "verified evidence";
 	}
 
 	const why = seenBefore
@@ -194,7 +214,7 @@ export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRout
 			const failure: import("../../types.ts").EscalationFailure = {
 				kind: "stagnation",
 				stage: "implementation-red",
-				message: `RED test generation for phase "${phaseName}" is not converging (${why}). This is typically a spec or test-toolchain issue — e.g. the target package has no runnable test command, so a new test cannot be observed to fail. Inspect the recurring RED evidence or provide guidance before retrying.${redJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (${redJudgeEvidenceLabel}):\n${redJudgeDiagnosis}` : ""}`,
+				message: `RED test generation for phase "${phaseName}" is not converging (${why}). This is typically a spec or test-toolchain issue — e.g. the target package has no runnable test command, so a new test cannot be observed to fail. Inspect the recurring RED evidence or provide guidance before retrying.${diagnosis ? `\n\nJUDGE DIAGNOSIS (${evidenceLabel}):\n${diagnosis}` : ""}`,
 				severity: "soft",
 				findings: (redEvidenceFailureReasons(redEvidence).length ? redEvidenceFailureReasons(redEvidence) : [redEvidence.reason ?? redEvidence.status]).slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
 				worktreePath: input.worktreePath,
@@ -208,12 +228,12 @@ export async function routeRedJudge(input: JudgeRoutingInput): Promise<JudgeRout
 					retries++;
 					ctx.log(`Implementation ${phaseId} RED no-progress escalation: retrying with user guidance`);
 					return { kind: "restart", routing: { retries,
-				redJudgeRoutes, redEnvRestarts, redHint: retryHint, redJudgeDiagnosis, redJudgeEvidenceLabel, terminalStopReason: "failed" } };
+				redJudgeRoutes, redEnvRestarts, redHint: retryHint, redJudgeDiagnosis: diagnosis, redJudgeEvidenceLabel: evidenceLabel, terminalStopReason: "no-progress" } };
 				}
 			}
 		} catch { /* never-throw: fall through to the terminal break */ }
 	}
 
 	return { kind: "terminal", routing: { retries,
-				redJudgeRoutes, redEnvRestarts, redHint: "", redJudgeDiagnosis, redJudgeEvidenceLabel, terminalStopReason: "no-progress" } };
+				redJudgeRoutes, redEnvRestarts, redHint: "", redJudgeDiagnosis: diagnosis, redJudgeEvidenceLabel: evidenceLabel, terminalStopReason: "no-progress" } };
 }

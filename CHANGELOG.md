@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fix — v0.4.33: the v0.4.32 dual-gate fold — two divergences the "byte-identical" claim denied
+
+The Code and Adversarial gates over `39756e41` independently surfaced the same two
+behavior changes in the judge hand-off — both introduced by the extraction, both
+invisible to the existing tests, and both contradicting the v0.4.32 header's
+"byte-identical" claim. This release **restores** the parent semantics rather than
+redefining them, and corrects the claim.
+
+- **M1 / ADV-1 (restored)** — the parent assigned `terminalStopReason = "no-progress"` *before* the HITL block, so a `retry-with-guidance` continue leaked that reason into every later RED iteration. The extraction returned it only on the terminal branch, so the phase-scope value stayed `"failed"` — and a later budget-dead exit logged "(no progress)" where it now logged "budget". Fixed by carrying the reason in as `incomingStopReason`, echoing it on the restart paths, and having the caller rebind it unconditionally.
+- **L2 / ADV-2 (restored)** — the parent's allow-scaffold / re-author-tests / fix-environment `continue`s never touched the phase-scoped `redJudgeDiagnosis`, so a diagnosis from an earlier episode survived into the convergence record. The extraction wiped it to `""` on restart. Fixed by carrying the diagnosis and label in and echoing them on restart.
+- **L3 / ADV-3 (shipped)** — the dynamic `import("../../replan/replan.ts")` sat *outside* its `try`, so a module-resolution failure would escape `routeRedJudge` and breach the module's own "Never throws" contract (the original called it statically, so the throw was structurally impossible). Practically unreachable today — `stage.ts` statically imports `replan.ts` — but the guard is the honest spelling.
+- **L4** — `MAX_RED_ENV_RESTARTS` and `restrictRedJudgeRoutes` were left dead in `stage.ts` after the move; dropped, keyed per import site.
+- **L5** — `JudgeRouting.attemptErrorsAppend` was declared and checked but never produced by any route (the parent never wrote `attemptErrors` here either); the field and the dead append branch are removed.
+
+**Lesson.** The two restores were the harder ones to see because they run *across* the
+return boundary — the parent's `continue` implicitly preserved phase-scoped state,
+and a returned record has to do that explicitly. The gate's evidence was decisive:
+the parent's assignment ordering, quoted from the blob. A refactor's mandate is to
+preserve behavior; where the parent's behavior was imperfect, fixing it is a
+separate change, not a silent side effect of the move.
+
 ### Refactor — v0.4.32: the judge hand-off extracted — red-judge.ts, and the first control-flow conversion
 
 **English — increment 5 of the stage.ts split, and the first increment that actually converts control flow rather than lifting straight-line code.** The block that runs when the RED loop stalls (a repeated signature, or the retry ceiling) — one judge diagnosis before the human boundary, and its four routes (allow-scaffold / replan-upstream / re-author-tests / fix-environment, plus the HITL guided retry) — moves from stage.ts lines 965–1097 into `routeRedJudge()` in `src/stages/implementation/red-judge.ts`. `stage.ts` is 3,135 → 3,036 lines (−99), measured by blob against the actual parent this time.
