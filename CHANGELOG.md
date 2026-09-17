@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fix — v0.4.25: package-lock.json repaired — the v0.4.16 stamping corruption, nine releases deep
+
+**English — a real defect I created, propagated across nine releases, and twice misdiagnosed. Disclosed loudly because the honesty debt here is mine.** At v0.4.16 the per-commit version-bump routine overwrote EVERY `version` field in `package-lock.json` with the project version — not just the two root fields. `import { version } → "0.4.16"` landed on all 404 dependency entries: `typescript`, `vitest`, `vite`, `@types/estree` and 400 others all claimed the *project's* version, and 52 of them carried no `resolved` field, so a fresh `npm ci` could not resolve them at all (version is npm's only resolution key for entries without `resolved`). Every bump from v0.4.16 to v0.4.24 re-stamped the lie forward.
+
+**Why it survived nine releases:** the already-installed `node_modules` kept the suite green (nothing ever re-installed), and each audit compared two *identically corrupted* lockfiles and saw identical churn as normal. The v0.4.21-era review flagged the 810-line churn and I ruled it a false alarm — that verdict was itself the false negative. The v0.4.24 dual gates flagged it again, and this time the check was structural rather than statistical.
+
+**The repair** regenerates the lockfile truth (`npm install --package-lock-only`, with four entries that npm left half-repaired re-resolved from scratch), then proves itself end-to-end: a clean `npm ci` from the repaired lock installs 353 packages and the full suite passes 4200/4200 against that fresh install. Root fields carry v0.4.25; every dependency entry now has its own version plus `resolved` and `integrity`. The bump routine itself is now a JSON-level edit of exactly the two root fields — a global string replace over the lockfile is retired as a method.
+
+**The class-level guard** is a new test (`tests/lockfile-integrity.test.ts`): no dependency entry may carry the project version (the corruption's exact signature), every entry must be resolvable, and the two root fields must equal `SUPER_DEV_EXTENSION_VERSION`. A future bump that reaches for a global replace fails here, in CI, before it ships — the invariant is mechanical now, not a remembered discipline.
+
+**Follow-up, not shipped here:** the v0.4.24 brace-spacing drift on ~14 rewritten import lines (`import {join}` style). Both gates called it cosmetic and non-blocking, and an attempted repo-wide normalizer escaped its intended 38 lines and was reverted rather than mixed into this commit — a formatting pass is its own small decision.
+
 ### Fix — v0.4.24: dead-import cleanup — the 388 debt paid, per-site
 
 **English — the debt quantified in the v0.4.21 entry is paid.** The blind spot was real and it propagated through every wave of the refactoring campaign: the v0.4.17–0.4.17d splits left 146 dead import bindings behind because the pruner of that era counted re-export lines, comments, and template-literal text as usage, and `noUnusedLocals` is off in this project so tsc never flagged them. Dead code with zero runtime effect — but mess the campaign made, so the campaign cleans it.
