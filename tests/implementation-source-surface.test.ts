@@ -22,9 +22,9 @@ const KNOWN_PARTS = [
 	"phase-emit.ts",
 	"phase-reentry.ts",
 	"phase-rollback.ts",
-	"red-ratchet.ts",
 	"phase-status.ts",
 	"red-evidence.ts",
+	"red-ratchet.ts",
 	"run-prepare.ts",
 	"stage.ts",
 ];

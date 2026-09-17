@@ -22,8 +22,10 @@ const ALREADY_REJECTED: ReadonlySet<RedEvidence["status"]> = new Set([
 /**
  * The statuses that count as "already rejected" only when the phase is
  * fail-closed (it requires tests). An unknown that is NOT fail-closed still
- * falls through to the implementer per v0.3.30 F2's P3 contract, so the ratchet
- * must not reject it.
+ * falls through to the implementer per v0.3.30 F2's P3 contract — that means
+ * the ratchet must not PRE-REJECT it as already-rejected; it is still
+ * evaluated like any acceptance-bound try, so a weakened pre-existing guard
+ * is caught here too (the 09-09 gutting class).
  */
 const REJECT_ONLY_WHEN_FAIL_CLOSED: ReadonlySet<RedEvidence["status"]> = new Set([
 	"unknown-no-runner",
