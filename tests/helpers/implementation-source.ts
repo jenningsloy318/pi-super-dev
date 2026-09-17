@@ -17,14 +17,23 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const PARTS = readdirSync(join(process.cwd(), "src", "stages", "implementation"))
-	.filter((f) => f.endsWith(".ts") && f !== "index.ts")
-	.sort();
+/** Every non-index part of the implementation stage under `root`, sorted.
+ * Derived lazily from the same root the body reads from — a v0.4.27 gate
+ * finding: deriving the list from process.cwd() at module load while the
+ * contents came from the `root` argument paired a cwd-derived list with a
+ * root-derived body for callers passing a non-default root. */
+export function implementationParts(root = process.cwd()): string[] {
+	return readdirSync(join(root, "src", "stages", "implementation"))
+		.filter((f) => f.endsWith(".ts") && f !== "index.ts")
+		.sort();
+}
 
 /** Concatenated source of the implementation stage (every non-index part,
  *  alphabetical). */
 export function implementationSources(root = process.cwd()): string {
-	return PARTS.map((p) => readFileSync(join(root, "src", "stages", "implementation", p), "utf8")).join("\n");
+	return implementationParts(root)
+		.map((p) => readFileSync(join(root, "src", "stages", "implementation", p), "utf8"))
+		.join("\n");
 }
 
 /** The stage body — the 063/v0.3.x contract pins (control shape, wiring) live here. */

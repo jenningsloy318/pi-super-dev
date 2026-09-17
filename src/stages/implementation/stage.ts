@@ -1,6 +1,6 @@
 import {AcceptedRedContext, MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, ProgressSignature, RED_WEAKENING_SOURCE, RedEvidence, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, preexistingTestSurfaceRows, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, restrictRedJudgeRoutes, setDiff, snapshotFiles, trackerOutofScopeEdits, weakenedAssertionSurfaces} from "./red-evidence.ts";
 import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, TestDefect, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseRedContradictions, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
-import {PhaseFailureEntry, PhaseStatusEntry, attributeQuarantinePaths, attributeQuarantinedViolations, deterministicPhaseCommit, discardGreenWork, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase} from "./phase-status.ts";
+import { attributeQuarantinePaths, attributeQuarantinedViolations, deterministicPhaseCommit, discardGreenWork, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
@@ -12,24 +12,20 @@ import { prepareImplementationRun } from "./run-prepare.ts";
  * replaces the old QA self-report — no more vacuous pass on "agent said green".
  */
 
-import { execFileSync, spawnSync } from "node:child_process";
-import { superDevEnv } from "../../render/super-dev-dir.ts";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync , rmSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
-import type { BoundaryQuarantinePayload, ControlObj, PipelineState, Stage, StageContext } from "../../types.ts";
+import { spawnSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { BoundaryQuarantinePayload, ControlObj, Stage } from "../../types.ts";
 
 // v0.3.73 M1: re-exported for the salvage seam + tests.
 import { classifyJudgeRoute } from "../../routing/router.ts";
 import { appendGateChecked } from "../../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
-import { localTimestamp } from "../../render/time.ts";
-import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../../test-artifacts.ts";
+import { approveScaffoldPaths } from "../../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
 import { firstCitedTestFile, runJudge, type JudgeRoute } from "../judge.ts";
-import { triggerReplanForFindings, replanPending, countInheritedRedRows, pendingInheritedRedRows } from "../../replan/replan.ts";
-import { planInlineRouteBack } from "../../routing/walker.ts";
-import { RouteBackSignal } from "../../routing/router.ts";
+import { triggerReplanForFindings, replanPending, countInheritedRedRows } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { FatalAbort } from "../../nodes.ts";
@@ -38,24 +34,19 @@ import { INHERITED_RED_SOURCE, appendInheritedRedEvent, countInheritedRedOccurre
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
 // research-agent, no agent file is created.
-import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, runResearchAssist, type NeedsResearchEntry, type ResearchAssistRedArm, type ResearchAssistGreenTrigger } from "../research-assist.ts";
-import { planFeasibilityFindings, contradictionFastFailFrame } from "../plan-feasibility.ts";
+import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, runResearchAssist, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
+import { contradictionFastFailFrame } from "../plan-feasibility.ts";
 // 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
 // plan compile-time checks) — two-locus mechanical findings routed through
 // the SAME replan circuit plan-feasibility uses (no judge call needed).
-import { stage9EntryGate, type EntryGateFinding } from "../../review/claim-spine.ts";
-import { freshStageDocTexts } from "../../review/contract-validators.ts";
 import { isNoEditCompletion } from "../../agent-errors.ts";
 import { renderAndWrite } from "../../render/render.ts";
-import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA, TddCoverageControlData, FileClassifyControlData } from "../../render/schemas.ts";
-import { userNotesForAgent } from "../../render/user-notes.ts";
-import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } from "../../doc-validators.ts";
-import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type BuildGateResult, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../../build-runner.ts";
-import { renderRetryFeedbackBlock, type RetryFeedback } from "../../retry-feedback.ts";
-import { runInStepScope } from "../../step-scope.ts";
-import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../../convergence-ledger.ts";
-import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount, type FaultClass } from "../../fault-classification.ts";
-import { freshRunWallFuseState, markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
+import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../../render/schemas.ts";
+import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type BuildGateResult, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
+import { createPhaseStatusKit } from "./phase-emit.ts";
+import { recordConvergenceFindings } from "../../convergence-ledger.ts";
+import { classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount, type FaultClass } from "../../fault-classification.ts";
+import { markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
 import { clearBaselineCache } from "../../build-runner/baseline.ts";
 import { phaseClauseFiles } from "../plan-feasibility.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
@@ -63,9 +54,9 @@ import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runner
 import { deriveConventionsRunnerSpec } from "../../build-runner/conventions.ts";
 import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../../build-runner/coverage-gate.ts";
 // Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
-import { buildProtectionEducationBlock, bumpProtectionStrike, detectProtectionViolations, deriveProtectionInterval, PROTECTION_STRIKE_BOUND, resetProtectionStrike, reviveProtectionInterval, serializeProtectionInterval, type ProtectionInterval } from "../protection-interval.ts";
+import { buildProtectionEducationBlock, bumpProtectionStrike, detectProtectionViolations, PROTECTION_STRIKE_BOUND, resetProtectionStrike, serializeProtectionInterval } from "../protection-interval.ts";
 import { consumeProtectionBreachEscalation } from "../../review/protection-breach-consumer.ts";
-import { captureStageEntryBaseline, laterPhasesRan, reapplyRollbackStash, rollbackConvergenceReentry } from "../checkpoint-rollback.ts";
+import { laterPhasesRan, reapplyRollbackStash, rollbackConvergenceReentry } from "../checkpoint-rollback.ts";
 import { stateFileFor } from "../../state/state-root.ts";
 
 export const implementationStage: Stage = {
@@ -75,7 +66,7 @@ export const implementationStage: Stage = {
 		const prepared = await prepareImplementationRun(state, ctx);
 		if ("earlyResult" in prepared) return prepared.earlyResult;
 		let {
-			phases, setup, feasibility, startInstructionFingerprint, phaseStartDirt,
+			phases, setup, startInstructionFingerprint, phaseStartDirt,
 			redAssistArmed, phaseResearchAssistUsed, phaseStatus, runStartDirt,
 			phaseGuidanceReentryUsed, phaseProtectionStrikes, stageEntryBaselineCommit,
 			pendingRollbackStash, protectionInterval, lastFailures, phasesCompleted, allGreen,
@@ -125,75 +116,10 @@ export const implementationStage: Stage = {
 			const expectedScenarios = expectedScenariosForPhase(phase, state.spec ?? null, state.bdd ?? null);
 			const phaseHeadline = `Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			const phaseLabel = `↳ Phase ${idx + 1}/${phases.length}: ${phaseName}`;
-			let phaseLifecycleStarted = false;
-			const emitPhaseStatus = (status: "running" | "ok" | "failed" | "skipped" | "partial") => {
-				ctx.events.emit("stage", {
-					id: `implementation.${phaseId}`,
-					label: phaseLabel,
-					status,
-					kind: "phase",
-					parentId: "implementation",
-				});
-			};
-			const ensurePhaseRunning = () => {
-				if (phaseLifecycleStarted) return;
-				phaseLifecycleStarted = true;
-				emitPhaseStatus("running");
-			};
-			const announceActivity = (activity?: string, detail?: string) => {
-				const suffix = activity ? ` — ${activity}${detail ? ` (${detail})` : ""}` : "";
-				ctx.phase(`${phaseHeadline}${suffix}`);
-			};
-			// Level-3 (step) dashboard rows: nested under the phase row so the
-			// implementation stage shows stage → phase → step. Each step (and retry)
-			// persists as its own row with its own ok/failed glyph (full audit trail).
-			// `seq` disambiguates repeated step labels across attempts/retries so a new
-			// row is emitted per occurrence rather than overwriting the prior one.
-			let stepSeq = 0;
-			const emitStep = (label: string, status: "running" | "ok" | "failed", seq: number): void => {
-				ctx.events.emit("stage", {
-					id: `implementation.${phaseId}.step-${pad(seq)}`,
-					label: `· ${label}`,
-					status,
-					kind: "step",
-					parentId: `implementation.${phaseId}`,
-				});
-			};
-			/** Announce + run a phase step: emits a running level-3 row, runs `fn`,
-			 *  then marks the row ok/failed by `okIf(result)`. Returns fn's result.
-			 *  v0.3.58 pipelining attribution: the ENTIRE step body (announce,
-			 *  lifecycle events, agent calls, delegation child lines) runs inside
-			 *  runInStepScope, so every line emitted by this step's async chain is
-			 *  stamped with THIS step's identity — a concurrently-running step (F3
-			 *  pipelined RED review vs implementer) no longer steals the other's
-			 *  lines via the global stage cursor. The raw id (no occurrence suffix)
-			 *  matches emitStep's id; the extension seam resolves the display id. */
-			const runStep = async <T>(label: string, detail: string | undefined, okIf: (r: T) => boolean, fn: () => Promise<T>): Promise<T> => {
-				const seq = ++stepSeq;
-				const stepLabel = `${label}${detail ? ` (${detail})` : ""}`;
-				return runInStepScope({ stageId: `implementation.${phaseId}.step-${pad(seq)}`, stageLabel: `· ${stepLabel}` }, async () => {
-					announceActivity(label, detail);
-					emitStep(stepLabel, "running", seq);
-					try {
-						const r = await fn();
-						emitStep(stepLabel, okIf(r) ? "ok" : "failed", seq);
-						return r;
-					} catch (err) {
-						emitStep(stepLabel, "failed", seq);
-						throw err;
-					}
-				});
-			};
-			/** v0.3.59 review P1 (class fix): manual step sites attribute their
-			 *  emissions per-chain with the SAME identity scheme as runStep — these
-			 *  sites drive announce/terminal emitStep by hand (custom okIf logic),
-			 *  but their async chains MUST carry the step scope or the pipelined
-			 *  inverse leak persists (implementer lines landing in the RED review's
-			 *  card once the review's terminal event moves the cursor back). */
-			const inStepScope = <T>(seq: number, stepLabel: string, fn: () => Promise<T>): Promise<T> =>
-				runInStepScope({ stageId: `implementation.${phaseId}.step-${pad(seq)}`, stageLabel: `· ${stepLabel}` }, fn);
-			const attemptDetail = (attempt: number, extra?: string) =>
-				[`attempt ${attempt}`, extra].filter(Boolean).join(", ");
+		const {
+			emitPhaseStatus, ensurePhaseRunning, announceActivity, emitStep, runStep,
+			inStepScope, attemptDetail, nextStepSeq,
+		} = createPhaseStatusKit(ctx, { phaseId, phaseLabel, phaseHeadline });
 			// §D: skip a phase already green in a prior convergence iteration (don't
 			// re-touch done work — the state-confusion churn §F fought).
 			if (phaseStatus.some((p) => p.id === phaseId && p.status === "green")) {
@@ -613,7 +539,7 @@ export const implementationStage: Stage = {
 						const tddId = retries === 0
 							? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
 							: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
-						const tddStepSeq = ++stepSeq;
+						const tddStepSeq = nextStepSeq();
 						// v0.3.73 M7 (dual review AR-73-05): the RED authoring window gets the
 						// same HEAD-drift advisory as the implementer - the incident's 5d4790d
 						// (implementation landed BEFORE its RED was authored) was exactly a
@@ -1535,7 +1461,7 @@ export const implementationStage: Stage = {
 				}
 				implParts.push(redImplementContext(redStatus));
 				const implPrompt = implParts.join("\n\n");
-				const implStepSeq = ++stepSeq;
+				const implStepSeq = nextStepSeq();
 				// v0.3.73 M7 (run 2026-09-05T23-09-55-596Z: 2e92da3/5d4790d): detect a
 				// mid-phase implementer self-commit — HEAD moved across the call window.
 				// Advisory (P10 honest log + low finding): the deterministic commit and

@@ -15,7 +15,7 @@
  * / FatalAbort for the inline-jump and hard-block paths, exactly as before.
  */
 import { existsSync } from "node:fs";
-import type { PipelineState, StageContext, SetupControl } from "../../types.ts";
+import { PipelineState, StageContext } from "../../types.ts";
 import { normalizePhases } from "../../doc-validators.ts";
 import { planFeasibilityFindings } from "../plan-feasibility.ts";
 import { stage9EntryGate, type EntryGateFinding } from "../../review/claim-spine.ts";
@@ -286,7 +286,7 @@ export async function prepareImplementationRun(state: PipelineState, ctx: StageC
 		let inheritedRedFlakeGrantUsed = priorImpl.inheritedRedFlakeGrantUsed === true;
 
 		return {
-			phases, setup, feasibility, startInstructionFingerprint, phaseStartDirt,
+			phases, setup, startInstructionFingerprint, phaseStartDirt,
 			redAssistArmed, phaseResearchAssistUsed, phaseStatus, runStartDirt,
 			phaseGuidanceReentryUsed, phaseProtectionStrikes, stageEntryBaselineCommit,
 			pendingRollbackStash, protectionInterval, lastFailures, phasesCompleted, allGreen,
