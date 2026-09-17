@@ -15,7 +15,7 @@ import { prepareImplementationRun } from "./run-prepare.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { BoundaryQuarantinePayload, ControlObj, Stage } from "../../types.ts";
+import type { BoundaryQuarantinePayload, ControlObj, Stage } from "../../types.ts";
 
 // v0.3.73 M1: re-exported for the salvage seam + tests.
 import { classifyJudgeRoute } from "../../routing/router.ts";
@@ -56,7 +56,8 @@ import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../
 // Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
 import { buildProtectionEducationBlock, bumpProtectionStrike, detectProtectionViolations, PROTECTION_STRIKE_BOUND, resetProtectionStrike, serializeProtectionInterval } from "../protection-interval.ts";
 import { consumeProtectionBreachEscalation } from "../../review/protection-breach-consumer.ts";
-import { laterPhasesRan, reapplyRollbackStash, rollbackConvergenceReentry } from "../checkpoint-rollback.ts";
+import { reapplyRollbackStash } from "../checkpoint-rollback.ts";
+import { handleConvergenceRollback } from "./phase-rollback.ts";
 import { stateFileFor } from "../../state/state-root.ts";
 
 export const implementationStage: Stage = {
@@ -116,10 +117,10 @@ export const implementationStage: Stage = {
 			const expectedScenarios = expectedScenariosForPhase(phase, state.spec ?? null, state.bdd ?? null);
 			const phaseHeadline = `Implementation — Phase ${idx + 1}/${phases.length}: ${phaseName}`;
 			const phaseLabel = `↳ Phase ${idx + 1}/${phases.length}: ${phaseName}`;
-		const {
-			emitPhaseStatus, ensurePhaseRunning, announceActivity, emitStep, runStep,
-			inStepScope, attemptDetail, nextStepSeq,
-		} = createPhaseStatusKit(ctx, { phaseId, phaseLabel, phaseHeadline });
+			const {
+				emitPhaseStatus, ensurePhaseRunning, announceActivity, emitStep, runStep,
+				inStepScope, attemptDetail, nextStepSeq,
+			} = createPhaseStatusKit(ctx, { phaseId, phaseLabel, phaseHeadline });
 			// §D: skip a phase already green in a prior convergence iteration (don't
 			// re-touch done work — the state-confusion churn §F fought).
 			if (phaseStatus.some((p) => p.id === phaseId && p.status === "green")) {
@@ -153,31 +154,11 @@ export const implementationStage: Stage = {
 			// Self-limiting: after the first rollback in a pass, the invalidated
 			// downstream entries are gone, so later non-green phases no longer match
 			// the laterPhasesRan predicate (at most one rollback per §D entry).
-			if (laterPhasesRan(phaseStatus, idx)) {
-				const rollback = rollbackConvergenceReentry({
-					worktreePath: setup.worktreePath,
-					worktreeCreated: (setup as { worktreeCreated?: boolean }).worktreeCreated,
-					specDirectory: setup.specDirectory,
-					phaseIndex: idx + 1,
-					totalPhases: phases.length,
-					phaseStatus,
-					baselineCommit: stageEntryBaselineCommit,
-					log: (line) => ctx.log(line),
-				});
-				if (rollback.status === "rolled-back") {
-					// Re-baseline phase K's first-ever dirt snapshot on the rolled-back
-				// ground (the K-1 tree): unlike the sd26-F1 case, a hard reset to a
-				// PREDECESSOR commit legitimately re-anchors the attribution boundary.
-				// Invalidated downstream phases lose their snapshots so their
-				// re-execution captures fresh (their old ground no longer exists).
-				delete phaseStartDirt[phaseId]; // dropped — the landed phase-entry capture below recaptures fresh on the rolled-back ground (unlike sd26-F1, a reset to a PREDECESSOR commit legitimately re-anchors the attribution boundary)
-					for (const inv of rollback.invalidated) {
-						delete phaseStartDirt[inv];
-						resetProtectionStrike(phaseProtectionStrikes, inv); // fresh protection interval on re-execution
-					}
-					pendingRollbackStash = rollback.stashSha ? { phaseId, stashSha: rollback.stashSha } : null;
-				}
-			}
+			pendingRollbackStash = handleConvergenceRollback({
+				setup, idx, totalPhases: phases.length, phaseStatus, phaseId,
+				baselineCommit: stageEntryBaselineCommit, phaseStartDirt, phaseProtectionStrikes,
+				log: (line) => ctx.log(line),
+			});
 			let green = false;
 			let attemptErrors: string[] = [];
 			let attemptsRun = 0;

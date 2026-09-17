@@ -347,10 +347,14 @@ describe("058 D-D — the deterministic phase-commit chain stays intact after ro
 
 	it("source pin: the stage wiring resets the walk to the NEW-3 target and re-baselines the phase-start dirt snapshot", () => {
 		const impl = implementationSources();
-		expect(impl).toContain("if (laterPhasesRan(phaseStatus, idx)) {"); // the re-entry trigger
+		// v0.4.28: the block moved to phase-rollback.ts as handleConvergenceRollback
+		// (straight-line, mutations by reference + the stash rebinding returned);
+		// the wiring pin follows the seam, the Layer-4/ground pins are unchanged.
+		expect(impl).toContain("handleConvergenceRollback({"); // the stage wiring at the re-entry trigger
+		expect(impl).toContain("laterPhasesRan(input.phaseStatus, input.idx)"); // the re-entry trigger (module-local shape)
 		expect(impl).toContain("rollbackConvergenceReentry({"); // the Layer-4 seam
 		expect(impl).toContain("reapplyRollbackStash({ worktreePath: setup.worktreePath, stashSha: pendingRollbackStash.stashSha"); // post-re-execution re-apply
-		expect(impl).toContain("delete phaseStartDirt[phaseId];"); // the attribution boundary re-anchors on the rolled-back ground (fresh recapture at phase entry)
+		expect(impl).toContain("delete input.phaseStartDirt[input.phaseId];"); // the attribution boundary re-anchors on the rolled-back ground (fresh recapture at phase entry)
 		expect(impl).toContain("captureStageEntryBaseline(setup.worktreePath)"); // the NEW-3 fallback captured once per run
 	});
 });
