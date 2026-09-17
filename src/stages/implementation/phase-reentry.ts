@@ -1,4 +1,3 @@
-import { preservePartialPhase } from "./phase-status.ts";
 import {AcceptedRedContext, MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, ProgressSignature, RED_WEAKENING_SOURCE, appendImplementationEvidence, boundarySummary, changeFootprint, changedSinceSnapshot, expectedScenariosForPhase, failureSignature, formatRedDiagnosticSummary, implementationRetrySection, nextFaultStreak, pad, porcelainEntries, preexistingTestSurfaceRows, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceLogLine, repeatedNoProgress, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).

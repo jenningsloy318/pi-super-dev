@@ -10,7 +10,7 @@
  * pass on both trees.
  */
 import { describe, expect, it } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, cpSync } from "node:fs";
+import {rmSync, writeFileSync, readFileSync} from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";

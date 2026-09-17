@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendToKnowledge, clearKnowledge, knowledgeForAgent, knowledgePath, AGENT_KNOWLEDGE_NEEDS } from "../src/render/knowledge.ts";

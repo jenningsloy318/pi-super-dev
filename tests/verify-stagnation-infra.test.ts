@@ -18,10 +18,10 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import {existsSync } from "node:fs";
 
 const judgeMock = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>>, route: "escalate-now" as string }));
 vi.mock("../src/stages/judge.ts", async (importOriginal) => {

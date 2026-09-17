@@ -31,10 +31,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { evalLayerSources } from "./helpers/eval-layer-source.ts";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
 	VERDICT_CLOSURE, TARGET_STAGES, TARGET_AGENTS, makeCanary,

@@ -35,7 +35,6 @@
  * verified list — callers can only pass verified paths.
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { TOOL_USAGE_BASENAME, type ToolUsageRow } from "./tool-usage.ts";
 import { stateFileFor } from "../state/state-root.ts";
 

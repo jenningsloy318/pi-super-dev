@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fix — v0.4.24: dead-import cleanup — the 388 debt paid, per-site
+
+**English — the debt quantified in the v0.4.21 entry is paid.** The blind spot was real and it propagated through every wave of the refactoring campaign: the v0.4.17–0.4.17d splits left 146 dead import bindings behind because the pruner of that era counted re-export lines, comments, and template-literal text as usage, and `noUnusedLocals` is off in this project so tsc never flagged them. Dead code with zero runtime effect — but mess the campaign made, so the campaign cleans it.
+
+**The method is the fix for the failed sweep.** The v0.4.21-era mechanical attempt was reverted because it was keyed per *file* (a dead-name set per file, applied everywhere in that file), which cross-removed a live binding (`mkDir` — a differently-aliased import of the same name) and mangled multi-line import formatting across 88 files. This wave keys removal to tsc's reported *line/column per import site*, so two different imports of the same name in one file are judged independently, and multi-line clauses are handled by rewriting the whole statement span rather than regexing lines. The oracle loop is mechanical and provably converging: remove → run plain tsc → any non-TS6133 error (TS2304 "cannot find name") means a live binding died, and that statement is restored wholesale. This run: 62 files, 87 statements, 146 bindings removed, **zero** new tsc errors, no empty-brace imports left behind.
+
+**Scope is imports only.** The audit still reports 291 unused *locals* (variables and parameters) — a different risk class (signature/placeholder intent) deliberately left out of this wave; it is its own decision, not a mechanical one. Every removed binding was dead in the strictest sense: no value reference anywhere in its file, verified by the compiler, not by a regex.
+
 ### Fix — v0.4.23: dual-gate fold on the v0.4.21/v0.4.22 split pair + stale arch-doc
 
 **English — both gates returned clean verdicts over the two split commits (Code: APPROVED, zero blocking; Adversarial: PASS, zero blocking), and their residue is folded here.** The two gates independently converged on the same defect: the v0.4.21 eval-layer tripwire derived its scan surface from disk *but excluded the barrel*, while both the helper comment and this CHANGELOG claimed a barrel literal "cannot escape the no-retype scan" — false by construction. Fixed by making the claim true rather than weakening it: `index.ts` is now inside the scan surface (its only quoted strings are module specifiers, which match no closure value), so a DEC-6 closure literal re-typed in the barrel is caught. The helper header was rewritten to match the code it actually has — the scan is alphabetical, and every pin is order-insensitive, so a future region-order-sensitive assertion must make the order explicit first.

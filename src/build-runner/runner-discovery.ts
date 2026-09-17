@@ -14,7 +14,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { harvestJUnitXml, sumHarvestedXml, parseTapCounts, type TestResultCounts } from "./result-parse.ts";
 import { stateFileFor } from "../state/state-root.ts";
 

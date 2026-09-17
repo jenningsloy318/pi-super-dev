@@ -19,7 +19,6 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { superDevEnv } from "../render/super-dev-dir.ts";
-import { join } from "node:path";
 import { stateFileFor } from "../state/state-root.ts";
 import {
 	type RouteStageId,

@@ -33,7 +33,7 @@ import {
 	planInlineRouteBack,
 	withInlineRouteBack,
 } from "../src/routing/walker.ts";
-import { appendRouteBackRequests, invalidateResumeCache, REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";
+import { appendRouteBackRequests, REPLAN_REQUESTS_FILE } from "../src/replan/replan.ts";
 import { sequence, task } from "../src/nodes.ts";
 import type { Node, NodeResult, PipelineState, Stage, StageContext } from "../src/types.ts";
 import { recordConvergenceFindings } from "../src/convergence-ledger.ts";

@@ -5,7 +5,6 @@ import {RedCheckOptions, RedStatus, classifyFromEvidence, cleanupConventionPlans
  */
 
 import { spawnSync } from "node:child_process";
-import { superDevEnv } from "../../render/super-dev-dir.ts";
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { dedupePreservingOrder, detectProjectCommands, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "../detect.ts";

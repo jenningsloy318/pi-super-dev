@@ -7,7 +7,6 @@
  */
 import { describe, expect, it } from "vitest";
 import { classifyOutOfScopeNpmErrors, parseFailingGoPackages } from "../src/build-runner/scope.ts";
-import { resolveIntegrationStems } from "../src/build-runner/detect.ts";
 import { redCheckOptionsDefaultBranch } from "./sweep3-phase3-helpers.ts";
 
 describe("G6 — scoping plumbing", () => {

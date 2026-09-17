@@ -14,7 +14,7 @@
  */
 import { verifySources } from "./helpers/implementation-source.ts";
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { specDoc, specDocs } from "../src/prompts.ts";

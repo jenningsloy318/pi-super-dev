@@ -17,9 +17,9 @@
 
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import {join } from "node:path";
 import { ensureRuntimeStateUntracked } from "../src/runtime-state-git.ts";
 import { harnessBasenames } from "../src/harness-paths.ts";
 // Hoisted to module top level so implementation.ts (the repo's largest module)

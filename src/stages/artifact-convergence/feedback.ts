@@ -3,7 +3,6 @@ import { ArtifactConvergenceOptions } from "./validators.ts";
 import { setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../../retry-feedback.ts";
 import type { ControlObj, Escalate, PipelineState, StageContext } from "../../types.ts";
 import { NEGATED_APPROVAL_RE } from "../../review-findings.ts";
-import { renderAndWrite } from "../../render/render.ts";
 import { blockingConvergenceFindings, carriedConvergenceFindings, classSweepRetryFeedback, convergenceRetryFeedback, normalizeConvergenceStage, ownerPrecedes, recordConvergenceFindings, type ConvergenceOwnerStage } from "../../convergence-ledger.ts";
 import { appendRouteBackRequests } from "../../replan/replan.ts";
 import { isRoutableOwnerStage } from "../../routing/router.ts";

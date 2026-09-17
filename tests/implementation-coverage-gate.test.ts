@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentCall, AgentResult, Budget, ControlObj, HelperResult, PipelineState, RunOptions, Stage, StageContext } from "../src/types.ts";

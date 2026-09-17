@@ -4,7 +4,7 @@
  * trigger → owning stage; owning convergence approval → reply).
  */
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sendMessage, replyTo, pendingMessagesFor, recordInstruction, MESSAGES_FILE } from "../src/team/messages.ts";

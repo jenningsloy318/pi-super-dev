@@ -2,7 +2,6 @@ import { MECHANICAL_CLASSIFIER_ROLES } from "../skill-domains.ts";
 import {BROWSER_EXTENSION_PACKAGES, RESEARCH_EXTENSION_PACKAGES, isBrowserAgent, needsWebResearch, piAgentDir, resolveExtensionEntries} from "./extensions.ts";
 /** config-extensions — config-driven extension entries, tool index, tool budgets. Split from agent-runtime.ts at v0.4.17d. */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { getConfig, superDevEnv, type ToolBudgetValue } from "../../render/super-dev-dir.ts";
 import { fileURLToPath } from "node:url";

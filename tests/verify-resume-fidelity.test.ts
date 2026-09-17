@@ -17,7 +17,6 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
 import { reviewLoopUntil, classifyIntegrationObservation } from "../src/stages/verify/index.ts";
 import type { PipelineState, StageContext } from "../src/types.ts";
 

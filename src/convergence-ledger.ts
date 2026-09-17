@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
 import { localTimestamp } from "./render/time.ts";
 import { inferReviewFindingStatus, reviewFindingBlocks, reviewFindingFingerprint, reviewFindingHighSeverity } from "./review-findings.ts";
 import type { RetryFeedback } from "./retry-feedback.ts";

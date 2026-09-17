@@ -23,8 +23,7 @@
 import { task, sequence, branch, loop } from "../nodes.ts";
 import type { ControlObj, PipelineState, Stage, Workflow } from "../types.ts";
 import { setupStage } from "./setup.ts";
-import { classifyStage, cleanupTask, debugWriter, assessmentWriter, specWriter, specReviewWriter, docsWriter, mergeWriter, mergeVerifyTask } from "./writers.ts";
-import { designStage } from "./design.ts";
+import { classifyStage, cleanupTask, debugWriter, assessmentWriter, docsWriter, mergeWriter, mergeVerifyTask } from "./writers.ts";
 import { prototypeStage } from "./prototype.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../build-runner.ts";
 import { appendGateChecked } from "../runlog.ts";

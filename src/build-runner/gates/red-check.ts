@@ -5,16 +5,16 @@ import {BuildCommandPlan, BuildGateResult, GateOptions, RedCheckDiagnostic, RedC
 
 import { spawnSync } from "node:child_process";
 import { superDevEnv } from "../../render/super-dev-dir.ts";
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { dedupePreservingOrder, detectProjectCommands, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope, type ProjectCommands } from "../detect.ts";
-import { parseTestPackages, detectTouchedCargoPackages, touchedFilePaths, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors, parseFailingNpmTestFiles, parseFailingPythonTestFiles, detectFailureBlockLanguage, parseFailingGoPackages, resolveGoModuleForPackages } from "../scope.ts";
-import { verifyUntouchedFailuresAgainstBaseline, type BaselineCheckResult, type BaselineVerifyInput } from "../baseline.ts";
+import {readFileSync, rmSync, statSync } from "node:fs";
+import {join} from "node:path";
+import { dedupePreservingOrder, detectProjectCommands, resolveCargoPackageNames, validatePackageNames, resolveIntegrationStems, classificationScope} from "../detect.ts";
+import { parseTestPackages, detectTouchedCargoPackages, scopedCargoBuildArgs, scopedCargoTestArgs, scopedCargoClippyArgs, classifyOutOfScopeErrors, classifyOutOfScopeNpmErrors} from "../scope.ts";
+import {type BaselineCheckResult, type BaselineVerifyInput } from "../baseline.ts";
 // v0.3.30 Layer A/C: universal structured classification + agent-proposed runners.
 import { classifyFromStructuredCounts, harvestJUnitXml, parseTapCounts, sumHarvestedXml, parseGoTestJson, parseCountsPattern, type TestResultCounts } from "../result-parse.ts";
 // v0.3.31: the single per-ecosystem seam — convention DATA, no engine knowledge.
 import { conventionPlansFor, detectPmForDir, hasPackageTool, pmExec, type ConventionPlan, type ResultChannel } from "../conventions.ts";
-import { dynamicRedCheckPlans, type TestRunnerSpec } from "../runner-discovery.ts";
+import {type TestRunnerSpec } from "../runner-discovery.ts";
 export function runBuildGate(
 	cwd: string,
 	opts: { timeoutMs?: number; testPackages?: string[]; gate?: GateOptions; signal?: AbortSignal; defaultBranch?: string; baselineVerify?: (input: BaselineVerifyInput) => BaselineCheckResult } = {},

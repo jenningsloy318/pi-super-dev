@@ -18,7 +18,6 @@ import {VerificationAttemptRecord, buildErrors, ensureVerificationAttempts, reco
  * Split at v0.4.17c into evidence / boundary / steps / nodes.
  */
 import { execFileSync } from "node:child_process";
-import { superDevEnv } from "../../render/super-dev-dir.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

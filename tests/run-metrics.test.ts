@@ -8,7 +8,7 @@
  * machine-checkable health counters. Never throws; no spec dir → no row.
  */
 import { describe, it, expect, vi, afterAll, beforeAll } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 

@@ -21,7 +21,6 @@
  */
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { UsageAccumulator } from "../types.ts";
 import { getSuperDevDir, superDevEnv } from "../render/super-dev-dir.ts";
 import { stateFileFor } from "../state/state-root.ts";
 

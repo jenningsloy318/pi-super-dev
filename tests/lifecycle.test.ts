@@ -4,7 +4,6 @@
  * are exercised end-to-end (and fast).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { spawn } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

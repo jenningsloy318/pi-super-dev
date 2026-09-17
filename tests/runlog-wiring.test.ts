@@ -8,7 +8,7 @@
  * wiring is under test.
  */
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWorkflow } from "../src/workflow.ts";

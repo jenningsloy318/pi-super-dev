@@ -24,7 +24,6 @@
  * read as dirty tracked changes) and the RED write-boundary.
  */
 import { appendFileSync } from "node:fs";
-import { join } from "node:path";
 import { stateFileFor } from "../state/state-root.ts";
 
 /** The telemetry basename (shared with the P3 reread-check reader). */

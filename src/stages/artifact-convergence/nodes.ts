@@ -4,7 +4,7 @@ import { ArtifactValidator } from "./validators.ts";
 /** nodes — the four stage convergence-node wirings (split from artifact-convergence.ts at v0.4.17e). */
 import { task } from "../../nodes.ts";
 import type { ControlObj, PipelineState, Stage, StageContext } from "../../types.ts";
-import { readContractSliceStamp, readStateSliceStamp } from "../../review/contract-surface/index.ts";
+import {readStateSliceStamp } from "../../review/contract-surface/index.ts";
 import { contractValidationContext, designAmendmentFamilyFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate } from "../../review/contract-validators.ts";
 import { designContractsErrors, readSpecDoc } from "../../doc-validators.ts";
 import { bddReviewWriter, bddWriter, designReviewWriter, requirementsReviewWriter, requirementsWriter, researchWriter } from "../writers.ts";

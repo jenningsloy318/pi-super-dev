@@ -6,7 +6,7 @@
  * phases with no source files must PASS (never block on infrastructure).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeSymbolGate } from "../src/build-runner.ts";

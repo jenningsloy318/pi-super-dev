@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, mkdirSync as mkDir } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync as mkDir } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { planFeasibilityFindings } from "../src/stages/plan-feasibility.ts";

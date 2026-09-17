@@ -3,7 +3,6 @@ import {IntegrationOutcome, buildGreen, failedReviewControl, failedTestControl, 
 /** steps — the review/test/build step nodes and both fix steps. Split from verify.ts at v0.4.17c. */
 import { execFileSync } from "node:child_process";
 import { superDevEnv } from "../../render/super-dev-dir.ts";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../../nodes.ts";

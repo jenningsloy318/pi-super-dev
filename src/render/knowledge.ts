@@ -14,7 +14,6 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
-import { join } from "node:path";
 import { stateFileFor } from "../state/state-root.ts";
 
 interface KnowledgeFile {

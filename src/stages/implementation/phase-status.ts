@@ -1,5 +1,5 @@
 import {IMPLEMENTER_CONTROL_KEYS, LeakPhase, MAX_CHALLENGE_REAUTHORS, UNSATISFIABLE_TEXT_RE, cratesFromErrors, formatReauthorEvidence, leakNorm, quoteCmdArg, redImplementContext, redRePromptHint, trimImplementerText} from "./phase-reentry.ts";
-import {AcceptedRedContext, MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, ProgressSignature, RED_WEAKENING_SOURCE, appendImplementationEvidence, boundarySummary, changeFootprint, changedSinceSnapshot, expectedScenariosForPhase, failureSignature, formatRedDiagnosticSummary, implementationRetrySection, nextFaultStreak, pad, porcelainEntries, preexistingTestSurfaceRows, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceLogLine, repeatedNoProgress, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
+import {porcelainEntries} from "./red-evidence.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
@@ -13,13 +13,12 @@ import {AcceptedRedContext, MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, ProgressSigna
 import { execFileSync, spawnSync } from "node:child_process";
 import { harnessBasenames } from "../../harness-paths.ts";
 import { superDevEnv } from "../../render/super-dev-dir.ts";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync , rmSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import {rmSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { BoundaryQuarantinePayload, ControlObj, PipelineState, Stage, StageContext } from "../../types.ts";
 
 // v0.3.73 M1: re-exported for the salvage seam + tests.
 import { classifyJudgeRoute } from "../../routing/router.ts";
-import { appendGateChecked } from "../../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { localTimestamp } from "../../render/time.ts";

@@ -14,7 +14,7 @@
  */
 
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute} from "node:path";
 import { stateFileFor } from "./state/state-root.ts";
 
 export const RUN_LOG_VERSION = 1;

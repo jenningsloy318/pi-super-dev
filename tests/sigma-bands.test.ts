@@ -20,7 +20,7 @@
  *  - The report is deterministic: same rows → same report, no LLM anywhere.
  */
 import { describe, it, expect, vi, afterAll, beforeAll } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 

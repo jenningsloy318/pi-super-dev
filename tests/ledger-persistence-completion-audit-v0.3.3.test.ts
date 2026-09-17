@@ -25,7 +25,7 @@ import {
 	getConvergenceLedger,
 	markConvergenceFindingsVerified,
 } from "../src/convergence-ledger.ts";
-import { completionAuditAnomaly, writeCompletionAudit, COMPLETION_AUDIT_FILE, completionAuditExists } from "../src/completion-audit.ts";
+import { completionAuditAnomaly, writeCompletionAudit, completionAuditExists } from "../src/completion-audit.ts";
 import { isHarnessBookkeepingPath } from "../src/helpers.ts";
 import type { ControlObj, PipelineState, SetupControl, StageContext } from "../src/types.ts";
 

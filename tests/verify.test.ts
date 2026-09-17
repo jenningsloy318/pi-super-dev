@@ -7,9 +7,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { artifactConvergenceSources } from "./helpers/artifact-convergence-source.ts";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import {join } from "node:path";
 import { integrationTestsGreen, integrationOutcome, expectedIntegrationRoles, integrationLoopNode, reviewLoopNode, reviewLoopUntil, verificationConvergenceNode, findingsSignature } from "../src/stages/verify/index.ts";
 import { runHelper } from "../src/helpers.ts";
 import type { AgentCall, AgentResult, ControlObj, PipelineState, StageContext } from "../src/types.ts";

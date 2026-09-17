@@ -8,7 +8,7 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EDGES, STAGE_IDS, downstreamOf, inboundEdges } from "../graph/edges.ts";
+import { EDGES, STAGE_IDS, downstreamOf} from "../graph/edges.ts";
 import { RACI_TABLE, informedOf } from "../team/raci.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "../version.ts";
 

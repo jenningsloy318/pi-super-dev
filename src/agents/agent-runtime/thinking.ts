@@ -2,7 +2,6 @@ import { piAgentDir } from "./extensions.ts";
 import { isCodeWritingAgent } from "./config-extensions.ts";
 /** thinking — thinking tiers, config overrides, and the model-catalog clamp. Split from agent-runtime.ts at v0.4.17d. */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { getConfig, superDevEnv, type ToolBudgetValue } from "../../render/super-dev-dir.ts";
 import { fileURLToPath } from "node:url";

@@ -27,7 +27,6 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { PipelineState, StageContext } from "../types.ts";
 import { ARTIFACT_REVISIONS_FILE, pendingReplanRequests } from "../replan/replan.ts";
 import { readRoutingJournal, ROUTING_JOURNAL_FILE,  routingJournalPath } from "./journal.ts";

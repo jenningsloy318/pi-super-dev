@@ -16,7 +16,6 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgentViaDelegation } from "../agents/delegation-backend.ts";
-import { extractControl } from "../control.ts";
 import type { RunMetricsRow } from "./sigma-bands.ts";
 
 export type PostMortemMode = "auto" | "manual";

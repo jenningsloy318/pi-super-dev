@@ -7,7 +7,6 @@ import { gateValidator, task } from "../../nodes.ts";
 import type { PipelineState, Stage, StageContext } from "../../types.ts";
 import { bddPinOwnershipFindings, contractValidationContext, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate } from "../../review/contract-validators.ts";
 import { type ConvergenceOwnerStage } from "../../convergence-ledger.ts";
-import { requirementsReviewWriter } from "../writers.ts";
 
 export type ArtifactValidator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
 

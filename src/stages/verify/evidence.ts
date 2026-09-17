@@ -4,13 +4,12 @@ import {IntegrationOutcomeStatus, buildGreen, expectedIntegrationRoles} from "./
 import { execFileSync } from "node:child_process";
 import { superDevEnv } from "../../render/super-dev-dir.ts";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import {readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } from "../../nodes.ts";
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../../prompts.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../../build-runner.ts";
 import { runJudge } from "../judge.ts";
-import { toBool } from "../../doc-validators.ts";
 import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../../helpers.ts";
 import { RouteBackSignal } from "../../routing/router.ts";
 import { planInlineRouteBack } from "../../routing/walker.ts";

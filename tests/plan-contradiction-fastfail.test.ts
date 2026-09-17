@@ -15,7 +15,6 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import { contradictionFastFailFrame } from "../src/stages/plan-feasibility.ts";
 import { implementationSources } from "./helpers/implementation-source.ts";
 
