@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.34: research-assist dispatch extracted (stage.ts split, increment 6)
+
+The engine-mediated research-assist trigger state machine (v0.3.87 S4(b)) moves out of
+`stage.ts` into `src/stages/implementation/research-assist-dispatch.ts` — 3,038 → 3,012
+lines. The block is straight-line (no continue/break against the phase loop): it resolves
+one trigger from the two sources (RED arm, GREEN pending), guards cap-then-budget, and
+either dispatches or declines.
+
+Two relocations from the inline block, behavior-preserving and acknowledged rather than
+claimed byte-identical (the v0.4.33 lesson): `researchAssistPending` now nulls after the
+await instead of before the guards (unobservable — the value is captured synchronously,
+nothing reads the slot during the await, and `runResearchAssist` never throws), and the
+archive clear + block push moved behind `if (assist.block)` in the caller (equivalent only
+because the block is contractually never empty; degradation stays bounded by
+`RESEARCH_ASSIST_ARCHIVE_CAP`).
+
+Dual gates ran on glm-5.3-flash:high over the working tree. Code gate: CHANGES REQUESTED
+(0 Critical/High, 3 Medium) — dead `runResearchAssist` import removed; test names that
+asserted behavior they never checked reworked to capture the mock call args, so
+`failingTargets` wiring and RED-over-GREEN precedence can now actually fail; header claim
+of a nonexistent "consumed record" corrected to describe the real owner split.
+Adversarial gate: CONTEST, no behavioral divergence on all five attack vectors (by-ref
+mutation timing, pending-slot placement, precedence/double-consumption, per-phase cap,
+disk mutation) — its test-integrity findings folded with the Code gate's. The
+`RedAssistArm` local twin was replaced by the exported `ResearchAssistRedArm`.
+
+
 ### Fix — v0.4.33: the v0.4.32 dual-gate fold — two divergences the "byte-identical" claim denied
 
 The Code and Adversarial gates over `39756e41` independently surfaced the same two

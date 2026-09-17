@@ -26,6 +26,7 @@ const KNOWN_PARTS = [
 	"red-evidence.ts",
 	"red-judge.ts",
 	"red-ratchet.ts",
+	"research-assist-dispatch.ts",
 	"run-prepare.ts",
 	"stage.ts",
 ];

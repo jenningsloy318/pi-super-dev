@@ -6,6 +6,7 @@ import { attributeQuarantinePaths, attributeQuarantinedViolations, deterministic
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
 import { routeRedJudge } from "./red-judge.ts";
+import { dispatchResearchAssist } from "./research-assist-dispatch.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
@@ -38,7 +39,7 @@ import { INHERITED_RED_SOURCE, appendInheritedRedEvent, countInheritedRedOccurre
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
 // research-agent, no agent file is created.
-import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, runResearchAssist, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
+import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
 import { contradictionFastFailFrame } from "../plan-feasibility.ts";
 // 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
 // plan compile-time checks) — two-locus mechanical findings routed through
@@ -1145,39 +1146,12 @@ export const implementationStage: Stage = {
 				// cap 1 (P8); the dispatch consumes the archived needsResearch entries
 				// (enrichment — surfaced in the ledger row's enrichedByNeedsResearch).
 				{
-					const redArm = redAssistArmed[phaseId] ?? null;
-					delete redAssistArmed[phaseId]; // consumed either way — an armed trigger never outlives the first implementer round it targets
-					const trigger: { side: "RED" | "GREEN"; triggerDetail: string; contextLines: string[]; failingTargets: string[] } | null = redArm
-						? { side: "RED", triggerDetail: `RED generation stuck — ${redArm.tries} terminal RED trie(s) in a prior pass`, contextLines: [`terminal RED failure reasons: ${redArm.detail}`], failingTargets: redArm.testFiles }
-						: researchAssistPending
-							? { side: "GREEN", triggerDetail: researchAssistPending.triggerDetail, contextLines: researchAssistPending.contextLines, failingTargets: [...testFiles] }
-							: null;
-					researchAssistPending = null;
-					if (trigger) {
-						if (phaseResearchAssistUsed[phaseId]) {
-							ctx.log(`Implementation ${phaseId} research-assist trigger (${trigger.side}) — per-phase assist cap already spent; proceeding WITHOUT assist (P8)`);
-						} else if (!ctx.budget.check()) {
-							ctx.log(`Implementation ${phaseId} research-assist trigger (${trigger.side}) — budget exhausted; assist skipped, proceeding WITHOUT assist`);
-						} else {
-							phaseResearchAssistUsed[phaseId] = true;
-						ctx.log(`Implementation ${phaseId} research-assist trigger (${trigger.side}: ${trigger.triggerDetail}) — dispatching research-agent synchronously before attempt ${attempt} (scoped single question, 240s cap; toolBudget resolved from the assist config chain)`);
-						const assist = await runResearchAssist({
-							ctx,
-							specDirectory: setup.specDirectory,
-							phaseId,
-							phaseName,
-							attempt,
-							trigger: trigger.side,
-							triggerDetail: trigger.triggerDetail,
-							contextLines: trigger.contextLines,
-							failingTargets: trigger.failingTargets,
-							needsResearch: needsResearchArchive,
-						});
+					const assist = await dispatchResearchAssist({ ctx, specDirectory: setup.specDirectory, phaseId, phaseName, attempt, redAssistArmed, researchAssistPending, phaseResearchAssistUsed, needsResearchArchive, testFiles });
+					researchAssistPending = null; // consumed either way (a pending GREEN trigger never outlives the attempt it targets)
+					if (assist.block) {
 						// consumed — the entries surfaced in the ledger row (enrichedByNeedsResearch) once used
 						needsResearchArchive.length = 0;
 						implParts.push(assist.block);
-						ctx.log(`Implementation ${phaseId} research-assist complete (before attempt ${attempt}): outcome=${assist.row.outcome}${assist.row.enrichedByNeedsResearch ? ", enriched by needsResearch" : ""}${assist.row.noUsefulSignal ? ", noUsefulSignal (honest-empty note accompanies the attempt)" : ""}${assist.toolBudgetSent ? ", toolBudget sent" : ", no toolBudget configured"}, ${assist.row.durationMs}ms — the distilled block accompanies this attempt`);
-						}
 					}
 				}
 				// Forceful, prominent retry feedback when the PRIOR attempt edited a
