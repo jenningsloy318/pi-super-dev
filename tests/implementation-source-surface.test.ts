@@ -24,6 +24,7 @@ const KNOWN_PARTS = [
 	"phase-rollback.ts",
 	"phase-status.ts",
 	"red-evidence.ts",
+	"red-judge.ts",
 	"red-ratchet.ts",
 	"run-prepare.ts",
 	"stage.ts",

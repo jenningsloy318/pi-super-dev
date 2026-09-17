@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.32: the judge hand-off extracted — red-judge.ts, and the first control-flow conversion
+
+**English — increment 5 of the stage.ts split, and the first increment that actually converts control flow rather than lifting straight-line code.** The block that runs when the RED loop stalls (a repeated signature, or the retry ceiling) — one judge diagnosis before the human boundary, and its four routes (allow-scaffold / replan-upstream / re-author-tests / fix-environment, plus the HITL guided retry) — moves from stage.ts lines 965–1097 into `routeRedJudge()` in `src/stages/implementation/red-judge.ts`. `stage.ts` is 3,135 → 3,036 lines (−99), measured by blob against the actual parent this time.
+
+**This is the technique the research prescribed, and it works.** The block's 4 `continue`s and 3 `break`s become a returned discriminant: `{ kind: "restart", routing }` (rebind the scalars, continue the RED loop) or `{ kind: "terminal", routing }` (rebind, break). The two collections it mutates (`redScaffoldApproved`, `redProgressHistory`) pass by reference; the seven scalars it rebinds come back in the `JudgeRouting` record. Fowler's "Extract Method on the loop, then use a return rather than a break" and Startifact's "extract the loop body → turn break into early return" — applied verbatim, and the multi-level-jump concern from the research did not arise: every escape targets the RED loop itself.
+
+**The extraction had one real bug, and the test oracle caught it before any gate saw the code.** I forgot to rebind two of the seven scalars at the call site — `redJudgeRoutes` and `redEnvRestarts`. The second one is load-bearing: it is the v0.3.30 F3 counter that terminates the loop as `environment-blocked` after a second fix-environment verdict. With it never rebound, `tests/red-env-restart-cap.test.ts` failed (6 tdd sessions instead of 4 — the loop could not terminate). This is precisely the failure mode the research anticipated ("shared mutable state becomes returned rebinding values") and precisely why the full suite runs as the oracle before each commit. Fixed; the test passes; both counters now round-trip through the routing record.
+
+**Honesty note on the suite:** 2 failures under parallel execution (research-assist, attempt-governor-plateau), both green in isolation and green under `--no-file-parallelism` (4,210/4,210) — the load-flake fingerprint, a *different* set from the previous run's, and neither file touches the extracted block. The single-fork run is the clean confirmation.
+
 ### Fix — v0.4.31: the v0.4.30 dual-gate fold — the arithmetic (again), a vacuous test, and a docstring that lied
 
 **English — both v0.4.30 gates returned (adversarial: PASS; code: CHANGES REQUESTED, zero Critical/High, behavior verified equivalent). Five findings folded; two of them are worth naming because they are the campaign's recurring failure classes, not one-offs.**

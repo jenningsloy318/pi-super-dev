@@ -5,6 +5,7 @@ import type {TestDefect} from "./phase-reentry.ts";
 import { attributeQuarantinePaths, attributeQuarantinedViolations, deterministicPhaseCommit, discardGreenWork, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
+import { routeRedJudge } from "./red-judge.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
@@ -962,137 +963,37 @@ export const implementationStage: Stage = {
 								// the RED loop with the diagnosis appended (bounded by the judge's
 								// per-signature budget of 2, so the third identical stall escalates);
 								// escalate-now / discarded / degraded falls through to today's HITL.
-								const judgeOut = await runJudge(ctx, {
-									scope: `stage9.red-no-progress.${phaseId}`,
-									signature,
+
+								// v0.4.32: the judge hand-off + its four routes extracted to red-judge.ts
+								// (increment 5 of the stage.ts split). The block's 4 continue / 3 break
+								// against shared loop state became a returned discriminant: restart rebinds
+								// the scalars and continues the RED loop, terminal rebinds and breaks. The
+								// route set, counters, log text, escalation paths and terminal reasons are
+								// byte-identical to the inline block (verified by the red-loop oracle).
+								const judgeRoute = await routeRedJudge({
+									ctx, state,
+									phaseId, phaseName, signature, seenBefore, attempt,
+									retries, redJudgeRoutes, redEnvRestarts,
+									redEvidence, testFiles, redChangedFiles,
+									retryHint,
+									tddText: tdd?.text ?? "",
 									worktreePath: setup.worktreePath,
 									specDirectory: setup.specDirectory,
-									context: [
-										`## RED evidence (attempt ${attempt}, retry ${retries + 1})`,
-										`status: ${redEvidence.status}`,
-										`reasons: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || "n/a"}`,
-										`test files: ${testFiles.join(", ") || "n/a"}`,
-										"## Oracle output tails",
-										...(redEvidence.diagnostics ?? []).map((d) => `[${d.plan.argv.join(" ")} exit=${d.exitCode ?? "?"}] ${d.outputTail.slice(0, 2000)}`),
-										"## TDD agent's last text (tail)",
-										(tdd?.text ?? "").slice(-2000) || "(none)",
-										"## Files changed during RED",
-										redChangedFiles.join("\n") || "(none)",
-									].join("\n"),
-									allowedRoutes: (() => {
-								const base = ["re-author-tests", "fix-environment", "replan-upstream", "allow-scaffold"] as const;
-								const restricted = restrictRedJudgeRoutes(redJudgeRoutes, base);
-								if (restricted.length < base.length) ctx.log(`Implementation ${phaseId} red judge routes capped: ${redJudgeRoutes} routed intervention(s) without green — forcing fix-environment (stop resampling, start diagnosing the environment)`);
-								return restricted;
-							})(),
-									outputTails: [...(redEvidence.diagnostics ?? []).map((d) => d.outputTail), tdd?.text ?? ""],
+									specIdentifier: setup.specIdentifier ?? "unknown",
+									redScaffoldApproved,
+									redProgressHistory,
 								});
-								if (judgeOut.status === "routed") redJudgeRoutes++;
-								// v0.2.8 G4 (allow-scaffold): the judge read the spec + the changed
-								// files and blessed them as declaration-only scaffolding the test
-								// needs to compile and still fail RED. Re-admit those paths through
-								// the boundary and restart the RED loop; the oracle remains the guard
-								// (the test must still be `red` next try). Bounded by the judge's
-								// per-signature budget.
-								if (judgeOut.status === "routed" && judgeOut.verdict.route === "allow-scaffold") {
-									for (const f of redChangedFiles) redScaffoldApproved.add(f);
-									redProgressHistory.length = 0;
-									retries++;
-									redHint = `\n\n## Judge approved your scaffolding (allow-scaffold)\n${judgeOut.verdict.diagnosis}\nKeep the declaration-only scaffolding you created (do NOT implement the behavior); make the test COMPILE and still FAIL on its assertion (a valid RED). Evidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-									ctx.log(`Implementation ${phaseId} judge route=allow-scaffold: approved declaration-only scaffolding (${redChangedFiles.length} path(s)) — re-admitting through the RED boundary; oracle still guards`);
+								retries = judgeRoute.routing.retries;
+								redJudgeRoutes = judgeRoute.routing.redJudgeRoutes;
+								redEnvRestarts = judgeRoute.routing.redEnvRestarts;
+								redJudgeDiagnosis = judgeRoute.routing.redJudgeDiagnosis;
+								redJudgeEvidenceLabel = judgeRoute.routing.redJudgeEvidenceLabel;
+								if (judgeRoute.routing.attemptErrorsAppend) attemptErrors = [...attemptErrors, judgeRoute.routing.attemptErrorsAppend];
+								if (judgeRoute.kind === "restart") {
+									redHint = judgeRoute.routing.redHint;
 									continue;
 								}
-								// v0.2.8 G1 (replan-upstream, run 2026-08-19T08-32-47-962Z): the judge
-								// determined the RED cannot be made strong because an UPSTREAM artifact
-								// is defective (an AC referencing a non-existent code baseline; a spec
-								// citing a non-existent scenario/AC). Route it back to the owning stage
-								// via the replan circuit — the run ends `replan` and auto-resumes at
-								// requirements/bdd/spec. Not routable / budget exhausted ⇒ fall through
-								// to today's HITL with the diagnosis. Never throws.
-								if (judgeOut.status === "routed" && judgeOut.verdict.route === "replan-upstream") {
-									const finding = {
-										id: `red-replan-${phaseId}`,
-										title: `RED cannot converge — upstream artifact defect (phase "${phaseName}")`,
-										detail: judgeOut.verdict.diagnosis,
-										severity: "high",
-										recommendation: judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | "),
-										file: judgeOut.verdict.evidence[0]?.file,
-									};
-									let replanned = false;
-									// M5 documented exception: this finding carries NO structured
-									// ownerStage — the owner is resolved by the replan LEAD (an LLM
-									// call), which the deterministic inline planner cannot serve.
-									// The emulation survives here (and for genuine cross-run
-									// interruptions) while every owner-addressable site routes inline.
-									try { replanned = await triggerReplanForFindings(state, ctx, [finding], "implementation-red", setup.specIdentifier ?? "unknown"); } catch { replanned = false; }
-									if (replanned) {
-										redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${finding.recommendation}`;
-										terminalStopReason = "no-progress";
-										ctx.log(`Implementation ${phaseId} judge route=replan-upstream: routed the upstream-artifact defect back via REPLAN — the run will revise the owning stage and re-enter — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
-										break;
-									}
-									ctx.log(`Implementation ${phaseId} judge route=replan-upstream: no routable owner / replan budget exhausted — falling through to the human boundary with the diagnosis`);
-								}
-								if (judgeOut.status === "routed" && (judgeOut.verdict.route === "re-author-tests" || judgeOut.verdict.route === "fix-environment")) {
-									// v0.3.30 F3 (run 16-09-12 try 4): one fix-environment restart is
-									// granted for genuinely in-repo environment repairs; a SECOND
-									// fix-environment verdict means the fix is outside the RED loop's
-									// reach (typically harness-side) — terminate honestly instead of
-									// another blind restart that burns budget and tempts the agent to
-									// hunt the harness's own source outside the worktree.
-									if (judgeOut.verdict.route === "fix-environment" && redEnvRestarts >= MAX_RED_ENV_RESTARTS) {
-										redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-										terminalStopReason = "environment-blocked";
-										ctx.log(`Implementation ${phaseId} RED generation stopped — environment-blocked: ${redEnvRestarts} fix-environment restart(s) granted without progress; the fix is outside the RED loop's reach — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
-										break;
-									}
-									if (judgeOut.verdict.route === "fix-environment") redEnvRestarts++;
-									redProgressHistory.length = 0;
-									retries++;
-									redHint = `\n\n## Judge diagnosis (verified evidence — act on it)\n${judgeOut.verdict.diagnosis}\n${judgeOut.verdict.route === "fix-environment" ? "The judge classified this as an ENVIRONMENT problem. Repair it INSIDE this worktree only (install dependencies, fix toolchain/config files that live in this repository), then author the RED test. If the fix requires anything OUTSIDE this repository (a capability the harness itself lacks), do NOT hunt for, read, or modify external files — state the limitation in your result and stop; the harness will escalate." : "The judge classified the RED tests themselves as contradictory or unsatisfiable: re-author the affected tests into a satisfiable form that still pins the same behavior."}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-									ctx.log(`Implementation ${phaseId} judge route=${judgeOut.verdict.route}: restarting RED with the diagnosis`);
-									continue;
-								}
-								if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
-									redJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-					redJudgeEvidenceLabel = judgeOut.status === "escalate" && judgeOut.verdict.evidence.length === 0 ? "escalated — evidence unverified" : "verified evidence";
-								}
-								terminalStopReason = "no-progress";
-								const why = seenBefore
-									? `RED generation is oscillating (a prior failure state recurred) after ${retries + 1} tries`
-									: `RED generation did not converge within ${MAX_RED_RETRIES} tries`;
-								ctx.log(`Implementation ${phaseId} RED generation stopped — ${why}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
-								// HITL escalation (parity with the implementation no-progress path):
-								// a non-converging RED is usually a spec/toolchain problem (e.g. no
-								// test runner for the package), not something more retries fix.
-								const escalate = (ctx as { options?: { escalate?: import("../../types.ts").Escalate } }).options?.escalate;
-								if (escalate) {
-									try {
-										const { runEscalation, applyRetryDecision } = await import("../../escalation.ts");
-										const failure: import("../../types.ts").EscalationFailure = {
-											kind: "stagnation",
-											stage: "implementation-red",
-											message: `RED test generation for phase "${phaseName}" is not converging (${why}). This is typically a spec or test-toolchain issue — e.g. the target package has no runnable test command, so a new test cannot be observed to fail. Inspect the recurring RED evidence or provide guidance before retrying.${redJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (${redJudgeEvidenceLabel}):\n${redJudgeDiagnosis}` : ""}`,
-											severity: "soft",
-											findings: (redEvidenceFailureReasons(redEvidence).length ? redEvidenceFailureReasons(redEvidence) : [redEvidence.reason ?? redEvidence.status]).slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
-											worktreePath: setup.worktreePath,
-											specDirectory: setup.specDirectory,
-										};
-										const decision = await runEscalation(state, failure, escalate);
-										if (decision) {
-											applyRetryDecision(state, decision, { worktreePath: setup.worktreePath, specDirectory: setup.specDirectory });
-											if (decision.choice === "retry-with-guidance" && ctx.budget.check()) {
-												// Guided retry: clear the cycle window so the guided attempt is
-												// judged fresh, and re-prompt with the user's guidance.
-												redProgressHistory.length = 0;
-												retries++;
-												redHint = retryHint;
-												ctx.log(`Implementation ${phaseId} RED no-progress escalation: retrying with user guidance`);
-												continue;
-											}
-										}
-									} catch { /* never-throw: fall through to the terminal break */ }
-								}
+								terminalStopReason = judgeRoute.routing.terminalStopReason;
 								break;
 							}
 							// RC8: review-weak evidence must ALSO restore the rejected RED
