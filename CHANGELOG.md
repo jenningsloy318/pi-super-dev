@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fix — v0.4.21: dual-gate fold on the eval-layer split (dead imports + stale citations)
+
+**English — both gates approved the v0.4.20 split (zero blocking findings); their residue findings are folded here.** Six dead import bindings the split left behind (invisible to tsc — `noUnusedLocals` is off): `resolve` and `makeCanary` in `closure.ts` (the `makeCanary` re-export is self-contained and never needed the import), `existsSync`/`STAGE_IDS`/`REGISTERED_AGENTS` in `cases.ts` (the two vocabulary names appear only as bare text inside template-literal error messages), and `join` in `bands.ts` (its only occurrence is `Array.prototype.join`). Four comments elsewhere still cited the deleted monolith path (`helpers.ts`, `fault-classification.ts`, `eval-shared.ts`, `reviewer-harness.ts`) — updated to the part or barrel that now holds the code. The P6 tripwire's scan surface is now derived from disk rather than a hand-maintained part list, so a future part or a barrel literal cannot escape the no-retype scan, and its failure message no longer names the deleted file.
+
+**A quantified debt this wave exposed, not yet paid:** a `noUnusedLocals` audit shows 388 dead import bindings still living in the modules split across v0.4.17–v0.4.17d — the same blind spot propagated through every earlier wave (my pruner counted re-export lines, comments, and template-literal text as usage). They are dead code with zero runtime effect. A mechanical regex sweep was attempted and reverted: it cross-removed a live binding (`mkDir`) because its dead-name set was keyed per file instead of per import site, and it mangled multi-line import formatting. The honest fix is a per-site removal keyed to tsc's reported line/column, or enabling `noUnusedLocals` behind a dedicated cleanup wave — tracked as follow-up, not shipped here.
+
+
 ### Refactor — v0.4.20: evolution/eval-layer.ts 拆分(5 模块)
 
 **English — the P1 eval layer is split.** `src/evolution/eval-layer.ts` (1,187 lines) → `src/evolution/eval-layer/{closure,cases,rubrics,bands,agreement}.ts` + index barrel, following the file's own section seams: the DEC-6 verdict-closure table and the F6 target→verdict-family mapping; golden-case schema/validation/loader; rubric schema/validation/loader plus the seed-scaffolding template writers; the σ-band baseline key; and the validation-gate machinery (hand labels, bootstrap-calibrated agreement, gatePasses policy). Runtime dependency graph is acyclic (bands holds only a type-only import of GoldenCase).

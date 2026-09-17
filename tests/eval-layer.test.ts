@@ -197,7 +197,7 @@ describe("verdict closure table (DEC-6)", () => {
 		}
 		// …and no closure value is ever re-typed as a string literal in the module.
 		for (const value of ALL_FAMILY_VALUES) {
-			expect(src.includes(`"${value}"`), `eval-layer.ts must not re-type the closure literal "${value}"`).toBe(false);
+			expect(src.includes(`"${value}"`), `eval-layer must not re-type the closure literal "${value}"`).toBe(false);
 		}
 	});
 });

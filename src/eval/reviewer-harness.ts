@@ -13,7 +13,7 @@
  * no attributable finding score ZERO.
  *
  * Layout (mirrors the landed eval-layer module conventions —
- * src/evolution/eval-stage.ts / eval-layer.ts, v0.3.89-91):
+ * src/evolution/eval-stage.ts / eval-layer/index.ts, v0.3.89-91):
  *   - golden fixtures: INLINE, deterministic data (the SCENARIO-014 shape —
  *     an AC amendment conflicting with exactly-N membership pins + a porcelain
  *     byte-untouched pin — plus two sibling-shape variants);

@@ -46,7 +46,7 @@ export type FaultClass = "environmental-blocker" | "product-defect" | "unclassif
  *  the type union so the compiler forces completeness (a fresh literal
  *  missing or adding a member is a type error — the list can never drift
  *  from the type). Exported for the eval layer's DEC-6 verdict-closure table
- *  (src/evolution/eval-layer.ts; P6 single grammar). */
+ *  (src/evolution/eval-layer/index.ts; P6 single grammar). */
 const FAULT_CLASS_TABLE: Record<FaultClass, FaultClass> = {
 	"environmental-blocker": "environmental-blocker",
 	"product-defect": "product-defect",

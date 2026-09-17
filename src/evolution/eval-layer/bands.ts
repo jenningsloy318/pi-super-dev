@@ -2,7 +2,6 @@ import type { GoldenCase } from "./cases.ts";
 /**
  * eval-layer — the σ-band baseline key (M2 fold). Layer doc: ./closure.ts.
  */
-import { join } from "node:path";
 
 // ─── Band key (M2 / §8.3 fold — P1 ships the KEY SHAPE only) ────────────────
 

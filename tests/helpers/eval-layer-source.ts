@@ -9,13 +9,18 @@
  * Order mirrors the pre-split file layout (closure → cases → rubrics → bands
  * → agreement) so region-order-sensitive assertions still hold.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const PARTS = ["closure.ts", "cases.ts", "rubrics.ts", "bands.ts", "agreement.ts"];
+// Derived from disk (not a hand-maintained list): a future part or a literal
+// landing in the barrel is caught automatically. Sorted for determinism; every
+// tripwire pin is order-insensitive (contains).
+const LAYER_DIR = fileURLToPath(new URL("../../src/evolution/eval-layer/", import.meta.url));
+const PARTS = readdirSync(LAYER_DIR).filter((f) => f.endsWith(".ts") && f !== "index.ts").sort();
 
 /** Concatenated source of the eval layer. Part order follows the pre-split
  *  file layout. */
-export function evalLayerSources(root = process.cwd()): string {
-	return PARTS.map((p) => readFileSync(join(root, "src", "evolution", "eval-layer", p), "utf8")).join("\n");
+export function evalLayerSources(): string {
+	return PARTS.map((p) => readFileSync(join(LAYER_DIR, p), "utf8")).join("\n");
 }

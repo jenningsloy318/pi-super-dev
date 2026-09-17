@@ -3,12 +3,10 @@ import { BAND_KEY_SEP } from "./bands.ts";
 /**
  * eval-layer — golden-case schema, validation, loader, and the shared string guards. Layer doc: ./closure.ts.
  */
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { casesDir, makeCanary } from "../eval-shared.ts";
-import { STAGE_IDS } from "../../graph/edges.ts";
-import { REGISTERED_AGENTS } from "../../agents/register-agents.ts";
 
 // ─── Golden case schema (DEC-6, seven fields + optional caseSet) ───────────
 
@@ -58,7 +56,7 @@ export type Validation<T> = { ok: true; value: T; reasons: string[] } | { ok: fa
  *  derivation as post-mortem.ts defaultInboxDir / predictions.ts
  *  defaultFindingsDir). `source` paths resolve against it. */
 export function repoRoot(): string {
-	const here = fileURLToPath(new URL(".", import.meta.url)); // …/src/evolution/
+	const here = fileURLToPath(new URL(".", import.meta.url)); // …/src/evolution/eval-layer/
 	return resolve(here, "..", "..", ".."); // v0.4.20: the split moved this module one level deeper (src/evolution/eval-layer/)
 }
 

@@ -51,8 +51,6 @@
  *       template writes use flag "wx"; optional caseSet stamp + caseSetOf
  *       layer derivation.
  */
-import { resolve } from "node:path";
-import { makeCanary } from "../eval-shared.ts";
 import { STAGE_IDS } from "../../graph/edges.ts";
 import { REGISTERED_AGENTS } from "../../agents/register-agents.ts";
 import { REVIEW_VERDICT_VALUES } from "../../helpers.ts";

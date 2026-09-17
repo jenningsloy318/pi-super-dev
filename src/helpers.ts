@@ -245,7 +245,7 @@ const VERDICT_RANK: Record<string, number> = { Approved: 0, "Approved with Comme
 /** The convergence-review verdict vocabulary as a runtime list — the keys of
  *  VERDICT_RANK (the ONE canonical table; normalizeReviewVerdict folds every
  *  reviewer wording into exactly these four). Exported for the eval layer's
- *  DEC-6 verdict-closure table (src/evolution/eval-layer.ts): golden-case
+ *  DEC-6 verdict-closure table (src/evolution/eval-layer/closure.ts): golden-case
  *  expected.verdict validates against these REAL enum values, never a
  *  re-typed copy (P6 single grammar). */
 export const REVIEW_VERDICT_VALUES: readonly string[] = Object.keys(VERDICT_RANK);

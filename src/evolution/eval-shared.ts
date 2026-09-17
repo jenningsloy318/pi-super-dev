@@ -5,8 +5,8 @@
  *
  * Why this module exists (the P6 cycle break): the learned-index injection
  * seam (src/render/learned.ts) must participate in the §8.1 contamination
- * firewall, but importing eval-layer.ts from learned.ts closes the cycle
- * learned.ts → eval-layer.ts → register-agents.ts → agents.ts → learned.ts
+ * firewall, but importing the eval-layer barrel from learned.ts closes the cycle
+ * learned.ts → eval-layer/index.ts → register-agents.ts → agents.ts → learned.ts
  * (eval-layer evaluates the DEC-6 closure at module scope, so the cycle is
  * not merely theoretical). makeCanary and the ~/.super-dev/evals/ layout
  * therefore live HERE — one spelling, imported by eval-layer (re-exported
