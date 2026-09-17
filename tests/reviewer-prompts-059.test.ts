@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSpecReviewPrompt, buildUpstreamReviewPrompt } from "../src/prompts.ts";
-import { CONTRACT_INVENTORY_ERROR_BANNER, stampContractSlice, writerContractSlice } from "../src/review/contract-surface.ts";
+import { CONTRACT_INVENTORY_ERROR_BANNER, stampContractSlice, writerContractSlice } from "../src/review/contract-surface/index.ts";
 import { reviewerContractSliceBlock } from "../src/stages/writers.ts";
 import type { PipelineState, SetupControl } from "../src/types.ts";
 

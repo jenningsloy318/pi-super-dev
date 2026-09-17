@@ -3,7 +3,7 @@ import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFee
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
 import { enforceReviewerConvergenceDuty, reviewBlockingVerdictFindings } from "../review-findings.ts";
 import { consumeContractConflictEscalation } from "../review/contract-conflict-consumer.ts";
-import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readContractSliceStamp } from "../review/contract-surface.ts";
+import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readContractSliceStamp } from "../review/contract-surface/index.ts";
 // 059 R1A D-R-B residual (§3 R3 DEFECT-1 + D-R-E): the spec-fallback family
 // validator, its validation context, the reconciliation section builder, and
 // the Metadata Strike-1 classifier/repair template.

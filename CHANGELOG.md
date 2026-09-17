@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.22: review/contract-surface.ts 拆分(7 模块)
+
+**English — the 059 R1A contract-surface inventory is split.** `src/review/contract-surface.ts` (1,071 lines) → `src/review/contract-surface/{types,tokens,scanners,inventory,slice,reconcile,stamps}.ts` + index barrel, following the file's own section seams: the grammar-table types and deterministic pinId minting; literal path-token extraction plus the P10 reject accumulator; the twelve grammar scanners (four families × ts/py/md forms) with the `scanSourceFile` dispatcher; deterministic traversal plus the repo-invariants.json envelope and `extractContractInventory`; Layer R2 slice construction; the D-R-E reconciliation section and tolerant amendmentFamily normalization; and the write-time slice plumbing (state stamps, the persisted `.knowledge.json` stamp, slice views).
+
+**The pre-existing `contract-surface ↔ claim-spine` runtime cycle is preserved and not widened:** claim-spine now imports from the three specific parts it needs (scanners / inventory / reconcile) plus the two types modules, and only `inventory.ts` imports `governedProtectedTokens` back. The barrel is never imported by a part, so no part↔barrel cycle was introduced.
+
+`scanSourceFile` initially landed in `inventory.ts` because it sits in the file's traversal section, but it is the dispatcher for the twelve scanners — moved into `scanners.ts` where it belongs. Line-multiset parity against the pre-split monolith: LOST=0, GAINED=0. A `noUnusedLocals` audit of the seven new parts reports zero dead bindings (the v0.4.21 fold's lesson applied).
+
+
 ### Fix — v0.4.21: dual-gate fold on the eval-layer split (dead imports + stale citations)
 
 **English — both gates approved the v0.4.20 split (zero blocking findings); their residue findings are folded here.** Six dead import bindings the split left behind (invisible to tsc — `noUnusedLocals` is off): `resolve` and `makeCanary` in `closure.ts` (the `makeCanary` re-export is self-contained and never needed the import), `existsSync`/`STAGE_IDS`/`REGISTERED_AGENTS` in `cases.ts` (the two vocabulary names appear only as bare text inside template-literal error messages), and `join` in `bands.ts` (its only occurrence is `Array.prototype.join`). Four comments elsewhere still cited the deleted monolith path (`helpers.ts`, `fault-classification.ts`, `eval-shared.ts`, `reviewer-harness.ts`) — updated to the part or barrel that now holds the code. The P6 tripwire's scan surface is now derived from disk rather than a hand-maintained part list, so a future part or a barrel literal cannot escape the no-retype scan, and its failure message no longer names the deleted file.

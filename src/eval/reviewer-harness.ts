@@ -36,7 +36,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { buildContractSlice, extractContractInventory, type ContractInventory, type ContractSlice } from "../review/contract-surface.ts";
+import { buildContractSlice, extractContractInventory, type ContractInventory, type ContractSlice } from "../review/contract-surface/index.ts";
 import { buildSpecReviewPrompt, buildUpstreamReviewPrompt } from "../prompts.ts";
 import { reviewFindingBlocks } from "../review-findings.ts";
 import type { Classification, SetupControl } from "../types.ts";

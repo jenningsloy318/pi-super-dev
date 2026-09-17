@@ -19,7 +19,7 @@ import {
 	CONTRACT_SLICE_TRUNCATION_MARKER,
 	CONTRACT_INVENTORY_ERROR_BANNER,
 	mintPinId,
-} from "../src/review/contract-surface.ts";
+} from "../src/review/contract-surface/index.ts";
 import {
 	bddPinOwnershipFindings,
 	designAmendmentFamilyFindings,

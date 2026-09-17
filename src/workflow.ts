@@ -63,7 +63,7 @@ import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
 import { isNonRetryableAgentError } from "./agent-errors.ts";
 import { freshRunWallFuseState, readRunWallFuseMarker, runWallFusePreCallError } from "./wall-fuse.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
-import { persistCurrentStateStamp } from "./review/contract-surface.ts";
+import { persistCurrentStateStamp } from "./review/contract-surface/index.ts";
 import type {
 	AgentCall,
 	AgentResult,

@@ -34,7 +34,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claimPathUsable, isUsableProtectedToken } from "../stages/plan-feasibility.ts";
-import { extractContractInventory, normalizeAmendmentFamily, PROTECT_QUALIFIER_RE, type ContractInventory, type NormalizedAmendmentFamilyEntry } from "./contract-surface.ts";
+import { PROTECT_QUALIFIER_RE } from "./contract-surface/scanners.ts";
+import { extractContractInventory } from "./contract-surface/inventory.ts";
+import { normalizeAmendmentFamily } from "./contract-surface/reconcile.ts";
+import type { ContractInventory } from "./contract-surface/types.ts";
+import type { NormalizedAmendmentFamilyEntry } from "./contract-surface/reconcile.ts";
 import { stateFileFor } from "../state/state-root.ts";
 
 // ─── types ───────────────────────────────────────────────────────────────────

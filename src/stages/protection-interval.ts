@@ -27,7 +27,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { extractContractInventory } from "../review/contract-surface.ts";
+import { extractContractInventory } from "../review/contract-surface/index.ts";
 import { amendmentExemptFiles } from "../review/claim-spine.ts";
 import { claimPathUsable } from "./plan-feasibility.ts";
 

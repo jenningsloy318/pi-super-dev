@@ -8,7 +8,7 @@ import type { ControlObj, EscalationFailure, Node, PipelineState, Stage, StageCo
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../../agent-errors.ts";
 import { enforceReviewerConvergenceDuty, reviewBlockingVerdictFindings } from "../../review-findings.ts";
 import { consumeContractConflictEscalation } from "../../review/contract-conflict-consumer.ts";
-import { readContractSliceStamp } from "../../review/contract-surface.ts";
+import { readContractSliceStamp } from "../../review/contract-surface/index.ts";
 import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../../review/contract-validators.ts";
 import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";

@@ -22,7 +22,7 @@ import {
 	governedProtectedTokens,
 	isUsablePathToken,
 } from "../src/review/claim-spine.ts";
-import { extractContractInventory } from "../src/review/contract-surface.ts";
+import { extractContractInventory } from "../src/review/contract-surface/index.ts";
 import { specAmendmentFamilyFindings ,
 	isPreW,
 } from "../src/review/contract-validators.ts";
@@ -788,7 +788,7 @@ describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", ()
 			const specDir = join(repo, "docs", "specifications", "26-x");
 			mkdirSync(specDir, { recursive: true });
 			const state = { setup: { specDirectory: `${specDir}/` } };
-			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
+			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface/index.ts");
 			stampContractSlice(state, "spec", { empty: false, block: "b", pinCount: 1, truncated: false, unmappedConcepts: [], files: ["a.ts"], pinIds: ["pin-1"] } as never);
 			// v0.4.13: persistence happens at the memoizer's LIVE-append moment
 			// (persistCurrentStateStamp), NOT at prompt build (replay rounds
@@ -834,7 +834,7 @@ describe("065 v0.4.12 — persisted slice stamps (the resume temporal hole)", ()
 			const specDir = join(repo, "docs", "specifications", "26-f1");
 			mkdirSync(specDir, { recursive: true });
 			const state = { setup: { specDirectory: `${specDir}/` } };
-			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
+			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface/index.ts");
 			const { appendToKnowledge } = await import("../src/render/knowledge.ts");
 			const { stateFileFor } = await import("../src/state/state-root.ts");
 			stampContractSlice(state, "spec", { empty: false, block: "b", pinCount: 2, truncated: false, unmappedConcepts: [], files: ["a.ts", "b.ts"], pinIds: ["pin-1", "pin-2"] } as never);
@@ -893,7 +893,7 @@ describe("065 v0.4.13 — stamp persistence timing (live-append only, disk-first
 			process.env.SUPER_DEV_STATE_DIR = join(home, "state");
 			const specDir = `${join(repo, "docs", "specifications", "26-x")}/`;
 			mkdirSync(specDir, { recursive: true });
-			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface.ts");
+			const { stampContractSlice, persistCurrentStateStamp, readContractSliceStamp } = await import("../src/review/contract-surface/index.ts");
 			const state = { setup: { specDirectory: specDir } };
 			// round 1 LIVE: stamp (state) then persist (the memoizer's live-append hook)
 			stampContractSlice(state, "bdd", { empty: false, block: "", pinCount: 1, truncated: false, unmappedConcepts: [], files: ["a.ts"], pinIds: ["pin-live"] } as never);

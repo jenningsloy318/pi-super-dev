@@ -18,7 +18,7 @@ import { priorReplanConstraintBlock } from "../replan/replan.ts";
 // 059 R1B (D-R-C reviewer portion): the reviewer-side slice — re-rendered from
 // the WRITER's stamp (readContractSliceStamp) so each reviewer sees the same
 // contract-surface pins its stage's writer saw.
-import { CONTRACT_INVENTORY_ERROR_BANNER, CONTRACT_SLICE_MAX_LINES, CONTRACT_SLICE_TRUNCATION_MARKER, extractContractInventory, readContractSliceStamp, stampContractSlice, writerContractSlice, type ContractSliceStamp } from "../review/contract-surface.ts";
+import { CONTRACT_INVENTORY_ERROR_BANNER, CONTRACT_SLICE_MAX_LINES, CONTRACT_SLICE_TRUNCATION_MARKER, extractContractInventory, readContractSliceStamp, stampContractSlice, writerContractSlice, type ContractSliceStamp } from "../review/contract-surface/index.ts";
 import { readFileSync } from "node:fs";
 
 const S = (s: { setup?: SetupControl }) => s.setup!;

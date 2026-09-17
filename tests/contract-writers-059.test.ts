@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { render } from "../src/render/template-engine.ts";
 import { buildBddPrompt, buildDesignPrompt, buildRequirementsPrompt, buildSpecPrompt } from "../src/prompts.ts";
-import { contractSliceView, readContractSliceStamp, stampContractSlice, writerContractSlice } from "../src/review/contract-surface.ts";
+import { contractSliceView, readContractSliceStamp, stampContractSlice, writerContractSlice } from "../src/review/contract-surface/index.ts";
 import { contractValidationContext } from "../src/review/contract-validators.ts";
 import { REVIEWER_DUTY_ROUND, enforceReviewerConvergenceDuty } from "../src/review-findings.ts";
 import { specWriterBuildPrompt } from "../src/stages/writers.ts";

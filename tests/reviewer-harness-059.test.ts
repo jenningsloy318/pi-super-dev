@@ -16,7 +16,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractContractInventory } from "../src/review/contract-surface.ts";
+import { extractContractInventory } from "../src/review/contract-surface/index.ts";
 import {
 	CONTRADICTION_FIXTURES,
 	aggregateEscapeRate,

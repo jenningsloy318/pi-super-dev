@@ -12,7 +12,7 @@ import { STAGE_MODELS } from "../render/schemas.ts";
 // slice — computed and stamped BEFORE the skip decision so the dual design-skip
 // predicate (designConvergenceNode.skipped) and the R4 exemption both read it,
 // and so a shared-surface bug fix is DESIGNED instead of skipped.
-import { stampContractSlice, writerContractSlice } from "../review/contract-surface.ts";
+import { stampContractSlice, writerContractSlice } from "../review/contract-surface/index.ts";
 
 export const designStage: Stage = {
 	id: "design",

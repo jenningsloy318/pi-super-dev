@@ -21,8 +21,8 @@
  */
 
 import { existsSync } from "node:fs";
-import type { ContractInventory, ContractPin, ContractSlice, NormalizedAmendmentFamilyEntry } from "./contract-surface.ts";
-import { buildContractSlice, contractSliceView, extractContractInventory, normalizeAmendmentFamily, readContractSliceStamp } from "./contract-surface.ts";
+import type { ContractInventory, ContractPin, ContractSlice, NormalizedAmendmentFamilyEntry } from "./contract-surface/index.ts";
+import { buildContractSlice, contractSliceView, extractContractInventory, normalizeAmendmentFamily, readContractSliceStamp } from "./contract-surface/index.ts";
 // 065 D-F-B/D-F-C: Gate W (fresh post-render write-claim closure) + the
 // design-declared skip conditioning input.
 import { readSpecDoc } from "../doc-validators.ts";
