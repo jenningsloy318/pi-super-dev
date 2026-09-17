@@ -1,9 +1,10 @@
-import {MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, preexistingTestSurfaceRows, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, restrictRedJudgeRoutes, setDiff, snapshotFiles, trackerOutofScopeEdits, weakenedAssertionSurfaces} from "./red-evidence.ts";
+import {MAX_RED_ENV_RESTARTS, MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, restrictRedJudgeRoutes, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
 import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseRedContradictions, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { attributeQuarantinePaths, attributeQuarantinedViolations, deterministicPhaseCommit, discardGreenWork, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
+import { evaluateF5Ratchet } from "./red-ratchet.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
@@ -777,42 +778,21 @@ export const implementationStage: Stage = {
 							}
 						}
 						// ── v0.3.85 F5 — RED-phase assertion ratchet (C3 fix; §9 F5, §14 ADR 10) ──
-						// During RED the boundary LEGALLY admits edits to pre-existing test
-						// files (the GREEN-side test-edit ban is v0.3.43) — the 09-09 phase-1
-						// tdd-guide answered an "unsatisfiable RED" by gutting 3 pre-existing
-						// guard suites, making the oracle green and misrouting the phase. The
-						// ratchet: a pre-existing test file's assertion-surface count (F5
-						// grammar, above) must NEVER decrease vs its pre-edit HEAD state.
-						// Checked at ACCEPTANCE — only for tries heading to acceptance
-						// (classes already rejected below revert everything anyway, and an
-						// unknown that is NOT fail-closed still falls through to the
-						// implementer per v0.3.30 F2's P3 contract) — so a weakened oracle
-						// can NEVER reach GREEN, not even via the already-satisfied route.
-						// ADR 10 (the F4/F5 asymmetry): unlike F4 — which escalates
-						// IMMEDIATELY because retry is PROVABLY futile (a deterministically
-						// restored lockstep test kills every later attempt) — F5 retries
-						// FIRST because the corrective hint teaches a legal recoverable
-						// alternative (author an independent NEW test file); escalation fires
-						// only on RED-retry exhaustion or persistent weakening (below).
-						const f5AlreadyRejected = redEvidence.status === "coverage-incomplete"
-							|| redEvidence.status === "green-weak-test"
-							|| redEvidence.status === "broken-test"
-							|| redEvidence.status === "polluted-red"
-							|| ((redEvidence.status === "unknown-no-runner" || redEvidence.status === "unknown-unclassified") && redFailClosedUnknown);
-						if (!f5AlreadyRejected) {
-							const f5Rows = preexistingTestSurfaceRows(setup.worktreePath, redChangedFiles);
-							const f5Weakened = weakenedAssertionSurfaces(f5Rows);
-							if (f5Weakened.length > 0) {
-								redEvidence = {
-									...redEvidence,
-									status: "weakened-preexisting-test",
-									reason: `pre-existing test assertion surface decreased: ${f5Weakened.map((w) => `${w.path} ${w.before}→${w.after}`).join(", ")}`,
-									weakenedFiles: f5Weakened,
-									preexistingTestFiles: f5Rows.map((r) => r.path),
-								};
-								ctx.log(`Implementation ${phaseId} RED assertion ratchet: REJECTED — weakened pre-existing test file(s) ${f5Weakened.map((w) => `${w.path} (${w.before}→${w.after} markers)`).join(", ")}; the pre-existing test edit(s) will be reverted, new independent test files survive`);
-							}
-						}
+						// The deterministic ACCEPTANCE-TIME evaluation lives in
+						// evaluateF5Ratchet() (red-ratchet.ts, extracted v0.4.30) — it is pure and
+						// straight-line, so it lifted whole. The ESCALATION half (declared handoff /
+						// judge routing on RED-retry exhaustion or persistent weakening) stays
+						// inline below: it mutates run-scope state and breaks the RED loop, which is
+						// the campaign's control-flow boundary — the loop's `continue`/`break` all
+						// target this loop, so the extraction is the textbook Extract-Method case,
+						// sized as its own wave.
+						redEvidence = evaluateF5Ratchet(redEvidence, {
+							worktreePath: setup.worktreePath,
+							redChangedFiles,
+							failClosedUnknown: redFailClosedUnknown,
+							phaseId,
+							log: (line) => ctx.log(line),
+						});
 						appendImplementationEvidence(setup.specDirectory, redEvidence);
 						if (redEvidence.status === "polluted-red") {
 							restorePaths(setup.worktreePath, redEvidence.forbiddenFiles);

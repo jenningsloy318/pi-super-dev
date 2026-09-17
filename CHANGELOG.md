@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.30: the F5 assertion ratchet extracted — red-ratchet.ts, and the campaign boundary revised
+
+**English — increment 4 of the stage.ts split, and the one that revisions the boundary I had drawn too pessimistically.** I had claimed the remaining loop blocks (F5 ratchet, inherited-red ladder, judge hand-off) were a *genuine rewrite, not code motion*, because their `continue`/`break` hit shared mutable state. Online research said otherwise, so I checked it against the code rather than defending the claim. The verdict, from three independent sources:
+
+- **Fowler** (*Refactoring with Loops and Collection Pipelines*): "My first move is to consider applying Extract Method on the loop… it's often easier to manipulate a loop if it's isolated into its own function" — then, once extracted, "I can use a return rather than a break."
+- **Startifact** (*Refactoring to Multiple Exit Points*): works this exact case — extract the loop body, turn `break` into early return, flip conditions into guards; names the objections (parameter management, no reuse) and proceeds anyway because the working-memory win dominates.
+- **Microsoft C# language docs**: "When you work with nested loops, consider refactoring separate loops into separate methods."
+
+**I was wrong about the blocker, right about the size.** The mechanical recipe is: extract the body → `continue` becomes `return <retry-signal>` → `break` becomes `return <terminal-signal>` → shared state passes as parameters (objects by reference) and returns (rebindings) — the exact by-ref-vs-returned asymmetry v0.4.28 already proved. And I verified against the code that the RED loop's 14 escape sites (stage.ts ~976–1147) are all SELF-CONTAINED: every `continue`/`break` targets the RED `while` loop itself, never the outer attempt loop. That is the textbook extractable case, not a rewrite. What remains genuinely sized is scope: the RED loop is ~700 lines touching ~12 shared bindings, so it is a wave, not an afternoon.
+
+**This wave takes the safe half.** The F5 block was straight-line with no `continue`/`break` at all, so it lifts whole into `evaluateF5Ratchet()` in `src/stages/implementation/red-ratchet.ts` — pure, no disk mutation, returns the evidence unchanged or flagged `weakened-preexisting-test`. The DELIBERATE split: the deterministic ACCEPTANCE-TIME evaluation moved out; the ESCALATION half (declared handoff / judge routing on RED-retry exhaustion, which mutates `terminalStopReason`/`attemptErrors` and breaks the loop) stays inline, documented at the seam. The two helpers it alone used (`preexistingTestSurfaceRows`, `weakenedAssertionSurfaces`) moved with it and were dropped from stage.ts's import. `stage.ts` is 3,147 → 3,135 lines (−12).
+
+**Honest note on the suite, again.** The full run showed 8 failures under parallel and 3 under single-fork — a *different set each mode*, all 8 green in isolation, and the 3 were the timing-tier assertions (6ms / 1ms) that are load-sensitive by construction. That is the load-flake fingerprint (a deterministic interaction would reproduce identically across modes), not a regression; no F5 or ratchet test failed in any run. The machine is the variable — collect time tripled (487s → 1120s) between two runs of the same code.
+
 ### Fix — v0.4.29: the v0.4.28 dual-gate fold — conditional stash rebind, type-only imports, and the arithmetic
 
 **English — both v0.4.28 gates returned (code: APPROVED, adversarial: CONTEST) with zero blockers; their three findings fold here.** The extraction itself was verified clean on all four attack vectors — the by-reference identity of `phaseStartDirt`/`phaseProtectionStrikes` end-to-end, the `pendingRollbackStash` clobber proven impossible by induction over §D passes (no `finally` in stage.ts, so a mid-flight stash can never ride an exception across a pass boundary), the `worktreeCreated` cast surviving intact, and the reindent proven whitespace-only by hunk-span arithmetic.
