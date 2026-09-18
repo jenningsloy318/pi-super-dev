@@ -58,7 +58,9 @@ describe("workflow/pre-call-fuses — wave 2 increment 5 (budget → wall fuse �
 		const input = baseInput();
 		const out = preCallFuseError(input);
 		expect(out).toBe("wall fuse tripped: spent 61m >= 60m cap");
+		expect(input.budget.spent).toHaveBeenCalled(); // adversarial fold: the BUG-4 reservation ran BEFORE the wall trip (the slot is consumed)
 		expect(input.log).toHaveBeenCalledWith("agent pipeline.implementation.phase-01: wall fuse tripped: spent 61m >= 60m cap");
+		expect(appendRunEvent).toHaveBeenCalledTimes(1); // adversarial fold: exactly ONE row on this arm too
 		expect(appendRunEvent).toHaveBeenCalledWith("/spec", expect.objectContaining({
 			data: expect.objectContaining({ error: "wall fuse tripped: spent 61m >= 60m cap" }),
 		}));
