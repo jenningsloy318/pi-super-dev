@@ -79,7 +79,6 @@ import type {
 	PipelineState,
 	BoundaryQuarantinePayload,
 	RunOptions,
-
 	RunSummary,
 	SpawnResult, AgentUsage, UsageCallRow,
 	StageContext,
@@ -795,7 +794,6 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 }
 
 /** Run a workflow for a task. */
-
 export async function runWorkflow(workflow: Workflow, task: string, options: RunOptions = {}): Promise<RunSummary> {
 	// v0.3.95 fix-round ADVISORY-1: reset the delegation thinking-clamp notice
 	// memo at RUN start — the one-warn-per-key bound (P8) is per RUN, not per
