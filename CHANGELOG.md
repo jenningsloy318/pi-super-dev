@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.51: stage.ts split, increment 23 (phase entry — campaign complete)
+
+- **What**: the phase-ENTRY work — the resume-only verified no-op adjudication (§F #1: `deliverablesAlreadyMet` pre-filter → build gate + FULL deliverable check → skip with upsert/splice/emit trio, or rejected with `attemptErrors`/`missingDeliverables` seeded) + the phase-start capture (dashboard rows, `tracker.begin`, the v0.3.85 F2 first-ever porcelain snapshot with §D-re-entry reuse) — extracted to `src/stages/implementation/phase-entry.ts` (`enterPhase`, boundary closer, outcome `{skip} | {enter, phaseStartSet, attemptErrors, missingDeliverables}`). stage.ts 1,413 → 1,376 lines; the skip path provably omits the subtitle/tracker/snapshot (vector-A invariant, negatively pinned).
+- **Campaign complete**: 23 increments (v0.4.34-v0.4.51) took stage.ts 3,038 → 1,376 lines (−55%); every control-flow-dense region now lives in a module selected by the granularity standard (adjudicators, record builders, boundary closers, dispatchers); stage.ts keeps the loop skeleton, P3 guards, let-cascade, and outcome interpretation.
+- **Pin moves**: SCENARIO-012's `stageFiles` now enumerates the extracted `runBuildGate` call sites (stage-close-reverify.ts + phase-entry.ts — stage.ts has none left); KNOWN_PARTS at 27 parts.
+- **Gates**: dual `glm-5.3-flash:high` — adversarial PASS (zero divergence on all five vectors; skip-conversion placement proven — the return precedes announce/tracker/snapshot exactly as inline `continue` did); code Changes-Request with 2 non-blocking Mediums folded (6 dead imports incl. 2 the adversarial round missed; the gate-green/check-red AND-arm + the `skipTests` threading now pinned).
+- Suite 291 files / 4,375 green; version x4 + CHANGELOG h3 + arch:doc.
+
 ### Refactor — v0.4.50: stage.ts split, increment 22 (stage-close re-verification)
 
 - **What**: the post-phase-loop v0.3.80 B2 stage-close re-verification (commit fusion) — the git changed-set walk (merge-base/diff/porcelain with pinned timeouts, degrading to empty-set on failure), `reverifyPartialPhases`, the flip ladder (build gate + FULL deliverable re-check, keep-PARTIAL honesty logs, `phaseStatusUpsert`, stale failure-row drop, budget-gated deterministic close commit), and the review-P3 all-green entry-subset rule — extracted from `stage.ts` into `src/stages/implementation/stage-close-reverify.ts` (`runStageCloseReverify`, a boundary closer). stage.ts 1,464 → 1,413 lines.

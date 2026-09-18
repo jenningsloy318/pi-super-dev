@@ -34,6 +34,7 @@ const KNOWN_PARTS = [
 	"red-acceptance.ts",
 	"red-retry-ladder.ts",
 	"phase-tail.ts",
+	"phase-entry.ts",
 	"gate-suite.ts",
 	"phase-status.ts",
 	"protection-gate.ts",

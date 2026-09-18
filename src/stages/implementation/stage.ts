@@ -11,7 +11,7 @@ import { adjudicateNoProgress } from "./no-progress-valve.ts";
 import { runGateSuite } from "./gate-suite.ts";
 import { runGreenBoundaryOracle } from "./green-boundary.ts";
 import { closePhaseTail } from "./phase-tail.ts";
-import { phaseStatusUpsert } from "./phase-status.ts";
+import { enterPhase } from "./phase-entry.ts";
 import { runStageCloseReverify } from "./stage-close-reverify.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { adjudicateRedRetryLadder } from "./red-retry-ladder.ts";
@@ -33,14 +33,13 @@ import { dispatchImplementer } from "./implementer-dispatch.ts";
 import { existsSync } from "node:fs";
 import type { ControlObj, Stage } from "../../types.ts";
 
-import { appendGateChecked } from "../../runlog.ts";
 import { getActiveTracker } from "../../tracking.ts";
 import { buildImplementationSummaryPrompt } from "../../prompts.ts";
 import { replanPending } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { FatalAbort } from "../../nodes.ts";
-import { extractFailingTestFilePaths, normalizeRepoPath } from "../inherited-red.ts";
+import { extractFailingTestFilePaths } from "../inherited-red.ts";
 // v0.3.87 S4(b)+(d) (§9/§10 decision 9, §13, §14 ADR 6): the engine-mediated
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
@@ -51,10 +50,10 @@ import { RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, type NeedsResearchEntry, type Res
 // the SAME replan circuit plan-feasibility uses (no judge call needed).
 import { renderAndWrite } from "../../render/render.ts";
 import { STAGE_MODELS } from "../../render/schemas.ts";
-import { deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
+import { deliverablesAlreadyMet, type DeliverableContract, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
 import { createPhaseStatusKit } from "./phase-emit.ts";
 import { recordConvergenceFindings } from "../../convergence-ledger.ts";
-import { classifyGateFault, collectDirtPaths, listPorcelainPaths, type FaultClass } from "../../fault-classification.ts";
+import { classifyGateFault, collectDirtPaths, type FaultClass } from "../../fault-classification.ts";
 import { markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
 import { readCachedTestRunner, type TestRunnerSpec } from "../../build-runner/runner-discovery.ts";
@@ -344,59 +343,22 @@ export const implementationStage: Stage = {
 			// Even on resume, this is a verified no-op: run the deterministic build gate
 			// and full deliverable check before marking the phase green.
 			const phaseDeliverables = (phase as { deliverables?: DeliverableContract }).deliverables;
-			const resumeNoOpAllowed = ctx.options.resume === true || typeof ctx.options.resume === "string";
-			if (resumeNoOpAllowed && phaseDeliverables && deliverablesAlreadyMet(setup.worktreePath, phaseDeliverables, setup.defaultBranch) /* sweep-3 CR-R2-7 */) {
-				ensurePhaseRunning();
-				announceActivity("Resume verification");
-				resetDeliverableCheckCache();
-				announceActivity("Build gate", "resume verification");
-				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
-				appendGateChecked(state, "phase-green:resume-verify", gate, "implementation");
-				announceActivity("Deliverable check", "resume verification");
-				const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass), defaultBranch: setup.defaultBranch });
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
-					ctx.log(`Implementation ${phaseId} no-op: resume deliverables already satisfied and verified — skipping implementer`);
-					phaseStatusUpsert(phaseStatus, phaseId, "green");
-					emitPhaseStatus("ok");
-					const fi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (fi >= 0) lastFailures.splice(fi, 1);
-					phasesCompleted++;
-					continue;
-				}
-				ctx.log(`Implementation ${phaseId} no-op rejected: resume verification failed (build=${gate.pass || gate.inScopePass}, missing=${deliverableCheck.missing.join("; ") || "none"}) — running implementer`);
-				attemptErrors = gate.errors;
-				missingDeliverables = deliverableCheck.missing;
+			// increment 23: phase entry — the resume-only verified no-op adjudication (§F #1)
+			// + the phase-start capture (dashboard rows, tracker.begin, the F2 first-ever
+			// dirt snapshot). skip ⇒ verified no-op; enter ⇒ seeds carry over ONLY on the
+			// resume-rejected arm (attemptErrors/missingDeliverables), phaseStartSet rides the record.
+			const entry = enterPhase({
+				ctx, state, phaseId, phaseDeliverables, tracker, phaseStatus, lastFailures, phaseStartDirt,
+				worktreePath: setup.worktreePath, defaultBranch: setup.defaultBranch,
+				ensurePhaseRunning, announceActivity, emitPhaseStatus,
+			});
+			if (entry.kind === "skip") {
+				phasesCompleted++;
+				continue;
 			}
-			// Pi-native sub-phase subtitle: announce WHICH phase is being implemented
-			// AFTER the skip guards (so a skipped/already-green phase never flickers a
-			// subtitle it isn't working on). Surfaces "Phase N/M: <name>" as the
-			// dashboard header/working-message + a distinct ▶ line under the running
-			// stage's live-log section. phase.name falls back to the phase id.
-			// Emit the dashboard sub-stage row BEFORE the subtitle so the live-stream sink
-			// tags the subtitle/progress under the current implementation phase.
-			ensurePhaseRunning();
-			announceActivity();
-			if (tracker) tracker.begin("phase", phaseId);
-			// v0.3.85 F2 (C1): the phase's FIRST-EVER porcelain snapshot — the F2
-			// attribution boundary. Persisted across §D convergence iterations via
-			// the control (the sd26-F1 lesson runStartDirt already pins: a re-entry
-			// must not re-capture after this phase's own prior-iteration edits hit
-			// disk, or its own live work would classify as pre-phase/inherited).
-			// Dirt present in the first-ever snapshot is PRE-PHASE (earlier phases'
-			// leftovers / prior-run state — the C1 poison class); dirt absent from
-			// it appeared during THIS phase (the phase's own leak). A git failure
-			// degrades to [] — unknown provenance can never support an inherited
-			// classification (the safe direction is the Tier-0 own-leak ladder).
-			// FIX ROUND 1 (A): the spawn is SKIPPED entirely for an absent worktree
-			// (same [] degradation, zero latency) — a git spawn between the F3
-			// phase-wall anchor and attempt 1 pre-empted the FIRST attempt under a
-			// tiny SUPER_DEV_MAX_PHASE_WALL_MS (the wall bounds ATTEMPTS, never
-			// pre-empts attempt 1).
-			if (!Object.prototype.hasOwnProperty.call(phaseStartDirt, phaseId)) {
-				phaseStartDirt[phaseId] = existsSync(setup.worktreePath) ? listPorcelainPaths(setup.worktreePath).map(normalizeRepoPath) : [];
-			} else {
-				ctx.log(`Implementation ${phaseId}: reusing persisted first-ever phase-start dirt snapshot (F2 attribution boundary stays the phase's first entry ever)`);
-			}
-			const phaseStartSet = new Set<string>(phaseStartDirt[phaseId] ?? []);
+			attemptErrors = entry.attemptErrors;
+			missingDeliverables = entry.missingDeliverables;
+			const phaseStartSet = entry.phaseStartSet;
 			for (let attempt = 1; ctx.budget.check(); attempt++) {
 				// v0.3.85 F3: close out the PREVIOUS attempt's wall duration first — the
 				// trailing-3-attempt median the run-fuse wind-down compares against is

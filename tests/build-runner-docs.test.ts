@@ -117,7 +117,10 @@ describe("DEFAULT_TIMEOUT_MS resolution-site JSDoc (AC-09 / SCENARIO-013)", () =
 describe("Stage call sites unchanged (SCENARIO-012)", () => {
 	const stageFiles = [
 		"src/stages/verify/steps.ts",
-		"src/stages/implementation/stage.ts",
+		// v0.4.50-v0.4.51 (increments 22-23): stage.ts's two call sites moved to
+		// the extracted boundary closers — the pin follows the call sites.
+		"src/stages/implementation/stage-close-reverify.ts",
+		"src/stages/implementation/phase-entry.ts",
 		"src/stages/index.ts",
 	];
 
