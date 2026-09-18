@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.39: env-blocker judge hand-off extracted (stage.ts split, increment 11)
+
+The environmental-blocker JUDGE HAND-OFF (the second and final sub-block of the env-blocker branch:
+the T4.3 kill-switch warning, the single runJudge dispatch at stage9.impl-env-blocker.<phaseId>, the
+outcome ladder — routed fix-environment / escalate / degraded → the D-5 soft HITL surface with
+logged-only escalation and the G4 one-shot retry-with-guidance re-entry, routed implementer-retry
+→ the G3 audited product override — the T6.2 verdict record, and the terminal stop) moves out of
+`stage.ts` into `src/stages/implementation/env-blocker-judge.ts` — 2,727 → 2,528 lines. The SEVENTH
+control-flow conversion: one `break` became `terminal-stop` (stopReason "failed" + a NULL-OR-VALUE
+blockReason — null exactly when the guidance re-entry was granted, leaving convergenceBlockReason
+unset as inline); one fall-through became `override-retry` (fault class + judge feedback +
+null-or-value post-regate errors). envBlockedPhases (Set) and phaseGuidanceReentryUsed (Record)
+stay in/out by reference; envGuidanceReentryGranted had no readers outside the region and became a
+module-local (its orphaned stage.ts declaration deleted). The env-blocker branch is now fully
+extracted across increments 10 + 11.
+
+Dual gates ran on glm-5.3-flash:high. Code gate: CHANGES REQUESTED (1 Medium, both findings
+pre-folded by the adversarial pass) — move equivalence, null-or-value, in/out surfaces, dead
+imports, test honesty all PASS; fold: the kill-switch ordering test's joint-relocation blind spot
+closed (the fake agent lane now marks the dispatch in the log stream, so the warning provably
+precedes the dispatch itself), plus the orphaned M1 comment removed and the makeWorktree temp
+dirs cleaned. Adversarial gate: PASS, zero divergence on all five vectors (the full outcome-ladder
+table incl. the escalate-arm interpolation and the discarded-arm T6.2 skip, the guidance-grant
+race with the git-diff proof, the escalation surface incl. dynamic-import resolution depth, the
+verdict-record ordering, all 11 region log emissions matched verbatim). 8 tests.
+
 ### Refactor — v0.4.38: env-blocker quarantine/re-gate extracted (stage.ts split, increment 10)
 
 The environmental-blocker quarantine/re-gate/re-classification machinery (the first sub-block of

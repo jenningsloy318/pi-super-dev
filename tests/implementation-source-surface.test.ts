@@ -24,6 +24,7 @@ const KNOWN_PARTS = [
 	"phase-rollback.ts",
 	"inherited-red-ladder.ts",
 	"env-blocker-regate.ts",
+	"env-blocker-judge.ts",
 	"phase-status.ts",
 	"protection-gate.ts",
 	"red-evidence.ts",

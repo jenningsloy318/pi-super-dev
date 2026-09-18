@@ -6,6 +6,7 @@ import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
 import { adjudicateInheritedRedLadder } from "./inherited-red-ladder.ts";
 import { runEnvBlockerRegate } from "./env-blocker-regate.ts";
+import { handOffEnvBlockerJudge } from "./env-blocker-judge.ts";
 import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
@@ -26,8 +27,6 @@ import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ControlObj, Stage } from "../../types.ts";
 
-// v0.3.73 M1: re-exported for the salvage seam + tests.
-import { classifyJudgeRoute } from "../../routing/router.ts";
 import { appendGateChecked } from "../../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
@@ -54,7 +53,7 @@ import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../../render/s
 import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
 import { createPhaseStatusKit } from "./phase-emit.ts";
 import { recordConvergenceFindings } from "../../convergence-ledger.ts";
-import { classifyGateFault, collectDirtPaths, listPorcelainPaths, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount, type FaultClass } from "../../fault-classification.ts";
+import { classifyGateFault, collectDirtPaths, listPorcelainPaths, type FaultClass } from "../../fault-classification.ts";
 import { markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
 import { phaseClauseFiles } from "../plan-feasibility.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
@@ -240,15 +239,6 @@ export const implementationStage: Stage = {
 			// the product ladder). Runs 01-47 / 05-09 died on exactly the missing
 			// distinction: a clean-at-start tree classified `environmental-blocker`
 			// and the quarantine stashed the implementer's own live fix.
-			// v0.2.6 G4 — one-shot guidance re-entry grant at the env-blocker
-			// boundary, PERSISTED per phase across convergence iterations
-			// (adversarial sd26-F2: a per-run flag would re-grant on every re-entry,
-			// making guidance-driven windup bounded only by the global agent budget).
-			// The FIRST retry-with-guidance ever granted for a phase declines to trip
-			// convergenceBlocked so the outer convergence loop re-enters the phase
-			// and the persisted guidance reaches fresh agent calls; any later choice
-			// finds the budget spent and terminal-stops.
-			let envGuidanceReentryGranted = false;
 			// J9-a: judge diagnosis to surface at the human boundary when it escalates.
 			let redJudgeDiagnosis = "";
 			// ADV-v0379-4: honest labeling — the v0.3.79 corrective floor escalates with
@@ -1904,225 +1894,36 @@ export const implementationStage: Stage = {
 				if (envRegate.reclassifiedFaultClass !== null) attemptFaultClass = envRegate.reclassifiedFaultClass;
 				if (envRegate.postRegateProductErrors !== null) postRegateProductErrors = envRegate.postRegateProductErrors;
 				if (!envRegate.reRunClassifiedProduct) {
-					// Still blocked — v0.2.6 G1/G2 narrowed the reachable entries to
-					// kill-switch-set and quarantine-FAILED (no-dirt can no longer classify
-					// environmental; a still-failing or deliverable-failing re-gate
-					// re-classifies product above): the judge hand-off below owns routing
-					// from exactly those entries.
-
-					// T4.3 (SCENARIO-024 · AC-11/AC-04): kill-switch ordering — the detection
-					// warning is emitted BEFORE the judge hand-off. Detection observes,
-					// mutation never runs: the guard above skipped the quarantine arm and the
-					// primitive's own short-circuit makes a stash structurally unreachable.
-					if (dirtPaths.length > 0 && !dirtyQuarantineEnabled()) {
-						ctx.log(`Implementation ${phaseId} dirty-quarantine kill-switch SUPER_DEV_NO_DIRTY_QUARANTINE=1 set — detection only, worktree untouched — class=environment; next=<judge: fix-environment/escalate>`);
-					}
-					// AC-05 (SCENARIO-013): class + next action on every new line (NFR-2).
-					ctx.log(`Implementation ${phaseId} environmental-blocker: out-of-scope-only failures, baseline=regression, own-scope evidence green — class=environment; next=<judge: fix-environment/escalate>`);
-					// ── T4.1 (SCENARIO-010/011 · AC-04): the SINGLE judge hand-off, at FIRST
-					// occurrence, reached from every still-blocked entry (dirt empty |
-					// kill-switch | re-gate grant spent | re-run still blocked | quarantine
-					// failed). D-13: the signature is keyed on the out-of-scope subjects +
-					// baseline status — NEVER progressSignature.failure — so the ≤2
-					// per-signature budget is not shared with stage9.impl-no-progress.
-					// D-6 (OQ-1): allowedRoutes is EXACTLY ["fix-environment"] (escalate-now
-					// is auto-unioned by judge.ts); outputTails carries the gate tail +
-					// baseline evidence so quote verification (INV-2) can pass instead of
-					// silently degrading. OQ-3/D-8: exactly one prior-fault context line,
-					// present iff the track ledger exists.
-					const latestGate = envRegate.gate2 ?? gate;
-					const envSubjects = [...new Set(latestGate.outOfScopeErrors)].sort();
-					const envSignature = JSON.stringify({ subjects: envSubjects, baseline: latestGate.baselineCheck?.status ?? "regression" });
-					const priorFaults = readEnvironmentFaultCount(setup.specDirectory);
-					const envBaselineStatus = latestGate.baselineCheck?.status ?? "regression";
-					const envBaselineEvidence = latestGate.baselineCheck?.evidence ?? "(none)";
-					const envGateTail = latestGate.errors.join("\n").slice(-2000);
-					const judgeOut = await runJudge(ctx, {
-						scope: `stage9.impl-env-blocker.${phaseId}`,
-						signature: envSignature,
+					// increment 11 — the judge hand-off (env-blocker-judge.ts): the single
+					// runJudge dispatch at the blocker boundary, the D-5 soft HITL surface
+					// (logged-only escalation, retry-with-guidance persistence), the T6.2
+					// verdict record, and the terminal stop — or the G3 audited product
+					// override falling through to failureReasons. envBlockedPhases and
+					// phaseGuidanceReentryUsed mutate in place inside the module.
+					const envJudge = await handOffEnvBlockerJudge({
+						ctx,
+						state,
 						worktreePath: setup.worktreePath,
 						specDirectory: setup.specDirectory,
-						context: [
-							"## Environmental blocker — out-of-scope-only failures, baseline=regression, own-scope evidence green",
-							...latestGate.errors.slice(0, 12),
-							"## Baseline verification",
-							`status=${envBaselineStatus}`,
-							envBaselineEvidence,
-							"## Dirt inventory (foreign uncommitted state, canonical exclusions applied)",
-							dirtPaths.length ? dirtPaths.join("\n") : "(empty)",
-							...(priorFaults !== null ? [`## Prior environmental faults on this track: ${priorFaults} (from .environment-faults.jsonl)`] : []),
-						].join("\n"),
-						// v0.2.6 G3: the judge may ARBITRATE — when its grounded diagnosis
-						// contradicts the deterministic `class=environment` frame (run 05-09:
-						// "NOT environmental — cross-phase sequencing conflict"), it can route
-						// implementer-retry instead of being boxed into fix-environment or
-						// escalate-now. Bounded by the per-signature budget; audited in the log,
-						// the ledger, and the implementer feedback.
-						allowedRoutes: ["fix-environment", "implementer-retry"],
-						outputTails: [envGateTail, envBaselineEvidence],
+						phaseId,
+						phaseName,
+						gate,
+						gate2: envRegate.gate2,
+						dirtPaths,
+						phaseGuidanceReentryUsed,
+						envBlockedPhases,
 					});
-					// ── T4.2 (SCENARIO-012 · AC-04): the outcome ladder. A routed
-					// fix-environment surfaces as the D-5 soft HITL escalation carrying BOTH
-					// evidence packets; escalate/discarded/degraded (incl. disabled judge and
-					// budget exhaustion) fall to the SAME surface; headless logs the packets.
-					// EVERY arm then terminal-stops — no `continue`, no implementer spawn, no
-					// second automatic quarantine (OQ-1); the outer convergence loop owns
-					// re-entry (a later iteration re-enters the phase with a fresh budget).
-					const routedFixEnvironment = judgeOut.status === "routed" && judgeOut.verdict.route === "fix-environment";
-					// v0.2.6 G3 — the audited override: the classifier said environment, the
-					// judge's grounded reading says product. Trust the judge: the diagnosis
-					// joins the implementer feedback, no HITL surface, no convergence block,
-					// the attempt falls through to failureReasons (normal implementer retry).
-					// M4 fold (defense-in-depth, NOT tautology removal): the explicit
-					// route check guards against an UNOFFERED retry-classified route
-					// (re-author-tests/challenge-test also classify to "retry" but are
-					// never offered at this scope); the classifier agreement pins the
-					// shared vocabulary so the two can never drift apart silently.
-					const routedImplementerRetry = judgeOut.status === "routed" && judgeOut.verdict.route === "implementer-retry" && classifyJudgeRoute(judgeOut.verdict.route) === "retry";
-					let envJudgeDiagnosis = "";
-					if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
-						envJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
+					if (envJudge.kind === "override-retry") {
+						attemptFaultClass = envJudge.faultClass;
+						if (envJudge.postRegateErrors !== null) postRegateProductErrors = envJudge.postRegateErrors;
+						envJudgeOverrideFeedback = envJudge.judgeOverrideFeedback;
 					} else {
-						envJudgeDiagnosis = `judge ${judgeOut.status}: ${judgeOut.reason}`;
-					}
-					if (routedFixEnvironment) {
-						ctx.log(`Implementation ${phaseId} judge route=fix-environment: environmental fix required — surfacing both evidence packets to the user (soft HITL, terminal stop) — class=environment; next=<human: fix-environment> — ${judgeOut.verdict.diagnosis}`);
-					} else if (routedImplementerRetry) {
-						// v0.2.6 G3 + code-review sd26-CR-3: the override arm neither
-						// surfaces HITL nor terminal-stops — the ladder wording below must
-						// not fire for it (its own override log is emitted in the G3 block).
-					} else {
-						const degradeWhy = judgeOut.status === "routed" || judgeOut.status === "escalate" ? `verdict route=${judgeOut.verdict.route}` : judgeOut.reason;
-						ctx.log(`Implementation ${phaseId} judge ${judgeOut.status} at the environmental-blocker boundary (${degradeWhy}) — surfacing both evidence packets to the user (soft HITL, terminal stop) — class=environment; next=<human: escalate>`);
-					}
-					if (routedImplementerRetry) {
-						// v0.2.6 G3 — the audited override path: the judge's grounded diagnosis
-						// contradicts the deterministic class=environment frame. Record the
-						// verdict in the ledger, join the diagnosis (+ any undeclared-edit
-						// feedback) to the implementer retry, and SKIP the HITL surface and the
-						// convergence block entirely — the attempt falls through to failureReasons
-						// and the implementer is re-spawned with the judge's reading in context.
-						appendEnvironmentFault(setup.specDirectory, { kind: "judge-environmental", paths: null, stashRef: null, reason: `implementer-retry: ${judgeOut.verdict.diagnosis.slice(0, 200)}` }, ctx.log);
-						attemptFaultClass = "product-defect"; // v0.3.85 F3: the judge's grounded override — the audited log line says class=product
-						// v0.2.6 G3 + code-review sd26-CR-5: when this override arrives via
-						// a still-red post-quarantine re-gate, the re-run's errors are the
-						// tree's current truth — mirror the G2 carrier so the implementer
-						// never sees the stale pre-quarantine gate tail.
-						if (envRegate.gate2) postRegateProductErrors = envRegate.gate2.errors;
-						envJudgeOverrideFeedback = [
-							`judge override — the deterministic classifier said environment, but the judge diagnosis says this is a product defect the implementer must address: ${judgeOut.verdict.diagnosis.slice(0, 600)}`,
-							// v0.2.7 dedup: ownDirtFeedback is ALWAYS appended to failureReasons
-							// directly below, so it must NOT be repeated here (it duplicated every
-							// undeclared-edit line in the retry prompt on this override path).
-						];
-						ctx.log(`Implementation ${phaseId} judge route=implementer-retry: classifier=environment OVERRIDDEN by judge diagnosis — class=product; next=<implementer-retry> (audited in .environment-faults.jsonl; diagnosis joined the retry feedback) — ${judgeOut.verdict.diagnosis.slice(0, 200)}`);
-					} else {
-						// The soft HITL surface (mirrors the no-progress block's shape — minus
-						// applyRetryDecision, D-5): kind stagnation / severity soft / stage
-						// implementation; findings = gate tail + baseline + inventory sliced to
-						// 12, with the baseline and inventory packets LEADING the slice so both
-						// evidence packets always survive it.
-						const envFailure: import("../../types.ts").EscalationFailure = {
-							kind: "stagnation",
-							stage: "implementation",
-							message: `Implementation phase "${phaseName}" is blocked by an environmental failure: every gate failure references out-of-scope subject(s) that PASS at the merge-base baseline (status=${envBaselineStatus}), while all own-scope evidence (deliverables, change gate, symbol gate, TDD oracle) is green — this is not a product defect, and the implementer was not re-spawned.${envJudgeDiagnosis ? `\n\nJUDGE (${judgeOut.status}):\n${envJudgeDiagnosis}` : ""} Fix the environment (or recover quarantined state with: git stash pop) and re-run; the next convergence pass re-enters this phase with a fresh one-re-run budget.`,
-							severity: "soft",
-							findings: [
-								...(envJudgeDiagnosis ? [{ file: null, severity: null, title: `judge diagnosis: ${envJudgeDiagnosis.split("\n")[0].slice(0, 200)}` }] : []),
-								{ file: null, severity: null, title: `baseline verification: status=${envBaselineStatus} — ${envBaselineEvidence}` },
-								{ file: null, severity: null, title: `dirt inventory (canonical exclusions applied): ${dirtPaths.length ? dirtPaths.join(", ") : "(empty)"}` },
-								...latestGate.errors.slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
-							].slice(0, 12),
-							worktreePath: setup.worktreePath,
-							specDirectory: setup.specDirectory,
-						};
-						const escalate = (ctx as { options?: { escalate?: import("../../types.ts").Escalate } }).options?.escalate;
-						if (escalate) {
-							try {
-								const { runEscalation } = await import("../../escalation.ts");
-								const decision = await runEscalation(state, envFailure, escalate);
-								// D-5: the decision is LOGGED ONLY — applyRetryDecision is NOT called
-								// at this boundary (its retry path is a `git reset --hard` + `git
-								// clean -fd` rollback; stash entries survive it, but the env-blocker
-								// arm must never make that destructive choice unconscious). No
-								// rollback, no implementer re-spawn, no `continue` — the outer
-								// convergence loop owns re-entry.
-								if (decision) {
-									// adv-review F-3: a retry-with-guidance choice at this boundary must
-									// not be silently discarded — persist the guidance non-destructively
-									// to the track user-notes (injected into every later agent prompt)
-									// WITHOUT applyRetryDecision (D-5 still holds: no rollback, no
-									// implementer re-spawn, no continue).
-									// v0.2.6 G4 — the FIRST retry-with-guidance EVER granted for this phase
-										// (persisted across convergence iterations — adversarial sd26-F2) grants a
-										// bounded re-entry: guidance persists AND the adv-F2 windup trip below is
-										// skipped, so the outer convergence loop re-enters the phase and the guidance
-										// actually reaches fresh agent calls (run 05-09 dead-lettered the user's
-										// explicit "do it again"). One-shot per phase EVER; a later choice (any
-										// iteration) finds the budget spent and terminal-stops as before. sd26-F3:
-										// the grant is consumed ONLY after appendUserNotes succeeds — a persistence
-										// failure leaves the budget intact and falls to the blocked stop.
-									if (decision.choice === "retry-with-guidance" && decision.guidance) {
-										const grantReentry = !Object.prototype.hasOwnProperty.call(phaseGuidanceReentryUsed, phaseId);
-										try {
-											const { appendUserNotes } = await import("../../render/user-notes.ts");
-											appendUserNotes(setup.specDirectory, [`[env-blocker phase ${phaseId}] ${decision.guidance.slice(0, 2000)}`]);
-											if (grantReentry) {
-												phaseGuidanceReentryUsed[phaseId] = true;
-												envGuidanceReentryGranted = true;
-											}
-											ctx.log(`Implementation ${phaseId} environmental-blocker retry-with-guidance: guidance persisted to track user-notes${grantReentry ? " — re-entry granted (1/1, per phase ever): the outer convergence loop re-enters this phase and the guidance reaches the next pass" : " — re-entry budget already spent; phase preserved as partial and the pass continues (v0.3.0 semantics), guidance persists for the next convergence iteration"} — class=environment; next=<${grantReentry ? "re-entry consumes guidance" : "human: manual re-entry"}>`);
-										} catch (e) {
-											ctx.log(`Implementation ${phaseId} environmental-blocker guidance persistence failed (logged only — re-entry grant NOT consumed): ${e instanceof Error ? e.message : String(e)}`);
-										}
-									}
-									ctx.log(`Implementation ${phaseId} environmental-blocker escalation decision: ${decision.choice}${decision.guidance ? ` (guidance: ${decision.guidance.slice(0, 200)})` : ""} — logged only, NOT applied (no rollback; the outer convergence loop owns re-entry)`);
-								}
-							} catch { /* never-throw: fall through to the terminal stop */ }
-						} else {
-							// Headless: no escalation surface — log BOTH evidence packets, then stop.
-							ctx.log(`Implementation ${phaseId} environmental-blocker (headless — no escalation surface): gate tail: ${envGateTail}; baseline: status=${envBaselineStatus} — ${envBaselineEvidence}; dirt inventory (canonical exclusions applied): ${dirtPaths.length ? dirtPaths.join(", ") : "(empty)"}`);
-						}
-						// ── T6.2 (SCENARIO-026 · AC-12): the judge-environmental VERDICT record,
-						// appended after the hand-off settles (the HITL/headless surface has run)
-						// on every outcome that carries a verdict — routed or escalate. A
-						// discarded/degraded outcome carries NO verdict (only a reason), so no
-						// verdict record exists to write; lenient preexisting grants never reach
-						// this boundary at all (D-14). Verdict shape: paths/stashRef null, reason
-						// = "<route>: <diagnosis tail>" (≤200 chars); key set stays exactly
-						// {kind, paths, stashRef, reason}. The append never throws — an
-						// unwritable ledger degrades to the primitive's warning (SCENARIO-030)
-						// and the terminal stop below proceeds regardless.
-						if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
-							appendEnvironmentFault(setup.specDirectory, { kind: "judge-environmental", paths: null, stashRef: null, reason: `${judgeOut.verdict.route}: ${judgeOut.verdict.diagnosis.slice(0, 200)}` }, ctx.log);
-						}
-						// D-5 terminal stop: terminalStopReason "failed" (the generic loop-tail
-						// stop line carries no suffix for it) + this DISTINCT stop log so the
-						// boundary remains identifiable in the run log.
-						terminalStopReason = "failed";
-					envBlockedPhases.add(phaseId); // v0.3.80 B2: judge-owned environmental stop — excluded from stage-close re-verification
-						if (envGuidanceReentryGranted) {
-							// v0.2.6 G4 — the granted re-entry declines the windup trip: the outer
-							// convergence loop re-enters the phase and the persisted guidance
-							// reaches the fresh agent calls. terminalStopReason stays "failed" so
-							// the loop tail logs an honest stop for THIS pass.
-							ctx.log(`Implementation ${phaseId} environmental-blocker stop after judge hand-off (outcome: ${routedFixEnvironment ? "route=fix-environment" : judgeOut.status}) — guidance re-entry GRANTED: convergence not blocked, the outer convergence loop re-enters this phase — class=environment; next=<re-entry consumes guidance>`);
-						} else {
-							// adv-review F-2: trip the convergence-level anti-windup — an unresolved
-							// environmental blocker must NOT let the outer convergence loop re-enter
-							// this phase until the global agent budget. The distinct reason names
-							// the class so the summary distinguishes it from product no-progress.
-							// v0.3.0 (harness research): the environmental-blocker stop no longer
-							// trips convergenceBlocked — the phase is preserved as partial and the
-							// pipeline continues; the outer convergence loop re-enters bounded by
-							// the global budget fuse.
-							convergenceBlockReason = `environmental-blocker: ${routedFixEnvironment ? "judge route=fix-environment awaiting environment fix" : `judge ${judgeOut.status}`} — out-of-scope-only failures (baseline=${envBaselineStatus}), own-scope evidence green`;
-							ctx.log(`Implementation ${phaseId} environmental-blocker stop after judge hand-off (outcome: ${routedFixEnvironment ? "route=fix-environment" : judgeOut.status}) — awaiting environment fix or user decision — class=environment; phase preserved as partial, continuing to the next phase this pass (v0.3.0)`);
-						}
+						terminalStopReason = envJudge.stopReason;
+						if (envJudge.blockReason !== null) convergenceBlockReason = envJudge.blockReason;
 						break;
-					} // end !routedImplementerRetry (v0.2.6 G3)
-					} // end !reRunClassifiedProduct (adv-F5)
-				}
+					} // end the judge-hand-off interpretation (increment 11)
+				} // end !reRunClassifiedProduct (adv-F5)
+				} // end environmental-blocker branch
 				const failureReasons = [
 					// v0.2.6 G2: on the post-re-gate product fall-through the RE-RUN's errors
 					// are the tree's current truth (the pre-quarantine gate errors describe a
