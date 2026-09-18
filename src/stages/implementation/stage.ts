@@ -5,6 +5,7 @@ import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
 import { adjudicateInheritedRedLadder } from "./inherited-red-ladder.ts";
+import { runEnvBlockerRegate } from "./env-blocker-regate.ts";
 import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
@@ -50,12 +51,11 @@ import { contradictionFastFailFrame } from "../plan-feasibility.ts";
 import { isNoEditCompletion } from "../../agent-errors.ts";
 import { renderAndWrite } from "../../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../../render/schemas.ts";
-import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type BuildGateResult, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
+import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
 import { createPhaseStatusKit } from "./phase-emit.ts";
 import { recordConvergenceFindings } from "../../convergence-ledger.ts";
-import { classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount, type FaultClass } from "../../fault-classification.ts";
+import { classifyGateFault, collectDirtPaths, listPorcelainPaths, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount, type FaultClass } from "../../fault-classification.ts";
 import { markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
-import { clearBaselineCache } from "../../build-runner/baseline.ts";
 import { phaseClauseFiles } from "../plan-feasibility.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
 import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../../build-runner/runner-discovery.ts";
@@ -193,7 +193,9 @@ export const implementationStage: Stage = {
 			// one-gate-re-run budget. Per-phase hoisted state — reset each convergence
 			// iteration (a later re-entry gets a fresh budget of exactly 1) and grants
 			// EXACTLY ONE post-quarantine re-run; D-2: no delay-based anti-windup.
-			let envBlockerRegateUsed = false;
+			// increment 10: the quarantine/re-gate grant as an in/out holder (the
+			// module consumes it; one grant per phase, surviving attempts).
+			const envBlockerRegate = { used: false };
 			// v0.3.79 A2 (spec-25 run 14-14): count BLOCKING phase-boundary
 			// reverts in this phase — a repeated no-progress signature coinciding
 			// with reverts is a DETERMINISTIC plan contradiction, and the
@@ -1868,126 +1870,40 @@ export const implementationStage: Stage = {
 					// exclusions live once in the shared helper. RC12c-class undeclared edits
 					// land IN the inventory (SCENARIO-009) as ownDirt — deliberately different
 					// from trackerOutofScopeEdits' audit semantics (D-7).
-					let gate2: BuildGateResult | null = null;
-				let latestDeliverableCheck2: ReturnType<typeof runDeliverableCheck> | null = null; // adv-F5: re-run deliverable verdict for re-classification
-					if (foreignDirt.length > 0 && dirtyQuarantineEnabled() && !envBlockerRegateUsed) {
-						announceActivity("Environmental blocker", attemptDetail(attempt));
-						// AC-05 (SCENARIO-013 · T3.4): the class + next-action literal for
-						// the quarantine arm — substring-pinned in tests (dirt non-empty +
-						// switch unset ⇒ next=<quarantine+re-gate>).
-						ctx.log(`Implementation ${phaseId} environmental-blocker: out-of-scope-only failures, baseline=regression, own-scope evidence green — class=environment; next=<quarantine+re-gate>`);
-						// Recoverable quarantine (D-9/D-10): stash-based only, kill-switched,
-						// never destructive — the ONLY worktree mutation is a scoped
-						// `git stash push -u -- <paths>`.
-						// v0.2.6 G1: stash FOREIGN dirt only — paths dirty at phase start. This
-						// phase's own undeclared edits (ownDirt) are NEVER stashed: they are live
-						// work the retry feedback must name, not state to sweep away.
-						const q = quarantineDirt({ worktreePath: setup.worktreePath, paths: foreignDirt, reason: `stage9 environmental-blocker phase ${phaseId}`, log: ctx.log });
-						if (q.ok) {
-							// PRD ledger record (AC-12 · SCENARIO-005's And-clause): one JSON
-							// line, exact key set; never throws (degrades inside the primitive).
-							appendEnvironmentFault(setup.specDirectory, { kind: "quarantine", paths: foreignDirt, stashRef: q.stashRef, reason: `environmental-blocker phase ${phaseId}` }, ctx.log);
-							// Recovery log (AC-10 parity): quarantined paths + stash ref +
-							// `git stash pop` + kill-switch in one prominent line; class + next
-							// (NFR-2). Reversible by construction — never drop/clear (R-N6).
-							ctx.log(`Implementation ${phaseId} quarantined foreign uncommitted state — paths: ${foreignDirt.join(", ")} (foreign pre-phase dirt only — this-phase edits are never stashed); stash ref: ${q.stashRef ?? "(unresolved)"}; recover with: git stash pop; kill-switch: SUPER_DEV_NO_DIRTY_QUARANTINE=1 — class=environment; next=<build-gate re-run>`);
-							// The budget counts a COMPLETED state change: consumed only on a
-							// successful quarantine — it grants EXACTLY ONE gate re-run (AC-03,
-							// OQ-1; a failed quarantine leaves it intact, T4.4).
-							envBlockerRegateUsed = true;
-							// D-1a (SCENARIO-006 · AC-03): the re-run must NOT inherit a baseline
-							// verdict memoized against the pre-quarantine worktree — clear the
-							// memo immediately before the single re-run (AC wins over research
-							// Q4; deterministic, zero new cache machinery).
-							clearBaselineCache();
-							announceActivity("Build gate (post-quarantine re-run)", attemptDetail(attempt));
-							gate2 = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
-							appendGateChecked(state, "phase-build:env-blocker-regate", gate2, "implementation");
-							ctx.log(`Implementation ${phaseId} build-gate (post-quarantine re-run) ${gate2.pass ? "PASS" : "FAIL"} (ran: ${gate2.ran.join(", ") || "no commands"})`);
-							// T3.3 (SCENARIO-007 · AC-03): green-through on the RE-RUN result — the
-							// existing `(gate.pass || gate.inScopePass)` branch re-entered with a FRESH
-							// deliverable check. D-12 (risk 2): the original check ran with skipTests:true
-							// (the build was failing); after a green re-run, resetDeliverableCheckCache()
-							// then re-run with skipTests:false so `requireTests` is verified against a
-							// build-green state. The changeGate/symbolGate/tdd-oracle verdicts are REUSED,
-							// not recomputed — the quarantined paths exclude the claimed set, so those
-							// verdicts remain valid post-quarantine (D-12).
-							if (gate2.pass || gate2.inScopePass) {
-								resetDeliverableCheckCache();
-								announceActivity("Deliverable check", attemptDetail(attempt, "post-quarantine re-run"));
-								const deliverableCheck2 = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: false, defaultBranch: setup.defaultBranch }); // sweep-3 G6
-								latestDeliverableCheck2 = deliverableCheck2;
-								if ((gate2.pass || gate2.inScopePass) && deliverableCheck2.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
-									green = true;
-									phaseStatusUpsert(phaseStatus, phaseId, "green", attempt); // v0.3.85 S3: peak-attempts metric
-									emitPhaseStatus("ok");
-									const _efi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_efi >= 0) lastFailures.splice(_efi, 1);
-									if (gate2.pass) {
-										ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
-									} else {
-										ctx.log(`Implementation ${phaseId} IN-SCOPE GREEN on attempt ${attempt} — ${gate2.outOfScopeErrors.length} pre-existing out-of-scope failure(s) ignored (crates: ${cratesFromErrors(gate2.outOfScopeErrors).join(",")})`);
-									}
-									attemptErrors = gate2.errors;
-									break;
-								}
-								// Still blocked on own-scope evidence after the fresh check — but
-								// adv-review F-5: re-classify the RE-RUN evidence before the judge
-								// tail. A green re-run whose fresh deliverable check fails is product
-								// evidence, not environmental — routing it to the environmental judge
-								// would misclassify. Only a still-environmental verdict proceeds to
-								// the judge hand-off below; otherwise fall through to failureReasons.
-							}
-						} else if (q.error) {
-							// Quarantine mechanism failure (T4.4/SCENARIO-029 arm): nothing was
-							// stashed so no recovery is owed; degrade to the judge route —
-							// never fatal, the attempt loop never throws (AC-13).
-							ctx.log(`Implementation ${phaseId} quarantine FAILED (nothing stashed — degrading to judge route) — class=environment; next=<judge: fix-environment/escalate>: ${q.error.slice(0, 300)}`);
-						}
-						// (q.skipped === "empty" is unreachable here — foreignDirt.length > 0;
-						// q.skipped === "kill-switch" is guarded by dirtyQuarantineEnabled().)
-					}
-					// adv-F5 + v0.2.6 G2: compute the re-run re-classification ONCE here (gate2
-					// + the fresh deliverable verdict + reused change/symbol/tdd evidence). It
-					// now covers BOTH non-green re-run shapes: (a) the re-run STILL FAILS — post-
-					// quarantine the foreign dirt is stashed by construction, so any remaining
-					// failure is this phase's product problem (run 2026-08-19T05-09-21-800Z rode
-					// a stale environment class into the judge on exactly this path — its own
-					// quarantine had manufactured the tsc failures); (b) adv-F5's original case —
-					// the re-run went green but the fresh deliverable check failed.
-					// Non-environmental ⇒ fall through to failureReasons (product retry
-					// semantics, the re-run's errors as the feedback truth) instead of the
-					// environmental judge hand-off.
-					let reRunClassifiedProduct = false;
-					const regateStillRed = gate2 !== null && !gate2.pass && !gate2.inScopePass;
-					if (gate2 && (regateStillRed || (latestDeliverableCheck2 !== null && !latestDeliverableCheck2.pass))) {
-						// v0.2.6 G2 + adversarial sd26-F5: OBSERVED provenance, not the
-						// asserted 0 — recompute the inventory and partition against the
-						// phase's first-ever snapshot (normally 0 post-quarantine because
-						// the foreign dirt was stashed; an external tree mutation between
-						// the stash and the re-gate surfaces here as live foreign dirt and
-						// keeps the environmental reading honest).
-						const dirtAfter = collectDirtPaths({
-							worktreePath: setup.worktreePath,
-							specDirectory: setup.specDirectory,
-							copiedEnvFiles: setup.copiedEnvFiles ?? [],
-							extraExcluded: [...projectStructured.filesCreated, ...projectStructured.filesModified, ...projectStructured.filesDeleted, ...declaredScope, ...testFiles],
-						});
-						const foreignAfter = dirtAfter.filter((p) => runStartSet.has(p));
-						const reClassify = classifyGateFault({
-							errors: gate2.errors,
-							outOfScopeErrors: gate2.outOfScopeErrors,
-							baselineCheck: gate2.baselineCheck,
-							ownScope: { deliverablePass: latestDeliverableCheck2 !== null ? latestDeliverableCheck2.pass : false, changePass: changeGate.pass, symbolPass: symbolGate.pass, tddClean: tddOracleFailures.length === 0 },
-							foreignDirtCount: foreignAfter.length,
-						});
-						if (reClassify.faultClass !== "environmental-blocker") {
-							reRunClassifiedProduct = true;
-							attemptFaultClass = reClassify.faultClass; // v0.3.85 F3: the re-run's class is the attempt's effective class
-							postRegateProductErrors = gate2.errors;
-							ctx.log(`Implementation ${phaseId} post-quarantine re-run classified ${reClassify.faultClass} (${regateStillRed ? "re-run still failing — remaining failures are this phase's product problem (foreign dirt already stashed)" : "own-scope evidence not green"}) — class=product; next=<implementer-retry> — environmental judge skipped`);
-						}
-					}
-					if (!reRunClassifiedProduct) {
+				// increment 10 — the quarantine/re-gate/re-classification machinery
+				// (env-blocker-regate.ts): the green-through break became a returned
+				// variant; every fall-through collapses into `blocked`, which carries
+				// gate2 (the judge region's latestGate input) and the null-or-value
+				// re-classification fields the caller assigns ONLY when non-null.
+				const envRegate = await runEnvBlockerRegate({
+					ctx,
+					state,
+					worktreePath: setup.worktreePath,
+					specDirectory: setup.specDirectory,
+					copiedEnvFiles: setup.copiedEnvFiles ?? [],
+					defaultBranch: setup.defaultBranch,
+					phaseId,
+					attempt,
+					foreignDirt,
+					runStartSet,
+					dirtExclusions: [...projectStructured.filesCreated, ...projectStructured.filesModified, ...projectStructured.filesDeleted, ...declaredScope, ...testFiles],
+					regateUsed: envBlockerRegate,
+					bridgedDeliverables,
+					ownScope: { changePass: changeGate.pass, symbolPass: symbolGate.pass, tddClean: tddOracleFailures.length === 0 },
+					phaseStatus: phaseStatus as never,
+					lastFailures: lastFailures as never,
+					announceActivity,
+					emitPhaseStatus,
+					attemptDetail,
+				});
+				if (envRegate.kind === "green-through") {
+					green = true;
+					attemptErrors = envRegate.gateErrors;
+					break;
+				}
+				if (envRegate.reclassifiedFaultClass !== null) attemptFaultClass = envRegate.reclassifiedFaultClass;
+				if (envRegate.postRegateProductErrors !== null) postRegateProductErrors = envRegate.postRegateProductErrors;
+				if (!envRegate.reRunClassifiedProduct) {
 					// Still blocked — v0.2.6 G1/G2 narrowed the reachable entries to
 					// kill-switch-set and quarantine-FAILED (no-dirt can no longer classify
 					// environmental; a still-failing or deliverable-failing re-gate
@@ -2005,7 +1921,7 @@ export const implementationStage: Stage = {
 					ctx.log(`Implementation ${phaseId} environmental-blocker: out-of-scope-only failures, baseline=regression, own-scope evidence green — class=environment; next=<judge: fix-environment/escalate>`);
 					// ── T4.1 (SCENARIO-010/011 · AC-04): the SINGLE judge hand-off, at FIRST
 					// occurrence, reached from every still-blocked entry (dirt empty |
-					// kill-switch | envBlockerRegateUsed | re-run still blocked | quarantine
+					// kill-switch | re-gate grant spent | re-run still blocked | quarantine
 					// failed). D-13: the signature is keyed on the out-of-scope subjects +
 					// baseline status — NEVER progressSignature.failure — so the ≤2
 					// per-signature budget is not shared with stage9.impl-no-progress.
@@ -2014,7 +1930,7 @@ export const implementationStage: Stage = {
 					// baseline evidence so quote verification (INV-2) can pass instead of
 					// silently degrading. OQ-3/D-8: exactly one prior-fault context line,
 					// present iff the track ledger exists.
-					const latestGate = gate2 ?? gate;
+					const latestGate = envRegate.gate2 ?? gate;
 					const envSubjects = [...new Set(latestGate.outOfScopeErrors)].sort();
 					const envSignature = JSON.stringify({ subjects: envSubjects, baseline: latestGate.baselineCheck?.status ?? "regression" });
 					const priorFaults = readEnvironmentFaultCount(setup.specDirectory);
@@ -2092,7 +2008,7 @@ export const implementationStage: Stage = {
 						// a still-red post-quarantine re-gate, the re-run's errors are the
 						// tree's current truth — mirror the G2 carrier so the implementer
 						// never sees the stale pre-quarantine gate tail.
-						if (gate2) postRegateProductErrors = gate2.errors;
+						if (envRegate.gate2) postRegateProductErrors = envRegate.gate2.errors;
 						envJudgeOverrideFeedback = [
 							`judge override — the deterministic classifier said environment, but the judge diagnosis says this is a product defect the implementer must address: ${judgeOut.verdict.diagnosis.slice(0, 600)}`,
 							// v0.2.7 dedup: ownDirtFeedback is ALWAYS appended to failureReasons

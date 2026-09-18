@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.38: env-blocker quarantine/re-gate extracted (stage.ts split, increment 10)
+
+The environmental-blocker quarantine/re-gate/re-classification machinery (the first sub-block of
+the env-blocker branch: foreign-dirt quarantine with the kill-switch, the phase's single
+post-quarantine gate re-run, the fresh skipTests:false deliverable check, and the
+OBSERVED-provenance product re-classification) moves out of `stage.ts` into
+`src/stages/implementation/env-blocker-regate.ts` — 2,810 → 2,727 lines. The SIXTH control-flow
+conversion: one `break` (green-through) became a returned variant; the two fall-throughs
+(product re-classification; still-blocked → judge) collapsed into one `blocked` variant
+carrying `gate2` (the still-inline judge region reads `latestGate = gate2 ?? gate` at its two
+sites, now `envRegate.gate2`) plus null-or-value re-classification fields the caller assigns
+ONLY when non-null. The phase-scoped re-gate grant (`let envBlockerRegateUsed`) became an in/out
+`{used}` holder at the same declaration site — one grant per phase per convergence iteration,
+consumed only on a successful quarantine, surviving attempts. The judge hand-off (the second
+sub-block, ~200 lines) stays inline as increment 11.
+
+Dual gates ran on glm-5.3-flash:high. Code gate: APPROVED (0 Critical/High/Medium, 3 nits) —
+move equivalence, holder conversion, null-or-value discipline, dead imports, test honesty all
+MET; folds: the orphaned `type BuildGateResult` import pruned and the D-1a ordering pinned by
+invocation-call-order (the baseline memo clear provably precedes the re-run). Adversarial gate:
+PASS, zero divergence on all five vectors (fall-through state incl. the green-through/deliverable-fail
+arm, grant holder incl. mid-attempt throws and §D re-entry, green-through mutation reordering
+proven unobservable, judge seam rewires complete, re-classification inputs identical);
+folds: the stale identifier in the T4.1 comment and the over-trusting "Never throws" doc claim.
+6 contract tests + the 103-test stage-level env-blocker suite green end-to-end.
+
 ### Refactor — v0.4.37: inherited-red tier ladder extracted (stage.ts split, increment 9)
 
 The inherited-red tier ladder (Tier-0 own-leak deterministic revert, Tier-1 flake filter with
