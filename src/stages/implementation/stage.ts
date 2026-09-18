@@ -1,6 +1,6 @@
 import { changeFootprint, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, landedFootprintIsEmpty, nextFaultStreak, pad, repeatedNoProgress } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
-import { MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, phaseWallBudgetMs, reverifyPartialPhases, runtimeInstructionFingerprint } from "./phase-reentry.ts";
+import { MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, maxPhaseAttempts, phaseWallBudgetMs, runtimeInstructionFingerprint } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
@@ -11,7 +11,8 @@ import { adjudicateNoProgress } from "./no-progress-valve.ts";
 import { runGateSuite } from "./gate-suite.ts";
 import { runGreenBoundaryOracle } from "./green-boundary.ts";
 import { closePhaseTail } from "./phase-tail.ts";
-import { deterministicPhaseCommit, phaseStatusUpsert } from "./phase-status.ts";
+import { phaseStatusUpsert } from "./phase-status.ts";
+import { runStageCloseReverify } from "./stage-close-reverify.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { adjudicateRedRetryLadder } from "./red-retry-ladder.ts";
 import { adjudicateRedAcceptance } from "./red-acceptance.ts";
@@ -29,7 +30,6 @@ import { dispatchImplementer } from "./implementer-dispatch.ts";
  * replaces the old QA self-report — no more vacuous pass on "agent said green".
  */
 
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { ControlObj, Stage } from "../../types.ts";
 
@@ -1345,67 +1345,16 @@ export const implementationStage: Stage = {
 				continue;
 			}
 		}
-		// v0.3.80 B2 — stage-close re-verification (commit fusion): gate-window expiry
-		// can end a phase PARTIAL with its work already landed; the stage verdict must
-		// reflect the tree, not the stale gate window. Dual-review hardening: the flip
-		// requires an affirmative clause + a clause file changed THIS RUN (vs the merge
-		// base — pre-existing content cannot flip) + the stage build gate + a FULL
-		// runDeliverableCheck per flippable (deliverablesAlreadyMet now verifies
-		// requireTests at existence grade; execution authority stays here — F-04,
-		// v0.3.86); flipped phases splice lastFailures and get their deterministic
-		// commit like every other green path (review F3).
-		{
-			const changedThisRun = new Set<string>();
-			try {
-				const mergeBase = String(spawnSync("git", ["-C", setup.worktreePath, "merge-base", "HEAD", setup.defaultBranch], { encoding: "utf8", timeout: 10_000 }).stdout ?? "").trim();
-				if (mergeBase) {
-					const diffOut = String(spawnSync("git", ["-C", setup.worktreePath, "diff", "--name-only", mergeBase, "HEAD"], { encoding: "utf8", timeout: 15_000 }).stdout ?? "");
-					const statusOut = String(spawnSync("git", ["-C", setup.worktreePath, "status", "--porcelain"], { encoding: "utf8", timeout: 10_000 }).stdout ?? "");
-					for (const line of diffOut.split("\n")) if (line.trim()) changedThisRun.add(leakNorm(line.trim()));
-					for (const line of statusOut.split("\n")) {
-						const rel = line.slice(3).trim().replace(/^"|"$/g, "");
-						if (rel && !rel.includes(" -> ")) changedThisRun.add(leakNorm(rel));
-					}
-				}
-			} catch { /* changed-set is a hardening input, not a gate — empty set degrades to the pre-hardening behavior for absorbed-work detection */ }
-			const reverify = reverifyPartialPhases(phases as unknown as Array<Record<string, unknown>>, phaseStatus as Array<{ id: string; status: string }>, setup.worktreePath, setup.defaultBranch, envBlockedPhases, changedThisRun);
-			for (const skipped of reverify.skippedVacuous) ctx.log(`Implementation stage-close re-verification: ${skipped} — keeping PARTIAL (honest)`);
-			if (reverify.flippable.length > 0) {
-				ctx.phase("Stage 9 — Implementation — stage-close re-verification");
-				resetDeliverableCheckCache();
-				const closeGate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
-				appendGateChecked(state, "stage-close-reverify", closeGate, "implementation");
-				if (closeGate.pass || closeGate.inScopePass) {
-					for (const f of reverify.flippable) {
-						const rvDeliverables = (phases[f.index] as { deliverables?: DeliverableContract }).deliverables;
-						const rvCheck = rvDeliverables
-							? runDeliverableCheck(setup.worktreePath, rvDeliverables, { signal: ctx.signal, skipTests: false, defaultBranch: setup.defaultBranch })
-							: null;
-						if (rvCheck && !rvCheck.pass) {
-							ctx.log(`Implementation ${f.id} stage-close re-verification: deliverablesAlreadyMet passed but the FULL deliverable check FAILED (missing: ${rvCheck.missing.slice(0, 3).join("; ")}) — keeping PARTIAL (honest; requireTests/scenario sweep authoritative)`);
-							continue;
-						}
-						ctx.log(`Implementation ${f.id} stage-close re-verification: deliverables satisfied at close (full check + build gate green) — marking GREEN (gate-window expiry had left landed work unverified; commit fusion)`);
-						phaseStatusUpsert(phaseStatus, f.id, "green");
-						phasesCompleted++;
-						lastFailures = lastFailures.filter((e) => !e.phaseId || e.phaseId !== f.id); // review F3: a green phase carries no stale failure row
-						if (ctx.budget.check()) {
-							const commitOutcome = deterministicPhaseCommit(setup.worktreePath, {
-								phaseIndex: f.index + 1,
-								totalPhases: phases.length,
-								phaseName: String((phases[f.index] as { name?: unknown })?.name ?? f.id),
-								worktreeCreated: (setup as { worktreeCreated?: boolean }).worktreeCreated,
-								gateSummary: "stage-close re-verification: build green; deliverables met (full check)",
-							});
-							ctx.log(`Implementation ${f.id} stage-close commit: ${commitOutcome.status} — ${commitOutcome.reason}`);
-						}
-					}
-					if (phaseStatus.length === phases.length && phaseStatus.every((p) => p.status === "green")) allGreen = true; // review P3: never claim all-green over an entry subset (REPLAN break leaves later phases without entries)
-				} else {
-					ctx.log(`Implementation stage-close re-verification: ${reverify.flippable.length} partial phase(s) have satisfied deliverables but the stage build gate FAILED — keeping PARTIAL (honest)`);
-				}
-			}
-		}
+		// increment 22: stage-close re-verification (commit fusion) — boundary closer
+		const close = runStageCloseReverify({
+			ctx, state,
+			worktreePath: setup.worktreePath, defaultBranch: setup.defaultBranch,
+			worktreeCreated: (setup as { worktreeCreated?: boolean }).worktreeCreated,
+			phases, phaseStatus, envBlockedPhases, lastFailures,
+		});
+		phasesCompleted += close.flipsCompleted;
+		lastFailures = close.lastFailuresOut; // content-identical when nothing flipped
+		if (close.forceAllGreen) allGreen = true; // review P3: only on a full entry set, every row green
 		const control: ControlObj = {
 			phasesCompleted,
 			totalPhases: phases.length,

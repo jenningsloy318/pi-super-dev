@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.50: stage.ts split, increment 22 (stage-close re-verification)
+
+- **What**: the post-phase-loop v0.3.80 B2 stage-close re-verification (commit fusion) — the git changed-set walk (merge-base/diff/porcelain with pinned timeouts, degrading to empty-set on failure), `reverifyPartialPhases`, the flip ladder (build gate + FULL deliverable re-check, keep-PARTIAL honesty logs, `phaseStatusUpsert`, stale failure-row drop, budget-gated deterministic close commit), and the review-P3 all-green entry-subset rule — extracted from `stage.ts` into `src/stages/implementation/stage-close-reverify.ts` (`runStageCloseReverify`, a boundary closer). stage.ts 1,464 → 1,413 lines.
+- **Result contract**: `{flipsCompleted, lastFailuresOut, forceAllGreen}` applied mechanically by the caller (`+=`, rebind, conditional set); the no-flip path returns the SAME array reference (identity-pinned).
+- **Gates**: dual `glm-5.3-flash:high` — adversarial PASS (zero divergence on all five vectors; the deferred-counter throw-ordering divergence proven unreachable — no try/catch wraps the region in either version; the await-seam vector closed by verifying the real gate signatures are synchronous); code Changes-Request with one test-honesty Medium folded (the "pre-existing content guard" test passed through content absence, not the guard — rewritten to the strongest form: anchor content COMMITTED, unrelated dirt making the changed-set non-empty without the clause file, so both walk-break directions now fail the suite).
+- **Fixture lessons**: porcelain collapses untracked dirs (`?? docs/`) — the clause file must be tracked-then-modified to reach the changed-set; `PhaseFailureEntry.phaseId` is a required `string` (defensive `!e.phaseId` arm stays unpinned by design).
+- Suite 290 files / 4,367 green; 3 dead import surfaces pruned (spawnSync line, leakNorm+reverifyPartialPhases, deterministicPhaseCommit); KNOWN_PARTS registered.
+
 ### Refactor — v0.4.49: stage.ts split, increment 21 (implementer dispatch + structured-claim parse)
 
 - **What**: the implementer CALL half of the implementer round — the v0.3.73 M7 HEAD-drift advisory (low, never blocking), the step-scoped dispatch (`IMPLEMENTER_CONTROL_KEYS`, `allowEmptyArraysFor: [testDefects, needsResearch]`), `parseStructuredChanges`, the v0.3.87 needsResearch archive with its P8 bounded cap, the internal-runtime-claim filter into `projectStructured`, the filesModified first-seen append, and the v0.2.9 G5 streaming log — extracted from `stage.ts` into `src/stages/implementation/implementer-dispatch.ts` (`dispatchImplementer`, one record; the archive + filesModified mutate by-ref exactly as inline). stage.ts 1,532 → 1,464 lines.

@@ -43,6 +43,7 @@ const KNOWN_PARTS = [
 	"red-review-join.ts",
 	"research-assist-dispatch.ts",
 	"run-prepare.ts",
+	"stage-close-reverify.ts",
 	"stage.ts",
 ];
 
