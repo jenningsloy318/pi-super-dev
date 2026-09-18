@@ -164,8 +164,9 @@ describe("v0.3.73 M7 — implementer self-commit prohibition + detector", () => 
 	});
 
 	it("implementation stage detects HEAD drift across the implementer call (source contract)", () => {
-		const impl = implementationStageSource(join(import.meta.dirname, ".."));
-		expect(impl).toContain("self-commit");
+		// v0.4.49 (increment 21): the implementer window moved to implementer-dispatch.ts
+		const implWindow = readFileSync(join(import.meta.dirname, "..", "src", "stages", "implementation", "implementer-dispatch.ts"), "utf8");
+		expect(implWindow).toContain("self-commit");
 	});
 
 	it("HEAD-drift detection brackets BOTH writer windows with pinned timeouts (AR-73-05)", () => {
@@ -173,9 +174,11 @@ describe("v0.3.73 M7 — implementer self-commit prohibition + detector", () => 
 		// v0.4.46 (increment 18): the tdd-guide window moved to red-tdd-dispatch.ts —
 		// the pin reads both files; the module's cwd is the destructured input param.
 		const tddWindow = readFileSync(join(import.meta.dirname, "..", "src", "stages", "implementation", "red-tdd-dispatch.ts"), "utf8");
-		const both = impl + "\n" + tddWindow;
+		// v0.4.49 (increment 21): the implementer window moved too — three files carry the 4 captures
+		const implWindow = readFileSync(join(import.meta.dirname, "..", "src", "stages", "implementation", "implementer-dispatch.ts"), "utf8");
+		const both = impl + "\n" + tddWindow + "\n" + implWindow;
 		// The implementer window…
-		expect(impl).toContain("implementer self-commit detected");
+		expect(implWindow).toContain("implementer self-commit detected");
 		// …and the RED authoring (tdd-guide) window — the incident's 5d4790d was a
 		// non-implementer-window self-commit shape.
 		expect(tddWindow).toContain("tdd-guide self-commit detected");

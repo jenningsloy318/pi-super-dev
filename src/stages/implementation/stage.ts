@@ -1,6 +1,6 @@
 import { changeFootprint, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, landedFootprintIsEmpty, nextFaultStreak, pad, repeatedNoProgress } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
-import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
+import { MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, phaseWallBudgetMs, reverifyPartialPhases, runtimeInstructionFingerprint } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
@@ -18,6 +18,7 @@ import { adjudicateRedAcceptance } from "./red-acceptance.ts";
 import { dispatchRedTdd } from "./red-tdd-dispatch.ts";
 import { runRedOracleCycle } from "./red-oracle-cycle.ts";
 import { assembleImplementerPrompt } from "./implementer-prompt.ts";
+import { dispatchImplementer } from "./implementer-dispatch.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
@@ -33,8 +34,7 @@ import { existsSync } from "node:fs";
 import type { ControlObj, Stage } from "../../types.ts";
 
 import { appendGateChecked } from "../../runlog.ts";
-import { getActiveTracker, isInternalRuntimeClaim } from "../../tracking.ts";
-import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
+import { getActiveTracker } from "../../tracking.ts";
 import { buildImplementationSummaryPrompt } from "../../prompts.ts";
 import { replanPending } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
@@ -45,7 +45,7 @@ import { extractFailingTestFilePaths, normalizeRepoPath } from "../inherited-red
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
 // research-agent, no agent file is created.
-import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, parseNeedsResearch, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
+import { RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
 // 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
 // plan compile-time checks) — two-locus mechanical findings routed through
 // the SAME replan circuit plan-feasibility uses (no judge call needed).
@@ -747,96 +747,30 @@ export const implementationStage: Stage = {
 				if (promptRound.consumedJudgeGuidance) judgeGuidance = "";
 				if (promptRound.consumedRedWeaknessAdvisory) redWeaknessAdvisory = "";
 				if (promptRound.consumedResearchAssistPending) researchAssistPending = null;
-				const implStepSeq = nextStepSeq();
-				// v0.3.73 M7 (run 2026-09-05T23-09-55-596Z: 2e92da3/5d4790d): detect a
-				// mid-phase implementer self-commit — HEAD moved across the call window.
-				// Advisory (P10 honest log + low finding): the deterministic commit and
-				// the v0.3.66/67 already-satisfied escapes keep the run safe, but a
-				// self-commit pre-lands unverified work and costs a RED cycle.
-				const headBeforeImpl = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
-				const impl = await inStepScope(implStepSeq, `Implementation (${attemptDetail(attempt)})`, async () => {
-					announceActivity("Implementation", attemptDetail(attempt));
-					emitStep(`Implementation (${attemptDetail(attempt)})`, "running", implStepSeq);
-					const r = await ctx.agent({
-						id: `pipeline.implementation.${phaseId}.impl.a${attempt}`,
-						agent: "implementer",
-						prompt: implPrompt,
-						// Fix 1a: the implementer's control contract is declared EXPLICITLY
-						// (parity with verify.ts:430) so the challenge channel never depends
-						// on prose parsing. `testDefects` MUST be declared for the model to
-						// emit it (v0.1.52: the undeclared key made the channel unreachable
-						// while a phantom `lines` key got filled instead).
-						controlKeys: IMPLEMENTER_CONTROL_KEYS,
-						// Fix 1c/1d: `testDefects: []` is the explicit "no proven defect"
-						// value — it must NOT trigger a corrective re-prompt in either
-						// backend. Absence (undefined) still does.
-						// v0.3.87 S4(b): `needsResearch: []` rides the same contract — the
-						// explicit "no research question" value, never a violation.
-						allowEmptyArraysFor: ["testDefects", "needsResearch"],
-					});
-					emitStep(`Implementation (${attemptDetail(attempt)})`, r.error ? "failed" : "ok", implStepSeq);
-					return r;
+				// increment 21 — the implementer dispatch + claim parse
+				// (implementer-dispatch.ts): the HEAD-drift advisory, the step-scoped
+				// implementer call (explicit controlKeys contract), the structured-claim
+				// parse with the internal-runtime filter, the needsResearch archive with
+				// its P8 cap, and the streaming log. One record; the by-ref archive and
+				// filesModified carries mutate in place.
+				const implRound = await dispatchImplementer({
+					ctx,
+					state,
+					worktreePath: setup.worktreePath,
+					phaseId,
+					attempt,
+					implPrompt,
+					needsResearchArchive,
+					filesModified,
+					attemptDetail,
+					announceActivity,
+					emitStep,
+					inStepScope,
+					nextStepSeq,
 				});
-				// spec-11 AC-06/AC-10: the implementer's claimed change set is now STRUCTURED
-				// ({filesCreated, filesModified, filesDeleted}). parseStructuredChanges reads
-				// it (and back-tolerates the legacy flat filesModified array). The flat
-				// summary list derives from filesCreated ∪ filesModified — deleted is
-				// EXCLUDED (a deleted file is not a "modified" display entry). dedupe via
-				// the existing `filesModified.includes` guard (first-seen order preserved).
-				try {
-					const headAfterImpl = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
-					if (headBeforeImpl && headAfterImpl && headBeforeImpl !== headAfterImpl) {
-						ctx.log(`Implementation ${phaseId} advisory: implementer self-commit detected (HEAD ${headBeforeImpl.slice(0, 8)} → ${headAfterImpl.slice(0, 8)} during the call) — commits are engine-owned; the deterministic commit still runs after the gates, and a pre-landed implementation routes through the already-satisfied verification`);
-						recordConvergenceFindings(state, {
-							detectedAtStage: "implementation",
-							ownerStage: "implementation",
-							severity: "low",
-							blocking: false,
-							title: `Phase ${phaseId} implementer self-commit (HEAD moved mid-call)`,
-							detail: `HEAD moved ${headBeforeImpl.slice(0, 8)} → ${headAfterImpl.slice(0, 8)} during the implementer call. Commits are engine-owned; self-commits pre-land unverified work and cost RED cycles.`,
-							evidence: [headAfterImpl],
-							sourceGate: "self-commit",
-						}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "self-commit" });
-					}
-				} catch { /* advisory detection only — never blocks the phase */ }
-				const structured = parseStructuredChanges(impl.control);
-				// Capture the implementer's diagnosis for the evidence-carrying RED
-				// re-author (unsatisfiable-test loop). `testDefects` is the structured,
-				// preferred signal; the trimmed .text tail is a fallback so a model
-				// that ignores the contract still surfaces its reasoning. Kept per
-				// phase (latest attempt) and consumed when RED is re-authored.
-				implDefects = parseTestDefects(impl.control);
-				// v0.3.87 S4(b) (decision 9): ARCHIVE the implementer's optional
-				// needsResearch entries — the field NEVER dispatches by itself; the
-				// in-memory per-phase archive enriches the assist QUESTION when the
-				// engine gate trips. Bounded (P8): oldest entries drop first, logged
-				// honestly; malformed entries were already rejected by the parser.
-				{
-					const before = needsResearchArchive.length;
-					needsResearchArchive.push(...parseNeedsResearch(impl.control, (m) => ctx.log(`Implementation ${phaseId} ${m}`)));
-					if (needsResearchArchive.length > RESEARCH_ASSIST_ARCHIVE_CAP) {
-						const dropped = needsResearchArchive.length - RESEARCH_ASSIST_ARCHIVE_CAP;
-						needsResearchArchive.splice(0, dropped);
-						ctx.log(`Implementation ${phaseId} research-assist archive bounded (${RESEARCH_ASSIST_ARCHIVE_CAP}): dropped ${dropped} oldest needsResearch entr(ies)`);
-					}
-					if (needsResearchArchive.length > before) ctx.log(`Implementation ${phaseId} needsResearch: ${needsResearchArchive.length} entr(ies) archived (no dispatch — the engine gate has not tripped; the field alone never triggers research)`);
-				}
-				implTextTail = trimImplementerText(impl.text);
-				const projectStructured: StructuredChanges = {
-					filesCreated: structured.filesCreated.filter((f) => !isInternalRuntimeClaim(f)),
-					filesModified: structured.filesModified.filter((f) => !isInternalRuntimeClaim(f)),
-					filesDeleted: structured.filesDeleted.filter((f) => !isInternalRuntimeClaim(f)),
-				};
-				for (const f of [...projectStructured.filesCreated, ...projectStructured.filesModified]) {
-					if (!filesModified.includes(f)) filesModified.push(f);
-				}
-				// v0.2.9 G5: stream what the implementer DID (claimed changes + summary +
-				// tests-pass count), so the run log shows each attempt's work, not just gates.
-				{
-					const implSummary = String((impl.control as { summary?: unknown } | null)?.summary ?? "").replace(/\s+/g, " ").trim();
-					const tp = (impl.control as { testsPassCount?: unknown } | null)?.testsPassCount;
-					ctx.log(`Implementation ${phaseId} implementer (attempt ${attempt})${impl.error ? ` error=${impl.error}` : ""}: created=[${projectStructured.filesCreated.join(", ") || "none"}] modified=[${projectStructured.filesModified.join(", ") || "none"}] deleted=[${projectStructured.filesDeleted.join(", ") || "none"}]${tp != null ? ` testsPass=${String(tp)}` : ""}${implSummary ? ` — ${implSummary.slice(0, 400)}` : ""}`);
-				}
+				const { impl, projectStructured } = implRound;
+				implDefects = implRound.implDefects;
+				implTextTail = implRound.implTextTail;
 				// ── v0.3.43 RC2 join: adjudicate the in-flight RED review ──────────────
 				// The review ran concurrently with this implementer (read-only vs the
 				// write lane). R2 fail-closed and the Fix 4 contradiction override are
@@ -929,7 +863,7 @@ export const implementationStage: Stage = {
 					idx,
 					testFiles,
 					projectStructured,
-					rawStructured: structured,
+					rawStructured: implRound.rawStructured,
 					tracker,
 					announceActivity,
 					attemptDetail,

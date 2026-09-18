@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.49: stage.ts split, increment 21 (implementer dispatch + structured-claim parse)
+
+- **What**: the implementer CALL half of the implementer round — the v0.3.73 M7 HEAD-drift advisory (low, never blocking), the step-scoped dispatch (`IMPLEMENTER_CONTROL_KEYS`, `allowEmptyArraysFor: [testDefects, needsResearch]`), `parseStructuredChanges`, the v0.3.87 needsResearch archive with its P8 bounded cap, the internal-runtime-claim filter into `projectStructured`, the filesModified first-seen append, and the v0.2.9 G5 streaming log — extracted from `stage.ts` into `src/stages/implementation/implementer-dispatch.ts` (`dispatchImplementer`, one record; the archive + filesModified mutate by-ref exactly as inline). stage.ts 1,532 → 1,464 lines.
+- **Audit parity preserved**: the record carries BOTH parses — `projectStructured` (internal-runtime-claim filtered) and `rawStructured` (the RAW parse feeding the gate-suite change-tracker probe, per the v0.4.41 C1 contract); a new source-contract test pins the raw wiring so a silent swap to the filtered parse cannot degrade `change-tracker.jsonl` claim exactness unnoticed.
+- **Pin moves**: the two M7 HEAD-drift source pins now read the three-file layout (stage.ts + red-tdd-dispatch.ts + implementer-dispatch.ts; 4 `rev-parse` captures, all timeout-pinned).
+- **Gates**: dual `glm-5.3-flash:high` — adversarial PASS (zero divergence across raw-vs-filtered, by-ref surfaces, filesModified carry, the await seam, and test honesty); code APPROVED 0C/0H/0M. Folds: dead `ChangeRecord, StructuredChanges` type import, dead test binding, dedupe-guard test hardened to load-bearing (seeded overlap), raw-parity source pin added. Suite 289 files / 4,359 green.
+
 ### Refactor — v0.4.48: implementer prompt assembly extracted (stage.ts split, increment 20)
 
 The corrective-prompt assembly (the advisory riders with protection-
