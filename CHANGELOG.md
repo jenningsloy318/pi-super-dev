@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.37: inherited-red tier ladder extracted (stage.ts split, increment 9)
+
+The inherited-red tier ladder (Tier-0 own-leak deterministic revert, Tier-1 flake filter with
+the per-run re-run grant, Tier-2 declared handoff via triggerReplanForFindings, Tier-3
+second-occurrence stop-the-line) moves out of `stage.ts` into
+`src/stages/implementation/inherited-red-ladder.ts` — 2,911 → 2,810 lines. The FIFTH
+control-flow conversion of the split and the one with the most exits: one `continue`
+(Tier-0 retry), two `break`s (flake-green, handoff-routed) and TWO `throw new FatalAbort`s
+(Tier-3, handoff-unavailable). The breaks became outcome variants; the throws STAY throws
+inside the module. The P3 run-state guards (replanPending / env-override feedback /
+post-regate product errors / run fuse) stay in the caller — the shape trigger (a pure
+function) moved into the module, so the AND-chain semantics are preserved exactly.
+
+Two extraction-shaped contracts: the UNIFORM-APPEND (every outcome carries
+attemptErrorsAppend, applied by the caller BEFORE kind interpretation — the Tier-0
+exhausted-budget fall-through keeps its revert errors; ONLY flake-green REPLACES
+attemptErrors with the re-run gate's verdict) and the FLAKE-GRANT HOLDER (a getter/setter
+object over the run-scoped let, so the one-per-run flag still persists to state at the
+stage tail and survives resume unchanged). In-place mutations (phaseStatusUpsert,
+lastFailures.splice) happen inside the module on the caller's objects, exactly where the
+inline code mutated them.
+
+Dual gates ran on glm-5.3-flash:high. Code gate: CHANGES REQUESTED (0 blocking) — move
+equivalence, uniform append, in-place mutations, dead imports all MET; folds: the Tier-0
+non-destructive contract is now FULLY pinned (untracked live work kept on disk + named in
+the log; porcelain-failure fail-safe reverts nothing), the attempt numbers are env-proof
+(asserted against maxPhaseAttempts() rather than literals assuming the default 4), and a
+stray `dirname` import dropped. Adversarial gate: PASS, zero divergence on all five
+vectors (guard split with no interleaving window, the 7-case append/replace table, the
+grant holder round-trip incl. resume, throw propagation through an unmodified catch
+layout, Tier-1 re-run side effects on live objects); folds: the leftover `porcelainEntries`
+import pruned and the caller interpretation seam (the 14 mechanical lines) pinned by a
+source test — append-before-interpret order, flake-green-only replace, both arms' loop
+semantics. 11 tests.
+
 ### Refactor — v0.4.36: protection choke point extracted (stage.ts split, increment 8)
 
 The protection choke point (the mechanical protected-path diff between the RED-review join and

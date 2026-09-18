@@ -1,9 +1,10 @@
-import {MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
+import {MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
 import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
+import { adjudicateInheritedRedLadder } from "./inherited-red-ladder.ts";
 import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
@@ -36,7 +37,7 @@ import { triggerReplanForFindings, replanPending, countInheritedRedRows } from "
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { FatalAbort } from "../../nodes.ts";
-import { INHERITED_RED_SOURCE, appendInheritedRedEvent, countInheritedRedOccurrences, extractFailingTestFilePaths, f4ScopeMatch, inheritedRedAttribution, inheritedRedBoundaryShape, inheritedRedFlakeTally, normalizeRepoPath } from "../inherited-red.ts";
+import { INHERITED_RED_SOURCE, appendInheritedRedEvent, extractFailingTestFilePaths, f4ScopeMatch, normalizeRepoPath } from "../inherited-red.ts";
 // v0.3.87 S4(b)+(d) (§9/§10 decision 9, §13, §14 ADR 6): the engine-mediated
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
@@ -81,6 +82,13 @@ export const implementationStage: Stage = {
 			runFuse, attemptDurations, attemptStartedAt, attemptDurationClosed,
 			inheritedRedFlakeGrantUsed,
 		} = prepared;
+		// increment 9: the inherited-red ladder takes the run-scoped flake grant by
+		// reference (in/out holder) — the let below still persists to state at the
+		// stage tail, unchanged.
+		const inheritedRedFlakeGrant = {
+			get used() { return inheritedRedFlakeGrantUsed; },
+			set used(v: boolean) { inheritedRedFlakeGrantUsed = v; },
+		};
 
 		for (const [idx, phase] of phases.entries()) {
 			// F9-C (v0.3.67): once a REPLAN round is routed, the spec artifacts are
@@ -2311,166 +2319,57 @@ export const implementationStage: Stage = {
 				// signature delta, footprint delta, and scope attribution — so both the
 				// trip and the non-trip are auditable in the run log.
 				ctx.log(`Implementation ${phaseId} attempt ${attempt} governor: signature ${signatureRepeat ? "repeat (failure+footprint pair seen in an earlier attempt)" : "fresh"}; footprint ${zeroLandedChange ? "EMPTY (zero landed file changes)" : lastSignature && lastSignature.footprint === progressSignature.footprint ? "repeat" : "fresh"}; citations ${crossScopeConflict ? `CROSS-SCOPE: ${crossScopeCites.map((c) => `${c.file} (requireTests of ${c.ownerPhases.join(", ")})`).join("; ")}` : "same-scope or unattributable"}`);
-				// ── v0.3.85 F2: the inherited-red tier ladder (C1 fix; §10 decision 3) ──
-				// Replaces C1's blind forward-continue at the partial boundary: when
-				// the GATE is the blocker, every remaining failure is out-of-scope, a
-				// baseline verification ran, own-scope evidence is green, and the
-				// failing subjects sit outside the declared targets — attribution
-				// decides. Occurrence = a boundary whose classification SURVIVES Tier 0
-				// (attribution) and Tier 1 (flake filter) — reaches the Tier-2 decision;
-				// Tier-0-reverted and Tier-1-flake-cleared boundaries are metrics-only
-				// and NEVER consume the tally. P3 guards: no ladder after the run already
-				// ended (replan marker / wall-fuse terminal), no double-fire with the env
-				// machinery's product fall-throughs, and F4's handoff sets the marker so
-				// this block cannot re-route in the same boundary. Runs AFTER the
-				// signature recording so a Tier-0 retry is visible to the no-progress
-				// detector on the NEXT attempt (bounded by the attempt cap — P8).
+				// increment 9 — the inherited-red tier ladder (inherited-red-ladder.ts):
+				// the P3 run-state guards stay here (replan pending / env-override
+				// feedback / post-regate product errors / run fuse); the ladder owns its
+				// shape trigger and the tier adjudication. Tier-3 and handoff-unavailable
+				// FatalAborts stay THROWS inside the module — they propagate through the
+				// stage identically. attemptErrorsAppend lands uniformly BEFORE the kind
+				// interpretation (the Tier-0 exhausted-budget fall-through keeps its
+				// revert errors); ONLY flake-green REPLACES attemptErrors (the re-run
+				// gate's verdict is the attempt's verdict).
 				if (
 					!replanPending(state)
 					&& envJudgeOverrideFeedback.length === 0
 					&& postRegateProductErrors === null
-					// FIX ROUND 1 (TSC TS2367 + the P3 intent behind it): read the FUSE
-					// STATE directly, never the terminalStopReason string (CFA narrows
-					// the reason away from "wall-fuse" on this path, and a string compare
-					// is not structural anyway). runFuse.tripped is the same live window
-					// the loop-head wind-down checks — fuse-terminal phases must NOT
-					// route handoffs after the run already ended.
 					&& !runFuse.tripped
-					&& inheritedRedBoundaryShape({
+				) {
+					const irOutcome = await adjudicateInheritedRedLadder({
+						ctx,
+						state,
+						worktreePath: setup.worktreePath,
+						specDirectory: setup.specDirectory,
+						specIdentifier: setup.specIdentifier ?? "unknown",
+						defaultBranch: setup.defaultBranch,
+						phaseId,
+						idx,
+						phases: phases as Array<Record<string, unknown>>,
 						gate,
 						ownScope: { deliverablePass: deliverableCheck.pass, changePass: changeGate.pass, symbolPass: symbolGate.pass, tddClean: tddOracleFailures.length === 0 },
 						coverageBlocked: coverageResult?.status === "below-threshold",
 						declaredScope,
-					}).shape
-				) {
-					const prePhaseDirt = dirtPaths.filter((p) => phaseStartSet.has(normalizeRepoPath(p)));
-					const ownLeakPaths = dirtPaths.filter((p) => !phaseStartSet.has(normalizeRepoPath(p)));
-					const baselineStatus = gate.baselineCheck?.status;
-					const attribution = inheritedRedAttribution({ baselineStatus, prePhaseDirt, ownLeakPaths });
-					if (attribution === "not-evaluable") {
-						// The deliberate exclusion: no attribution evidence (unknown
-						// baseline) — today's behavior; the poison, if any, is caught at the
-						// next completed gate.
-						ctx.log(`Implementation ${phaseId} inherited-red boundary: NOT EVALUABLE (baseline=${baselineStatus ?? "absent"}) — attribution needs evidence; today's retry semantics stand`);
-					} else if (attribution === "own-leak") {
-						// TIER 0 — deterministic attribution: an out-of-scope subject that
-						// passes at baseline cannot break on a tree clean at phase start any
-						// other way than this phase's own edits (G1's row-2 derivation).
-						// Revert the phase's undeclared out-of-scope dirt (deterministic,
-						// no agent call — runs even at exhausted attempt budget) and retry
-						// CONSUMING the phase's own attempt budget.
-						//
-						// FIX ROUND 1 (B): the revert is NON-DESTRUCTIVE. Only CONFIRMED
-						// tracked/staged leaks are restored to HEAD (recoverable,
-						// deterministic). UNTRACKED new files are the implementer's live
-						// work — the G1/v0.3.0 preserve contract keeps them on disk for the
-						// partial preserve-stash and names them in the retry feedback
-						// (restorePaths' `git clean` would delete them irrecoverably). A
-						// failed/empty porcelain read reverts NOTHING (fail-safe: no
-						// destructive op on unknown state).
-						const tier0Entries = porcelainEntries(setup.worktreePath);
-						const tier0Untracked = new Set(tier0Entries.filter((e) => e.status.startsWith("?")).map((e) => e.path));
-						const tier0Tracked = new Set(tier0Entries.filter((e) => !e.status.startsWith("?")).map((e) => e.path));
-						const revertableLeakPaths = ownLeakPaths.filter((p) => tier0Tracked.has(p) && !tier0Untracked.has(p));
-						const liveLeakPaths = ownLeakPaths.filter((p) => !revertableLeakPaths.includes(p));
-						appendInheritedRedEvent(setup.specDirectory, { event: "tier0-own-leak", phaseId, outcome: revertableLeakPaths.length ? "reverted" : ownLeakPaths.length ? "live-work-named" : "no-revertable-dirt", ownLeakPaths, baseline: baselineStatus }, ctx.log);
-						if (revertableLeakPaths.length > 0) {
-							restorePaths(setup.worktreePath, revertableLeakPaths);
-							attemptErrors = [...attemptErrors, ...revertableLeakPaths.map((p) => `inherited-red-own-leak-reverted: ${p}`)];
-						}
-						if (ownLeakPaths.length > 0) {
-							ctx.log(`Implementation ${phaseId} inherited-red Tier 0 (own-leak): regression on a tree clean at phase start with no pre-phase dirt — the out-of-scope failure is this phase's own leak; REVERTED ${revertableLeakPaths.length} tracked undeclared out-of-scope path(s) (${revertableLeakPaths.join(", ") || "none"}) — deterministic cleanup, no agent call${liveLeakPaths.length ? `; LEFT ${liveLeakPaths.length} untracked live-work path(s) in place, never destroyed (${liveLeakPaths.join(", ")}) — named in the retry feedback and preserved for the partial stash` : ""}`);
-						} else {
-							ctx.log(`Implementation ${phaseId} inherited-red Tier 0 (own-leak): no revertable undeclared out-of-scope dirt — the leak rides the phase's in-scope edits (an in-scope product regression; the implementer retry carries the failure feedback)`);
-						}
-						if (attempt < maxPhaseAttempts() && ctx.budget.check()) {
-							ctx.log(`Implementation ${phaseId} inherited-red Tier 0: retrying (the phase's own attempt budget is consumed — attempt ${attempt + 1} of ${maxPhaseAttempts()})`);
-							continue;
-						}
-						ctx.log(`Implementation ${phaseId} inherited-red Tier 0: attempt budget exhausted (attempt ${attempt}/${maxPhaseAttempts()}) — the revert still ran; the phase ends partial and boundary logic proceeds (Tier-0 boundaries are metrics-only and never consume the occurrence tally)`);
-					} else {
-						// attribution === "inherited" — Tier 1 flake filter first.
-						let tier1Gate: BuildGateResult | null = null;
-						if (!inheritedRedFlakeGrantUsed) {
-							inheritedRedFlakeGrantUsed = true;
-							announceActivity("Inherited-red flake filter (Tier 1)", attemptDetail(attempt));
-							tier1Gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
-							appendGateChecked(state, "phase-build:inherited-red-flake-rerun", tier1Gate, "implementation");
-							const flakeCleared = tier1Gate.pass || tier1Gate.inScopePass;
-							appendInheritedRedEvent(setup.specDirectory, { event: "flake-rerun", phaseId, outcome: flakeCleared ? "flake-cleared" : "still-red", baseline: baselineStatus }, ctx.log);
-							ctx.log(`Implementation ${phaseId} inherited-red Tier 1 (flake filter): deterministic full-gate re-run → ${flakeCleared ? "GREEN" : "RED"} (the re-run NEVER consumes an implementer attempt; the per-run grant is now spent; flake tally ${inheritedRedFlakeTally(setup.specDirectory)})`);
-							if (flakeCleared) {
-								// Green-through on the re-run (the env-blocker T3.3 precedent):
-								// own-scope evidence is green by the trigger shape, so the phase
-								// is green — NOT inherited-red; metrics-only, the tally is never
-								// consumed and a flake is never a retry reason.
-								green = true;
-								phaseStatusUpsert(phaseStatus, phaseId, "green", attempt); // v0.3.85 S3: peak-attempts metric
-								emitPhaseStatus("ok");
-								const _irfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_irfi >= 0) lastFailures.splice(_irfi, 1);
-								attemptErrors = tier1Gate.errors;
-								ctx.log(`Implementation ${phaseId} ${tier1Gate.pass ? "GREEN" : "IN-SCOPE GREEN"} via inherited-red Tier 1 flake filter on attempt ${attempt} — flake cleared, not inherited-red (occurrence tally NEVER consumed)`);
-								break;
-							}
-						} else {
-							ctx.log(`Implementation ${phaseId} inherited-red Tier 1 (flake filter): per-run grant already spent — the classification stands without a re-run (flake tally ${inheritedRedFlakeTally(setup.specDirectory)})`);
-						}
-						// TIER 2 decision — occurrence accounting (ledger-backed, persists
-						// across resume). Subjects come from the freshest gate (the Tier-1
-						// re-run when it ran); the owning prior phase is derived from the
-						// same Option-C scope predicate F4 uses (Arm A clause files ∪ Arm B
-						// recorded failing paths of prior PARTIAL phases).
-						const subjectsGate = tier1Gate ?? gate;
-						// P1 (FIX ROUND 2, item-1 audit): never trust gate shapes at the
-						// consumption sites either — the boundary shape already used
-						// Array-guarded reads; mirror that here so a runtime gate with an
-						// absent array cannot TypeError inside the Tier-2/3 subject naming.
-						const irOos = Array.isArray(subjectsGate.outOfScopeErrors) ? subjectsGate.outOfScopeErrors : [];
-						const irSubjects = [...new Set([...irOos, ...extractFailingTestFilePaths(irOos)])].slice(0, 6) as string[];
-						const irOwner = f4ScopeMatch([...prePhaseDirt, ...extractFailingTestFilePaths(irOos)], phases as Array<Record<string, unknown>>, phaseStatus, idx, lastFailures);
-						const priorOccurrences = countInheritedRedOccurrences(setup.specDirectory);
-						const priorHandoffRows = countInheritedRedRows(setup.specDirectory);
-						if (priorOccurrences >= 1 || priorHandoffRows >= 1) {
-							// TIER 3 — second occurrence (or sub-cap spent by an F2/F4
-							// trigger): FatalAbort naming the failing subjects + the owning
-							// prior phase. The poisoned baseline propagated past the single
-							// declared handoff — stop-the-line.
-							appendInheritedRedEvent(setup.specDirectory, { event: "occurrence", phaseId, outcome: "tier3-fatal", subjects: irSubjects, attribution, baseline: baselineStatus }, ctx.log);
-							ctx.log(`Implementation ${phaseId} inherited-red Tier 3: SECOND OCCURRENCE (prior occurrences=${priorOccurrences}, inherited-red handoff rows=${priorHandoffRows}) — FatalAbort naming the failing subjects + the owning prior phase (stop-the-line; no retry loop)`);
-							throw new FatalAbort(`inherited-red second occurrence at ${phaseId} (v0.3.85 F2, ADR 9): gate failures are out-of-scope by attribution (baseline=${baselineStatus ?? "n/a"}; ${prePhaseDirt.length} pre-phase dirt path(s): ${prePhaseDirt.slice(0, 6).join(", ") || "none"}) — failing subjects: ${irSubjects.join(" | ").slice(0, 600)}; owning prior phase: ${irOwner ? `${irOwner.phaseId} (arm ${irOwner.arm}, ${irOwner.path})` : "unidentified (no prior partial phase's declared scope matches the poison paths — pre-run dirt)"}. The poisoned baseline already consumed the single declared handoff; stop-the-line.`);
-						}
-						// Occurrence #1 → TIER 2 declared handoff: one replan-requests.json
-						// row (ownerStage:"spec" + source:"inherited-red" + sourcePhase) via
-						// the existing triggerReplanForFindings circuit; consumes ONE round
-						// of the shared SUPER_DEV_MAX_REPLAN_ROUNDS pool; the run ends
-						// status "replan" and the amended plan must pass the plan-feasibility
-						// validator before execution (§D re-entry).
-						const irFinding: Record<string, unknown> = {
-							id: `inherited-red-${phaseId}`,
-							file: null,
-							severity: "high",
-							title: `inherited-red partial boundary at ${phaseId}: gate failures out-of-scope by attribution (baseline=${baselineStatus ?? "n/a"})`,
-							detail: `The full-suite gate is red on failures outside this phase's declared targets, and attribution says they are NOT this phase's own: baseline=${baselineStatus ?? "n/a"}${prePhaseDirt.length ? `, ${prePhaseDirt.length} pre-phase dirt path(s) (${prePhaseDirt.slice(0, 6).join(", ")}) predating the phase's first-ever start` : ""}. Failing subjects: ${irSubjects.join(" | ").slice(0, 600)}. A prior phase left a poisoned baseline this phase cannot clear inside its declared scope — continuing forward-continues the poison (the C1 disease).`,
-							ownerStage: "spec",
-							source: INHERITED_RED_SOURCE,
-							sourcePhase: phaseId,
-							recommendation: "Merge the unfinished scope forward: amend the plan so the phase that owns the failing subjects' production change also owns the atomic test amendment (co-ownership in any clause form counts), or reorder/merge phases so the baseline this phase gates against is green when its turn comes.",
-						};
-						let irRouted = false;
-						try { irRouted = await triggerReplanForFindings(state, ctx, [irFinding], "implementation", setup.specIdentifier ?? "unknown"); } catch { irRouted = false; }
-						if (irRouted) {
-							appendInheritedRedEvent(setup.specDirectory, { event: "occurrence", phaseId, outcome: "tier2-handoff-routed", subjects: irSubjects, attribution, baseline: baselineStatus }, ctx.log);
-							terminalStopReason = "inherited-red";
-							attemptErrors = [...attemptErrors, `inherited-red: gate failures out-of-scope by attribution (baseline=${baselineStatus ?? "n/a"}) — declared handoff routed (source:inherited-red, sourcePhase:${phaseId}); the run ends status "replan"`];
-							ctx.log(`Implementation ${phaseId} inherited-red Tier 2 (declared handoff): occurrence 1 — replan-requests.json row routed via the shared replan pool (source:inherited-red, sourcePhase:${phaseId}, ownerStage:spec); consuming ONE SUPER_DEV_MAX_REPLAN_ROUNDS round; the phase ends partial and the run ends status "replan" (auto-resume → spec convergence regenerates the plan → plan-feasibility validator → §D re-entry)`);
-							break;
-						}
-						// The handoff could not route (pool exhausted / marker set / write
-						// failure): the occurrence still consumed the tally — routing
-						// Tier 3 keeps the C1 disease from forward-continuing silently.
-						appendInheritedRedEvent(setup.specDirectory, { event: "occurrence", phaseId, outcome: "handoff-unavailable", subjects: irSubjects, attribution, baseline: baselineStatus }, ctx.log);
-						ctx.log(`Implementation ${phaseId} inherited-red Tier 2: declared handoff UNAVAILABLE (replan pool exhausted / marker set / ledger write failure) — the occurrence consumed the tally; routing Tier 3 FatalAbort (no retry loop)`);
-						throw new FatalAbort(`inherited-red declared handoff unavailable at ${phaseId} (v0.3.85 F2, ADR 8/9): the replan circuit could not route while the gate is red on out-of-scope failures by attribution (baseline=${baselineStatus ?? "n/a"}). Failing subjects: ${irSubjects.join(" | ").slice(0, 600)}; owning prior phase: ${irOwner ? `${irOwner.phaseId} (arm ${irOwner.arm}, ${irOwner.path})` : "unidentified (pre-run dirt)"}. Stop-the-line — no retry loop.`);
+						dirtPaths,
+						phaseStartSet,
+						attempt,
+						lastFailures: lastFailures as never,
+						phaseStatus: phaseStatus as never,
+						flakeGrant: inheritedRedFlakeGrant,
+						announceActivity,
+						emitPhaseStatus,
+						attemptDetail,
+					});
+					if (irOutcome.attemptErrorsAppend.length > 0) attemptErrors = [...attemptErrors, ...irOutcome.attemptErrorsAppend];
+					if (irOutcome.kind === "tier0-retry") {
+						continue;
+					}
+					if (irOutcome.kind === "flake-green") {
+						green = true;
+						attemptErrors = irOutcome.gateErrors;
+						break;
+					}
+					if (irOutcome.kind === "handoff-routed") {
+						terminalStopReason = "inherited-red";
+						break;
 					}
 				}
 				if (noProgress) {

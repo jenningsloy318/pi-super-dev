@@ -22,6 +22,7 @@ const KNOWN_PARTS = [
 	"phase-emit.ts",
 	"phase-reentry.ts",
 	"phase-rollback.ts",
+	"inherited-red-ladder.ts",
 	"phase-status.ts",
 	"protection-gate.ts",
 	"red-evidence.ts",
