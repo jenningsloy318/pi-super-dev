@@ -15,12 +15,12 @@ describe("v0.3.x: super-dev extension version metadata", () => {
 			name: "super-dev",
 			version: "0.4.41",
 		});
-		expect(superDevVersionLabel()).toBe("super-dev v0.4.40");
+		expect(superDevVersionLabel()).toBe("super-dev v0.4.41");
 	});
 
 	it("keeps the TUI/run metadata line short", () => {
 		const line = superDevRunMetadataLine();
-		expect(line).toBe("super-dev v0.4.40");
+		expect(line).toBe("super-dev v0.4.41");
 		expect(line).not.toContain("version policy");
 		expect(line).not.toContain("increment patch every commit");
 	});
