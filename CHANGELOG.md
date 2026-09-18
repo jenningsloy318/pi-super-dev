@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.36: protection choke point extracted (stage.ts split, increment 8)
+
+The protection choke point (the mechanical protected-path diff between the RED-review join and
+the build gate: strike-1 education re-prompt, strike-2 judge escalation, challenge-test RED
+re-author, terminal no-progress) moves out of `stage.ts` into
+`src/stages/implementation/protection-gate.ts` — 2,935 → 2,911 lines. The fourth control-flow
+conversion of the split and the FIRST WITH A LOOP-COUNTER MUTATION: the inline strike-1
+`continue` also ran `attempt--` (zero attempt cost), which a module cannot do to the caller's
+for-loop counter — so the outcome is a FOUR-way union (pass / reprompt / reauthor / terminal)
+and the caller decrements the attempt only on `reprompt`. The strike-2 arms call the REAL
+consumeProtectionBreachEscalation inside the module; `phaseProtectionStrikes` stays an in/out
+record mutated in place (bump/reset), exactly as inline.
+
+The v0.4.33 cross-iteration discipline holds by construction: each outcome carries ONLY its
+branch's bindings — reprompt → education only; reauthor → evidence only (the caller clears
+attemptProgressHistory/acceptedRed in the same arm, the exact inline trio); terminal → error
+only.
+
+Dual gates ran on glm-5.3-flash:high over the working tree. Code gate: CHANGES REQUESTED
+(0 Critical/High; 1 Medium test-integrity + 2 Low + 1 Nit) — the extraction itself verified
+byte-faithful on all five axes; folds: every porcelain-visible fixture now passes an EMPTY
+declaredFootprint so the WALK feeds detection (the declared arm had masked it), the terminal
+test now supplies a real spec directory + verified evidence so the replan-routed template arm
+is genuinely exercised, the empty-set test is reworded as an honest outcome pin
+(porcelainEntries degrades to [] on spawn failure — it cannot prove the walk skipped), and the
+unused `ProtectionViolation` type import is dropped. Adversarial gate: PASS, zero divergence on
+all five vectors (counter, revert order, in-place state, judge-inside-module, disk); folds: a
+pre-seeded strike ≥ 2 test (the §D-re-entry resume input class — straight to the judge arm,
+no reprompt, real count interpolated), a throwing-judge test (degrades honestly to terminal,
+the module never escapes), and the inherited "challenge budget" comment corrected to the
+real bounds (attempt cap / wall / run budget — this path does NOT consult
+challengeReauthors). 8 tests total.
+
 ### Refactor — v0.4.35: parallel RED-review join extracted (stage.ts split, increment 7)
 
 The parallel RED-review adjudication block moves out of `stage.ts` into

@@ -3,6 +3,7 @@ import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evi
 import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
+import { adjudicateProtectionGate } from "./protection-gate.ts";
 import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
@@ -60,8 +61,7 @@ import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runner
 import { deriveConventionsRunnerSpec } from "../../build-runner/conventions.ts";
 import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../../build-runner/coverage-gate.ts";
 // Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
-import { buildProtectionEducationBlock, bumpProtectionStrike, detectProtectionViolations, PROTECTION_STRIKE_BOUND, resetProtectionStrike, serializeProtectionInterval } from "../protection-interval.ts";
-import { consumeProtectionBreachEscalation } from "../../review/protection-breach-consumer.ts";
+import { serializeProtectionInterval } from "../protection-interval.ts";
 import { reapplyRollbackStash } from "../checkpoint-rollback.ts";
 import { handleConvergenceRollback } from "./phase-rollback.ts";
 import { stateFileFor } from "../../state/state-root.ts";
@@ -1437,63 +1437,39 @@ export const implementationStage: Stage = {
 				// watcher would re-introduce the S-C read-skew race inside the protection
 				// mechanism itself). Zero cost / zero false positives when the protected
 				// set is empty.
-				if (protectionInterval.protectedPaths.size > 0) {
-					const protectionChanged = new Set<string>();
-					for (const e of porcelainEntries(setup.worktreePath)) {
-						protectionChanged.add(e.path);
-						if (e.fromPath) protectionChanged.add(e.fromPath);
-					}
-					const protectionViolations = detectProtectionViolations(
-						[...protectionChanged],
-						[...projectStructured.filesCreated, ...projectStructured.filesModified, ...projectStructured.filesDeleted],
-						protectionInterval,
-					);
-					if (protectionViolations.length > 0) {
-						const strike = bumpProtectionStrike(phaseProtectionStrikes, phaseId);
-						const violationPaths = protectionViolations.map((v) => v.path);
-						// Mechanical protection holds while the breach is adjudicated: revert
-						// the violating paths to the phase's entry state (restorePaths covers
-						// the tracked restore AND the created-file clean — the deterministic
-						// checkpoint chain IS the entry state).
-						restorePaths(setup.worktreePath, violationPaths);
-						if (strike === 1) {
-							// STRIKE 1 (zero attempt cost — an environment-corrected dispatch,
-							// not a judged failure): re-prompt the implementer ONCE with the
-							// education block naming the protected files + the exact clause.
-							protectionEducation = buildProtectionEducationBlock({ phaseId, violations: protectionViolations, strike });
-							ctx.log(`Implementation ${phaseId} protection strike 1/${PROTECTION_STRIKE_BOUND}: attempt ${attempt} wrote protected path(s) ${violationPaths.join(", ")} — REVERTED to the phase entry state; attempt NOT counted; re-prompting once with the protection education block (058 §3 Layer 2)`);
-							attempt--; // zero attempt cost: the for-loop's ++ restores the SAME attempt number
-							continue;
-						}
-						// STRIKE 2 (same phase): route to the judge — the consumer REFUSES
-						// escalate-now (honest degrade + route-back only, the 059 §3 R4
-						// consumer policy mirrored). Every strike-2 outcome ENDS this attempt
-						// (replan / RED re-author / honest partial), so no third in-loop
-						// strike can loop (P8: strike 2 always routes).
-						const breach = await consumeProtectionBreachEscalation({
-							ctx,
-							state,
-							phaseId,
-							phaseName,
-							strike,
-							violations: protectionViolations,
-							specIdentifier: setup.specIdentifier ?? "unknown",
-						});
-						if (breach.action === "challenge-test") {
-							reauthorEvidence = `\n\n## Judge diagnosis (verified evidence — the RED must be re-authored)\n${breach.diagnosis}\nEvidence: ${breach.evidence}`;
-							attemptProgressHistory = [];
-							acceptedRed = null;
-							// The contract surface is being re-authored — a fresh protection
-							// interval for this phase (bounded downstream by the judge's
-							// challenge budget and the strike-2-always-routes rule).
-							resetProtectionStrike(phaseProtectionStrikes, phaseId);
-							ctx.log(`Implementation ${phaseId} protection strike ${strike}: breach routed to judge → challenge-test — RED re-authored with the verified diagnosis; protection strike counter reset for the re-authored contract surface`);
-							continue;
-						}
-						attemptErrors = [...attemptErrors, `protection-breach: protected path(s) ${violationPaths.join(", ")} written ${strike}× after the strike-1 education${breach.action === "replan-routed" ? " — judge routed replan-upstream (plan revision)" : ` — judge outcome degraded (${breach.reason.slice(0, 200)})`}; the violating path(s) stay protected (reverted)`];
-						terminalStopReason = "no-progress";
-						break;
-					}
+				// increment 8 — the protection choke point (protection-gate.ts): the
+				// adjudication is extracted; the caller keeps only the phase-loop
+				// interpretation. `reprompt` decrements the attempt (zero attempt cost:
+				// the for-loop's ++ restores the SAME attempt number); `reauthor` clears
+				// the RED context alongside the judge diagnosis; `terminal` stops the
+				// phase as no-progress; `pass` falls through to the build gate below.
+				const protectionGate = await adjudicateProtectionGate({
+					ctx,
+					state,
+					worktreePath: setup.worktreePath,
+					phaseId,
+					phaseName,
+					specIdentifier: setup.specIdentifier ?? "unknown",
+					protectionInterval,
+					declaredFootprint: [...projectStructured.filesCreated, ...projectStructured.filesModified, ...projectStructured.filesDeleted],
+					phaseProtectionStrikes,
+					attempt,
+				});
+				if (protectionGate.kind === "reprompt") {
+					protectionEducation = protectionGate.education;
+					attempt--; // zero attempt cost: the for-loop's ++ restores the SAME attempt number
+					continue;
+				}
+				if (protectionGate.kind === "reauthor") {
+					reauthorEvidence = protectionGate.reauthorEvidence;
+					attemptProgressHistory = [];
+					acceptedRed = null;
+					continue;
+				}
+				if (protectionGate.kind === "terminal") {
+					attemptErrors = [...attemptErrors, protectionGate.attemptError];
+					terminalStopReason = "no-progress";
+					break;
 				}
 				// HARD test oracle: actually run build/test/typecheck instead of trusting
 				// a QA agent's self-report (vacuous-pass risk). Non-fatal when nothing
