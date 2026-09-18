@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.47: RED oracle cycle extracted (stage.ts split, increment 19)
+
+The RED loop body's middle — the runner-cache scope guard, the RED oracle,
+the conventions capture, the boundary + classification, the R1 fail-closed
+guard, the F9-A no-edit routing, the Layer C runner discovery (LLM proposes,
+machine verifies), the stale-spawn heal, scenario coverage, the F5 ratchet
+call, the Tier 1 hollow guard, the Tier 2 parallel review launch, and the
+v0.3.16 F4 timeout hint — moves out of `stage.ts` into
+`src/stages/implementation/red-oracle-cycle.ts` — 1,965 → 1,683 lines (the
+campaign's biggest single cut). A record builder with NO loop exits; the
+RED loop is now fully tripartite: dispatch → oracle cycle → ladder →
+acceptance, each its own module. The three cross-try runner lets ride the
+record.
+
+Dual gates: adversarial 513f1524 PASS zero divergence (the runner-lets
+matrix, the retryHint nullability, the await seams, the byte-compared
+discovery prompt, fixture honesty) with F1's throw-semantics note + N1/N2
+test folds; code gate f32b6b36 CR 0C/0H/2M — 4 more orphaned imports
+(F1), and F2: the module resets redFailClosedUnknown PER TRY where the
+baseline leaked `true` across tries within an attempt (declared before the
+while loop) — the v0.3.30 F2 contract describes the CURRENT try's
+evidence, so the reset is the documented intentional tightening. 10 module
+tests; suite 287 files / 4,343 green.
+
+
 ### Refactor — v0.4.46: tdd dispatch extracted (stage.ts split, increment 18)
 
 The tdd-guide dispatch + claim discipline (the tddId naming, the v0.3.73
