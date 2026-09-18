@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accumulateUsage, freshUsage, summarizeUsage, usageFuseError, type UsageTotalsView } from "../src/workflow/usage-accounting.ts";
 import type { AgentUsage } from "../src/types.ts";
 
@@ -7,6 +7,13 @@ const usage = (over: Partial<AgentUsage> = {}): AgentUsage => ({
 });
 
 describe("workflow/usage-accounting — wave 2 increment 2 (accumulators, summary, fuses)", () => {
+	// adversarial fold: delete the fuse vars BOTH sides — a shell exporting a
+	// non-numeric SUPER_DEV_MAX_RUN_COST would consume the sticky warn flag during
+	// an earlier test and deterministically break the warn-once pin.
+	beforeEach(() => {
+		delete process.env.SUPER_DEV_MAX_RUN_COST;
+		delete process.env.SUPER_DEV_MAX_RUN_TOKENS;
+	});
 	afterEach(() => {
 		delete process.env.SUPER_DEV_MAX_RUN_COST;
 		delete process.env.SUPER_DEV_MAX_RUN_TOKENS;
@@ -68,13 +75,17 @@ describe("workflow/usage-accounting — wave 2 increment 2 (accumulators, summar
 		expect(err).toContain("in 150/out 60");
 	});
 
-	it("v0.3.72 M3: a set-but-unparseable cap WARNs ONCE (per variable) and never disarms the fuse silently", () => {
+	it("v0.3.72 M3: a set-but-unparseable cap WARNs ONCE (per variable) and never disarms the fuse silently", async () => {
+		// adversarial fold: fresh module state via resetModules — the warn flags are
+		// module-sticky, so the pin must not depend on file test order.
+		vi.resetModules();
 		process.env.SUPER_DEV_MAX_RUN_COST = "not-a-number";
-		const acc = freshUsage();
+		const mod = await import("../src/workflow/usage-accounting.ts");
+		const acc = mod.freshUsage();
 		const logs: string[] = [];
 		const log = (m: string) => void logs.push(m);
-		expect(usageFuseError(acc, log)).toBeNull(); // proceeds unlimited, NOT a fake limit
-		expect(usageFuseError(acc, log)).toBeNull(); // second call: warn already spent
+		expect(mod.usageFuseError(acc, log)).toBeNull(); // proceeds unlimited, NOT a fake limit
+		expect(mod.usageFuseError(acc, log)).toBeNull(); // second call: warn already spent
 		expect(logs).toHaveLength(1);
 		expect(logs[0]).toContain('WARN usage fuse DISABLED: SUPER_DEV_MAX_RUN_COST="not-a-number"');
 	});

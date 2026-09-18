@@ -27,8 +27,9 @@ import { stateFileFor } from "../state/state-root.ts";
 type Bucket = NonNullable<UsageAccumulator["byAgent"][string]>;
 
 /** The usage numeric fields, in canonical order — shared with workflow.ts
- * (accumulator loops + the per-call row builder) so the three copies cannot
- * drift (v0.3.75 review N1: was a dead local beside two inlined copies). */
+ * (the per-call row builder) and workflow/usage-accounting.ts (the accumulator
+ * loops) so the three copies cannot drift (v0.3.75 review N1: was a dead local
+ * beside two inlined copies). */
 export const USAGE_FIELDS = ["turns", "toolCalls", "input", "output", "cacheRead", "cacheWrite", "cost", "durationMs"] as const;
 
 /** Normalize a call id to a stable stage key: trailing round/attempt/try

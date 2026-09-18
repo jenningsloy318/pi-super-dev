@@ -68,13 +68,13 @@ export function summarizeUsage(acc: { totals: UsageTotalsView; byAgent?: unknown
 }
 
 /** v0.3.68 F10-1 (plan D6 方案 A): per-call fail-closed cost/token fuse.
- *  Checked BEFORE a call launches; the call that LANDS at/over the cap still
- *  completes and is counted honestly — the NEXT call fails closed naming the
- *  fuse and the spent/limit numbers (mirrors the spawn-budget fuse). The
- *  error rows then flow through the EXISTING deterministic wind-down: v0.3.65
- *  marks them cause:"agent-error" and FatalAborts after 3 consecutive rounds,
- *  so a tripped fuse winds the run down with zero further agent spend and
- *  close-out (summary/audit/metrics) still runs — the reasons 方案 A beat a
+ * Checked BEFORE a call launches; the call that LANDS at/over the cap still
+ * completes and is counted honestly — the NEXT call fails closed naming the
+ * fuse and the spent/limit numbers (mirrors the spawn-budget fuse). The
+ * error rows then flow through the EXISTING deterministic wind-down: v0.3.65
+ * marks them cause:"agent-error" and FatalAborts after 3 consecutive rounds,
+ * so a tripped fuse winds the run down with zero further agent spend and
+ * close-out (summary/audit/metrics) still runs — the reasons 方案 A beat a
  *  hard abort (plan §6.1). */
 let fuseCostWarned = false;
 let fuseTokensWarned = false;
