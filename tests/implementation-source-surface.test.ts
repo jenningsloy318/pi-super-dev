@@ -27,6 +27,7 @@ const KNOWN_PARTS = [
 	"env-blocker-judge.ts",
 	"no-progress-valve.ts",
 	"green-boundary.ts",
+	"red-tdd-dispatch.ts",
 	"red-acceptance.ts",
 	"red-retry-ladder.ts",
 	"phase-tail.ts",

@@ -170,16 +170,20 @@ describe("v0.3.73 M7 — implementer self-commit prohibition + detector", () => 
 
 	it("HEAD-drift detection brackets BOTH writer windows with pinned timeouts (AR-73-05)", () => {
 		const impl = implementationStageSource(join(import.meta.dirname, ".."));
+		// v0.4.46 (increment 18): the tdd-guide window moved to red-tdd-dispatch.ts —
+		// the pin reads both files; the module's cwd is the destructured input param.
+		const tddWindow = readFileSync(join(import.meta.dirname, "..", "src", "stages", "implementation", "red-tdd-dispatch.ts"), "utf8");
+		const both = impl + "\n" + tddWindow;
 		// The implementer window…
 		expect(impl).toContain("implementer self-commit detected");
 		// …and the RED authoring (tdd-guide) window — the incident's 5d4790d was a
 		// non-implementer-window self-commit shape.
-		expect(impl).toContain("tdd-guide self-commit detected");
+		expect(tddWindow).toContain("tdd-guide self-commit detected");
 		// Every rev-parse capture pins a timeout (a wedged git must not stall the
 		// pipeline thread; every other git call in the file pins 15–30s).
-		const captures = impl.match(/spawnSync\("git", \["rev-parse", "HEAD"\]/g) ?? [];
+		const captures = both.match(/spawnSync\("git", \["rev-parse", "HEAD"\]/g) ?? [];
 		expect(captures.length).toBe(4);
-		const timeouted = impl.match(/spawnSync\("git", \["rev-parse", "HEAD"\], \{ cwd: setup\.worktreePath, encoding: "utf8", timeout: 5_000 \}/g) ?? [];
+		const timeouted = both.match(/spawnSync\("git", \["rev-parse", "HEAD"\], \{ cwd: (?:setup\.)?worktreePath, encoding: "utf8", timeout: 5_000 \}/g) ?? [];
 		expect(timeouted.length).toBe(4);
 	});
 });

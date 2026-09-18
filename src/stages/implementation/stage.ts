@@ -16,6 +16,7 @@ import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
 import { adjudicateRedRetryLadder } from "./red-retry-ladder.ts";
 import { adjudicateRedAcceptance } from "./red-acceptance.ts";
+import { dispatchRedTdd } from "./red-tdd-dispatch.ts";
 import { dispatchResearchAssist } from "./research-assist-dispatch.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
@@ -36,7 +37,7 @@ import { appendGateChecked } from "../../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { approveScaffoldPaths } from "../../test-artifacts.ts";
-import { buildTddPrompt, buildImplementPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
+import { buildImplementPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt } from "../../prompts.ts";
 import { replanPending } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
@@ -528,69 +529,33 @@ export const implementationStage: Stage = {
 					// the cap.
 					let redEnvRestarts = 0;
 					while (ctx.budget.check()) {
-						const redDiagnostics: RedCheckDiagnostic[] = [];
-						const redTryDetail = attemptDetail(attempt, `try ${retries + 1}`);
-						const tddId = retries === 0
-							? `pipeline.implementation.${phaseId}.tdd.a${attempt}`
-							: `pipeline.implementation.${phaseId}.tdd.red${retries}.a${attempt}`;
-						const tddStepSeq = nextStepSeq();
-						// v0.3.73 M7 (dual review AR-73-05): the RED authoring window gets the
-						// same HEAD-drift advisory as the implementer - the incident's 5d4790d
-						// (implementation landed BEFORE its RED was authored) was exactly a
-						// non-implementer-window self-commit shape.
-						const headBeforeTdd = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
-						const tdd = await inStepScope(tddStepSeq, `TDD RED (${redTryDetail})`, async () => {
-							announceActivity("TDD RED", redTryDetail);
-							emitStep(`TDD RED (${redTryDetail})`, "running", tddStepSeq);
-							const r = await ctx.agent({ id: tddId, agent: "tdd-guide", prompt: buildTddPrompt(setup, state.classify ?? null, phase, state.spec ?? null, [lang, rustDiscipline(setup)].filter(Boolean).join("\n\n"), state.bdd ?? null) + redHint + reauthorEvidence });
-							emitStep(`TDD RED (${redTryDetail})`, r.error ? "failed" : "ok", tddStepSeq);
-							return r;
-						});
-						try {
-							const headAfterTdd = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: setup.worktreePath, encoding: "utf8", timeout: 5_000 }).stdout ?? "").trim();
-							if (headBeforeTdd && headAfterTdd && headBeforeTdd !== headAfterTdd) {
-								ctx.log(`Implementation ${phaseId} advisory: tdd-guide self-commit detected (HEAD ${headBeforeTdd.slice(0, 8)} -> ${headAfterTdd.slice(0, 8)} during the RED call) - commits are engine-owned; a pre-landed implementation routes through the already-satisfied verification`);
-								recordConvergenceFindings(state, {
-									detectedAtStage: "implementation",
-									ownerStage: "implementation",
-									severity: "low",
-									blocking: false,
-									title: `Phase ${phaseId} tdd-guide self-commit (HEAD moved mid-call)`,
-									detail: `HEAD moved ${headBeforeTdd.slice(0, 8)} -> ${headAfterTdd.slice(0, 8)} during the tdd-guide RED call. Commits are engine-owned; self-commits pre-land unverified work and cost RED cycles.`,
-									evidence: [headAfterTdd],
-									sourceGate: "self-commit",
-								}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "self-commit" });
-							}
-						} catch { /* advisory detection only - never blocks the phase */ }
-						// Reflect an agent error/timeout in the step glyph: a ✓ TDD RED next to
-						// an errored call misrepresents what happened (R1 fail-closes the phase
-						// regardless, but the dashboard should not show success).
-						const filesRaw = (tdd.control as { testFiles?: unknown } | null)?.testFiles;
-						// v0.3.16 F1 (RC-T1, run 2026-08-23T02-59-20-670Z): an agent that errored or
-						// timed out produced NOTHING this try — keeping the previous try's claim
-						// made the log lie ("test files=tests/screen.test.ts" next to
-						// "error=timed out"), ran the oracle against a cleanup-deleted ghost file
-						// ("No test files found" → misleading red-broken feedback), and poisoned
-						// the next retry's hint. A non-completed agent is not a delivery: clear the
-						// claim so the fail-closed branch below reports the honest cause and the
-						// oracle never runs on stale state. (The legacy fallback ONLY survives for
-						// the normal control-bearing path where testFiles may legitimately be
-						// absent from a later control — the pre-fix echo.)
-						const tddNotCompleted = Boolean(tdd.error) || tdd.control == null;
-						if (tddNotCompleted) {
-							testFiles = [];
-						} else {
-							testFiles = filesRaw == null && testFiles.length ? testFiles : normalizeStringArray(filesRaw);
-							if (testFiles.length) lastClaimedTestFiles = [...testFiles];
-						}
-						// v0.2.9 G5: stream what tdd-guide DID (test files + its own summary),
-						// so the run log shows the RED work each try, not just the oracle verdict.
-						// v0.3.16 F1: the (agent did not complete) annotation makes the discard
-						// visible to operators reading the log tail.
-						{
-							const tddSummary = String((tdd.control as { summary?: unknown } | null)?.summary ?? "").replace(/\s+/g, " ").trim();
-							ctx.log(`Implementation ${phaseId} tdd-guide (try ${retries + 1})${tdd.error ? ` error=${tdd.error}` : ""}: test files=${testFiles.join(", ") || "(none)"}${tddNotCompleted ? " (agent did not complete — previous claim discarded)" : ""}${tddSummary ? ` — ${tddSummary.slice(0, 400)}` : ""}`);
-						}
+					const redDiagnostics: RedCheckDiagnostic[] = [];
+					const redTryDetail = attemptDetail(attempt, `try ${retries + 1}`);
+					// increment 18 — the tdd dispatch + claim discipline (red-tdd-dispatch.ts):
+					// the HEAD-drift advisory, the step-scoped tdd-guide call, the v0.3.16 F1
+					// claim discard on a non-completed agent, and the streaming log. One
+					// record; lastClaimedTestFiles rebinds only when the agent claimed files.
+					const tddDispatch = await dispatchRedTdd({
+						ctx,
+						state,
+						setup,
+						phase,
+						phaseId,
+						attempt,
+						retries,
+						redTryDetail,
+						redHint,
+						reauthorEvidence,
+						lang,
+						testFiles,
+						announceActivity,
+						emitStep,
+						inStepScope,
+						nextStepSeq,
+					});
+					const { tdd, tddNotCompleted } = tddDispatch;
+					testFiles = tddDispatch.testFiles;
+					if (tddDispatch.lastClaimedTestFiles) lastClaimedTestFiles = tddDispatch.lastClaimedTestFiles;
 						announceActivity("RED oracle", redTryDetail);
 						// v0.3.40 scope guard: a cached runner validated against an EARLIER
 						// phase's specific test file must not judge THIS phase's tests

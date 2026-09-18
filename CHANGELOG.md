@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.46: tdd dispatch extracted (stage.ts split, increment 18)
+
+The tdd-guide dispatch + claim discipline (the tddId naming, the v0.3.73
+M7 HEAD-drift advisory, the step-scoped dispatch, the v0.3.16 F1 CLAIM
+DISCIPLINE — an errored agent's previous claim is discarded, never
+oracled as stale state — and the streaming log) moves out of `stage.ts`
+into `src/stages/implementation/red-tdd-dispatch.ts` — 2,000 → 1,965
+lines. A dispatcher record {tdd, testFiles, lastClaimedTestFiles|null,
+tddNotCompleted}; the full pipeline head was re-sliced at the
+dispatch/oracle seam per the granularity standard (one record-builder
+would have needed ~30 inputs).
+
+Two EXISTING pins caught real breaks in the first draft: the
+phase-subtitle pin (TDD RED (attempt 1, try 1)) caught a missing
+attemptDetail wrapper — redTryDetail became a module input; the
+AR-73-05 pin now reads both files for its 4 rev-parse captures.
+
+Dual gates: adversarial 5c3442da PASS zero divergence (the claim
+lifecycle incl. the empty-array trap avoidance, the HEAD-drift window,
+prompt composition, step machinery, fixtures); code gate d36030eb CR
+0C/0H/1M — buildTddPrompt/rustDiscipline orphaned (the recurring
+dead-import class) + the duplicated worktree input (folded to
+setup.worktreePath). 7 module tests; suite 286 files / 4,333 green.
+
+
 ### Refactor — v0.4.45: RED acceptance boundary extracted (stage.ts split, increment 17)
 
 The four terminal blocks + the acceptance after the RED while loop (the F5
