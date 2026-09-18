@@ -1544,6 +1544,11 @@ export const implementationStage: Stage = {
 				});
 				tddOracleFailures = oracle.tddOracleFailures;
 				coverageResult = oracle.coverageResult;
+				// green/handoff arms reset the carry to [] (inline's reset ran before
+				// the green predicate; the only coverageGap readers — the next
+				// attempt's prompt build — are unreachable after either break, so the
+				// handoff arm's [] is a dead-binding write either way; adversarial
+				// e68a3167 NIT-1 documents the intent).
 				coverageGap = oracle.kind === "continue" ? oracle.coverageGapOut : [];
 				if (oracle.kind === "green") {
 					green = true;

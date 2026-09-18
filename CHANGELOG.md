@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fix — v0.4.42: increment-14 gate folds
+
+Dual-gate folds for the GREEN-boundary oracle extraction (v0.4.41's
+increment 14): adversarial e68a3167 PASS (zero divergence on all five
+vectors — nits folded: the coverageGap dead-binding intent comment on the
+handoff arm, the caller-interpretation source pin, the F4 handoff-routed
+ledger-row assertion); code gate 71a54b09 Changes-Requested 0C/0H/1M — the
+`tdd-targets-still-red`/`broken`/`unverified-after-implementation` oracle
+pushes pinned by a three-variant test (the retry feedback carries the real
+verdict), and the misleading still-red test title renamed to what it
+actually asserts. tests/green-boundary.test.ts now 11 tests; suite 282
+files / 4,291 green.
+
+
 ### Refactor — v0.4.41: gate-suite core + GREEN-boundary oracle extracted (stage.ts split, increments 13–14)
 
 - **`gate-suite.ts`**: the sequential gate-suite region extracted (the HARD build-gate oracle, the RC12c out-of-scope audit with its ledger finding, the AR-02 correlation line, the deliverable contract with the spec-10 claimed-files bridge, the per-attempt change-gate probe, the symbol/hollow-file gate, and the BLOCKING cross-phase deliverable-leak revert). Unlike increments 7–12 this region has NO loop exits — one wide record (`GateSuiteResult`); the caller rebinds ~10 loop bindings from it. The cross-phase leak returns a DELTA (`{revertHits, owners, files}`) that the caller applies to the phase-scoped boundary statistics with the same increment/union semantics the inline mutations had — the values the no-progress valve reads.

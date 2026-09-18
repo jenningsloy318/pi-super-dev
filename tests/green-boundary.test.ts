@@ -28,6 +28,14 @@ vi.mock("../src/build-runner/coverage-gate.ts", async (importOriginal) => {
 	};
 });
 
+vi.mock("../src/build-runner.ts", async (importOriginal) => {
+	const orig = await importOriginal<typeof import("../src/build-runner.ts")>();
+	return {
+		...orig,
+		runRedCheck: vi.fn((): string => "red"),
+	};
+});
+
 vi.mock("../src/replan/replan.ts", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("../src/replan/replan.ts")>();
 	return {
@@ -38,6 +46,7 @@ vi.mock("../src/replan/replan.ts", async (importOriginal) => {
 
 import { runGreenBoundaryOracle } from "../src/stages/implementation/green-boundary.ts";
 import { runCoverageGate } from "../src/build-runner/coverage-gate.ts";
+import { runRedCheck } from "../src/build-runner.ts";
 import { triggerReplanForFindings } from "../src/replan/replan.ts";
 import { FatalAbort } from "../src/nodes.ts";
 import type { PipelineState, StageContext } from "../src/types.ts";
@@ -109,6 +118,27 @@ const baseInput = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => { vi.clearAllMocks(); replanMock.mockResolvedValue(true); });
 afterEach(() => { for (const r of repos.splice(0)) rmSync(r, { recursive: true, force: true }); });
 
+describe("green-boundary caller interpretation (source pins, e68a3167 NIT-2)", () => {
+	it("the three-arm seam: rebind-before-interpret, green/handoff break, the continue carry feeds the phase-scoped let", async () => {
+		const src = readFileSync("src/stages/implementation/stage.ts", "utf8");
+		const impl = readFileSync("src/stages/implementation/green-boundary.ts", "utf8");
+		// the call + the rebind-lets (before any arm interpretation)
+		const callIdx = src.indexOf("const oracle = await runGreenBoundaryOracle({");
+		expect(callIdx).toBeGreaterThan(-1);
+		const seam = src.slice(callIdx, callIdx + 3200); // the full caller block incl. the NIT-1 comment
+		expect(seam.indexOf("tddOracleFailures = oracle.tddOracleFailures;")).toBeLessThan(seam.indexOf('if (oracle.kind === "green")'));
+		expect(seam.indexOf("coverageResult = oracle.coverageResult;")).toBeLessThan(seam.indexOf('if (oracle.kind === "green")'));
+		// green: ONLY green=true + break (the side-effect trio lives in-module)
+		expect(seam).toMatch(/kind === "green"[\s\S]{0,120}green = true;[\s\S]{0,60}break;/);
+		// handoff-routed: the caller owns the terminal trio
+		expect(seam).toMatch(/kind === "handoff-routed"[\s\S]{0,220}terminalStopReason = "declared-handoff";[\s\S]{0,200}oracle\.attemptErrorsAppend/);
+		// continue: the carry feeds the phase-scoped let (the next attempt's prompt reads it)
+		expect(seam).toContain('coverageGap = oracle.kind === "continue" ? oracle.coverageGapOut : [];');
+		// the module emits the F4-routed log BEFORE returning (the caller's writes are pure let-assignments)
+		expect(impl.indexOf("F4 door-in-the-fence: IMMEDIATE declared handoff")).toBeLessThan(impl.indexOf('return { kind: "handoff-routed"'));
+	});
+});
+
 describe("green-boundary oracle (v0.4.42 increment-14 extraction)", () => {
 	it("all gates green → the `green` arm, side effects ALREADY applied (upsert + emit + failure cleanup)", async () => {
 		const repo = makeRepo("sd-gb-green-");
@@ -127,7 +157,7 @@ describe("green-boundary oracle (v0.4.42 increment-14 extraction)", () => {
 		expect(failures.some((f) => f.phaseId === "phase-02")).toBe(false); // splice ran in-module
 	});
 
-	it("a still-red oracle → the `continue` arm carrying tddOracleFailures (never green)", async () => {
+	it("a failed build gate → the `continue` arm and the coverage gate never runs (broken builds never pay it)", async () => {
 		const repo = makeRepo("sd-gb-red-");
 		const out = await runGreenBoundaryOracle(baseInput({ worktreePath: repo, gate: { ...greenGate, pass: false, inScopePass: false } }) as never);
 		expect(out.kind).toBe("continue");
@@ -178,6 +208,10 @@ describe("green-boundary oracle (v0.4.42 increment-14 extraction)", () => {
 		expect(out.attemptErrorsAppend).toContain("declared-handoff (f4)");
 		expect(out.attemptErrorsAppend).toContain("sourcePhase:phase-01");
 		expect(replanMock).toHaveBeenCalledTimes(1);
+		// NIT-3 (e68a3167): the audit trail — the routed row lands in the ledger
+		const rows = readFileSync(join(specDir, ".inherited-red.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({ event: "f4-handoff", outcome: "handoff-routed", arm: "arm-a", sourcePhase: "phase-01", phaseId: "phase-02" });
 	});
 
 	it("F4 sub-cap already spent → Tier 3 FatalAbort (stop-the-line, no retry loop)", async () => {
@@ -240,6 +274,23 @@ describe("green-boundary oracle (v0.4.42 increment-14 extraction)", () => {
 		const out = await runGreenBoundaryOracle(baseInput({ worktreePath: repo, runnerSpec: null, covConventionsSpec: null }) as never);
 		expect(out.kind).toBe("green"); // unmeasurable never blocks
 		expect(coverageMock).not.toHaveBeenCalled(); // no runner → the no-runner branch, not the gate
+	});
+
+	it("the post-RED oracle pushes the real status (code-gate M: still-red/broken/unverified variants — the retry feedback carries it)", async () => {
+		const repo = makeRepo("sd-gb-status-");
+		// acceptedRed non-null + UNMODIFIED snapshot + confirmed targets → the
+		// else-if branch runs runRedCheck and pushes its verdict verbatim
+		for (const [status, want] of [["red", "tdd-targets-still-red"], ["broken", "tdd-targets-broken-after-implementation"], ["unknown", "tdd-targets-unverified-after-implementation"]] as const) {
+			vi.mocked(runRedCheck).mockReturnValueOnce(status as never);
+			const out = await runGreenBoundaryOracle(baseInput({
+				worktreePath: repo,
+				acceptedRed: { testFiles: ["tests/prod.test.ts"] } as never,
+				confirmedRedTargets: true,
+				redTestSnapshot: new Map(),
+			}) as never);
+			if (out.kind !== "continue") throw new Error(`expected continue for ${status}`);
+			expect(out.tddOracleFailures).toEqual([`${want}: tests/prod.test.ts`]);
+		}
 	});
 
 	it("a tddOracle failure blocks coverage entirely (the gate runs ONLY when every other gate is green)", async () => {
