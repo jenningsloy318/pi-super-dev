@@ -49,8 +49,10 @@ describe("v0.3.79 A2/A1 wiring source contracts", () => {
 
 	it("the BLOCKING phase-boundary leak site counts reverts per phase (boundaryRevertHits)", () => {
 		expect(impl).toMatch(/boundaryRevertHits/);
-		// incremented inside the leak-owners branch (the revert that fires)
-		expect(impl).toMatch(/leakOwners\.length > 0[\s\S]{0,400}boundaryRevertHits\+\+/);
+		// v0.4.41: the leak branch moved into gate-suite.ts — the module sets the
+		// leak DELTA inside the owners branch and the caller applies the increment
+		expect(impl).toMatch(/leakOwners\.length > 0[\s\S]{0,600}leak\.revertHits = 1/);
+		expect(impl).toMatch(/boundaryRevertHits \+= suite\.leak\.revertHits/);
 	});
 
 	it("the impl-no-progress judge offers replan-upstream when a boundary revert was observed", () => {

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.41: gate-suite core + GREEN-boundary oracle extracted (stage.ts split, increments 13–14)
+
+- **`gate-suite.ts`**: the sequential gate-suite region extracted (the HARD build-gate oracle, the RC12c out-of-scope audit with its ledger finding, the AR-02 correlation line, the deliverable contract with the spec-10 claimed-files bridge, the per-attempt change-gate probe, the symbol/hollow-file gate, and the BLOCKING cross-phase deliverable-leak revert). Unlike increments 7–12 this region has NO loop exits — one wide record (`GateSuiteResult`); the caller rebinds ~10 loop bindings from it. The cross-phase leak returns a DELTA (`{revertHits, owners, files}`) that the caller applies to the phase-scoped boundary statistics with the same increment/union semantics the inline mutations had — the values the no-progress valve reads.
+- Dual-gate folds: adversarial C1 — `probeEnd` restored to the RAW `structured` parse (audit parity; gates provably neutral to the filtered view) via a new `rawStructured` input; N1 — dead `specDirectory` input removed; code gate L1 — orphaned `phaseClauseFiles` import pruned (6 other orphans pruned at splice time).
+- Source pins updated: 058 choke-before-suite-call ordering; fastfail leak-count pins both halves of the moved mutation.
+- **`green-boundary.ts`**: (increment 14, extracted in the same tree) the TDD post-RED oracle (restore-don't-regenerate), the v0.3.85 F4 door-in-the-fence (both Tier-3 FatalAborts stay throws), the v0.3.49 coverage gate, and the GREEN acceptance — a 3-way outcome (`green` / `handoff-routed` / `continue` carrying `tddOracleFailures` + `coverageResult` + the phase-scoped `coverageGap` carry). 8 orphaned imports pruned.
+- stage.ts: 2,375 → 2,136 lines. New tests: `tests/gate-suite.test.ts` (6) + `tests/green-boundary.test.ts` (9). Suite: 282 files / 4,289 tests green.
+
 ### Refactor — v0.4.40: no-progress valve extracted (stage.ts split, increment 12)
 
 The no-progress valve (the contradiction frames — v0.3.79 A2 boundary-reverts + the Wave P1 D-C

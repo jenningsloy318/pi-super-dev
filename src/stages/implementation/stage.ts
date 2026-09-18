@@ -1,6 +1,6 @@
-import { MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits } from "./red-evidence.ts";
+import { MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreUnacceptedRedChanges, setDiff, snapshotFiles } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
-import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
+import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
@@ -8,6 +8,8 @@ import { adjudicateInheritedRedLadder } from "./inherited-red-ladder.ts";
 import { runEnvBlockerRegate } from "./env-blocker-regate.ts";
 import { handOffEnvBlockerJudge } from "./env-blocker-judge.ts";
 import { adjudicateNoProgress } from "./no-progress-valve.ts";
+import { runGateSuite } from "./gate-suite.ts";
+import { runGreenBoundaryOracle } from "./green-boundary.ts";
 import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
@@ -33,11 +35,11 @@ import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } fr
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { approveScaffoldPaths } from "../../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
-import { triggerReplanForFindings, replanPending, countInheritedRedRows } from "../../replan/replan.ts";
+import { triggerReplanForFindings, replanPending } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { FatalAbort } from "../../nodes.ts";
-import { INHERITED_RED_SOURCE, appendInheritedRedEvent, extractFailingTestFilePaths, f4ScopeMatch, normalizeRepoPath } from "../inherited-red.ts";
+import { extractFailingTestFilePaths, normalizeRepoPath } from "../inherited-red.ts";
 // v0.3.87 S4(b)+(d) (§9/§10 decision 9, §13, §14 ADR 6): the engine-mediated
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
@@ -49,16 +51,15 @@ import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESE
 import { isNoEditCompletion } from "../../agent-errors.ts";
 import { renderAndWrite } from "../../render/render.ts";
 import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA } from "../../render/schemas.ts";
-import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
+import { deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, runDeliverableCheck, runRedCheck, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
 import { createPhaseStatusKit } from "./phase-emit.ts";
 import { recordConvergenceFindings } from "../../convergence-ledger.ts";
 import { classifyGateFault, collectDirtPaths, listPorcelainPaths, type FaultClass } from "../../fault-classification.ts";
 import { markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
-import { phaseClauseFiles } from "../plan-feasibility.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
 import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../../build-runner/runner-discovery.ts";
 import { deriveConventionsRunnerSpec } from "../../build-runner/conventions.ts";
-import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../../build-runner/coverage-gate.ts";
+import { type CoverageGateResult, coverageThreshold } from "../../build-runner/coverage-gate.ts";
 // Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
 import { serializeProtectionInterval } from "../protection-interval.ts";
 import { reapplyRollbackStash } from "../checkpoint-rollback.ts";
@@ -1470,328 +1471,87 @@ export const implementationStage: Stage = {
 					terminalStopReason = "no-progress";
 					break;
 				}
-				// HARD test oracle: actually run build/test/typecheck instead of trusting
-				// a QA agent's self-report (vacuous-pass risk). Non-fatal when nothing
-				// is detectable (greenfield): ran is empty and pass is true.
-				announceActivity("Build gate", attemptDetail(attempt));
-				const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
-				appendGateChecked(state, "phase-build", gate, "implementation");
+				// increment 13 — the sequential gate-suite core (gate-suite.ts): the
+				// HARD build oracle, the RC12c out-of-scope audit, the deliverable
+				// contract (spec-10 bridge), the change and symbol gates, and the
+				// BLOCKING cross-phase leak revert. No loop exits — one wide record;
+				// the leak DELTA feeds the boundary-statistic unions exactly as the
+				// inline mutations did.
+				const suite = runGateSuite({
+					ctx,
+					state,
+					worktreePath: setup.worktreePath,
+					defaultBranch: setup.defaultBranch,
+					language: setup.language,
+					phaseId,
+					attempt,
+					phase: phase as never,
+					phases: phases as Array<Record<string, unknown>>,
+					idx,
+					testFiles,
+					projectStructured,
+					rawStructured: structured,
+					tracker,
+					announceActivity,
+					attemptDetail,
+				});
+				const { gate, declaredScope, bridgedDeliverables, deliverableCheck, phaseChangeRec, changeGate, symbolGate } = suite;
 				attemptErrors = gate.errors;
-				ctx.log(`Implementation ${phaseId} build-gate ${gate.pass ? "PASS" : "FAIL"} (ran: ${gate.ran.join(", ") || "no commands"})`);
-				// RC12c (runs 10-39/15-07): the implementer edited files OUTSIDE the
-				// phase's declared scope (auth-service type shims to dodge an unrelated
-				// build failure) — record a low non-blocking finding so the drift is
-				// visible in the ledger instead of silently persisting in the worktree.
-				// v0.3.80 B1 (P6): own-scope now derives from the validator's canonical
-				// clause grammar — requireNotContains/requireTests targets count as
-				// declared scope too, so a co-owned file declared through ANY clause
-				// form is never misclassified as a later-phase leak.
-				const declaredScope = new Set<string>(phaseClauseFiles(phase as never).map(leakNorm)); // review P3: leakNorm parity (trim + trailing slash) with the leak-side set
-				const outOfScope = [...declaredScope].length
-					? trackerOutofScopeEdits(tracker, setup.worktreePath, declaredScope, testFiles)
-					: [];
-				if (outOfScope.length > 0) {
-					ctx.log(`Implementation ${phaseId} out-of-scope edits (non-blocking, recorded): ${outOfScope.join(", ")}`);
-					try {
-						recordConvergenceFindings(state, {
-							detectedAtStage: "implementation",
-							ownerStage: "implementation",
-							severity: "low",
-							blocking: false,
-							title: `Phase ${phaseId} edited files outside its declared scope`,
-							detail: `The implementer modified ${outOfScope.slice(0, 5).join(", ")} which are not among this phase's declared deliverables. Often a workaround for an unrelated environmental failure (missing dependencies in a fresh worktree) — check the bootstrap log before accepting these edits.`,
-							evidence: outOfScope.slice(0, 8),
-							sourceGate: "phase-build",
-							recommendation: "Review the out-of-scope edits; if they work around an environmental failure, revert them and fix the environment (dependency bootstrap) instead.",
-						}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "phase-build" });
-					} catch { /* never block the phase on ledger bookkeeping */ }
-				}
-				// AR-02: emit the pi session/model correlation tag to the run trace.
-				const corr = buildGateCorrelationLine(gate);
-				if (corr) ctx.log(corr);
-				// DELIVERABLE CONTRACT (AC-03 → SCENARIO-011..015): a build-green phase can
-				// deliver NOTHING (a never-created file compiles fine, an unwired call site
-				// is still a valid public fn, a dead `_ => {}` router arm passes its own
-				// tests). runDeliverableCheck is the never-throwing sibling oracle AND-ed
-				// with the gate so the phase is only GREEN when the declared files/contains/
-				// not-contains/tests are ALSO satisfied. When phase.deliverables is undefined
-				// it early-returns {pass:true} → today's behavior (SCENARIO-014 backward compat).
-				// RUN-BOUNDARY RESET (review finding, HIGH): a module-level test-list
-				// cache is STALE the instant the implementer adds a test on a retry — the
-				// cached list omits the new name and requireTests false-negatives forever,
-				// defeating the core retry mechanism. Clearing it before EACH attempt
-				// guarantees a FRESH list is spawned (a freshly-added test is seen).
-				resetDeliverableCheckCache();
-				// SKIP the test-lister when the build gate FAILED (review finding: wasted
-				// compile on a broken build + a poisoned cache). The cheap file/contains/
-				// not-contains checks still run; only the requireTests spawn is deferred.
-				const buildGreen = gate.pass || gate.inScopePass;
-				// spec-10 deliverable bridge (AC-09 → SCENARIO-018): UNION the implementer's
-				// `claimed.filesCreated` into the spec-declared `requireFiles` so a file a
-				// phase CLAIMS to have created MUST also exist (tracking + deliverable
-				// assertions reinforce). Deduped UNION (first-seen order); the spec-declared
-				// contract is preserved verbatim — an omitted spec-required file is still
-				// caught independently (no circular double-count, SCENARIO-018b/018c).
-				const baseDeliverables = (phase.deliverables ?? {}) as DeliverableContract;
-				const bridgedDeliverables: DeliverableContract = {
-					...baseDeliverables,
-					// Deduped UNION preserving first-seen order (Set iteration is insertion
-					// order, first occurrence wins) — inlined so the stage does not depend
-					// on an un-mocked build-runner export (the bridge is pure data prep).
-					requireFiles: Array.from(new Set([
-						...(baseDeliverables.requireFiles ?? []),
-						...projectStructured.filesCreated,
-					])),
-				};
-				announceActivity("Deliverable check", attemptDetail(attempt));
-				const deliverableCheck = runDeliverableCheck(setup.worktreePath, bridgedDeliverables, { signal: ctx.signal, skipTests: !buildGreen, defaultBranch: setup.defaultBranch });
 				missingDeliverables = deliverableCheck.missing;
-				ctx.log(`Implementation ${phaseId} deliverable-check ${deliverableCheck.pass ? "PASS" : "FAIL"} (missing: ${deliverableCheck.missing.join("; ") || "none"}; ran: ${deliverableCheck.ran.join(", ") || "none"})`);
-				// Git cross-check GATE (AC-07, AC-08 → SCENARIO-013/014/015/016/017):
-				// snapshot the phase's actual-vs-claimed delta per-attempt (so a retry that
-				// wires the claimed file flips the verdict, SCENARIO-015), then collapse it
-				// into a boolean gate verdict AND-ed into phase-green. NEVER throws and
-				// degrades to a pass when git is unavailable (SCENARIO-017) — never block
-				// on infrastructure. No tracker / never ended → null record → trivial pass.
-				let phaseChangeRec: ChangeRecord | null = null;
-				announceActivity("Change check", attemptDetail(attempt));
-				if (tracker) {
-					// Per-attempt PROBE (compute + store, no jsonl append) so the retry
-					// injection sees the freshest claimedNotChanged (SCENARIO-015).
-					// The bracket is closed EXACTLY ONCE via commitEnd after the attempt
-					// loop so the jsonl trace keeps single begin/end-per-phase nesting
-					// (AC-04 → SCENARIO-008/009, review finding CR-MED).
-					phaseChangeRec = tracker.probeEnd("phase", phaseId, structured);
-				}
-				const changeGate = computeChangeGate(phaseChangeRec);
-				// Symbol/hollow-file gate (silent-empty-success killer): a claimed source
-				// deliverable that EXISTS (passes deliverable + change gates) but contains
-				// NO code symbols (doc-comment-only shell) is rejected here. Never throws;
-				// degrades to pass on unreadable files / unknown language / no source files.
-				announceActivity("Symbol check", attemptDetail(attempt));
-				const symbolGate = computeSymbolGate(setup.worktreePath, [...projectStructured.filesCreated, ...projectStructured.filesModified], setup.language);
-				ctx.log(`Implementation ${phaseId} symbol-check ${symbolGate.pass ? "PASS" : "FAIL"} (hollow: ${symbolGate.hollowFiles.join("; ") || "none"})`);
-				// Advisory-only (SCENARIO-014): files git shows changed that the agent did
-				// NOT report (under-reporting) are surfaced via ctx.log but NEVER fail the
-				// gate — under-reporting is not a false-green.
-				const advisory = phaseChangeRec?.crossCheck?.changedNotClaimed ?? [];
-				// Cross-phase deliverable leakage (run 2026-08-27T12-33-43-088Z):
-				// phase-2 changed root index.html — phase-3's DECLARED deliverable —
-				// out of scope (advisory then), so phase-3 could never author an honest
-				// RED and burned 9 tries. BLOCKING now: revert the leaked paths (this
-				// check runs PRE-commit, so the revert is effective) and name the owner
-				// phases — later phases re-do the work with an honest RED.
-				// The check runs over the attempt's FULL git delta (claimed or not —
-				// run-1's leak was HONESTLY claimed by phase-2, which is exactly why
-				// the advisory-only path would have missed it), minus this phase's
-				// own declared scope (a file declared by BOTH phases belongs here).
-				const gitActual = phaseChangeRec?.gitActual;
-				const changedAll = gitActual
-					? [...(gitActual.created ?? []), ...(gitActual.modified ?? []), ...(gitActual.deleted ?? [])]
-					: advisory;
-				const inOwnScope = changedAll.filter((f) => declaredScope.has(f) || declaredScope.has(f.replace(/\\/g, "/").replace(/^\.\//, "")));
-				const leakOwners = laterPhaseDeliverableOwners(changedAll.filter((f) => !inOwnScope.includes(f)), phases, idx);
-				if (leakOwners.length > 0) {
-					boundaryRevertHits++;
-					const leakFiles = laterPhaseDeliverableHits(changedAll.filter((f) => !inOwnScope.includes(f)), phases, idx);
-					boundaryLeakOwners = [...new Set([...boundaryLeakOwners, ...leakOwners])];
-					boundaryLeakFiles = [...new Set([...boundaryLeakFiles, ...leakFiles])];
-					ctx.log(`Implementation ${phaseId} BLOCKING: changed-not-claimed file(s) ${leakFiles.join(", ")} are DECLARED DELIVERABLES of later phase(s) ${leakOwners.join(", ")} — phase-boundary leak; reverting them (this phase's scope stands, later phases redo the work with an honest RED). ROUTE TO APPROVAL: if these files genuinely belong to this phase's work, the phase contract must DECLARE them (co-ownership — any clause form counts) or the plan must be revised to order the introduction before this phase; steer guidance to revise the plan rather than retrying blind.`);
-					restorePaths(setup.worktreePath, leakFiles);
-				}
-				if (advisory.length) {
-					ctx.log(`Implementation ${phaseId} advisory: ${advisory.length} changed-not-claimed file(s): ${advisory.join(", ")}`);
-				}
-				// Evidence (AC-10 → SCENARIO-019): the ground-truth actual change counts
-				// surfaced as a concise `📝 N files changed (C/M/D)` line.
-				const ga = phaseChangeRec?.gitActual ?? null;
-				if (ga) {
-					const c = ga.created?.length ?? 0;
-					const m = ga.modified?.length ?? 0;
-					const d = ga.deleted?.length ?? 0;
-					ctx.log(`Implementation ${phaseId} 📝 ${c + m + d} files changed (${c}C/${m}M/${d}D)`);
-				}
+				boundaryRevertHits += suite.leak.revertHits;
+				if (suite.leak.owners.length) boundaryLeakOwners = [...new Set([...boundaryLeakOwners, ...suite.leak.owners])];
+				if (suite.leak.files.length) boundaryLeakFiles = [...new Set([...boundaryLeakFiles, ...suite.leak.files])];
 				claimedNotChanged = changeGate.claimedNotChanged;
 				hollowFiles = symbolGate.hollowFiles;
-				const tddOracleFailures: string[] = [];
-				// Detect GREEN-phase corruption of the confirmed RED tests on EVERY attempt
-				// (the snapshot persists alongside acceptedRed), not only when RED freshly
-				// ran. If the implementer edited a test file, RESTORE the honest RED
-				// contents and retry the implementer with forceful feedback — do NOT
-				// invalidate/re-run RED. The RED tests are valid; re-running tdd-guide
-				// would re-author the same tests and the implementer would edit them
-				// again (the prior non-converging loop). Restoring + a forceful retry
-				// converges without wasting RED re-runs.
-				if (acceptedRed) {
-					const modifiedRedTests = changedSinceSnapshot(setup.worktreePath, redTestSnapshot);
-					if (modifiedRedTests.length) {
-						const restoredCount = restoreRedTestFiles(setup.worktreePath, redTestSnapshot, modifiedRedTests);
-						ctx.log(`Implementation ${phaseId} post-red-oracle: implementer modified confirmed RED test file(s) during GREEN — RESTORED ${restoredCount}/${modifiedRedTests.length} (${modifiedRedTests.join(", ")}); keeping confirmed RED (no re-generation).`);
-						// ── v0.3.85 F4 — the door in the fence (C4 fix; §9 F4, §14 ADR 8/10) ─
-						// A deterministically restored test file that belongs to a prior
-						// PARTIAL phase's scope (Arm A: declared clause files; Arm B:
-						// recorded failing-test paths) routes the declared handoff
-						// IMMEDIATELY — retry is PROVABLY futile (every subsequent
-						// implementer attempt hits the same restore; F3's cap bounds the
-						// UNDETECTABLE, not the detected — amendment 4). Shares F2's single
-						// ≤1 source:"inherited-red" sub-cap; spent → Tier 3 FatalAbort.
-						// No prior partial phase exists → F4 can never fire (the restore is
-						// implementer error and today's behavior stands). P3: never route
-						// after the run already ended — the replan marker OR a tripped run
-						// wall fuse (the fuse state read directly, mirroring the F2 ladder
-						// guard; structurally unreachable mid-attempt today because fuse
-						// breaks happen at the attempt head — kept explicit).
-						if (!replanPending(state) && !runFuse.tripped) {
-							const f4Match = f4ScopeMatch(modifiedRedTests, phases as Array<Record<string, unknown>>, phaseStatus, idx, lastFailures);
-							if (f4Match) {
-								const armLabel = f4Match.arm === "arm-a" ? "A: declared clause files" : "B: recorded failing-test paths";
-								const f4PriorRows = countInheritedRedRows(setup.specDirectory);
-								if (f4PriorRows >= 1) {
-									appendInheritedRedEvent(setup.specDirectory, { event: "f4-handoff", phaseId, outcome: "tier3-fatal", arm: f4Match.arm, sourcePhase: f4Match.phaseId, paths: modifiedRedTests }, ctx.log);
-									ctx.log(`Implementation ${phaseId} F4 door-in-the-fence: restored test file(s) ${modifiedRedTests.join(", ")} match prior partial phase ${f4Match.phaseId}'s scope (arm ${armLabel}) — inherited-red sub-cap already spent (${f4PriorRows} row(s)) — Tier 3 FatalAbort (stop-the-line; no retry loop)`);
-									throw new FatalAbort(`inherited-red sub-cap spent at ${phaseId} F4 (v0.3.85, ADR 8/9): the restored test file(s) ${modifiedRedTests.join(", ")} belong to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm} — ${armLabel}), but the single source:"inherited-red" handoff row was already consumed. Stop-the-line — a second declared handoff is mechanically unavailable.`);
-								}
-								const f4Finding: Record<string, unknown> = {
-									id: `f4-declared-handoff-${phaseId}`,
-									file: f4Match.path,
-									severity: "high",
-									title: `test-edit ban deadlock at ${phaseId}: the restored test file belongs to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm})`,
-									detail: `The GREEN-boundary restore deterministically reverted the implementer's edit to ${f4Match.path} — a file whose completion-relevant scope belongs to prior PARTIAL phase ${f4Match.phaseId} (arm ${f4Match.arm === "arm-a" ? "declared clause/target files" : "recorded failing-test file paths"}). Completing this phase requires editing that test file, which the GREEN test-edit ban mechanically forbids and restores: retry is provably futile. Amend the plan so the coupling is declared (co-ownership in this phase's contract, or a merged/reordered phase that owns both sides atomically). Restored path(s): ${modifiedRedTests.join(", ")}.`,
-									ownerStage: "spec",
-									source: INHERITED_RED_SOURCE,
-									sourcePhase: f4Match.phaseId,
-									handoffArm: f4Match.arm,
-									recommendation: "Declare the coupling in the plan: give this phase co-ownership of the test file (any clause form counts), or merge/reorder so the phase that owns the production change also owns the atomic test amendment.",
-								};
-								let f4Routed = false;
-								try { f4Routed = await triggerReplanForFindings(state, ctx, [f4Finding], "implementation", setup.specIdentifier ?? "unknown"); } catch { f4Routed = false; }
-								if (f4Routed) {
-									appendInheritedRedEvent(setup.specDirectory, { event: "f4-handoff", phaseId, outcome: "handoff-routed", arm: f4Match.arm, sourcePhase: f4Match.phaseId, paths: modifiedRedTests }, ctx.log);
-									terminalStopReason = "declared-handoff";
-									attemptErrors = [...attemptErrors, `declared-handoff (f4): restored test file(s) ${modifiedRedTests.join(", ")} belong to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm}) — spec amendment routed (source:inherited-red, sourcePhase:${f4Match.phaseId})`];
-									ctx.log(`Implementation ${phaseId} F4 door-in-the-fence: IMMEDIATE declared handoff — restored test file(s) ${modifiedRedTests.join(", ")} match prior partial phase ${f4Match.phaseId}'s scope (arm ${armLabel}); retry is provably futile, so the phase exits partial (declared-handoff (f4)) now and the run ends status "replan" — "requires a spec change" becomes a mechanism (row: source:inherited-red, sourcePhase:${f4Match.phaseId}, handoffArm:${f4Match.arm})`);
-									break;
-								}
-								appendInheritedRedEvent(setup.specDirectory, { event: "f4-handoff", phaseId, outcome: "handoff-unavailable", arm: f4Match.arm, sourcePhase: f4Match.phaseId, paths: modifiedRedTests }, ctx.log);
-								ctx.log(`Implementation ${phaseId} F4 door-in-the-fence: declared handoff UNAVAILABLE (replan pool exhausted / marker set / ledger write failure) while the restored test file(s) provably belong to prior partial phase ${f4Match.phaseId}'s scope — Tier 3 FatalAbort (no retry loop)`);
-								throw new FatalAbort(`F4 declared handoff unavailable at ${phaseId} (v0.3.85 F4, ADR 8): the restored test file(s) ${modifiedRedTests.join(", ")} belong to prior partial phase ${f4Match.phaseId}'s scope (arm ${f4Match.arm}), but the replan circuit could not route (pool exhausted, marker already set, or ledger write failure). Stop-the-line — no retry loop.`);
-							}
-						}
-						// Re-run the oracle against the RESTORED tests so the retry feedback
-						// carries the real status (green = the edit was the only blocker;
-						// red = real assertions still need production code).
-						announceActivity("Post-RED oracle (restored)", attemptDetail(attempt));
-						const restoredDiagnostics: RedCheckDiagnostic[] = [];
-						const restoredStatus = runRedCheck(setup.worktreePath, acceptedRed.testFiles, redCheckOptions(ctx, phaseId, restoredDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
-						ctx.log(`Implementation ${phaseId} post-red-oracle: restored tests re-checked → ${restoredStatus} (ran: ${acceptedRed.testFiles.join(",") || "n/a"})`);
-						tddOracleFailures.push(`tdd-tests-modified-during-green: ${modifiedRedTests.join(", ")} (RESTORED from confirmed RED; re-check=${restoredStatus})`);
-					} else if (confirmedRedTargets) {
-						announceActivity("Post-RED oracle", attemptDetail(attempt));
-						const postRedDiagnostics: RedCheckDiagnostic[] = [];
-						const postRedStatus = runRedCheck(setup.worktreePath, testFiles, redCheckOptions(ctx, phaseId, postRedDiagnostics, setup.defaultBranch, runnerSpec ?? undefined));
-						ctx.log(`Implementation ${phaseId} post-red-oracle: ${postRedStatus} (ran: ${testFiles.join(",") || "n/a"})`);
-						if (postRedStatus === "red") tddOracleFailures.push(`tdd-targets-still-red: ${testFiles.join(", ")}`);
-						else if (postRedStatus === "broken") tddOracleFailures.push(`tdd-targets-broken-after-implementation: ${testFiles.join(", ")}`);
-						else if (postRedStatus !== "green") tddOracleFailures.push(`tdd-targets-unverified-after-implementation: ${testFiles.join(", ")}`);
-					}
-				}
-				// In-scope verdict (AC-05 → SCENARIO-012/013/014/025/027): the phase is GREEN
-				// when the gate fully passed OR when every failure is a pre-existing
-				// out-of-scope crate the branch never touched (gate.inScopePass). The
-				// `if (!green)` branch below therefore fires ONLY on genuine in-scope
-				// failures — neither pass nor inScopePass before the attempt loop stops — so
-				// pre-existing breakage elsewhere can no longer abort green in-scope work.
-				// spec-11 AC-07/AC-08 (SCENARIO-013): AND `changeGate.pass` so a
-				// claimed-but-never-changed file hard-fails EVEN WHEN build + deliverable
-				// both pass (the false-green killer, closed a second way).
-				// v0.3.49 COVERAGE GATE (user mandate 2026-08-31): test coverage on the
-				// TARGET program is a HARD GATE — ≥85% lines on phase production files,
-				// striving for 100%. Deterministically measured from the VALIDATED cached
-				// runner (vitest / node --test / go recipes; SUPER_DEV_COVERAGE_THRESHOLD
-				// and SUPER_DEV_NO_COVERAGE_GATE switches). Unmeasurable families degrade
-				// to a loud non-blocking advisory — never a silent green, never a
-				// dead-lock. Runs ONLY when every other gate is already green so a
-				// broken build never pays the coverage re-run cost.
+				// increment 14 — the GREEN-boundary oracle (green-boundary.ts): the
+				// post-RED TDD oracle (restore-don't-regenerate), the F4 door-in-the-
+				// fence (FatalAborts stay throws), the coverage gate, and the GREEN
+				// acceptance. The F4-routed arm carries the append message; the
+				// caller owns green/terminalStopReason (the loop's own lets).
+				let tddOracleFailures: string[] = [];
 				let coverageResult: CoverageGateResult | null = null;
-				coverageGap = [];
-				// v0.3.56 F2: the runner chain is LIVE phase-scoped `runnerSpec` first
-				// (v0.3.53 hoisted it here, so the old "cache DIRECTLY" comment was
-				// stale), then the disk cache, then a conventions-derived spec — RED
-				// that ran via conventions previously left the cache unwritten and the
-				// `&& covRunnerSpec` below silently skipped the gate AND its advisory
-				// (a silent green, P10). Only when NO runner exists at all does the
-				// loud UNMEASURABLE advisory fire instead of silence.
-				const covRunnerSpec = runnerSpec ?? readCachedTestRunner(setup.specDirectory) ?? covConventionsSpec ?? deriveConventionsRunnerSpec(setup.worktreePath, testFiles); // F-E: the captured-at-RED spec precedes a fresh (implementer-mutable) re-derive
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0) {
-					if (covRunnerSpec) {
-						const phaseProductionFiles = Array.from(new Set([
-							...projectStructured.filesCreated,
-							...projectStructured.filesModified,
-							...declaredScope,
-							...(bridgedDeliverables.requireFiles ?? []),
-							]));
-						announceActivity("Coverage gate", attemptDetail(attempt));
-						coverageResult = runCoverageGate(setup.worktreePath, {
-							runnerSpec: covRunnerSpec,
-							phaseFiles: phaseProductionFiles,
-							testFiles,
-							log: (m) => ctx.log(`Implementation ${phaseId} coverage: ${m}`),
-							});
-						ctx.log(`Implementation ${phaseId} coverage-gate ${coverageResult.status.toUpperCase()}${coverageResult.linesPct !== undefined ? ` (${coverageResult.linesPct.toFixed(1)}% lines vs ≥${coverageResult.threshold}%)` : ""} — ${coverageResult.detail}`);
-						if (coverageResult.status === "below-threshold") {
-							coverageGap = [
-							`${(coverageResult.linesPct ?? 0).toFixed(1)}% lines vs the ≥${coverageResult.threshold}% hard floor (recipe: ${coverageResult.recipe ?? "n/a"})`,
-							...[...coverageResult.perFile].sort((a, b) => a.linesPct - b.linesPct).slice(0, 8)
-							.map((f) => `${f.file}: ${f.linesPct.toFixed(1)}% lines${f.uncoveredHint ? ` (uncovered ${f.uncoveredHint})` : ""}${typeof f.functionsPct === "number" ? `, funcs ${f.functionsPct.toFixed(1)}%` : ""}`),
-							];
-							} else if (coverageResult.status === "unmeasurable") {
-							// Loud carried debt — the phase still goes green (the gate cannot
-							// invent a recipe for an unwired family), but the ledger records it
-							// for review/verification to see.
-							try {
-							recordConvergenceFindings(state, {
-							detectedAtStage: "implementation",
-							ownerStage: "implementation",
-							severity: "medium",
-							blocking: false,
-							title: `Phase ${phaseId} coverage gate UNMEASURABLE`,
-							detail: coverageResult.detail,
-							evidence: [covRunnerSpec.command.slice(0, 200)],
-							sourceGate: "phase-coverage",
-							recommendation: "Wire a deterministic coverage recipe into the project's test command (vitest --coverage / node --test --experimental-test-coverage / go test -coverprofile) so the ≥85% lines hard floor becomes enforceable.",
-						}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "phase-coverage" });
-						} catch { /* ledger bookkeeping never blocks */ }
-						}
-						} else {
-						// v0.3.56 F2: no runner exists at all — loud carried debt, never a
-						// silent green (the old code skipped the gate silently here).
-						coverageResult = { status: "unmeasurable", threshold: coverageThreshold(), perFile: [], detail: "no validated or conventions-derived runner for this phase — coverage could not be measured (before v0.3.56 this case skipped the gate SILENTLY)" };
-						ctx.log(`Implementation ${phaseId} coverage-gate UNMEASURABLE — ${coverageResult.detail}`);
-						try {
-						recordConvergenceFindings(state, {
-						detectedAtStage: "implementation",
-						ownerStage: "implementation",
-						severity: "medium",
-						blocking: false,
-						title: `Phase ${phaseId} coverage gate UNMEASURABLE`,
-						detail: coverageResult.detail,
-						evidence: testFiles.slice(0, 3),
-						sourceGate: "phase-coverage",
-						recommendation: "Ensure runner discovery or a conventions row claims this project's tests so the ≥85% lines hard floor becomes enforceable.",
-						}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "phase-coverage" });
-						} catch { /* ledger bookkeeping never blocks */ }
-					}
-				}
-				if ((gate.pass || gate.inScopePass) && deliverableCheck.pass && changeGate.pass && symbolGate.pass && tddOracleFailures.length === 0 && coverageResult?.status !== "below-threshold") {
+				const oracle = await runGreenBoundaryOracle({
+					ctx,
+					state,
+					worktreePath: setup.worktreePath,
+					specDirectory: setup.specDirectory,
+					defaultBranch: setup.defaultBranch,
+					specIdentifier: setup.specIdentifier,
+					phaseId,
+					attempt,
+					phases: phases as Array<Record<string, unknown>>,
+					idx,
+					phaseStatus,
+					lastFailures,
+					acceptedRed,
+					confirmedRedTargets,
+					testFiles,
+					redTestSnapshot,
+					runnerSpec,
+					covConventionsSpec,
+					gate,
+					deliverablePass: deliverableCheck.pass,
+					changePass: changeGate.pass,
+					symbolPass: symbolGate.pass,
+					declaredScope,
+					bridgedRequireFiles: bridgedDeliverables.requireFiles ?? [],
+					projectStructured,
+					replanAlreadyPending: replanPending(state),
+					runFuseTripped: runFuse.tripped,
+					emitPhaseStatus,
+					announceActivity,
+					attemptDetail,
+				});
+				tddOracleFailures = oracle.tddOracleFailures;
+				coverageResult = oracle.coverageResult;
+				coverageGap = oracle.kind === "continue" ? oracle.coverageGapOut : [];
+				if (oracle.kind === "green") {
 					green = true;
-					phaseStatusUpsert(phaseStatus, phaseId, "green", attempt); // v0.3.85 S3: peak-attempts metric
-					emitPhaseStatus("ok");
-					const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);
-					if (gate.pass) {
-						ctx.log(`Implementation ${phaseId} GREEN on attempt ${attempt}`);
-					} else {
-						ctx.log(`Implementation ${phaseId} IN-SCOPE GREEN on attempt ${attempt} — ${gate.outOfScopeErrors.length} pre-existing out-of-scope failure(s) ignored (crates: ${cratesFromErrors(gate.outOfScopeErrors).join(",")})`);
-					}
+					break;
+				}
+				if (oracle.kind === "handoff-routed") {
+					terminalStopReason = "declared-handoff";
+					attemptErrors = [...attemptErrors, oracle.attemptErrorsAppend];
 					break;
 				}
 				// Track 30 PRA (T3.1 — SCENARIO-001..004 · AC-01/AC-02): the deterministic

@@ -26,6 +26,8 @@ const KNOWN_PARTS = [
 	"env-blocker-regate.ts",
 	"env-blocker-judge.ts",
 	"no-progress-valve.ts",
+	"green-boundary.ts",
+	"gate-suite.ts",
 	"phase-status.ts",
 	"protection-gate.ts",
 	"red-evidence.ts",

@@ -257,9 +257,11 @@ describe("058 D-B — strike 1: revert to the phase entry state + education bloc
 		// zero attempt cost: the loop counter is decremented so the for-loop's ++ restores the SAME number
 		expect(impl).toContain("attempt--; // zero attempt cost");
 		expect(impl).toMatch(/protection strike 1\/\$\{PROTECTION_STRIKE_BOUND\}/); // the strike-1 log
-		// the choke point is the post-join pre-build-gate seam (NEW-1) — BEFORE the build gate, never a watcher
+		// the choke point is the post-join pre-build-gate seam (NEW-1) — BEFORE the
+		// gate suite call (v0.4.41: the gate itself moved into gate-suite.ts; the
+		// ordering pin is now choke (stage.ts) < the runGateSuite invocation)
 		const chokeIdx = impl.indexOf("the protection-interval choke point");
-		const gateIdx = impl.indexOf("// HARD test oracle: actually run build/test/typecheck");
+		const gateIdx = impl.indexOf("const suite = runGateSuite({");
 		expect(chokeIdx).toBeGreaterThan(-1);
 		expect(chokeIdx).toBeLessThan(gateIdx);
 		// education consumed-on-use at the next implementer prompt (the judgeGuidance pattern)
