@@ -1,6 +1,6 @@
-import { changeFootprint, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, repeatedNoProgress } from "./red-evidence.ts";
+import { changeFootprint, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, landedFootprintIsEmpty, nextFaultStreak, pad, repeatedNoProgress } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
-import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
+import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
@@ -17,7 +17,7 @@ import { adjudicateRedRetryLadder } from "./red-retry-ladder.ts";
 import { adjudicateRedAcceptance } from "./red-acceptance.ts";
 import { dispatchRedTdd } from "./red-tdd-dispatch.ts";
 import { runRedOracleCycle } from "./red-oracle-cycle.ts";
-import { dispatchResearchAssist } from "./research-assist-dispatch.ts";
+import { assembleImplementerPrompt } from "./implementer-prompt.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
@@ -30,13 +30,12 @@ import { dispatchResearchAssist } from "./research-assist-dispatch.ts";
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import {  } from "node:path";
 import type { ControlObj, Stage } from "../../types.ts";
 
 import { appendGateChecked } from "../../runlog.ts";
-import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
+import { getActiveTracker, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
-import { buildImplementPrompt, buildImplementationSummaryPrompt } from "../../prompts.ts";
+import { buildImplementationSummaryPrompt } from "../../prompts.ts";
 import { replanPending } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
@@ -59,7 +58,7 @@ import { classifyGateFault, collectDirtPaths, listPorcelainPaths, type FaultClas
 import { markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
 import { readCachedTestRunner, type TestRunnerSpec } from "../../build-runner/runner-discovery.ts";
-import { type CoverageGateResult, coverageThreshold } from "../../build-runner/coverage-gate.ts";
+import { type CoverageGateResult } from "../../build-runner/coverage-gate.ts";
 // Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
 import { serializeProtectionInterval } from "../protection-interval.ts";
 import { handleConvergenceRollback } from "./phase-rollback.ts";
@@ -706,203 +705,48 @@ export const implementationStage: Stage = {
 					reauthorEvidence = "";
 					if (acceptance.redTestSnapshot) redTestSnapshot = acceptance.redTestSnapshot; // 8c5d07bc F1: null preserves the prior snapshot
 				}
+				// increment 20 — the corrective-prompt assembly (implementer-prompt.ts):
+				// the advisory riders, the research-assist consumption, the retry
+				// sections, the budget reminder, the prior-progress continuation, and
+				// the redImplementContext tail. A builder with one dispatch; the caller
+				// clears the consumed advisory lets (no reader between return and clear).
 				const redTargetsExist = Array.from(redTestSnapshot.values()).some((content) => content !== null);
 				const confirmedRedTargets = redStatus === "red" && testFiles.length > 0 && (redChangedFiles.length > 0 || redTargetsExist);
-				// Feed the previous attempt's REAL build/test errors into this attempt
-				// so the implementer fixes the specific failures instead of resampling,
-				// and surface the verified RED status so the green-phase agent knows
-				// whether the tests are CONFIRMED-red or unverified.
-				const basePrompt = buildImplementPrompt(setup, state.classify ?? null, phase, specialist.value, state.spec ?? null);
-				const implParts: string[] = [basePrompt];
-				// Wave 3 D-B (058 Layer 2): the protection education rides FIRST — a
-				// reverted protected-path edit is the same prominence class as the
-				// frozen-RED stop block below (the implementer must see it before any
-				// other retry guidance).
-				if (protectionEducation) {
-					implParts.push(protectionEducation);
-					protectionEducation = "";
-				}
-				if (judgeGuidance) {
-					implParts.push(judgeGuidance);
-					judgeGuidance = "";
-				}
-				if (redWeaknessAdvisory) {
-					implParts.push(`\n## RED review advisory\n${redWeaknessAdvisory}`);
-					redWeaknessAdvisory = "";
-				}
-				// ── v0.3.87 S4(b) (§9, §10 decision 9, §14 ADR 6): engine-mediated
-				// research assist — the hybrid trigger is CONSUMED here, immediately
-				// before the implementer call (report-always-accompanies-execution: the
-				// dispatched ResearchAssistData renders into THIS attempt's corrective
-				// block; never report-only — a dispatched assist always has this very
-				// attempt right after it). RED side: armed by a terminal
-				// RED-generation failure (≥ RESEARCH_ASSIST_RED_TRIGGER_TRIES) in a
-				// prior §D pass. GREEN side: pending from faultClassStreak ≥ 2 this
-				// pass. tdd-guide gets NO assist (implementer-only v1, ADR 6). Per-phase
-				// cap 1 (P8); the dispatch consumes the archived needsResearch entries
-				// (enrichment — surfaced in the ledger row's enrichedByNeedsResearch).
-				{
-					const assist = await dispatchResearchAssist({ ctx, specDirectory: setup.specDirectory, phaseId, phaseName, attempt, redAssistArmed, researchAssistPending, phaseResearchAssistUsed, needsResearchArchive, testFiles });
-					researchAssistPending = null; // consumed either way (a pending GREEN trigger never outlives the attempt it targets)
-					if (assist.block) {
-						// consumed — the entries surfaced in the ledger row (enrichedByNeedsResearch) once used
-						needsResearchArchive.length = 0;
-						implParts.push(assist.block);
-					}
-				}
-				// Forceful, prominent retry feedback when the PRIOR attempt edited a
-				// confirmed RED test file during GREEN (a contract violation — even a
-				// comment-only edit is detected and restored). Placed FIRST so the
-				// implementer sees it before any other retry guidance.
-				if (attemptErrors.some((e) => e.startsWith("tdd-tests-modified-during-green"))) {
-					implParts.push(implementationRetrySection("STOP editing the test files — they are READ-ONLY during GREEN", {
-						phase: phaseId,
-						attempt,
-						gate: "post-red-oracle",
-						location: "confirmed RED test files",
-						observed: "the previous GREEN attempt EDITED one or more confirmed RED test files. Any change — even a comment or header — is rejected and was RESTORED from the confirmed RED snapshot, so the edit had no effect.",
-						expected: "the confirmed RED test files remain byte-for-byte unchanged; only production/source code is modified",
-						missing: [],
-						nextAction: "Do NOT create, edit, or modify ANY test file — not even a comment, import, or header. The test files are the frozen RED oracle that judges your implementation. Implement ONLY production/source code (the module under test) to make the existing tests pass. If a test looks stale or wrong, that is the RED phase's job — leave the test file untouched.",
-					}));
-				}
-				// v0.3.85 F2 Tier 0: the previous attempt's own-leak revert — the retry
-				// must know the undeclared out-of-scope edit was rolled back and that
-				// the fix belongs INSIDE the declared scope (the declared-amendment
-				// route is the escape for genuinely-needed scope changes).
-				if (attemptErrors.some((e) => e.startsWith("inherited-red-own-leak-reverted:"))) {
-					const reverted = attemptErrors.filter((e) => e.startsWith("inherited-red-own-leak-reverted:")).map((e) => e.slice("inherited-red-own-leak-reverted:".length).trim());
-					implParts.push(implementationRetrySection("Out-of-scope own-leak REVERTED (inherited-red Tier 0)", {
-						phase: phaseId,
-						attempt,
-						gate: "inherited-red-tier0",
-						location: "undeclared out-of-scope edits",
-						observed: `the engine reverted ${reverted.length} undeclared out-of-scope path(s): ${reverted.join(", ")} — an out-of-scope subject that passes at baseline broke, and with a tree clean at phase start the break is attributable to this phase's own edits`,
-						expected: "only the phase's declared clause files (and the confirmed RED test files) change",
-						missing: reverted,
-						nextAction: "Redo the fix INSIDE the declared scope. If an out-of-scope file genuinely must change, that is a declared amendment (spec change) — report it as a blocker in your summary instead of editing the file.",
-					}));
-				}
-				// v0.3.0 budget reminder (Codex rollout_budget / alatirok model): the
-				// budget is MODEL-VISIBLE context, not a hidden fuse — from attempt 2
-				// the implementer sees its attempt number, the repeating failure
-				// signatures, and the explicit instruction to change strategy when
-				// evidence repeats. (Placed after the RED-violation warning, which is
-				// documented as FIRST — review code-F6.)
-				if (attempt >= 2) {
-					const recentSigs = attemptProgressHistory.slice(-2).map((h) => h.failure.slice(0, 140));
-					implParts.push(`\n## Attempt budget — attempt ${attempt}\nThis is your attempt #${attempt} for this phase; attempts are budget-limited.${recentSigs.length ? `\nPrevious failure signatures (most recent last):\n${recentSigs.map((x) => `- ${x}`).join("\n")}` : ""}\nIf the evidence above repeats your last failure, DO NOT retry the same strategy — diagnose the root cause, or report the blocker explicitly in your summary (testDefects) instead of burning the remaining budget.`);
-				}
-				// v0.3.43 RC3 (continuation): retries used to cold-restart — a fresh
-				// implementer re-read the whole repo while its predecessor's finished
-				// work sat invisible on disk (measured: 24 implementer calls for 6
-				// phases on run 2026-08-30T08-30-00; the post-timeout attempts that
-				// finished in 2-4 min were the ones that happened to notice the disk
-				// state). Surface the prior attempts' ACTUAL on-disk progress so the
-				// next attempt continues instead of re-deriving.
-				if (attempt >= 2) {
-					const priorProgress = Array.from(gitStatusPaths(setup.worktreePath))
-						.filter((p0: string) => !isHarnessBookkeepingPath(p0) && !runStartDirt.includes(p0) && !testFiles.includes(p0) && !(acceptedRed?.changedFiles ?? []).includes(p0));
-					if (priorProgress.length > 0) {
-						implParts.push(`\n## PRIOR ATTEMPT PROGRESS — continue, do NOT restart\n${priorProgress.length} production path(s) are ALREADY modified/created on disk by your predecessor attempt(s):\n${priorProgress.slice(0, 24).map((p0) => `- ${p0}`).join("\n")}${priorProgress.length > 24 ? `\n- … (+${priorProgress.length - 24} more)` : ""}\nInspect THESE FIRST with targeted reads (head/diff), then finish or fix the remaining gate failures. Do NOT re-derive the design or rewrite files that already carry your predecessor's work — your job is to COMPLETE the phase, not redo it. Files not in this list are unchanged and need no re-reading.`);
-					}
-				}
-				// §D: seed attempt 1 with the PRIOR convergence iteration's failure reasons
-				// so re-attempts target the real failures instead of resampling.
-				if (attempt === 1) {
-					const priorFail = lastFailures.find((f) => f.phaseId === phaseId);
-					if (priorFail?.reasons.length) {
-						implParts.push(implementationRetrySection("Prior convergence-iteration failures — fix these", {
-							phase: phaseId,
-							attempt,
-							gate: "prior-convergence-iteration",
-							location: "previous implementation convergence pass",
-							observed: "this phase failed in the prior convergence pass",
-							expected: "phase reaches green with build, deliverable, change, symbol, and post-RED gates satisfied",
-							missing: priorFail.reasons,
-							nextAction: "Fix these carried-forward blockers before reporting implementation complete.",
-						}));
-					}
-				}
-				if (attemptErrors.filter((e) => !/^deliverable:\s*missing (test|scenario):/i.test(e)).length) {
-					implParts.push(implementationRetrySection("Previous attempt failed the build/test gate — fix these", {
-						phase: phaseId,
-						attempt,
-						gate: "implementation-gates",
-						location: "previous GREEN attempt",
-						observed: "the prior implementation attempt did not satisfy all phase gates",
-						expected: "all deterministic build/test and phase gates pass",
-						// Exclude `deliverable: missing test:` — the implementer is forbidden
-						// from authoring RED tests; those route back to RED regeneration, so
-						// asking for them here is the forbidden action (deadlock root cause).
-						missing: attemptErrors.filter((e) => !/^deliverable:\s*missing (test|scenario):/i.test(e)),
-						nextAction: "Make a targeted code or test-support change for these exact failures, then run the relevant checks before calling structured_output.",
-					}));
-				}
-				// AND-semantics (AC-03 → SCENARIO-012): when a previous attempt was
-				// build-green but its DELIVERABLE CONTRACT was unmet, the exhaustive
-				// `missing` list is injected here so the implementer creates the files /
-				// does the wiring / adds the named tests instead of resampling.
-				if (missingDeliverables.filter((e) => !/^missing (test|scenario):/i.test(e)).length) {
-					implParts.push(implementationRetrySection("Deliverables still missing — create/wire these", {
-						phase: phaseId,
-						attempt,
-						gate: "deliverable-check",
-						location: "phase deliverable contract",
-						observed: "the prior attempt built but did not satisfy declared non-test deliverables",
-						expected: "every required file, pattern, and forbidden-pattern removal exists in the owning module",
-						missing: missingDeliverables.filter((e) => !/^missing (test|scenario):/i.test(e)),
-						nextAction: "Create, wire, or rename the missing deliverables directly. Do NOT create or edit test files — required tests are authored by the RED phase. Do not claim completion until this list is empty.",
-					}));
-				}
-				// spec-11 AC-07 (SCENARIO-015): a previous attempt claimed a file git did
-				// NOT show changed — feed the specific paths so the implementer actually
-				// creates/wires them instead of resampling. Mirrors the deliverables block
-				// above and is bounded by the global run budget plus no-progress detection
-				// in the surrounding attempt loop.
-				// v0.3.49: a previous attempt was green on every other gate but BELOW the
-				// coverage hard floor — inject the exact per-file numbers so the
-				// implementer writes targeted tests for the uncovered behavior instead
-				// of resampling. Test files are exempt (they are authored by RED, and
-				// the phase's production files are what the floor gates).
-				if (coverageGap.length) {
-					implParts.push(implementationRetrySection("Coverage below the hard floor — add tests for uncovered behavior", {
-						phase: phaseId,
-						attempt,
-						gate: "phase-coverage",
-						location: "deterministic coverage measurement on phase production files",
-						observed: "the previous attempt passed every functional gate but the measured line coverage is below the hard floor",
-						expected: `≥${coverageThreshold()}% lines across the phase's production files (aim for 100% on pure logic)`,
-						missing: coverageGap,
-						nextAction: "Write additional unit tests for the UNCOVERED behavior in the listed files (new test files you author in THIS retry are allowed and expected — unlike RED tests, coverage tests are additive). Do NOT weaken or delete existing assertions to raise the number.",
-					}));
-				}
-				if (claimedNotChanged.length) {
-					implParts.push(implementationRetrySection("Claimed changes not present in git — actually create/wire these", {
-						phase: phaseId,
-						attempt,
-						gate: "change-check",
-						location: "git actual-vs-claimed change set",
-						observed: "the implementer claimed files that git did not show as changed",
-						expected: "claimed files are actually created, modified, or deleted in the worktree",
-						missing: claimedNotChanged,
-						nextAction: "Actually create or modify these paths, or remove them from the claimed change set if no project edit is needed.",
-					}));
-				}
-				if (hollowFiles.length) {
-					implParts.push(implementationRetrySection("Hollow deliverable files — write the actual implementation", {
-						phase: phaseId,
-						attempt,
-						gate: "symbol-check",
-						location: "claimed source deliverables",
-						observed: "these files exist but contain only comments or no real code symbols",
-						expected: "claimed source deliverables contain real functions, types, handlers, or other executable implementation symbols",
-						missing: hollowFiles,
-						nextAction: "Write the actual implementation in each file instead of placeholder comments or empty shells.",
-					}));
-				}
-				implParts.push(redImplementContext(redStatus));
-				const implPrompt = implParts.join("\n\n");
+				const promptRound = await assembleImplementerPrompt({
+					ctx,
+					state,
+					setup,
+					worktreePath: setup.worktreePath,
+					specDirectory: setup.specDirectory,
+					phaseId,
+					phaseName,
+					attempt,
+					phase,
+					specialist: specialist.value,
+					redStatus,
+					testFiles,
+					protectionEducation,
+					judgeGuidance,
+					redWeaknessAdvisory,
+					redAssistArmed,
+					researchAssistPending,
+					phaseResearchAssistUsed,
+					needsResearchArchive,
+					attemptErrors,
+					missingDeliverables,
+					claimedNotChanged,
+					hollowFiles,
+					coverageGap,
+					attemptProgressHistory,
+					runStartDirt,
+					acceptedRedChangedFiles: [...(acceptedRed?.changedFiles ?? [])],
+					lastFailures,
+				});
+				const implPrompt = promptRound.implPrompt;
+				if (promptRound.consumedProtectionEducation) protectionEducation = "";
+				if (promptRound.consumedJudgeGuidance) judgeGuidance = "";
+				if (promptRound.consumedRedWeaknessAdvisory) redWeaknessAdvisory = "";
+				if (promptRound.consumedResearchAssistPending) researchAssistPending = null;
 				const implStepSeq = nextStepSeq();
 				// v0.3.73 M7 (run 2026-09-05T23-09-55-596Z: 2e92da3/5d4790d): detect a
 				// mid-phase implementer self-commit — HEAD moved across the call window.

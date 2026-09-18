@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.48: implementer prompt assembly extracted (stage.ts split, increment 20)
+
+The corrective-prompt assembly (the advisory riders with protection-
+education-FIRST prominence; the research-assist consumption; the frozen-RED
+STOP section; the Tier-0 own-leak section; the attempt budget reminder with
+the last-two signatures; the RC3 prior-progress continuation block; the §D
+prior-iteration seed; the gates/deliverables/coverage/claimed/hollow retry
+sections with their missing-test exclusion regexes; and the
+redImplementContext tail) moves out of `stage.ts` into
+`src/stages/implementation/implementer-prompt.ts` — 1,683 → 1,532 lines.
+A builder with one dispatch; consume flags returned, the caller owns the
+lets; redTargetsExist/confirmedRedTargets stay caller-side.
+
+Dual gates: adversarial cdb6a317 CONTEST (extraction zero-divergence on all
+five vectors; the contest was my TEST file — F1 the vacuous runStartDirt
+pin (seed.ts was committed-clean, so the filter was untestable — now dirty
+on disk AND filtered), F2 the assist-block order now pinned
+advisory→assist→STOP, F3 the test-file and acceptedRed filters now
+load-bearing); code gate a0378403 CR 0C/0H/3M (the two dead imports +
+the same vacuous fixture — all folded, plus the empty node:path import my
+earlier over-prune left behind). 9 module tests; suite 288 files / 4,352
+green. stage.ts: 3,038 → 1,532 (−50%) over 20 increments.
+
+
 ### Refactor — v0.4.47: RED oracle cycle extracted (stage.ts split, increment 19)
 
 The RED loop body's middle — the runner-cache scope guard, the RED oracle,
