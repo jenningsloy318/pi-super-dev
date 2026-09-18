@@ -1,12 +1,13 @@
-import {MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
+import { MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
-import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
+import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
 import { joinRedReview } from "./red-review-join.ts";
 import { adjudicateProtectionGate } from "./protection-gate.ts";
 import { adjudicateInheritedRedLadder } from "./inherited-red-ladder.ts";
 import { runEnvBlockerRegate } from "./env-blocker-regate.ts";
 import { handOffEnvBlockerJudge } from "./env-blocker-judge.ts";
+import { adjudicateNoProgress } from "./no-progress-valve.ts";
 import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
@@ -32,7 +33,6 @@ import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } fr
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { approveScaffoldPaths } from "../../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
-import { firstCitedTestFile, runJudge, type JudgeRoute } from "../judge.ts";
 import { triggerReplanForFindings, replanPending, countInheritedRedRows } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
@@ -43,7 +43,6 @@ import { INHERITED_RED_SOURCE, appendInheritedRedEvent, extractFailingTestFilePa
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
 // research-agent, no agent file is created.
 import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
-import { contradictionFastFailFrame } from "../plan-feasibility.ts";
 // 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
 // plan compile-time checks) — two-locus mechanical findings routed through
 // the SAME replan circuit plan-feasibility uses (no judge call needed).
@@ -246,9 +245,9 @@ export const implementationStage: Stage = {
 			// verdicts or evidence-carrying escalates (route-not-offered).
 			let redJudgeEvidenceLabel = "verified evidence";
 			let attemptProgressHistory: ProgressSignature[] = [];
-			// J9-b: judge diagnosis / guidance at the implementer no-progress boundary.
-			let implJudgeDiagnosis = "";
-			let implJudgeEvidenceLabel = "verified evidence";
+			// J9-b: judge guidance at the implementer no-progress boundary (the
+			// diagnosis/evidence-label carriers moved into no-progress-valve.ts,
+			// increment 12 — they were region-local).
 			let judgeGuidance = "";
 			// Wave 3 D-B (058 Layer 2): the strike-1 protection education block — set
 			// by the post-join pre-build-gate choke point, consumed ONCE by the next
@@ -2090,217 +2089,66 @@ export const implementationStage: Stage = {
 					}
 				}
 				if (noProgress) {
-					// v0.3.79 A2 (spec-25 run 14-14): a repeated signature + observed
-					// phase-boundary reverts is a DETERMINISTIC contradiction — arm the
-					// contradiction frame (replan-upstream offered) so the valve routes
-					// plan revision instead of blind retries; the generic J9-b frame
-					// stays when no revert was observed.
-					const cfFrame = boundaryRevertHits > 0
-						? contradictionFastFailFrame({ phaseId, phaseName: phases[idx]?.name ?? "", leakOwners: boundaryLeakOwners, leakFiles: boundaryLeakFiles, failureReasons })
-						: null;
-					// Wave P1 D-C (S-A class): the cross-scope contract-conflict frame —
-					// replan-upstream is offered on FIRST occurrence (the goal is
-					// unsatisfiable inside this phase's scope; no attempt can produce
-					// improving signal, so the budget is not consumed on it).
-					const csFrame = crossScopeConflict
-						? crossScopeContractConflictFrame({ phaseId, phaseName: phases[idx]?.name ?? "", citations: crossScopeCites })
-						: null;
-					// J9-b (judge routing layer): a verified diagnosis at the no-progress
-					// boundary, BEFORE the human is asked. challenge-test synthesizes the
-					// defect the implementer failed to report structurally and re-runs the
-					// EXISTING challenge edge; re-author-tests drops acceptedRed and restarts
-					// with the diagnosis; continue grants one fresh attempt with the
-					// diagnosis as guidance. escalate-now / discarded / degraded falls
-					// through to today's HITL (with the diagnosis surfaced when verified).
-					const judgeOut = await runJudge(ctx, {
-						scope: `stage9.impl-no-progress.${phaseId}`,
-						signature: progressSignature.failure,
-						worktreePath: setup.worktreePath,
-						specDirectory: setup.specDirectory,
-						context: [
-							...(csFrame ? [csFrame.context] : []),
-							...(cfFrame ? [cfFrame.context] : []),
-							faultRecurrence && !signatureRepeat
-								? `## Recurring failure-category (${attemptFaultClass} across ${faultClassStreak?.count ?? 0} consecutive attempts — signatures are fresh, the CLASS repeats)`
-								: zeroLandedChange
-									? "## Zero-change plateau (the attempt landed no file changes — static signal)"
-									: crossScopeConflict
-										? `## Cross-scope citation (${attempt === 1 ? "first occurrence" : `occurrence on attempt ${attempt}`} — routing immediately per the attempt governor)`
-										: "## Recurring failure (identical signature across consecutive attempts)",
-							...failureReasons.slice(0, 12),
-							"## Implementer's last reasoning tail",
-							implTextTail || "(none)",
-							"## Structured testDefects reported",
-							implDefects.length ? implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ") : "(none)",
-							"## Confirmed RED in force",
-							acceptedRed ? acceptedRed.testFiles.join(", ") : "none",
-							"## Test files under contract",
-							testFiles.join(", ") || "n/a",
-						].join("\n"),
-						allowedRoutes: ((csFrame ?? cfFrame)?.allowedRoutes ?? ["challenge-test", "re-author-tests", "continue"]) as JudgeRoute[],
-						outputTails: [implTextTail, ...failureReasons],
-					});
-					if (judgeOut.status === "routed" && judgeOut.verdict.route === "replan-upstream") {
-						// v0.3.79 A2: the contradiction valve's plan-revision route —
-						// route the replan with the contradiction finding and stop this
-						// pass (shouldIterateImplementation gates the re-entry; the
-						// extension restarts under the revised spec). Wave P1 D-C: a cross-scope
-						// conflict carries ITS OWN finding shape (cited file × owning phases),
-						// not the boundary-revert shape.
-						const contradictionFinding = csFrame
-							? {
-								file: null,
-								severity: "high",
-								title: `cross-scope contract conflict at ${phaseId}: gate failures cite test file(s) owned by ${crossScopeCites.map((c) => `${c.file} (${c.ownerPhases.join(", ")})`).join("; ")}`,
-								detail: `The build gate fails on test file(s) declared requireTests of ANOTHER phase (${crossScopeCites.map((c) => `${c.file}: ${c.ownerPhases.join(", ")}`).join("; ")}); every satisfiable fix edits files outside ${phaseId}'s declared scope, which the phase-boundary guard BLOCKS and reverts. Judge diagnosis: ${judgeOut.verdict.diagnosis}`,
-								ownerStage: "spec",
-							}
-							: {
-							file: null,
-							severity: "high",
-							title: `plan contradiction at ${phaseId}: phase-boundary BLOCKING reverts block the only satisfiable fix`,
-							detail: `Repeated identical failures while the engine reverted out-of-scope edits into later-phase deliverables (${boundaryLeakFiles.join(", ") || "n/a"} owned by ${boundaryLeakOwners.join(", ") || "later phases"}). Judge diagnosis: ${judgeOut.verdict.diagnosis}`,
-							ownerStage: "spec",
-						};
-						let contradictionReplanned = false;
-						try { contradictionReplanned = await triggerReplanForFindings(state, ctx, [contradictionFinding], "implementation", setup.specIdentifier ?? "unknown"); } catch { contradictionReplanned = false; }
-						if (contradictionReplanned) {
-							redJudgeDiagnosis = judgeOut.verdict.diagnosis;
-							terminalStopReason = "no-progress";
-							if (csFrame) {
-								ctx.log(`Implementation ${phaseId} judge route=replan-upstream: cross-scope contract conflict routed to REPLAN (plan revision) — stopping this pass (cited test file(s) declared by another phase; no attempt can produce improving signal)`);
-							} else {
-								ctx.log(`Implementation ${phaseId} judge route=replan-upstream: contradiction routed to REPLAN (plan revision) — stopping this pass (${boundaryRevertHits} boundary revert(s) observed)`);
-							}
-							break;
-						}
-					}
-					if (judgeOut.status === "routed" && judgeOut.verdict.route === "challenge-test" && acceptedRed && challengeReauthors < MAX_CHALLENGE_REAUTHORS) {
-						challengeReauthors++;
-						const defect = {
-							// v0.2.11 F1b: when the verdict carries no machine-verifiable evidence
-							// (the missing-evidence exemption class), the diagnosis usually names
-							// the culprit test verbatim (run 14-54: the stale spec-01 pin at
-							// tests/interface-contracts-ownership.test.ts:618) — prefer that over
-							// the phase's own RED file, which is NOT the defect in the
-							// cross-spec-contradiction class.
-							testFile: judgeOut.verdict.evidence[0]?.file ?? firstCitedTestFile(judgeOut.verdict.diagnosis) ?? acceptedRed.testFiles[0] ?? "",
-							lines: "",
-							reason: `judge-verified: ${judgeOut.verdict.diagnosis}`,
-						};
-						reauthorEvidence = formatReauthorEvidence([defect], implTextTail);
-						attemptProgressHistory = [];
-						acceptedRed = null;
-						ctx.log(`Implementation ${phaseId} judge route=challenge-test: re-authoring RED with the verified diagnosis (${challengeReauthors}/${MAX_CHALLENGE_REAUTHORS})`);
-						continue;
-					}
-					if (judgeOut.status === "routed" && judgeOut.verdict.route === "re-author-tests") {
-						acceptedRed = null;
-						attemptProgressHistory = [];
-						reauthorEvidence = `\n\n## Judge diagnosis (verified evidence — the RED must be re-authored)\n${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-						ctx.log(`Implementation ${phaseId} judge route=re-author-tests: restarting RED with the diagnosis`);
-						continue;
-					}
-					if (judgeOut.status === "routed" && judgeOut.verdict.route === "continue") {
-						attemptProgressHistory = [];
-						judgeGuidance = `## Judge guidance for this attempt (verified diagnosis — act on it)\n${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-						ctx.log(`Implementation ${phaseId} judge route=continue: one fresh attempt with diagnosis guidance`);
-						continue;
-					}
-					if (judgeOut.status === "routed" || judgeOut.status === "escalate") {
-						implJudgeDiagnosis = `${judgeOut.verdict.diagnosis}\nEvidence: ${judgeOut.verdict.evidence.map((e) => `${e.file}: ${e.quote}`).join(" | ")}`;
-				implJudgeEvidenceLabel = judgeOut.status === "escalate" && judgeOut.verdict.evidence.length === 0 ? "escalated — evidence unverified" : "verified evidence";
-					}
-					// HITL escalation (parity with gate-exhaustion + verify-stagnation):
-					// repeated identical failure is exactly where a human decision helps —
-					// often an unsatisfiable gate contradiction or a spec ambiguity, not a
-					// fixable code gap. Before the silent phase-fail (which abandons all
-					// later phases), give the user a chance to inject guidance and continue.
-					// Bounded by ESCALATION_RETRY_CAP; never throws; a dismissal/headless
-					// run falls straight through to the pre-existing no-progress break.
-					// J3 (run 2026-08-19T03-16-50-261Z): the deterministic test-defect
-					// signature — the phase's RED targets NEVER went green across the
-					// repeated no-progress attempts (tdd-targets-still-red) — identical
-					// failure+footprint signature across attempts, no net progress. "A test that fails consistently is not flaky —
-					// it is broken": surface the hypothesis and the legal next actions at
-					// the human boundary (escalation message/findings) and in the terminal
-					// stop log. Advisory only — never auto-triggers a re-author (the judge
-					// stays the actuator for that verdict).
-					const stillRedSuspect = failureReasons.some((r) => r.includes("tdd-targets-still-red"));
-					const escalate = (ctx as { options?: { escalate?: import("../../types.ts").Escalate } }).options?.escalate;
-					if (escalate) {
-						try {
-							const { runEscalation, applyRetryDecision } = await import("../../escalation.ts");
-							// Fix 3 — evidence conservation at the human boundary: when the
-							// structured challenge channel yielded nothing (no testDefects — the
-							// v0.1.52 inert-channel case, or an attempt that timed out with
-							// control=no and never called structured_output), the implementer's
-							// LAST reasoning text may still carry the impossibility proof. Surface
-							// it raw (already bounded to trimImplementerText's 1200-char tail);
-							// the user must never have to guess that a proof exists.
-							const implDiagnosisTail = implDefects.length === 0 ? implTextTail.trim() : "";
-							// Fix 5 — advisory-only text-proof heuristic: flag (never auto-trigger)
-							// when the tail claims unsatisfiability while failing a confirmed RED.
-							const textProofSuspect = implDiagnosisTail.length > 0 && acceptedRed !== null && UNSATISFIABLE_TEXT_RE.test(implDiagnosisTail);
-							if (textProofSuspect) {
-								ctx.log(`Implementation ${phaseId} advisory: implementer text matches unsatisfiability markers without structured testDefects — surfacing the reasoning tail to the user (no automatic re-author from text alone)`);
-							}
-							const failure: import("../../types.ts").EscalationFailure = {
-								kind: "stagnation",
-								stage: "implementation",
-								message: `Implementation phase "${phaseName}" made no progress across consecutive attempts — the same failure recurred after a change. This is often an unsatisfiable RED test, a gate contradiction, or a spec ambiguity.${crossScopeConflict ? ` THIS FAILURE CITES TEST FILE(S) DECLARED BY ANOTHER PHASE (${crossScopeCites.map((c) => `${c.file} ← ${c.ownerPhases.join(", ")}`).join("; ")}) — a cross-scope contract this phase cannot satisfy inside its declared scope; plan revision (replan) is the likely fix, not another attempt.` : ""}${implDefects.length ? ` THE IMPLEMENTER REPORTS THE RED TEST IS UNSATISFIABLE: ${implDefects.map((d) => `${d.testFile}${d.lines ? ` (${d.lines})` : ""}: ${d.reason}`).join("; ")}.` : ""}${implDiagnosisTail ? `${textProofSuspect ? " POSSIBLE UNSATISFIABLE RED (text evidence only — unverified):" : ""}\n\nImplementer's latest diagnosis (reasoning tail):\n${implDiagnosisTail}` : ""}${implJudgeDiagnosis ? `\n\nJUDGE DIAGNOSIS (${implJudgeEvidenceLabel}):\n${implJudgeDiagnosis}` : ""}${stillRedSuspect && implDefects.length === 0 ? "\n\nDETERMINISTIC TEST-SUSPECT SIGNAL: the phase's RED targets never went green across these repeated no-progress attempts (tdd-targets-still-red). The RED test itself may be unsatisfiable (defective). Legal next actions: re-author the RED with this failure evidence (retry-with-guidance), fix the environment, or accept the limitation." : ""} Inspect the recurring failures or provide explicit guidance before the phase is abandoned.`,
-								severity: "soft",
-								findings: [
-									...(implJudgeDiagnosis ? [{ file: null, severity: null, title: `judge diagnosis: ${implJudgeDiagnosis.split("\n")[0].slice(0, 200)}` }] : []),
-									...(implDefects.map((d) => ({ file: d.testFile, severity: null, title: `unsatisfiable: ${d.reason}` }))),
-								// J3: the deterministic still-red signal rides even when the
-								// implementer reported nothing — classification must be explicit,
-								// never silent.
-								...(stillRedSuspect ? [{ file: null, severity: null, title: "test-suspect (deterministic): RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence, fix the environment, or accept the limitation" }] : []),
-									// The diagnosis finding leads the failure reasons so it survives the
-									// 12-entry slice — it is the highest-value evidence for the decision.
-									...(implDiagnosisTail ? [{ file: null, severity: null, title: `implementer diagnosis: ${implDiagnosisTail.split("\n")[0].slice(0, 200)}` }] : []),
-									...failureReasons.slice(0, 12).map((r) => ({ file: null, severity: null, title: r })),
-								].slice(0, 12),
-								worktreePath: setup.worktreePath,
-								specDirectory: setup.specDirectory,
-							};
-							const decision = await runEscalation(state, failure, escalate);
-							if (decision) {
-								applyRetryDecision(state, decision, { worktreePath: setup.worktreePath, specDirectory: setup.specDirectory });
-								if (decision.choice === "retry-with-guidance" && ctx.budget.check()) {
-									// Reset the no-progress window so the guided attempt is judged
-									// fresh (not instantly re-flagged against the pre-guidance signature),
-									// and drop the accepted RED so guidance can reshape tests too.
-									// Carry the implementer's diagnosis so the guided re-author is
-									// evidence-backed, not blind (parity with the challenge edge). Even
-									// without structured testDefects, a model that proved the test
-									// unsatisfiable only in its .text reasoning still gets that proof
-									// routed to the RED author.
-									reauthorEvidence = formatReauthorEvidence(implDefects, implTextTail);
-									attemptProgressHistory = [];
-									acceptedRed = null;
-									ctx.log(`Implementation ${phaseId} no-progress escalation: retrying with user guidance`);
-									continue;
-								}
-							}
-						} catch { /* never-throw: fall through to the terminal break */ }
-					}
+				// increment 12 — the no-progress valve (no-progress-valve.ts): the
+				// contradiction frames, the J9-b judge dispatch, the route arms
+				// (replan-upstream / challenge-test / re-author-tests / continue),
+				// the HITL escalation, and the terminal stop-class log. The five-way
+				// outcome maps the region's four continues and two breaks; each arm
+				// carries ONLY its bindings (the v0.4.33 discipline), with
+				// challengeConsumed driving the caller-side counter increment.
+				const npOutcome = await adjudicateNoProgress({
+					ctx,
+					state,
+					worktreePath: setup.worktreePath,
+					specDirectory: setup.specDirectory,
+					specIdentifier: setup.specIdentifier ?? "unknown",
+					phaseId,
+					phaseName,
+					framePhaseName: phases[idx]?.name ?? "", // F1: the frames' RAW name — never the phaseId fallback
+					attempt,
+					signatureRepeat,
+					faultRecurrence,
+					zeroLandedChange,
+					attemptFaultClass,
+					faultClassStreakCount: faultClassStreak?.count ?? 0,
+					boundaryRevertHits,
+					boundaryLeakOwners,
+					boundaryLeakFiles,
+					crossScopeConflict,
+					crossScopeCites,
+					failureReasons,
+					progressSignatureFailure: progressSignature.failure,
+					implTextTail,
+					implDefects,
+					acceptedRed,
+					testFiles,
+					challengeReauthors,
+				});
+				if (npOutcome.kind === "replan-routed") {
+					redJudgeDiagnosis = npOutcome.diagnosis;
 					terminalStopReason = "no-progress";
-					// P10 (Wave P1 D-C): the terminal stop names WHICH governor valve fired —
-					// identical pair, zero-change plateau, fault-class recurrence, or the
-					// cross-scope citation (with its scope attribution).
-					const noProgressStopClass = signatureRepeat
-						? "repeated no-progress failure"
-						: faultRecurrence
-							? `failure-category recurrence (${attemptFaultClass} × ${faultClassStreak?.count ?? 0} consecutive attempts — fresh footprints, same class)`
-							: zeroLandedChange
-								? "zero-change plateau (the attempt landed no file changes — static signal)"
-								: crossScopeConflict
-									? `cross-scope contract conflict (cited test file(s) declared requireTests of ${crossScopeCites.map((c) => `${c.file} ← ${c.ownerPhases.join(", ")}`).join("; ")} — first occurrence routed immediately)`
-									: "repeated no-progress failure";
-					ctx.log(`Implementation ${phaseId} stopped after ${noProgressStopClass} on attempt ${attempt}: ${failureReasons.join("; ") || "phase gates unmet"}${stillRedSuspect ? " [test-suspect: RED targets never went green across repeated no-progress attempts — the RED itself may be unsatisfiable; re-author it with this evidence or accept the limitation]" : ""}`);
 					break;
+				}
+				if (npOutcome.kind === "reauthor") {
+					if (npOutcome.challengeConsumed) challengeReauthors++;
+					reauthorEvidence = npOutcome.reauthorEvidence;
+					attemptProgressHistory = [];
+					acceptedRed = null;
+					continue;
+				}
+				if (npOutcome.kind === "continue-guided") {
+					attemptProgressHistory = [];
+					judgeGuidance = npOutcome.judgeGuidance;
+					continue;
+				}
+				if (npOutcome.kind === "retry-with-guidance") {
+					reauthorEvidence = npOutcome.reauthorEvidence;
+					attemptProgressHistory = [];
+					acceptedRed = null;
+					continue;
+				}
+				terminalStopReason = "no-progress";
+				break;
 				}
 			}
 			// v0.3.85 F3: close out the FINAL attempt's wall duration — a green break or

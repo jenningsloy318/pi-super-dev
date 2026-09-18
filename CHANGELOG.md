@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.40: no-progress valve extracted (stage.ts split, increment 12)
+
+The no-progress valve (the contradiction frames — v0.3.79 A2 boundary-reverts + the Wave P1 D-C
+cross-scope frame; the J9-b judge dispatch at stage9.impl-no-progress; the four route arms —
+replan-upstream, challenge-test, re-author-tests, continue; the HITL escalation with
+applyRetryDecision and the retry-with-guidance re-author; and the P10 stop-class terminal log)
+moves out of `stage.ts` into `src/stages/implementation/no-progress-valve.ts` — 2,528 → 2,375
+lines. The EIGHTH control-flow conversion and the one with the MOST exits: FOUR `continue`s and
+TWO `break`s became a FIVE-way outcome union (replan-routed / reauthor{challengeConsumed} /
+continue-guided / retry-with-guidance / terminal), each arm carrying ONLY its bindings — with
+challengeConsumed driving the caller-side counter increment (the module logs N+1 byte-identical
+to inline's post-increment form) and judgeGuidance flowing to the next implementer prompt.
+implJudgeDiagnosis/implJudgeEvidenceLabel became module-locals — an INTENTIONAL tightening
+(blessed, code-review NPV-2): phase-scope declarations could leak a diagnosis across valve
+episodes.
+
+Dual gates ran on glm-5.3-flash:high. Adversarial gate: PASS — zero divergence on four of five
+vectors; its one genuine finding (F1, the frame constructors receiving the loop-normalized
+phaseName instead of the raw `phases[idx]?.name ?? ""`) fixed by the framePhaseName input,
+restoring exact code motion; F3 coverage folds: the declined-replan fall-through, the csFrame
+variant, and the N+1 log-form pin. Code gate: CHANGES REQUESTED (1 Medium + 2 Low + 2 nits) —
+NPV-1 the dead runJudge/JudgeRoute import (the last stage.ts judge consumer was this region),
+NPV-3 the framePhaseName split pinned with distinct values, NPV-4 spec-dir cleanup registry,
+NPV-5 the exhausted-budget assertion tightened to toBe("terminal"). 13 tests.
+
 ### Refactor — v0.4.39: env-blocker judge hand-off extracted (stage.ts split, increment 11)
 
 The environmental-blocker JUDGE HAND-OFF (the second and final sub-block of the env-blocker branch:
