@@ -1,4 +1,4 @@
-import { MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreUnacceptedRedChanges, setDiff, snapshotFiles } from "./red-evidence.ts";
+import { MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreUnacceptedRedChanges, setDiff, snapshotFiles } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
 import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
@@ -10,7 +10,8 @@ import { handOffEnvBlockerJudge } from "./env-blocker-judge.ts";
 import { adjudicateNoProgress } from "./no-progress-valve.ts";
 import { runGateSuite } from "./gate-suite.ts";
 import { runGreenBoundaryOracle } from "./green-boundary.ts";
-import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
+import { closePhaseTail } from "./phase-tail.ts";
+import { deterministicPhaseCommit, phaseStatusUpsert } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
 import { routeRedJudge } from "./red-judge.ts";
@@ -34,7 +35,7 @@ import { appendGateChecked } from "../../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { approveScaffoldPaths } from "../../test-artifacts.ts";
-import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
+import { buildTddPrompt, buildImplementPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
 import { triggerReplanForFindings, replanPending } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
@@ -62,7 +63,6 @@ import { deriveConventionsRunnerSpec } from "../../build-runner/conventions.ts";
 import { type CoverageGateResult, coverageThreshold } from "../../build-runner/coverage-gate.ts";
 // Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
 import { serializeProtectionInterval } from "../protection-interval.ts";
-import { reapplyRollbackStash } from "../checkpoint-rollback.ts";
 import { handleConvergenceRollback } from "./phase-rollback.ts";
 import { stateFileFor } from "../../state/state-root.ts";
 
@@ -1931,94 +1931,45 @@ export const implementationStage: Stage = {
 			// single `end` jsonl line (single begin/end-per-phase nesting,
 			// AC-04 → SCENARIO-008/009, review finding CR-MED). Never throws.
 			if (tracker) tracker.commitEnd("phase", phaseId);
-			if (!green) {
-				// §D: record the failure so the next convergence iteration targets it
-				const terminalReasons = [
-					...attemptErrors,
-					// review-2 F8: the judge's verified diagnosis (fix-environment /
-					// no-progress terminal stops) reaches the convergence record —
-					// without it, environment-blocked phases surface only generic
-					// red-unverified strings downstream.
-					...(redJudgeDiagnosis ? [`judge diagnosis: ${redJudgeDiagnosis.slice(0, 400)}`] : []),
-					...missingDeliverables.map((e) => `deliverable: ${e}`),
-					...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`),
-					...hollowFiles.map((e) => `hollow-file: ${e}`),
-				];
-				recordImplementationConvergenceFailure(state, { phaseId, phaseName, kind: terminalFailureKind, attemptsRun, reasons: terminalReasons });
-				// v0.3.0 (harness research): a failed phase NEVER terminates the run
-				// anymore. The five track-07 deaths all ended PARTIAL 0/N with hours
-				// of green doc/code work discarded; every external harness ends runs
-				// with the best attempt preserved (SWE-agent get_best, Anthropic
-				// git-per-increment, Ralph workspace-as-memory). The phase is marked
-				// `partial`, its best attempt is stash-preserved, and the pipeline
-				// CONTINUES to the next phase; the outer §D convergence loop re-enters
-				// non-green phases for another bounded pass until allGreen or the
-				// global budget fuse.
-				preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : terminalStopReason === "environment-blocked" ? "environment-blocked" : terminalStopReason === "phase-attempt-cap" ? "phase-attempt-cap" : terminalStopReason === "phase-wall" ? "phase-wall" : terminalStopReason === "wall-fuse" ? "wall-fuse" : terminalStopReason === "inherited-red" ? "inherited-red" : terminalStopReason === "declared-handoff" ? "declared-handoff (f4)" : terminalStopReason === "red-weakening" ? "red-weakening" : "gates-unmet"); // review-2 F8: keep the honest reason (v0.3.85 F3: the three bound reasons pass through verbatim; v0.3.85 F2/F4: the handoff reasons pass through named; v0.3.85 F5: the red-weakening handoff reason passes through named)
-			if (terminalStopReason === "environment-blocked") envBlockedPhases.add(phaseId);
-				{
-					const sig = terminalReasons.join("; ").slice(0, 200);
-					const prior = phaseStatus.find((p) => p.id === phaseId);
-					const sameSig = prior?.status === "partial" && prior.lastFailureSig === sig;
-					phaseStatusUpsert(phaseStatus, phaseId, "partial", attemptsRun); // v0.3.85 S3: peak-attempts metric
-					const entry = phaseStatus.find((p) => p.id === phaseId)!;
-					entry.lastFailureSig = sig;
-					entry.partialReEntries = sameSig ? (prior?.partialReEntries ?? 0) + 1 : 0;
-				}
-				emitPhaseStatus("partial");
-				lastFailuresUpsert(lastFailures, phaseId, [
-					...attemptErrors,
-					...missingDeliverables.map((e) => `deliverable: ${e}`),
-					...claimedNotChanged.map((e) => `claimed-not-changed: ${e}`),
-					...hollowFiles.map((e) => `hollow-file: ${e}`),
-				]);
-				if (terminalFailureKind === "red-generation") {
-					ctx.log(`Implementation ${phaseId} partial (RED generation stopped after ${terminalRedTries} tries in attempt ${attemptsRun}${terminalStopReason === "no-progress" ? ", no progress" : terminalStopReason === "budget" ? ", budget exhausted" : terminalStopReason === "environment-blocked" ? ", environment blocked (fix is outside this worktree — judge diagnosis above)" : terminalStopReason === "red-weakening" ? " (red-weakening — declared handoff routed; the run ends status replan)" : ""}) — continuing to the next phase`); // review-2 F8
-				} else {
-					ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : terminalStopReason === "phase-attempt-cap" ? " (phase-attempt-cap)" : terminalStopReason === "phase-wall" ? " (phase wall budget exhausted)" : terminalStopReason === "wall-fuse" ? " (wall-fuse — run wall budget exhausted; resumable by design)" : terminalStopReason === "inherited-red" ? " (inherited-red — declared handoff routed; the run ends status replan)" : terminalStopReason === "declared-handoff" ? " (declared-handoff (f4) — the run ends status replan)" : ""} — continuing to the next phase`); // review-2 F8
-				}
+			// increment 15 — the phase tail (phase-tail.ts): the §D failure record,
+			// the v0.3.0 partial preservation, the partial-status bookkeeping, the
+			// S4 pending-stash retention, the green path's deterministic commit
+			// (+ orchestrator fallback), and the stash re-apply. 3-way outcome;
+			// stashCleared rides every arm (the caller owns the let).
+			const tail = await closePhaseTail({
+				ctx,
+				state,
+				setup,
+				phaseId,
+				phaseName,
+				phaseNameRaw: (phase as { name?: string }).name as string,
+				idx,
+				totalPhases: phases.length,
+				isGreen: green,
+				terminalStopReason,
+				terminalFailureKind,
+				terminalRedTries,
+				attemptsRun,
+				attemptErrors,
+				missingDeliverables,
+				claimedNotChanged,
+				hollowFiles,
+				redJudgeDiagnosis,
+				phaseStatus,
+				lastFailures,
+				envBlockedPhases,
+				pendingRollbackStash,
+				worktreeGone,
+				emitPhaseStatus,
+				announceActivity,
+			});
+			if (tail.stashCleared) pendingRollbackStash = null;
+			if (tail.kind === "green") {
+				phasesCompleted++;
+			} else {
 				allGreen = false;
-				// Adversarial S4 (v0.3.99 fix): if THIS phase's rollback stash is still
-				// pending (the phase went partial before its re-apply point), preserve
-				// it honestly — nulling pendingRollbackStash here prevents a later
-				// phase's rollback from silently overwriting the SHA and orphaning the
-				// stash in git stash list (P10: named, never silently stranded).
-				if (pendingRollbackStash && pendingRollbackStash.phaseId === phaseId) {
-					ctx.log(`Implementation ${phaseId} went partial with a pending rollback stash (${pendingRollbackStash.stashSha.slice(0, 8)}) — the stash is RETAINED in git stash list for manual recovery; it will NOT be re-applied automatically on this pass`);
-					pendingRollbackStash = null;
-				}
-				if (worktreeGone) break; // v0.3.57 liveness: no further phase can run in a deleted worktree
+				if (tail.kind === "worktree-gone") break; // v0.3.57 liveness
 				continue;
-			}
-			phasesCompleted++;
-			if (ctx.budget.check()) {
-				announceActivity("Commit");
-				// v0.3.43: engine-side deterministic commit (RC4). Falls back to the
-				// orchestrator agent for in-place runs / kill-switch / git failures.
-				const commitOutcome = deterministicPhaseCommit(setup.worktreePath, {
-					phaseIndex: idx + 1,
-					totalPhases: phases.length,
-					phaseName,
-					worktreeCreated: (setup as { worktreeCreated?: boolean }).worktreeCreated,
-					gateSummary: ["build green", "deliverables met", "TDD oracle green"].join("; "),
-				});
-				if (commitOutcome.status === "committed") {
-					ctx.log(`Implementation ${phaseId} deterministic commit: ${commitOutcome.sha ?? "(sha unknown)"} — ${commitOutcome.reason}`);
-				} else if (commitOutcome.status === "skipped") {
-					ctx.log(`Implementation ${phaseId} commit skipped: ${commitOutcome.reason}`);
-				} else {
-					ctx.log(`Implementation ${phaseId} deterministic commit fell back to the orchestrator agent: ${commitOutcome.reason}`);
-					await ctx.agent({ id: `pipeline.implementation.${phaseId}.commit`, agent: "orchestrator", prompt: buildCommitPrompt(setup, phase.name) });
-				}
-			}
-			// ── Wave 3 D-D (058 Layer 4): re-apply the rollback stash AFTER this
-			// phase's re-execution landed (its deterministic commit just ran — the
-			// stash's downstream uncommitted state returns on top of the fresh K
-			// tree, best-effort; a conflict DROPS it with an honest P10 log inside
-			// reapplyRollbackStash — never an LLM conflict-resolution step).
-			if (pendingRollbackStash && pendingRollbackStash.phaseId === phaseId) {
-				reapplyRollbackStash({ worktreePath: setup.worktreePath, stashSha: pendingRollbackStash.stashSha, phaseId, log: (line) => ctx.log(line) });
-				pendingRollbackStash = null;
 			}
 		}
 		// v0.3.80 B2 — stage-close re-verification (commit fusion): gate-window expiry

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.43: phase tail extracted (stage.ts split, increment 15 — the final loop-scoped region)
+
+The phase tail (the §D failure convergence record with the judge-diagnosis
+union; the v0.3.0 partial preservation with the nine-name honest-reason
+chain; the partial-status bookkeeping with the same-signal re-entry
+counter; the S4 pending-stash retention; the v0.3.57 worktreeGone break;
+the green path's v0.3.43 deterministic commit with its orchestrator
+fallback; the Wave 3 D-D stash re-apply) moves out of `stage.ts` into
+`src/stages/implementation/phase-tail.ts` — 2,141 → 2,092 lines. A 3-way
+outcome (partial | worktree-gone | green) with `stashCleared` riding every
+arm; the caller alone owns the `pendingRollbackStash` let. The module
+input is `isGreen` (not `green`) because the theme-audit tripwire flags
+destructures containing color words.
+
+Dual gates: adversarial dcf87f06 PASS (zero divergence on all five
+vectors — the stash let, the exit shape incl. the phasesCompleted++
+reorder proven unobservable, the await point, the status bookkeeping, the
+fixtures); code gate 8480e24a APPROVED 0 C/H/M. Folds: the dead `tracker`
+param dropped (both gates found it), the two partial-log ternary variants
+pinned, the FULL §D record args pinned, the caller-seam source pin.
+tests/phase-tail.test.ts 12 tests; suite 283 files / 4,302 green.
+
+
 ### Fix — v0.4.42: increment-14 gate folds
 
 Dual-gate folds for the GREEN-boundary oracle extraction (v0.4.41's
