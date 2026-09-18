@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveThinking, splitModelThinking } from "./agents/agent-runtime/index.ts";
+import { splitModelThinking } from "./agents/agent-runtime/index.ts";
 import { buildRunMetricsRow, appendRunMetrics, checkSigmaBands } from "./evolution/sigma-bands.ts";
 import { deriveS3Counters, type S3ImplementationState } from "./evolution/run-observability.ts";
 // P2 (v0.3.90): the in-pipeline fail-open eval surface (D5+D3) — strictly

@@ -7,7 +7,7 @@ import { appendUserNotes, userNotesForAgent } from "../render/user-notes.ts";
 import { recordInstruction } from "../team/messages.ts";
 import { drainControlDrift, extractControlKeys } from "../control.ts";
 import { ledgerRunId } from "../runlog.ts";
-import type { AgentCall, PipelineState, RunOptions, StageContext } from "../types.ts";
+import type { AgentCall, PipelineState, RunOptions } from "../types.ts";
 
 /**
  * Wave 2 increment 6: the agent-call prompt assembly + per-call policy
