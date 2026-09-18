@@ -1,4 +1,4 @@
-import { appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreUnacceptedRedChanges, setDiff, snapshotFiles } from "./red-evidence.ts";
+import { appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, redDiagnosticsPrompt, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, setDiff, snapshotFiles } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
 import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
@@ -15,6 +15,7 @@ import { deterministicPhaseCommit, phaseStatusUpsert } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
 import { adjudicateRedRetryLadder } from "./red-retry-ladder.ts";
+import { adjudicateRedAcceptance } from "./red-acceptance.ts";
 import { dispatchResearchAssist } from "./research-assist-dispatch.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
@@ -45,7 +46,7 @@ import { extractFailingTestFilePaths, normalizeRepoPath } from "../inherited-red
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
 // research-agent, no agent file is created.
-import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
+import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, parseNeedsResearch, type NeedsResearchEntry, type ResearchAssistGreenTrigger } from "../research-assist.ts";
 // 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
 // plan compile-time checks) — two-locus mechanical findings routed through
 // the SAME replan circuit plan-feasibility uses (no judge call needed).
@@ -958,80 +959,66 @@ export const implementationStage: Stage = {
 					// full changedFiles revert would destroy the surviving new test files,
 					// and its reason overwrite would bury the handoff row; the scoped revert
 					// already ran at the escalation site).
-					if (redEvidence && terminalStopReason === "red-weakening") {
+					// increment 17 — the RED acceptance boundary (red-acceptance.ts): the
+					// F5 routed partial, the no-evidence terminal, the already-satisfied
+					// MACHINE verification, the fail-closed terminal with the research-assist
+					// arming, and the acceptance capture. 6-way outcome; the green trio and
+					// the arming run in-module (by-ref surfaces), the caller owns the lets.
+					const acceptance = adjudicateRedAcceptance({
+						ctx,
+						state,
+						worktreePath: setup.worktreePath,
+						defaultBranch: setup.defaultBranch,
+						phaseId,
+						attempt,
+						terminalStopReason,
+						retries,
+						redEvidence,
+						redStatus,
+						testFiles,
+						redChangedFiles,
+						redFailClosedUnknown,
+						phaseDeliverables,
+						phaseStatus,
+						lastFailures,
+						phaseResearchAssistUsed,
+						redAssistArmed,
+						attemptDetail,
+						announceActivity,
+						emitPhaseStatus,
+					});
+					if (acceptance.kind === "red-weakening-partial") {
 						terminalFailureKind = "red-generation";
-						terminalRedTries = retries + 1;
+						terminalRedTries = acceptance.terminalRedTries;
 						break;
 					}
-					if (!redEvidence) {
+					if (acceptance.kind === "no-evidence") {
 						attemptErrors = ["red-generation: no RED evidence produced"];
 						terminalFailureKind = "red-generation";
 						terminalRedTries = 0;
-						ctx.log(`Implementation ${phaseId} RED generation failed after 0 tries`);
 						break;
 					}
-					if (redEvidence.status === "green-already-satisfied") {
-						resetDeliverableCheckCache();
-						announceActivity("Already-satisfied verification", attemptDetail(attempt));
-						announceActivity("Build gate", attemptDetail(attempt));
-						const gate = runBuildGate(setup.worktreePath, { gate: (state.spec?.gate) as GateOptions | undefined, signal: ctx.signal, defaultBranch: setup.defaultBranch });
-						appendGateChecked(state, "phase-green:already-satisfied", gate, "implementation");
-						announceActivity("Deliverable check", attemptDetail(attempt));
-						const deliverableCheck = runDeliverableCheck(setup.worktreePath, phaseDeliverables ?? {}, { signal: ctx.signal, skipTests: !(gate.pass || gate.inScopePass), defaultBranch: setup.defaultBranch });
-						ctx.log(`Implementation ${phaseId} RED already-satisfied: build=${gate.pass || gate.inScopePass}, deliverables=${deliverableCheck.pass}`);
-						if ((gate.pass || gate.inScopePass) && deliverableCheck.pass) {
-							green = true;
-							phaseStatusUpsert(phaseStatus, phaseId, "green");
-							emitPhaseStatus("ok");
-							const _gfi = lastFailures.findIndex((f) => f.phaseId === phaseId); if (_gfi >= 0) lastFailures.splice(_gfi, 1);
-							break;
-						}
-						attemptErrors = gate.errors;
-						missingDeliverables = deliverableCheck.missing;
-						ctx.log(`Implementation ${phaseId} RED already-satisfied verification FAIL: ${[...attemptErrors, ...missingDeliverables.map((e) => `deliverable: ${e}`)].join("; ") || "phase gates unmet"}`);
+					if (acceptance.kind === "already-green") {
+						green = true;
 						break;
 					}
-					// v0.3.30 F2: unknown (red-unverified) evidence is only a TERMINAL
-					// failure when the fail-closed guard engaged (the phase requires
-					// tests). Otherwise the P3 contract holds: unknown falls through to
-					// the implementer with an unconfirmed-RED advisory, no stall.
-					const redFailures = redEvidenceFailureReasons(redEvidence).filter((r) => redFailClosedUnknown || !r.startsWith("red-unverified:"));
-					if (redFailures.length) {
-						restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
-						attemptErrors = redFailures;
+					if (acceptance.kind === "already-fail") {
+						attemptErrors = acceptance.attemptErrors;
+						missingDeliverables = acceptance.missingDeliverables;
+						break;
+					}
+					if (acceptance.kind === "red-terminal") {
+						attemptErrors = acceptance.attemptErrors;
 						terminalFailureKind = "red-generation";
-						terminalRedTries = retries + 1;
-						// v0.3.87 S4(b) RED side (decision 9): a terminal RED-generation
-						// failure with ≥ RESEARCH_ASSIST_RED_TRIGGER_TRIES tries (second RED
-						// retry onward) ARMS the engine-mediated assist for this phase's NEXT
-						// implementer round — the §D re-entry's first attempt. The dispatch
-						// happens at that attempt's corrective-prompt assembly (immediately
-						// before the implementer call), so the assist never fires without a
-						// following attempt that carries it (never report-only; arming is a
-						// zero-cost record, nothing is dispatched here). Per-phase cap ≤1
-						// (P8): a spent cap logs honestly and does NOT (re-)arm.
-						if (terminalRedTries >= RESEARCH_ASSIST_RED_TRIGGER_TRIES) {
-							if (phaseResearchAssistUsed[phaseId]) {
-								ctx.log(`Implementation ${phaseId} research-assist trigger (RED: terminalRedTries=${terminalRedTries}) — per-phase assist cap already spent; proceeding WITHOUT assist`);
-							} else {
-								redAssistArmed[phaseId] = { tries: terminalRedTries, detail: redFailures.slice(0, 6).join("; "), testFiles: [...testFiles] };
-								ctx.log(`Implementation ${phaseId} research-assist ARMED (RED: ${terminalRedTries} terminal RED trie(s)) — research-agent will be dispatched before this phase's NEXT implementer round (the §D re-entry attempt)`);
-							}
-						}
-						if (terminalStopReason !== "no-progress" && terminalStopReason !== "environment-blocked") terminalStopReason = ctx.budget.check() ? "failed" : "budget";
-						ctx.log(`Implementation ${phaseId} RED generation stopped after ${retries + 1} tries${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment-blocked)" : ""}`);
-						ctx.log(`Implementation ${phaseId} RED gate FAIL: ${redFailures.join("; ")}`);
-						ctx.log(redEvidenceLogLine(redEvidence));
+						terminalRedTries = acceptance.terminalRedTries;
+						terminalStopReason = acceptance.terminalStopReason;
 						break;
 					}
-					acceptedRed = { status: redStatus, testFiles: [...testFiles], changedFiles: [...redChangedFiles] };
+					acceptedRed = acceptance.acceptedRed;
 				// A freshly (re)accepted RED consumed any prior challenge evidence —
-				// clear it so a later UNRELATED re-author does not carry stale proof.
-				reauthorEvidence = "";
-					// Capture the confirmed RED test contents once; persisted across GREEN
-					// attempts via the hoisted redTestSnapshot so a later GREEN edit to a
-					// test file is detectable on every retry, not only this attempt.
-					if (redStatus === "red" && testFiles.length > 0) redTestSnapshot = snapshotFiles(setup.worktreePath, testFiles);
+					// clear it so a later UNRELATED re-author does not carry stale proof.
+					reauthorEvidence = "";
+					if (acceptance.redTestSnapshot) redTestSnapshot = acceptance.redTestSnapshot; // 8c5d07bc F1: null preserves the prior snapshot
 				}
 				const redTargetsExist = Array.from(redTestSnapshot.values()).some((content) => content !== null);
 				const confirmedRedTargets = redStatus === "red" && testFiles.length > 0 && (redChangedFiles.length > 0 || redTargetsExist);

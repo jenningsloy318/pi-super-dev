@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.45: RED acceptance boundary extracted (stage.ts split, increment 17)
+
+The four terminal blocks + the acceptance after the RED while loop (the F5
+routed red-weakening partial; the no-evidence terminal; the
+green-already-satisfied MACHINE verification with its side-effect trio; the
+fail-closed terminal with the research-assist arming; and the acceptance
+capture with the confirmed-RED snapshot) move out of `stage.ts` into
+`src/stages/implementation/red-acceptance.ts` — 2,014 → 2,000 lines. A
+6-way outcome; the arming and the trio run in-module on by-ref surfaces.
+
+BOTH gates independently found the same real divergence (adversarial
+8c5d07bc F1 ≡ code 7f682af4 F1): my first module returned an EMPTY map and
+the caller rebound unconditionally — dropping a live prior-RED snapshot on
+a non-red acceptance and silently blinding the GREEN-boundary oracle's
+changedSinceSnapshot to implementer edits of the previously confirmed RED
+(reachable via five acceptedRed-nulling reauthor sites). Folded: the
+accepted arm carries `redTestSnapshot: Map | null` (null = preserve the
+phase-hoisted snapshot, the inline no-else semantics) and the caller
+rebinds conditionally; the wrong empty-map test pin replaced with the
+preserve contract. Code F2 folded: the vacuous budget-override pin
+replaced with the two real cases (exhausted → "budget" + the log suffix;
+no-progress preserved verbatim). 11 module tests; suite 285 files / 4,326
+green.
+
+
 ### Refactor — v0.4.44: RED retry ladder extracted (stage.ts split, increment 16)
 
 The RED retry/escalation ladder (the RC-3 cycle/oscillation detection with
