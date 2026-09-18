@@ -80,7 +80,7 @@ import type {
 	BoundaryQuarantinePayload,
 	RunOptions,
 	RunSummary,
-	SpawnResult, AgentUsage, UsageCallRow,
+	SpawnResult, UsageCallRow,
 	StageContext,
 	StageProgressEvent,
 	Workflow,

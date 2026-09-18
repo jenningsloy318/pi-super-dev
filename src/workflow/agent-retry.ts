@@ -26,14 +26,14 @@ export function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
  *  resets. Retried with backoff INSIDE one agent call — not counted as a fresh
  *  gate attempt (which burned the budget when a model 429'd on every attempt). */
 const TRANSIENT_RE = /\b(429|rate.?limit|overload|too many requests|service unavailable|503|502|520|521|522|524|ECONNRESET|ETIMEDOUT|socket hang up)\b/i;
-function isTransientAgentError(error?: string): boolean {
+export function isTransientAgentError(error?: string): boolean {
 	return !!error && TRANSIENT_RE.test(error);
 }
 
 /** Transient-retry backoff schedule (ms). Read LAZILY so tests can set
  *  SUPER_DEV_TRANSIENT_RETRY_MS before invoking. Default: four retries
  *  (5 total tries) at 2s, 4s, 8s, 16s. */
-function transientRetryMs(): number[] {
+export function transientRetryMs(): number[] {
 	const defaultDelays = Array.from({ length: Math.max(0, WORKFLOW_ATTEMPTS - 1) }, (_, i) => 2000 * (2 ** i)).join(",");
 	return (superDevEnv("SUPER_DEV_TRANSIENT_RETRY_MS") ?? defaultDelays)
 		.split(",").map((x) => Number.parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
