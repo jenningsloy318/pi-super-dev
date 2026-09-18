@@ -38,11 +38,12 @@ export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evol
 import { captureSourceBoundary, restoreNewSourceViolations, sourceBoundaryViolations } from "./workflow/source-boundary.ts";
 // v0.3.56 F9f public seam (out-of-tree stability): re-exported from the extracted module.
 export { restoreNewSourceViolations } from "./workflow/source-boundary.ts";
-import { freshUsage, accumulateUsage, usageFuseError } from "./workflow/usage-accounting.ts";
+import { freshUsage, accumulateUsage } from "./workflow/usage-accounting.ts";
 // v0.3.68 F10-1 public seam (tests import summarizeUsage from here): re-exported.
 export { summarizeUsage, type UsageTotalsView } from "./workflow/usage-accounting.ts";
 import { deriveRunStatus, type StatusDerivationResultRow } from "./workflow/run-status.ts";
 import { runWithTransientRetry } from "./workflow/agent-retry.ts";
+import { preCallFuseError } from "./workflow/pre-call-fuses.ts";
 // A-05 public seam (exported from workflow.ts since v0.3.x): re-exported from the extracted module.
 export { sleepMs } from "./workflow/agent-retry.ts";
 export { deriveRunStatus, type RunStatusDerivation, type StatusDerivationResultRow } from "./workflow/run-status.ts";
@@ -61,13 +62,13 @@ import { getConfig } from "./render/super-dev-dir.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
 import { currentStepScope } from "./step-scope.ts";
-import { appendRunEvent, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
+import { appendRunEvent, ledgerRunId, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
 import { auditAppend } from "./render/super-dev-dir.ts";
 import { writeCompletionAudit } from "./completion-audit.ts";
 import { validateTeamReadiness } from "./team/raci.ts";
 import { recordInstruction } from "./team/messages.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
-import { freshRunWallFuseState, readRunWallFuseMarker, runWallFusePreCallError } from "./wall-fuse.ts";
+import { freshRunWallFuseState, readRunWallFuseMarker } from "./wall-fuse.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
 import { persistCurrentStateStamp } from "./review/contract-surface/index.ts";
 import type {
@@ -193,10 +194,6 @@ export function resolveAgentModel(
 	return splitModelThinking(globalModel).model || undefined;
 }
 
-/** P1.3: the run's ledger id, read at event time (runWorkflow sets __runId
- *  right after makeContext; agents only ever spawn after setup, so it exists). */
-const ledgerRunId = (state: PipelineState): string => String((state as Record<string, unknown>).__runId ?? "unknown");
-
 /** P1.3: bounded control summary for agent.called events — key presence plus
  *  the two universal scalar signals (verdict/pass). Full controls already live
  *  in audit.jsonl + the resume cache; events.jsonl must stay cheap to fold. */
@@ -245,52 +242,11 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 	const wallFuse = freshRunWallFuseState();
 
 	async function realAgent(call: AgentCall): Promise<AgentResult> {
-		// BUG-4: atomic reservation — bail BEFORE doing any work when the cap is hit,
-		// so concurrent branches can't exceed maxAgents. (Stage bodies still peek
-		// `check()` to avoid constructing a prompt when obviously over budget.)
-		if (!budget.spent()) {
-			appendRunEvent(state.setup?.specDirectory, {
-				runId: ledgerRunId(state),
-				agent: call.agent,
-				stage: (call.id ?? "").replace(/^pipeline\./, ""),
-				type: "agent.called",
-				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: "budget exhausted (maxAgents reached)" },
-			});
-			return { text: "", control: null, error: "budget exhausted (maxAgents reached)" };
-		}
-		// v0.3.85 F3 (decision 2): run wall fuse at the SAME pre-call seam as the
-		// spawn budget above — other stages' convergence loops see the fuse here,
-		// fail-closed with an honest error naming the numbers (zero further agent
-		// spend; the deterministic wind-down + close-out still run). The state
-		// marker this stamps is what deriveRunStatus maps to `partial (wall-fuse)`.
-		const wallFuseError = runWallFusePreCallError(wallFuse, state);
-		if (wallFuseError) {
-			log(`agent ${call.id ?? call.agent}: ${wallFuseError}`);
-			appendRunEvent(state.setup?.specDirectory, {
-				runId: ledgerRunId(state),
-				agent: call.agent,
-				stage: (call.id ?? "").replace(/^pipeline\./, ""),
-				type: "agent.called",
-				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: wallFuseError },
-			});
-			return { text: "", control: null, error: wallFuseError };
-		}
-		// v0.3.68 F10-1 (D6 方案 A): cost/token fuse — same pre-call shape as the
-		// spawn budget above. The call is not launched; the honest error names the
-		// fuse and the numbers; consecutive fuse rows FatalAbort via v0.3.65
-		// (deterministic wind-down, no hard abort — plan §6.1).
-		const fuseError = usageFuseError(usage, log);
-		if (fuseError) {
-			log(`agent ${call.id ?? call.agent}: ${fuseError}`);
-			appendRunEvent(state.setup?.specDirectory, {
-				runId: ledgerRunId(state),
-				agent: call.agent,
-				stage: (call.id ?? "").replace(/^pipeline\./, ""),
-				type: "agent.called",
-				data: { agent: call.agent, backend: "n/a", durationMs: 0, error: fuseError },
-			});
-			return { text: "", control: null, error: fuseError };
-		}
+		// increment 5: the pre-call fuse chain (spawn budget -> run wall fuse ->
+		// cost/token fuse) — each tripped fuse lands one agent.called ledger row and
+		// the call is not launched; null means the call may proceed.
+		const fuseError = preCallFuseError({ state, call, budget, wallFuse, usage, log });
+		if (fuseError) return { text: "", control: null, error: fuseError };
 		const agentCwd = state.setup?.worktreePath ?? options.cwd ?? process.cwd();
 		// First-principles retry convergence: if a gate rejected a prior attempt,
 		// it stored structured errors under state.__feedback[stageId]. Prepend them

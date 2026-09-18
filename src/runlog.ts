@@ -175,6 +175,12 @@ function fileEndsClean(path: string): boolean {
 	}
 }
 
+/** P1.3: the run's ledger id, read at event time (runWorkflow sets __runId
+ *  right after makeContext; agents only ever spawn after setup, so it exists). */
+export function ledgerRunId(state: { __runId?: unknown } | Record<string, unknown>): string {
+	return String((state as Record<string, unknown>).__runId ?? "unknown");
+}
+
 export function appendRunEvent(specDir: string | undefined, evt: RunEventInput): number | null {
 	if (!specDir) return null;
 	try {
