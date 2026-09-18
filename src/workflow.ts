@@ -36,6 +36,8 @@ import { checkPredictionsFromLedger } from "./evolution/predictions.ts";
 import { stageKey as usageStageKey, appendUsageCallRows, writeUsageArtifacts, USAGE_FIELDS } from "./evolution/usage-report.ts";
 export { buildRunMetricsRow, appendRunMetrics, type RunMetricsRow } from "./evolution/sigma-bands.ts";
 import { captureSourceBoundary, restoreNewSourceViolations, sourceBoundaryViolations } from "./workflow/source-boundary.ts";
+// v0.3.56 F9f public seam (out-of-tree stability): re-exported from the extracted module.
+export { restoreNewSourceViolations } from "./workflow/source-boundary.ts";
 import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName, resetThinkingClampState } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
