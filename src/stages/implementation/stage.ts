@@ -1,4 +1,4 @@
-import { MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreUnacceptedRedChanges, setDiff, snapshotFiles } from "./red-evidence.ts";
+import { appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, classifyRedEvidence, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreUnacceptedRedChanges, setDiff, snapshotFiles } from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
 import { IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, faultRecurrenceLimit, formatReauthorEvidence, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText } from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
@@ -14,7 +14,7 @@ import { closePhaseTail } from "./phase-tail.ts";
 import { deterministicPhaseCommit, phaseStatusUpsert } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
-import { routeRedJudge } from "./red-judge.ts";
+import { adjudicateRedRetryLadder } from "./red-retry-ladder.ts";
 import { dispatchResearchAssist } from "./research-assist-dispatch.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
@@ -36,7 +36,7 @@ import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } fr
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { approveScaffoldPaths } from "../../test-artifacts.ts";
 import { buildTddPrompt, buildImplementPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
-import { triggerReplanForFindings, replanPending } from "../../replan/replan.ts";
+import { replanPending } from "../../replan/replan.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { FatalAbort } from "../../nodes.ts";
@@ -909,125 +909,47 @@ export const implementationStage: Stage = {
 						// deliverable re-check passed) — an agent-death retry hint must not
 						// override it back into the retry loop; the Already-satisfied
 						// verification node adjudicates deterministically.
+						// increment 16 — the RED retry/escalation ladder (red-retry-ladder.ts):
+						// RC-3 cycle detection, the F5 red-weakening declared handoff, the
+						// judge routing interpretation (routeRedJudge stays the J9-a engine),
+						// the RC8 cleanup branches, and the retries++ step. 4-way outcome;
+						// the routing record echoes every counter on every arm.
 						if (retryHint && redEvidence.status !== "green-already-satisfied") {
-							const signature = redEvidenceSignature(redEvidence);
-							// Cycle/oscillation detection (RC-3): the previous check only
-							// compared the IMMEDIATELY-previous signature, so an A→B→A→B
-							// livelock (e.g. red-not-confirmed ↔ red-polluted) evaded it and ran
-							// for dozens of retries / hours. Stop when EITHER (a) this exact
-							// signature has already been seen this phase (a cycle — the loop is
-							// revisiting a state it cannot escape), OR (b) a hard retry ceiling
-							// is hit (belt-and-braces against a non-repeating drift the signature
-							// hashing might miss). Both are "no-progress": the RED phase is not
-							// converging and further blind retries only burn budget.
-							const seenBefore = redProgressHistory.includes(signature);
-							const hitCeiling = retries + 1 >= MAX_RED_RETRIES;
-							redProgressHistory.push(signature);
-							if (seenBefore || hitCeiling) {
-								// ── v0.3.85 F5 escalation (§9 F5, §14 ADR 8/10) — deterministic-first ──
-								// RED-retry exhaustion (hitCeiling) OR persistent weakening
-								// (seenBefore — the same weakened signature recurred): the ratchet
-								// rejection rides the declared-handoff circuit with a DISTINCT
-								// source:"red-weakening" tag, consuming ONE round of the shared
-								// SUPER_DEV_MAX_REPLAN_ROUNDS pool — ADR 8's FOURTH consumer, with
-								// NO inherited-red sub-cap (it never touches countInheritedRedRows).
-								// Deterministic scoped cleanup runs FIRST (F2 Tier-0-at-exhausted-
-								// budget doctrine: cleanup is deterministic, no agent call; the
-								// surviving new test files stay on disk for the restart). Unroutable
-								// (pool exhausted / marker already set / ledger write failure) falls
-								// through to the existing judge + HITL path with the honest evidence.
-								if (redEvidence.status === "weakened-preexisting-test" && !replanPending(state) && !runFuse.tripped) {
-									restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.preexistingTestFiles ?? []);
-									const f5WeakenedDetail = (redEvidence.weakenedFiles ?? []).map((w) => `${w.path} ${w.before}→${w.after}`).join(", ") || String(redEvidence.reason ?? "unknown");
-									const f5Finding: Record<string, unknown> = {
-										id: `red-weakening-${phaseId}`,
-										file: redEvidence.weakenedFiles?.[0]?.path ?? null,
-										severity: "high",
-										title: `RED-phase assertion ratchet exhausted at ${phaseId}: pre-existing test surface weakened after ${retries + 1} RED tries`,
-										detail: `The RED loop rejected ${retries + 1} tries because pre-existing test file(s) lost assertion surface (F5 grammar: test(/it(/assert/expect/SCENARIO): ${f5WeakenedDetail}. The corrective hint — author an independent NEW test file — did not land, so the work apparently REQUIRES weakening a frozen suite, which is a spec amendment: the declared route. Pre-existing test edits were reverted; surviving new test files stay on disk.`,
-										ownerStage: "spec",
-										source: RED_WEAKENING_SOURCE,
-										sourcePhase: phaseId,
-										recommendation: "Amend the spec/plan to declare the pre-existing suite's amendment (co-ownership in any clause form counts, or a phase that owns the atomic test change), so the RED can be authored without weakening the frozen guards.",
-									};
-									let f5Routed = false;
-									try { f5Routed = await triggerReplanForFindings(state, ctx, [f5Finding], "implementation-red", setup.specIdentifier ?? "unknown"); } catch { f5Routed = false; }
-									if (f5Routed) {
-										terminalStopReason = "red-weakening";
-										attemptErrors = [...attemptErrors, `red-weakening: pre-existing test assertion surface decreased (${f5WeakenedDetail}) after ${retries + 1} RED tries — declared handoff routed (source:red-weakening, sourcePhase:${phaseId}); the run ends status "replan"`];
-										ctx.log(`Implementation ${phaseId} F5 red-weakening escalation: ${seenBefore ? `persistent weakening (the same weakened signature recurred after ${retries + 1} tries)` : `RED retries exhausted (${retries + 1} tries)`} — replan-requests.json row routed via the shared replan pool (source:red-weakening, sourcePhase:${phaseId}, ownerStage:spec; NO inherited-red sub-cap); the phase ends partial (red-weakening) and the run ends status "replan"`);
-										break;
-									}
-									ctx.log(`Implementation ${phaseId} F5 red-weakening escalation: declared handoff UNAVAILABLE (replan pool exhausted / marker set / ledger write failure) — falling through to the judge + human boundary with the ratchet evidence`);
-								}
-								// J9-a (judge routing layer): one verified diagnosis before the
-								// human boundary. A routed re-author-tests / fix-environment restarts
-								// the RED loop with the diagnosis appended (bounded by the judge's
-								// per-signature budget of 2, so the third identical stall escalates);
-								// escalate-now / discarded / degraded falls through to today's HITL.
-
-								// v0.4.32: the judge hand-off + its four routes extracted to red-judge.ts
-								// (increment 5 of the stage.ts split). The block's 4 continue / 3 break
-								// against shared loop state became a returned discriminant: restart rebinds
-								// the scalars and continues the RED loop, terminal rebinds and breaks. The
-								// route set, counters, log text, escalation paths and terminal reasons are
-								// byte-identical to the inline block (verified by the red-loop oracle).
-								const judgeRoute = await routeRedJudge({
-									ctx, state,
-									phaseId, phaseName, signature, seenBefore, attempt,
-									retries, redJudgeRoutes, redEnvRestarts,
-									redEvidence, testFiles, redChangedFiles,
-									retryHint,
-									redJudgeDiagnosis, redJudgeEvidenceLabel,
-									incomingStopReason: terminalStopReason,
-									tddText: tdd?.text ?? "",
-									worktreePath: setup.worktreePath,
-									specDirectory: setup.specDirectory,
-									specIdentifier: setup.specIdentifier ?? "unknown",
-									redScaffoldApproved,
-									redProgressHistory,
-								});
-								retries = judgeRoute.routing.retries;
-								redJudgeRoutes = judgeRoute.routing.redJudgeRoutes;
-								redEnvRestarts = judgeRoute.routing.redEnvRestarts;
-								redJudgeDiagnosis = judgeRoute.routing.redJudgeDiagnosis;
-								redJudgeEvidenceLabel = judgeRoute.routing.redJudgeEvidenceLabel;
-								if (judgeRoute.kind === "restart") {
-									redHint = judgeRoute.routing.redHint;
-									terminalStopReason = judgeRoute.routing.terminalStopReason;
-									continue;
-								}
-								terminalStopReason = judgeRoute.routing.terminalStopReason;
-								break;
-							}
-							// RC8: review-weak evidence must ALSO restore the rejected RED
-							// files before re-authoring (previously rode green-weak-test).
-							// v0.3.16 F2 (RC-T2): a review that never RAN must not count as a verdict
-							// against the artifact. When the review-weak reason is the agent-error/
-							// timeout template ("RED review did not complete (...)" — the reviewer
-							// timed out or errored, control=no), the test file is preserved on disk:
-							// it was never adjudicated, the retry hint already names the review
-							// infrastructure failure, and deleting it forces the next try to rewrite
-							// from scratch (run 02-59 try 1 wrote a good file, its review timed out at
-							// 480s, cleanup deleted the file, and every later try fought a ghost).
-							const reviewNeverRan = redEvidence.status === "review-weak" && /RED review (?:did not complete|returned no usable verdict)/i.test(String(redEvidence.reason ?? ""));
-							if (!reviewNeverRan && (redEvidence.status === "green-weak-test" || redEvidence.status === "review-weak" || redEvidence.status === "polluted-red")) {
-								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.changedFiles);
-							} else if (redEvidence.status === "weakened-preexisting-test") {
-								// v0.3.85 F5: SCOPED revert — pre-existing test-file edits ONLY.
-								// The corrective route is an independent NEW test file, so the new
-								// files SURVIVE the revert (salvageability, Group 3's non-destructive
-								// Tier-0 doctrine) — the full changedFiles revert above would
-								// `git clean` them away and force the next try to rewrite from
-								// scratch (the v0.3.16 F2 ghost-file lesson).
-								restoreUnacceptedRedChanges(ctx, setup.worktreePath, phaseId, redEvidence.preexistingTestFiles ?? []);
-							} else if (reviewNeverRan) {
-								ctx.log(`Implementation ${phaseId} RED cleanup SKIPPED: the review did not complete (no verdict was rendered) — preserving the written test file(s) on disk for the retry`);
-							}
-							retries++;
-							redHint = retryHint;
-							ctx.log(`Implementation ${phaseId} RED generation retry ${retries}: ${redEvidenceFailureReasons(redEvidence).join("; ") || redEvidence.reason || redEvidence.status}`);
-							continue;
+							const ladder = await adjudicateRedRetryLadder({
+								ctx,
+								state,
+								phaseId,
+								phaseName,
+								attempt,
+								retries,
+								redJudgeRoutes,
+								redEnvRestarts,
+								redJudgeDiagnosis,
+								redJudgeEvidenceLabel,
+								incomingStopReason: terminalStopReason,
+								retryHint,
+								redEvidence,
+								testFiles,
+								redChangedFiles,
+								tddText: tdd?.text ?? "",
+								worktreePath: setup.worktreePath,
+								specDirectory: setup.specDirectory,
+								specIdentifier: setup.specIdentifier ?? "unknown",
+								redScaffoldApproved,
+								redProgressHistory,
+								replanAlreadyPending: replanPending(state),
+								runFuseTripped: runFuse.tripped,
+							});
+							retries = ladder.routing.retries;
+							redJudgeRoutes = ladder.routing.redJudgeRoutes;
+							redEnvRestarts = ladder.routing.redEnvRestarts;
+							redJudgeDiagnosis = ladder.routing.redJudgeDiagnosis;
+							redJudgeEvidenceLabel = ladder.routing.redJudgeEvidenceLabel;
+							redHint = ladder.routing.redHint;
+							terminalStopReason = ladder.routing.terminalStopReason;
+							if (ladder.kind === "f5-routed") attemptErrors = [...attemptErrors, ladder.attemptErrorsAppend];
+							if (ladder.kind === "restart" || ladder.kind === "retry") continue;
+							break;
 						}
 						break;
 					}

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.44: RED retry ladder extracted (stage.ts split, increment 16)
+
+The RED retry/escalation ladder (the RC-3 cycle/oscillation detection with
+the signature history and hard retry ceiling; the v0.3.85 F5 red-weakening
+declared handoff with its scoped revert and the shared replan pool; the J9-a
+judge routing interpretation over the already-extracted routeRedJudge; the
+RC8 cleanup branches incl. the reviewNeverRan preservation; and the
+retries++/redHint retry step) moves out of `stage.ts` into
+`src/stages/implementation/red-retry-ladder.ts` — 2,092 → 2,014 lines. A
+4-way outcome (restart | retry | f5-routed | terminal) with the routing
+record echoing every counter on every arm; the retryHint guard stays
+caller-side (P3). terminalStopReason carries the 10-member literal union.
+
+Dual gates: adversarial 60bb564c PASS zero divergence (counter-echo table
+across all four arms, history push order, await seam, guard booleans,
+fixture honesty); code gate f8cbcb53 Changes-Requested 0C/0H/1M — the two
+orphaned imports (routeRedJudge, triggerReplanForFindings) my sweep missed.
+Folds: the judge-sourced counter echo pinned on restart + the untouched echo
+on retry, the runFuseTripped guard arm, the weakenedFiles before→after
+rendering, the typed test helper (as-never casts gone).
+tests/red-retry-ladder.test.ts 12 tests; suite 284 files / 4,314 green.
+
+
 ### Refactor — v0.4.43: phase tail extracted (stage.ts split, increment 15 — the final loop-scoped region)
 
 The phase tail (the §D failure convergence record with the judge-diagnosis
