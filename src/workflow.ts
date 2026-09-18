@@ -14,7 +14,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { languageDirective, superDevEnv } from "./render/super-dev-dir.ts";
+import { languageDirective } from "./render/super-dev-dir.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync, rmSync } from "node:fs";
@@ -42,13 +42,15 @@ import { freshUsage, accumulateUsage, usageFuseError } from "./workflow/usage-ac
 // v0.3.68 F10-1 public seam (tests import summarizeUsage from here): re-exported.
 export { summarizeUsage, type UsageTotalsView } from "./workflow/usage-accounting.ts";
 import { deriveRunStatus, type StatusDerivationResultRow } from "./workflow/run-status.ts";
+import { runWithTransientRetry } from "./workflow/agent-retry.ts";
+// A-05 public seam (exported from workflow.ts since v0.3.x): re-exported from the extracted module.
+export { sleepMs } from "./workflow/agent-retry.ts";
 export { deriveRunStatus, type RunStatusDerivation, type StatusDerivationResultRow } from "./workflow/run-status.ts";
 import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName, resetThinkingClampState } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
 import { runHelper } from "./helpers.ts";
-import { mergeUsage } from "./types.ts";
 import { skillsForCall } from "./agents/agent-runtime/index.ts";
 import { appendToolUsageRows } from "./evolution/tool-usage.ts";
 import { createMemoizingAgent} from "./resume.ts";
@@ -57,7 +59,6 @@ import { knowledgeForAgent } from "./render/knowledge.ts";
 import { appendUserNotes, userNotesForAgent } from "./render/user-notes.ts";
 import { getConfig } from "./render/super-dev-dir.ts";
 import { getActiveTracker } from "./tracking.ts";
-import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { getRetryFeedback, renderRetryFeedbackBlock } from "./retry-feedback.ts";
 import { currentStepScope } from "./step-scope.ts";
 import { appendRunEvent, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
@@ -66,7 +67,6 @@ import { writeCompletionAudit } from "./completion-audit.ts";
 import { validateTeamReadiness } from "./team/raci.ts";
 import { recordInstruction } from "./team/messages.ts";
 import { SUPER_DEV_EXTENSION_VERSION } from "./version.ts";
-import { isNonRetryableAgentError } from "./agent-errors.ts";
 import { freshRunWallFuseState, readRunWallFuseMarker, runWallFusePreCallError } from "./wall-fuse.ts";
 import { convergenceRetryFeedback, normalizeConvergenceStage } from "./convergence-ledger.ts";
 import { persistCurrentStateStamp } from "./review/contract-surface/index.ts";
@@ -158,25 +158,6 @@ function makeBudget(maxAgents: number): Budget {
  *  of a fragile sequential counter. Module-level so one run shares one stack. */
 const scopeAls = new AsyncLocalStorage<string[]>();
 
-/** Signal-aware sleep (local — workflow.ts doesn't import nodes' sleep).
- *  Exported (additive) for the A-05 listener-count pinning test. */
-export function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve) => {
-		if (signal?.aborted) return resolve();
-		const onAbort = () => { clearTimeout(t); finish(); };
-		// A-05 (NFR-6): remove the once-listener on NORMAL resolution too — the
-		// transient-retry backoff cadence otherwise accumulates retained closures
-		// on the ONE shared run AbortSignal (MaxListenersExceededWarning noise).
-		const finish = () => { signal?.removeEventListener("abort", onAbort); resolve(); };
-		const t = setTimeout(finish, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-}
-
-/** Transient (retryable) agent errors: rate limits, overload, 5xx, connection
- *  resets. Retried with backoff INSIDE one agent call — not counted as a fresh
- *  gate attempt (which burned the budget when a model 429'd on every attempt). */
-const TRANSIENT_RE = /\b(429|rate.?limit|overload|too many requests|service unavailable|503|502|520|521|522|524|ECONNRESET|ETIMEDOUT|socket hang up)\b/i;
 /** v0.3.26: pi-subagents' executor answers unresolvable agent names with
  *  "Unknown agent: <name>". That error is a registration gap, never a task
  *  failure — realAgent surfaces it as the call's error with the re-register
@@ -188,44 +169,6 @@ const UNKNOWN_AGENT_ERROR_RE = /unknown agent/i;
 const DELEGATION_OWNER_ABSENT_ERROR = "pi-subagents is not active in this session (no delegation owner answered the registration handshake). Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi — super-dev v0.3.64+ requires it.";
 /** v0.3.64: actionable per-call error for the sticky version-skew class. */
 const DELEGATION_VERSION_SKEW_ERROR = "pi-subagents version skew: the package changed under this live pi session (pi update mid-session), so delegated children die at startup. Restart pi so the in-memory backend matches the on-disk package, then re-run.";
-function isTransientAgentError(error?: string): boolean {
-	return !!error && TRANSIENT_RE.test(error);
-}
-
-/** Transient-retry backoff schedule (ms). Read LAZILY so tests can set
- *  SUPER_DEV_TRANSIENT_RETRY_MS before invoking. Default: four retries
- *  (5 total tries) at 2s, 4s, 8s, 16s. */
-function transientRetryMs(): number[] {
-	const defaultDelays = Array.from({ length: Math.max(0, WORKFLOW_ATTEMPTS - 1) }, (_, i) => 2000 * (2 ** i)).join(",");
-	return (superDevEnv("SUPER_DEV_TRANSIENT_RETRY_MS") ?? defaultDelays)
-		.split(",").map((x) => Number.parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 0);
-}
-
-/** Run an agent backend call, retrying transient errors with exponential backoff.
- *  One logical agent call = one budget unit (budget.spent is called once by
- *  realAgent; retries are internal).
- *  v0.3.72 M1 (review F1/ADV-F1): every transient attempt burns real tokens,
- *  so the returned result carries the SUM of all attempts' usage — the last
- *  attempt's block alone under-counts the fuse input. */
-async function runWithTransientRetry<T extends { error?: string; usage?: AgentUsage }>(
-	exec: () => Promise<T>, signal: AbortSignal | undefined, log: (m: string) => void,
-): Promise<T> {
-	const delays = transientRetryMs();
-	let last: T;
-	let total: AgentUsage | undefined;
-	const done = (): T => (total == null ? last : { ...last, usage: total });
-	for (let attempt = 0; ; attempt++) {
-		last = await exec();
-		total = mergeUsage(total, last.usage);
-		if (isNonRetryableAgentError(last.error)) return done();
-		if (!isTransientAgentError(last.error)) return done();
-		if (attempt >= delays.length) return done(); // exhausted -> surface the transient error
-		const delay = delays[attempt];
-		log(`agent transient error (429/overload) — retrying in ${delay}ms (attempt ${attempt + 1}/${delays.length}): ${last.error}`);
-		await sleepMs(delay, signal);
-		if (signal?.aborted) return done();
-	}
-}
 
 /** Resolve the model for a specific agent call under precedence A (cross-model
  *  policy in config wins over a one-off global --model):
