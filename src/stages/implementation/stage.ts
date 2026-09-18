@@ -1,8 +1,9 @@
 import {MAX_RED_RETRIES, RED_WEAKENING_SOURCE, appendImplementationEvidence, assertionPresenceGaps, boundarySummary, changeFootprint, changedSinceSnapshot, classifyRedEvidence, crossScopeContractConflictFrame, crossScopeTestCitations, expectedScenariosForPhase, failureSignature, gitStatusPaths, implementationRetrySection, landedFootprintIsEmpty, nextFaultStreak, pad, porcelainEntries, recordImplementationConvergenceFailure, redDiagnosticsPrompt, redEvidenceFailureReasons, redEvidenceLogLine, redEvidenceSignature, redGenerationRetryHint, repeatedNoProgress, resolveRedBoundary, resolveTddScenarioCoverage, restorePaths, restoreRedTestFiles, restoreUnacceptedRedChanges, setDiff, snapshotFiles, trackerOutofScopeEdits} from "./red-evidence.ts";
 import type {AcceptedRedContext, ProgressSignature, RedEvidence} from "./red-evidence.ts";
-import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseRedContradictions, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
+import {IMPLEMENTER_CONTROL_KEYS, MAX_CHALLENGE_REAUTHORS, MAX_PARTIAL_REENTRIES, UNSATISFIABLE_TEXT_RE, cratesFromErrors, faultRecurrenceLimit, formatReauthorEvidence, laterPhaseDeliverableHits, laterPhaseDeliverableOwners, leakNorm, maxPhaseAttempts, normalizeStringArray, parseStructuredChanges, parseTestDefects, phaseWallBudgetMs, redCheckOptions, redImplementContext, reverifyPartialPhases, runtimeInstructionFingerprint, trimImplementerText} from "./phase-reentry.ts";
 import type {TestDefect} from "./phase-reentry.ts";
-import { attributeQuarantinePaths, attributeQuarantinedViolations, deterministicPhaseCommit, discardGreenWork, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
+import { joinRedReview } from "./red-review-join.ts";
+import { deterministicPhaseCommit, lastFailuresUpsert, phaseStatusUpsert, preservePartialPhase } from "./phase-status.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
 import { routeRedJudge } from "./red-judge.ts";
@@ -20,7 +21,7 @@ import { dispatchResearchAssist } from "./research-assist-dispatch.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { BoundaryQuarantinePayload, ControlObj, Stage } from "../../types.ts";
+import type { ControlObj, Stage } from "../../types.ts";
 
 // v0.3.73 M1: re-exported for the salvage seam + tests.
 import { classifyJudgeRoute } from "../../routing/router.ts";
@@ -1406,106 +1407,28 @@ export const implementationStage: Stage = {
 				// endpoint — same semantics as the serial path). Anything else
 				// discards the GREEN work and re-authors the RED with the evidence.
 				if (redReviewInFlight) {
-					// v0.3.51: the parallel review can REJECT (agent throw — e.g. a
-					// source-read-only boundary violation, run 2026-08-31T03-25-44-485Z
-					// 16:29). The store site marks the rejection handled; here it must be
-					// adjudicated as a review error (fail-closed re-author), never allowed
-					// to escape the stage.
-					let review: { control: unknown; error?: string; quarantine?: BoundaryQuarantinePayload; salvagedControl?: Record<string, unknown> | null } | null;
-					try {
-						review = await redReviewInFlight;
-					} catch (err) {
-						// v0.3.55 security review F1: the structured quarantine payload
-						// rides the thrown Error (parent-composed, unforgeable); the
-						// message string is display-only and never parsed.
-						const q = (err as { quarantine?: BoundaryQuarantinePayload } | null | undefined)?.quarantine;
-						// v0.3.73 M1: the boundary throw may carry the delegation's
-						// fully-formed control (attached parent-side) — keep it reachable.
-						const salvaged = ((err as { salvagedControl?: unknown } | undefined)?.salvagedControl ?? null) as Record<string, unknown> | null;
-						review = { control: null, error: String((err as Error)?.message ?? err), quarantine: q, salvagedControl: salvaged && typeof salvaged === "object" ? salvaged : null };
-					}
-					redReviewInFlight = null;
-
-					// v0.3.73 M1 (run 2026-09-05T23-09-55-596Z — six quarantines, 54 min):
-					// when EVERY violating path is covered by the concurrent implementer's
-					// DECLARED file claims, the violations attribute to the writer lane and
-					// the formed verdict is valid evidence about the suite. Salvage it
-					// instead of discarding; adjudication proceeds normally. (Dual review
-					// AR-73-01: phase test files are EXCLUDED from this predicate — they
-					// claim unconditionally and cannot establish that the reviewer wrote
-					// nothing; a reviewer-written test file stays unclaimed → no salvage,
-					// the v0.3.53 fail-open path keeps the work.)
-					if (review?.error && !(review.control as { verdict?: unknown } | null)?.verdict && review.salvagedControl && review.quarantine) {
-						const attribution = attributeQuarantinePaths(setup.worktreePath, review.quarantine, impl?.control, testFiles, { testFilesAsClaims: false });
-						if (attribution.declaredAny && attribution.unclaimed.length === 0 && review.salvagedControl.verdict !== undefined) {
-							review = { control: review.salvagedControl, error: undefined };
-							ctx.log(`Implementation ${phaseId} red-review verdict salvaged (boundary violations fully covered by the implementer's declared claims: ${attribution.claimed.join(", ")}) — adjudicating normally`);
-						}
-					}
-					const verdict = String((review?.control as { verdict?: unknown } | null)?.verdict ?? "").toLowerCase();
-					const contradictionList = parseRedContradictions((review?.control ?? null) as Parameters<typeof parseRedContradictions>[0]);
-					if (verdict === "strong" && contradictionList.length === 0) {
-						ctx.log(`Implementation ${phaseId} RED review: STRONG (no contradictions; adjudicated post-implementation)`);
-					} else if (verdict === "weak" && contradictionList.length === 0) {
-						const summary = String((review?.control as { summary?: unknown } | null)?.summary ?? "") || "test assertions are not bound to the scenario's observable behavior";
-						ctx.log(`Implementation ${phaseId} RED review: NOT STRONG (weak) — ${summary} (advisory; proceeding — the implementer already ran, the post-RED oracle guards)`);
-						redWeaknessAdvisory = `An independent reviewer rated the RED tests as NOT STRONG: ${summary}.`;
-					} else if (!contradictionList.length && review?.error && !verdict) {
-						// v0.3.53 F2 (P5): the REVIEWER failed (boundary violation, timeout,
-						// spawn error) — a CHECKER failure, not evidence about the suite.
-						// v0.3.54 review fix (code F2): fail open ONLY when no verdict text
-						// was parsed. A control carrying an off-enum verdict (e.g. "REJECTED"
-						// via an unconstrained <control> path) IS evidence about the suite —
-						// failing open on it would launder a rejection into a keep; such
-						// controls fall to the fail-closed branch below. The
-						// pre-0.3.53 fail-closed path discarded correct GREEN work and
-						// re-authored the RED, then re-launched the same misbehaving reviewer
-						// (8+ violations, 3 phases partial, ~5h: run 2026-08-31T16-03-57-978Z
-						// phases 05/06/07). Fail OPEN instead: keep the work, degrade to the
-						// deterministic gates, record the finding, count separately; the
-						// launch site stops parallel reviews for this phase at 2 violations.
-						attributeQuarantinedViolations(setup.worktreePath, review.quarantine, impl?.control, testFiles, (line) => ctx.log(line));
-						phaseReviewViolations++;
-						const reason = String(review.error).slice(0, 300);
-						ctx.log(`Implementation ${phaseId} red-review-incomplete (advisory): ${reason} — GREEN work KEPT (checker failure, not suite evidence); post-RED oracle + deliverable gates remain authoritative${phaseReviewViolations >= 2 ? "; parallel review DISABLED for this phase" : ""}`);
-						try {
-							recordConvergenceFindings(state, {
-								detectedAtStage: "implementation",
-								ownerStage: "implementation",
-								severity: "low",
-								blocking: false,
-								title: `Phase ${phaseId} RED review did not complete (reviewer-side failure)`,
-								detail: `${reason}. The RED tests were NOT independently reviewed this phase; GREEN acceptance rests on the deterministic oracles. Re-run the review manually if an independent LLM audit is wanted.`,
-								evidence: [reason],
-								sourceGate: "red-review",
-							}, { detectedAtStage: "implementation", ownerStage: "implementation", sourceGate: "red-review" });
-						} catch { /* never block the phase on ledger bookkeeping */ }
-					} else {
-						const summary = contradictionList.length > 0
-							? `joint-satisfiability contradiction(s): ${contradictionList.map((c) => c.tests).join("; ")}`
-							: review?.error
-								? `RED review did not complete (${review.error})`
-								: String((review?.control as { summary?: unknown } | null)?.summary ?? "") || "RED review returned no usable verdict";
-						const discarded = discardGreenWork(setup.worktreePath, new Set(testFiles));
-						reauthorEvidence = `\n\n## RED REVIEW REJECTED THE SUITE — the tests are jointly unsatisfiable (adjudicated after a parallel implementation pass — that work was discarded, ${discarded.length} file(s) restored)\n${summary}\n${contradictionList.length > 0 ? `Rewrite or remove the contradicting tests: ${contradictionList.map((c) => `${c.tests}${c.lines ? ` (${c.lines})` : ""}: ${c.proof}`).join(" | ")}. Resolve the contradiction in favor of the specification's observable behavior.\n` : ""}Re-author the suite so every test binds the scenario's OBSERVABLE behavior (concrete expected values/outputs/status codes), then re-run.`;
-						// Canonical RC8 honesty lines (grep-stable across the serial→parallel change).
-						ctx.log(contradictionList.length > 0
-							? `Implementation ${phaseId} red-review-rejected: RED review found jointly unsatisfiable tests: ${summary} (parallel join — GREEN work discarded)`
-							: `Implementation ${phaseId} red-review-rejected: RED review not strong: ${summary} (parallel join — GREEN work discarded)`);
-						attemptErrors = [...attemptErrors, contradictionList.length > 0 ? `red-review-rejected: RED review found jointly unsatisfiable tests: ${summary}` : `red-review-rejected: RED review not strong: ${summary}`];
-						acceptedRed = null;
-						redTestSnapshot = new Map();
-						ctx.log(`Implementation ${phaseId} RED review: REJECTED at join (${summary}) — discarded ${discarded.length} GREEN file(s) (${discarded.slice(0, 6).join(", ")}${discarded.length > 6 ? ", …" : ""}); routing back to RED re-author`);
-						parallelReviewRejects++;
-						if (parallelReviewRejects > MAX_PARALLEL_REVIEW_REJECTS) {
-							terminalFailureKind = "red-generation";
-							terminalRedTries = attemptsRun;
-							terminalStopReason = "no-progress";
-							ctx.log(`Implementation ${phaseId} stopped after ${MAX_PARALLEL_REVIEW_REJECTS} parallel-review rejections without a usable suite — continuing to the next phase`);
-							break;
-						}
-						continue;
-					}
+					const reviewOutcome = await joinRedReview({
+						ctx, state, worktreePath: setup.worktreePath, phaseId,
+						review: redReviewInFlight, implControl: impl?.control, testFiles,
+						maxParallelReviewRejects: MAX_PARALLEL_REVIEW_REJECTS, attemptsRun,
+						parallelReviewRejects, phaseReviewViolations,
+						terminalFailureKind, terminalRedTries, terminalStopReason,
+						acceptedRed, redTestSnapshot, redWeaknessAdvisory, reauthorEvidence,
+					});
+					redReviewInFlight = null; // read once — a stale in-flight review must never join a later attempt
+					const r = reviewOutcome.routing;
+					parallelReviewRejects = r.parallelReviewRejects;
+					phaseReviewViolations = r.phaseReviewViolations;
+					terminalFailureKind = r.terminalFailureKind;
+					terminalRedTries = r.terminalRedTries;
+					terminalStopReason = r.terminalStopReason;
+					redWeaknessAdvisory = r.redWeaknessAdvisory;
+					reauthorEvidence = r.reauthorEvidence;
+					acceptedRed = r.acceptedRed;
+					redTestSnapshot = r.redTestSnapshot;
+					if (r.attemptErrorsAppend) attemptErrors = [...attemptErrors, r.attemptErrorsAppend];
+					if (reviewOutcome.kind === "terminal") break;
+					if (reviewOutcome.kind === "restart") continue;
 				}
 				// ── Wave 3 D-B (058 Layer 2 — NEW-1): the protection-interval choke point.
 				// A SYNCHRONOUS engine seam evaluated strictly AFTER the implementer

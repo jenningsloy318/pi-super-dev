@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.35: parallel RED-review join extracted (stage.ts split, increment 7)
+
+The parallel RED-review adjudication block moves out of `stage.ts` into
+`src/stages/implementation/red-review-join.ts` — 3,012 → 2,935 lines. This is the
+third control-flow conversion of the split (after red-judge.ts v0.4.32 and
+research-assist-dispatch.ts v0.4.34): the block's `continue` (reject → re-author the
+RED) became a returned `{kind:"restart"}`, and its `break` (parallel-review-rejects cap
+exhausted → phase stops) became `{kind:"terminal"}`. The four verdict branches are
+preserved verbatim — STRONG proceeds log-only; WEAK proceeds with an advisory; a
+reviewer-side failure with NO parsed verdict fails OPEN (v0.3.53 F2 / v0.3.54: keep the
+GREEN work, count a phaseReviewViolation); everything else REJECTS (discard the GREEN
+work, re-author, cap at 3). The v0.3.73 M1 salvage gate rides along: a boundary throw
+whose violations are fully covered by the implementer's declared claims salvages its
+verdict into normal adjudication.
+
+The returned routing record explicitly echoes every phase-scoped binding each branch does
+NOT touch (the v0.4.33 cross-iteration lesson: a `continue` preserved them implicitly — a
+returned record must too). `MAX_PARALLEL_REVIEW_REJECTS` stays a single spelling: the
+phase-loop const at the caller, passed as a param (P6).
+
+Dual gates ran on glm-5.3-flash:high over the working tree. Code gate: CHANGES REQUESTED
+(0 Critical/High, 1 Medium) — five imports the move orphaned in stage.ts
+(`parseRedContradictions`, `attributeQuarantinePaths`, `attributeQuarantiedViolations`,
+`discardGreenWork`, `BoundaryQuarantinePayload`) removed; move equivalence, guard order,
+cross-iteration echo, and test honesty all PASS. Adversarial gate: PASS, zero divergence
+on all five attack vectors (outcome-interpretation seam, cap boundary, fail-open
+laundering, cross-iteration class, disk mutation). Its F2 test-integrity finding folded:
+the contract file now also pins an off-enum verdict WITH an error (stays fail-closed), a
+resolved-null review (rejects with the no-usable-verdict summary), and the salvage gate
+itself (full attribution → proceed with the salvage log; a salvaged OFF-ENUM verdict
+still rejects — the gate must not launder a rejection into a keep). 11 tests total.
+
 ### Refactor — v0.4.34: research-assist dispatch extracted (stage.ts split, increment 6)
 
 The engine-mediated research-assist trigger state machine (v0.3.87 S4(b)) moves out of
