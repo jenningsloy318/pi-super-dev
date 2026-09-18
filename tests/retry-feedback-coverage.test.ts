@@ -10,7 +10,7 @@ const src = (path: string) => readFileSync(join(root, path), "utf8");
 
 describe("shared retry-feedback coverage", () => {
 	it("routes every stage-level agent retry surface through the shared feedback renderer", () => {
-		const workflow = src("src/workflow.ts");
+		const workflow = src("src/workflow.ts") + "\n" + src("src/workflow/agent-call-assembly.ts"); // v0.4.52 (wave 2 inc 6): the surfaces moved to the module
 		const stages = src("src/stages/index.ts");
 		const artifactConvergence = artifactConvergenceSources();
 		const specConvergence = src("src/stages/spec-convergence.ts");
@@ -29,7 +29,7 @@ describe("shared retry-feedback coverage", () => {
 		expect(artifactConvergence).toContain("setRetryFeedback(state");
 		expect(specConvergence).toContain("setRetryFeedback(state");
 		expect(specConvergence).toContain("setSpecFeedback(state");
-		expect(workflow).toContain("convergenceRetryFeedback(state");
+		expect(workflow).toContain("convergenceRetryFeedback(state"); // now satisfied by the module text
 		expect(workflow).toContain("renderRetryFeedbackBlock(combinedFeedback)");
 
 		// Stage 9: RED retries and GREEN implementation retries.
