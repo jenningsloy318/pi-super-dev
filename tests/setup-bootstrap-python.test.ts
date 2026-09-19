@@ -6,7 +6,7 @@
  * best-effort, never fatal, every skip LOUD.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -118,6 +118,10 @@ describe("v0.4.9 arm independence (code-gate MED-2)", () => {
 	});
 
 	it("F1 — a FAILED sync REMOVES the partial .venv (no poisoned reuse)", async () => {
+		// W4 adversarial F3: guard the uv-availability the sibling tests carry —
+		// without uv on PATH the arm logs the named skip and this lane would fail
+		// spuriously on a uv-less machine.
+		if (spawnSync("uv", ["--version"], { stdio: "ignore" }).error) return;
 		const wt = join(home, "wt-f1");
 		mkdirSync(join(wt, "python"), { recursive: true });
 		// pyproject WITHOUT uv.lock would skip; with a BAD lock the sync fails

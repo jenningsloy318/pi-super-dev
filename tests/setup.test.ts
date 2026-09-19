@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync, spawn} from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { runSetup, detectLanguage, referencedSpecIdentifier, findReusableSpec, slugTokenContainment, taskSimilarity, specReuseEnabled, releaseHeldRunLock, RUN_LOCK_BASENAME } from "../src/setup.ts";
@@ -641,6 +641,23 @@ describe("spec-track reuse (G2)", () => {
 			seedTrack(d, "254-step-e2e-test-dashboard");
 			const pick = findReusableSpec(d, "continue the step e2e dashboard work");
 			expect(pick).toBe("254-e2e-dashboard"); // lexicographically smallest of equal scores
+		} finally { rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it("mtime tie-break (W4 adversarial F2): equal scores resolve by RECENCY before lexicographic id", () => {
+		const d = mkdtempSync(join(tmpdir(), "sd-reuse-mtime-"));
+		try {
+			// same slug shape → equal containment scores; distinct anchor mtimes,
+			// the LATER track wins even though its id sorts AFTER the other
+			// anchors MUST exist for mtime to discriminate (no-anchor → mtime 0)
+			const older = seedTrack(d, "254-step-e2e-test-dashboard", ORIG_TASK);
+			const newer = seedTrack(d, "zz-step-e2e-test-dashboard", ORIG_TASK);
+			const tOld = new Date(Date.now() - 60_000);
+			const tNew = new Date();
+			utimesSync(stateFileFor(older, ".task"), tOld, tOld);
+			utimesSync(stateFileFor(newer, ".task"), tNew, tNew);
+			const pick = findReusableSpec(d, "continue the step e2e test dashboard work");
+			expect(pick).toBe("zz-step-e2e-test-dashboard"); // recency beats lex order
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 });

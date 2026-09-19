@@ -15,7 +15,7 @@
  * the observable is git's own check-ignore / index / commit-tree behavior.
  */
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
@@ -131,6 +131,23 @@ describe("copied env files are excluded from staging (AC-08, ISS-01)", () => {
 			writeFileSync(join(s.worktreePath, "fix.txt"), "fix\n");
 			expect(commitWorktreeChanges(s.worktreePath, "fix").committed).toBe(true);
 			expect(sh(s.worktreePath, "git ls-files").includes("apps/web/.env.development")).toBe(false);
+		} finally { rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("G8 empty-copy branch: with NO env files copied, the harness-bookkeeping excludes (.run-lock, .convergence-ledger.json) still land (Sweep-3 G8)", () => {
+		// W4 adversarial F1: every other lane seeds an env file, so a regression
+		// dropping the UNCONDITIONAL excludes would pass. This lane is env-less.
+		const root = mkdtempSync(join(tmpdir(), "sd-envex0-"));
+		sh(root, "git init -b main && git config user.email t@t && git config user.name t");
+		writeFileSync(join(root, "a.txt"), "base\n");
+		sh(root, "git add a.txt && git commit -m base");
+		try {
+			const s = runSetup("implement a node api", { cwd: root });
+			// no env file existed to copy — the premise of the empty-copy branch
+			const copied = readdirSync(s.worktreePath).filter((f) => f.startsWith(".env"));
+			expect(copied).toHaveLength(0);
+			expect(checkIgnore(s.worktreePath, ".run-lock")).toBe(0);
+			expect(checkIgnore(s.worktreePath, ".convergence-ledger.json")).toBe(0);
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 });
