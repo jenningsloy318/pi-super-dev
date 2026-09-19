@@ -52,7 +52,7 @@ describe("extension/event-handlers — wave 3 increment 5 (input adjudication + 
 	});
 
 	it("instructionForEntry strips image bytes to the telemetry triple", () => {
-		const entry = instructionForEntry({ id: "i", text: "t", images: [{ mediaType: "image/png", path: "/a.png", label: "L", data: "HUGE" } as never] });
+		const entry = instructionForEntry({ id: "i", text: "t", images: [{ mediaType: "image/png", path: "/a.png", label: "L", data: "HUGE" } as never] } as never);
 		expect(entry.images).toEqual([{ mediaType: "image/png", path: "/a.png", label: "L" }]);
 	});
 
