@@ -40,6 +40,7 @@ const KNOWN_PARTS = [
 	"protection-gate.ts",
 	"red-evidence.ts",
 	"red-snapshot.ts",
+	"red-boundary.ts",
 	"red-judge.ts",
 	"red-ratchet.ts",
 	"red-review-join.ts",
