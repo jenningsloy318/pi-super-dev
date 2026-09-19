@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.52: the workflow.ts split (wave 2, increments 1-6 — one version bump for the whole wave)
+
+- **Campaign**: workflow.ts 1,522 → 942 lines (−38%) over 6 dual-gated increments, each a module selected by the granularity standard; workflow.ts keeps the closure-dense orchestrator core (makeContext/realAgent's dispatch + terminal blocks, runWorkflow) whose extraction would hit the wrong-seam signals.
+- **Increment 1 — `workflow/source-boundary.ts`**: the source-read-only enforcement pair (capture → compare → restore/quarantine) incl. the `:(literal)` pathspec-magic guard, the lstat/0o700 quarantine, and the porcelain `-z` R/C second-path arm (all now unit-pinned; the `:(top)*` S2 incident filename is the direct discriminator).
+- **Increment 2 — `workflow/usage-accounting.ts`**: freshUsage/accumulateUsage (the byStage `(unlabeled)` arm)/summarizeUsage/usageFuseError (warn-once unparseable caps; fail-closed cost/token fuses).
+- **Increment 3 — `workflow/run-status.ts`**: deriveRunStatus, the pure Sweep-3 G3/G9/G22 terminal-status adjudicator (last-status-per-stage, affirmative buildGate, the wall-fuse partial marker, G22 stale-stagnation delete).
+- **Increment 4 — `workflow/agent-retry.ts`**: the transient-retry machinery (sleepMs moved with it — no cycle; TRANSIENT_RE arms + the \b-boundary grammar now pinned; the post-sleep abort arm; the v0.3.72 M1 usage-sum).
+- **Increment 5 — `workflow/pre-call-fuses.ts`**: the budget → wall-fuse → cost/token chain (first-tripped wins; each lands ONE agent.called row; the chain order is inversion-proof pinned). `ledgerRunId` relocated to runlog.ts (P6 common-ancestor home).
+- **Increment 6 — `workflow/agent-call-assembly.ts`**: the prompt assembly (feedback merge + ledger dedupe → autonomy → knowledge → user-steer drain/persist → source-read-only section → language-directive-last) + the per-call policy record (11 fields); DELEGATION_AUTONOMY_CLAUSE moved with it (public seam re-exported); the memoizer's no-re-drain property preserved and e2e-pinned.
+- **Process**: per user direction, increments commit WITHOUT version bumps — the wave ships this ONE bump; every increment dual-gated (glm-5.3-flash:high code + adversarial), all gates PASS/APPROVED with every finding folded; the v0.4.50/v0.4.51 version-pin drift was repaired early in the wave (the two commits had missed staging tests/version.test.ts).
+- Suite 296 files / 4,424 green; public seams (restoreNewSourceViolations, summarizeUsage, deriveRunStatus, sleepMs, DELEGATION_AUTONOMY_CLAUSE) all re-exported for stability.
+
 ### Refactor — v0.4.51: stage.ts split, increment 23 (phase entry — campaign complete)
 
 - **What**: the phase-ENTRY work — the resume-only verified no-op adjudication (§F #1: `deliverablesAlreadyMet` pre-filter → build gate + FULL deliverable check → skip with upsert/splice/emit trio, or rejected with `attemptErrors`/`missingDeliverables` seeded) + the phase-start capture (dashboard rows, `tracker.begin`, the v0.3.85 F2 first-ever porcelain snapshot with §D-re-entry reuse) — extracted to `src/stages/implementation/phase-entry.ts` (`enterPhase`, boundary closer, outcome `{skip} | {enter, phaseStartSet, attemptErrors, missingDeliverables}`). stage.ts 1,413 → 1,376 lines; the skip path provably omits the subtitle/tracker/snapshot (vector-A invariant, negatively pinned).
