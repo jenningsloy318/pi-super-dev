@@ -39,6 +39,7 @@ const KNOWN_PARTS = [
 	"phase-status.ts",
 	"protection-gate.ts",
 	"red-evidence.ts",
+	"red-snapshot.ts",
 	"red-judge.ts",
 	"red-ratchet.ts",
 	"red-review-join.ts",
