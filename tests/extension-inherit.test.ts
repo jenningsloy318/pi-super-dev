@@ -80,6 +80,13 @@ vi.mock("../src/agents/agent-runtime/index.ts", async (importOriginal) => ({
 	// the real executor is delegation-backend's runAgentViaDelegation).
 	abbreviatePath: vi.fn((p: string) => p),
 }));
+// wave 3 inc 2 fold: run-presentation imports abbreviatePath from runtime.ts
+// DIRECTLY (cycle avoidance) — mock the resolved module too so the lane's
+// isolation contract holds for both import paths.
+vi.mock("../src/agents/agent-runtime/runtime.ts", async (importOriginal) => ({
+	...await importOriginal<typeof import("../src/agents/agent-runtime/runtime.ts")>(),
+	abbreviatePath: vi.fn((p: string) => p),
+}));
 
 vi.mock("../src/render/live-stream.js", () => ({
 	createLiveStream: vi.fn((opts: { onUpdate?: (body: string) => void } = {}) => {

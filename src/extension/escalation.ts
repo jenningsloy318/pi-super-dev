@@ -23,6 +23,14 @@ interface StagnationRecord {
 	verdict?: string;
 	findings?: Array<{ file?: string | null; severity?: string | null; title?: string | null }>;
 }
+/** Gap 4.6′-lite — stagnation escalation (scheme C: informative by default, interactive opt-in).
+ *  Always writes a stagnation-report.md to the spec dir (baseline, all modes);
+ *  spec-18 / Phase 2 additionally delegates the canonical escalation-report.md
+ *  to the shared `writeEscalationReport` writer. When the run is interactive
+ *  (ctx.hasUI) AND config.escalation === "interactive", additionally prompts a
+ *  3-option select. Returns the chosen option (or undefined if not interactive /
+ *  dismissed). For Tier-2 all options just finish the run — "revise spec" only
+ *  surfaces the recommendation; auto-replay is deferred (Tier-3). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function handleStagnation(summary: RunSummary, ctx: any, opts?: { escalation?: "informative" | "interactive" }): Promise<string | undefined> {
 	const st = (summary.state as Record<string, unknown>).__stagnated as StagnationRecord | undefined;

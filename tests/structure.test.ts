@@ -57,8 +57,10 @@ describe("self-contained engine structure", () => {
 	it("registers the super_dev tool and /super-dev command", () => {
 		const ext = readFileSync(join(ROOT, "src", "extension.ts"), "utf8");
 		expect(ext).toMatch(/registerTool/);
-		expect(ext).toContain('"super_dev"');
 		expect(ext).toMatch(/registerCommand/);
+		// wave 3 inc 4: the "super_dev" literal moved with SUPER_DEV_TOOL to tool-args.ts
+		const toolArgs = readFileSync(join(ROOT, "src", "extension", "tool-args.ts"), "utf8");
+		expect(toolArgs).toContain('"super_dev"');
 	});
 	it("ships the specialist agent definitions", () => {
 		const agents = readdirSync(join(ROOT, "agents")).filter((f) => f.endsWith(".md"));

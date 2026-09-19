@@ -43,9 +43,12 @@ export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
 export * as nodes from "./nodes.ts";
 export { runWorkflow } from "./workflow.ts";
-import { handleStagnation, escalateOptionsFor, mapEscalateChoice, makeEscalate } from "./extension/escalation.ts";
+import { handleStagnation, makeEscalate } from "./extension/escalation.ts";
 import { autoResumeEnabled, formatSummary, formatDuration, launchMetadataLines } from "./extension/run-presentation.ts";
 import { createActiveRun, setRunGuard, releaseRunGuard, noteInFlightReflection, getRunGuard, runGuardRefusal, pendingBackgroundWork, clearPendingBackgroundWork, type ActiveRun } from "./extension/run-state.ts";
+import { SUPER_DEV_TOOL, SUPER_DEV_COMMAND, SUPER_DEV_PANEL_SHORTCUT, buildSuperDevToolInstruction, hasRemovedBackgroundFlag, canonTruncate, parseSuperDevCommandArgs } from "./extension/tool-args.ts";
+// Public seam (canon + command lanes import from extension.ts): re-exported.
+export { parseSuperDevCommandArgs, canonTruncate, CANON_MAX_CONTENT_BYTES, CANON_MAX_CONTENT_LINES } from "./extension/tool-args.ts";
 // Public seam (the input-handler + run-guard test lanes import these from extension.ts): re-exported.
 export { createActiveRun, runGuardRefusal, setRunGuard, releaseRunGuard, noteInFlightReflection, type ActiveRun, type ActiveRunGuard } from "./extension/run-state.ts";
 // Public seam (tests + the escalation lanes import these from extension.ts): re-exported.
@@ -53,65 +56,6 @@ export { handleStagnation, escalateOptionsFor, mapEscalateChoice, makeEscalate }
 export { SUPER_DEV_VERSION_METADATA, SUPER_DEV_EXTENSION_VERSION, SUPER_DEV_VERSION_POLICY, superDevVersionLabel } from "./version.ts";
 import { checkServingFreshness, SERVING_EXTENSION_DIR, servingVersionLine } from "./serving-freshness.ts";
 import { eventsPath } from "./runlog.ts";
-
-const SUPER_DEV_TOOL = "super_dev";
-const SUPER_DEV_COMMAND = "super-dev";
-const SUPER_DEV_PANEL_SHORTCUT = "ctrl+shift+d";
-
-export interface ParsedSuperDevCommandArgs {
-	task: string;
-}
-
-/** Parse `/super-dev` args. The command is foreground-only. */
-export function parseSuperDevCommandArgs(args: unknown): ParsedSuperDevCommandArgs {
-	return { task: String(args ?? "").trim() };
-}
-
-/** v0.3.60 R8 (canon: extensions.md Output Truncation — tools MUST truncate
- *  to ~50KB / ~2000 lines and tell the model where the full output lives).
- *  Guards the headless (print/json/RPC) `content` path; byte-identical below
- *  both bounds. The notice points at the durable run log. */
-export const CANON_MAX_CONTENT_BYTES = 50_000;
-export const CANON_MAX_CONTENT_LINES = 2_000;
-export function canonTruncate(text: string, logPath?: string): string {
-	const totalLines = text.split("\n").length;
-	if (Buffer.byteLength(text, "utf8") <= CANON_MAX_CONTENT_BYTES && totalLines <= CANON_MAX_CONTENT_LINES) return text;
-	// v0.3.61: the byte bound is measured in UTF-8 BYTES (canon DEFAULT_MAX_BYTES),
-	// not UTF-16 code units — a 50k-char slice let CJK content through at ~3× the
-	// cap — and the cut walks code points so it never splits a surrogate pair.
-	let kept = text;
-	if (Buffer.byteLength(text, "utf8") > CANON_MAX_CONTENT_BYTES) {
-		let bytes = 0;
-		let end = 0;
-		for (const ch of text) {
-			const w = Buffer.byteLength(ch, "utf8");
-			if (bytes + w > CANON_MAX_CONTENT_BYTES) break;
-			bytes += w;
-			end += ch.length;
-		}
-		kept = text.slice(0, end);
-	}
-	const keptLines = kept.split("\n");
-	const lineCapped = keptLines.length > CANON_MAX_CONTENT_LINES;
-	if (lineCapped) keptLines.length = CANON_MAX_CONTENT_LINES;
-	kept = keptLines.join("\n");
-	const notice = lineCapped
-		? `[Output truncated: showing ${keptLines.length} of ${totalLines} lines — full output saved to: ${logPath ?? "the run log"}]`
-		: `[Output truncated: kept first ${CANON_MAX_CONTENT_BYTES} bytes (${totalLines} lines) — full output saved to: ${logPath ?? "the run log"}]`;
-	return `${kept}\n${notice}`;
-}
-
-function hasRemovedBackgroundFlag(args: unknown): boolean {
-	return /^--(?:bg|background)(?:\s+|$)/.test(String(args ?? "").trim());
-}
-
-function buildSuperDevToolInstruction(task: string): string {
-	return [
-		`Use the ${SUPER_DEV_TOOL} tool with these exact parameters:`,
-		JSON.stringify({ task }, null, 2),
-		"Call the tool now. Pass the task verbatim.",
-	].join("\n");
-}
 
 let activeRun: ActiveRun | null = null;
 
@@ -161,14 +105,6 @@ export function getActiveRun(): ActiveRun | null {
 	return activeRun;
 }
 
-/** Gap 4.6′-lite — stagnation escalation (scheme C: informative by default, interactive opt-in).
- *  Always writes a stagnation-report.md to the spec dir (baseline, all modes);
- *  spec-18 / Phase 2 additionally delegates the canonical escalation-report.md
- *  to the shared `writeEscalationReport` writer. When the run is interactive
- *  (ctx.hasUI) AND config.escalation === "interactive", additionally prompts a
- *  3-option select. Returns the chosen option (or undefined if not interactive /
- *  dismissed). For Tier-2 all options just finish the run — "revise spec" only
- *  surfaces the recommendation; auto-replay is deferred (Tier-3). */
 // Re-export the extracted dashboard presentation helpers so existing
 // importers (tests, downstream consumers) keep resolving unchanged (AC-08).
 // The upgraded, theme-aware implementations live in src/render/dashboard.ts.
