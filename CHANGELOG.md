@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.55: the red-evidence.ts split (wave 5 — one version bump for the whole wave)
+
+- **red-evidence.ts 1,060 -> 667 lines (-37%)**:
+  - orphan-import purge first: 108 dead imported names (24 whole lines) left behind by the stage.ts-split increments 16-23, swept deterministically with a reverse check
+  - `src/stages/implementation/red-snapshot.ts` (I1, 211) — snapshotFiles, the hollow-assertion guard (ASSERTION_RE + conftest exemption), the v0.3.85 F5 assertion-surface ratchet (the enumerated P2 grammar), changedSinceSnapshot, restoreRedTestFiles
+  - `src/stages/implementation/red-boundary.ts` (I2, 186) — resolveTddScenarioCoverage + resolveRedBoundary (the two RED-gate agent adjudications), TddCoverageResult at its natural home, the scenarioId coercion helpers
+  - the signature/citations/porcelain/reasons/caps library core stays as one cohesive flat module
+- Adversarial verdict: the split is verbatim-faithful, zero divergence on all six vectors; its CONTEST on the wave's own cleanliness claims (one dead import + a locally-true-only sort claim) resolved in folds
+- Ledger corrections: red-boundary.ts is 186 lines (not 189); the original module was 1,060 (not 1,058)
+
 ### Refactor — v0.4.54: the setup.ts split (wave 4, increments 1-4 — one version bump for the whole wave)
 
 - **setup.ts 1,042 -> 326 lines (-69%)** into 5 single-reason modules under `src/setup/`:
