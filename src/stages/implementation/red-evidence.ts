@@ -1,4 +1,4 @@
-import {IMPLEMENTER_CONTROL_KEYS, LeakPhase, MAX_CHALLENGE_REAUTHORS, UNSATISFIABLE_TEXT_RE, cratesFromErrors, formatReauthorEvidence, leakNorm, quoteCmdArg, redImplementContext, redRePromptHint, trimImplementerText} from "./phase-reentry.ts";
+import { LeakPhase, leakNorm, quoteCmdArg, redRePromptHint } from "./phase-reentry.ts";
 /**
  * Stage 9 — Implementation (per-phase TDD).
  * Self-contained task: iterates the spec's phased task list. For each phase,
@@ -10,61 +10,37 @@ import {IMPLEMENTER_CONTROL_KEYS, LeakPhase, MAX_CHALLENGE_REAUTHORS, UNSATISFIA
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { harnessBasenames } from "../../harness-paths.ts";
 import { superDevEnv } from "../../render/super-dev-dir.ts";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync , rmSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
-import type { BoundaryQuarantinePayload, ControlObj, PipelineState, Stage, StageContext } from "../../types.ts";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ControlObj, PipelineState, StageContext } from "../../types.ts";
 
 // v0.3.73 M1: re-exported for the salvage seam + tests.
 export type { BoundaryQuarantinePayload } from "../../types.ts";
-import { classifyJudgeRoute } from "../../routing/router.ts";
-import { appendGateChecked } from "../../runlog.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { localTimestamp } from "../../render/time.ts";
-import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, approveScaffoldPaths, type RedBoundaryResult } from "../../test-artifacts.ts";
-import { buildTddPrompt, buildImplementPrompt, buildCommitPrompt, buildImplementationSummaryPrompt, buildRedReviewPrompt, rustDiscipline } from "../../prompts.ts";
-import { firstCitedTestFile, runJudge, type JudgeRoute } from "../judge.ts";
-import { triggerReplanForFindings, replanPending, countInheritedRedRows, pendingInheritedRedRows } from "../../replan/replan.ts";
-import { planInlineRouteBack } from "../../routing/walker.ts";
-import { RouteBackSignal } from "../../routing/router.ts";
+import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../../test-artifacts.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
-import { FatalAbort } from "../../nodes.ts";
-import { INHERITED_RED_SOURCE, appendInheritedRedEvent, countInheritedRedOccurrences, extractFailingTestFilePaths, f4ScopeMatch, inheritedRedAttribution, inheritedRedBoundaryShape, inheritedRedFlakeTally, normalizeRepoPath } from "../inherited-red.ts";
+import { INHERITED_RED_SOURCE } from "../inherited-red.ts";
 // v0.3.87 S4(b)+(d) (§9/§10 decision 9, §13, §14 ADR 6): the engine-mediated
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
 // research-agent, no agent file is created.
-import { RESEARCH_ASSIST_ARCHIVE_CAP, RESEARCH_ASSIST_GREEN_TRIGGER_STREAK, RESEARCH_ASSIST_RED_TRIGGER_TRIES, parseNeedsResearch, runResearchAssist, type NeedsResearchEntry, type ResearchAssistRedArm, type ResearchAssistGreenTrigger } from "../research-assist.ts";
-import { planFeasibilityFindings, contradictionFastFailFrame } from "../plan-feasibility.ts";
+import { contradictionFastFailFrame } from "../plan-feasibility.ts";
 // 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
 // plan compile-time checks) — two-locus mechanical findings routed through
 // the SAME replan circuit plan-feasibility uses (no judge call needed).
-import { stage9EntryGate, type EntryGateFinding } from "../../review/claim-spine.ts";
-import { freshStageDocTexts } from "../../review/contract-validators.ts";
-import { isNoEditCompletion } from "../../agent-errors.ts";
-import { renderAndWrite } from "../../render/render.ts";
-import { STAGE_MODELS, RedReviewData as RED_REVIEW_SCHEMA, TddCoverageControlData, FileClassifyControlData } from "../../render/schemas.ts";
-import { userNotesForAgent } from "../../render/user-notes.ts";
-import { extractScenarioIds, extractScenarioRefsFromControl, normalizePhases } from "../../doc-validators.ts";
-import { computeChangeGate, computeSymbolGate, deliverablesAlreadyMet, resetDeliverableCheckCache, runBuildGate, buildGateCorrelationLine, runDeliverableCheck, runRedCheck, type BuildGateResult, type DeliverableContract, type GateOptions, type RedCheckDiagnostic, type RedCheckPlan, type RedStatus } from "../../build-runner.ts";
+import { TddCoverageControlData, FileClassifyControlData } from "../../render/schemas.ts";
+import { extractScenarioIds, extractScenarioRefsFromControl } from "../../doc-validators.ts";
+import { type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";
 import { renderRetryFeedbackBlock, type RetryFeedback } from "../../retry-feedback.ts";
-import { runInStepScope } from "../../step-scope.ts";
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../../convergence-ledger.ts";
-import { stripVolatileNoise, classifyGateFault, collectDirtPaths, listPorcelainPaths, quarantineDirt, dirtyQuarantineEnabled, appendEnvironmentFault, readEnvironmentFaultCount, type FaultClass } from "../../fault-classification.ts";
-import { freshRunWallFuseState, markRunWallFuseTripped, runFuseWindDown, runWallFuseMs } from "../../wall-fuse.ts";
-import { clearBaselineCache } from "../../build-runner/baseline.ts";
+import { stripVolatileNoise, type FaultClass } from "../../fault-classification.ts";
 import { phaseClauseFiles } from "../plan-feasibility.ts";
 // v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
-import { readCachedTestRunner, writeCachedTestRunner, validateRunnerSpec, runnerCoversTargets, type TestRunnerSpec } from "../../build-runner/runner-discovery.ts";
-import { deriveConventionsRunnerSpec } from "../../build-runner/conventions.ts";
-import { runCoverageGate, type CoverageGateResult, coverageThreshold } from "../../build-runner/coverage-gate.ts";
 // Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
-import { buildProtectionEducationBlock, bumpProtectionStrike, detectProtectionViolations, deriveProtectionInterval, PROTECTION_STRIKE_BOUND, resetProtectionStrike, reviveProtectionInterval, serializeProtectionInterval, type ProtectionInterval } from "../protection-interval.ts";
-import { consumeProtectionBreachEscalation } from "../../review/protection-breach-consumer.ts";
-import { captureStageEntryBaseline, laterPhasesRan, reapplyRollbackStash, rollbackConvergenceReentry } from "../checkpoint-rollback.ts";
 import { stateFileFor } from "../../state/state-root.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red" | "weakened-preexisting-test";
