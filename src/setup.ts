@@ -6,7 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { superDevEnv } from "./render/super-dev-dir.ts";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 // PRC (Track 30 Phase 5): the shared dirt primitives — REUSED, never
 // duplicated (D-7: src/fault-classification.ts is the canonical exclusion/
 // quarantine source so setup and the Stage 9 loop cannot drift).
@@ -20,17 +20,12 @@ import { clearUserNotes } from "./render/user-notes.ts";
 import { dirname, join, relative, resolve } from "node:path";
 import type { SetupControl } from "./types.ts";
 import { loadDotEnv, copyEnvFilesToWorktree, excludeCopiedEnvFiles } from "./setup/env-files.ts";
+import { acquireRunLock } from "./setup/run-lock.ts";
+export { RUN_LOCK_BASENAME, releaseHeldRunLock } from "./setup/run-lock.ts";
+import { git, createOrReuseWorktree, detectDefaultBranch, isGitRepo, headExists, ensureGitIdentity } from "./setup/worktree-git.ts";
 import { nextSpecNumber, sanitizeSlug, slugifyTask, slugFromSpecPathReference, dedupeSlugIndex, findReusableSpec, referencedSpecIdentifier, specReuseEnabled, SPEC_TASK_ANCHOR } from "./setup/spec-identity.ts";
 export { sanitizeSlug, slugifyTask, taskTokens, taskSimilarity, slugTokenContainment, SPEC_TASK_ANCHOR, specRefNumerals, slugFromSpecPathReference, dedupeSlugIndex, anchorNumeralRefusal, specReuseEnabled, findReusableSpec, referencedSpecIdentifier } from "./setup/spec-identity.ts";
 export { isEnvFile, copyEnvFilesToWorktree } from "./setup/env-files.ts";
-
-function git(args: string[], cwd: string): string | null {
-	try {
-		return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-	} catch {
-		return null;
-	}
-}
 
 export function detectLanguage(cwd: string, task = ""): { language: string; isWebUi: boolean } {
 	const has = (f: string) => existsSync(join(cwd, f));
@@ -60,179 +55,6 @@ export function detectLanguage(cwd: string, task = ""): { language: string; isWe
 }
 
 
-function branchExists(cwd: string, branch: string): boolean {
-	return git(["rev-parse", "--verify", `refs/heads/${branch}`], cwd) !== null;
-}
-
-// ─── OQ-3 / AC-30: spec-dir run lock ────────────────────────────────────────
-
-/** AC-30: the per-spec-dir run lock basename (serialized same-track runs). */
-export const RUN_LOCK_BASENAME = ".run-lock";
-
-/** The lock this process currently holds (released by pipeline.ts / the
- *  extension's finally). Null when nothing is held. */
-let heldRunLockPath: string | null = null;
-
-/** Parse a lock file's holder ({pid, startedAt}); null on ANY failure. */
-function readLockHolder(path: string): { pid: number; startedAt?: string } | null {
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; startedAt?: unknown };
-		const pid = Number(parsed?.pid);
-		if (!Number.isInteger(pid) || pid <= 0) return null;
-		return { pid, startedAt: typeof parsed?.startedAt === "string" ? parsed.startedAt : undefined };
-	} catch {
-		return null;
-	}
-}
-
-/** Signal-0 liveness probe: process.kill(pid, 0) succeeds ⟺ a signal could be
- *  delivered (alive + permitted); false on ANY throw (dead / not ours). */
-function isPidAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err) {
-		// Adversarial F-03 (spec-28 review): kill(pid,0) on a LIVE process owned
-		// by another user throws EPERM (exists-but-not-permitted) — that is
-		// ALIVE, not dead. Only ESRCH (no such process) means dead.
-		return (err as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-/** Serialize same-track runs: exclusive-create the lock; on collision a LIVE
- *  holder (≠ this process) blocks setup with an actionable error, anything
- *  else (dead pid, unreadable, our own pid — replan auto-restarts re-enter
- *  runSetup in the same process) is stolen and retried (≤3 attempts). */
-
-/** Bounded SYNCHRONOUS sleep (no child process, no event-loop dependency):
- *  Atomics.wait on a zero-initialized SharedArrayBuffer is the canonical
- *  sync sleep in Node and resolves in every context acquireRunLock runs in. */
-function sleepSyncMs(ms: number): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/** F-10 (v0.3.86): when readLockHolder returns null the file may be an
- *  EMPTied-but-locked window — another process's openSync("wx") has created
- *  the file but its writeSync has not landed yet. Stealing immediately (the
- *  old rmSync) let BOTH processes hold the lock (TOCTOU). Bounded backoff:
- *  2 retries × 75ms, stealing only if the file is STILL unreadable after the
- *  window — a genuine holder writes within one loop iteration, so the total
- *  added latency for the stale case is a fixed ≤150ms. */
-const LOCK_EMPTY_RETRIES = 2;
-const LOCK_EMPTY_BACKOFF_MS = 75;
-
-function readLockHolderWithBackoff(path: string): { pid: number; startedAt?: string } | null {
-	let holder = readLockHolder(path);
-	if (holder !== null) return holder;
-	for (let i = 0; i < LOCK_EMPTY_RETRIES && holder === null; i++) {
-		sleepSyncMs(LOCK_EMPTY_BACKOFF_MS);
-		holder = readLockHolder(path);
-	}
-	return holder;
-}
-
-function acquireRunLock(specDirectory: string): void {
-	// 063 S1 (spec §3.4 H2 concurrency ruling): the lock resolves through the
-	// state funnel — EXTERNAL when derivable, so two worktrees/checkouts of one
-	// repo running the SAME spec-id serialize on one lock instead of silently
-	// racing over the shared external store (previously-parallel duplicate-spec
-	// runs now hard-fail with the message below — the deliberate trade). The
-	// fail-closed degradation keeps the legacy in-spec lock.
-	const lockPath = stateFileFor(specDirectory, RUN_LOCK_BASENAME);
-	if (externalStateAvailable(specDirectory)) mkdirSync(dirname(lockPath), { recursive: true });
-	for (let attempt = 0; attempt < 3; attempt++) {
-		let fd: number | undefined;
-		try {
-			fd = openSync(lockPath, "wx");
-			writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
-			// Sweep-3 (B SETUP-2): close the descriptor — every acquisition leaked
-			// one fd for the process lifetime (closeSync was imported, never called).
-			closeSync(fd);
-			fd = undefined;
-			heldRunLockPath = lockPath;
-			return;
-		} catch (err) {
-			const code = (err as { code?: string }).code;
-			if (code !== "EEXIST") throw err; // real IO failure — fail closed
-			// F-10: an EMPTY/unparseable lock gets the bounded backoff FIRST — the
-			// competing process's writeSync usually lands within one retry, turning a
-			// would-be steal into the honest live-holder block above.
-			const holder = readLockHolderWithBackoff(lockPath);
-			// A holder pid equal to process.pid is ALWAYS stolen; a live foreign
-			// holder blocks; a dead/still-unreadable lock is stale and stolen.
-			if (holder && holder.pid !== process.pid && isPidAlive(holder.pid)) {
-				throw new Error(`spec directory ${specDirectory} is locked by another super-dev run (pid ${holder.pid}, started ${holder.startedAt ?? "unknown"}); wait for it to finish, or remove ${lockPath} if that run is gone`);
-			}
-			rmSync(lockPath, { force: true });
-		}
-	}
-	throw new Error(`spec directory ${specDirectory} could not be locked (${RUN_LOCK_BASENAME} kept reappearing — remove ${lockPath} manually and retry)`);
-}
-
-/** Release the lock this process holds (pipeline.ts finally + the extension's
- *  doRun finally). Safe when nothing is held. */
-export function releaseHeldRunLock(): void {
-	if (heldRunLockPath === null) return;
-	try {
-		rmSync(heldRunLockPath, { force: true });
-	} catch { /* best-effort */ }
-	heldRunLockPath = null;
-}
-
-/** H7 (AC-09): run git capturing BOTH streams — the fail-closed worktree-add
- *  error message must surface git's own stderr tail (diagnosability), which
- *  the silent-stderr `git()` helper cannot provide. Never throws. */
-function gitWithStderr(args: string[], cwd: string): { stdout: string; stderr: string } {
-	try {
-		const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-		return { stdout: out, stderr: "" };
-	} catch (err) {
-		const e = err as { stdout?: string; stderr?: string; message?: string };
-		return { stdout: String(e.stdout ?? ""), stderr: String(e.stderr ?? e.message ?? "") };
-	}
-}
-
-function createOrReuseWorktree(cwd: string, specIdentifier: string, defaultBranch: string): { worktreePath: string; worktreeCreated: boolean } {
-	const wtPath = join(cwd, ".worktree", specIdentifier);
-	if (existsSync(wtPath)) return { worktreePath: wtPath, worktreeCreated: true };
-	const args = branchExists(cwd, specIdentifier)
-		? ["worktree", "add", wtPath, specIdentifier]
-		: ["worktree", "add", "-b", specIdentifier, wtPath, defaultBranch];
-	const created = git(args, cwd);
-	if (created !== null || existsSync(wtPath)) return { worktreePath: wtPath, worktreeCreated: true };
-	// H7 (AC-09 / SCENARIO-020): prune once and retry once — a stale
-	// registration for a deleted .worktree/<id> path is the common recoverable
-	// failure (worktree dir removed without `git worktree remove`).
-	git(["worktree", "prune"], cwd);
-	const retried = git(args, cwd);
-	if (retried !== null || existsSync(wtPath)) return { worktreePath: wtPath, worktreeCreated: true };
-	// H7 (AC-09 / SCENARIO-019): FAIL CLOSED — never silently fall back to
-	// running in the user's main checkout with no isolation. Surface git's
-	// stderr tail plus the recovery hint.
-	const { stderr } = gitWithStderr(args, cwd);
-	throw new Error(`git worktree add failed for ${specIdentifier} even after \`git worktree prune\` + one retry — git stderr: ${stderr.trim().slice(-400) || "(none)"}. Run \`git worktree prune\` manually and retry, or set skipWorktree to run in place deliberately.`);
-}
-
-function detectDefaultBranch(cwd: string): string {
-	const fromOrigin = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
-	if (fromOrigin && fromOrigin.startsWith("origin/")) return fromOrigin.slice("origin/".length);
-	const current = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
-	if (current && current !== "HEAD") return current;
-	return "main";
-}
-
-function isGitRepo(cwd: string): boolean {
-	return git(["rev-parse", "--is-inside-work-tree"], cwd) !== null;
-}
-
-function headExists(cwd: string): boolean {
-	return git(["rev-parse", "--verify", "HEAD"], cwd) !== null;
-}
-
-function ensureGitIdentity(cwd: string): void {
-	if (!git(["config", "user.email"], cwd)) git(["config", "user.email", "pi-super-dev@local"], cwd);
-	if (!git(["config", "user.name"], cwd)) git(["config", "user.name", "pi-super-dev"], cwd);
-}
 
 export interface SetupOptions {
 	cwd?: string;
