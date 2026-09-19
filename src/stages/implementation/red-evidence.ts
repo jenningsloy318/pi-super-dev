@@ -20,7 +20,7 @@ export type { BoundaryQuarantinePayload } from "../../types.ts";
 import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } from "../../tracking.ts";
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { localTimestamp } from "../../render/time.ts";
-import { buildRedBoundaryPrompt, classifyObviousRedPath, isRuntimeEvidencePath, isSubstrateArtifact, redBoundaryResultFromAgent, redBoundaryResultFromClassifications, type RedBoundaryResult } from "../../test-artifacts.ts";
+import { isRuntimeEvidencePath, isSubstrateArtifact, type RedBoundaryResult } from "../../test-artifacts.ts";
 // v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
 // stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
 import { INHERITED_RED_SOURCE } from "../inherited-red.ts";
@@ -28,14 +28,12 @@ import { INHERITED_RED_SOURCE } from "../inherited-red.ts";
 // research assist — pure helpers + ledger + the one dispatch seam. §13:
 // "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
 // research-agent, no agent file is created.
-import { contradictionFastFailFrame } from "../plan-feasibility.ts";
 // 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
 // plan compile-time checks) — two-locus mechanical findings routed through
 // the SAME replan circuit plan-feasibility uses (no judge call needed).
-import { TddCoverageControlData, FileClassifyControlData } from "../../render/schemas.ts";
-import { extractScenarioIds, extractScenarioRefsFromControl } from "../../doc-validators.ts";
-import { normalizeSlash, snapshotFiles, changedSinceSnapshot, restoreRedTestFiles } from "./red-snapshot.ts";
-import { uniqueScenarioIds, scenarioIdsFromUnknown, resolveTddScenarioCoverage, resolveRedBoundary, type TddCoverageResult } from "./red-boundary.ts";
+import { extractScenarioRefsFromControl } from "../../doc-validators.ts";
+import { normalizeSlash } from "./red-snapshot.ts";
+import { uniqueScenarioIds, scenarioIdsFromUnknown, type TddCoverageResult } from "./red-boundary.ts";
 export { resolveTddScenarioCoverage, resolveRedBoundary, boundarySummary } from "./red-boundary.ts";
 export { snapshotFiles, assertionPresenceGaps, RED_WEAKENING_SOURCE, assertionSurfaceCount, weakenedAssertionSurfaces, preexistingTestSurfaceRows, changedSinceSnapshot, restoreRedTestFiles, type AssertionSurfaceRow, type WeakenedAssertionSurface } from "./red-snapshot.ts";
 import { type RedCheckDiagnostic, type RedStatus } from "../../build-runner.ts";

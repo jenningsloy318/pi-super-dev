@@ -7,7 +7,7 @@ import { TddCoverageControlData, FileClassifyControlData } from "../../render/sc
 import type { RedStatus } from "../../build-runner.ts";
 import { extractScenarioIds } from "../../doc-validators.ts";
 
-// listOrNone twin (the red-evidence.ts original serves redEvidenceLogLine's 4
+// listOrNone twin (the red-evidence.ts original serves redEvidenceLogLine's 5
 // call sites there; kept local to avoid a red-evidence -> red-boundary cycle).
 function listOrNoneLocal(values: string[]): string {
 	return values.length ? values.join(", ") : "none";
