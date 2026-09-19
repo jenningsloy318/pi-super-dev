@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.54: the setup.ts split (wave 4, increments 1-4 — one version bump for the whole wave)
+
+- **setup.ts 1,042 -> 326 lines (-69%)** into 5 single-reason modules under `src/setup/`:
+  - `env-files.ts` (I1, 130) — loadDotEnv, the H6/AC-07 worktree env copier, the G8/F-04/L1 info/exclude writer; env-files imports git from the sibling worktree-git (review fold)
+  - `spec-identity.ts` (I2, 322) — the slug core, the spec-reference numeral grammars, findReusableSpec (G2 deterministic tiebreak + layout-aware), referencedSpecIdentifier, nextSpecNumber
+  - `run-lock.ts` (I3a, 126) + `worktree-git.ts` (I3b, 77) — the OQ-3/AC-30 lock steal ladder (F-03/F-10/S1/SETUP-2) and the worktree bootstrap (SCENARIO-019/020 fail-closed)
+  - `bootstrap.ts` (I4, 138) — the RC12a node+python dependency pre-warm with arm-scoped failures
+- runSetup + SetupOptions + detectLanguage stay as the wiring core
+- Dual gates per increment, all folds landed; new coverage from the folds: the G8 empty-copy branch pinned, the mtime-desc tiebreak pinned (mutation-verified); ledger correction: worktree-git.ts is 77 lines
+
 ### Refactor — v0.4.53: the extension.ts split (wave 3, increments 1-5 — one version bump for the whole wave)
 
 - **extension.ts 1,237 -> 658 lines (-47%)** into 5 single-reason modules under `src/extension/`:
