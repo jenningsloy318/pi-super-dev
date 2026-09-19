@@ -18,7 +18,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as ext from "../src/extension.ts";
 
 const activate = (ext as any).default as (pi: any) => void;
-const setActiveRun = (run: unknown): void => (ext as any).setRunGuard === undefined && (ext as any).setActiveRun(run);
 const setInFlight = (v: boolean): void => (ext as any).setInFlight(v);
 const setRunGuard = (g: unknown): void => (ext as any).setRunGuard(g);
 const runGuardRefusal = (): string | null => (ext as any).runGuardRefusal();

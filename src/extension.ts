@@ -16,7 +16,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { packDashboardLines, padTruncate, truncateActivity, buildDashboardWidget, createDashboardWidgetFactory, buildResultComponent } from "./render/dashboard.ts";
 import type { DashboardTheme } from "./render/dashboard.ts";
 import { createLiveStream } from "./render/live-stream.js";
-import type { TranscriptLine, LiveStreamHandle, StageStamp } from "./render/live-stream.js";
+import type { TranscriptLine, StageStamp } from "./render/live-stream.js";
 import { stepOccurrenceStamp } from "./render/stage-occurrence.ts";
 import {type StepScopeInfo } from "./step-scope.ts";
 import { Type } from "typebox";
