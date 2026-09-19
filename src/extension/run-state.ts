@@ -92,7 +92,7 @@ export function runGuardRefusal(): string | null {
 // (promise → { runDir, kind }) — the detached auto post-mortem registers with
 // kind "post-mortem" so a teardown names IT too instead of severing the child
 // agent silently. Reflections keep their exact historical message wording.
-interface InFlightBackgroundWork {
+export interface InFlightBackgroundWork {
 	runDir: string;
 	kind: "reflection" | "post-mortem";
 }
@@ -200,7 +200,7 @@ export function noteInFlightReflection(runDir: string | undefined, reflection: P
 
 /** Drain-and-clear view for the shutdown path (reports every still-pending
  *  entry; the caller clears after reporting — the wave-3 extraction seam). */
-export function pendingBackgroundWork(): Array<[Promise<unknown>, { runDir: string; kind: "reflection" | "post-mortem" }]> {
+export function pendingBackgroundWork(): Array<[Promise<unknown>, InFlightBackgroundWork]> {
 	return [...pendingReflections.entries()];
 }
 
