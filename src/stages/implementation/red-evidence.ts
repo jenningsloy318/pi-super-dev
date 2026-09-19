@@ -21,16 +21,6 @@ import { getActiveTracker, isHarnessBookkeepingPath, isInternalRuntimeClaim } fr
 import type { ChangeRecord, StructuredChanges } from "../../tracking.ts";
 import { localTimestamp } from "../../render/time.ts";
 import { isRuntimeEvidencePath, isSubstrateArtifact, type RedBoundaryResult } from "../../test-artifacts.ts";
-// v0.3.85 F2 Tier 3 / F4 sub-cap + the validator hard-fail override: the
-// stop-the-line terminal (ADR 9) and the restart-state pending-row probe.
-import { INHERITED_RED_SOURCE } from "../inherited-red.ts";
-// v0.3.87 S4(b)+(d) (§9/§10 decision 9, §13, §14 ADR 6): the engine-mediated
-// research assist — pure helpers + ledger + the one dispatch seam. §13:
-// "research-assist" is a CONFIG ROLE KEY ONLY; the dispatch reuses
-// research-agent, no agent file is created.
-// 065 D-F-D/D-F-F: the Stage-9-entry gate (write×protect cross-product +
-// plan compile-time checks) — two-locus mechanical findings routed through
-// the SAME replan circuit plan-feasibility uses (no judge call needed).
 import { extractScenarioRefsFromControl } from "../../doc-validators.ts";
 import { normalizeSlash } from "./red-snapshot.ts";
 import { uniqueScenarioIds, scenarioIdsFromUnknown, type TddCoverageResult } from "./red-boundary.ts";
@@ -41,8 +31,6 @@ import { renderRetryFeedbackBlock, type RetryFeedback } from "../../retry-feedba
 import { recordConvergenceFindings, type ConvergenceOwnerStage } from "../../convergence-ledger.ts";
 import { stripVolatileNoise, type FaultClass } from "../../fault-classification.ts";
 import { phaseClauseFiles } from "../plan-feasibility.ts";
-// v0.3.30 Layer C: agent-proposed runner discovery (machine-verified + cached).
-// Wave 3 (058 §4 D-B/D-D, v0.3.99): Layer-2 protection intervals + Layer-4 checkpoint rollback.
 import { stateFileFor } from "../../state/state-root.ts";
 
 type RedEvidenceStatus = "red-behavior-failure" | "coverage-incomplete" | "green-weak-test" | "review-weak" | "green-already-satisfied" | "broken-test" | "unknown-no-runner" | "unknown-unclassified" | "polluted-red" | "weakened-preexisting-test";
