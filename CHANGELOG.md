@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Refactor — v0.4.53: the extension.ts split (wave 3, increments 1-5 — one version bump for the whole wave)
+
+- **extension.ts 1,237 -> 658 lines (-47%)** into 5 single-reason modules under `src/extension/`:
+  - `escalation.ts` (I1, 198) — the stagnation/blocked-on-decisions escalation surface (spec-18 inline machinery)
+  - `run-presentation.ts` (I2, ~90) — formatSummary/formatDuration/gitValue/launchMetadataLines/autoResumeEnabled
+  - `run-state.ts` (I3, ~210) — the ActiveRun value machinery: the globalThis cross-instance run guard (R3 + v0.3.61 token ownership) and the F-16 in-flight background-work registry; the singletons stay (activate reads them raw — a first whole-region attempt was reverted on tsc evidence)
+  - `tool-args.ts` (I4, 65) — the tool/command consts + canonTruncate (UTF-8 BYTES, CJK + surrogate edges)
+  - `event-handlers.ts` (I5, ~100) — adjudicateInputEvent PURE over (activeRun, event): the AC-01/AC-03 capture-invariant ladder unit-pinned for the first time (9 tests), reportSessionShutdown
+- doRun + registrations + renderers stay as the wiring core (wrong-seam signals: ~12 closure deps each)
+- Dual gates per increment (glm-5.3-flash:high), all folds landed; audited ledger corrections: I3 961->781, I5 post-commit 659
+
 ### Refactor — v0.4.52: the workflow.ts split (wave 2, increments 1-6 — one version bump for the whole wave)
 
 - **Campaign**: workflow.ts 1,522 → 942 lines (−38%) over 6 dual-gated increments, each a module selected by the granularity standard; workflow.ts keeps the closure-dense orchestrator core (makeContext/realAgent's dispatch + terminal blocks, runWorkflow) whose extraction would hit the wrong-seam signals.
