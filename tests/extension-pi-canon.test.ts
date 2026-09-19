@@ -243,7 +243,8 @@ describe("R8: canonical tool-output truncation (content path)", () => {
 
 describe("v0.3.61 review fixes (r60 lanes)", () => {
 	const fs = require("node:fs");
-	const extSrc = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8");
+	const extSrc = fs.readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8")
+		+ "\n" + fs.readFileSync(new URL("../src/extension/run-state.ts", import.meta.url), "utf8"); // wave 3 inc 3: runGuardRefusal moved to the module
 	const flush = (): Promise<void> => new Promise<void>((r) => setImmediate(r));
 
 	it("P1: runGuardRefusal reads the hatch through superDevEnv (config.json channel), never raw process.env", () => {
