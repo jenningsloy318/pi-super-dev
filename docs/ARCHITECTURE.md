@@ -78,6 +78,35 @@
 - `merge` → `merge-verify`
 - `merge-verify` → _(terminal)_
 
+## Code architecture (the v0.4.34-v0.4.55 split — module map)
+
+> The five former giants were decomposed under the AGENTS.md granularity standard
+> (one reason to change per module; loop skeletons and wiring cores kept where the
+> wrong-seam signals applied). Every extraction was byte-faithful with dual gates.
+
+| Former giant | Now | Composition kept |
+|---|---|---|
+| `stages/implementation/stage.ts` (3,038 → 1,375) | 28 single-reason modules under `src/stages/implementation/` — dispatchers (implementer-prompt, implementer-dispatch, red-tdd-dispatch), record builders (red-oracle-cycle, gate-suite, phase-entry), adjudicators (protection-gate, inherited-red-ladder, env-blocker-regate/judge, no-progress-valve, green-boundary, red-retry-ladder, red-acceptance), boundary closers (phase-tail, stage-close-reverify, phase-entry) | the attempt-loop skeleton, P3 run-state guards, the let-cascade, outcome interpretation |
+| `workflow.ts` (1,522 → 942) | `src/workflow/` — source-boundary, usage-accounting, run-status, agent-retry, pre-call-fuses, agent-call-assembly | makeContext/realAgent dispatch + terminal try/catch, runWorkflow (closure-dense by design) |
+| `extension.ts` (1,237 → 658) | `src/extension/` — escalation, run-presentation, run-state, tool-args, event-handlers | doRun execute core, pi registrations, renderers/panel |
+| `setup.ts` (1,042 → 326) | `src/setup/` — env-files, spec-identity, run-lock, worktree-git, bootstrap | runSetup + SetupOptions + detectLanguage |
+| `red-evidence.ts` (1,060 → 667) | `red-snapshot.ts` (snapshot/ratchet/restore) + `red-boundary.ts` (the two RED-gate agent adjudications) | the signatures/citations/porcelain/reasons/caps flat library core |
+
+Cross-cutting foundations (each a leaf or choke point, unchanged by the splits):
+
+- `src/nodes.ts` — the control-flow node algebra (task/sequence/branch/parallel/loop/retry/gate/map/wait/tryCatch); `FatalAbort` + `RouteBackSignal` propagation contracts
+- `src/tracking.ts` — the change tracker (never-throw, conservative parse, the false-green killer cross-check) + `rollbackWorktreeTo`
+- `src/harness-paths.ts` — the SINGLE canonical registry of harness-file roles (red-boundary / advisory-noise / claim-exempt / neverGitTracked / stateExternal); consumers derive sets, never declare literals
+- `src/state/state-root.ts` — the external-state funnel `stateFileFor` (fail-closed, realpath-canonicalized project keys) + one-time migration + orphan sweep
+- `src/runlog.ts` — the append-only events ledger (INV-L1..L6, torn-line healing, payload bounds)
+- `src/convergence-ledger.ts` — findings lifecycle (writer claims vs reviewer verification, duty downgrades with provenance gating, superseded orphaned anchors)
+- `src/control.ts` — `<control>` extraction (decoy guards, unescaped-quote repair, depth-aware key parsing)
+- `src/resume.ts` — durable-execution replay (structural cache keys, poisoned-row recovery, error rows never replayed)
+- `src/agent-errors.ts` — non-retryable classification incl. the persisted model-exclusion store diagnosis (TZ-validated quota hints)
+- `src/fault-classification.ts` — the deterministic fault floor (environmental vs product vs unclassified) + the never-destructive dirt quarantine
+- `src/wall-fuse.ts` — the per-run-pass wall budget (first-trip-wins marker, trailing-median wind-down)
+- `src/routing/router.ts` — the ONE routing vocabulary (continue/retry/route-back/escalate/accept-limitation/abort) every decision mechanism maps onto
+
 ## Where the semantics live
 
 - Loop vocabulary + degradation ladder: `docs/requirements/027-postmortem-0001-verify-loop-dead-state.md`
