@@ -1,6 +1,6 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, copyFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { git } from "./worktree-git.ts";
 
 /** Wave 4 increment 1: env-file PROPAGATION — the .env loader (process.env
  *  merge, existing wins), the recursive worktree copier (H6/AC-07: never
@@ -8,8 +8,8 @@ import { dirname, join, relative, resolve } from "node:path";
  *  the common-info/exclude writer (H6/AC-08 + Sweep-3 G8 unconditional
  *  harness-bookkeeping excludes + F-04 .run-lock + v0.3.3 L1 ledger) — moved
  *  verbatim from setup.ts. One reason to change: how env files reach worktrees.
- *  The private git() helper is a same-shape copy of setup.ts's (7 other
- *  consumers there keep it); kept private to avoid a setup.ts cycle. */
+ *  The git() helper comes from the sibling worktree-git.ts (the wave-4 I3
+ *  review fold: the original private copy predates worktree-git exporting it). */
 
 /** Load KEY=VALUE pairs from a `.env` file into `process.env` so spawned
  *  specialist agents (api-tester, etc.) inherit them. Only sets vars that
@@ -121,10 +121,3 @@ export function excludeCopiedEnvFiles(worktreeRoot: string, copiedRelPaths: stri
 	} catch { /* best-effort — the cleanup scan blocks committed env files */ }
 }
 
-function git(args: string[], cwd: string): string | null {
-	try {
-		return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-	} catch {
-		return null;
-	}
-}

@@ -4,7 +4,7 @@
  * Replaces the original LLM-driven setup agent; no model round-trip.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 // PRC (Track 30 Phase 5): the shared dirt primitives — REUSED, never
 // duplicated (D-7: src/fault-classification.ts is the canonical exclusion/
 // quarantine source so setup and the Stage 9 loop cannot drift).
