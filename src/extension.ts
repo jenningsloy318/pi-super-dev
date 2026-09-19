@@ -37,7 +37,7 @@ import { setActiveTracker } from "./tracking.ts";
 import { registerSuperDevAgentsDeferred } from "./agents/register-agents.ts";
 import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
 import { superDevRunMetadataLine } from "./version.ts";
-import type { ProgressSink, RunSummary, RuntimeInstruction, RuntimeInstructionImage } from "./types.ts";
+import type { ProgressSink, RuntimeInstruction } from "./types.ts";
 
 export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
@@ -47,6 +47,7 @@ import { handleStagnation, makeEscalate } from "./extension/escalation.ts";
 import { autoResumeEnabled, formatSummary, formatDuration, launchMetadataLines } from "./extension/run-presentation.ts";
 import { createActiveRun, setRunGuard, releaseRunGuard, noteInFlightReflection, getRunGuard, runGuardRefusal, pendingBackgroundWork, clearPendingBackgroundWork, type ActiveRun } from "./extension/run-state.ts";
 import { SUPER_DEV_TOOL, SUPER_DEV_COMMAND, SUPER_DEV_PANEL_SHORTCUT, buildSuperDevToolInstruction, hasRemovedBackgroundFlag, canonTruncate, parseSuperDevCommandArgs } from "./extension/tool-args.ts";
+import { adjudicateInputEvent, instructionForEntry, reportSessionShutdown } from "./extension/event-handlers.ts";
 // Public seam (canon + command lanes import from extension.ts): re-exported.
 export { parseSuperDevCommandArgs, canonTruncate, CANON_MAX_CONTENT_BYTES, CANON_MAX_CONTENT_LINES } from "./extension/tool-args.ts";
 // Public seam (the input-handler + run-guard test lanes import these from extension.ts): re-exported.
@@ -65,20 +66,7 @@ let activeRun: ActiveRun | null = null;
  *  dir are never clobbered by a concurrent invocation. */
 let inFlight = false;
 
-function normalizeInputImages(images: unknown): RuntimeInstructionImage[] {
-	return Array.isArray(images) ? images as RuntimeInstructionImage[] : [];
-}
 
-function instructionForEntry(instruction: RuntimeInstruction): RuntimeInstruction {
-	return {
-		...instruction,
-		images: (instruction.images ?? []).map((image) => ({
-			mediaType: image.mediaType,
-			path: image.path,
-			label: image.label,
-		})),
-	};
-}
 
 /** Set/clear the module singleton. Called on execute() entry (store ctx) and
  * in the execute() finally (discard — unifies run + widget teardown). */
@@ -154,45 +142,15 @@ export default function activate(pi: ExtensionAPI): void {
 	} catch { /* best-effort */ }
 	// Phase 1 (AC-01 / SCENARIO-001): register the mid-run input listener EXACTLY
 	// ONCE at module lifetime (inside activate, never per execute() call). The
-	// handler implements the {active-run + interactive}→handled / {else}→continue
-	// invariant (AC-03); returning {action:"handled"} for captured input tells pi
-	// NOT to re-queue it as a parent steer (SCENARIO-004). The whole body is
-	// try/catch-wrapped so any capture failure degrades to a safe no-op and the
-	// run always completes normally (SCENARIO-006 / SCENARIO-023).
-	// v0.3.60 R1: subscribed via the TYPED `pi.on("input", …)` handler (canon:
-	// extensions.md Events) instead of the raw `pi.events` bus — the event is
-	// compile-time InputEvent and the return the documented InputEventResult,
-	// with the same runtime narrowing guards kept (a malformed payload still
-	// degrades to {continue} via the catch).
+	// adjudication invariant lives in extension/event-handlers.ts (increment 5);
+	// this wiring keeps only the appendEntry telemetry + the catch degradation.
 	pi.on("input", (event) => {
 		try {
-			// idle (no run in progress) → pi owns the input entirely.
-			if (activeRun == null) return { action: "continue" };
-			// non-interactive sources (rpc/extension/print/json/headless) are never
-			// captured — they flow through pi byte-identical to today.
-			if (event?.source !== "interactive") return { action: "continue" };
-			// Slash-commands pass through so /reload, /model, etc.
-			// still work during a run. Everything else typed during an active run is
-			// captured as mid-run user context: it is drained + persisted into
-			// .user-notes.json and injected into EVERY subsequent stage (durable,
-			// resume-safe). Returning {handled} tells pi NOT to also queue it as a normal turn.
-			// Coerce safely so a missing/blank `text` can never crash the handler.
-			const text = typeof event?.text === "string" ? event.text : "";
-			if (text.trimStart().startsWith("/")) return { action: "continue" };
-			// v0.3.60 R7: `parent: <text>` escapes run-scoped capture and flows to
-			// the PARENT agent with the prefix stripped ({action:"transform"}) —
-			// the user keeps a control channel mid-run without disabling capture.
-			const trimmed = text.trimStart();
-			if (trimmed.startsWith("parent:")) {
-				const toParent = trimmed.slice("parent:".length).trim();
-				if (!toParent) return { action: "continue" };
-				return { action: "transform", text: toParent };
+			const result = adjudicateInputEvent(activeRun, event);
+			if (result.action === "handled" && result.instruction) {
+				try { pi.appendEntry?.("super-dev-instruction", { instruction: instructionForEntry(result.instruction), queued: result.queued }); } catch { /* best-effort */ }
 			}
-			const instruction = activeRun.push(text, normalizeInputImages(event?.images), { source: event?.source, streamingBehavior: event?.streamingBehavior });
-			if (instruction) {
-				try { pi.appendEntry?.("super-dev-instruction", { instruction: instructionForEntry(instruction), queued: activeRun.queue.length }); } catch { /* best-effort */ }
-			}
-			return { action: "handled" };
+			return result.action === "handled" ? { action: "handled" as const } : result.action === "transform" ? { action: "transform" as const, text: result.text } : { action: "continue" as const };
 		} catch {
 			return { action: "continue" };
 		}
@@ -200,32 +158,15 @@ export default function activate(pi: ExtensionAPI): void {
 
 	// v0.3.60 R3: idempotent session_shutdown handler (canon: extensions.md
 	// Lifecycle — /new, /resume, /fork, /reload and quit tear the extension
-	// instance down and rebind it). The idempotency flag is INSTANCE-local (a
-	// rebound instance must handle its own shutdown); the state it reads
-	// (inFlight, activeRun, the globalThis run guard, the reflection handle)
-	// is module/global scope by design so it observes the OLD run honestly.
+	// instance down and rebind it). The idempotency flag is INSTANCE-local; the
+	// state it reads is module/global scope by design so it observes the OLD run.
 	let shutdownHandled = false;
 	pi.on("session_shutdown", (event) => {
 		if (shutdownHandled) return;
 		shutdownHandled = true;
-		const honest: string[] = [];
-		if (inFlight && activeRun) {
-			const dir = getRunGuard()?.runDir ?? "unknown";
-			honest.push(`a super-dev run is STILL IN FLIGHT (run dir: ${dir}) — the pipeline keeps running headlessly in this process and writes results to its run.log; inspect or resume it via /super-dev with resume:true`);
-		}
-		for (const [promise, entry] of pendingBackgroundWork()) {
-			honest.push(`post-run ${entry.kind} for ${entry.runDir} was in flight and is DROPPED by session_shutdown (reason: ${event.reason})`);
-			void promise.catch(() => { /* reported, not awaited */ });
-		}
-		clearPendingBackgroundWork();
-		for (const line of honest) {
-			try { pi.appendEntry?.("super-dev-shutdown", { line, reason: event.reason }); } catch { /* best-effort */ }
-			try { console.error(`[super-dev] ${line}`); } catch { /* best-effort */ }
-		}
-		// Session-scoped registrations die with the instance (canon) — release the
-		// delegation-bus agent registrations bound at activate time.
-		try { superDevAgentsDispose?.(); } catch { /* best-effort */ }
-		superDevAgentsDispose = undefined;
+		reportSessionShutdown(pi, event, {
+			inFlight, activeRun, getRunGuard, pendingBackgroundWork, clearPendingBackgroundWork, disposeAgents: superDevAgentsDispose,
+		});
 	});
 
 	pi.registerTool({
