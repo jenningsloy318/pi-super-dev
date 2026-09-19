@@ -559,7 +559,11 @@ export const HARNESS_BOOKKEEPING_FILES = harnessBasenames("specDirBookkeeping");
 /** True when `path` is a harness bookkeeping file inside the run's spec
  *  directory (the only place the harness writes them). A same-named file an
  *  agent writes elsewhere (e.g. src/events.jsonl) is NOT exempt. */
-export function isHarnessBookkeepingPath(specDirectory: string | undefined, path: string): boolean {
+/** Spec-dir-SCOPED bookkeeping test (the helpers variant — RENAMED from
+ *  isHarnessBookkeepingPath in the v0.4.55 whole-code review: tracking.ts
+ *  exports a DIFFERENT, repo-wide 1-arg predicate under that name; two
+ *  same-named predicates with different arity/semantics was a drift trap). */
+export function isSpecDirBookkeepingFile(specDirectory: string | undefined, path: string): boolean {
 	const base = path.split("/").pop() ?? path;
 	if (!HARNESS_BOOKKEEPING_FILES.has(base)) return false;
 	const specDir = specDirectory?.replace(/^\.\//, "").replace(/\/+$/, "");

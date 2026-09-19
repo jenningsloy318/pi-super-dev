@@ -10,7 +10,7 @@ import type { Stage, SetupControl, PipelineState, StageContext } from "../types.
 import * as P from "../prompts.ts";
 import { ClassificationData } from "../render/schemas.ts";
 import { toBool, normalizePhases } from "../doc-validators.ts";
-import { isHarnessBookkeepingPath } from "../helpers.ts";
+import { isSpecDirBookkeepingFile } from "../helpers.ts";
 import { priorReplanConstraintBlock } from "../replan/replan.ts";
 // 059 R1A W1 (D-R-C plumbing): the write-time contract-surface slice — computed
 // per buildPrompt call (fresh walk, no cache) and stamped on the pipeline state
@@ -360,8 +360,8 @@ export const mergeVerifyTask: Stage = {
 			if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
 			return p;
 		}) : [];
-		const exempt = dirtyPaths.filter((p) => isHarnessBookkeepingPath(setup.specDirectory, p));
-		const dirty = dirtyPaths.filter((p) => !isHarnessBookkeepingPath(setup.specDirectory, p));
+		const exempt = dirtyPaths.filter((p) => isSpecDirBookkeepingFile(setup.specDirectory, p));
+		const dirty = dirtyPaths.filter((p) => !isSpecDirBookkeepingFile(setup.specDirectory, p));
 		if (exempt.length > 0) ctx.log(`merge-verify: exempting ${exempt.length} harness bookkeeping file(s) the pipeline itself appended to after the merge commit: ${exempt.join(", ")}`);
 		if (dirty.length > 0) reasons.push(`worktree has ${dirty.length} uncommitted tracked change(s) that would NOT ship with the merge (e.g. ${dirty[0]})`);
 		if (reasons.length === 0) {

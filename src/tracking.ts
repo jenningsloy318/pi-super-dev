@@ -306,19 +306,6 @@ export class ChangeTracker {
 	}
 
 	/**
-	 * End a bracket for `unit`:`id`. Re-snapshots, computes the delta =
-	 * `git diff --name-status <beginHead>` UNION `git status --porcelain`,
-	 * classifies into created/modified/deleted, cross-checks against the
-	 * optional `claimed` set, and emits one `{event:"end"}` jsonl line.
-	 * Returns the {@link ChangeRecord} (never null, never throws).
-	 *
-	 * On any git failure the record is `{gitUnavailable:true, gitActual:null,
-	 * crossCheck:null, verdict:"git-unavailable"}` and the method returns it
-	 * WITHOUT throwing (no block — SCENARIO-005 / AC-02). Conservative parse
-	 * leaves `claimedNotChanged` empty on ambiguity/unavailability
-	 * (SCENARIO-006 / AC-02).
-	 */
-	/**
 	 * End a bracket for `unit`:`id` (the STAGE path). Computes the delta,
 	 * cross-check, stores the record on the endRecords map (last wins) AND
 	 * appends ONE `{event:"end"}` jsonl line. Returns the record (never null,

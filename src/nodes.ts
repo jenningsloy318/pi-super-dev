@@ -635,20 +635,20 @@ export function gate(opts: GateOptions, node: Node): Node {
 						if (decision) {
 							applyRetryDecision(state, decision, { worktreePath: setup?.worktreePath, specDirectory: setup?.specDirectory });
 							if (decision.choice === "accept-limitation") {
-							// SD-05 (NFR-6): a human-accepted limitation on a FATAL gate is
-							// never a silent gate pass — record the marker so the run-status
-							// derivation can only yield `partial`, never `success` (the
-							// foundational artifact still never validated; the acceptance is
-							// visible in state and the run summary, not just the report).
-							const accepted = (state as Record<string, unknown>).__acceptedLimitations as Record<string, unknown> | undefined;
-							(state as Record<string, unknown>).__acceptedLimitations = {
-								...(accepted ?? {}),
-								[opts.feedbackKey ?? "gate"]: { stage: opts.feedbackKey ?? "gate", message: msg },
-							};
-							ctx.log(`gate${label}: fatal blocker accepted as a limitation — the run will report partial (${msg})`);
-							return { status: "ok" as const, attempts: max };
-						}
-							if (decision.choice === "retry-with-guidance") { escalationRetry = true; continue; }
+						// SD-05 (NFR-6): a human-accepted limitation on a FATAL gate is
+						// never a silent gate pass — record the marker so the run-status
+						// derivation can only yield `partial`, never `success` (the
+						// foundational artifact still never validated; the acceptance is
+						// visible in state and the run summary, not just the report).
+						const accepted = (state as Record<string, unknown>).__acceptedLimitations as Record<string, unknown> | undefined;
+						(state as Record<string, unknown>).__acceptedLimitations = {
+							...(accepted ?? {}),
+							[opts.feedbackKey ?? "gate"]: { stage: opts.feedbackKey ?? "gate", message: msg },
+						};
+						ctx.log(`gate${label}: fatal blocker accepted as a limitation — the run will report partial (${msg})`);
+						return { status: "ok" as const, attempts: max };
+					}
+					if (decision.choice === "retry-with-guidance") { escalationRetry = true; continue; }
 						}
 					} catch (err) {
 						// G2 (routing M1 review): a RouteBackSignal escaping the decision

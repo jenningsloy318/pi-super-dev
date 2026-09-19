@@ -10,7 +10,7 @@ import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, 
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../../build-runner.ts";
 import { runJudge } from "../judge.ts";
 import { toBool } from "../../doc-validators.ts";
-import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../../helpers.ts";
+import { commitWorktreeChanges, isSpecDirBookkeepingFile } from "../../helpers.ts";
 import { RouteBackSignal } from "../../routing/router.ts";
 import { planInlineRouteBack } from "../../routing/walker.ts";
 import { countStageRounds } from "../../resume.ts";

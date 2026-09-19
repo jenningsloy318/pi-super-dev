@@ -10,7 +10,7 @@ import { loop, sequence, parallel, branch, noop, task, tryCatch, isFatalAbort } 
 import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, buildFixPrompt, buildApiTestPrompt, buildUiTestPrompt } from "../../prompts.ts";
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../../build-runner.ts";
 import { runJudge } from "../judge.ts";
-import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../../helpers.ts";
+import { commitWorktreeChanges, isSpecDirBookkeepingFile } from "../../helpers.ts";
 import { RouteBackSignal } from "../../routing/router.ts";
 import { planInlineRouteBack } from "../../routing/walker.ts";
 import { countStageRounds } from "../../resume.ts";

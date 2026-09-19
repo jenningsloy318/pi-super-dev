@@ -13,7 +13,7 @@ import { join, dirname } from "node:path";
 import { runSetup, detectLanguage, referencedSpecIdentifier, findReusableSpec, slugTokenContainment, taskSimilarity, specReuseEnabled, releaseHeldRunLock, RUN_LOCK_BASENAME } from "../src/setup.ts";
 import { resumeCachePath } from "../src/resume.ts";
 import { stateFileFor } from "../src/state/state-root.ts";
-import { isHarnessBookkeepingPath } from "../src/helpers.ts";
+import { isSpecDirBookkeepingFile } from "../src/helpers.ts";
 import { isInternalRuntimeClaim } from "../src/tracking.ts";
 
 const git = (args: string[], cwd: string) => execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
@@ -430,7 +430,7 @@ describe("spec-dir run lock (AC-30)", () => {
 		try {
 			const s = runSetup("implement @docs/specifications/24-auth-flow/ exemptions", { cwd: d, skipWorktree: true });
 			const lockRel = `${s.specDirectory}${RUN_LOCK_BASENAME}`;
-			expect(isHarnessBookkeepingPath(s.specDirectory, lockRel)).toBe(true);
+			expect(isSpecDirBookkeepingFile(s.specDirectory, lockRel)).toBe(true);
 			expect(isInternalRuntimeClaim(lockRel)).toBe(true);
 		} finally {
 			releaseHeldRunLock();

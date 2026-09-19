@@ -3,7 +3,7 @@
  * signature normalization & reused-worktree isolation; ships as v0.2.3).
  *
  * ONE dependency-light, synchronous, NEVER-THROW module consumed by BOTH dirt
- * call sites — Stage 9's attempt loop (src/stages/implementation.ts) and
+ * call sites — Stage 9's attempt loop (src/stages/implementation/) and
  * runSetup (src/setup.ts) — so the exclusion/quarantine semantics cannot drift
  * between them (D-7: this module is the canonical exclusion source).
  *
@@ -24,7 +24,7 @@
  *   PRD — per-track environment-fault JSONL ledger primitives.
  *         scenarioRefs: [SCENARIO-025] · acceptanceCriteriaRefs: [AC-12]
  *
- * Imports: node builtins + `isHarnessBookkeepingPath` (src/helpers.ts —
+ * Imports: node builtins + `isSpecDirBookkeepingFile` (src/helpers.ts —
  * imported, never modified) + `BASELINE_VERIFY_ERROR_PREFIX`
  * (src/build-runner/gates/ (v0.4.17b split)). No stage imports — no cycles (06-code-
  * assessment proposed module surface). Everything here is unit-testable with
@@ -34,7 +34,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { isHarnessBookkeepingPath } from "./helpers.ts";
+import { isSpecDirBookkeepingFile } from "./helpers.ts";
 import { BASELINE_VERIFY_ERROR_PREFIX } from "./build-runner/gates/index.ts";
 import { stateFileFor } from "./state/state-root.ts";
 
@@ -226,7 +226,7 @@ function normalizeRepoRelative(p: string): string {
 
 /** Worktree-relative spec-dir prefix (`docs/specifications/<id>`), derived
  *  from `specDirectory` — absolute (with the final-segment fallback technique
- *  of `isHarnessBookkeepingPath` for absolute-vs-relative mismatches) or
+ *  of `isSpecDirBookkeepingFile` for absolute-vs-relative mismatches) or
  *  already relative. Null when no spec dir is known. Never throws. */
 function specDirRelPrefix(o: DirtInventoryOptions): string | null {
 	const specDir = o.specDirectory?.trim();
@@ -253,7 +253,7 @@ function specDirRelPrefix(o: DirtInventoryOptions): string | null {
  * HERE, not there — the two sets serve different purposes; drift hazard is
  * documented in the Track 30 spec D-7). Rules, in order:
  *   (1) the spec-dir prefix (`docs/specifications/<specId>/…`);
- *   (2) `isHarnessBookkeepingPath(specDirectory, path)` (same-named files
+ *   (2) `isSpecDirBookkeepingFile(specDirectory, path)` (same-named files
  *       OUTSIDE the spec dir are NOT exempt);
  *   (3) the `.super-dev/` state prefix;
  *   (4) `copiedEnvFiles` members (slash-normalized exact match);
@@ -265,7 +265,7 @@ export function isExcludedFromQuarantine(path: string, options: DirtInventoryOpt
 	const p = normalizeRepoRelative(path);
 	const prefix = specDirRelPrefix(options);
 	if (prefix && (p === prefix || p.startsWith(`${prefix}/`))) return true;
-	if (isHarnessBookkeepingPath(options.specDirectory, p)) return true;
+	if (isSpecDirBookkeepingFile(options.specDirectory, p)) return true;
 	if (p === ".super-dev" || p.startsWith(".super-dev/")) return true;
 	for (const c of options.copiedEnvFiles ?? []) {
 		if (c && normalizeRepoRelative(c) === p) return true;

@@ -9,7 +9,7 @@ import { buildCodeReviewPrompt, buildAdversarialPrompt, buildTestsReviewPrompt, 
 import { runBuildGate, buildGateCorrelationLine, type GateOptions } from "../../build-runner.ts";
 import { runJudge } from "../judge.ts";
 import { toBool } from "../../doc-validators.ts";
-import { commitWorktreeChanges, isHarnessBookkeepingPath } from "../../helpers.ts";
+import { commitWorktreeChanges, isSpecDirBookkeepingFile } from "../../helpers.ts";
 import { RouteBackSignal } from "../../routing/router.ts";
 import { planInlineRouteBack } from "../../routing/walker.ts";
 import { countStageRounds } from "../../resume.ts";
@@ -82,7 +82,7 @@ async function resolveIntegrationWriteBoundary(args: { ctx: StageContext; state:
 /** True when `path` is a harness bookkeeping file inside the run's spec
  *  directory (see helpers.ts isHarnessBookkeepingPath). */
 function isHarnessBookkeepingFile(s: PipelineState, path: string): boolean {
-	return isHarnessBookkeepingPath(s.setup?.specDirectory, path);
+	return isSpecDirBookkeepingFile(s.setup?.specDirectory, path);
 }
 
 export async function detectIntegrationWriteViolations(state: PipelineState, ctx: StageContext, before: Map<string, string | null>): Promise<string[]> {

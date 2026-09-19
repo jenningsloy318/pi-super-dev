@@ -26,7 +26,7 @@ import {
 	markConvergenceFindingsVerified,
 } from "../src/convergence-ledger.ts";
 import { completionAuditAnomaly, writeCompletionAudit, completionAuditExists } from "../src/completion-audit.ts";
-import { isHarnessBookkeepingPath } from "../src/helpers.ts";
+import { isSpecDirBookkeepingFile } from "../src/helpers.ts";
 import type { ControlObj, PipelineState, SetupControl, StageContext } from "../src/types.ts";
 
 function setupCtl(dir: string): SetupControl {
@@ -159,7 +159,7 @@ describe("L1: persisted ledger", () => {
 	});
 
 	it(".convergence-ledger.json is registered harness bookkeeping (dirty-tree exempt)", () => {
-		expect(isHarnessBookkeepingPath("docs/specifications/001", "docs/specifications/001/.convergence-ledger.json")).toBe(true);
+		expect(isSpecDirBookkeepingFile("docs/specifications/001", "docs/specifications/001/.convergence-ledger.json")).toBe(true);
 	});
 });
 
