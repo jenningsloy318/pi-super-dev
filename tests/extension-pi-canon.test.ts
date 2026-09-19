@@ -230,7 +230,7 @@ describe("R8: canonical tool-output truncation (content path)", () => {
 		expect(outLines[2000]).toBe("[Output truncated: showing 2000 of 2500 lines — full output saved to: /tmp/runs/x/run.log]");
 	});
 
-	it("cuts at 50000 chars when the text is one huge line", () => {
+	it("cuts at 50000 BYTES when the text is one huge line", () => {
 		const text = "x".repeat(60_000);
 		const out = canonTruncate(text);
 		expect(out.startsWith("x".repeat(50_000))).toBe(true);

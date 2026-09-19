@@ -8,9 +8,10 @@ import type { RuntimeInstruction, RuntimeInstructionImage } from "../types.ts";
  *  bound + the TUI ACK surfaces), the globalThis cross-instance run guard
  *  (v0.3.60 R3 / v0.3.61 token ownership), and the in-flight background-work
  *  registry (v0.3.86 F-16) — extracted from extension.ts verbatim. The module
- *  singletons (activeRun/inFlight) + their raw readers + the input-handler's
- *  normalizeInputImages/instructionForEntry STAY in extension.ts. One reason
- *  to change: active-run lifecycle values. */
+ *  singletons (activeRun/inFlight) + their raw readers STAY in extension.ts;
+ *  the input-handler's normalizeInputImages/instructionForEntry moved on to
+ *  extension/event-handlers.ts in increment 5. One reason to change:
+ *  active-run lifecycle values. */
 
 /**
  * Phase 1 (AC-01 / AC-02 / AC-03) — Mid-run input injection run-state singleton.
