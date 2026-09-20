@@ -208,3 +208,41 @@ WS2 (validator bounce) rides the SAME seam one increment later: the
 run post-writer — find their emission site (grep `contract-validator
 (advisory)` in src/) and route designated classes through the same
 one-bounce channel instead of advisory-only.
+
+## 8. WS2 execution plan (anchors established 2026-09-20 22:45; v0.4.61 landed WS1 fully)
+
+Goal: designated deterministic validator classes bounce the writer ONCE
+pre-review instead of advisory-only. Receipts: BDD round 1 (16.6-min review
+after ~40 advisory unknown-pinId/contradiction findings at 16:38:44), design
+round 1 ($1.54 / 17.3 min / 9 contract-claims at 18:20:36).
+
+1. **Emission sites** (all already compute `{blocking, advisory}` via
+   `splitContractFindings`): `src/stages/artifact-convergence/validators.ts:100`
+   (requirements intent), `:126-128` (BDD pinOwnership + Gate-W),
+   `src/stages/artifact-convergence/nodes.ts:61-90` (design contract-validator
+   + Gate-W), `src/stages/spec-convergence.ts:186` (spec).
+2. **Designated classes** (066 WS2 — the mechanically-checkable, writer-fixable
+   set): `/cites unknown pinId/` and `/contradicts a pin in .* OWN artifact/`
+   and `/carries a foreign pin/` — regex on the advisory message. Everything
+   else stays advisory.
+3. **Wiring — reuse the WS1 bounce channel**: the node's WS1 gate block
+   (artifact-convergence/node.ts, after `consecutiveWriterAgentErrors = 0`)
+   gains a second leg: collect the designated advisories by calling the SAME
+   finder functions the validators call (or better: have the validators
+   return them via a side-channel — extend `ArtifactValidator` results with
+   `bounceErrors?: string[]`), and if non-empty and the per-walk bounce budget
+   (shared with WS1, bound 1) is unspent → ONE re-dispatch with the violation
+   list via setArtifactFeedback (agent budget, not a round). Second pass:
+   proceed with violations attached (P10 log).
+   P5: finder crash → advisory-only. Kill-switch:
+   `SUPER_DEV_NO_VALIDATOR_BOUNCE` (lazy read, mirror the WS1 pattern).
+4. **Tests**: extend tests/artifact-convergence-finding-resolution.test.ts —
+   plant a control citing an unknown pinId (the BDD harness at
+   tests/artifact-convergence.test.ts:80 `bddControl` shows the pinOwnership
+   shape; point one at `pin-does-not-exist`) → exactly 2 writer dispatches;
+   mapped/no-violation → 1; kill-switch → 1 with the violation logged.
+5. Version bump, dual gates, suite green.
+
+Note: making the classes BLOCKING validation errors instead (the cheaper
+wiring) consumes convergence rounds — measured cost today — the WS2 design
+explicitly wants the no-round bounce; do not take the shortcut.
