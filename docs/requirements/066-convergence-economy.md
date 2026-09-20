@@ -1,6 +1,6 @@
 # Convergence Economy — first-pass acceptance and verification cost
 
-Status: proposed — grill round 1 folded (6H+5M; answers in §5, research-backed).
+Status: proposed — grill rounds 1+2 folded (6H+5M, then 5H+4M+1L; answers in §5, research-backed).
 Lineage: sibling of 065
 (first-pass satisfiability). 065 makes the spec's write-claims deterministically
 checkable BEFORE any implementer attempt; this doc makes the write→review
@@ -160,11 +160,25 @@ aclanthology.org/2024.emnlp-main.911.pdf) and a compliance declaration in the
 output reliably fools a judge (CHERRL, arxiv.org/abs/2606.04923). The gate is
 therefore three-layered: (a) the harness resolves every cited locus
 mechanically (path/anchor exists; de-anchored — it derives its own expectation
-before reading the map); (b) the REVIEWER deep-verifies a rotating random
-30–50% subset of coverage rows per round (Rubric Dropout,
-arxiv.org/abs/2608.11669) with a PROTECTED never-dropped set (blocking-finding
-classes — the ones that historically killed runs); (c) the note field must
-quote the remedy language of the finding it claims to address.
+before reading the map); (b) the REVIEWER deep-verifies a random subset of
+coverage rows per round (Rubric Dropout, arxiv.org/abs/2608.11669) with a
+PROTECTED never-dropped set (blocking-finding classes — the ones that
+historically killed runs); (c) the note field must quote the remedy language
+of the finding it claims to address. **Audit selection is SEALED (grill-2
+Q1):** the deep-verification subset is committed AFTER artifact submission,
+derived from a source the writer cannot bias (commit-reveal,
+arxiv.org/abs/2504.03936; hash(unbiasable-run-randomness ∩ artifact-rev)) —
+a deterministic rotating roster is the weakest option, exactly the structure
+the adaptive reward-hacking literature says gets learned (METR 2025-06:
+training against an observable policy yields "cheating in more clever ways";
+metr.org/blog/2025-06-05-recent-reward-hacking/). **WS1 × WS6 composition
+(grill-2 Q4):** the coverage map is itself cache-keyed — findings whose
+addressing loci are unchanged since a verified map inherit green (a WS5 hit);
+the writer maps only the DELTA; the gate checks
+`injected − (mapped ∪ inheritedGreen) ≠ ∅`. **Protected-set derivation
+(grill-2 Q7):** never-dropped classes are DERIVED — all convergence-ledger
+findings with historical blocking=true, severity≥high, plus the fixed
+anchor-grammar core — configurable with a floor the config cannot lower.
 
 **WS2 — Pre-review validator bounce (kills E2).** Promote designated
 deterministic validator classes — unknown-pinId citations, own-artifact
@@ -179,7 +193,15 @@ classes stay with the LLM reviewer.
 premise in an artifact must carry a file:line anchor produced by a read in the
 same session; the WS2 gate resolves anchors mechanically (path exists, line in
 range); the reviewer judges interpretation only. CoVe discipline: premises
-verified by fresh lookups, never draft re-reading.
+verified by fresh lookups, never draft re-reading. **Two-layer support
+verification (grill-2 Q5):** mechanical resolution gives ~100% recall on
+"anchor nonexistent" and ~zero discrimination on "anchor SUPPORTS the claim"
+(the partial-support failure mode — CAQA, ACL 2025: 25 attribution evaluators
+systematically fail exactly there, arxiv.org/abs/2401.14640); so premise-class
+claims additionally pass an NLI/LLM support-derivation layer (~78–90%
+human-agreement per ALCE, arxiv.org/abs/2305.14627 — the Anthropic
+CitationAgent separation pattern), and the verdict's tier records WHICH layer
+verified it (feeds WS5's strength tiers).
 
 **WS4 — Rejection memory (Reflexion).** Each reviewer rejection persists as
 structured lessons (defect class + locus + rule) injected into the writer's
@@ -219,6 +241,29 @@ tests is the safety envelope, engineering.fb.com 2018; 52–58% of real bug
 fixes are multi-entity with 66–76% syntactically related co-changes, ICSME
 2018) — NOT k-hop or same-module; statistical pruning inside the closure is
 the optional economy (PTS runs a third of it at >99.9% catch), off by default.
+**Fingerprint-probe budget is a zero-acceptance sampling plan (grill-2 Q2):**
+the probe audits n cached-green verdicts per round with the Squeglia c=0 rule
+— `n ≥ ln(β)/ln(1−p)` independent of lot size (confidence scales with
+absolute n, not fraction); defaults β=0.10, p=5% ⇒ n≈45 (β=0.05, p=2% ⇒
+n≈148); ONE defective cached verdict rejects the LOT: the whole round's cache
+is re-verified (the c=0 property; acceptance-sampling lineage ANSI/ASQ Z1.4,
+Dodge-Romig, Cleanroom — asq.org/quality-resources/z14-z19). Caveat: the
+direct application to LLM-CI auditing is thin (one 2026 practitioner essay +
+the Cleanroom lineage; disclosed) — the parameters are measured, not settled.
+**Verification-strength tiers (grill-2 Q3):** verdict rows carry their tier —
+`full` / `adjacent-closure` / `sampled` / `mechanical-only` — and the probe
+budget spends disproportionately on the weaker tiers (the Develocity
+FLAKY-classification and Bazel `--cache_test_results=auto` precedents: cached
+states carry different trust). **Cached-fail never replays (Bazel auto):**
+only PASSES are cache-replayable; a failure always re-executes.
+**Ledger write rules (grill-2 Q6):** keys carry the content hash of verified
+inputs (claim text + anchor + artifact digest) AND the pipeline position (the
+AI21 collision pattern, ai21.com/blog/caching-in-agentic-llm-pipelines/);
+writes are idempotent-if-deterministic, FIRST-WRITE-WINS; same-key divergence
+is a producer-nondeterminism signal routed to audit, never overwritten
+(Bazel/Gradle remote-cache precedent); shard replicas emit CANDIDATE rows and
+only the round's orchestrator COMMITS (single trusted writer per key); the
+append-only runlog invariants (INV-L1..L6) extend to the ledger.
 
 **WS6 — Surgical patch-mode on route-back (kills E3, enables WS5).** When
 route-back findings are precise, the writer prompt switches to patch-mode: the
@@ -317,6 +362,24 @@ The one user-frontier question (adjacency depth: direct importers vs. k-hop)
 was resolved by evidence — transitive closure, pruning optional — leaving no
 open decisions from this round.
 
+### Grill round 2 (2026-09-20) — findings and resolutions
+
+The frontier round 1 unblocked; five factual questions answered by a second
+research pass (citations inline above).
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| Q1 | HIGH | Audit rotation as specified (seeded, logged) is learnable — adaptive reward hacking exploits observable policy (METR) | Sealed commit-reveal: subset committed AFTER submission from an unbiasable source; deterministic rosters rejected (WS1) |
+| Q2 | HIGH | Audit budget numbers hand-picked | Zero-acceptance plan: n ≥ ln(β)/ln(1−p), defaults n≈45 (β=0.10, p=5%); one defect ⇒ whole-lot re-verify (WS5) |
+| Q3 | HIGH | All verdicts cached with equal trust | Verification-strength tiers (full/adjacent-closure/sampled/mechanical-only); probe budget weighted to weak tiers; cached-fail never replays (WS5) |
+| Q4 | HIGH | WS1×WS6 conflict: full re-map vs patch-mode | Coverage map is cache-keyed; inherited-green findings exempt; gate checks mapped ∪ inheritedGreen (WS1) |
+| Q5 | HIGH | Anchor-exists ≠ anchor-supports | Two-layer verification: mechanical resolution + NLI/LLM support-derivation for premise-class claims; tier records the layer (WS3) |
+| Q6 | MED | Ledger write races (3 concurrent reviewers) | Content-hash + pipeline-position keys; first-write-wins; divergence→audit; orchestrator-only commits (WS5) |
+| Q7 | MED | Protected set undefined | Derived from historical blocking/high findings + anchor-grammar core; config floor (WS1) |
+| Q8 | MED | Metrics cold-start | N=3 pre-wave-1 baseline runs required; the live 07-37 run is N=1 (Metrics) |
+| Q9 | MED | Rubric-version flush hits in-flight runs | Rubric version pins PER RUN at start (WS5) |
+| Q10 | LOW | Crystallized vocabulary unwritten | Glossary §7 added |
+
 ## 6. Risks and honest limits
 
 - The claim-level verdict cache is a novel synthesis (no published precedent
@@ -336,3 +399,16 @@ open decisions from this round.
   in this design is tool-interactive or deterministic, never introspection-only.
 - Cascade escalation pays twice — measure before routing verification down-tier.
 - Degradations must leave the happy path byte-identical (defensive rule 7).
+
+## 7. Glossary (terms minted by this spec)
+
+- **Claim** — the atomic verification unit: an anchor-grammar element (AC-*/SCENARIO-* id, pinId citation, file:line premise) mechanically enumerated from an artifact by the harness; reviewers supply verdicts for the enumerated set only.
+- **Verdict row** — one (claim, verdict, evidence, tier) record a reviewer emits for an enumerated claim.
+- **Green manifest** — the set of claims whose cached verdict rows hit under unchanged keys for the current round.
+- **Adjacency closure** — the reverse-dependency closure over the claim/citation graph; unchanged claims inside the closure of a change are always re-verified.
+- **Fingerprint probe** — the periodic re-verification of identical cache keys whose disagreement rate is the cache's distrust signal (zero-acceptance plan: n ≥ ln(β)/ln(1−p)).
+- **Protected set** — coverage-row classes never dropped from deep verification: derived from historical blocking/high-severity findings plus the anchor-grammar core.
+- **Verification-strength tier** — full / adjacent-closure / sampled / mechanical-only; the layer that produced a verdict, carried on its row and weighting probe budgets.
+- **Sealed audit seed** — the deep-verification subset selector, committed after artifact submission from an unbiasable source (commit-reveal).
+- **Coverage row** — one `findingResolutions` entry: {finding id, loci, remedy-quote note}.
+- **Inherited green** — a finding whose addressing loci are unchanged since a verified coverage map; exempt from re-mapping under patch-mode.
