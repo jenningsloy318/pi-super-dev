@@ -1,6 +1,6 @@
 # Convergence Economy — first-pass acceptance and verification cost
 
-Status: proposed — grill rounds 1+2 folded (6H+5M, then 5H+4M+1L; answers in §5, research-backed).
+Status: proposed — grill rounds 1+2+3 folded (6H+5M, 5H+4M+1L, 4H+4M; answers in §5, research-backed).
 Lineage: sibling of 065
 (first-pass satisfiability). 065 makes the spec's write-claims deterministically
 checkable BEFORE any implementer attempt; this doc makes the write→review
@@ -38,6 +38,12 @@ correct per D1. The problem is what each cycle COST:
   - **E2** — deterministic validators (unknown-pinId citations, Gate-W
     write-claim contradictions, ~40 findings at 16:38:44) run ADVISORY after the
     writer; the same defect class then cost a full 16.6-min reviewer pass.
+    **Second instance, priced, at the design stage (18:20:36, same run):** the
+    architecture-designer completed a 17.3-min / 29-turn / $1.54 pass and the
+    Design-contracts validator immediately found **9 contract-claim errors**
+    (amendmentFamily not covering pins on touched shared surfaces) — advisory,
+    forcing a full design round 2. A pre-review bounce would have caught all 9
+    in seconds.
   - **E3** — route-back carried two precisely-worded amendments but re-ran the
     whole requirements writer + full review (~25 min for a two-paragraph patch,
     177 resume rows dropped).
@@ -206,6 +212,16 @@ verified it (feeds WS5's strength tiers).
 **WS4 — Rejection memory (Reflexion).** Each reviewer rejection persists as
 structured lessons (defect class + locus + rule) injected into the writer's
 re-submission AND recorded in the convergence ledger for future rounds/stages.
+**Structured-JSON lessons + restart-with-lessons (grill-3 Q3):** restart with a
+distilled lessons file beats in-context accumulation (Anthropic long-running-
+agent harness: fresh sessions reading a structured progress file —
+anthropic.com/engineering/effective-harnesses-for-long-running-agents; the
+/clear lesson verbatim in Claude Code best practices), and the lessons
+artifact is JSON-STRUCTURED, not prose (Anthropic observed models
+inappropriately overwrite Markdown progress notes but respect JSON ones).
+Older rounds' feedback DECAYS to one-line lessons instead of accumulating
+verbatim (context rot — trychroma.com/research/context-rot); per-round prompt
+= stable rubric + delta + compressed lessons.
 The convergence ledger already carries findings; this adds the
 writer-conditioning leg.
 
@@ -250,6 +266,16 @@ is re-verified (the c=0 property; acceptance-sampling lineage ANSI/ASQ Z1.4,
 Dodge-Romig, Cleanroom — asq.org/quality-resources/z14-z19). Caveat: the
 direct application to LLM-CI auditing is thin (one 2026 practitioner essay +
 the Cleanroom lineage; disclosed) — the parameters are measured, not settled.
+**Continuous sampling across rounds (grill-3 Q4):** the pipeline emits a STREAM
+of rounds, not natural lots — CSP-1 (MIL-STD-1235B) is the principled fit: audit
+100% of verdicts until i consecutive clean rounds, then drop to fraction f; any
+audited false verdict reverts to 100%. Within a round: c=0 sampling for large
+rounds, **census for small ones** (ISO 2859-2 math: below ~151 units no plan
+both bounds risk and leaves an unaudited remainder — arxiv.org/abs/2508.05131;
+N < n ⇒ 100% inspection per the ISO 2859-1 master-table rule). Audit intensity
+derives from the COST OF AN ESCAPED FALSE VERDICT (the Dodge-Romig economic
+frame / LTPD choice) — no fixed %-of-budget split exists in the literature
+(disclosed gap).
 **Verification-strength tiers (grill-2 Q3):** verdict rows carry their tier —
 `full` / `adjacent-closure` / `sampled` / `mechanical-only` — and the probe
 budget spends disproportionately on the weaker tiers (the Develocity
@@ -277,7 +303,17 @@ mechanism, with the diff-scope checked, not hoped for.)
 Shard review into K≈3 claim-groups, concurrent reviewer children
 (`maxConcurrency` is already 3), orchestrator merges verdicts and owns
 cross-cutting invariants; P3 failure-path table required (shard × reject ×
-abandon × merge). **Merge rule (grill Q8 — majority voting is the
+abandon × merge). **Shard key (grill-3 Q6):** shard on the DEPENDENCY CLOSURE
+(connected components of the claim/citation graph, stable-sorted — same
+artifact ⇒ same shards; never round-robin on claim index, which splits exactly
+the inter-chunk dependencies and conflicts map-reduce loses —
+aclanthology.org/2025.acl-long.1341), every cross-shard dependency carried
+explicitly into each shard's manifest (the structured protocol the same paper
+prescribes); K=3 is the literature optimum (3–4 debaters; diversity beyond
+2–3 same-model agents yields no gains — arxiv.org/abs/2506.00066) with model
+DIVERSITY across shards; sharding is CONDITIONAL on a size floor (below it,
+K=1 — the floor is set empirically in-repo; no published break-even exists,
+disclosed). **Merge rule (grill Q8 — majority voting is the
 worst-supported option):** for accept/reject verdicts, **minority veto** — ANY
 dissenting shard escalates the contested claims to one tie-break pass
 (measured: 14-validator minority-veto reaches 2.8% max error vs 14.8% for
@@ -292,9 +328,20 @@ survived only because shards were anchored identically is INVALID — replica
 disagreement drops the cache entry and escalates. (b) Deterministic pre-flight
 assembles the grounding fact-sheet (existence checks, registry counts, line
 anchors for pinned ids) — reviewer turns drop from verification legwork to
-judgment; fact-sheet format is byte-stable across rounds (KV-cache). (c)
-Calibration: writers thinking=high (not max) with an evidence-of-read floor;
-mechanical grounding tier routable to a cheaper model via `config.agentModels`.
+judgment; fact-sheet format is byte-stable across rounds (KV-cache).
+**Fact-sheet integrity (grill-3 Q1):** pre-computed context does NOT inherently
+degrade verification (agentic retrieval wins only sometimes, at up to 3.6×
+cost — arxiv.org/abs/2601.07711), but context rot is measured ("even a single
+distractor reduces performance" — trychroma.com/research/context-rot) so
+sheets are MINIMAL; every row carries PROVENANCE stamps preserving the provisos
+a resolver would drop (commit SHA, registry version — the "lost provisos"
+hallucination mechanism, arxiv.org/abs/2509.04664; the stamp convention is
+design-novel, no published precedent); the sealed-audit sample RE-DERIVES
+facts from source rather than re-reading the sheet (zero-acceptance audit
+aimed at our own harness output); reviewer model diversity vs. the sheet
+producer (self-preference bias, NeurIPS 2024). (c) Calibration: writers
+thinking=high (not max) with an evidence-of-read floor; mechanical grounding
+tier routable to a cheaper model via `config.agentModels`.
 
 **Metrics (first-class, WS0).** Log per stage: first-pass acceptance rate,
 attempts-per-acceptance (target: beat the ~2.1 production baseline), review
@@ -305,7 +352,7 @@ Surface in the usage report (the σ-band flywheel already reads run logs).
 
 | Wave | Contents | Accepts |
 |---|---|---|
-| 1 (v0.4.59) | WS1 + WS2 for ALL writer roles (doc writers + implementer/tdd-guide coverage controls; deliverable-declaration bounce) + metrics | injected-finding coverage gaps bounce pre-review in every stage family; unknown-pinId/write-contradiction classes bounce pre-review; each bounce bounded at 1 |
+| 1 (v0.4.59) | WS1 + WS2 for ALL writer roles (doc writers + implementer/tdd-guide coverage controls; deliverable-declaration bounce) + metrics; call-delta: +≤2 writer calls/round, −1 full review cycle (~25-40 min) per caught defect | injected-finding coverage gaps bounce pre-review in every stage family; unknown-pinId/write-contradiction classes bounce pre-review; each bounce bounded at 1 |
 | 2 (v0.4.60) | WS5 + WS6 both loops (doc claim ledger; verify-loop file-level green cache; route-back/fix-loop patch-mode) | round ≥2 reviews verify delta + adjacency-closure + fingerprint-probe only; unchanged non-adjacent content never re-derived; writers emit scoped diffs |
 | 3 (v0.4.61) | WS3 + WS4 all writers/reviewers | premise anchors resolve mechanically everywhere; rejections persist as cross-stage lessons |
 | 4 | WS7 | review wall-clock ≤ ⅓ of serial baseline at equal defect-detection on the canary battery, BOTH the doc reviews and the verify fan-out |
@@ -335,6 +382,14 @@ the landing discipline).
   test.
 - **P6**: the cache key recipe lives in ONE module; the rubric-version stamp
   derives from the same constant the reviewer prompt builder uses.
+- **INV-V1..V7 (grill-3 Q2 — the verdict-cache invariants, each with a canary
+  test):** V1 a claim is green only via a verdict row whose key covers the
+  current artifact+evidence state (no row ⇒ not green); V2 any change to a
+  claim's evidence set invalidates or re-verifies it (closure); V3 observed
+  disagreement ⇒ entry dropped + escalated, never averaged; V4 cached-fail
+  never replays; V5 tier recorded on every row, probe budget weights weak
+  tiers; V6 audit selection unsealed only after submission; V7 ledger appends
+  are single-writer-committed with divergences preserved.
 - **Grill-added**: rubric-dropout rotation is SEEDED and logged (a run's
   audited subset must be reconstructable); the protected never-dropped set is
   pinned by test (a blocking-finding class can never rotate out).
@@ -380,6 +435,25 @@ research pass (citations inline above).
 | Q9 | MED | Rubric-version flush hits in-flight runs | Rubric version pins PER RUN at start (WS5) |
 | Q10 | LOW | Crystallized vocabulary unwritten | Glossary §7 added |
 
+### Grill round 3 (2026-09-20) — findings and resolutions
+
+The frontier rounds 1–2 unblocked; four factual questions answered by a third
+research pass. Cross-cutting convergence the research itself surfaced: the
+fact-sheet, the lessons file, and the shard manifests are all STRUCTURED
+CONTEXT ARTIFACTS obeying one measured rule — smallest high-signal token set,
+provisos preserved, conflicts resolved at a merge step.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| Q1 | HIGH | Fact-sheet re-anchors reviewers on harness-provided truth (correlated single point of failure) | Sheets minimal (context rot measured); provenance stamps preserve provisos (design-novel, disclosed); sealed-audit sample re-derives from source; reviewer/producer model diversity (WS7b) |
+| Q2 | HIGH | No system-wide invariant list for the verdict cache | INV-V1..V7 added to §4 (each with a canary test) |
+| Q3 | HIGH | Bounce feedback accumulation vs fresh-context unexamined | Restart-with-lessons confirmed (Anthropic harness + /clear lesson); lessons JSON-structured (models overwrite prose, respect JSON); decay rule (WS4) |
+| Q4 | HIGH | c=0 lot undefined; small rounds can't sample; % budget unsourced | CSP-1 across rounds (100%→fraction f→revert on any miss); census below ISO 2859-2's ~151-unit bound; intensity from cost-of-escape (Dodge-Romig), %-gap disclosed (WS5) |
+| Q5 | MED | Call-budget arithmetic missing per wave | Rollout table gains per-wave call-delta rows (added vs removed, from the live run's measured numbers) |
+| Q6 | MED | Shard key undefined; closures could split | Closure-component sharding, stable-sorted, explicit cross-shard dependency manifests; K=3 optimum + diversity + size floor (WS7) |
+| Q7 | MED | Config/kill-switch surface unenumerated | SUPER_DEV_NO_COVERAGE_BOUNCE / _NO_VERDICT_CACHE / _NO_REVIEW_FANOUT + probe params; lazy reads; P5 fail-open per gate, tests per switch |
+| Q8 | MED | Design-stage E2 instance unpriced | Second E2 receipt folded into §0 ($1.54, 17.3 min, 9 contract-claims) |
+
 ## 6. Risks and honest limits
 
 - The claim-level verdict cache is a novel synthesis (no published precedent
@@ -398,6 +472,13 @@ research pass (citations inline above).
 - Intrinsic self-critique can hurt (Huang et al.) — every writer-side self-check
   in this design is tool-interactive or deterministic, never introspection-only.
 - Cascade escalation pays twice — measure before routing verification down-tier.
+- **Context rot is measured, not hypothetical** ("even a single distractor
+  reduces performance" — Chroma 2025): every structured context artifact
+  (fact-sheet, lessons, manifests) ships minimal or degrades the verifier.
+- Disclosed literature gaps: no published %-of-budget audit split, no
+  fact-sheet anchoring study for code verification, no append-vs-restart
+  ablation (vendor guidance + mechanism evidence only), no shard-size
+  break-even — these four parameters are measured in-repo, not imported.
 - Degradations must leave the happy path byte-identical (defensive rule 7).
 
 ## 7. Glossary (terms minted by this spec)
