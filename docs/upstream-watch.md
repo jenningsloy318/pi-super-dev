@@ -82,8 +82,21 @@ If a file reports DIFF, act per contract:
   `ln -sfn ~/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent
   ~/.pi/agent/npm/node_modules/@earendil-works/pi-coding-agent` — resolution probe
   verified; live sessions recover on the next delegated call (failed ESM imports are not
-  cached). Note the symlink targets the mise node-version-scoped path: re-create it after
-  a pi reinstall under a different node version. Engine-side (v0.4.57): the ESM wording
+  cached). **The bare symlink is NOT durable: pi's startup reconciliation PRUNED it**
+  (receipt 2026-09-20 15:00:08 — `~/.pi/agent/npm/package.json` + `node_modules` both
+  rebuilt at session start; the `@earendil-works/` scope dir emptied; the failure
+  recurred in run 2026-09-20T07-01-08-362Z where v0.4.57's fail-fast worked exactly as
+  designed — one real 0.0s failure, then instant sticky-degrade with the remedy).
+  **DURABLE remedy applied 15:03 and probe-verified**: `"@earendil-works/pi-coding-agent":
+  "file:/home/jenningsl/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent"`
+  declared in `~/.pi/agent/npm/package.json` dependencies + `npm install` there (npm
+  installs the file: dep as a symlink PLUS its @earendil-works peers — pi-agent-core,
+  pi-ai, pi-tui, chord, pi-telemetry — so the whole import chain resolves; declared deps
+  survive pi's reconciliation). Re-check after the next pi restart that the declaration
+  survives (if pi ever REGENERATES package.json from settings.json alone, the dep drops
+  and the entry-level ask below becomes the only path). Note the file: target is
+  node-version-scoped under mise — re-point it after a pi reinstall under a different
+  node version. Engine-side (v0.4.57): the ESM wording
   (`Cannot find package '…' imported from …pi-subagents…`) joined the infra-failure
   grammar (`DELEGATION_RUNTIME_EXTENSION_FAILURE_RE` shape C) with its OWN sticky-degrade
   reason + remedy (computed symlink command / #2352 upgrade note), the envelope is

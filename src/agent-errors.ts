@@ -70,18 +70,26 @@ export function resolveHostPiPackageRoot(entryPath: string | undefined = process
 	return undefined;
 }
 
-/** The host-SDK remedy text. The symlink command is computed from the LIVE pi
- * process's own package root when discoverable (advisory — absent root yields
- * the generic guidance); mirrors upstream #2352's root precedence. */
+/** The host-SDK remedy text. The DURABLE form is a declared `file:` dependency
+ * in pi's extension npm tree (~/.pi/agent/npm/package.json) + npm install —
+ * pi's startup reconciliation PRUNES bare extraneous symlinks from that tree
+ * (receipt 2026-09-20 15:00:08: the manual symlink survived 32 min, then the
+ * next pi start removed it and the failure recurred in run
+ * 2026-09-20T07-01-08-362Z), but keeps declared dependencies. The symlink
+ * command is computed from the LIVE pi process's own package root when
+ * discoverable (advisory — absent root yields the generic guidance); mirrors
+ * upstream #2352's root precedence. */
 export function hostSdkResolutionRemedy(error: string): string {
 	const m = HOST_SDK_RESOLUTION_RE.exec(error);
 	const missing = m?.[1] ?? "<unknown-package>";
-	let command = "";
+	let durable = "";
 	if (missing === "@earendil-works/pi-coding-agent") {
 		const root = resolveHostPiPackageRoot();
-		if (root) command = ` On this machine pi runs from ${root}; remedy command: mkdir -p ~/.pi/agent/npm/node_modules/@earendil-works && ln -sfn '${root}' ~/.pi/agent/npm/node_modules/@earendil-works/pi-coding-agent, then re-run (a live pi session recovers on the next delegated call — failed ESM imports are not cached).`;
+		if (root) {
+			durable = ` Durable remedy (verified 2026-09-20): add "@earendil-works/pi-coding-agent": "file:${root}" to the dependencies of ~/.pi/agent/npm/package.json and run npm install in that directory — pi's startup reconciliation prunes bare extraneous symlinks from that tree but keeps declared dependencies (npm installs the file: dep as a symlink plus its @earendil-works peers, so child-session's import resolves to the host's real module path). On this machine pi runs from ${root}.`;
+		}
 	}
-	return `pi-subagents ≤0.70 with pi ≥0.86: delegated children cannot resolve '${missing}' from inside pi-subagents' own code (pi 0.86 stopped serving virtual module resolution to extension code).${command} Structural fix: upgrade pi-subagents once a release carrying upstream fix #2352 (loadHostPiCodingAgent) ships.`;
+	return `pi-subagents ≤0.70 with pi ≥0.86: delegated children cannot resolve '${missing}' from inside pi-subagents' own code (pi 0.86 stopped serving virtual module resolution to extension code).${durable} Structural fix: upgrade pi-subagents once a release carrying upstream fix #2352 (loadHostPiCodingAgent) ships.`;
 }
 
 /** Provider quota-reset hint shapes found inside cached-exclusion reasons.

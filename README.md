@@ -43,11 +43,11 @@ deterministic code before the pipeline believes it.
   '@earendil-works/pi-coding-agent' imported from …/pi-subagents/…`. super-dev
   detects the envelope, degrades the backend for the session (fail-fast with
   the remedy instead of burning retries), and names the fix: upgrade
-  pi-subagents once a release carrying upstream #2352 ships, or symlink the pi
-  package into the agent npm tree —
-  `ln -sfn <pi package root> ~/.pi/agent/npm/node_modules/@earendil-works/pi-coding-agent`
-  (the abort message computes the exact command from the running pi process
-  when it can). A live pi session recovers on the next delegated call.
+  pi-subagents once a release carrying upstream #2352 ships, or declare the pi
+  package as a `file:` dependency in `~/.pi/agent/npm/package.json` and
+  `npm install` there — a durable, npm-managed symlink (a bare symlink is
+  PRUNED by pi's startup reconciliation of that tree). The abort message
+  computes the exact declaration from the running pi process when it can.
 
 ## Install
 
