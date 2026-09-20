@@ -290,6 +290,16 @@ is a producer-nondeterminism signal routed to audit, never overwritten
 (Bazel/Gradle remote-cache precedent); shard replicas emit CANDIDATE rows and
 only the round's orchestrator COMMITS (single trusted writer per key); the
 append-only runlog invariants (INV-L1..L6) extend to the ledger.
+**Ledger persistence (grill-4 Q1):** the ledger lives in the SPEC DIRECTORY
+(alongside the artifacts it verifies — the convergence-ledger/.knowledge.json
+precedent), scoped by specIdentifier; run-dir copies hold uncommitted
+candidates only. Cross-run hits are exactly as sound as intra-run hits (the
+key already carries artifact+evidence content hashes); resumed passes — the
+COMMON case under the fuse/budget cadence — inherit the cache.
+**Resume-cache compat (grill-4 Q3):** agent-call resume rows gain a
+contract-version salt (the stage prompt-builder's hash); a control-contract
+change invalidates cached calls for THAT ROLE ONLY — never a mass flush — and
+the doc names the bump procedure.
 
 **WS6 — Surgical patch-mode on route-back (kills E3, enables WS5).** When
 route-back findings are precise, the writer prompt switches to patch-mode: the
@@ -325,7 +335,14 @@ expected answer before reading the artifact — collapses false positives
 0.719→0.012, arxiv.org/abs/2607.05904; the Anthropic CitationAgent pattern,
 anthropic.com/engineering/multi-agent-research-system). A cached "pass" that
 survived only because shards were anchored identically is INVALID — replica
-disagreement drops the cache entry and escalates. (b) Deterministic pre-flight
+disagreement drops the cache entry and escalates.
+**Tie-break P8 bound (grill-4 Q4):** ≤1 tie-break pass per round, ≤2 per
+stage; on exhaustion the contested closure falls back to SERIAL full review —
+degrade-to-slower, never degrade-to-less-strict (defensive rule 7: the
+happy path stays byte-identical). **Diversity is a preference, not a
+precondition (grill-4 Q5):** when the provider set can't diversify (one
+family; exclusions), same-model shards with DISJOINT contexts still give
+sampling diversity; veto/audit machinery unchanged. (b) Deterministic pre-flight
 assembles the grounding fact-sheet (existence checks, registry counts, line
 anchors for pinned ids) — reviewer turns drop from verification legwork to
 judgment; fact-sheet format is byte-stable across rounds (KV-cache).
@@ -453,6 +470,19 @@ provisos preserved, conflicts resolved at a merge step.
 | Q6 | MED | Shard key undefined; closures could split | Closure-component sharding, stable-sorted, explicit cross-shard dependency manifests; K=3 optimum + diversity + size floor (WS7) |
 | Q7 | MED | Config/kill-switch surface unenumerated | SUPER_DEV_NO_COVERAGE_BOUNCE / _NO_VERDICT_CACHE / _NO_REVIEW_FANOUT + probe params; lazy reads; P5 fail-open per gate, tests per switch |
 | Q8 | MED | Design-stage E2 instance unpriced | Second E2 receipt folded into §0 ($1.54, 17.3 min, 9 contract-claims) |
+
+### Grill round 4 (2026-09-20) — deployment-reality frontier
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| Q1 | HIGH | Ledger location/lifetime unstated; run-dir death kills wave-2 savings on resumed runs (the common case) | Spec-dir persistence, specIdentifier-scoped; candidates-only in run dir (WS5) |
+| Q2 | HIGH | Control-key grammar changes per role unnamed (P2 discipline) | research-pending → additive-only evolution table, role × keys × optionality |
+| Q3 | HIGH | Prompt-contract evolution vs resume cache | Contract-version salt per role; role-scoped invalidation, named bump procedure (WS5) |
+| Q4 | HIGH | Pathological dissent: veto + tie-break every round | P8: ≤1 tie-break/round, ≤2/stage, then serial-full fallback (WS7) |
+| Q5 | MED | Model diversity may be unavailable (one family) | Downgraded to preference; disjoint-context same-model shards suffice (WS7) |
+| Q6 | MED | Reviewer prompt gains four context blocks on 27-59k-char prompts | research-pending → priority budget + on-demand fact-sheet rows |
+| Q7 | MED | Canary battery unspecified | research-pending → rides eval/flywheel lanes; defect pool from historical ledger findings |
+| Q8 | LOW | Implementation-stage economics receipts absent | Waits on the live run's stage 9; fold into §0 then |
 
 ## 6. Risks and honest limits
 

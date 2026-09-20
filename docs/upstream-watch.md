@@ -65,6 +65,24 @@ If a file reports DIFF, act per contract:
 
 ## Drift log
 
+- **2026-09-20 (later)** — pi-subagents **0.70.0 removed the model-exclusions
+  mechanism ENTIRELY** (verified in installed source,
+  `src/extension/config.js:188`: "config.modelExclusions was removed; model
+  failures are no longer persisted or used for automatic switching" — part of
+  #2270 "remove automatic model fallback"; no exclusion store module remains,
+  and a config file carrying the key now THROWS at load). Consequences: (a) the
+  2026-09-08/09-10 quota-poisoning watch items are HISTORICAL for ≥0.70 — the
+  24h-exclusion class cannot recur; a quota 429 is now a plain transient (our
+  TRANSIENT_RE ladder + provider reset); (b) the 2026-09-10 local mitigation
+  (`~/.pi/agent/extensions/subagent/config.json` with
+  `modelExclusions.defaultTtlMs`) is OBSOLETE and MUST NOT be recreated — it
+  would crash extension config load on 0.70+ (the file was found empty/absent
+  2026-09-20, which is the correct state); (c) our v0.3.82 engine-side
+  classification + remedy text for the exclusion envelope is now dead code on
+  0.70+ — harmless (the envelope no longer occurs), retained for ≤0.69
+  compat. Live observation pending: how the 21:25-21:46 zai quota window
+  behaves end-to-end under 0.70 (run 2026-09-20T07-37-57-688Z, spec stage).
+
 - **2026-09-20** — pi-subagents **0.70.0** × pi **0.86.0**: foreground/delegation children
   die instantly with `Cannot find package '@earendil-works/pi-coding-agent' imported from
   …/pi-subagents/src/runs/shared/child-session.js` (run 2026-09-20T06-09-36-327Z: every
