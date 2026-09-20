@@ -118,3 +118,47 @@ derivation, success precedence.
    verify the deterministic gates themselves against a known-good spec.
 5. Upstream asks already filed in upstream-watch.md (exclusion TTL cap, activation-
    safe tool enumeration, foreground-child provider inheritance).
+
+## 6. First-pass quality — diagnosis from live run 2026-09-20T07-37-57-688Z
+
+The run converged requirements in 2 rounds, then BDD review found 2 blocking
+defects BOTH owned by requirements (BDD26-F01: the spec's mandated edits provably
+trip tests/prosperity-contract.test.ts:2798 — the same collision that killed 4
+prior implementation attempts; and AC-20/SCENARIO-081 asserting a nonexistent
+fallback mechanism), auto-routing bdd→requirements (correct per D1 — the BDD must
+not mint backing ACs) and dropping 177 resume rows. The route-back itself is the
+system working; the CHURN is in how expensive each discovery+repair cycle is.
+Four measured inefficiencies, with fixes:
+
+- **E1 — prior findings injected but never checked as addressed.** Round-1
+  requirements got 36 prior blocking findings; the writer addressed most, the
+  round-2 review approved — yet the prosperity-guard finding (present in the
+  pool as CF-implementation-1nl0mhr) resurfaced only at BDD review, ~80 min and
+  3 agent calls later. Fix: writer control gains a per-finding resolution map
+  (findingId → artifact loci); a DETERMINISTIC post-write check bounces the
+  writer (one bounded pass, no reviewer burn) when an injected blocking finding
+  is unaddressed. Seam: prompts.ts controlKeys + artifact-convergence/node.ts.
+- **E2 — deterministic validators run advisory-only AFTER the writer.** The
+  unknown-pinId and Gate-W lines (16:38:44) are deterministic and cheap but did
+  not bounce the writer; the same defects then cost a full 16.6-min reviewer
+  pass. Fix: promote designated validator classes (unknown pinId citation,
+  own-artifact write-claim contradiction) to a pre-review bounce gate with one
+  bounded fix pass (P4: mechanical enforcement instead of advisory). The
+  validators already exist — this is wiring, not new code.
+- **E3 — full-artifact regeneration for surgical fixes.** The route-back
+  carried two precisely-worded amendments but re-ran the whole requirements
+  writer (36→24-finding injection) + full review (~25 min). Fix: patch-mode
+  writer prompt on route-back — the exact finding recommendations + "changes
+  limited to implicated content; everything previously approved preserved
+  byte-faithfully" + diff-size expectation in the control block.
+- **E4 — reviewer premise-grounding asymmetry.** Requirements review round 2
+  verified enumerations but APPROVED AC-20's factually-wrong mechanism premise
+  ("falls through the dim:-miss researcher fallback" — the dispatch actually
+  fails loud, runtime-dispatch.ts:84,89-117); the BDD reviewer caught it by
+  grounding the premise in code. Fix: requirements-reviewer prompt gains the
+  explicit rule: every behavioral-premise claim ("preserves X"/"falls through
+  Y"/"today's behavior is Z") must be grounded at the named locus before
+  approval — enumerations alone do not suffice. (Advisory; E1/E2 are the
+  mechanical backstops.)
+
+Order: E2 (cheapest, pure wiring) → E1 (highest value) → E3 → E4.
