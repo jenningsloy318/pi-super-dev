@@ -162,3 +162,49 @@ Four measured inefficiencies, with fixes:
   mechanical backstops.)
 
 Order: E2 (cheapest, pure wiring) → E1 (highest value) → E3 → E4.
+
+## 7. Wave-1 increment B — execution plan (anchors established 2026-09-20, v0.4.59 landed the core)
+
+Goal: wire the finding-resolution bounce into the live convergence loop.
+Consumes `src/convergence-economy/finding-resolution-gate.ts` (v0.4.59).
+
+1. **Capture the round-1 injected id set** — `src/stages/artifact-convergence/node.ts:214-236`
+   builds `round1Lines` from `priorFindingsForInjection` + replan findings and
+   logs "N prior-run blocking finding(s) injected at round 1". Capture the
+   finding IDS into a round-scoped `injectedBlockingIds: string[]` at the same
+   site (both sources carry ids; check their shapes in convergence-ledger.ts
+   `priorFindingsForInjection` + the replan rows).
+2. **Add the control contract** — `src/prompts.ts:267` (requirements writer),
+   `:283` (BDD writer), and the spec/docs writer contracts nearby: append
+   `- findingResolutions (optional UNLESS prior findings were injected): array
+   of { id: the finding id, loci: string[] (artifact anchors), note: a short
+   quote of the finding's remedy language }` + add to the
+   "Output <control> JSON with:" line as `findingResolutions?`. Nullable/union
+   per 066 grill-4 Q2. Update the stage control schemas (render/schemas.ts)
+   and the controlKeys lists where the writers' keys are declared.
+3. **Wire the gate** — in the node, right AFTER the writer-agent-error guard
+   (`consecutiveWriterAgentErrors = 0;`, ~node.ts:292) and BEFORE validation:
+   read the writer control (find where the writer stage result exposes it —
+   check stages/writers.ts for the control-bearing result shape), run
+   `adjudicateFindingResolutionGate({ injectedIds, resolutions, inheritedGreen? })`;
+   on `bounce` and a per-round bounce counter < 1: log the feedback line
+   (telemetry: "finding-resolution bounce: N missing ids" — the OTel-isolated
+   event naming), re-run `stageTask.run` ONCE with the feedback appended via
+   `setArtifactFeedback` (the existing retry-feedback channel — the bounce
+   consumes agent budget via the normal dispatch, NOT a convergence round;
+   do NOT increment `round`). Second failure path: proceed to validation with
+   the missing ids recorded (P10 honest, no second bounce — P8 bound = 1).
+4. **Fail-open**: wrap the gate call in try/catch — a gate crash logs
+   advisory and proceeds (P5).
+5. **Tests**: extend tests/artifact-convergence.test.ts — (a) missing-id →
+   one re-dispatch with the feedback, then proceeds; (b) all-mapped → no
+   extra dispatch; (c) kill-switch → never re-dispatches; (d) gate crash →
+   proceeds; (e) bounce does not consume a convergence round (round counter
+   unchanged). Prompt-contract tests pin the new controlKeys (P6).
+6. Version v0.4.60; dual gates; suite green.
+
+WS2 (validator bounce) rides the SAME seam one increment later: the
+"BDD contract-validator (advisory)" / "Gate-W (advisory)" emitters already
+run post-writer — find their emission site (grep `contract-validator
+(advisory)` in src/) and route designated classes through the same
+one-bounce channel instead of advisory-only.
