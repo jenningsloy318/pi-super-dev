@@ -6,8 +6,10 @@
  * the stage budget and hides the real setup problem.
  */
 import * as os from "node:os";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
-const NON_RETRYABLE_AGENT_RE = /\b(?:spawn\s+\S+\s+ENOENT|failed\s+to\s+spawn\s+pi|ENOENT|EACCES|EPERM|permission\s+denied|command\s+not\s+found|no\s+such\s+file\s+or\s+directory|unknown\s+subagent\s+model|model\s+\S+\s+not\s+found|no\s+such\s+model|is\s+excluded\s+and\s+cannot\s+be\s+replaced\s+by\s+a\s+fallback|no\s+usable\s+subagent\s+models\s+remain)\b/i;
+const NON_RETRYABLE_AGENT_RE = /\b(?:spawn\s+\S+\s+ENOENT|failed\s+to\s+spawn\s+pi|ENOENT|EACCES|EPERM|permission\s+denied|command\s+not\s+found|no\s+such\s+file\s+or\s+directory|unknown\s+subagent\s+model|model\s+\S+\s+not\s+found|no\s+such\s+model|is\s+excluded\s+and\s+cannot\s+be\s+replaced\s+by\s+a\s+fallback|no\s+usable\s+subagent\s+models\s+remain|cannot\s+find\s+package\s+['"][^'"]+['"]\s+imported\s+from\s+[^'"]*pi-subagents)\b/i;
 
 /** v0.3.77 (incident 2026-09-07T14-10-39-259Z): pi-subagents' model-exclusion
  * registry caches model failures — quota 429s included — for a flat 24h and
@@ -30,6 +32,57 @@ const NON_RETRYABLE_AGENT_RE = /\b(?:spawn\s+\S+\s+ENOENT|failed\s+to\s+spawn\s+
  * when the parsed provider reset hint has already passed — states plainly
  * that the persisted entry is stale. */
 const MODEL_EXCLUSION_RE = /is excluded and cannot be replaced by a fallback/i;
+
+/** v0.4.57 (run 2026-09-20T06-09-36-327Z): the ESM host-SDK resolution shape —
+ * `Cannot find package '<pkg>' imported from <…pi-subagents…>`. pi ≥0.86 no
+ * longer serves virtual module resolution to extension code, so pi-subagents
+ * ≤0.70.0's bare `import("@earendil-works/pi-coding-agent")` fallback in
+ * child-session.ts cannot resolve from the agent npm tree; every delegated
+ * child dies in ~0.3s with turns=0 (the run's whole RED retry ladder + judge
+ * dispatches burned against it before the class existed). In-process retry can
+ * never create the missing package. The importer must name pi-subagents so
+ * unrelated package-resolution errors stay retryable. */
+const HOST_SDK_RESOLUTION_RE = /[Cc]annot find package ['"]([^'"]+)['"] imported from [^'"]*pi-subagents/;
+
+export function isHostSdkResolutionFailure(error?: string): boolean {
+	return !!error && HOST_SDK_RESOLUTION_RE.test(error);
+}
+
+/** Locate the running pi process's own @earendil-works/pi-coding-agent package
+ * root by walking up from the CLI entry (process.argv[1] inside pi). Advisory
+ * only — never load-bearing (P5: a broken read must not punish the work);
+ * returns undefined when the entry is not inside the package (e.g. tests). */
+export function resolveHostPiPackageRoot(entryPath: string | undefined = process.argv[1]): string | undefined {
+	if (!entryPath) return undefined;
+	let dir = path.dirname(path.resolve(entryPath));
+	for (let i = 0; i < 16; i++) {
+		try {
+			const pj = path.join(dir, "package.json");
+			if (fs.existsSync(pj)) {
+				const name = (JSON.parse(fs.readFileSync(pj, "utf8")) as { name?: unknown }).name;
+				if (name === "@earendil-works/pi-coding-agent") return dir;
+			}
+		} catch { /* advisory */ }
+		const parent = path.dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+	return undefined;
+}
+
+/** The host-SDK remedy text. The symlink command is computed from the LIVE pi
+ * process's own package root when discoverable (advisory — absent root yields
+ * the generic guidance); mirrors upstream #2352's root precedence. */
+export function hostSdkResolutionRemedy(error: string): string {
+	const m = HOST_SDK_RESOLUTION_RE.exec(error);
+	const missing = m?.[1] ?? "<unknown-package>";
+	let command = "";
+	if (missing === "@earendil-works/pi-coding-agent") {
+		const root = resolveHostPiPackageRoot();
+		if (root) command = ` On this machine pi runs from ${root}; remedy command: mkdir -p ~/.pi/agent/npm/node_modules/@earendil-works && ln -sfn '${root}' ~/.pi/agent/npm/node_modules/@earendil-works/pi-coding-agent, then re-run (a live pi session recovers on the next delegated call — failed ESM imports are not cached).`;
+	}
+	return `pi-subagents ≤0.70 with pi ≥0.86: delegated children cannot resolve '${missing}' from inside pi-subagents' own code (pi 0.86 stopped serving virtual module resolution to extension code).${command} Structural fix: upgrade pi-subagents once a release carrying upstream fix #2352 (loadHostPiCodingAgent) ships.`;
+}
 
 /** Provider quota-reset hint shapes found inside cached-exclusion reasons.
  *  Local-time shapes (zai renders the reset in Beijing time; this machine
@@ -176,6 +229,12 @@ export function nonRetryableAgentSummary(error?: string): string {
 			staleNote = `; the message says the quota resets at ${a.hint.toLocaleString()} but the timezone inference could not be validated against the failure timestamp (no cross-check data in the message, or an implausible parse) — check the provider console before clearing`;
 		}
 		remedy = ` — persisted model-exclusion cache (pi-subagents ≥0.66 caches model failures — quota, auth, billing — in ${modelExclusionsStorePath()} with a flat 24h TTL and RELOADS them at startup, so restarting pi alone no longer clears them${staleNote}). Remedy: quit pi, remove the stale entries or delete that store file, start pi, then resume — if the quota has NOT actually reset yet, the next live call simply re-records the exclusion once (bounded, no worse than now); if the cached reason is auth/billing-shaped, fix the provider credential/auth.json first — restart alone will not clear it.`;
+	}
+	// v0.4.57: the host-SDK resolution class carries ITS remedy (symlink now /
+	// upgrade once #2352 releases) — the generic "fix the local agent runtime"
+	// recommendation cannot name it.
+	if (isHostSdkResolutionFailure(message)) {
+		remedy = ` — ${hostSdkResolutionRemedy(message)}`;
 	}
 	return `non-retryable agent environment failure: ${message}${remedy}`;
 }

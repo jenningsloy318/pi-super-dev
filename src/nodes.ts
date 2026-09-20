@@ -45,6 +45,7 @@ import { auditAppend } from "./render/super-dev-dir.ts";
 import { WORKFLOW_ATTEMPTS } from "./retry-policy.ts";
 import { clearRetryFeedback, setRetryFeedback } from "./retry-feedback.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "./agent-errors.ts";
+import { markAgentBudgetExhausted } from "./agent-budget-fuse.ts";
 import { markConvergenceFindingsVerified, recordConvergenceFindings, normalizeConvergenceStage } from "./convergence-ledger.ts";
 
 // ─── Shared helper types ────────────────────────────────────────────────────
@@ -215,6 +216,11 @@ export function task(stage: Stage): Node {
 				ctx.log(error);
 				ctx.events.emit("stage", { id: stage.id, label: stage.label, status: "running" }); // G20: open the lifecycle
 				record(ctx, "failed", error);
+				// v0.4.57: stamp the first-trip agent-budget marker so deriveRunStatus
+				// derives the `partial (agent-budget)` terminal state — a budget-blocked
+				// cascade is bounded-by-design (fresh budget per resumed pass), never a
+				// bug class; mirrors the wall-fuse marker contract exactly.
+				markAgentBudgetExhausted(state as { [key: string]: unknown }, stage.id, ctx.budget.count);
 				return { status: "failed", error };
 			}
 			// Precondition: verify upstream artifact docs exist before running. Logs

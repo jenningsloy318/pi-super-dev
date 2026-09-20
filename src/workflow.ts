@@ -49,7 +49,7 @@ export { DELEGATION_AUTONOMY_CLAUSE } from "./workflow/agent-call-assembly.ts";
 // A-05 public seam (exported from workflow.ts since v0.3.x): re-exported from the extracted module.
 export { sleepMs } from "./workflow/agent-retry.ts";
 export { deriveRunStatus, type RunStatusDerivation, type StatusDerivationResultRow } from "./workflow/run-status.ts";
-import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, delegationBackendDegraded, markDelegationBackendDegraded, delegationAgentName, resetThinkingClampState } from "./agents/delegation-backend.ts";
+import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, isDelegationHostSdkResolutionFailure, delegationHostSdkResolutionError, delegationBackendDegraded, delegationBackendDegradeMessage, markDelegationBackendDegraded, DELEGATION_VERSION_SKEW_ERROR, delegationAgentName, resetThinkingClampState } from "./agents/delegation-backend.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
@@ -161,10 +161,8 @@ const scopeAls = new AsyncLocalStorage<string[]>();
 const UNKNOWN_AGENT_ERROR_RE = /unknown agent/i;
 
 /** v0.3.64: actionable per-call error when no pi-subagents owner is in the
- *  process (hard requirement — no fallback backend). */
+ * process (hard requirement — no fallback backend). */
 const DELEGATION_OWNER_ABSENT_ERROR = "pi-subagents is not active in this session (no delegation owner answered the registration handshake). Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi — super-dev v0.3.64+ requires it.";
-/** v0.3.64: actionable per-call error for the sticky version-skew class. */
-const DELEGATION_VERSION_SKEW_ERROR = "pi-subagents version skew: the package changed under this live pi session (pi update mid-session), so delegated children die at startup. Restart pi so the in-memory backend matches the on-disk package, then re-run.";
 
 /** Resolve the model for a specific agent call under precedence A (cross-model
  *  policy in config wins over a one-off global --model):
@@ -365,7 +363,10 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// call instantly with the remedy instead of burning ~5s on the dead child
 			// (2026-09-04 incident: every agent of two stages).
 			if (delegationBackendDegraded()) {
-				return { text: "", control: null, error: DELEGATION_VERSION_SKEW_ERROR };
+				// v0.4.57: the RECORDED reason — version-skew keeps the restart
+				// remedy; the host-SDK resolution class (shape C) keeps its
+				// symlink/upgrade remedy. First mark wins, never flaps.
+				return { text: "", control: null, error: delegationBackendDegradeMessage() || DELEGATION_VERSION_SKEW_ERROR };
 			}
 			// v0.3.76 skill curation (L0/L1): resolve the per-call skill field from
 			// the role tiers + config + the run's classifier-selected domains.
@@ -405,9 +406,15 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// fallback backend since v0.3.64); the sticky flag above makes later calls
 			// fail fast.
 			if (delegated.error && isDelegationRuntimeExtensionFailure(delegated.error)) {
-				markDelegationBackendDegraded();
-				log(`ERROR pi-subagents delegation infra failure (${delegated.error}) — the pi-subagents package changed under this live pi session (pi update mid-session), so the in-memory backend and the on-disk package disagree. Every later agent call in this pi session will fail fast. Remedy: restart pi (so memory matches the on-disk package) and re-run.`);
-				return { text: delegated.text, control: null, error: DELEGATION_VERSION_SKEW_ERROR };
+				// v0.4.57 (run 2026-09-20T06-09-36-327Z): the ESM host-SDK subclass
+				// (pi ≥0.86 × pi-subagents ≤0.70 — children cannot import the pi
+				// package) gets ITS remedy text (symlink/upgrade), not the
+				// version-skew "restart pi" text that is wrong for this class.
+				const hostSdk = isDelegationHostSdkResolutionFailure(delegated.error);
+				const degradeError = hostSdk ? delegationHostSdkResolutionError(delegated.error) : DELEGATION_VERSION_SKEW_ERROR;
+				markDelegationBackendDegraded(degradeError);
+				log(`ERROR pi-subagents delegation infra failure (${delegated.error}) — ${hostSdk ? "the host SDK package cannot be resolved by delegated children (pi ≥0.86 × pi-subagents ≤0.70)" : "the pi-subagents package changed under this live pi session (pi update mid-session), so the in-memory backend and the on-disk package disagree"}. Every later agent call in this pi session will fail fast. Remedy: ${hostSdk ? "see the error text (symlink now / upgrade pi-subagents when the #2352 fix releases)" : "restart pi (so memory matches the on-disk package)"} and re-run.`);
+				return { text: delegated.text, control: null, error: degradeError };
 			}
 			// v0.3.26 → v0.3.64: an unresolvable agent name surfaces as the call's
 			// error (run 2026-08-28T15-50-08 lost all 8 requirements rounds to instant

@@ -66,9 +66,10 @@ export function renderArchitectureDoc(): string {
 	lines.push("- `src/convergence-ledger.ts` — findings lifecycle (writer claims vs reviewer verification, duty downgrades with provenance gating, superseded orphaned anchors)");
 	lines.push("- `src/control.ts` — `<control>` extraction (decoy guards, unescaped-quote repair, depth-aware key parsing)");
 	lines.push("- `src/resume.ts` — durable-execution replay (structural cache keys, poisoned-row recovery, error rows never replayed)");
-	lines.push("- `src/agent-errors.ts` — non-retryable classification incl. the persisted model-exclusion store diagnosis (TZ-validated quota hints)");
+	lines.push("- `src/agent-errors.ts` — non-retryable classification incl. the persisted model-exclusion store diagnosis (TZ-validated quota hints) + the host-SDK resolution remedy");
 	lines.push("- `src/fault-classification.ts` — the deterministic fault floor (environmental vs product vs unclassified) + the never-destructive dirt quarantine");
 	lines.push("- `src/wall-fuse.ts` — the per-run-pass wall budget (first-trip-wins marker, trailing-median wind-down)");
+	lines.push("- `src/agent-budget-fuse.ts` — the spawn-budget terminal marker (partial (agent-budget), first-trip-wins, fresh budget per resumed pass)");
 	lines.push("- `src/routing/router.ts` — the ONE routing vocabulary (continue/retry/route-back/escalate/accept-limitation/abort) every decision mechanism maps onto");
 	lines.push("");
 	lines.push("## Where the semantics live");

@@ -35,6 +35,7 @@
  */
 
 import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
+import { hostSdkResolutionRemedy, isHostSdkResolutionFailure } from "../agent-errors.ts";
 import { superDevEnv } from "../render/super-dev-dir.ts";
 import {
 	structuredModeDegraded, structuredModeEnabled, isStructuredUnsupportedRejection,
@@ -184,30 +185,71 @@ export interface DelegationUpdatePayload {
  * MODULE resolution (`Cannot find module '…/pi-subagents/…'`, observed live
  * 2026-09-05: the 0.65 detached runner watchdog chain). Same class: a restart
  * or reinstall is the only remedy; per-call retries just burn child startups.
- * The path must name pi-subagents so unrelated module errors stay non-sticky. */
-const DELEGATION_RUNTIME_EXTENSION_FAILURE_RE = /Failed to load extension "[^"]*pi-subagents[^"]*"|Cannot find module ['"][^'"]*pi-subagents/;
+ * The path must name pi-subagents so unrelated module errors stay non-sticky.
+ * v0.4.57 shape C (run 2026-09-20T06-09-36-327Z): the ESM rendering —
+ * `Cannot find package '<pkg>' imported from <…pi-subagents…>` (Node renders
+ * bare-specifier ERR_MODULE_NOT_FOUND as "Cannot find PACKAGE", not "module").
+ * Receipt: pi 0.86 stopped serving virtual module resolution to extension
+ * code, so pi-subagents ≤0.70.0's lazy
+ * `import("@earendil-works/pi-coding-agent")` fallback in child-session.ts
+ * fails against the agent npm tree (pi itself lives elsewhere — not an
+ * ancestor for Node resolution). Every delegated child of the run died in
+ * ~0.3s with turns=0; the CJS-only grammar let it ride the whole RED retry
+ * ladder + judge dispatches. Same stickiness (in-process retry can never
+ * create the missing package), but the remedy is NOT "restart pi" — it is the
+ * host-sdk remedy below (symlink now, ≥0.71 upgrade once upstream #2352
+ * ships). The importer path must still name pi-subagents so unrelated
+ * package-resolution errors stay non-sticky. */
+const DELEGATION_RUNTIME_EXTENSION_FAILURE_RE = /Failed to load extension "[^"]*pi-subagents[^"]*"|Cannot find module ['"][^'"]*pi-subagents|[Cc]annot find package ['"][^'"]+['"] imported from [^'"]*pi-subagents/;
 
 /** True when a delegation error shows pi-subagents' own runtime extension
- * failing to load in the spawned child (version-skew class above). */
+ * failing to load in the spawned child (version-skew class above), or
+ * pi-subagents' own import chain failing package/module resolution. */
 export function isDelegationRuntimeExtensionFailure(error: string | undefined): boolean {
 	return !!error && DELEGATION_RUNTIME_EXTENSION_FAILURE_RE.test(error);
 }
 
-/** Sticky whole-backend degrade state for the version-skew class. The
- * in-memory pi-subagents bridge cannot change within this process, so once
- * the signature is seen, every later pi-subagents call in ANY run of this
- * process fails fast with DELEGATION_VERSION_SKEW_ERROR and the restart
- * remedy (no per-call 5s burn - the 2026-09-04 incident lost every agent of
- * two stages to it). Reset hook exists for tests only. */
-let delegationRuntimeExtensionFailureSeen = false;
-export function delegationBackendDegraded(): boolean {
-	return delegationRuntimeExtensionFailureSeen;
+/** True for the ESM host-SDK resolution subclass specifically (shape C) —
+ * the subclass whose remedy differs from version skew. Pattern + remedy live
+ * in agent-errors.ts (the leaf); this local alias keeps the backend's API. */
+export function isDelegationHostSdkResolutionFailure(error: string | undefined): boolean {
+	return isHostSdkResolutionFailure(error);
 }
-export function markDelegationBackendDegraded(): void {
-	delegationRuntimeExtensionFailureSeen = true;
+
+/** The canonical version-skew fail-fast text. Lives HERE (P6 — the shared
+ * value next to the degrade state it names) so the backend's default mark and
+ * the workflow pre-call fuse emit one string. */
+export const DELEGATION_VERSION_SKEW_ERROR = "pi-subagents version skew: the package changed under this live pi session (pi update mid-session), so delegated children die at startup. Restart pi so the in-memory backend matches the on-disk package, then re-run.";
+
+/** The actionable degrade error for the host-SDK resolution subclass: the
+ * class explanation + the shared remedy (agent-errors.ts — computed symlink
+ * command when pi's own root is discoverable from THIS process, plus the
+ * upstream #2352 upgrade note). Deterministic aside from the advisory probe. */
+export function delegationHostSdkResolutionError(error: string): string {
+	return `pi-subagents host-SDK resolution failure: delegated children cannot import a host package from inside pi-subagents' own code. Retrying inside this process cannot create the missing package — this pi session's delegation backend is degraded. ${hostSdkResolutionRemedy(error)}`;
+}
+
+/** Sticky whole-backend degrade state. The in-memory pi-subagents bridge
+ * cannot change within this process, so once an infra signature is seen,
+ * every later pi-subagents call in ANY run of this process fails fast with
+ * the RECORDED reason (version-skew restart text, or the host-sdk resolution
+ * remedy — first mark wins so the remedy never flaps) instead of burning a
+ * child startup per call (the 2026-09-04 incident lost every agent of two
+ * stages to it). Reset hook exists for tests only. */
+let delegationDegradeReason = "";
+export function delegationBackendDegraded(): boolean {
+	return delegationDegradeReason !== "";
+}
+/** The recorded degrade reason ("" when not degraded) — the pre-call fuse
+ * returns THIS text so the fail-fast names the class-correct remedy. */
+export function delegationBackendDegradeMessage(): string {
+	return delegationDegradeReason;
+}
+export function markDelegationBackendDegraded(reason: string = DELEGATION_VERSION_SKEW_ERROR): void {
+	if (delegationDegradeReason === "") delegationDegradeReason = reason;
 }
 export function resetDelegationBackendDegradeForTests(): void {
-	delegationRuntimeExtensionFailureSeen = false;
+	delegationDegradeReason = "";
 }
 
 /** v0.3.28: the terminal summary line — turns/tools/tokens/cache/cost/duration

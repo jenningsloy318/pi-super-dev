@@ -16,16 +16,13 @@ pi or pi-subagents updates. It exists so a future session can answer
 | C5 | Runtime agent registration validation | `src/agents/runtime-agent-registry.ts` — `validateString` requires `systemPrompt` non-empty with **no leading/trailing whitespace** | `loadAgentBasePrompt` trims (v0.3.26; run 2026-08-28T15-50-08 lost 30/32 registrations to trailing newlines before this) | Unreleased main adds optional `allowNestedSubagents` and removes `defaultTurnBudget`; neither affects our `{name, description, systemPrompt, tools}` payload. `allowNestedSubagents` is a future option if sd-* specialists ever need to fan out. |
 | C6 | Result envelope shape | `src/api/delegation-adapters.ts:364-375` | `textOf` in `src/agents/delegation-backend.ts` | If a new result kind appears, `textOf` must handle or honestly error it. |
 
-## Version pins (verified 2026-08-29)
+## Version pins (verified 2026-09-20)
 
-- pi-subagents: **0.58.0** installed (`~/.pi/agent/npm/node_modules/pi-subagents`) = npm `latest`.
-  Unreleased main `1f2abe1` has 10 commits after the 0.58.0 tag (all 2026-08-28);
-  verified zero drift on C1/C3 and only non-impacting changes on C2/C4/C5.
-- pi: **0.84.3** — `getSessionId()` returns a uuid, `getSessionFile()` returns the
-  session file path. A Pi session id IS the session file path per upstream source
-  comments; the docs example calling `getSessionId()` is broken on this version —
-  that upstream doc bug does not affect us because we mirror the runtime resolver,
-  not the docs.
+- pi-subagents: **0.70.0** installed (`~/.pi/agent/npm/node_modules/pi-subagents`, installed
+  2026-09-20 11:29 +08) = npm `latest`. Unreleased main (`4db20f0`) carries the host-SDK
+  resolution fix (#2352, see the 2026-09-20 drift entry) plus Pi 0.86 support (#2349).
+- pi: **0.86.0** (mise node 24.15.0 global install). 0.86 is the release that stopped
+  serving virtual module resolution to extension code — the trigger for the host-SDK gap.
 - Reference clone: `docs/references/pi-subagents` (gitignored, shallow). Refresh
   with `git fetch origin` before any comparison; compare against origin/main.
 
@@ -67,6 +64,35 @@ If a file reports DIFF, act per contract:
 - **C3 (exports map)** — re-run the resolution probe if the module path moves.
 
 ## Drift log
+
+- **2026-09-20** — pi-subagents **0.70.0** × pi **0.86.0**: foreground/delegation children
+  die instantly with `Cannot find package '@earendil-works/pi-coding-agent' imported from
+  …/pi-subagents/src/runs/shared/child-session.js` (run 2026-09-20T06-09-36-327Z: every
+  delegated child turns=0 in ~0.3s). ROOT CAUSE (verified end-to-end + byte-reproduced by
+  probe): pi 0.86 stopped serving virtual module resolution to extension code, and
+  0.70.0's `child-session.ts:133` falls back to the bare
+  `import("@earendil-works/pi-coding-agent")`, which cannot resolve from the agent npm
+  tree (`~/.pi/agent/npm/node_modules/@earendil-works/` is empty; pi itself lives under
+  the mise node tree — not an ancestor for Node resolution). **Fixed upstream 2026-09-19
+  by unreleased #2352** (`loadHostPiCodingAgent` — resolves the running pi process's own
+  package root and imports by file URL; env override
+  `PI_CODING_AGENT_PACKAGE_ROOT`); no npm release carries it yet — re-check
+  `npm view pi-subagents version` and strike this entry when ≥0.71 ships. **Local remedy
+  APPLIED 2026-09-20** (the 2026-09-05 pi-server pattern):
+  `ln -sfn ~/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent
+  ~/.pi/agent/npm/node_modules/@earendil-works/pi-coding-agent` — resolution probe
+  verified; live sessions recover on the next delegated call (failed ESM imports are not
+  cached). Note the symlink targets the mise node-version-scoped path: re-create it after
+  a pi reinstall under a different node version. Engine-side (v0.4.57): the ESM wording
+  (`Cannot find package '…' imported from …pi-subagents…`) joined the infra-failure
+  grammar (`DELEGATION_RUNTIME_EXTENSION_FAILURE_RE` shape C) with its OWN sticky-degrade
+  reason + remedy (computed symlink command / #2352 upgrade note), the envelope is
+  non-retryable at every `isNonRetryableAgentError` seam, and the RED oracle cycle
+  FatalAborts round-1 on it. Also reviewed 0.67→0.70 contract-surface diffs: only
+  `f58dfcb` (#2270 "remove automatic model fallback") and `fee92e0` (Herdr saved machines
+  for external-cli agents) touch C1–C6 files — #2270 changes the FALLBACK configuration
+  surface our model-exclusion envelopes describe ("cannot be replaced by a fallback");
+  observed envelopes unchanged on 0.70.0, keep an eye on the wording if it drifts.
 
 - **2026-09-10** — model-exclusions store (see 2026-09-08 item 1): confirmed in practice
   that deleting the on-disk store (`<tmp>/pi-subagents-uid-<uid>/model-exclusions.json`)

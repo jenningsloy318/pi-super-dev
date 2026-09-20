@@ -43,7 +43,8 @@ import { appendImplementationEvidence, assertionPresenceGaps, boundarySummary, c
 import { evaluateF5Ratchet } from "./red-ratchet.ts";
 import { resolveRedBoundary, resolveTddScenarioCoverage } from "./red-evidence.ts";
 import { approveScaffoldPaths } from "../../test-artifacts.ts";
-import { isNoEditCompletion } from "../../agent-errors.ts";
+import { isNoEditCompletion, isNonRetryableAgentError, nonRetryableAgentSummary } from "../../agent-errors.ts";
+import { FatalAbort } from "../../nodes.ts";
 import { RedReviewData as RED_REVIEW_SCHEMA } from "../../render/schemas.ts";
 import { normalizeStringArray, redCheckOptions } from "./phase-reentry.ts";
 import { buildRedReviewPrompt } from "../../prompts.ts";
@@ -170,6 +171,16 @@ export async function runRedOracleCycle(input: RedOracleCycleInput): Promise<Red
 			|| normalizeStringArray(phaseDeliverables?.requireTests).length > 0
 			|| normalizeStringArray((phaseDeliverables as { requireScenarios?: unknown } | undefined)?.requireScenarios).length > 0;
 		const unknownRed = redEvidence.status === "unknown-unclassified" || redEvidence.status === "unknown-no-runner";
+		// v0.4.57 (run 2026-09-20T06-09-36-327Z): a NON-RETRYABLE tdd dispatch
+		// error (host-SDK resolution, model-exclusion cache, spawn ENOENT …)
+		// can never improve by re-dispatching the same agent — the RED ladder
+		// burned 4 tries + judge dispatches + a research-arm against the identical
+		// 0.3s failure. Fail the RUN round-1 with the class remedy instead of
+		// riding the ladder (the gate/convergence stages already do this at
+		// their seams; this is the RED loop's).
+		if (tddError && isNonRetryableAgentError(tddError)) {
+			throw new FatalAbort(nonRetryableAgentSummary(tddError));
+		}
 		if (unknownRed && (requiresTests || tddError)) {
 			const why = tddError
 				? `the TDD agent did not complete (${tddError})`

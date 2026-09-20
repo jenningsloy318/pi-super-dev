@@ -1,6 +1,6 @@
 # Architecture (generated)
 
-> Generated from `src/graph/edges.ts` + `src/team/raci.ts` at v0.4.55 — do not edit by hand; run `npm run arch:doc`.
+> Generated from `src/graph/edges.ts` + `src/team/raci.ts` at v0.4.57 — do not edit by hand; run `npm run arch:doc`.
 
 ## Stage table (RACI over the skeleton)
 
@@ -102,9 +102,10 @@ Cross-cutting foundations (each a leaf or choke point, unchanged by the splits):
 - `src/convergence-ledger.ts` — findings lifecycle (writer claims vs reviewer verification, duty downgrades with provenance gating, superseded orphaned anchors)
 - `src/control.ts` — `<control>` extraction (decoy guards, unescaped-quote repair, depth-aware key parsing)
 - `src/resume.ts` — durable-execution replay (structural cache keys, poisoned-row recovery, error rows never replayed)
-- `src/agent-errors.ts` — non-retryable classification incl. the persisted model-exclusion store diagnosis (TZ-validated quota hints)
+- `src/agent-errors.ts` — non-retryable classification incl. the persisted model-exclusion store diagnosis (TZ-validated quota hints) + the host-SDK resolution remedy
 - `src/fault-classification.ts` — the deterministic fault floor (environmental vs product vs unclassified) + the never-destructive dirt quarantine
 - `src/wall-fuse.ts` — the per-run-pass wall budget (first-trip-wins marker, trailing-median wind-down)
+- `src/agent-budget-fuse.ts` — the spawn-budget terminal marker (partial (agent-budget), first-trip-wins, fresh budget per resumed pass)
 - `src/routing/router.ts` — the ONE routing vocabulary (continue/retry/route-back/escalate/accept-limitation/abort) every decision mechanism maps onto
 
 ## Where the semantics live

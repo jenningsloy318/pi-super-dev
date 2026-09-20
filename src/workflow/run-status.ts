@@ -1,5 +1,6 @@
 import { toBool } from "../doc-validators.ts";
 import { readRunWallFuseMarker } from "../wall-fuse.ts";
+import { agentBudgetStatusReason, readAgentBudgetMarker } from "../agent-budget-fuse.ts";
 import type { PipelineState, RunStatus } from "../types.ts";
 
 /** Wave 2 increment 3: the run-status derivation (Sweep-3 G3/G9/G22), a pure
@@ -89,6 +90,14 @@ export function deriveRunStatus(input: {
 	const wallFuseMarker = readRunWallFuseMarker(state);
 	const wallFuseEnds = wallFuseMarker !== undefined && abortError !== "workflow cancelled";
 
+	// v0.4.57: the spawn-budget terminal marker — same contract as the wall
+	// fuse (first-trip state marker written by nodes.ts task() when the
+	// stage-start budget check first fails). A budget-blocked cascade is
+	// bounded-by-design and resumable with a FRESH budget: the marker adds its
+	// honest reason on the partial branch (and, like the wall fuse, never
+	// downgrades a fully-converged success and never outranks REPLAN).
+	const agentBudgetMarker = readAgentBudgetMarker(state);
+
 	const statusReasons: string[] = [];
 	let status: RunStatus;
 	if (replanMarker && (!aborted || replanAbort)) {
@@ -101,6 +110,9 @@ export function deriveRunStatus(input: {
 		status = "partial";
 		if (wallFuseEnds) {
 			statusReasons.push(`partial (wall-fuse): run wall budget exhausted at ${new Date(wallFuseMarker!.trippedAt).toISOString()} (SUPER_DEV_MAX_RUN_WALL_MS=${wallFuseMarker!.capMs}ms; ${wallFuseMarker!.reason}) — bounded by design: converged phases are committed and a resumed pass continues with a FRESH fuse window`);
+		}
+		if (agentBudgetMarker !== undefined) {
+			statusReasons.push(agentBudgetStatusReason(agentBudgetMarker));
 		}
 		if (!buildAffirmed && state.buildGate === undefined) statusReasons.push("build gate absent (no deterministic build verification ran)");
 		if (!green) statusReasons.push("implementation not all-green");
