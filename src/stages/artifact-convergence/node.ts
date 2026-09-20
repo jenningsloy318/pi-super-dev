@@ -12,6 +12,7 @@ import { readContractSliceStamp } from "../../review/contract-surface/index.ts";
 import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../../review/contract-validators.ts";
 import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";
+import { adjudicateFindingResolutionGate } from "../../convergence-economy/finding-resolution-gate.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../../escalation.ts";
 import { runJudge } from "../judge.ts";
 import { countStageRounds } from "../../resume.ts";
@@ -67,6 +68,11 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 				? countStageRounds(state.setup.specDirectory, `pipeline.${options.review.stage.id}`)
 				: 0;
 			let round = 0;
+			// v0.4.60 WS1 (066 §2): the ids this walk injected at round 1 (prior-run
+			// ledger + replan requests, post-downgrade stamped) — the finding-
+			// resolution gate's injected set. Empty for no-injection specs (the gate
+			// is then inert).
+			let round1InjectedIds: string[] = [];
 			let lastErrors: string[] = [];
 			let priorBlockingSignature = "";
 			let convergenceJudgeTried = false;
@@ -249,6 +255,9 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						round1Lines.push(...pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
 						ctx.log(`${options.feedbackKey} convergence: ${pendingReplan.length} replan request(s) injected at round 1`);
 					}
+					// v0.4.60 WS1: capture the injected id set for the gate (replan ids
+					// take the replan- prefix the ledger rows get).
+					round1InjectedIds = [...prior.findings.map((f) => f.id), ...pendingReplan.map((r) => `replan-${r.id}`)];
 					// Replan directives lead (they are explicit revision orders);
 					// prior-run residue follows within the slice budget.
 					if (round1Lines.length > 0) setArtifactFeedback(options, state, round1Lines);
@@ -295,6 +304,40 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					continue;
 				}
 				consecutiveWriterAgentErrors = 0;
+				// v0.4.60 WS1 (066 §2) — the finding-resolution gate: the E1 class (an
+				// injected blocking finding unaddressed by the writer, receipt run
+				// 2026-09-20T07-37-57-688Z: rediscovered ~80 min and 3 agent calls
+				// later at BDD review) bounces the writer ONCE with the exact missing
+				// ids BEFORE any reviewer pass. P5 fail-open (a gate crash logs
+				// advisory and proceeds); P8 bound = 1 bounce per walk; the
+				// re-dispatch consumes agent budget, NOT a convergence round.
+				if (round1InjectedIds.length > 0) {
+					let frGate: ReturnType<typeof adjudicateFindingResolutionGate> | null = null;
+					try {
+						const ctrlCandidate = ((stageResult as { control?: unknown } | null | undefined)?.control
+							?? (state as Record<string, unknown>)[options.stage.id]) as { findingResolutions?: unknown } | null | undefined;
+						frGate = adjudicateFindingResolutionGate({ injectedIds: round1InjectedIds, resolutions: ctrlCandidate?.findingResolutions });
+					} catch (error) {
+						ctx.log(`${options.feedbackKey} convergence: finding-resolution gate crashed (advisory — proceeding): ${error instanceof Error ? error.message : String(error)}`);
+					}
+					if (frGate?.bounce) {
+						ctx.log(`${options.feedbackKey} convergence: ${frGate.feedback} — one bounded writer re-dispatch follows (agent budget, not a convergence round)`);
+						setArtifactFeedback(options, state, [frGate.feedback]);
+						const bounceResult = await stageTask.run(state, ctx);
+						if (bounceResult.status === "cancelled") return bounceResult;
+						if (bounceResult.status === "failed") {
+							lastErrors = [`${options.feedbackKey} agent failed (post-bounce): ${bounceResult.error ?? "unknown error"}`];
+							recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-agent`);
+							setArtifactFeedback(options, state, lastErrors);
+							ctx.log(`${options.feedbackKey} convergence: bounced writer failed round ${round} — ${lastErrors.join("; ")}`);
+							prevOwnOpen = Number.POSITIVE_INFINITY;
+							lastOwnOpen = Number.POSITIVE_INFINITY;
+							continue;
+						}
+					} else if (frGate && frGate.missing.length > 0) {
+						ctx.log(`${options.feedbackKey} convergence: finding-resolution gate — ${frGate.missing.length} injected finding(s) unaddressed (gate disabled or bounce spent); proceeding to validation/review with the gap recorded: ${frGate.missing.join(", ")}`);
+					}
+				}
 
 				// Stage produced no artifact by design (e.g. design skipped for a bug
 				// fix): nothing to validate or review — converge immediately.
