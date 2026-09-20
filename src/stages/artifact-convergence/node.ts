@@ -12,8 +12,10 @@ import { readContractSliceStamp } from "../../review/contract-surface/index.ts";
 import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../../review/contract-validators.ts";
 import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";
-import { adjudicateFindingResolutionGate, validatorBounceEnabled } from "../../convergence-economy/finding-resolution-gate.ts";
+import { adjudicateFindingResolutionGate, validatorBounceEnabled, findingResolutionGateEnabled, parseFindingResolutions, resolveAnchors } from "../../convergence-economy/finding-resolution-gate.ts";
 import { lessonsForWriter, lessonsPromptBlock } from "../../convergence-economy/rejection-memory.ts";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../../escalation.ts";
 import { runJudge } from "../judge.ts";
 import { countStageRounds } from "../../resume.ts";
@@ -352,6 +354,44 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					} else if (frGate && frGate.missing.length > 0) {
 						ctx.log(`${options.feedbackKey} convergence: finding-resolution gate — ${frGate.missing.length} injected finding(s) unaddressed (gate disabled or bounce spent); proceeding to validation/review with the gap recorded: ${frGate.missing.join(", ")}`);
 					}
+				// v0.4.68 WS3 (066 §2) — the premise-anchor MECHANICAL layer: the
+				// mapped rows' loci must RESOLVE in the worktree (path:line/#fragment
+				// forms). Unresolved anchors bounce ONCE through the same shared
+				// budget (a dangling citation is a pre-review defect, not a reviewer
+				// discovery); support-vs-claim stays with the reviewer (the NLI layer).
+				if (!writerBounceSpent && findingResolutionGateEnabled()) {
+					try {
+						const ctrlCandidateW3 = ((stageResult as { control?: unknown } | null | undefined)?.control
+							?? (state as Record<string, unknown>)[options.stage.id]) as { findingResolutions?: unknown } | null | undefined;
+						const wtPath = state.setup?.worktreePath ?? "";
+						const specDir = state.setup?.specDirectory ?? "";
+						const anchorOut = resolveAnchors(
+							parseFindingResolutions(ctrlCandidateW3?.findingResolutions).rows.flatMap((r) => r.loci),
+							// Spec-doc loci are SPEC-RELATIVE (the docs render into the
+							// spec directory); code loci are worktree-relative. Try both
+							// plus cwd before declaring a citation dangling.
+							(rel: string) => { try { return existsSync(join(wtPath, rel)) || (specDir ? existsSync(join(specDir, rel)) : false) || existsSync(rel); } catch { return false; } },
+						);
+						if (anchorOut.unresolved.length > 0) {
+							writerBounceSpent = true;
+							const anchorFeedback = `anchor bounce: ${anchorOut.unresolved.length} cited locu(s) do not resolve in the worktree — fix the paths/anchors in findingResolutions: ${anchorOut.unresolved.slice(0, 6).join("; ")}`;
+							ctx.log(`${options.feedbackKey} convergence: ${anchorFeedback} — one bounded writer re-dispatch follows`);
+							setArtifactFeedback(options, state, [anchorFeedback]);
+							const abResult = await stageTask.run(state, ctx);
+							if (abResult.status === "cancelled") return abResult;
+							if (abResult.status === "failed") {
+								lastErrors = [`${options.feedbackKey} agent failed (post-anchor-bounce): ${abResult.error ?? "unknown error"}`];
+								recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-agent`);
+								setArtifactFeedback(options, state, lastErrors);
+								prevOwnOpen = Number.POSITIVE_INFINITY;
+								lastOwnOpen = Number.POSITIVE_INFINITY;
+								continue;
+							}
+						}
+					} catch (error) {
+						ctx.log(`${options.feedbackKey} convergence: anchor gate crashed (advisory — proceeding): ${error instanceof Error ? error.message : String(error)}`);
+					}
+				}
 				}
 
 				// Stage produced no artifact by design (e.g. design skipped for a bug

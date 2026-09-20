@@ -99,3 +99,35 @@ export function adjudicateFindingResolutionGate(input: FindingResolutionGateInpu
 		: "";
 	return { enabled, missing, malformedRows, bounce, feedback };
 }
+
+// ── WS3 (066 §2): premise-anchor resolution — the MECHANICAL layer ──────────
+// Research (grill-2 Q5): path-exists/line-in-range checks give ~100% recall
+// on "anchor nonexistent" and ~zero discrimination on "anchor SUPPORTS the
+// claim" — the NLI/LLM support-derivation layer is the reviewer's job. This
+// layer only asserts the anchor RESOLVES (the file exists in the worktree;
+// the path:line form parses) — converting "dangling citation" from a
+// reviewer-time discovery into a pre-review bounce.
+
+export interface AnchorResolution {
+	/** Loci that failed to resolve (file absent / unparseable form). */
+	unresolved: string[];
+	/** Loci checked (resolved + unresolved) — honesty on empty inputs. */
+	checked: number;
+}
+
+/** Extract the path part of a locus (`path.md:18`, `path.md#anchor`, bare
+ * path) and test existence via the injected predicate (pure for tests). */
+export function resolveAnchors(loci: readonly string[], exists: (path: string) => boolean): AnchorResolution {
+	const unresolved: string[] = [];
+	let checked = 0;
+	for (const raw of loci) {
+		const locus = typeof raw === "string" ? raw.trim() : "";
+		if (!locus) continue;
+		checked++;
+		// Strip a trailing :line(-col) or #fragment; spec-relative paths win.
+		const pathPart = locus.replace(/:[0-9]+(-[0-9]+)?$/, "").replace(/#.*$/, "");
+		if (!pathPart || pathPart.includes(" ")) { unresolved.push(locus); continue; }
+		if (!exists(pathPart)) unresolved.push(locus);
+	}
+	return { unresolved, checked };
+}

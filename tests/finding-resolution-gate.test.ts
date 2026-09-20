@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { adjudicateFindingResolutionGate, findingResolutionGateEnabled, validatorBounceEnabled, parseFindingResolutions, type FindingResolutionGateInput } from "../src/convergence-economy/finding-resolution-gate.ts";
+import { adjudicateFindingResolutionGate, findingResolutionGateEnabled, validatorBounceEnabled, parseFindingResolutions, resolveAnchors, type FindingResolutionGateInput } from "../src/convergence-economy/finding-resolution-gate.ts";
 import { designatedBounceFindings } from "../src/stages/artifact-convergence/validators.ts";
 
 const base = (over: Partial<FindingResolutionGateInput> = {}): FindingResolutionGateInput => ({
@@ -145,5 +145,23 @@ describe("designatedBounceFindings (WS2 class table — live-run message shapes)
 			"some other advisory noise",
 		]);
 		expect(out.length).toBe(0);
+	});
+});
+
+describe("resolveAnchors (WS3 mechanical layer — anchor nonexistent ≈ 100% recall)", () => {
+	const exists = (p: string) => p === "01-requirements.md" || p === "docs/spec/03-bdd.md";
+	it("resolves path:line, path#fragment, and bare-path forms", () => {
+		const out = resolveAnchors(["01-requirements.md:18", "docs/spec/03-bdd.md#AC-01", "01-requirements.md"], exists);
+		expect(out.unresolved).toEqual([]);
+		expect(out.checked).toBe(3);
+	});
+	it("flags absent files, spaces, and empty path parts as unresolved", () => {
+		const out = resolveAnchors(["nope.md:5", "has space.md:3", ":12"], exists);
+		expect(out.unresolved.length).toBe(3);
+	});
+	it("skips empty loci (checked stays honest)", () => {
+		const out = resolveAnchors(["", "   ", "01-requirements.md:1"], exists);
+		expect(out.checked).toBe(1);
+		expect(out.unresolved).toEqual([]);
 	});
 });
