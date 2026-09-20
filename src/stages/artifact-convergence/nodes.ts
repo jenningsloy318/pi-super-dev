@@ -1,4 +1,4 @@
-import { bddComplete, requirementsComplete, researchComplete } from "./validators.ts";
+import { bddComplete, designatedBounceFindings, requirementsComplete, researchComplete } from "./validators.ts";
 import { artifactConvergenceNode } from "./node.ts";
 import { ArtifactValidator } from "./validators.ts";
 /** nodes — the four stage convergence-node wirings (split from artifact-convergence.ts at v0.4.17e). */
@@ -67,13 +67,18 @@ export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: S
 		// 065 D-F-B (Gate W, CONCRETE — blocking at design, the typed-family home
 		// per 059 W4/grill R6 HIGH-1): fresh post-render walk over the design doc.
 		const designGateWNoClaims = stageWriteClaimGate({ stage: "design", level: "concrete", state: s as Record<string, unknown>, control: control as Record<string, unknown> | undefined, docGlobs: ["*-design.md"] });
-		for (const a of designGateWNoClaims.filter((f) => f.kind === "advisory")) ctx.log(`Design Gate-W (advisory): ${a.message.slice(0, 200)}`);
+		const noClaimsBounce: string[] = [];
+		for (const a of designGateWNoClaims.filter((f) => f.kind === "advisory")) {
+			ctx.log(`Design Gate-W (advisory): ${a.message.slice(0, 200)}`);
+			noClaimsBounce.push(a.message);
+		}
+		const noClaimsValidatorBounce = designatedBounceFindings(noClaimsBounce);
 		const designGateWNoClaimsBlocking = designGateWNoClaims.filter((f) => f.kind === "blocking").map((f) => f.message);
 		if (designGateWNoClaimsBlocking.length > 0) {
 			ctx.log(`Design Gate-W: ${designGateWNoClaimsBlocking.length} typed-closure error(s): ${designGateWNoClaimsBlocking.slice(0, 2).join("; ")}`);
 			return { pass: false, errors: designGateWNoClaimsBlocking };
 		}
-		return { pass: true, errors: [] };
+		return { pass: true, errors: [], ...(noClaimsValidatorBounce.length > 0 ? { bounceErrors: noClaimsValidatorBounce } : {}) };
 	}
 	const worktreePath = s.setup?.worktreePath ?? "";
 	const errors = designContractsErrors(control, worktreePath);
@@ -86,8 +91,12 @@ export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: S
 			errors.push(...blocking);
 	}
 	// 065 D-F-B (Gate W, CONCRETE — blocking at design; the with-claims path).
+	const withClaimsBounce: string[] = [];
 	for (const f of stageWriteClaimGate({ stage: "design", level: "concrete", state: s as Record<string, unknown>, control: control as Record<string, unknown> | undefined, docGlobs: ["*-design.md"] })) {
-		if (f.kind === "advisory") ctx.log(`Design Gate-W (advisory): ${f.message.slice(0, 200)}`);
+		if (f.kind === "advisory") {
+			ctx.log(`Design Gate-W (advisory): ${f.message.slice(0, 200)}`);
+			withClaimsBounce.push(f.message);
+		}
 		else errors.push(f.message);
 	}
 	// Rendered-doc parity: the reviewer reads the RENDERED design — a contracts
@@ -97,7 +106,8 @@ export const designComplete: ArtifactValidator = async (s: PipelineState, ctx: S
 		errors.push("design declares contract claims but the rendered design doc has no '## Contract Claims' section — the enumeration must be visible to the reviewer");
 	}
 	if (errors.length) ctx.log(`Design contracts: ${errors.length} contract-claim error(s): ${errors.slice(0, 2).join("; ")}`);
-	return { pass: errors.length === 0, errors };
+	const withClaimsValidatorBounce = designatedBounceFindings(withClaimsBounce);
+	return { pass: errors.length === 0, errors, ...(withClaimsValidatorBounce.length > 0 ? { bounceErrors: withClaimsValidatorBounce } : {}) };
 };
 
 /** Stage 6 design convergence: since v0.3.2 the design carries ONE deterministic
