@@ -14,6 +14,7 @@ import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";
 import { adjudicateFindingResolutionGate, validatorBounceEnabled, findingResolutionGateEnabled, parseFindingResolutions, resolveAnchors } from "../../convergence-economy/finding-resolution-gate.ts";
 import { lessonsForWriter, lessonsPromptBlock } from "../../convergence-economy/rejection-memory.ts";
+import { patchModeDirective, changedSectionsSoftCheck } from "../../convergence-economy/patch-mode.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../../escalation.ts";
@@ -276,6 +277,10 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					// finding; deduped/capped/decay by construction).
 					const lessonBlock = lessonsPromptBlock(lessonsForWriter(getConvergenceLedger(state).findings));
 					if (lessonBlock) round1Lines.push(lessonBlock);
+					// v0.4.69 WS6 (066 §2): route-back re-entry walks run in PATCH MODE —
+					// preserve approved content, change only implicated regions, declare
+					// changedSections (the soft diff-scope check logs post-write).
+					if (routeBackReentry(state.setup?.specDirectory, options.feedbackKey)) round1Lines.push(patchModeDirective());
 					if (round1Lines.length > 0) setArtifactFeedback(options, state, round1Lines);
 				}
 
@@ -483,6 +488,12 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					continue;
 				}
 				ctx.log(`${options.feedbackKey} convergence: deterministic validation passed round ${round}`);
+			// v0.4.69 WS6: the soft diff-scope check (advisory — grill-2 M10).
+			{
+				const pmCtrl = ((state as Record<string, unknown>)[options.stage.id] ?? (stageResult as { control?: unknown } | null)?.control) as { changedSections?: unknown } | null | undefined;
+				const pm = changedSectionsSoftCheck(pmCtrl);
+				ctx.log(`${options.feedbackKey} convergence: ${pm.note}`);
+			}
 				// v0.4.62 WS2 (066 §2) — designated validator violations bounce the
 				// writer ONCE pre-review (the receipts: ~40 unknown-pinId/contradiction
 				// advisories at 16:38:44 preceding a 16.6-min review). Shared budget

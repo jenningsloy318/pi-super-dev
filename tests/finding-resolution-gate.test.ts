@@ -165,3 +165,15 @@ describe("resolveAnchors (WS3 mechanical layer — anchor nonexistent ≈ 100% r
 		expect(out.unresolved).toEqual([]);
 	});
 });
+
+describe("WS6 patch-mode", () => {
+	it("directive names the three patch rules; soft check handles absent/malformed/declared controls", async () => {
+		const { patchModeDirective, changedSectionsSoftCheck } = await import("../src/convergence-economy/patch-mode.ts");
+		const d = patchModeDirective();
+		expect(d).toContain("Patch mode (route-back revision)");
+		expect(d).toContain("changedSections");
+		expect(changedSectionsSoftCheck(undefined).note).toContain("absent");
+		expect(changedSectionsSoftCheck({ changedSections: ["x.md:1", 42, ""] }).declared).toBe(1);
+		expect(changedSectionsSoftCheck({ changedSections: [] }).note).toContain("absent");
+	});
+});
