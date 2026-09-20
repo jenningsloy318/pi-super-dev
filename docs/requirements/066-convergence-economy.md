@@ -52,6 +52,15 @@ correct per D1. The problem is what each cycle COST:
     burned on the 065 Gate-R amendment-family determinism (spec write-claims
     on pinned surfaces without declared sharedFile entries) — the same
     deterministic-after-write pattern, at the run's most expensive stage.
+    **Terminal state (22:59:37, user-cancelled at spec review round 7):**
+    7h22m wall, 31 agent calls, $27.76 — **the spec stage alone consumed
+    $15.31 (55%)** across 7 writer+review cycles, and the σ-bands flagged
+    cost 10.2σ / wall 3.4σ / tokens 3.3σ vs the 21-run history. Stages
+    1-6C all converged and committed (requirements, BDD, research,
+    assessment, design+review, prototype); implementation (stage 9) was
+    never reached, so Q8's implementation-stage receipts remain open — the
+    spec-stage economics above is the interim pricing of exactly the churn
+    wave 1 (WS1/WS2, v0.4.59-v0.4.63) eliminates at the doc stages.
   - **E3** — route-back carried two precisely-worded amendments but re-ran the
     whole requirements writer + full review (~25 min for a two-paragraph patch,
     177 resume rows dropped).
