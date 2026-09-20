@@ -1,6 +1,7 @@
 # Convergence Economy — first-pass acceptance and verification cost
 
-Status: proposed (research + design; no code yet). Lineage: sibling of 065
+Status: proposed — grill round 1 folded (6H+5M; answers in §5, research-backed).
+Lineage: sibling of 065
 (first-pass satisfiability). 065 makes the spec's write-claims deterministically
 checkable BEFORE any implementer attempt; this doc makes the write→review
 convergence loop itself cheap and first-pass accurate — the two compose: 065
@@ -151,7 +152,19 @@ bounce carrying the missing ids back to the writer (bounded, P8: max 1 bounce;
 P5: validator crash → advisory, review proceeds). Seam: `prompts.ts`
 (controlKeys + prompt text), `stages/artifact-convergence/node.ts`,
 `render/schemas.ts`. Checklist-design rule (Degani & Wiener): the table is
-per-id rows, never prose.
+per-id rows, never prose. **Anti-gaming (grill H3, FBI/CHERRL-backed):** the
+writer's self-filled table is WEAK evidence — evaluator LLMs "did not adjust
+their scores for perturbed responses despite correctly identifying the
+perturbations in their explanations" (FBI, EMNLP 2024,
+aclanthology.org/2024.emnlp-main.911.pdf) and a compliance declaration in the
+output reliably fools a judge (CHERRL, arxiv.org/abs/2606.04923). The gate is
+therefore three-layered: (a) the harness resolves every cited locus
+mechanically (path/anchor exists; de-anchored — it derives its own expectation
+before reading the map); (b) the REVIEWER deep-verifies a rotating random
+30–50% subset of coverage rows per round (Rubric Dropout,
+arxiv.org/abs/2608.11669) with a PROTECTED never-dropped set (blocking-finding
+classes — the ones that historically killed runs); (c) the note field must
+quote the remedy language of the finding it claims to address.
 
 **WS2 — Pre-review validator bounce (kills E2).** Promote designated
 deterministic validator classes — unknown-pinId citations, own-artifact
@@ -175,16 +188,37 @@ The convergence ledger already carries findings; this adds the
 writer-conditioning leg.
 
 **WS5 — Claim-level verdict cache (kills the ~50 min re-verification).** The
-reviewer emits per-claim verdict rows (id, artifact loci, cited files, verdict,
-evidence summary) — it already does per-finding CF adjudication; generalize to
-artifact claims. The convergence node stores a review ledger keyed
-content-addressed: `hash(claim_text, cited_file_hashes, reviewer_prompt_version,
-model_version)`. Next round: the reviewer prompt receives the green manifest
-(claims whose keys hit) + the delta claims to verify fresh + a PASS_TO_PASS
-regression sample (~10% of green claims re-verified adversarially — the
-verifier-strictness guard). Invalidation is total (Bazel contract): prompt/model
-version bumps flush the ledger. Canary test: a defect planted in a CHANGED locus
-must always be caught; a green-claim manifest that skips a changed locus fails.
+reviewer emits per-claim verdict rows; the convergence node stores a review
+ledger keyed content-addressed. **Claim enumeration is DETERMINISTIC (grill
+H1):** the harness enumerates the claim set from the anchor grammar it already
+parses (AC-*/SCENARIO-* ids, pinId citations, file:line anchors); the reviewer
+supplies verdicts for THAT set only; a claim with no verdict row is NOT green
+(fail-closed — a lazy reviewer's vacuous rows cannot mint green). **Cache key
+(grill H5):** `hash(claim_text, cited_file_hashes, resolved model id + thinking
+level, rubric-section version)` — the full resolution tuple, not the configured
+one; the rubric stays byte-stable at the prompt PREFIX and evidence appends at
+the tail, so verdict-cache flushes and KV-prefix stability stop fighting.
+**Consistency class is NEVER sampled (grill H2):** cross-claim contradictions
+(today's AC-20 × SCENARIO-081/082 class) get an always-run scope — the
+deterministic cross-reference checks that already exist, plus an adjacency
+rule: an unchanged claim re-verifies when it shares a cited entity with any
+changed claim. **Re-verification policy (grill H6/H7 — replaces the earlier
+10% assertion, which has NO industry precedent; disclosed absent from
+Bazel/Turborepo/Develocity/GitHub docs):** sound-by-construction keys +
+entry signing (the Turborepo HMAC pattern,
+turborepo.dev/docs/reference/configuration); deterministic re-verification on
+dependency change (the merge-queue contract: GitHub required checks re-run on
+the merged state, docs.github.com merge-queue — soundness preferred over
+economy even at 2× cost); and a Develocity-style **same-fingerprint
+re-execution** probe (develocity.ai/product/flaky-tests-detection): identical
+keys are periodically re-verified and the DISAGREEMENT rate is the cache's
+distrust signal — plus a small protected always-checked invariant set.
+**Adjacency depth (grill H6):** the reverse-dependency closure over the
+claim/citation graph is the envelope (Meta PTS: transitive closure ≈ 25% of
+tests is the safety envelope, engineering.fb.com 2018; 52–58% of real bug
+fixes are multi-entity with 66–76% syntactically related co-changes, ICSME
+2018) — NOT k-hop or same-module; statistical pruning inside the closure is
+the optional economy (PTS runs a third of it at >99.9% catch), off by default.
 
 **WS6 — Surgical patch-mode on route-back (kills E3, enables WS5).** When
 route-back findings are precise, the writer prompt switches to patch-mode: the
@@ -198,12 +232,24 @@ mechanism, with the diff-scope checked, not hoped for.)
 Shard review into K≈3 claim-groups, concurrent reviewer children
 (`maxConcurrency` is already 3), orchestrator merges verdicts and owns
 cross-cutting invariants; P3 failure-path table required (shard × reject ×
-abandon × merge). (b) Deterministic pre-flight assembles the grounding
-fact-sheet (existence checks, registry counts, line anchors for pinned ids) —
-reviewer turns drop from verification legwork to judgment; fact-sheet format is
-byte-stable across rounds (KV-cache). (c) Calibration: writers thinking=high
-(not max) with an evidence-of-read floor; mechanical grounding tier routable to
-a cheaper model via `config.agentModels`.
+abandon × merge). **Merge rule (grill Q8 — majority voting is the
+worst-supported option):** for accept/reject verdicts, **minority veto** — ANY
+dissenting shard escalates the contested claims to one tie-break pass
+(measured: 14-validator minority-veto reaches 2.8% max error vs 14.8% for
+majority at TPR 95.5%, arxiv.org/abs/2510.11822; inter-judge agreement is
+chance-level for defect judging — κ 0.07–0.16 in co-creation settings,
+arxiv.org/abs/2604.27727 — so dissent is signal, not noise). Cross-cutting
+invariants are checked by an independent, de-anchored pass (derive the
+expected answer before reading the artifact — collapses false positives
+0.719→0.012, arxiv.org/abs/2607.05904; the Anthropic CitationAgent pattern,
+anthropic.com/engineering/multi-agent-research-system). A cached "pass" that
+survived only because shards were anchored identically is INVALID — replica
+disagreement drops the cache entry and escalates. (b) Deterministic pre-flight
+assembles the grounding fact-sheet (existence checks, registry counts, line
+anchors for pinned ids) — reviewer turns drop from verification legwork to
+judgment; fact-sheet format is byte-stable across rounds (KV-cache). (c)
+Calibration: writers thinking=high (not max) with an evidence-of-read floor;
+mechanical grounding tier routable to a cheaper model via `config.agentModels`.
 
 **Metrics (first-class, WS0).** Log per stage: first-pass acceptance rate,
 attempts-per-acceptance (target: beat the ~2.1 production baseline), review
@@ -215,7 +261,7 @@ Surface in the usage report (the σ-band flywheel already reads run logs).
 | Wave | Contents | Accepts |
 |---|---|---|
 | 1 (v0.4.59) | WS1 + WS2 for ALL writer roles (doc writers + implementer/tdd-guide coverage controls; deliverable-declaration bounce) + metrics | injected-finding coverage gaps bounce pre-review in every stage family; unknown-pinId/write-contradiction classes bounce pre-review; each bounce bounded at 1 |
-| 2 (v0.4.60) | WS5 + WS6 both loops (doc claim ledger; verify-loop file-level green cache; route-back/fix-loop patch-mode) | round ≥2 reviews AND re-reviews verify delta + 10% green-sample only; unchanged content never re-derived; writers emit scoped diffs |
+| 2 (v0.4.60) | WS5 + WS6 both loops (doc claim ledger; verify-loop file-level green cache; route-back/fix-loop patch-mode) | round ≥2 reviews verify delta + adjacency-closure + fingerprint-probe only; unchanged non-adjacent content never re-derived; writers emit scoped diffs |
 | 3 (v0.4.61) | WS3 + WS4 all writers/reviewers | premise anchors resolve mechanically everywhere; rejections persist as cross-stage lessons |
 | 4 | WS7 | review wall-clock ≤ ⅓ of serial baseline at equal defect-detection on the canary battery, BOTH the doc reviews and the verify fan-out |
 
@@ -235,21 +281,57 @@ the landing discipline).
 - **P5**: validator crash → advisory fail-open, review proceeds; test per branch.
 - **P1**: green manifests are OUR record, not the work's claim — the canary
   battery (planted defects in changed loci; changed-locus-skipped-manifest
-  failure) is the fail-closed direction; cache poisoning (Bazel hazard) is
-  excluded by keying on content hashes + prompt/model versions, tested by
+  failure; **replica-disagreement-must-invalidate** canary added by grill H2)
+  is the fail-closed direction; cache poisoning (Bazel hazard) is excluded by
+  keying on content hashes + the resolution tuple + entry signing, tested by
   mutation.
 - **P3**: WS7 ships with the shard × {reject, abandon, late} × merge-state table
-  and per-cell tests.
-- **P6**: the cache key recipe lives in ONE module; reviewer prompt version is
-  stamped from the same constant the prompts derive from.
+  and per-cell tests; the minority-veto merge rule gets a dissent-provoking
+  test.
+- **P6**: the cache key recipe lives in ONE module; the rubric-version stamp
+  derives from the same constant the reviewer prompt builder uses.
+- **Grill-added**: rubric-dropout rotation is SEEDED and logged (a run's
+  audited subset must be reconstructable); the protected never-dropped set is
+  pinned by test (a blocking-finding class can never rotate out).
 
-## 5. Risks and honest limits
+## 5. Grill round 1 (2026-09-20) — findings and resolutions
+
+Adversarial pass over this spec (grill-with-docs protocol); four factual
+questions answered by a dedicated research pass (citations inline above).
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| H1 | HIGH | "Claim" undefined; free-form reviewer rows could mint vacuous green | Claim set is deterministically enumerated from the anchor grammar; no verdict row ⇒ not green (WS5) |
+| H2 | HIGH | Cross-claim contradictions escape per-claim caching | Consistency class never sampled: deterministic cross-refs + shared-cited-entity adjacency always re-verified (WS5) |
+| H3 | HIGH | Coverage gate gameable ("tick-and-flick"; FBI/CHERRL show self-certification fools judges) | Three-layer gate: mechanical locus resolution (de-anchored) + reviewer deep-verifies rotating 30–50% subset with protected blocking set + remedy-quote note field (WS1) |
+| H4 | HIGH | One-bounce economics asserted, not derived | Bounce consumes agent-call budget, NOT convergence rounds (≤2 writer calls/round); validator precision is a wave-1 metric with demote-to-advisory tripwire (~70%) |
+| H5 | HIGH | Cache key omitted the resolution tuple (model+thinking per-call); KV-prefix vs. version-flush tension | Full resolution tuple in the key; rubric-stable prefix + append-only evidence (WS5) |
+| H6 | HIGH | Verify-loop green cache unsound for cross-file defects | Reverse-dependency closure is the envelope (Meta PTS; ICSME 2018 co-change data); k-hop rejected; pruning off by default (WS5) |
+| M7 | MED | 10% sampling asserted | NO industry standard exists (disclosed); replaced by signed keys + dependency-change re-verify + same-fingerprint disagreement probe + protected invariants (WS5) |
+| M8 | MED | Shard-merge policy unnamed | Minority veto (any dissent escalates) — strongest measured support; majority explicitly rejected (WS7) |
+| M9 | MED | Rejection memory could go stale | Lessons tagged with artifact rev; dropped on route-back rewrite (WS4) |
+| M10 | MED | WS6 diff-confinement not mechanically checkable | Soft-check (diff-size expectation) + reviewer-scoped-to-delta is the enforcement; documented as advisory (WS6) |
+| M11 | MED | Metrics unmeasurable as written | WS0 = derivation from existing audit.jsonl rows + delegation terminal lines + one σ-band per metric; no new instrumentation (Metrics) |
+
+The one user-frontier question (adjacency depth: direct importers vs. k-hop)
+was resolved by evidence — transitive closure, pruning optional — leaving no
+open decisions from this round.
+
+## 6. Risks and honest limits
 
 - The claim-level verdict cache is a novel synthesis (no published precedent
   found); hit-rate assumptions are unvalidated — instrument first (WS0), and
   let wave 2 land only if measured re-verification share stays >30%.
+- **Checklist self-certification is weak evidence** (FBI/CHERRL — a writer's
+  "addressed" declaration can fool even a good judge): WS1's three-layer gate
+  exists because of this; the writer's map alone never blocks anything green.
+- **No industry-standard re-verification sampling rate exists** (disclosed by
+  research): the fingerprint-probe + dependency-trigger policy is our own
+  synthesis on the Develocity/merge-queue precedents — treat its parameters
+  as measured, not settled.
 - Fan-out costs ~15× tokens per review (Anthropic's number) — it must ride on
-  WS5/WS7b shrinking the review first, or it multiplies cost.
+  WS5/WS7b shrinking the review first, or it multiplies cost; and majority
+  voting among shards is explicitly REJECTED (measured worst option).
 - Intrinsic self-critique can hurt (Huang et al.) — every writer-side self-check
   in this design is tool-interactive or deterministic, never introspection-only.
 - Cascade escalation pays twice — measure before routing verification down-tier.
