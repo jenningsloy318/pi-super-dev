@@ -7,6 +7,8 @@ import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readC
 // 059 R1A D-R-B residual (§3 R3 DEFECT-1 + D-R-E): the spec-fallback family
 // validator, its validation context, the reconciliation section builder, and
 // the Metadata Strike-1 classifier/repair template.
+import { designatedBounceFindings } from "./artifact-convergence/validators.ts";
+import { validatorBounceEnabled } from "../convergence-economy/finding-resolution-gate.ts";
 import {  selfSpecArtifactMatcher, contractValidationContext, familyInclusionMismatches, freshSpecWriteClaims, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
@@ -150,7 +152,7 @@ function upstreamBlockingSummary(state: PipelineState): string[] {
  *  one-gate-per-round pattern burned 6 live rounds: the writer patched the
  *  trace finding, resubmitted, and only THEN learned the family gate flagged
  *  three more files). */
-export function specFamilyPureErrors(state: PipelineState, ctx: StageContext, round = 0): string[] {
+export function specFamilyPureErrors(state: PipelineState, ctx: StageContext, round = 0, designatedCollector?: string[]): string[] {
 	// round 0 (default) = pure evaluation context (no strike machinery consumes it);
 	//   v0.4.14 (gate F4): the live callers thread the REAL round — isPreW's
 	//   round > 1 degradation rule was permanently disarmed by the v0.4.11
@@ -184,6 +186,11 @@ export function specFamilyPureErrors(state: PipelineState, ctx: StageContext, ro
 			specWriteClaims: freshSpecWriteClaims(state as Record<string, unknown>),
 		}), ...gateW]);
 		for (const a of advisory) ctx.log(`spec convergence: contract-validator (advisory): ${a}`);
+		// v0.4.64 WS2 (066 §2): designated advisory classes ride the collector for
+		// the spec node's pre-review bounce leg (same classes as the
+		// artifact-convergence family; blocking classes keep the round path).
+		const designated = designatedBounceFindings(advisory);
+		if (designated.length > 0 && designatedCollector) designatedCollector.push(...designated);
 		return blocking;
 }
 
@@ -242,6 +249,8 @@ export const specConvergenceNode: Node = {
 		}
 		let lastErrors: string[] = [];
 		let round = 0;
+		// v0.4.64 WS2: walk-scoped writer-bounce budget (P8 bound 1, shared across the walk).
+		let specWriterBounceSpent = false;
 		const maxRounds = MAX_CONVERGENCE_ROUNDS;
 		// F3 (RC2): grant a resumed run FRESH rounds after its replay — the old
 		// static cap fired right after the cache-hit replay and re-killed the run
@@ -501,6 +510,30 @@ export const specConvergenceNode: Node = {
 				continue;
 			}
 			ctx.log(`spec convergence: trace gate passed round ${round}`);
+			// v0.4.64 WS2 (066 §2) — the spec site's pre-review bounce leg:
+			// designated advisory violations bounce the writer ONCE (agent budget,
+			// NOT a convergence round); shared with the family-gate round path which
+			// keeps owning BLOCKING classes. P8 bound 1 per walk; kill-switch mirrors
+			// the artifact-convergence family.
+			if (!specWriterBounceSpent && validatorBounceEnabled()) {
+				const designated: string[] = [];
+				specFamilyPureErrors(state, ctx, round, designated);
+				if (designated.length > 0) {
+					specWriterBounceSpent = true;
+					ctx.log(`spec convergence: validator bounce — ${designated.length} designated violation(s): one bounded writer re-dispatch follows (agent budget, not a convergence round)`);
+					setSpecFeedback(state, "designated validator violations", designated.slice(0, 8));
+					const vb = await specTask.run(state, ctx);
+					if (vb.status === "cancelled") return vb;
+					if (vb.status === "failed") {
+						lastErrors = [`spec agent failed (post-validator-bounce): ${vb.error ?? "unknown error"}`];
+						setSpecFeedback(state, "validator bounce", lastErrors);
+						ctx.log(`spec convergence: validator-bounced writer failed round ${round} — ${lastErrors.join("; ")}`);
+						prevOwnOpen = Number.POSITIVE_INFINITY;
+						lastOwnOpen = Number.POSITIVE_INFINITY;
+						continue;
+					}
+				}
+			}
 
 			// 059 R1A D-R-B residual (§3 R3 DEFECT-1 — Stage 6-skip fallback): when
 			// design declared no amendmentFamily, the specification's own
