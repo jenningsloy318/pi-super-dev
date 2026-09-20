@@ -1,6 +1,6 @@
 # Convergence Economy — first-pass acceptance and verification cost
 
-Status: proposed — grill rounds 1-5 folded (6H+5M, 5H+4M+1L, 4H+4M, 3H+5M; answers in §5, research-backed).
+Status: proposed — grill rounds 1-6 folded (6H+5M, 5H+4M+1L, 4H+4M, 3H+5M, 2H+6M; answers in §5, research-backed).
 Lineage: sibling of 065
 (first-pass satisfiability). 065 makes the spec's write-claims deterministically
 checkable BEFORE any implementer attempt; this doc makes the write→review
@@ -8,6 +8,10 @@ convergence loop itself cheap and first-pass accurate — the two compose: 065
 guards satisfiability, 066 guards economy. Evidence base: live run
 `2026-09-20T07-37-57-688Z` (the first run of the v0.4.57/v0.4.58 harness) plus
 two deep-research passes (2026-09-20) whose citations appear inline.
+
+**Contents:** §0 receipts · §1 research grounding · §2 workstreams + scope
+matrix · §3 rollout/acceptance · §4 test strategy + invariants + telemetry ·
+§5 grill rounds 1-6 (findings/resolutions) · §6 risks · §7 glossary.
 
 ---
 
@@ -44,6 +48,10 @@ correct per D1. The problem is what each cycle COST:
     (amendmentFamily not covering pins on touched shared surfaces) — advisory,
     forcing a full design round 2. A pre-review bounce would have caught all 9
     in seconds.
+    **Third instance, spec stage (21:51:58, same run):** spec rounds 6-7
+    burned on the 065 Gate-R amendment-family determinism (spec write-claims
+    on pinned surfaces without declared sharedFile entries) — the same
+    deterministic-after-write pattern, at the run's most expensive stage.
   - **E3** — route-back carried two precisely-worded amendments but re-ran the
     whole requirements writer + full review (~25 min for a two-paragraph patch,
     177 resume rows dropped).
@@ -303,6 +311,23 @@ is a producer-nondeterminism signal routed to audit, never overwritten
 (Bazel/Gradle remote-cache precedent); shard replicas emit CANDIDATE rows and
 only the round's orchestrator COMMITS (single trusted writer per key); the
 append-only runlog invariants (INV-L1..L6) extend to the ledger.
+**Affected-graph invalidation (grill-6 Q1/Q4, research-answered — CORRECTS
+the earlier "content hashing suffices" position):** content hashing of a
+claim's DECLARED inputs is weaker than every monorepo precedent — Nx,
+Turborepo, and Bazel all ALSO compute reverse-dependency affected sets,
+because (a) shared inputs not in a task's declared set silently fail to
+invalidate (a documented Turborepo failure mode) and (b) dependency-RELATION
+changes are only caught by graph traversal. The cache therefore adds:
+(1) SUSPECT-LINK invalidation (the DOORS/DO-178C pattern — a change to a
+shared input flags every trace-linked claim as suspect) with the
+link-completeness caveat made mechanical: a coverage check proves every
+verdict's input dependencies are recorded in the link set (a missed link is
+a silently stale verdict — the DO-178C audit-gap warning); (2) a
+globalDependencies analog — inputs that invalidate ALL verdicts (the spec
+control block, the rubric) as the escape hatch for untraceable shared
+state; (3) spec-rev hashes into every downstream phase-plan and verify-cache
+key (amendment implies the impacted subset re-verifies via trace links,
+never wholesale).
 **Verifier-change compatibility REJECTED (grill-5 Q4, research-answered):**
 every examined compiler/build cache makes verifier identity part of the key —
 a verifier change is a wholesale miss BY CONSTRUCTION (ccache compiler_check,
@@ -400,7 +425,12 @@ minutes per accepted artifact, verdict-cache hit rate, bounce-gate save count.
 Surface in the usage report (the σ-band flywheel already reads run logs). **Attempt definition (grill-5 Q6):** an ATTEMPT is one writer dispatch
 that SUBMITTED an artifact to review; bounces are counted separately
 (bounce-prevented submissions) — the bounce's value appears as fewer
-attempts by construction, not by accounting. **Bounce headroom (grill-5
+attempts by construction, not by accounting. **Per-stage targets (grill-6 Q6):** every doc-stage convergence cycle
+(2B/2C/7), not just stage 2 — all ≤ 40 min baseline-relative. **Budget
+attribution (grill-6 Q3):** the __agentBudget marker gains a consumed-by
+breakdown (writer/reviewer/bounce/probe) so a bounce-policy death is named
+as such (P10).
+**Bounce headroom (grill-5
 Q7):** bounce budget = min(2/round, ~15% of remaining agent budget);
 implementation phases reserve ≥60% of the agent budget (guidance row in
 the rollout; the pre-call fuse remains the hard cap). **Small-n decision procedure (grill-5 Q1, research-answered):** with n≤5,
@@ -461,6 +491,18 @@ the landing discipline).
   never replays; V5 tier recorded on every row, probe budget weights weak
   tiers; V6 audit selection unsealed only after submission; V7 ledger appends
   are single-writer-committed with divergences preserved.
+- **Canary tiers + rotation (grill-6 Q5, research-answered):** the pool is
+  TWO-TIER — natural defects plus ADVERSARIAL/gaming items (subtle wrong
+  claims, confident-but-unsupported assertions, checklist-gaming attempts) —
+  because natural-only batteries systematically overstate judge quality
+  (LLMBar, ICLR 2024, arxiv.org/abs/2310.07641; universal judge-attack
+  phrases, arxiv.org/abs/2402.14016); rotated LiveBench-style (1/6 per
+  cadence, full refresh every 6, freshest slice WITHHELD —
+  arxiv.org/abs/2406.19314) and never fully visible to the pipeline under
+  evaluation.
+- **Canary hermeticity (grill-6 Q2):** canary runs carry a hermetic scope
+  flag — separate ledger namespace, cache writes discarded, telemetry
+  counted separately.
 - **Canary-battery honesty (grill-4 Q7, research-answered):** versioned
   defect pools with a HELD-OUT split (certifying against canaries you tuned
   against is teach-to-test by construction — the mutation-testing discipline;
@@ -562,6 +604,22 @@ provisos preserved, conflicts resolved at a merge step.
 | Q6 | MED | "Attempt" undefined for the headline metric | Attempt = submitted-to-review dispatch; bounces counted separately (Metrics) |
 | Q7 | MED | Bounce headroom unstated | min(2/round, ~15% remaining budget); ≥60% reserved for implementation (Metrics) |
 | Q8 | LOW | Governance: proposed→approved trigger unnamed | Green-lighting wave 1 is the approval; lifecycle edit is a named commit |
+
+### Grill round 6 (2026-09-20) — consolidation round
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| Q1 | HIGH | Spec-amendment downstream cache invalidation unstated | Suspect-link invalidation + link-completeness coverage check + spec-rev in downstream keys (WS5) |
+| Q2 | HIGH | Canary runs could poison the live ledger | Hermetic scope flag: separate namespace, cache writes discarded (§4) |
+| Q3 | MED | Agent-budget death would not attribute bounce consumption | Marker gains consumed-by breakdown (Metrics) |
+| Q4 | MED | Multi-spec shared-file staleness answered WRONG first (hashing suffices) | CORRECTED: affected-graph sets on top of hashing, per unanimous Nx/Turborepo/Bazel precedent (WS5) |
+| Q5 | MED | Canary pool lacks gaming attempts | Two-tier pool (natural+adversarial, LLMBar) + LiveBench rotation with withheld slice (§4) |
+| Q6 | MED | Acceptance targets stage-2-only | Per doc-stage targets (Metrics) |
+| Q7 | MED | Row-shy reviewer could shrink the green set | Already sound (INV-V1 fail-closed + control-repair loop); stated explicitly |
+| Q8 | LOW | Doc cohesion at ~500 lines | Single doc kept (house convention); TOC added |
+
+**Closing verdict:** the frontier is now implementation, not specification —
+rounds 5-6 trend design-completeness; close the grill here and build wave 1.
 
 ## 6. Risks and honest limits
 
