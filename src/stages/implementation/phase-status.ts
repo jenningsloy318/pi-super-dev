@@ -76,6 +76,17 @@ export interface PhaseStatusEntry {
 	 *  phases that can still converge). */
 	partialReEntries?: number;
 	lastFailureSig?: string;
+	/** Run 2026-09-19T04-50-49-552Z — the LAST already-satisfied-wall signature
+	 * observed for this phase (deliverables verified satisfied while the build
+	 * gate stayed red; machine-computed from the real gate errors with the
+	 * synthetic baseline-verify annotation stripped — red-acceptance.ts
+	 * alreadySatisfiedWallSignature). Durable across §D convergence passes via
+	 * state.implementation: the circuit breaker in stage.ts's already-fail arm
+	 * blocks the phase (`already-satisfied-blocked`) when the SAME signature
+	 * recurs — this phase in a prior pass, or a different non-green phase. A
+	 * green outcome replaces the entry and erases the field (the wall was
+	 * repaired — never blocks on it again). */
+	alreadySatisfiedWallSig?: string;
 	/** v0.3.85 S3 (metrics-only): the PEAK implementer attempts this phase
 	 *  consumed across §D entries (attempts reset per §D re-entry per F3, so
 	 *  the max is the honest exposure). No control flow reads this — it feeds

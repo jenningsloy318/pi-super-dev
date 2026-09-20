@@ -81,7 +81,7 @@ export interface JudgeRouting {
 	redJudgeRoutes: number;
 	/** fix-environment restarts granted after this call (v0.3.30 F3). */
 	redEnvRestarts: number;
-	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening";
+	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" | "already-satisfied-blocked";
 }
 
 export type JudgeRoutingOutcome =

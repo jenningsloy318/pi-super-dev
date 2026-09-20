@@ -52,7 +52,7 @@ export interface RedLadderInput {
 	redJudgeDiagnosis: string;
 	redJudgeEvidenceLabel: string;
 	/** The current attempt's terminalStopReason value (echoed unless an arm owns it). */
-	incomingStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening";
+	incomingStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" | "already-satisfied-blocked";
 	/** The rejection hint (falsy ⇒ accept). */
 	retryHint: string;
 	redEvidence: RedEvidence;
@@ -77,7 +77,7 @@ export interface RedLadderRouting {
 	redJudgeDiagnosis: string;
 	redJudgeEvidenceLabel: string;
 	redHint: string;
-	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening";
+	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" | "already-satisfied-blocked";
 }
 
 export type RedLadderOutcome =

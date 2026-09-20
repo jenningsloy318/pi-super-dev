@@ -100,7 +100,7 @@ export async function closePhaseTail(input: PhaseTailInput): Promise<PhaseTailOu
 		// CONTINUES to the next phase; the outer §D convergence loop re-enters
 		// non-green phases for another bounded pass until allGreen or the
 		// global budget fuse.
-		preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : terminalStopReason === "environment-blocked" ? "environment-blocked" : terminalStopReason === "phase-attempt-cap" ? "phase-attempt-cap" : terminalStopReason === "phase-wall" ? "phase-wall" : terminalStopReason === "wall-fuse" ? "wall-fuse" : terminalStopReason === "inherited-red" ? "inherited-red" : terminalStopReason === "declared-handoff" ? "declared-handoff (f4)" : terminalStopReason === "red-weakening" ? "red-weakening" : "gates-unmet"); // review-2 F8: keep the honest reason (v0.3.85 F3: the three bound reasons pass through verbatim; v0.3.85 F2/F4: the handoff reasons pass through named; v0.3.85 F5: the red-weakening handoff reason passes through named)
+		preservePartialPhase(ctx, setup, phaseId, phaseName, terminalStopReason === "no-progress" ? "no-progress" : terminalStopReason === "budget" ? "budget" : terminalStopReason === "environment-blocked" ? "environment-blocked" : terminalStopReason === "phase-attempt-cap" ? "phase-attempt-cap" : terminalStopReason === "phase-wall" ? "phase-wall" : terminalStopReason === "wall-fuse" ? "wall-fuse" : terminalStopReason === "inherited-red" ? "inherited-red" : terminalStopReason === "declared-handoff" ? "declared-handoff (f4)" : terminalStopReason === "red-weakening" ? "red-weakening" : terminalStopReason === "already-satisfied-blocked" ? "already-satisfied-blocked" : "gates-unmet"); // review-2 F8: keep the honest reason (v0.3.85 F3: the three bound reasons pass through verbatim; v0.3.85 F2/F4: the handoff reasons pass through named; v0.3.85 F5: the red-weakening handoff reason passes through named; run 2026-09-19T04-50-49-552Z: the already-satisfied wall passes through named)
 		if (terminalStopReason === "environment-blocked") envBlockedPhases.add(phaseId);
 		{
 			const sig = terminalReasons.join("; ").slice(0, 200);
@@ -110,6 +110,11 @@ export async function closePhaseTail(input: PhaseTailInput): Promise<PhaseTailOu
 			const entry = phaseStatus.find((p) => p.id === phaseId)!;
 			entry.lastFailureSig = sig;
 			entry.partialReEntries = sameSig ? (prior?.partialReEntries ?? 0) + 1 : 0;
+			// Run 2026-09-19T04-50-49-552Z: phaseStatusUpsert REPLACES the entry, and
+			// the already-fail arm recorded this pass's wall signature on the prior
+			// entry mid-attempt — carry it across the replace (the circuit breaker
+			// reads it on every later §D pass / phase).
+			if (prior?.alreadySatisfiedWallSig !== undefined) entry.alreadySatisfiedWallSig = prior.alreadySatisfiedWallSig;
 		}
 		emitPhaseStatus("partial");
 		lastFailuresUpsert(lastFailures, phaseId, [
@@ -121,7 +126,7 @@ export async function closePhaseTail(input: PhaseTailInput): Promise<PhaseTailOu
 		if (terminalFailureKind === "red-generation") {
 			ctx.log(`Implementation ${phaseId} partial (RED generation stopped after ${terminalRedTries} tries in attempt ${attemptsRun}${terminalStopReason === "no-progress" ? ", no progress" : terminalStopReason === "budget" ? ", budget exhausted" : terminalStopReason === "environment-blocked" ? ", environment blocked (fix is outside this worktree — judge diagnosis above)" : terminalStopReason === "red-weakening" ? " (red-weakening — declared handoff routed; the run ends status replan)" : ""}) — continuing to the next phase`); // review-2 F8
 		} else {
-			ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : terminalStopReason === "phase-attempt-cap" ? " (phase-attempt-cap)" : terminalStopReason === "phase-wall" ? " (phase wall budget exhausted)" : terminalStopReason === "wall-fuse" ? " (wall-fuse — run wall budget exhausted; resumable by design)" : terminalStopReason === "inherited-red" ? " (inherited-red — declared handoff routed; the run ends status replan)" : terminalStopReason === "declared-handoff" ? " (declared-handoff (f4) — the run ends status replan)" : ""} — continuing to the next phase`); // review-2 F8
+			ctx.log(`Implementation ${phaseId} partial after ${attemptsRun} attempt(s)${terminalStopReason === "no-progress" ? " (no progress)" : terminalStopReason === "budget" ? " (budget exhausted)" : terminalStopReason === "environment-blocked" ? " (environment blocked — judge diagnosis above)" : terminalStopReason === "phase-attempt-cap" ? " (phase-attempt-cap)" : terminalStopReason === "phase-wall" ? " (phase wall budget exhausted)" : terminalStopReason === "wall-fuse" ? " (wall-fuse — run wall budget exhausted; resumable by design)" : terminalStopReason === "inherited-red" ? " (inherited-red — declared handoff routed; the run ends status replan)" : terminalStopReason === "declared-handoff" ? " (declared-handoff (f4) — the run ends status replan)" : terminalStopReason === "already-satisfied-blocked" ? " (already-satisfied-blocked — deliverables satisfied but the build gate stays red on the same external subject(s); recorded for §D/REPLAN)" : ""} — continuing to the next phase`); // review-2 F8
 		}
 		// Adversarial S4 (v0.3.99 fix): if THIS phase's rollback stash is still
 		// pending (the phase went partial before its re-apply point), preserve

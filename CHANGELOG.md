@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fix — v0.4.56: the already-satisfied-wall circuit breaker (run 2026-09-19T04-50-49-552Z)
+
+- **The incident**: spec-26 phases 2–6 each burned 3–4 full attempts against an IDENTICAL wall — deliverables verified satisfied on disk (`deliverables=true`) while the full-suite build gate stayed red (`build=false`) on 4 out-of-scope regressions new on the branch (a pinned `src/schemas.ts` + registry census tests). The honest tdd-guide no-op ("nothing to author, already green") was rejected by the acceptance layer (correct P4), F9-A correctly routed to the already-satisfied verification, and the verification failed on the SAME gate errors — but the `already-fail` outcome carried raw gate errors with NO fault classification, NO recurrence detection, NO cross-phase propagation (unlike the post-GREEN path's classifyGateFault/env-blocker/recurrence-valve trio). Every §D pass and every later phase re-dispatched agents that provably could not change the outcome: ≈40 dispatches, ~$50, 16h, ended only by the run wall fuse.
+- **The fix (class-level, deterministic, machine-decided)**:
+  - `red-acceptance.ts` — `alreadySatisfiedWallSignature()`: stable signature of the REAL gate failures (synthetic `[baseline-verify]` annotation stripped via `isBaselineVerifySyntheticError`, ANSI stripped, whitespace collapsed, sorted/deduped, 160/block, 200 total — `lastFailureSig` parity); the `already-fail` outcome carries it ONLY when deliverables verified satisfied (missing deliverables stay actionable by RED/GREEN — old semantics verbatim).
+  - `stage.ts` — the already-fail arm records the signature on the phase's durable `PhaseStatusEntry` (state.implementation carries it across §D passes; a green outcome replaces the entry and erases it) and ends the phase partial with the NAMED reason `already-satisfied-blocked` when the SAME signature recurs: this phase in a prior pass, or a different non-green phase (cross-phase — a phase that later went green proves the wall was repaired and never blocks).
+  - `phase-tail.ts` — the named reason reaches the preserve-stash label + the partial log line; the wall field survives the tail's entry replacement.
+  - Control-flow honesty (found the hard way — TS narrowing was right): the already-fail arm BREAKS the attempt loop, so within-pass recurrence cannot exist; the recurrence that burned the run lives across §D passes and across phases, hence the durable phaseStatus carrier, not a per-pass local.
+- Tests: `tests/implementation-already-satisfied-wall.test.ts` (9) — signature determinism/annotation-stripping/caps; first-occurrence records without blocking; prior-pass and cross-phase recurrence block with the named reason; green erases the wall; a different signature is new information; missing deliverables carry no signature. Suite 299/4,449 green, tsc 0.
+
 ### Refactor — v0.4.55: the red-evidence.ts split (wave 5 — one version bump for the whole wave)
 
 - **red-evidence.ts 1,060 -> 667 lines (-37%)**:

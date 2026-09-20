@@ -35,9 +35,10 @@ import { runBuildGate, runDeliverableCheck, resetDeliverableCheckCache, type Del
 import { appendGateChecked } from "../../runlog.ts";
 import { phaseStatusUpsert, type PhaseStatusEntry, type PhaseFailureEntry } from "./phase-status.ts";
 import { redEvidenceFailureReasons, redEvidenceLogLine, restoreUnacceptedRedChanges, snapshotFiles, type RedEvidence } from "./red-evidence.ts";
+import { isBaselineVerifySyntheticError } from "../../fault-classification.ts";
 import { RESEARCH_ASSIST_RED_TRIGGER_TRIES, type ResearchAssistRedArm } from "../research-assist.ts";
 
-type StopReason = "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening";
+type StopReason = "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" | "already-satisfied-blocked";
 
 export interface RedAcceptanceInput {
 	ctx: StageContext;
@@ -71,9 +72,35 @@ export type RedAcceptanceOutcome =
 	| { kind: "red-weakening-partial"; terminalRedTries: number }
 	| { kind: "no-evidence" }
 	| { kind: "already-green" }
-	| { kind: "already-fail"; attemptErrors: string[]; missingDeliverables: string[] }
+	| { kind: "already-fail"; attemptErrors: string[]; missingDeliverables: string[]; /** Run 2026-09-19T04-50-49-552Z: present ONLY when deliverables verified satisfied and the build gate stayed red — a stable signature of the REAL failing subjects (synthetic baseline-verify annotation stripped) the caller uses for its already-satisfied-wall circuit breaker. Empty/absent ⇒ the generic missing-deliverable path (old behavior). */ alreadySatisfiedWallSig?: string }
 	| { kind: "red-terminal"; attemptErrors: string[]; terminalRedTries: number; terminalStopReason: StopReason }
 	| { kind: "accepted"; acceptedRed: { status: RedStatus; testFiles: string[]; changedFiles: string[] }; /** null = leave the caller's phase-hoisted snapshot UNTOUCHED — 8c5d07bc F1 / 7f682af4 F1: an empty-map rebind would blind the GREEN-boundary oracle's changedSinceSnapshot to implementer edits of the prior confirmed RED. */ redTestSnapshot: Map<string, string | null> | null };
+
+/**
+ * Deterministic signature of a build-gate failure set, for wall-recurrence
+ * detection (run 2026-09-19T04-50-49-552Z: phases 2–6 each burned 3–4 full
+ * RED+implementer attempts against an IDENTICAL `deliverables=true,
+ * build=false` wall — the out-of-scope regressions new on the branch — because
+ * the already-fail outcome carried no recurrence semantics). Strips the
+ * synthetic `[baseline-verify]` annotation (isBaselineVerifySyntheticError —
+ * exact-prefix, no fuzzy absorb), strips ANSI, collapses whitespace, keeps
+ * each block's first 160 chars, dedupes, sorts (runner output order is not
+ * contract), and caps at 200 like PhaseStatusEntry.lastFailureSig. Returns ""
+ * when nothing REAL failed (annotation-only) — callers treat that as
+ * "no signature" and keep today's behavior. Pure; never throws.
+ */
+export function alreadySatisfiedWallSignature(errors: readonly string[]): string {
+	const real = errors.filter((e) => !isBaselineVerifySyntheticError(e));
+	if (real.length === 0) return "";
+	return [...new Set(real.map((block) => String(block ?? "")
+		.replace(/\u001b\[[0-9;]*m/g, "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 160)))]
+		.sort()
+		.join(" | ")
+		.slice(0, 200);
+}
 
 /**
  * Adjudicate the RED outcome after the while loop. Synchronous (the build
@@ -109,7 +136,15 @@ export function adjudicateRedAcceptance(input: RedAcceptanceInput): RedAcceptanc
 			return { kind: "already-green" };
 		}
 		ctx.log(`Implementation ${phaseId} RED already-satisfied verification FAIL: ${[...gate.errors, ...deliverableCheck.missing.map((e) => `deliverable: ${e}`)].join("; ") || "phase gates unmet"}`);
-		return { kind: "already-fail", attemptErrors: gate.errors, missingDeliverables: deliverableCheck.missing };
+		// Run 2026-09-19T04-50-49-552Z: when the deliverables ARE satisfied the
+		// failure set is, by the F9-A contract, everything the RETRY cannot
+		// change from inside this phase's RED/GREEN cycle — tag it so the caller
+		// can detect recurrence and stop the attempt loop deterministically
+		// (the incident looped 4 attempts × 5 phases ≈ 40 agent dispatches on an
+		// unchanged wall). Absent when deliverables are missing (actionable by
+		// RED/GREEN — old retry semantics stay).
+		const alreadySatisfiedWallSig = deliverableCheck.pass ? alreadySatisfiedWallSignature(gate.errors) : "";
+		return { kind: "already-fail", attemptErrors: gate.errors, missingDeliverables: deliverableCheck.missing, ...(alreadySatisfiedWallSig ? { alreadySatisfiedWallSig } : {}) };
 	}
 	// v0.3.30 F2: unknown (red-unverified) evidence is only a TERMINAL
 	// failure when the fail-closed guard engaged (the phase requires

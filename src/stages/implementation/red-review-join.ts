@@ -74,7 +74,7 @@ export interface RedReviewJoinInput {
 	/** Phase-scoped state carried in (echoed on restart — v0.4.33 lesson). */
 	terminalFailureKind: "red-generation" | "implementation-gate";
 	terminalRedTries: number;
-	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening";
+	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" | "already-satisfied-blocked";
 	/** Carried in; nulled ONLY on reject. */
 	acceptedRed: AcceptedRedContext | null;
 	redTestSnapshot: Map<string, string | null>;
@@ -88,7 +88,7 @@ export interface RedReviewRouting {
 	phaseReviewViolations: number;
 	terminalFailureKind: "red-generation" | "implementation-gate";
 	terminalRedTries: number;
-	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening";
+	terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" | "already-satisfied-blocked";
 	/** Set on the WEAK branch (advisory; consumed once by the next prompt). */
 	redWeaknessAdvisory: string;
 	/** Set on the REJECT branch (the re-author evidence). */

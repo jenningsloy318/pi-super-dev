@@ -16,6 +16,7 @@ import { runStageCloseReverify } from "./stage-close-reverify.ts";
 import { prepareImplementationRun } from "./run-prepare.ts";
 import { adjudicateRedRetryLadder } from "./red-retry-ladder.ts";
 import { adjudicateRedAcceptance } from "./red-acceptance.ts";
+import { phaseStatusUpsert } from "./phase-status.ts";
 import { dispatchRedTdd } from "./red-tdd-dispatch.ts";
 import { runRedOracleCycle } from "./red-oracle-cycle.ts";
 import { assembleImplementerPrompt } from "./implementer-prompt.ts";
@@ -179,7 +180,7 @@ export const implementationStage: Stage = {
 			let attemptsRun = 0;
 			let terminalFailureKind: "red-generation" | "implementation-gate" = "implementation-gate";
 			let terminalRedTries = 0;
-			let terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" = "failed";
+			let terminalStopReason: "budget" | "no-progress" | "failed" | "environment-blocked" | "phase-attempt-cap" | "phase-wall" | "wall-fuse" | "inherited-red" | "declared-handoff" | "red-weakening" | "already-satisfied-blocked" = "failed";
 			// v0.3.57 liveness: set when the worktree vanished under a running phase —
 			// breaks the PHASE loop after this phase's partial bookkeeping (remaining
 			// phases cannot run in a deleted worktree; re-probing each is pure noise).
@@ -652,6 +653,46 @@ export const implementationStage: Stage = {
 					if (acceptance.kind === "already-fail") {
 						attemptErrors = acceptance.attemptErrors;
 						missingDeliverables = acceptance.missingDeliverables;
+						// Run 2026-09-19T04-50-49-552Z — the already-satisfied-wall circuit
+						// breaker. That run's phases 2–6 each burned 3–4 full attempts
+						// (tdd-guide + implementer + oracle + gates ≈ 15–70 min each) against
+						// an IDENTICAL wall: deliverables verified satisfied on disk, build
+						// gate red on out-of-scope regressions new on the branch. The honest
+						// tdd-guide no-op ("nothing to author, already green") was rejected by
+						// the acceptance layer (correct P4) and F9-A correctly routed to the
+						// already-satisfied verification — which then failed on the SAME gate
+						// errors, and the generic retry re-dispatched agents that provably
+						// could not change the outcome (≈40 dispatches, ~$50, 16h, wall-fuse).
+						//
+						// Control-flow note: this arm BREAKS the attempt loop (an already-fail
+						// always ends the pass's attempts for this phase), so within-pass
+						// recurrence cannot exist — the recurrence that burned the run lives
+						// ACROSS §D convergence passes and ACROSS phases. Hence the durable
+						// carrier: the wall signature rides this phase's PhaseStatusEntry
+						// (state.implementation persists phaseStatus between passes), and the
+						// deterministic block fires when the SAME signature is now observed
+						// again — by THIS phase in a prior pass (still not green), or by a
+						// DIFFERENT non-green phase (cross-phase; a phase that later went green
+						// proves the wall was repaired and never blocks). Missing deliverables
+						// never carry a signature (actionable by RED/GREEN — old semantics).
+						const wallSig = acceptance.alreadySatisfiedWallSig;
+						if (wallSig) {
+							const priorSamePhase = phaseStatus.find((p) => p.id === phaseId && p.alreadySatisfiedWallSig === wallSig);
+							const priorOtherPhase = phaseStatus.find((p) => p.id !== phaseId && p.status !== "green" && p.alreadySatisfiedWallSig === wallSig);
+							// Record durably NOW (before the tail's upsert replaces the entry —
+							// closePhaseTail carries the field across its replace).
+							phaseStatusUpsert(phaseStatus, phaseId, "partial");
+							const wallEntry = phaseStatus.find((p) => p.id === phaseId)!;
+							wallEntry.alreadySatisfiedWallSig = wallSig;
+							if (priorSamePhase !== undefined || priorOtherPhase !== undefined) {
+								terminalStopReason = "already-satisfied-blocked";
+								const wallOrigin = priorSamePhase !== undefined
+									? "a prior convergence pass of this phase"
+									: `phase ${priorOtherPhase!.id}`;
+								attemptErrors.push(`already-satisfied-blocked: deliverables verified satisfied but the build gate failed on the same subject(s) as ${wallOrigin} (deliverables=true, build=false; wall signature: ${wallSig}) — RED/GREEN retries cannot change an out-of-phase failure; ending the phase partial (recorded for §D convergence / REPLAN)`);
+								ctx.log(`Implementation ${phaseId} already-satisfied wall: same failing subject(s) as ${wallOrigin} with deliverables satisfied — ending the phase partial (already-satisfied-blocked) instead of retrying an unfixable wall`);
+							}
+						}
 						break;
 					}
 					if (acceptance.kind === "red-terminal") {
