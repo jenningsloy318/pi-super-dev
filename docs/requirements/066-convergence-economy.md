@@ -181,7 +181,11 @@ metr.org/blog/2025-06-05-recent-reward-hacking/). **WS1 × WS6 composition
 (grill-2 Q4):** the coverage map is itself cache-keyed — findings whose
 addressing loci are unchanged since a verified map inherit green (a WS5 hit);
 the writer maps only the DELTA; the gate checks
-`injected − (mapped ∪ inheritedGreen) ≠ ∅`. **Protected-set derivation
+`injected − (mapped ∪ inheritedGreen) ≠ ∅`. **Gate-set consistency (grill-5 Q2):** the gate checks the
+round's injection set AS STAMPED AT INJECTION TIME — duty downgrades
+(v0.3.19) apply BEFORE injection and are stamped, so the gate's set is
+exactly what the round carried; no blocking↔advisory ping-pong across
+rounds (consistency test pins it). **Protected-set derivation
 (grill-2 Q7):** never-dropped classes are DERIVED — all convergence-ledger
 findings with historical blocking=true, severity≥high, plus the fixed
 anchor-grammar core — configurable with a floor the config cannot lower.
@@ -363,7 +367,15 @@ tier routable to a cheaper model via `config.agentModels`.
 **Metrics (first-class, WS0).** Log per stage: first-pass acceptance rate,
 attempts-per-acceptance (target: beat the ~2.1 production baseline), review
 minutes per accepted artifact, verdict-cache hit rate, bounce-gate save count.
-Surface in the usage report (the σ-band flywheel already reads run logs).
+Surface in the usage report (the σ-band flywheel already reads run logs). **Attempt definition (grill-5 Q6):** an ATTEMPT is one writer dispatch
+that SUBMITTED an artifact to review; bounces are counted separately
+(bounce-prevented submissions) — the bounce's value appears as fewer
+attempts by construction, not by accounting. **Bounce headroom (grill-5
+Q7):** bounce budget = min(2/round, ~15% of remaining agent budget);
+implementation phases reserve ≥60% of the agent budget (guidance row in
+the rollout; the pre-call fuse remains the hard cap). **Small-n honesty
+(grill-5 Q1, pending research):** with ≤5 runs per condition, acceptance
+targets are reported as interval estimates, never point-threshold pass/fail.
 
 ## 3. Rollout order and acceptance criteria
 
@@ -399,6 +411,12 @@ the landing discipline).
   test.
 - **P6**: the cache key recipe lives in ONE module; the rubric-version stamp
   derives from the same constant the reviewer prompt builder uses.
+- **Lane mapping (grill-5 Q5):** WS1/WS2 bounce gates → L0 grammar tables
+  + L2 real render/prompt round-trips; WS5 ledger/cache → L0 + L4 (real git
+  dirs, real file hashes); WS7 fan-out → L0 + a concurrency lane carrying
+  the P3 failure-path table; canary battery → the eval/flywheel lane. Each
+  wave ships dual gates (code + adversarial review) per the landing
+  discipline.
 - **INV-V1..V7 (grill-3 Q2 — the verdict-cache invariants, each with a canary
   test):** V1 a claim is green only via a verdict row whose key covers the
   current artifact+evidence state (no row ⇒ not green); V2 any change to a
@@ -483,6 +501,19 @@ provisos preserved, conflicts resolved at a merge step.
 | Q6 | MED | Reviewer prompt gains four context blocks on 27-59k-char prompts | research-pending → priority budget + on-demand fact-sheet rows |
 | Q7 | MED | Canary battery unspecified | research-pending → rides eval/flywheel lanes; defect pool from historical ledger findings |
 | Q8 | LOW | Implementation-stage economics receipts absent | Waits on the live run's stage 9; fold into §0 then |
+
+### Grill round 5 (2026-09-20) — operator-and-measurement frontier
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| Q1 | HIGH | Acceptance criteria statistically unsound at n=3 (CLT misuse) | research-pending → interval-based decision procedure; interim honesty note added to Metrics |
+| Q2 | HIGH | Bounce gate vs duty-downgrade set inconsistency | Gate checks the post-downgrade stamped injection set; consistency test (WS1) |
+| Q3 | HIGH | No operator event taxonomy for the new machinery | research-pending → OTel GenAI semconv / BEP precedent; floor: every trip emits a named run-log line with counts+remedies |
+| Q4 | HIGH | Verifier-change cache invalidation is total and brutal | research-pending → compiler/CI precedents; compatibility probe needs an explicit soundness argument or rejection |
+| Q5 | MED | Waves lack test-lane mapping | Lane mapping added to §4 (L0/L2/L4/concurrency/eval per workstream) |
+| Q6 | MED | "Attempt" undefined for the headline metric | Attempt = submitted-to-review dispatch; bounces counted separately (Metrics) |
+| Q7 | MED | Bounce headroom unstated | min(2/round, ~15% remaining budget); ≥60% reserved for implementation (Metrics) |
+| Q8 | LOW | Governance: proposed→approved trigger unnamed | Green-lighting wave 1 is the approval; lifecycle edit is a named commit |
 
 ## 6. Risks and honest limits
 
