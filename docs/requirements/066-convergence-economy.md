@@ -121,6 +121,29 @@ correct per D1. The problem is what each cycle COST:
 
 ## 2. Architecture — seven workstreams (seams named)
 
+**SCOPE — every agent role, not just the doc stages.** The receipts in §0 come
+from stage 2, but the mechanisms apply pipeline-wide. Nothing in this spec is
+stage-2-only; each workstream names its per-role seams below. The applicability
+matrix (role × workstream):
+
+| Agent role (stage family) | WS1 coverage gate | WS2 validator bounce | WS3 anchors | WS4 rejection memory | WS5 verdict cache | WS6 patch-mode | WS7 fan-out/facts/calib |
+|---|---|---|---|---|---|---|---|
+| doc writers: requirements-clarifier, bdd-scenario-writer, spec-writer, docs-executor (2B/2C/3/6B) | ✔ control `findingResolutions` | ✔ Gate-W/pinId classes | ✔ | ✔ ledger lessons | ✔ claim ledger | ✔ route-back patch-mode | ✔ fact-sheet |
+| doc reviewers: requirements/bdd/spec/docs-reviewer | — (reviewer emits claim rows instead) | ✔ their OWN findings get deterministically triaged before blocking | judges anchors | ✔ | ✔ green manifest + delta | — | ✔ fan-out K=3 |
+| implementation: tdd-guide, implementer (RED/GREEN loop) | ✔ control maps injected replan/inherited-red/prior-phase findings → phases/scenarios addressing them | ✔ already strongest in repo (build-runner oracle runs pre-review); EXTEND to deliverable-declaration bounce (tracking.ts claim-vs-actual mismatch bounces before reviewer burn) | ✔ premise anchors in test plans | ✔ redJudgeDiagnosis + no-progress signatures already persist; generalize as lessons into the NEXT phase's prompts | ✔ GREEN re-verify: unchanged-phase ratchet already exists (red-snapshot); ADD verify-side file-level green cache (below) | ✔ phase-local edits (phase-rollback already scopes) | ✔ runner-discovery cached; thinking floor for writers |
+| verify: code-reviewer, adversarial-reviewer, tests-reviewer | — reviewers, not writers | ✔ findings deterministically triaged (review-findings.ts) before fix-loop burn | judges anchors | ✔ fix-loop carries finding ids; unaddressed-id bounce | ✔ **re-review after fixes sees ONLY changed files + green manifest of unchanged files** (today each fix round re-reviews everything) | ✔ fix-loop edits scoped to finding loci | ✔ biggest fan-out win: 3 reviewers already run — shard their scopes, merge |
+| judge | — | — | — | ✔ routing rationale persisted (already) | ✔ signature-level: identical stall signature reuses prior route within budget | — | ✔ (cheap tier already) |
+| auxiliary dispatches: research-assist, debug-analyzer, runner-discovery | — | — | ✔ commands carry verified anchors | — | ✔ runner-discovery already cached | — | — |
+
+The two NEW pipeline-wide items this matrix adds beyond the doc-stage wiring:
+**implementer finding-coverage control** (WS1 column: the implementation prompts
+inject replan findings + inherited-red rows + prior-phase blockers — same
+unaddressed-id escape E1 exists there; the v0.4.56 already-satisfied-wall and
+no-progress valve detect the SYMPTOM after ~3 burned attempts) and the
+**verify-loop file-level green cache** (WS5 column: after a fix round, unchanged
+files re-review from scratch today — the same 35–50% re-verification waste,
+at the most expensive reviews in the pipeline).
+
 **WS1 — Findings coverage gate (kills E1).** The writer's control block gains
 `findingResolutions: [{id, loci, note}]` covering EVERY injected blocking
 finding id. Deterministic post-write check: `injectedIds − mappedIds ≠ ∅` → ONE
@@ -191,15 +214,18 @@ Surface in the usage report (the σ-band flywheel already reads run logs).
 
 | Wave | Contents | Accepts |
 |---|---|---|
-| 1 (v0.4.59) | WS1 + WS2 (+metrics) | injected-finding coverage gaps bounce pre-review; unknown-pinId/write-contradiction classes bounce pre-review; each bounce bounded at 1 |
-| 2 (v0.4.60) | WS5 + WS6 | round ≥2 reviews verify delta + 10% green-sample only; unchanged-locus green claims never re-derived; route-back writers emit scoped diffs |
-| 3 (v0.4.61) | WS3 + WS4 | premise anchors resolve mechanically; rejections persist as lessons |
-| 4 | WS7 | review wall-clock ≤ ⅓ of serial baseline at equal defect-detection on the canary battery |
+| 1 (v0.4.59) | WS1 + WS2 for ALL writer roles (doc writers + implementer/tdd-guide coverage controls; deliverable-declaration bounce) + metrics | injected-finding coverage gaps bounce pre-review in every stage family; unknown-pinId/write-contradiction classes bounce pre-review; each bounce bounded at 1 |
+| 2 (v0.4.60) | WS5 + WS6 both loops (doc claim ledger; verify-loop file-level green cache; route-back/fix-loop patch-mode) | round ≥2 reviews AND re-reviews verify delta + 10% green-sample only; unchanged content never re-derived; writers emit scoped diffs |
+| 3 (v0.4.61) | WS3 + WS4 all writers/reviewers | premise anchors resolve mechanically everywhere; rejections persist as cross-stage lessons |
+| 4 | WS7 | review wall-clock ≤ ⅓ of serial baseline at equal defect-detection on the canary battery, BOTH the doc reviews and the verify fan-out |
 
-Global criteria, measured on the next omisis spec runs: stage-2 convergence
-cycle ≤ 40 min (from ~2 h); first-pass acceptance ≥ 50% on doc stages; zero
-loss of verification strictness ON CHANGED CONTENT (canary battery green);
-suite green throughout (dual gates per the landing discipline).
+Global criteria, measured on the next omisis spec runs, PER ROLE (not per
+stage): attempts-per-acceptance ≤ 1.5 for every agent role (from today's ~2-3;
+production baseline ~2.1); first-pass acceptance ≥ 50% for every writer role;
+review minutes per accepted artifact ≤ ½ baseline; whole-run wall-clock ≤ 1
+wall-fuse window for a 6-phase spec; zero loss of verification strictness ON
+CHANGED CONTENT (canary battery green); suite green throughout (dual gates per
+the landing discipline).
 
 ## 4. Test strategy (per the constitution)
 
