@@ -1,6 +1,6 @@
 # Convergence Economy — first-pass acceptance and verification cost
 
-Status: proposed — grill rounds 1+2+3 folded (6H+5M, 5H+4M+1L, 4H+4M; answers in §5, research-backed).
+Status: proposed — grill rounds 1-5 folded (6H+5M, 5H+4M+1L, 4H+4M, 3H+5M; answers in §5, research-backed).
 Lineage: sibling of 065
 (first-pass satisfiability). 065 makes the spec's write-claims deterministically
 checkable BEFORE any implementer attempt; this doc makes the write→review
@@ -185,7 +185,16 @@ the writer maps only the DELTA; the gate checks
 round's injection set AS STAMPED AT INJECTION TIME — duty downgrades
 (v0.3.19) apply BEFORE injection and are stamped, so the gate's set is
 exactly what the round carried; no blocking↔advisory ping-pong across
-rounds (consistency test pins it). **Protected-set derivation
+rounds (consistency test pins it). **Control-schema evolution (grill-4 Q2,
+research-answered):** new control fields are added as nullable/union members
+(OpenAI strict mode treats all fields as required — every addition changes
+every emitted token stream, so "purely additive" is a fiction:
+developers.openai.com/api/docs/guides/structured-outputs; complexity
+correlates with accuracy loss — SO-Bench, arxiv.org/abs/2511.21750), with
+per-field accuracy RE-MEASURED on the canary battery before/after every
+schema change (per-document compliance masks per-field errors — Cleanlab)
+and a schema-version stamp traveling with cached verdicts.
+**Protected-set derivation
 (grill-2 Q7):** never-dropped classes are DERIVED — all convergence-ledger
 findings with historical blocking=true, severity≥high, plus the fixed
 anchor-grammar core — configurable with a floor the config cannot lower.
@@ -294,6 +303,16 @@ is a producer-nondeterminism signal routed to audit, never overwritten
 (Bazel/Gradle remote-cache precedent); shard replicas emit CANDIDATE rows and
 only the round's orchestrator COMMITS (single trusted writer per key); the
 append-only runlog invariants (INV-L1..L6) extend to the ledger.
+**Verifier-change compatibility REJECTED (grill-5 Q4, research-answered):**
+every examined compiler/build cache makes verifier identity part of the key —
+a verifier change is a wholesale miss BY CONSTRUCTION (ccache compiler_check,
+sccache env+binary hashing, Bazel action keys "no partial matching", rustc/
+TS version stamps); NO precedent exists for sampled cross-verifier
+revalidation, and the Bazel #4558 hazard (untracked /usr/bin/gcc letting
+different compilers wrongly share entries) is exactly the failure a probe
+would court. A mid-campaign model change therefore invalidates the campaign's
+cache — accepted cost (rare; bounded by the fuse/budget cadence), not
+papered over with an unsound probe.
 **Ledger persistence (grill-4 Q1):** the ledger lives in the SPEC DIRECTORY
 (alongside the artifacts it verifies — the convergence-ledger/.knowledge.json
 precedent), scoped by specIdentifier; run-dir copies hold uncommitted
@@ -317,7 +336,18 @@ mechanism, with the diff-scope checked, not hoped for.)
 Shard review into K≈3 claim-groups, concurrent reviewer children
 (`maxConcurrency` is already 3), orchestrator merges verdicts and owns
 cross-cutting invariants; P3 failure-path table required (shard × reject ×
-abandon × merge). **Shard key (grill-3 Q6):** shard on the DEPENDENCY CLOSURE
+abandon × merge). **Prompt-size budget (grill-4 Q6, research-answered):** input length is
+itself a cost — 13.9–85% degradation even with perfect retrieval or masking
+(arxiv.org/abs/2510.05381, EMNLP-Findings 2025) — so the reviewer's added
+context blocks are budgeted and priority-ordered (irrelevant-before-relevant
+is the only ordering with support; evidence/history/rubric ordering is a
+DESIGN CHOICE, disclosed); shards sit at the HIGH end of the measured
+plateau (LLM×MapReduce chunk ablation — NO crossover constant exists; any
+"shard above X" number would be unsupported, disclosed); the
+"recite the retrieved evidence first" trick (+4%, same paper) is adopted for
+evidence-heavy shards. No JIT-vs-inline verdict-task evidence exists
+(disclosed) — fact-sheet rows stay inline but budgeted.
+**Shard key (grill-3 Q6):** shard on the DEPENDENCY CLOSURE
 (connected components of the claim/citation graph, stable-sorted — same
 artifact ⇒ same shards; never round-robin on claim index, which splits exactly
 the inter-chunk dependencies and conflicts map-reduce loses —
@@ -373,9 +403,15 @@ that SUBMITTED an artifact to review; bounces are counted separately
 attempts by construction, not by accounting. **Bounce headroom (grill-5
 Q7):** bounce budget = min(2/round, ~15% of remaining agent budget);
 implementation phases reserve ≥60% of the agent budget (guidance row in
-the rollout; the pre-call fuse remains the hard cap). **Small-n honesty
-(grill-5 Q1, pending research):** with ≤5 runs per condition, acceptance
-targets are reported as interval estimates, never point-threshold pass/fail.
+the rollout; the pre-call fuse remains the hard cap). **Small-n decision procedure (grill-5 Q1, research-answered):** with n≤5,
+normal-approximation intervals are anti-conservative — use beta-binomial
+posteriors per condition and compare by P(A beats B) with pre-declared
+margins; substantially-overlapping posteriors read as UNDECIDED, not a win
+("Don't Use the CLT in LLM Evals", ICML 2025, arxiv.org/abs/2503.01747;
+"Adding Error Bars to Evals", arxiv.org/abs/2411.00640; reference impl:
+github.com/sambowyer/bayes_evals). Promotion rule: P(better) ≥ 0.9 AND a
+pre-declared absolute margin, else collect runs. Informative priors from the
+prior condition only when genuinely comparable.
 
 ## 3. Rollout order and acceptance criteria
 
@@ -425,6 +461,18 @@ the landing discipline).
   never replays; V5 tier recorded on every row, probe budget weights weak
   tiers; V6 audit selection unsealed only after submission; V7 ledger appends
   are single-writer-committed with divergences preserved.
+- **Canary-battery honesty (grill-4 Q7, research-answered):** versioned
+  defect pools with a HELD-OUT split (certifying against canaries you tuned
+  against is teach-to-test by construction — the mutation-testing discipline;
+  CDBench, Empirical SE 2026, is the LLM-era precedent; Meta scales mutation
+  testing with LLMs, engineering.fb.com 2025); detection reported PER DEFECT
+  CLASS (aggregates hide blindness classes).
+- **Operator telemetry (grill-5 Q3, research-answered):** economy events
+  (bounce fired, lot rejected, veto escalated, cache hit/miss per verifier
+  identity) are structured JOINABLE events (BEP-style), not aggregates —
+  names isolated behind a thin layer pinned to the OTel GenAI semconv
+  (Development status 2026-05; already productized by Datadog), so the
+  unstable spec cannot leak into run-log contracts.
 - **Grill-added**: rubric-dropout rotation is SEEDED and logged (a run's
   audited subset must be reconstructable); the protected never-dropped set is
   pinned by test (a blocking-finding class can never rotate out).
@@ -494,22 +542,22 @@ provisos preserved, conflicts resolved at a merge step.
 | # | Sev | Finding | Resolution |
 |---|---|---|---|
 | Q1 | HIGH | Ledger location/lifetime unstated; run-dir death kills wave-2 savings on resumed runs (the common case) | Spec-dir persistence, specIdentifier-scoped; candidates-only in run dir (WS5) |
-| Q2 | HIGH | Control-key grammar changes per role unnamed (P2 discipline) | research-pending → additive-only evolution table, role × keys × optionality |
+| Q2 | HIGH | Control-key grammar changes per role unnamed (P2 discipline) | Nullable/union additions + schema-version stamp + per-field canary re-measurement; the per-role evolution table lands with wave 1 (WS1) |
 | Q3 | HIGH | Prompt-contract evolution vs resume cache | Contract-version salt per role; role-scoped invalidation, named bump procedure (WS5) |
 | Q4 | HIGH | Pathological dissent: veto + tie-break every round | P8: ≤1 tie-break/round, ≤2/stage, then serial-full fallback (WS7) |
 | Q5 | MED | Model diversity may be unavailable (one family) | Downgraded to preference; disjoint-context same-model shards suffice (WS7) |
-| Q6 | MED | Reviewer prompt gains four context blocks on 27-59k-char prompts | research-pending → priority budget + on-demand fact-sheet rows |
-| Q7 | MED | Canary battery unspecified | research-pending → rides eval/flywheel lanes; defect pool from historical ledger findings |
+| Q6 | MED | Reviewer prompt gains four context blocks on 27-59k-char prompts | Length-is-cost budgeting (2510.05381); irrelevant-first ordering (only supported one); high-end shard plateau; recite-evidence-first trick; no crossover constant exists (disclosed) (WS7) |
+| Q7 | MED | Canary battery unspecified | Versioned pools + held-out split + per-class detection reporting; rides the eval/flywheel lanes; pool seeded from historical ledger findings (§4) |
 | Q8 | LOW | Implementation-stage economics receipts absent | Waits on the live run's stage 9; fold into §0 then |
 
 ### Grill round 5 (2026-09-20) — operator-and-measurement frontier
 
 | # | Sev | Finding | Resolution |
 |---|---|---|---|
-| Q1 | HIGH | Acceptance criteria statistically unsound at n=3 (CLT misuse) | research-pending → interval-based decision procedure; interim honesty note added to Metrics |
+| Q1 | HIGH | Acceptance criteria statistically unsound at n=3 (CLT misuse) | Beta-binomial posteriors; P(better)≥0.9 + pre-declared margin; overlap = undecided (Metrics) |
 | Q2 | HIGH | Bounce gate vs duty-downgrade set inconsistency | Gate checks the post-downgrade stamped injection set; consistency test (WS1) |
-| Q3 | HIGH | No operator event taxonomy for the new machinery | research-pending → OTel GenAI semconv / BEP precedent; floor: every trip emits a named run-log line with counts+remedies |
-| Q4 | HIGH | Verifier-change cache invalidation is total and brutal | research-pending → compiler/CI precedents; compatibility probe needs an explicit soundness argument or rejection |
+| Q3 | HIGH | No operator event taxonomy for the new machinery | BEP-style joinable events behind a thin OTel-GenAI-pinned layer; every trip emits a named log line with counts+remedies (§4) |
+| Q4 | HIGH | Verifier-change cache invalidation is total and brutal | Probe REJECTED: zero precedent in compiler/build caches; #4558 hazard; wholesale miss accepted as rare bounded cost (WS5) |
 | Q5 | MED | Waves lack test-lane mapping | Lane mapping added to §4 (L0/L2/L4/concurrency/eval per workstream) |
 | Q6 | MED | "Attempt" undefined for the headline metric | Attempt = submitted-to-review dispatch; bounces counted separately (Metrics) |
 | Q7 | MED | Bounce headroom unstated | min(2/round, ~15% remaining budget); ≥60% reserved for implementation (Metrics) |
