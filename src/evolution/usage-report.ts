@@ -19,6 +19,7 @@
  * Resume honesty (P10): the report covers THIS pass only (runId-named);
  * prior passes' rows remain in usage-calls.jsonl with their own runIds.
  */
+import { economyMetricsFromLog, economyMetricsSummary } from "../convergence-economy/economy-metrics.ts";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UsageAccumulator, UsageCallRow } from "../types.ts";
@@ -85,6 +86,10 @@ export interface UsageReportInput {
 	wallMs: number;
 	usage: UsageAccumulator;
 	calls: UsageCallRow[];
+	/** v0.4.66 (WS0, 066 §2): the run-log lines for the economy derivation
+	 * (per-role attempts/bounces/review wall-clock). Optional — absent means
+	 * no economy section (P10 no fabrication). */
+	runLogLines?: readonly string[];
 }
 
 /** Pure renderer — null when zero calls were recorded (P10 no fabrication). */
@@ -188,6 +193,13 @@ export function writeUsageArtifacts(specDir: string | undefined, input: UsageRep
 				.map(([k, b]) => `${k.replace(/^pipeline\./, "")}=${fmt$(b.cost)}`)
 				.join(", ");
 			log(`usage report: ${input.calls.length} calls${noUsage > 0 ? ` (${noUsage} without usage data)` : ""} — in ${fmtK(input.usage.totals.input)} (+cache ${fmtK(input.usage.totals.cacheRead)}) out ${fmtK(input.usage.totals.output)} — ${fmt$(input.usage.totals.cost)}${topStages ? ` — top stages: ${topStages}` : ""}${specDir ? ` — ${join(specDir, "usage-report.md")}` : ""}`);
+			// v0.4.66 (WS0): the convergence-economy line rides the same report —
+			// per-role attempts/bounces/review wall-clock derived from the log.
+			if (input.runLogLines && input.runLogLines.length > 0) {
+				try {
+					log(economyMetricsSummary(economyMetricsFromLog(input.runLogLines)));
+				} catch { /* best-effort (P5) */ }
+			}
 		}
 	} catch { /* best-effort observability (P5) */ }
 }

@@ -16,7 +16,7 @@
 import { EventEmitter } from "node:events";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { lstatSync, readdirSync, rmSync } from "node:fs";
+import { lstatSync, readdirSync, rmSync , readFileSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitModelThinking } from "./agents/agent-runtime/index.ts";
@@ -62,6 +62,7 @@ import { getConfig } from "./render/super-dev-dir.ts";
 import { getActiveTracker } from "./tracking.ts";
 import { currentStepScope } from "./step-scope.ts";
 import { appendRunEvent, ledgerRunId, runStartedEvent, readRunEvents, reconstructStageOutcomes, type RunEventInput } from "./runlog.ts";
+import { getRunLogPath } from "./render/super-dev-dir.ts";
 import { auditAppend } from "./render/super-dev-dir.ts";
 import { writeCompletionAudit } from "./completion-audit.ts";
 import { validateTeamReadiness } from "./team/raci.ts";
@@ -929,6 +930,10 @@ export async function runWorkflow(workflow: Workflow, task: string, options: Run
 		wallMs: Date.now() - runStartedAt,
 		usage: ctx.usage ?? freshUsage(),
 		calls: ctx.usageCalls ?? [],
+		// v0.4.66 (WS0, 066 §2): the run-log lines feed the economy
+		// derivation (per-role attempts/bounces/review wall-clock). Best-effort
+		// read (P5) — absent file means no economy line, no fabrication.
+		runLogLines: (() => { try { return readFileSync(getRunLogPath(), "utf8").split("\n"); } catch { return undefined; } })(),
 	}, (m) => progress?.log(m));
 
 	return {

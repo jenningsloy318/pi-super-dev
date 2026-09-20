@@ -60,3 +60,16 @@ describe("economyMetricsSummary (operator line)", () => {
 		expect(s).toContain("2 pre-review bounce(s)");
 	});
 });
+
+describe("usage-report wiring (WS0): the economy line rides writeUsageArtifacts", () => {
+	it("runLogLines present → the summary line is logged; absent → no line, no fabrication", async () => {
+		const { writeUsageArtifacts } = await import("../src/evolution/usage-report.ts");
+		const lines: string[] = [];
+		const base = { runId: "r", status: "partial", wallMs: 1000, usage: { totals: { calls: 1, input: 10, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.01 } }, calls: [{ stage: "x", model: "m", durationMs: 5 } as never] };
+		writeUsageArtifacts(undefined, { ...base, runLogLines: LINES }, (m) => lines.push(m));
+		expect(lines.some((l) => l.startsWith("economy:"))).toBe(true);
+		const lines2: string[] = [];
+		writeUsageArtifacts(undefined, { ...base }, (m) => lines2.push(m));
+		expect(lines2.some((l) => l.startsWith("economy:"))).toBe(false);
+	});
+});
