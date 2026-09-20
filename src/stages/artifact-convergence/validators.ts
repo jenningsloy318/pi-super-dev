@@ -8,7 +8,17 @@ import type { PipelineState, Stage, StageContext } from "../../types.ts";
 import { bddPinOwnershipFindings, contractValidationContext, requirementsIntentFindings, selfSpecArtifactMatcher, splitContractFindings, stageWriteClaimGate } from "../../review/contract-validators.ts";
 import { type ConvergenceOwnerStage } from "../../convergence-ledger.ts";
 
-export type ArtifactValidator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[] }> | { pass: boolean; errors: string[] };
+export type ArtifactValidator = (state: PipelineState, ctx: StageContext) => Promise<{ pass: boolean; errors: string[]; bounceErrors?: string[] }> | { pass: boolean; errors: string[]; bounceErrors?: string[] };
+
+/** WS2 (066 §2, v0.4.62): designated ADVISORY classes that bounce the writer
+ * ONCE pre-review instead of riding a full reviewer pass — the mechanically
+ * checkable, writer-fixable set (receipts: ~40 unknown-pinId/contradiction
+ * advisories at 16:38:44 preceding a 16.6-min review; 9 design contract-claims
+ * at $1.54/17.3 min). Everything else stays advisory. */
+const DESIGNATED_BOUNCE_RE = /cites unknown pinId|contradicts a pin in [^.]*OWN artifact|carries a foreign pin/i;
+export function designatedBounceFindings(advisory: readonly string[]): string[] {
+	return advisory.filter((a) => DESIGNATED_BOUNCE_RE.test(a));
+}
 
 /** Hard liveness ceiling for every artifact-convergence loop (requirements, bdd,
  *  research, design). Termination normally comes from reviewer approval, the
@@ -90,15 +100,16 @@ function researchUnavailableDisclosure(r: Record<string, unknown>): boolean {
 }
 
 export const requirementsComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
-	const base = await gateValidator("gate-requirements", "write-requirements", "requirements")(s, ctx);
+	const base: { pass: boolean; errors: string[]; bounceErrors?: string[] } = await gateValidator("gate-requirements", "write-requirements", "requirements")(s, ctx);
 	// 059 R1A R3(c): affectsSharedSurfaces intent consistency — ADVISORY at 2B
 	// (HIGH-1: requirements legitimately may not know; blocking moves down-stack
 	// to design-review). Never blocks the loop.
 	const contractCtx = contractValidationContext(s as Record<string, unknown>, "requirements", [ctx.task, JSON.stringify(s.requirements ?? {})]);
 	if (contractCtx) {
-		for (const a of splitContractFindings(requirementsIntentFindings({ control: s.requirements as Record<string, unknown> | undefined, slice: contractCtx.slice })).advisory) {
-			ctx.log(`Requirements contract-validator (advisory): ${a}`);
-		}
+		const reqAdvisory = splitContractFindings(requirementsIntentFindings({ control: s.requirements as Record<string, unknown> | undefined, slice: contractCtx.slice })).advisory;
+		for (const a of reqAdvisory) ctx.log(`Requirements contract-validator (advisory): ${a}`);
+		const reqBounce = designatedBounceFindings(reqAdvisory);
+		if (reqBounce.length > 0) base.bounceErrors = [...(base.bounceErrors ?? []), ...reqBounce];
 		// 065 D-F-B (Gate W, intent level — advisory at 2B per 059 W2: the typed
 		// family is a design/spec home; requirements findings feed forward).
 		for (const f of stageWriteClaimGate({ stage: "requirements", level: "intent", state: s as Record<string, unknown>, control: s.requirements as Record<string, unknown> | undefined, docGlobs: ["*-requirements.md"] })) {
@@ -117,7 +128,7 @@ export const requirementsComplete: ArtifactValidator = async (s: PipelineState, 
 };
 
 export const bddComplete: ArtifactValidator = async (s: PipelineState, ctx: StageContext) => {
-	const base = await gateValidator("gate-bdd", "write-bdd", "bdd")(s, ctx);
+	const base: { pass: boolean; errors: string[]; bounceErrors?: string[] } = await gateValidator("gate-bdd", "write-bdd", "bdd")(s, ctx);
 	// 059 R1A R3(b): pinOwnership AST validator — the typed control field,
 	// NEVER rendered-markdown regex (grill R6 HIGH-2, P1/P6). No context
 	// (no worktree / no stamp) ⇒ no-op (fail-open harmless).
@@ -127,9 +138,13 @@ export const bddComplete: ArtifactValidator = async (s: PipelineState, ctx: Stag
 		for (const a of advisory) ctx.log(`BDD contract-validator (advisory): ${a}`);
 		// 065 D-F-B (Gate W, intent level — advisory at 2C; blocking moves to the
 		// concrete home at design/spec).
+		const bddGateWAdvisory: string[] = [];
 		for (const f of stageWriteClaimGate({ stage: "bdd", level: "intent", state: s as Record<string, unknown>, control: s.bdd as Record<string, unknown> | undefined, docGlobs: ["*-bdd-scenarios.md"] })) {
 			ctx.log(`BDD Gate-W (${f.kind}): ${f.message.slice(0, 200)}`);
+			if (f.kind === "advisory") bddGateWAdvisory.push(f.message);
 		}
+		const bddBounce = designatedBounceFindings([...advisory, ...bddGateWAdvisory]);
+		if (bddBounce.length > 0) base.bounceErrors = [...(base.bounceErrors ?? []), ...bddBounce];
 		if (blocking.length > 0) return { pass: false, errors: [...base.errors, ...blocking] };
 	}
 	return base;

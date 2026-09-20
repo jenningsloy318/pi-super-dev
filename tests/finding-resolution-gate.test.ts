@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { adjudicateFindingResolutionGate, findingResolutionGateEnabled, parseFindingResolutions, type FindingResolutionGateInput } from "../src/convergence-economy/finding-resolution-gate.ts";
+import { adjudicateFindingResolutionGate, findingResolutionGateEnabled, validatorBounceEnabled, parseFindingResolutions, type FindingResolutionGateInput } from "../src/convergence-economy/finding-resolution-gate.ts";
+import { designatedBounceFindings } from "../src/stages/artifact-convergence/validators.ts";
 
 const base = (over: Partial<FindingResolutionGateInput> = {}): FindingResolutionGateInput => ({
 	injectedIds: ["CF-implementation-1nl0mhr", "BDD26-F01"],
@@ -110,5 +111,39 @@ describe("findingResolutionGateEnabled (kill-switch, lazy env)", () => {
 			if (saved === undefined) delete process.env.SUPER_DEV_NO_COVERAGE_BOUNCE;
 			else process.env.SUPER_DEV_NO_COVERAGE_BOUNCE = saved;
 		}
+	});
+});
+
+describe("validatorBounceEnabled (WS2 kill-switch, lazy env)", () => {
+	it("defaults enabled; the three falsy spellings disable", () => {
+		expect(validatorBounceEnabled()).toBe(true);
+		const saved = process.env.SUPER_DEV_NO_VALIDATOR_BOUNCE;
+		try {
+			for (const v of ["1", "true", "yes"]) {
+				process.env.SUPER_DEV_NO_VALIDATOR_BOUNCE = v;
+				expect(validatorBounceEnabled()).toBe(false);
+			}
+		} finally {
+			if (saved === undefined) delete process.env.SUPER_DEV_NO_VALIDATOR_BOUNCE;
+			else process.env.SUPER_DEV_NO_VALIDATOR_BOUNCE = saved;
+		}
+	});
+});
+
+describe("designatedBounceFindings (WS2 class table — live-run message shapes)", () => {
+	it("matches the three designated classes", () => {
+		const out = designatedBounceFindings([
+			"bdd SCENARIO-054 pinOwnership cites unknown pinId pin-pe-11tb30l — cite only pinIds present in the injected slice",
+			"bdd write-claim on docs/requirements/20-tooling.md contradicts a pin in bdd's OWN artifact",
+			"bdd writes src/persistence.ts which carries a foreign pin pin-xn-00fsa30",
+		]);
+		expect(out.length).toBe(3);
+	});
+	it("leaves non-designated advisories advisory", () => {
+		const out = designatedBounceFindings([
+			"36 further pin(s) on the touched surfaces exceed the injected slice cap",
+			"some other advisory noise",
+		]);
+		expect(out.length).toBe(0);
 	});
 });

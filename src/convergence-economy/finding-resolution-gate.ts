@@ -59,6 +59,12 @@ export function findingResolutionGateEnabled(): boolean {
 	return !(v === "1" || v === "true" || v === "yes");
 }
 
+/** WS2 kill-switch — same lazy-read pattern, default ENABLED. */
+export function validatorBounceEnabled(): boolean {
+	const v = superDevEnv("SUPER_DEV_NO_VALIDATOR_BOUNCE");
+	return !(v === "1" || v === "true" || v === "yes");
+}
+
 /** Lenient structural parse of the control field. A row counts ONLY when it
  * carries a non-empty string id; loci/note survive as strings when present.
  * Malformed rows are DROPPED and counted (fail-closed: an unparseable row

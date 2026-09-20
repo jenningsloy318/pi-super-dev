@@ -12,7 +12,7 @@ import { readContractSliceStamp } from "../../review/contract-surface/index.ts";
 import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../../review/contract-validators.ts";
 import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";
-import { adjudicateFindingResolutionGate } from "../../convergence-economy/finding-resolution-gate.ts";
+import { adjudicateFindingResolutionGate, validatorBounceEnabled } from "../../convergence-economy/finding-resolution-gate.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../../escalation.ts";
 import { runJudge } from "../judge.ts";
 import { countStageRounds } from "../../resume.ts";
@@ -73,6 +73,11 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 			// resolution gate's injected set. Empty for no-injection specs (the gate
 			// is then inert).
 			let round1InjectedIds: string[] = [];
+			// v0.4.62 WS2 (066 §2): the SHARED walk-scoped writer-bounce budget —
+			// one bounce per walk across BOTH legs (WS1 finding-resolution AND WS2
+			// designated-validator violations), P8 bound; also retroactively bounds
+			// the v0.4.60 WS1 leg (which could previously re-fire every round).
+			let writerBounceSpent = false;
 			let lastErrors: string[] = [];
 			let priorBlockingSignature = "";
 			let convergenceJudgeTried = false;
@@ -320,7 +325,8 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					} catch (error) {
 						ctx.log(`${options.feedbackKey} convergence: finding-resolution gate crashed (advisory — proceeding): ${error instanceof Error ? error.message : String(error)}`);
 					}
-					if (frGate?.bounce) {
+					if (frGate?.bounce && !writerBounceSpent) {
+						writerBounceSpent = true;
 						ctx.log(`${options.feedbackKey} convergence: ${frGate.feedback} — one bounded writer re-dispatch follows (agent budget, not a convergence round)`);
 						setArtifactFeedback(options, state, [frGate.feedback]);
 						const bounceResult = await stageTask.run(state, ctx);
@@ -428,6 +434,28 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					continue;
 				}
 				ctx.log(`${options.feedbackKey} convergence: deterministic validation passed round ${round}`);
+				// v0.4.62 WS2 (066 §2) — designated validator violations bounce the
+				// writer ONCE pre-review (the receipts: ~40 unknown-pinId/contradiction
+				// advisories at 16:38:44 preceding a 16.6-min review). Shared budget
+				// with the WS1 leg; the re-dispatch consumes agent budget, NOT a
+				// convergence round; second pass proceeds to review with the
+				// violations already logged (P10). P5 fail-open by construction.
+				if (!writerBounceSpent && validatorBounceEnabled() && result.bounceErrors && result.bounceErrors.length > 0) {
+					writerBounceSpent = true;
+					ctx.log(`${options.feedbackKey} convergence: validator bounce — ${result.bounceErrors.length} designated violation(s) (unknown-pinId citation / own-artifact write-claim contradiction / foreign pin): one bounded writer re-dispatch follows (agent budget, not a convergence round)`);
+					setArtifactFeedback(options, state, result.bounceErrors.slice(0, 8));
+					const vbResult = await stageTask.run(state, ctx);
+					if (vbResult.status === "cancelled") return vbResult;
+					if (vbResult.status === "failed") {
+						lastErrors = [`${options.feedbackKey} agent failed (post-validator-bounce): ${vbResult.error ?? "unknown error"}`];
+						recordArtifactErrors(options, state, lastErrors, `${options.feedbackKey}-agent`);
+						setArtifactFeedback(options, state, lastErrors);
+						ctx.log(`${options.feedbackKey} convergence: validator-bounced writer failed round ${round} — ${lastErrors.join("; ")}`);
+						prevOwnOpen = Number.POSITIVE_INFINITY;
+						lastOwnOpen = Number.POSITIVE_INFINITY;
+						continue;
+					}
+				}
 
 				// Fagan-style LLM review layer (shift-left). A passed deterministic gate
 				// INTENTIONALLY falls through to the reviewer — content quality is judged

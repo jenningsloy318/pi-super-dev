@@ -1,6 +1,6 @@
 # Convergence Economy — first-pass acceptance and verification cost
 
-Status: proposed — grill rounds 1-6 folded (6H+5M, 5H+4M+1L, 4H+4M, 3H+5M, 2H+6M; answers in §5, research-backed).
+Status: approved 2026-09-20 (user directive: implement all tasks autonomously) — grill rounds 1-6 folded (6H+5M, 5H+4M+1L, 4H+4M, 3H+5M, 2H+6M; answers in §5, research-backed).
 Lineage: sibling of 065
 (first-pass satisfiability). 065 makes the spec's write-claims deterministically
 checkable BEFORE any implementer attempt; this doc makes the write→review
