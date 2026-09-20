@@ -9,6 +9,7 @@ import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readC
 // the Metadata Strike-1 classifier/repair template.
 import { designatedBounceFindings } from "./artifact-convergence/validators.ts";
 import { validatorBounceEnabled } from "../convergence-economy/finding-resolution-gate.ts";
+import { lessonsForWriter, lessonsPromptBlock } from "../convergence-economy/rejection-memory.ts";
 import {  selfSpecArtifactMatcher, contractValidationContext, familyInclusionMismatches, freshSpecWriteClaims, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
 import { isNonRetryableAgentError, nonRetryableAgentSummary } from "../agent-errors.ts";
@@ -396,6 +397,10 @@ export const specConvergenceNode: Node = {
 					round1Lines.push(...pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
 					ctx.log(`spec convergence: ${pendingReplan.length} replan request(s) injected at round 1`);
 				}
+				// v0.4.67 WS4 (066 §2): cross-stage rejection memory rides the same
+				// channel — the full ledger's findings as compact JSON lesson rows.
+				const specLessonBlock = lessonsPromptBlock(lessonsForWriter(getConvergenceLedger(state).findings));
+				if (specLessonBlock) round1Lines.push(specLessonBlock);
 				if (round1Lines.length > 0) setSpecFeedback(state, "prior-run-ledger+replan", round1Lines);
 			}
 

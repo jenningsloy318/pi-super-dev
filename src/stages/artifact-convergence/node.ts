@@ -13,6 +13,7 @@ import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadata
 import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";
 import { adjudicateFindingResolutionGate, validatorBounceEnabled } from "../../convergence-economy/finding-resolution-gate.ts";
+import { lessonsForWriter, lessonsPromptBlock } from "../../convergence-economy/rejection-memory.ts";
 import { applyRetryDecision, escalationBudgetRemaining, runEscalation } from "../../escalation.ts";
 import { runJudge } from "../judge.ts";
 import { countStageRounds } from "../../resume.ts";
@@ -265,6 +266,14 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					round1InjectedIds = [...prior.findings.map((f) => f.id), ...pendingReplan.map((r) => `replan-${r.id}`)];
 					// Replan directives lead (they are explicit revision orders);
 					// prior-run residue follows within the slice budget.
+					// v0.4.67 WS4 (066 §2): cross-stage rejection memory — the FULL
+					// ledger's findings (any stage) become compact JSON lesson rows
+					// riding the same feedback channel (restart-with-lessons: every
+					// dispatch is a fresh session reading structured lessons — the
+					// shape models respect, per the Anthropic long-running-harness
+					// finding; deduped/capped/decay by construction).
+					const lessonBlock = lessonsPromptBlock(lessonsForWriter(getConvergenceLedger(state).findings));
+					if (lessonBlock) round1Lines.push(lessonBlock);
 					if (round1Lines.length > 0) setArtifactFeedback(options, state, round1Lines);
 				}
 
