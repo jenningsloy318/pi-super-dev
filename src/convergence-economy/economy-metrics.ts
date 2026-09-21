@@ -36,7 +36,7 @@ export interface EconomyMetrics {
 }
 
 const DELEGATION_RE = /delegation ([a-zA-Z0-9-]+): (?:completed|terminal status=\S+).*?duration=([^ ]+)/;
-const BOUNCE_RE = /convergence: (?:finding-resolution bounce|validator bounce)/;
+const BOUNCE_RE = /convergence: (?:finding-resolution bounce|coverage bounce|validator bounce|anchor bounce)/;
 
 /** The writer-role set (dispatches that submit artifacts for review). */
 const WRITER_ROLES = new Set([
@@ -114,7 +114,7 @@ export function economyMetricsFromLog(lines: readonly string[]): EconomyMetrics 
 	// (The roles array materializes AFTER this walk: a bounce for a role with
 	// no dispatch row yet must still appear.)
 	for (const line of lines) {
-		const b = /([a-zA-Z]+) convergence: (?:finding-resolution bounce|validator bounce)/.exec(String(line ?? ""));
+		const b = /([a-zA-Z]+) convergence: (?:finding-resolution bounce|coverage bounce|validator bounce|anchor bounce)/.exec(String(line ?? ""));
 		if (!b) continue;
 		const key = b[1]!;
 		const role = key === "requirements" ? "requirements-clarifier"

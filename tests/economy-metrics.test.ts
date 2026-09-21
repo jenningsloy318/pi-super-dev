@@ -15,6 +15,7 @@ const LINES = [
 	"[2026-09-20T22:49:38.762+08:00] delegation spec-reviewer: terminal status=failed model=zai-coding-cn/glm-5.3-flash:high turns=56 tools=56 tokens=151223/25847 cache=5842240/0 $0.2109 duration=797.9s",
 	"[2026-09-20T21:51:58.032+08:00] spec convergence: contract-validator (advisory): bdd SCENARIO-054 pinOwnership cites unknown pinId pin-pe-11tb30l",
 	"[2026-09-20T22:15:00.000+08:00] bdd convergence: finding-resolution bounce: 2 injected blocking finding(s) have no resolution row — one bounded writer re-dispatch follows (agent budget, not a convergence round)",
+	"[2026-09-21T07:54:00.117+08:00] requirements convergence: coverage bounce: 27 injected blocking finding(s) have no resolution row — one bounded writer re-dispatch follows (agent budget, not a convergence round)",
 	"[2026-09-20T22:16:00.000+08:00] spec convergence: validator bounce — 3 designated violation(s): one bounded writer re-dispatch follows (agent budget, not a convergence round)",
 	"[2026-09-20T16:38:44.316+08:00] BDD contract-validator (advisory): bdd: 36 further pin(s) on the touched surfaces exceed the injected slice cap",
 ];
@@ -34,16 +35,16 @@ describe("economyMetricsFromLog", () => {
 		const spec = m.roles.find((r) => r.role === "spec-reviewer")!;
 		expect(spec.reviewPasses).toBe(1);
 	});
-	it("bounces attribute to their stage's writer role (bdd->bdd-scenario-writer, spec->spec-writer)", () => {
+	it("bounces attribute to their stage's writer role (all four bounce wordings)", () => {
 		const m = economyMetricsFromLog(LINES);
 		expect(m.roles.find((r) => r.role === "bdd-scenario-writer")?.bounces).toBe(1);
 		expect(m.roles.find((r) => r.role === "spec-writer")?.bounces).toBe(1);
-		expect(m.roles.find((r) => r.role === "requirements-clarifier")?.bounces).toBe(0);
+		expect(m.roles.find((r) => r.role === "requirements-clarifier")?.bounces).toBe(1);
 	});
 	it("ordinary advisory lines and stage lines are neither attempts nor bounces", () => {
 		const m = economyMetricsFromLog(LINES);
 		const totalBounces = m.roles.reduce((n, r) => n + r.bounces, 0);
-		expect(totalBounces).toBe(2);
+		expect(totalBounces).toBe(3);
 	});
 	it("never throws on garbage; malformed delegation durations count unparseable", () => {
 		const m = economyMetricsFromLog(["", "noise", "delegation x: completed duration=abc", "delegation y: completed duration=-5s"]);
@@ -57,7 +58,7 @@ describe("economyMetricsSummary (operator line)", () => {
 		const s = economyMetricsSummary(economyMetricsFromLog(LINES));
 		expect(s).toContain("2 writer attempts");
 		expect(s).toContain("3 review passes");
-		expect(s).toContain("2 pre-review bounce(s)");
+		expect(s).toContain("3 pre-review bounce(s)");
 	});
 });
 
