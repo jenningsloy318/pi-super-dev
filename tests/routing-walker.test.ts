@@ -293,7 +293,7 @@ describe("M2 withInlineRouteBack — active (the pilot jump, end to end)", () =>
 	it("journals, invalidates cache, injects requests, sub-walks from the owner — pre-owner never re-runs", async () => {
 		setFlagOn();
 		const dir = mkSpecDir();
-		seedCacheRows(dir, ["pipeline.requirements@root#1", "pipeline.bdd@root#1", "pipeline.research@root#1"]);
+		seedCacheRows(dir, ["pipeline.requirements@root#1@v2", "pipeline.bdd@root#1@v2", "pipeline.research@root#1@v2"]);
 		const order: string[] = [];
 		const log: string[] = [];
 
@@ -630,7 +630,7 @@ describe("M2 round-2 remediation pins", () => {
 		setFlagOn();
 		const dir = mkSpecDir();
 		// Seed a cache row for requirements that UNPARSEABLE rows can't shadow:
-		seedCacheRows(dir, ["pipeline.requirements@root#1"]);
+		seedCacheRows(dir, ["pipeline.requirements@root#1@v2"]);
 		// Make the cache file such that the REAL invalidation will drop 0 while
 		// resumeCacheHasRowsFor sees a match: corrupt the row AFTER seeding is
 		// impossible (they parse the same), so pin the dry-probe ordering via the
@@ -654,7 +654,7 @@ describe("M2 round-2 remediation pins", () => {
 		expect(readRoutingJournal(dir).entries).toHaveLength(0);
 		expect(existsSync(join(dir, REPLAN_REQUESTS_FILE))).toBe(false);
 		const cache = readFileSync(join(dir, ".resume-cache.jsonl"), "utf8");
-		expect(cache).toContain("pipeline.requirements@root#1");
+		expect(cache).toContain("pipeline.requirements@root#1@v2");
 		expect(readFileSync(join(dir, "artifact-revisions.json"), "utf8")).toBe("{not json");
 	});
 
@@ -703,7 +703,7 @@ describe("M2 round-3 remediation pins", () => {
 	it("B6 post-call guard: a 0-drop invalidation with surviving rows declines (chmod read-only cache)", async () => {
 		setFlagOn();
 		const dir = mkSpecDir();
-		seedCacheRows(dir, ["pipeline.requirements@root#1"]);
+		seedCacheRows(dir, ["pipeline.requirements@root#1@v2"]);
 		// Read-only cache file: the real invalidation's WRITE fails silently →
 		// dropped 0, while resumeCacheHasRowsFor still sees the row.
 		chmodSync(join(dir, ".resume-cache.jsonl"), 0o444);
@@ -873,7 +873,7 @@ describe("M3 incident replay (run 03-23-47 shape, default-ON)", () => {
 	it("bdd round-1 upstream blocker → inline jump → requirements revises → bdd converges → downstream proceeds", async () => {
 		setFlagOn();
 		const dir = mkSpecDir();
-		seedCacheRows(dir, ["pipeline.requirements@root#1", "pipeline.bdd@root#1"]);
+		seedCacheRows(dir, ["pipeline.requirements@root#1@v2", "pipeline.bdd@root#1@v2"]);
 		const order: string[] = [];
 		const reqCalls: number[] = [];
 		const requirements: Stage = {

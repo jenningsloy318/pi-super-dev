@@ -207,7 +207,7 @@ describe("063 S2 external resume scan", () => {
 		const repo = mkRepo("orphan-resume");
 		// Simulate the dead-worktree run: state external, branch exists, spec dir GONE.
 		const specDir = mkSpecDir(repo, "20-orphan");
-		writeFileSync(stateFileFor(specDir, ".resume-cache.jsonl"), '{"key":"pipeline.spec@root#1","result":{}}\n');
+		writeFileSync(stateFileFor(specDir, ".resume-cache.jsonl"), '{"key":"pipeline.spec@root#1@v2","result":{}}\n');
 		// Gate F5/ADV-2 fold: the branch TIP must contain the spec dir (that
 		// is createOrReuseWorktree's re-creation source) — commit the track
 		// content BEFORE branching, then kill the filesystem dir.

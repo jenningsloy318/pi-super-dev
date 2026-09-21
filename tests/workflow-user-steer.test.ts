@@ -139,7 +139,7 @@ describe("workflow agent() durable user-context injection", () => {
 
 	it("a memoized replay (resume cache hit) does NOT re-drain / re-persist", async () => {
 		const cached: AgentResult = { text: "CACHED TEXT", control: {} };
-		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}@root#1`, cached]]);
+		const resumeCache = new Map<string, AgentResult>([[`${BASE_CALL.id}@root#1@v2`, cached]]);
 		const { provider, callCount } = makeProviderSpy(["should-not-persist-on-replay"]);
 		const ctx = mkCtx({}, { userSteerProvider: provider, resumeCache });
 		const result = await ctx.agent(BASE_CALL);

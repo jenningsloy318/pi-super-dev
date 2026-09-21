@@ -131,7 +131,7 @@ describe("findResumableSpec + specDirFor", () => {
 
 describe("createMemoizingAgent", () => {
 	it("returns the cached result without calling the real agent (hit)", async () => {
-		const cache = new Map<string, AgentResult>([["x@root#1", result({ hit: true })]]);
+		const cache = new Map<string, AgentResult>([["x@root#1@v2", result({ hit: true })]]);
 		let calls = 0;
 		const agent = createMemoizingAgent(async () => { calls++; return result({ hit: false }); }, cache, () => "/tmp", () => {});
 		const r = await agent(call("x"));
@@ -146,9 +146,9 @@ describe("createMemoizingAgent", () => {
 			const agent = createMemoizingAgent(async () => result({ ran: true }), cache, () => specDir, () => {});
 			const r = await agent(call("x"));
 			expect(r.control).toEqual({ ran: true });
-			expect(cache.get("x@root#1")?.control).toEqual({ ran: true });
+			expect(cache.get("x@root#1@v2")?.control).toEqual({ ran: true });
 			// captured to disk too
-			expect(loadResumeCache(specDir).get("x@root#1")?.control).toEqual({ ran: true });
+			expect(loadResumeCache(specDir).get("x@root#1@v2")?.control).toEqual({ ran: true });
 		} finally { rmSync(specDir, { recursive: true, force: true }); }
 	});
 
@@ -157,7 +157,7 @@ describe("createMemoizingAgent", () => {
 		// SAME call.id. Pre-seed the cache as if iteration 1 completed (seq=1)
 		// and iteration 2 was interrupted (seq=2 missing).
 		const cache = new Map<string, AgentResult>([
-			["pipeline.verify.code-review@root#1", result({ iter: 1 })],
+			["pipeline.verify.code-review@root#1@v2", result({ iter: 1 })],
 		]);
 		const seen: number[] = [];
 		const agent = createMemoizingAgent(
@@ -184,14 +184,14 @@ describe("R8 — torn-line repair + corrupt-line warning", () => {
 		const d = tmpDir();
 		try {
 			// simulate a crash mid-write: a half line with NO trailing newline
-			writeFileSync(resumeCachePath(d), '{"key":"pipeline.x@root#1","result":{', "utf8");
-			appendResumeResult(d, "pipeline.y@root#1", result({ ok: 1 }));
+			writeFileSync(resumeCachePath(d), '{"key":"pipeline.x@root#1@v2","result":{', "utf8");
+			appendResumeResult(d, "pipeline.y@root#1@v2", result({ ok: 1 }));
 			const map = loadResumeCache(d);
-			expect(map.has("pipeline.x@root#1")).toBe(false); // the torn entry is lost by design (one-shot repair)
-			expect(map.get("pipeline.y@root#1")?.control).toEqual({ ok: 1 }); // the next good entry is saved
+			expect(map.has("pipeline.x@root#1@v2")).toBe(false); // the torn entry is lost by design (one-shot repair)
+			expect(map.get("pipeline.y@root#1@v2")?.control).toEqual({ ok: 1 }); // the next good entry is saved
 			const lines = readFileSync(resumeCachePath(d), "utf8").split("\n").filter(Boolean);
 			expect(lines).toHaveLength(2); // the torn fragment is its own (dead) line; the good row is intact
-			expect(lines[1]).toContain("pipeline.y@root#1");
+			expect(lines[1]).toContain("pipeline.y@root#1@v2");
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -211,7 +211,7 @@ describe("R8 — torn-line repair + corrupt-line warning", () => {
 		try {
 			writeFileSync(resumeCachePath(d), [
 				"not-json-at-all",
-				JSON.stringify({ key: "good@root#1", result: { text: "", control: {}, model: "t" } }),
+				JSON.stringify({ key: "good@root#1@v2", result: { text: "", control: {}, model: "t" } }),
 				'{"broken":',
 			].join("\n") + "\n");
 			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -232,11 +232,11 @@ describe("countStageRounds (F3 resume round budget)", () => {
 		try {
 			const cache = `${d}/.resume-cache.jsonl`;
 			writeFileSync(cache, [
-				JSON.stringify({ key: "pipeline.spec@root#1", result: { text: "r1" } }),
-				JSON.stringify({ key: "pipeline.spec@root#2", result: { text: "r2" } }),
-				JSON.stringify({ key: "pipeline.spec@root#8", result: { text: "r8" } }),
-				JSON.stringify({ key: "pipeline.specReview@root#1", result: { text: "review" } }),
-				JSON.stringify({ key: "pipeline.specification@root#3", result: { text: "other" } }),
+				JSON.stringify({ key: "pipeline.spec@root#1@v2", result: { text: "r1" } }),
+				JSON.stringify({ key: "pipeline.spec@root#2@v2", result: { text: "r2" } }),
+				JSON.stringify({ key: "pipeline.spec@root#8@v2", result: { text: "r8" } }),
+				JSON.stringify({ key: "pipeline.specReview@root#1@v2", result: { text: "review" } }),
+				JSON.stringify({ key: "pipeline.specification@root#3@v2", result: { text: "other" } }),
 			].join("\n") + "\n");
 			expect(countStageRounds(d, "pipeline.spec")).toBe(8);
 			expect(countStageRounds(d, "pipeline.specReview")).toBe(1);
@@ -268,7 +268,7 @@ describe("v0.3.83 — cached agent errors are never replayed (2026-09-08 quota p
 	it("read side: a pure cached error (no control, no recoverable text) is NOT replayed — the call re-runs live and the fresh row shadows the old one", async () => {
 		const d = tmpDir();
 		try {
-			appendResumeResult(d, "pipeline.requirements@root#1", errorRow(""));
+			appendResumeResult(d, "pipeline.requirements@root#1@v2", errorRow(""));
 			const cache = loadResumeCache(d);
 			const logs: string[] = [];
 			let live = 0;
@@ -279,8 +279,8 @@ describe("v0.3.83 — cached agent errors are never replayed (2026-09-08 quota p
 			expect(logs.some((m) => m.includes("NOT replayed") && m.includes("re-running live"))).toBe(true);
 			// append-only last-wins: the live row now shadows the error row
 			const reloaded = loadResumeCache(d);
-			expect(reloaded.get("pipeline.requirements@root#1")?.control).toEqual({ healed: true });
-			expect(reloaded.get("pipeline.requirements@root#1")?.error).toBeUndefined();
+			expect(reloaded.get("pipeline.requirements@root#1@v2")?.control).toEqual({ healed: true });
+			expect(reloaded.get("pipeline.requirements@root#1@v2")?.error).toBeUndefined();
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -291,8 +291,8 @@ describe("v0.3.83 — cached agent errors are never replayed (2026-09-08 quota p
 			const agent = createMemoizingAgent(async () => errorRow(""), cache, () => d, () => {});
 			const r = await agent(call("x"));
 			expect(r.error).toBeDefined();
-			expect(cache.has("x@root#1")).toBe(false);          // RED today: true
-			expect(loadResumeCache(d).has("x@root#1")).toBe(false); // RED today: true
+			expect(cache.has("x@root#1@v2")).toBe(false);          // RED today: true
+			expect(loadResumeCache(d).has("x@root#1@v2")).toBe(false); // RED today: true
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -302,13 +302,13 @@ describe("v0.3.83 — cached agent errors are never replayed (2026-09-08 quota p
 			const cache = new Map<string, AgentResult>();
 			const agent = createMemoizingAgent(async () => errorRow("long partial review text…"), cache, () => d, () => {});
 			await agent(call("x"));
-			expect(cache.get("x@root#1")?.error).toBeDefined();
-			expect(loadResumeCache(d).get("x@root#1")?.text).toContain("partial review");
+			expect(cache.get("x@root#1@v2")?.error).toBeDefined();
+			expect(loadResumeCache(d).get("x@root#1@v2")?.text).toContain("partial review");
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
 	it("v0.3.48 recovery still wins BEFORE the live re-run: a cached error whose text holds a valid control is recovered without calling the agent", async () => {
-		const cache = new Map<string, AgentResult>([["x@root#1", { text: '{"verdict":"Approved","findings":[]}', control: null, error: "delegation ended with status failed" }]]);
+		const cache = new Map<string, AgentResult>([["x@root#1@v2", { text: '{"verdict":"Approved","findings":[]}', control: null, error: "delegation ended with status failed" }]]);
 		let live = 0;
 		const agent = createMemoizingAgent(async () => { live++; return result(); }, cache, () => "/tmp", () => {});
 		const r = await agent({ id: "x", agent: "a", prompt: "", controlKeys: ["verdict", "findings"] });
@@ -320,7 +320,7 @@ describe("v0.3.83 — cached agent errors are never replayed (2026-09-08 quota p
 	it("an unrecoverable error WITH text falls through to the live re-run (recovery attempted, failed, not replayed)", async () => {
 		const d = tmpDir();
 		try {
-			appendResumeResult(d, "x@root#1", errorRow("truncated garbage, no control JSON"));
+			appendResumeResult(d, "x@root#1@v2", errorRow("truncated garbage, no control JSON"));
 			const cache = loadResumeCache(d);
 			let live = 0;
 			const agent = createMemoizingAgent(async () => { live++; return result({ fresh: true }); }, cache, () => d, () => {});
@@ -331,7 +331,7 @@ describe("v0.3.83 — cached agent errors are never replayed (2026-09-08 quota p
 	});
 
 	it("success rows still replay without a live call (regression)", async () => {
-		const cache = new Map<string, AgentResult>([["x@root#1", result({ hit: true })]]);
+		const cache = new Map<string, AgentResult>([["x@root#1@v2", result({ hit: true })]]);
 		let live = 0;
 		const agent = createMemoizingAgent(async () => { live++; return result(); }, cache, () => "/tmp", () => {});
 		const r = await agent(call("x"));
@@ -360,7 +360,7 @@ describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fi
 	it("read side (adv-F1): a cached error+control row (corrective-retry strain) is NOT replayed — re-runs live and shadows", async () => {
 		const d = tmpDir();
 		try {
-			appendResumeResult(d, "x@root#1", errCtrlRow("", { stale: true }));
+			appendResumeResult(d, "x@root#1@v2", errCtrlRow("", { stale: true }));
 			const cache = loadResumeCache(d);
 			const logs: string[] = [];
 			let live = 0;
@@ -371,14 +371,14 @@ describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fi
 			expect(r.error).toBeUndefined();               // RED today: the poisoned error
 			expect(logs.some((m) => m.includes("NOT replayed") && m.includes("re-running live"))).toBe(true);
 			const reloaded = loadResumeCache(d);
-			expect(reloaded.get("x@root#1")?.control).toEqual({ fresh: true });
-			expect(reloaded.get("x@root#1")?.error).toBeUndefined();
+			expect(reloaded.get("x@root#1@v2")?.control).toEqual({ fresh: true });
+			expect(reloaded.get("x@root#1@v2")?.error).toBeUndefined();
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
 	it("read side (adv-F1): recoverable text in an error+control row recovers BEFORE the live re-run (stale control discarded)", async () => {
 		const cache = new Map<string, AgentResult>([
-			["x@root#1", errCtrlRow('{"verdict":"Approved","findings":[]}', { stale: true })],
+			["x@root#1@v2", errCtrlRow('{"verdict":"Approved","findings":[]}', { stale: true })],
 		]);
 		let live = 0;
 		const agent = createMemoizingAgent(async () => { live++; return result(); }, cache, () => "/tmp", () => {});
@@ -395,11 +395,11 @@ describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fi
 			const agent = createMemoizingAgent(async () => errCtrlRow("partial first-attempt text", { stale: true }), cache, () => d, () => {});
 			const r = await agent(call("x"));
 			expect(r.control).toEqual({ stale: true });            // live caller sees the original result unchanged
-			const persisted = cache.get("x@root#1");
+			const persisted = cache.get("x@root#1@v2");
 			expect(persisted?.control).toBeNull();                // RED today: { stale: true } persisted verbatim
 			expect(persisted?.text).toContain("partial first-attempt text"); // text survives as recovery material
 			expect(persisted?.error).toBeDefined();
-			expect(loadResumeCache(d).get("x@root#1")?.control).toBeNull();   // and on disk
+			expect(loadResumeCache(d).get("x@root#1@v2")?.control).toBeNull();   // and on disk
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -410,8 +410,8 @@ describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fi
 			const agent = createMemoizingAgent(async () => errCtrlRow("", { stale: true }), cache, () => d, () => {});
 			const r = await agent(call("x"));
 			expect(r.control).toEqual({ stale: true }); // live caller unchanged
-			expect(cache.has("x@root#1")).toBe(false); // RED today: true
-			expect(loadResumeCache(d).has("x@root#1")).toBe(false);
+			expect(cache.has("x@root#1@v2")).toBe(false); // RED today: true
+			expect(loadResumeCache(d).has("x@root#1@v2")).toBe(false);
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});
 
@@ -421,10 +421,10 @@ describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fi
 			const cache = new Map<string, AgentResult>();
 			const agent = createMemoizingAgent(async () => errorRow("   "), cache, () => d, () => {});
 			await agent(call("x"));
-			expect(cache.has("x@root#1")).toBe(false);
-			expect(loadResumeCache(d).has("x@root#1")).toBe(false);
+			expect(cache.has("x@root#1@v2")).toBe(false);
+			expect(loadResumeCache(d).has("x@root#1@v2")).toBe(false);
 			// read side: a pre-existing whitespace-text error row is not replayable either
-			appendResumeResult(d, "y@root#1", errorRow("   "));
+			appendResumeResult(d, "y@root#1@v2", errorRow("   "));
 			let live = 0;
 			const reader = createMemoizingAgent(async () => { live++; return result({ ok: 1 }); }, loadResumeCache(d), () => d, () => {});
 			const r = await reader(call("y"));
@@ -438,11 +438,11 @@ describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fi
 		try {
 			const row = (key: string, r: AgentResult) => JSON.stringify({ key, result: r });
 			writeFileSync(`${d}/.resume-cache.jsonl`, [
-				row("pipeline.spec@root#1", { text: "r1", control: null }),
-				row("pipeline.spec@root#2", { text: "r2", control: null }),
-				row("pipeline.spec@root#3", errorRow("")),
-				row("pipeline.spec@root#4", errCtrlRow("", { stale: true })),
-				row("pipeline.spec@root#5", errorRow("some text")),
+				row("pipeline.spec@root#1@v2", { text: "r1", control: null }),
+				row("pipeline.spec@root#2@v2", { text: "r2", control: null }),
+				row("pipeline.spec@root#3@v2", errorRow("")),
+				row("pipeline.spec@root#4@v2", errCtrlRow("", { stale: true })),
+				row("pipeline.spec@root#5@v2", errorRow("some text")),
 			].join("\n") + "\n");
 			expect(countStageRounds(d, "pipeline.spec")).toBe(2); // RED today: 5
 		} finally { rmSync(d, { recursive: true, force: true }); }
@@ -452,7 +452,7 @@ describe("v0.3.83 r2 — error+control rows and round accounting (dual-review fi
 		const d = mkdtempSync(join(tmpdir(), "sd-count-errs-2-"));
 		try {
 			const row = (key: string) => JSON.stringify({ key, result: errorRow("") });
-			writeFileSync(`${d}/.resume-cache.jsonl`, [row("pipeline.spec@root#1"), row("pipeline.spec@root#2"), row("pipeline.spec@root#3")].join("\n") + "\n");
+			writeFileSync(`${d}/.resume-cache.jsonl`, [row("pipeline.spec@root#1@v2"), row("pipeline.spec@root#2@v2"), row("pipeline.spec@root#3@v2")].join("\n") + "\n");
 			expect(countStageRounds(d, "pipeline.spec")).toBe(0); // RED today: 3
 		} finally { rmSync(d, { recursive: true, force: true }); }
 	});

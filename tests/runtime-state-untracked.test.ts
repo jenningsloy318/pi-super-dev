@@ -49,7 +49,7 @@ function trackStateFiles(repo: string, git: (...args: string[]) => { status: num
 	const specDir = join(repo, SPEC);
 	mkdirSync(specDir, { recursive: true });
 	mkdirSync(join(repo, "src"), { recursive: true });
-	writeFileSync(join(specDir, ".resume-cache.jsonl"), JSON.stringify({ key: "pipeline.classify@root#1", result: { text: "a", control: { ok: true } } }) + "\n");
+	writeFileSync(join(specDir, ".resume-cache.jsonl"), JSON.stringify({ key: "pipeline.classify@root#1@v2", result: { text: "a", control: { ok: true } } }) + "\n");
 	writeFileSync(join(specDir, ".convergence-ledger.json"), JSON.stringify({ rounds: [] }) + "\n");
 	writeFileSync(join(repo, "src", "app.ts"), "export const app = 1;\n");
 	git("add", "-A");
@@ -66,7 +66,7 @@ describe("v0.4.3 — ensureRuntimeStateUntracked (the 2026-09-15T08-13-05-056Z c
 			trackStateFiles(repo, git);
 			// Post-commit appends — the rows the old world LOSED on every rollback.
 			const cachePath = join(repo, SPEC, ".resume-cache.jsonl");
-			writeFileSync(cachePath, cacheRows(repo).join("\n") + "\n" + JSON.stringify({ key: "pipeline.prototype.r01@root#1", result: { text: "proto", control: { verdict: "pass" } } }) + "\n");
+			writeFileSync(cachePath, cacheRows(repo).join("\n") + "\n" + JSON.stringify({ key: "pipeline.prototype.r01@root#1@v2", result: { text: "proto", control: { verdict: "pass" } } }) + "\n");
 			expect(cacheRows(repo)).toHaveLength(2);
 
 			const report = ensureRuntimeStateUntracked({ worktreePath: repo, specDirectory: join(repo, SPEC), worktreeCreated: true });
@@ -84,7 +84,7 @@ describe("v0.4.3 — ensureRuntimeStateUntracked (the 2026-09-15T08-13-05-056Z c
 			// PRE-FIX this reverts the file to the committed 1-row snapshot and the
 			// prototype row is silently gone; POST-FIX the appended row survives.
 			expect(cacheRows(repo)).toHaveLength(2);
-			expect(cacheRows(repo).some((l) => l.includes("pipeline.prototype.r01@root#1"))).toBe(true);
+			expect(cacheRows(repo).some((l) => l.includes("pipeline.prototype.r01@root#1@v2"))).toBe(true);
 		} finally {
 			rmSync(repo, { recursive: true, force: true });
 		}

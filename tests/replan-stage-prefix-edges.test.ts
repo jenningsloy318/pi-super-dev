@@ -117,9 +117,9 @@ describe("STAGE_CALL_PREFIXES entries — SCENARIO-008", () => {
 		const d = mkdtempSync(join(tmpdir(), "sd-prefix-"));
 		try {
 			writeFileSync(join(d, ".resume-cache.jsonl"), [
-				'{"key":"pipeline.debug@root#1","result":{}}',
-				'{"key":"pipeline.assessment@root#2","result":{}}',
-				'{"key":"pipeline.prototype.r01@root#3","result":{}}',
+				'{"key":"pipeline.debug@root#1@v2","result":{}}',
+				'{"key":"pipeline.assessment@root#2@v2","result":{}}',
+				'{"key":"pipeline.prototype.r01@root#3@v2","result":{}}',
 			].join("\n") + "\n");
 			const dropped = invalidateResumeCache(d, downstreamOf("requirements"));
 			expect(dropped).toBe(3);

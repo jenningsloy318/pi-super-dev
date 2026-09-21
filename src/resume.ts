@@ -17,6 +17,7 @@
  * cache-misses that call (still correct, less efficient).
  */
 
+import { CONTROL_SCHEMA_VERSION } from "./render/schemas.ts";
 import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentCall, AgentResult } from "./types.ts";
@@ -243,7 +244,10 @@ export function createMemoizingAgent(
 		const occKey = `${id}\u0000${scope}`;
 		const n = (occ.get(occKey) ?? 0) + 1;
 		occ.set(occKey, n);
-		const key = `${id}@${scope}#${n}`;
+		// v0.4.81 (066 r4 Q3 / 067 R5-Q3): the contract-version salt — a control-
+		// schema change invalidates cached agent calls for the changed contract
+		// (role-scoped by the id prefix naturally; never a mass flush).
+		const key = `${id}@${scope}#${n}@v${CONTROL_SCHEMA_VERSION}`;
 		const hit = cache.get(key);
 		if (hit) {
 			// v0.3.48 poisoned-row recovery: a cached row whose ONLY defect was a
@@ -342,7 +346,7 @@ export function countStageRounds(specDir: string, callId: string): number {
 			try {
 				const entry = JSON.parse(trimmed) as { key?: string; result?: { error?: string } };
 			if (entry?.result?.error != null) continue; // v0.3.83 r2: error rounds are holes, not banked work
-			const m = entry?.key ? new RegExp(`^${callId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}@(\\S+)#(\\d+)$`).exec(entry.key) : null;
+			const m = entry?.key ? new RegExp(`^${callId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}@(\\S+)#(\\d+)(?:@v\\d+)?$`).exec(entry.key) : null;
 				if (!m) continue;
 				const n = Number.parseInt(m[2] ?? "0", 10);
 				if (Number.isFinite(n) && n > (perScope.get(m[1] ?? "") ?? 0)) perScope.set(m[1] ?? "", n);

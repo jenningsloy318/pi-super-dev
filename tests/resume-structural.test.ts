@@ -55,8 +55,8 @@ describe("structural cache keys for parallel branches (BUG-1)", () => {
 		const wf = parallel([task(agentStage("a", "pipeline.review")), task(agentStage("b", "pipeline.review"))]);
 		await wf.run({}, ctx);
 		const keys = [...cache.keys()];
-		expect(keys).toContain("pipeline.review@parallel[0]#1");
-		expect(keys).toContain("pipeline.review@parallel[1]#1");
+		expect(keys).toContain("pipeline.review@parallel[0]#1@v2");
+		expect(keys).toContain("pipeline.review@parallel[1]#1@v2");
 		expect(keys.length).toBe(2);
 	});
 

@@ -57,16 +57,16 @@ function ctxWith(agent?: StageContext["agent"]): { ctx: StageContext; logs: stri
 }
 
 const RESUME_ROWS = [
-	'{"key":"pipeline.requirements@root#1","result":{"text":"","control":{}}}',
-	'{"key":"pipeline.spec@root#1","result":{"text":"","control":{}}}',
-	'{"key":"pipeline.implementation.phase-01.impl.a1@root#1","result":{"text":"","control":{}}}',
-	'{"key":"pipeline.verify.code-review@root#1","result":{"text":"","control":{}}}',
-	'{"key":"pipeline.docs@root#1","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.requirements@root#1@v2","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.spec@root#1@v2","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.implementation.phase-01.impl.a1@root#1@v2","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.verify.code-review@root#1@v2","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.docs@root#1@v2","result":{"text":"","control":{}}}',
 	// H4 (AC-04/SCENARIO-010): debug/assessment/prototype rows must drop for
 	// owners whose downstream set covers them (requirements, design).
-	'{"key":"pipeline.debug@root#1","result":{"text":"","control":{}}}',
-	'{"key":"pipeline.assessment@root#1","result":{"text":"","control":{}}}',
-	'{"key":"pipeline.prototype.r01@root#1","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.debug@root#1@v2","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.assessment@root#1@v2","result":{"text":"","control":{}}}',
+	'{"key":"pipeline.prototype.r01@root#1@v2","result":{"text":"","control":{}}}',
 ].join("\n") + "\n";
 
 describe("R3/R4/R5 — triggerReplanForFindings (the M5 survivor; the verify wrapper was deleted)", () => {
@@ -234,8 +234,8 @@ describe("R3/R4/R5 — triggerReplanForFindings (the M5 survivor; the verify wra
 	// invalidated on EVERY replan trigger — unconditionally unioned into the
 	// prefix set (never short-circuits to 0, even with no owning-stage rows).
 	const JUDGE_REPLAN_ROWS = [
-		'{"key":"pipeline.judge.spec@root#1","result":{"text":"","control":{}}}',
-		'{"key":"pipeline.replan.lead@root#1","result":{"text":"","control":{}}}',
+		'{"key":"pipeline.judge.spec@root#1@v2","result":{"text":"","control":{}}}',
+		'{"key":"pipeline.replan.lead@root#1@v2","result":{"text":"","control":{}}}',
 	].join("\n") + "\n";
 
 	it("AC-05 (SCENARIO-011): every replan trigger drops the judge and replan-lead rows (count ≥ 2)", async () => {

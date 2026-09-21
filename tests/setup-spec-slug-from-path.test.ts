@@ -180,7 +180,7 @@ describe("runSetup end-to-end — path-referenced spec id composition (no LLM sl
 			{
 				const external = stateFileFor(first.specDirectory, ".resume-cache.jsonl");
 				mkdirSync(dirname(external), { recursive: true });
-				writeFileSync(external, '{"key":"pipeline.requirements@root#1","result":{"text":"","control":{}}}');
+				writeFileSync(external, '{"key":"pipeline.requirements@root#1@v2","result":{"text":"","control":{}}}');
 			}
 			const second = runSetup(INCIDENT_TASK, { cwd: d, skipWorktree: true });
 			expect(second.specIdentifier).toBe("26-capability-backends");
