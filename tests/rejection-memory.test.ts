@@ -43,8 +43,8 @@ describe("lessonRowFrom", () => {
 });
 
 describe("lessonsForWriter (dedupe, ranking, cap, decay semantics)", () => {
-	it("excludes superseded rows (dead against the revised upstream)", () => {
-		const rows = lessonsForWriter([finding({ status: "superseded" }), finding({ defectClass: "other" })]);
+	it("excludes superseded rows AND resolved residue (verified/addressed teach nothing — 067 R6-Q3)", () => {
+		const rows = lessonsForWriter([finding({ status: "superseded" }), finding({ status: "verified" }), finding({ status: "addressed" }), finding({ defectClass: "other" })]);
 		expect(rows.length).toBe(1);
 		expect(rows[0]!.class).toBe("other");
 	});

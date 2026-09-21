@@ -72,7 +72,11 @@ export function lessonsForWriter(findings: readonly ConvergenceFindingLike[]): L
 	const rows: LessonRow[] = [];
 	for (const f of findings) {
 		if (!f || typeof f !== "object") continue;
-		if (f.status === "superseded") continue;
+		// 067 R6-Q3: RESOLVED findings teach nothing — a lesson from an already-
+		// verified/addressed finding is stale context (context rot is measured);
+		// only OPEN residue may ride the lessons block. Superseded rows are dead
+		// against the revised upstream (the original rule).
+		if (f.status === "superseded" || f.status === "verified" || f.status === "addressed") continue;
 		const row = lessonRowFrom(f);
 		const key = `${row.class}::${row.rule.slice(0, 40)}`;
 		if (seen.has(key)) continue;

@@ -125,6 +125,29 @@ five folded rounds (2H+3M, 5, 6, 4, 5 findings); further adversarial effort
 belongs on the NEXT live run's receipts (the economy line on v0.4.77+ is
 the full-chain measurement), not on this document.
 
+## 2.15 Grill round 6 (2026-09-21) — cross-spec consistency (066↔067) + pre-registered predictions
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| R6-Q1 | HIGH | 066 WS1 promises a THREE-layer anti-gaming gate; layer (b) — the SEALED AUDIT SUBSET (the reviewer deep-verifies a committed-after-submission random subset of coverage rows, protected set never dropped) — exists ONLY in docblocks. Zero implementation: the gate is really two-layer + the reviewer's natural behavior. FBI/CHERRL say the writer's self-map is weak evidence; without layer (b) a sophisticated gaming attempt (loci exist, remedy quoted, still wrong) has no dedicated defense. | **Named as THE remaining gap** — its own increment (reviewer-prompt rubric change + commit-reveal subset selection + protected-set derivation), NOT rushed wiring here. Tracked as the wave-1 residual alongside WS5/WS7 wiring. |
+| R6-Q2 | HIGH | Round 5 closed the grill but the spec is not FALSIFIABLE — no pre-registered predictions for the next live run | §4 added below: falsifiable economy-line predictions for v0.4.77+ runs |
+| R6-Q3 | MED | lessonsForWriter filtered only superseded — VERIFIED/ADDRESSED findings still taught stale lessons (context rot; a resolved defect teaching "avoid X" misleads later writers) | Resolved statuses excluded (pinned) |
+| R6-Q4 | MED | WS6 patch-mode honored only advisorially; no presence pin | Accepted (066 grill-2 M10 design); directive presence pinned in v0.4.69's tests |
+| R6-Q5 | LOW | The flywheel's σ-bands don't yet track firstPassAcceptance | Deferred to the WS0 flywheel touchpoint (with the metrics' other σ-band rows) |
+
+## 2.16 Pre-registered predictions (falsifiable — the round-5 verdict's receipts surface)
+
+For the next live run on v0.4.77+ over the SAME spec (26-capability-backend-substrate):
+
+- P1: requirements + BDD combined consume ≤ 8 writer attempts (the 07-37 run: 10) and ≤ 2 bounces each.
+- P2: FIRST-PASS ACCEPTANCE (the economy line, now spec-visible) ≥ 1/4 doc walks approved at round 1 (the 07-37 run: 0/3).
+- P3: the spec stage's cost share < 55% (07-37: 55% — the schema fix lets the writer carry the map on the FIRST dispatch).
+- P4: no `unaddressed (bounce spent)` line persists past round 2 (07-37: every round).
+
+A miss on P2-P4 with the machinery firing is a NEW receipt class → reopen the
+grill with it; a miss on P1 alone may be task-difficulty (adjudicated per the
+round-1 Q1 rule).
+
 ## 3. Test obligations
 
 - Schema lane: render a requirements control WITH findingResolutions → the
