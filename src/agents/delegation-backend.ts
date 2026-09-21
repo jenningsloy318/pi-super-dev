@@ -36,6 +36,7 @@
 
 import { DEFAULT_EMPTY_ARRAY_OK, extractControl, missingControlKeys } from "../control.ts";
 import { hostSdkResolutionRemedy, isHostSdkResolutionFailure } from "../agent-errors.ts";
+import { stripMalformedResolutionRows } from "../convergence-economy/finding-resolution-gate.ts";
 import { superDevEnv } from "../render/super-dev-dir.ts";
 import {
 	structuredModeDegraded, structuredModeEnabled, isStructuredUnsupportedRejection,
@@ -708,7 +709,12 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 	// v0.3.70 W3: engine-side schema validation — wrong-TYPED fields now fail
 	// with detailed JSON-pointer violations instead of silently passing the
 	// missing-key check (F10-6's corrective-round waste).
-	const violations = control != null && opts.schema != null ? schemaViolationErrors(opts.schema, control) : [];
+	// 067 grill-2 Q1: row-seam strict, array-seam lenient — malformed
+	// coverage-map rows strip BEFORE schema validation (a bad row degrades to
+	// an unmapped id the finding-resolution gate bounce owns, never a
+	// whole-control corrective re-emission).
+	const controlNorm = control != null && typeof control === "object" ? stripMalformedResolutionRows(control) : control;
+	const violations = controlNorm != null && opts.schema != null ? schemaViolationErrors(opts.schema, controlNorm) : [];
 	if (missing.length > 0 || violations.length > 0) {
 		// One corrective attempt: same logical node, new requestId (legal once
 		// the previous attempt settled). The corrective task names BOTH the
@@ -730,7 +736,8 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 			// v0.3.70 W3 (P10): a retried control that STILL violates the schema is
 			// an honest error naming the exact violations — never a silent
 			// wrong-typed control handed to the stage.
-			const violations2 = opts.schema != null ? schemaViolationErrors(opts.schema, control2) : [];
+			const control2Norm = control2 != null && typeof control2 === "object" ? stripMalformedResolutionRows(control2) : control2;
+			const violations2 = control2Norm != null && opts.schema != null ? schemaViolationErrors(opts.schema, control2Norm) : [];
 			if (violations2.length > 0) {
 				return { text: text2, control: null, model: response2.model ?? response.model, usage: mergeUsage(response.usage, response2.usage), error: `delegation retry still has schema violations (${violations2.join("; ")})` };
 			}

@@ -95,7 +95,7 @@ export function adjudicateFindingResolutionGate(input: FindingResolutionGateInpu
 	const missing = input.injectedIds.filter((id) => !mapped.has(id) && !inherited.has(id));
 	const bounce = enabled && missing.length > 0;
 	const feedback = bounce
-		? `coverage bounce: ${missing.length} injected blocking finding(s) have no resolution row — add findingResolutions entries (id + loci + a note quoting the finding's remedy language) for: ${missing.join(", ")}; unchanged-content findings may cite their existing verified loci`
+		? `coverage bounce: ${missing.length} injected blocking finding(s) have no resolution row — add findingResolutions entries (id + loci + a note quoting the finding's remedy language) for ONLY these ids, changing nothing else in the artifact: ${missing.join(", ")}; unchanged-content findings may cite their existing verified loci (repair-beats-rejection: scoped rows-only repair, never a full re-emission)`
 		: "";
 	return { enabled, missing, malformedRows, bounce, feedback };
 }
@@ -130,4 +130,18 @@ export function resolveAnchors(loci: readonly string[], exists: (path: string) =
 		if (!exists(pathPart)) unresolved.push(locus);
 	}
 	return { unresolved, checked };
+}
+
+/** 067 grill-2 Q1: row-seam strict, array-seam LENIENT. Strip malformed
+ * findingResolutions rows BEFORE schema validation (one bad row degrades to
+ * "unmapped id" — the bounce's own semantics — instead of rejecting the
+ * whole control into a full corrective re-emission; ExtractBench:
+ * whole-payload strict rejection is catastrophic, row strictness is cheap).
+ * Pure; returns the original object reference when nothing changes. */
+export function stripMalformedResolutionRows<T extends Record<string, unknown>>(control: T): T {
+	const v = control.findingResolutions;
+	if (!Array.isArray(v)) return control;
+	const clean = v.filter((r): r is Record<string, unknown> => r != null && typeof r === "object" && typeof (r as { id?: unknown }).id === "string" && ((r as { id?: unknown }).id as string).trim() !== "");
+	if (clean.length === v.length) return control;
+	return { ...control, findingResolutions: clean };
 }

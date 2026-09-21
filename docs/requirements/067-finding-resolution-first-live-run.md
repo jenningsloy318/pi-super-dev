@@ -79,6 +79,16 @@ as logged noise.
 | Q4 | MED | Resume-replay safety argument absent | Argued + pinned: resume replays stage RESULTS, not controls; old results lack the field → Optional passes; the field exists only on NEW emissions. |
 | Q5 | LOW | Schema-version stamp deferred twice | Named: folds into the WS5 wiring increment together with the resume contract-salt (066 round-4 Q3) — one schema-identity change, one commit. |
 
+## 2.7 Grill round 2 (2026-09-21) — folded (code-analysis + dependency-check + research)
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| Q1 | HIGH | One malformed row rejects the WHOLE control (closed entry → schemaViolationErrors → full corrective re-emission for one bad row) — duplicate defense vs the gate's row-level semantics at higher cost | **Row-seam strict, array-seam lenient** (ExtractBench: whole-payload strict = catastrophic, 62%→0; row strict kills ~30% of failure classes cheaply): a pre-strip normalization runs parseFindingResolutions on the control BEFORE schema validation — malformed rows are stripped and degrade to "unmapped id" (the bounce's exact semantics); the clean array enters the schema check. Implemented this commit. |
+| Q2 | HIGH | Is Optional wire-legal here? | Code-analysis closed: structured mode is ENGINE-side validated (pi-subagents in-child; unsupported → fail-open text mode) — NOT provider strict API; repo precedent production-proven. Migration rule stands for strict-mode providers. |
+| Q3 | HIGH | Render/auto-render/controlKeys dependencies | Code-analysis closed: renderAndWrite validates against STAGE_MODELS (Optional passes old+new); njk ignores unknown fields; controlKeys is the REQUIRED list — findingResolutions is conditional and must NOT join it. Argument pinned. |
+| Q4 | HIGH | Strict-vs-lenient row validation (research) | Confirms Q1's rule verbatim: "enforce strictness at the row seam, leniency at the array seam" (arxiv.org/abs/2602.12247); strictness is syntactic only — 15-25pt validate-vs-correct gap means the id-set diff stays the real gate (arxiv.org/abs/2604.25359). |
+| Q5 | HIGH | 27-row enumeration drop-off (research) | "Judging Is Not Enumerating" (arxiv.org/abs/2608.01000): authored sets omit-first (19-42% of oracle members; omissions resist audit; over-inclusion detected 6-7× more than omission) — **mechanical id-set diffing is the only reliable gate** (exactly WS1); **repair beats rejection 3.3-10.6× in yield** — the bounce's re-dispatch feedback upgrades to "add rows ONLY for the missing ids; change nothing else" (patch-mode scoping); Attention Overflow (arxiv.org/abs/2407.13481): 27 uniform 3-field rows sit far below the ~128-item repetition onset — single-call emission is within capability; chunking deferred. |
+
 ## 3. Test obligations
 
 - Schema lane: render a requirements control WITH findingResolutions → the

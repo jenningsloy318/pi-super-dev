@@ -177,3 +177,17 @@ describe("WS6 patch-mode", () => {
 		expect(changedSectionsSoftCheck({ changedSections: [] }).note).toContain("absent");
 	});
 });
+
+describe("stripMalformedResolutionRows (067 grill-2 Q1 — row-seam strict, array-seam lenient)", () => {
+	it("one malformed row is stripped, not the whole control; clean arrays pass through by reference", async () => {
+		const { stripMalformedResolutionRows } = await import("../src/convergence-economy/finding-resolution-gate.ts");
+		const ctrl = { title: "t", findingResolutions: [{ id: "F1", loci: ["a"], note: "n" }, { loci: ["bad row no id"] }, null, { id: "  " }] };
+		const out = stripMalformedResolutionRows(ctrl as never);
+		expect((out.findingResolutions as unknown[]).length).toBe(1);
+		expect(out.title).toBe("t");
+		const clean = { title: "t", findingResolutions: [{ id: "F1", loci: [], note: "" }] };
+		expect(stripMalformedResolutionRows(clean as never)).toBe(clean); // no-copy when clean
+		const noField = { title: "t" };
+		expect(stripMalformedResolutionRows(noField as never)).toBe(noField);
+	});
+});
