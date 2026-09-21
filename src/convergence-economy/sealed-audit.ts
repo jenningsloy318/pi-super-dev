@@ -127,3 +127,43 @@ export function sealedAuditBlockFrom(state: { [key: string]: unknown }): string 
 	const v = state[STATE_KEY];
 	return typeof v === "string" ? v : "";
 }
+
+// ── R7 research confirmation (Q2: verbatim quotes must be MACHINE-CHECKED —
+// Rulers: verdicts tied to extractive evidence that is mechanically checked;
+// a required-but-unchecked quote field is still rubber-stampable).
+
+export interface AuditQuoteVerification {
+	/** Audited rows whose priorFindingResolutions evidence quote appears
+	 * verbatim in the rendered artifact. */
+	verified: string[];
+	/** Rows whose evidence quote does NOT appear (rubber-stamp signature:
+	 * absent response OR quote ≠ substring of the artifact). */
+	failed: string[];
+	/** Audited rows the reviewer's control never answered at all. */
+	unanswered: string[];
+}
+
+/** Deterministic post-review check: every audited row MUST have a
+ * priorFindingResolutions entry whose evidence string occurs verbatim in
+ * the artifact text. Pure (artifact text in); never throws. */
+export function verifyAuditQuotes(input: {
+	auditedIds: readonly string[];
+	artifactText: string;
+	resolutions: ReadonlyArray<{ findingId?: unknown; evidence?: unknown; response?: unknown }>;
+}): AuditQuoteVerification {
+	const byId = new Map<string, { evidence?: unknown; response?: unknown }>();
+	for (const r of input.resolutions) {
+		if (r && typeof r === "object" && typeof r.findingId === "string") byId.set(r.findingId, r);
+	}
+	const verified: string[] = [];
+	const failed: string[] = [];
+	const unanswered: string[] = [];
+	for (const id of input.auditedIds) {
+		const r = byId.get(id);
+		if (!r) { unanswered.push(id); continue; }
+		const q = typeof r.evidence === "string" ? r.evidence.trim() : "";
+		if (q.length >= 8 && input.artifactText.includes(q)) verified.push(id);
+		else failed.push(id);
+	}
+	return { verified, failed, unanswered };
+}

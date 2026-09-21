@@ -12,8 +12,9 @@ import { readContractSliceStamp } from "../../review/contract-surface/index.ts";
 import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../../review/contract-validators.ts";
 import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";
+import { readSpecDoc } from "../../doc-validators.ts";
 import { adjudicateFindingResolutionGate, validatorBounceEnabled, findingResolutionGateEnabled, parseFindingResolutions, resolveAnchors } from "../../convergence-economy/finding-resolution-gate.ts";
-import { mkSealToken, protectedAuditIds, sealedAuditLogLine, sealedAuditPromptBlock, selectSealedAuditSubset, setSealedAuditBlock } from "../../convergence-economy/sealed-audit.ts";
+import { mkSealToken, protectedAuditIds, sealedAuditLogLine, sealedAuditPromptBlock, selectSealedAuditSubset, setSealedAuditBlock, verifyAuditQuotes } from "../../convergence-economy/sealed-audit.ts";
 import { lessonsForWriter, lessonsPromptBlock } from "../../convergence-economy/rejection-memory.ts";
 import { patchModeDirective, changedSectionsSoftCheck } from "../../convergence-economy/patch-mode.ts";
 import { existsSync } from "node:fs";
@@ -507,6 +508,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 						const saSel = selectSealedAuditSubset({ rows: saRows, seal: saSeal, protectedIds: protectedAuditIds(getConvergenceLedger(state).findings) });
 						ctx.log(sealedAuditLogLine(saSel));
 						setSealedAuditBlock(state as { [key: string]: unknown }, sealedAuditPromptBlock(saSel));
+						(state as Record<string, unknown>).__sealedAuditIds = saSel.audited.map((r) => r.id);
 					}
 				} catch { /* P5 fail-open — no audit block, the review proceeds */ }
 			}
@@ -586,6 +588,21 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					// The reviewer's verification of prior findings also updates the ledger
 					// (a finding it confirms resolved is marked, so it stops blocking).
 					const resolved = markConvergenceFindingsAddressedFromResponses(state, reviewControl?.priorFindingResolutions, "reviewer");
+					// v0.4.80 (R7 research Q2): machine-check the sealed audit's verbatim
+					// quotes — a required-but-unchecked quote field is still
+					// rubber-stampable. Rubber-stamp rows (failed/unanswered) are
+					// LOGGED honestly; the reviewer's verdict stands (P5: this is a
+					// signal, not a veto — the CSP probe distrust machinery consumes it).
+					try {
+						const auditBlockState = ((state as Record<string, unknown>).__sealedAuditIds as string[] | undefined);
+						if (auditBlockState && auditBlockState.length > 0) {
+							const artifactText = String(readSpecDoc(state.setup?.specDirectory ?? "", (state as Record<string, unknown>)[options.stage.id] as Record<string, unknown> | undefined, `*-${options.stage.id === "requirements" ? "requirements" : options.stage.id}.md`)?.content ?? "");
+							if (artifactText) {
+								const vq = verifyAuditQuotes({ auditedIds: auditBlockState, artifactText, resolutions: Array.isArray(reviewControl?.priorFindingResolutions) ? reviewControl.priorFindingResolutions as { findingId?: unknown; evidence?: unknown; response?: unknown }[] : [] });
+								ctx.log(`sealed audit verification: ${vq.verified.length} verified / ${vq.failed.length} quote-failed / ${vq.unanswered.length} unanswered (rubber-stamp signature)`);
+							}
+						}
+					} catch { /* P5 fail-open */ }
 					if (resolved > 0) ctx.log(`${options.feedbackKey} convergence: reviewer resolved ${resolved} prior finding(s)`);
 					// G1 (run 08-56 moving-target spiral): the convergence-duty
 					// contract is enforced DETERMINISTICALLY, not by prompt

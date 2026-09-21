@@ -67,3 +67,24 @@ describe("the commitment + prompt block", () => {
 		expect(mkSealToken()).not.toBe(mkSealToken());
 	});
 });
+
+describe("verifyAuditQuotes (R7 research: machine-check the verbatim quote — a required-but-unchecked field is still rubber-stampable)", () => {
+	const res = (findingId: string, evidence?: string) => ({ findingId, evidence, response: "checked" });
+	it("a verbatim artifact substring verifies; a fabricated quote fails; an absent row is unanswered", async () => {
+		const { verifyAuditQuotes } = await import("../src/convergence-economy/sealed-audit.ts");
+		const artifact = "AC-07 now carries the fail-loud expiry check with the process-cached tool_trade_date_hist_sina fallback used ONLY on bundle expiry.";
+		const out = verifyAuditQuotes({
+			auditedIds: ["CF-1", "CF-2", "CF-3"],
+			artifactText: artifact,
+			resolutions: [res("CF-1", "fail-loud expiry check with the process-cached"), res("CF-2", "this quote appears nowhere in the artifact"), res("CF-3", "too short")],
+		});
+		expect(out.verified).toEqual(["CF-1"]);
+		expect(out.failed).toEqual(["CF-2", "CF-3"]);
+		expect(out.unanswered).toEqual([]);
+	});
+	it("a row the reviewer never answered is unanswered (INV-V1: no verdict ⇒ not green)", async () => {
+		const { verifyAuditQuotes } = await import("../src/convergence-economy/sealed-audit.ts");
+		const out = verifyAuditQuotes({ auditedIds: ["CF-9"], artifactText: "x", resolutions: [] });
+		expect(out.unanswered).toEqual(["CF-9"]);
+	});
+});
