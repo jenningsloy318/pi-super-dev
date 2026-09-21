@@ -191,3 +191,19 @@ describe("stripMalformedResolutionRows (067 grill-2 Q1 — row-seam strict, arra
 		expect(stripMalformedResolutionRows(noField)).toBe(noField);
 	});
 });
+
+describe("067 R5 convergence pins", () => {
+	it("R5-Q3: CONTROL_SCHEMA_VERSION is pinned — a bump is a deliberate act (the resume salt consumes it)", async () => {
+		const { CONTROL_SCHEMA_VERSION } = await import("../src/render/schemas.ts");
+		expect(CONTROL_SCHEMA_VERSION).toBe("2");
+	});
+	it("R5-Q4: every convergence node carries EXACTLY ONE walk-scoped writer-bounce budget (the round-4 drift class)", async () => {
+		const fs = await import("node:fs");
+		const spec = fs.readFileSync("src/stages/spec-convergence.ts", "utf8");
+		const node = fs.readFileSync("src/stages/artifact-convergence/node.ts", "utf8");
+		const countDecl = (src: string, name: string) => (src.match(new RegExp(`let ${name} = false;`, "g")) ?? []).length;
+		expect(countDecl(spec, "specWriterBounceSpent")).toBe(1);
+		expect(countDecl(spec, "specWriterResolutionBounceSpent")).toBe(0);
+		expect(countDecl(node, "writerBounceSpent")).toBe(1);
+	});
+});

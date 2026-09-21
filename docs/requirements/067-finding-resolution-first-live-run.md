@@ -109,6 +109,22 @@ as logged noise.
 | R4-Q3 | MED | The WS3 anchor leg skipped SILENTLY when the bounce budget was spent — unresolved loci unreported (a P10 gap, not a design change) | The spent-budget branch logs the gap honestly before proceeding |
 | R4-Q4 | MED | Round 3 promised an empty-array pin that was never actually added | Added: [] maps nothing → bounce owns it; both approval wordings count |
 
+## 2.13 Grill round 5 (2026-09-21) — the convergence sweep: GRILL CLOSED
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| R5-Q1 | — | Flag-duplication sweep | CLEAN: exactly one walk-scoped budget per node (round-4 fix holds; now tripwire-pinned) |
+| R5-Q2 | MED | The WS3 anchor leg was absent from the spec walk (spec writers' loci unchecked) | Wired: the same resolveAnchors predicate (spec-dir/worktree/cwd relative) on the shared budget, honest spent-budget log (this commit) |
+| R5-Q3 | MED | CONTROL_SCHEMA_VERSION had ZERO consumers and ZERO pins — a constant nobody reads drifts silently | Value-pinned (a bump now fails the pin — a deliberate act); the resume-salt consumer lands with WS5 wiring as documented |
+| R5-Q4 | MED | The round-4 unified-budget fix had no pin | Source-scan tripwire: exactly one budget declaration per node, the drifted name at zero (the round-4 drift class can never silently recur) |
+| R5-Q5 | LOW | Prompt-bloat note: lessons + patch directive + round1 lines + bounce feedback all ride the round-1 prompt un-budgeted | Advisory, recorded; the WS7 prompt-size budget owns it when wired |
+
+**Verdict: GRILL CONVERGED.** Rounds 4-5 found only implementation drift and
+missing pins — no design defects since round 2. 067 is grill-closed with
+five folded rounds (2H+3M, 5, 6, 4, 5 findings); further adversarial effort
+belongs on the NEXT live run's receipts (the economy line on v0.4.77+ is
+the full-chain measurement), not on this document.
+
 ## 3. Test obligations
 
 - Schema lane: render a requirements control WITH findingResolutions → the

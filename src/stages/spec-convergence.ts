@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { AGENT_ERROR_FATAL_CONSECUTIVE, agentErrorTextsSince, FatalAbort, gateValidator, task } from "../nodes.ts";
 import { clearRetryFeedback, setRetryFeedback, withOmissionNotice, type RetryFeedback } from "../retry-feedback.ts";
 import type { ControlObj, Node, PipelineState, StageContext } from "../types.ts";
@@ -8,7 +10,7 @@ import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readC
 // validator, its validation context, the reconciliation section builder, and
 // the Metadata Strike-1 classifier/repair template.
 import { designatedBounceFindings } from "./artifact-convergence/validators.ts";
-import { adjudicateFindingResolutionGate, findingResolutionGateEnabled, validatorBounceEnabled } from "../convergence-economy/finding-resolution-gate.ts";
+import { adjudicateFindingResolutionGate, findingResolutionGateEnabled, parseFindingResolutions, resolveAnchors, validatorBounceEnabled } from "../convergence-economy/finding-resolution-gate.ts";
 import { lessonsForWriter, lessonsPromptBlock } from "../convergence-economy/rejection-memory.ts";
 import {  selfSpecArtifactMatcher, contractValidationContext, familyInclusionMismatches, freshSpecWriteClaims, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -552,6 +554,43 @@ export const specConvergenceNode: Node = {
 					}
 				} catch (error) {
 					ctx.log(`spec convergence: finding-resolution gate crashed (advisory — proceeding): ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+			// v0.4.77 (067 R5-Q2): the spec walk's WS3 anchor leg — the mapped rows'
+			// loci must RESOLVE (spec-dir/worktree/cwd relative); the same shared
+			// walk budget as the coverage leg (P8 bound 1); unresolved loci with
+			// the budget spent log honestly (P10).
+			if (round1InjectedIds.length > 0 && !specWriterBounceSpent && findingResolutionGateEnabled()) {
+				try {
+					const specCtrlW3 = (state.spec ?? (specResult as { control?: unknown } | null)?.control) as { findingResolutions?: unknown } | null | undefined;
+					const specDirPath = state.setup?.specDirectory ?? "";
+					const wtPathW3 = state.setup?.worktreePath ?? "";
+					const specAnchorOut = resolveAnchors(
+						parseFindingResolutions(specCtrlW3?.findingResolutions).rows.flatMap((r) => r.loci),
+						(rel: string) => { try { return (specDirPath ? existsSync(join(specDirPath, rel)) : false) || existsSync(join(wtPathW3, rel)) || existsSync(rel); } catch { return false; } },
+					);
+					if (specAnchorOut.unresolved.length > 0) {
+						if (specWriterBounceSpent) {
+							ctx.log(`spec convergence: anchor gate — ${specAnchorOut.unresolved.length} unresolved locu(s) (bounce budget spent); proceeding with the gap recorded: ${specAnchorOut.unresolved.slice(0, 4).join("; ")}`);
+						} else {
+							specWriterBounceSpent = true;
+							const specAnchorFeedback = `anchor bounce: ${specAnchorOut.unresolved.length} cited locu(s) do not resolve — fix the paths/anchors in findingResolutions for ONLY these loci, changing nothing else: ${specAnchorOut.unresolved.slice(0, 6).join("; ")}`;
+							ctx.log(`spec convergence: ${specAnchorFeedback} — one bounded writer re-dispatch follows`);
+							setSpecFeedback(state, "anchor bounce", [specAnchorFeedback]);
+							const ab = await specTask.run(state, ctx);
+							if (ab.status === "cancelled") return ab;
+							if (ab.status === "failed") {
+								lastErrors = [`spec writer failed (post-anchor-bounce): ${ab.error ?? "unknown error"}`];
+								setSpecFeedback(state, "anchor bounce", lastErrors);
+								ctx.log(`spec convergence: anchor-bounced writer failed round ${round} — ${lastErrors.join("; ")}`);
+								prevOwnOpen = Number.POSITIVE_INFINITY;
+								lastOwnOpen = Number.POSITIVE_INFINITY;
+								continue;
+							}
+						}
+					}
+				} catch (error) {
+					ctx.log(`spec convergence: anchor gate crashed (advisory — proceeding): ${error instanceof Error ? error.message : String(error)}`);
 				}
 			}
 			// v0.4.64 WS2 (066 §2) — the spec site's pre-review bounce leg:
