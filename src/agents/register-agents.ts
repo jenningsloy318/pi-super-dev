@@ -356,18 +356,23 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 			const pruned: Record<string, unknown> = { ...request.definition };
 			for (const f of strip) delete pruned[f];
 			log(`super-dev: retrying sd-${name} registration without [${[...strip].join(", ")}] (upstream removed the field)`);
-			const retryRequest = { ...request, definition: pruned };
+			// v0.4.85: the spread copies the FIRST attempt's `result: {ok:false}` —
+			// the owner's listener guards on `request.result !== undefined` and
+			// silently SKIPS any request that already carries a result. The retry
+			// must be a FRESH object with result explicitly absent.
+			const { result: _firstResult, ...freshRequest } = request;
+			const retryRequest = { ...freshRequest, definition: pruned };
 			try {
 				events.emit(RUNTIME_AGENT_REGISTER_EVENT, retryRequest);
 			} catch { return null; }
-			const retryResult = retryRequest.result;
+			const retryResult = (retryRequest as { result?: { ok: boolean; registration?: { dispose(): void }; error?: Error } }).result;
 			if (retryResult?.ok) {
 				lastRegistrationRejections.pop(); // the retry superseded the rejection
 				onAnswered();
-				return retryResult.registration.dispose.bind(retryResult.registration);
+				return retryResult.registration?.dispose.bind(retryResult.registration) ?? null;
 			}
 			if (retryResult && !retryResult.ok) {
-				log(`ERROR super-dev: agent registration retry also rejected for sd-${name}: ${retryResult.error.message}`);
+				log(`ERROR super-dev: agent registration retry also rejected for sd-${name}: ${retryResult.error?.message ?? "unknown"}`);
 			}
 		}
 		return null;
