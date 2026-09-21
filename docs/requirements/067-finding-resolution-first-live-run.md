@@ -1,6 +1,6 @@
 # The finding-resolution gate's first live run — two defects and the demand-set hygiene spec
 
-Status: approved 2026-09-21 (autonomous directive) — implementing this commit.
+Status: implemented (v0.4.72–v0.4.79; six grill rounds folded + the sealed-audit layer designed in round 7 and implemented). Lineage below.
 Lineage: child of 066 (convergence economy, WS1). Evidence: live run
 `2026-09-20T23-42-17-331Z` (v0.4.71 — the first run carrying the full
 wave-1 machinery).
@@ -147,6 +147,19 @@ For the next live run on v0.4.77+ over the SAME spec (26-capability-backend-subs
 A miss on P2-P4 with the machinery firing is a NEW receipt class → reopen the
 grill with it; a miss on P1 alone may be task-difficulty (adjudicated per the
 round-1 Q1 rule).
+
+## 2.17 Grill round 7 (2026-09-21) — the sealed-audit design grill + implementation
+
+| # | Finding | Design answer (implemented v0.4.79) |
+|---|---|---|
+| Q1 | The unbiasable randomness source | mkSealToken(): crypto-random, generated AFTER submission (validation-passed seam); the LOG LINE is the commitment (append-only ordering — the writer never sees the log mid-flight; anyone recomputes sha256(seal,id) post-hoc) |
+| Q2 | Where the seal lives / auditability | sealedAuditLogLine names seal + count + ids + the reconstruction recipe |
+| Q3 | Verdict shape (anti-rubber-stamp) | Per-row priorFindingResolutions entries with a REQUIRED verbatim evidence quote — a bare pass is not an audit (the schema field already existed) |
+| Q4 | Protected set | unresolved blocking high/P0/P1/critical ledger findings (resolved rows LEAVE — cannot balloon) + unconditional inclusion past the sampled target |
+| Q5 | Subset size | fraction 0.4 default, census below minRows 3 |
+| Q6 | The auditor | the stage's existing reviewer; the block rides the shared buildUpstreamReviewPrompt/buildSpecReviewPrompt tails (stable header first — KV); stages without coverage maps untouched |
+
+Research-pending confirmations (commit-reveal mechanics, verdict elicitation, protected-set precedents) fold on the agent's return; the design answers stand on the round-1/2 research base either way.
 
 ## 3. Test obligations
 

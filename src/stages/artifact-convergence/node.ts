@@ -13,6 +13,7 @@ import { isWriterMetadataRejection, writerMetadataRepairFeedback, writerMetadata
 import { renderAndWrite } from "../../render/render.ts";
 import { priorFindingsForInjection } from "../../convergence-ledger.ts";
 import { adjudicateFindingResolutionGate, validatorBounceEnabled, findingResolutionGateEnabled, parseFindingResolutions, resolveAnchors } from "../../convergence-economy/finding-resolution-gate.ts";
+import { mkSealToken, protectedAuditIds, sealedAuditLogLine, sealedAuditPromptBlock, selectSealedAuditSubset, setSealedAuditBlock } from "../../convergence-economy/sealed-audit.ts";
 import { lessonsForWriter, lessonsPromptBlock } from "../../convergence-economy/rejection-memory.ts";
 import { patchModeDirective, changedSectionsSoftCheck } from "../../convergence-economy/patch-mode.ts";
 import { existsSync } from "node:fs";
@@ -490,6 +491,25 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					continue;
 				}
 				ctx.log(`${options.feedbackKey} convergence: deterministic validation passed round ${round}`);
+			// v0.4.79 (066 WS1 layer b / 067 R6-Q1): the SEALED AUDIT SUBSET —
+			// selected AFTER submission (validation just passed), committed by
+			// this log line (append-only ordering is the proof; recompute
+			// sha256(seal,id) to verify), carried to the reviewer prompt via
+			// state. Protected ids (unresolved blocking high-severity ledger
+			// findings) are unconditional. P5: never blocks on crash.
+			{
+				try {
+					const saCtrl = ((state as Record<string, unknown>)[options.stage.id] ?? (stageResult as { control?: unknown } | null)?.control) as { findingResolutions?: unknown } | null | undefined;
+					const saRows = parseFindingResolutions(saCtrl?.findingResolutions).rows;
+					delete (state as Record<string, unknown>).__sealedAuditBlock;
+					if (saRows.length > 0) {
+						const saSeal = mkSealToken();
+						const saSel = selectSealedAuditSubset({ rows: saRows, seal: saSeal, protectedIds: protectedAuditIds(getConvergenceLedger(state).findings) });
+						ctx.log(sealedAuditLogLine(saSel));
+						setSealedAuditBlock(state as { [key: string]: unknown }, sealedAuditPromptBlock(saSel));
+					}
+				} catch { /* P5 fail-open — no audit block, the review proceeds */ }
+			}
 			// v0.4.69 WS6: the soft diff-scope check (advisory — grill-2 M10).
 			{
 				const pmCtrl = ((state as Record<string, unknown>)[options.stage.id] ?? (stageResult as { control?: unknown } | null)?.control) as { changedSections?: unknown } | null | undefined;
