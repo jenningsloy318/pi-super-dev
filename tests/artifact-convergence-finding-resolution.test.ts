@@ -173,3 +173,18 @@ describe("067 D1/D2 — schema-legal field + demand-set hygiene", () => {
 		expect(Value.Check(RequirementsData, newControl)).toBe(true);
 	});
 });
+
+describe("067 R4-Q4 — the empty-array path (writer emits []; controlKeys passes; the gate owns it)", () => {
+	it("[] maps nothing — every injected id is missing and the bounce fires", async () => {
+		const { adjudicateFindingResolutionGate } = await import("../src/convergence-economy/finding-resolution-gate.ts");
+		const d = adjudicateFindingResolutionGate({ injectedIds: ["CF-1"], resolutions: [] });
+		expect(d.bounce).toBe(true);
+		expect(d.missing).toEqual(["CF-1"]);
+	});
+	it("the spec approval wording (✓ trace + review approved round N) counts in the economy metrics", async () => {
+		const { economyMetricsFromLog } = await import("../src/convergence-economy/economy-metrics.ts");
+		const m = economyMetricsFromLog(["[t] spec convergence: ✓ trace + review approved round 1", "[t] requirements convergence: ✓ review approved round 3"]);
+		expect(m.reviewedWalks).toBe(2);
+		expect(m.firstPassApprovals).toBe(1);
+	});
+});

@@ -131,7 +131,7 @@ export function economyMetricsFromLog(lines: readonly string[]): EconomyMetrics 
 	let firstPassApprovals = 0;
 	let reviewedWalks = 0;
 	for (const raw of lines) {
-		const m = /convergence: ✓ review approved round (\d+)/.exec(String(raw ?? ""));
+		const m = /convergence: ✓ (?:trace \+ )?review approved round (\d+)/.exec(String(raw ?? ""));
 		if (!m) continue;
 		reviewedWalks++;
 		if (Number.parseInt(m[1]!, 10) === 1) firstPassApprovals++;

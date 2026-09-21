@@ -377,7 +377,9 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 							// plus cwd before declaring a citation dangling.
 							(rel: string) => { try { return existsSync(join(wtPath, rel)) || (specDir ? existsSync(join(specDir, rel)) : false) || existsSync(rel); } catch { return false; } },
 						);
-						if (anchorOut.unresolved.length > 0) {
+						if (anchorOut.unresolved.length > 0 && writerBounceSpent) {
+							ctx.log(`${options.feedbackKey} convergence: anchor gate — ${anchorOut.unresolved.length} unresolved locu(s) (bounce budget spent); proceeding to validation/review with the gap recorded: ${anchorOut.unresolved.slice(0, 4).join("; ")}`);
+						} else if (anchorOut.unresolved.length > 0) {
 							writerBounceSpent = true;
 							const anchorFeedback = `anchor bounce: ${anchorOut.unresolved.length} cited locu(s) do not resolve in the worktree — fix the paths/anchors in findingResolutions: ${anchorOut.unresolved.slice(0, 6).join("; ")}`;
 							ctx.log(`${options.feedbackKey} convergence: ${anchorFeedback} — one bounded writer re-dispatch follows`);

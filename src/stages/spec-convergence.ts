@@ -254,8 +254,10 @@ export const specConvergenceNode: Node = {
 		// injected blocking CONTENT ids (agent-failed markers filtered, 067 D2)
 		// + the shared walk-scoped bounce budget (P8 bound 1 across legs).
 		let round1InjectedIds: string[] = [];
-		let specWriterResolutionBounceSpent = false;
 		// v0.4.64 WS2: walk-scoped writer-bounce budget (P8 bound 1, shared across the walk).
+		// v0.4.76 (067 R4-Q1): ONE shared walk-scoped writer-bounce budget across
+		// BOTH legs (coverage WS1 + validator WS2) — the documented design (066
+		// §2, P8 bound 1 per walk); v0.4.64/75 had accidentally declared two.
 		let specWriterBounceSpent = false;
 		const maxRounds = MAX_CONVERGENCE_ROUNDS;
 		// F3 (RC2): grant a resumed run FRESH rounds after its replay — the old
@@ -527,12 +529,12 @@ export const specConvergenceNode: Node = {
 			// same leg the artifact family has run since v0.4.60. One bounded
 			// re-dispatch; agent budget, NOT a convergence round; the scoped
 			// repair feedback names ONLY the missing ids (repair-beats-rejection).
-			if (round1InjectedIds.length > 0 && !specWriterResolutionBounceSpent && findingResolutionGateEnabled()) {
+			if (round1InjectedIds.length > 0 && !specWriterBounceSpent && findingResolutionGateEnabled()) {
 				try {
 					const specCtrl = (state.spec ?? (specResult as { control?: unknown } | null)?.control) as { findingResolutions?: unknown } | null | undefined;
 					const specGate = adjudicateFindingResolutionGate({ injectedIds: round1InjectedIds, resolutions: specCtrl?.findingResolutions });
 					if (specGate.bounce) {
-						specWriterResolutionBounceSpent = true;
+						specWriterBounceSpent = true;
 						ctx.log(`spec convergence: ${specGate.feedback} — one bounded writer re-dispatch follows (agent budget, not a convergence round)`);
 						setSpecFeedback(state, "coverage bounce", [specGate.feedback]);
 						const rb = await specTask.run(state, ctx);

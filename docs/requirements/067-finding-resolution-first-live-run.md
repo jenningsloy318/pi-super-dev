@@ -100,6 +100,15 @@ as logged noise.
 | R3-Q5 | MED | Schema-version stamp deferred a third time | CLOSED: CONTROL_SCHEMA_VERSION = "2" in schemas.ts — the single constant the resume contract-salt (066 r4 Q3) consumes |
 | R3-Q6 | LOW | Grill numbering collided across rounds | Round-3 rows prefixed R3- |
 
+## 2.11 Grill round 4 (2026-09-21) — two-flag drift + the spec stage's invisible approvals
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| R4-Q1 | HIGH | v0.4.64 and v0.4.75 had ACCIDENTALLY declared TWO walk-scoped bounce flags in the spec node (specWriterBounceSpent + specWriterResolutionBounceSpent) — the spec walk could bounce twice, violating the documented shared-budget bound-1 (066 §2 P8) | Unified into ONE specWriterBounceSpent across both legs (this commit) |
+| R4-Q2 | HIGH | The economy metrics' approval regex matched "✓ review approved round N" — but the SPEC stage logs "✓ trace + review approved round N": the run's most expensive stage was INVISIBLE to reviewedWalks/firstPassApprovals | Regex covers the trace + review wording (pinned both shapes) |
+| R4-Q3 | MED | The WS3 anchor leg skipped SILENTLY when the bounce budget was spent — unresolved loci unreported (a P10 gap, not a design change) | The spent-budget branch logs the gap honestly before proceeding |
+| R4-Q4 | MED | Round 3 promised an empty-array pin that was never actually added | Added: [] maps nothing → bounce owns it; both approval wordings count |
+
 ## 3. Test obligations
 
 - Schema lane: render a requirements control WITH findingResolutions → the
