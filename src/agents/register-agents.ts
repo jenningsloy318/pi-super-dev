@@ -181,7 +181,9 @@ function completionGuardFieldSupported(): boolean {
 		const pkgJson = require("fs").readFileSync(require("path").join(process.env.HOME ?? "", ".pi/agent/npm/node_modules/pi-subagents/package.json"), "utf8");
 		const v = (JSON.parse(pkgJson) as { version?: string }).version ?? "0";
 		const [major, minor] = v.split(".").map((x) => Number.parseInt(x, 10));
-		completionGuardSupportedMemo = Number.isFinite(major) && Number.isFinite(minor) && (major < 0 || (major === 0 && minor <= 70));
+		// v0.4.84: the probe no longer gates the field — the unknown-fields
+		// retry owns the adaptation. Always true: send when relevant, retry strips.
+		completionGuardSupportedMemo = true;
 	} catch { completionGuardSupportedMemo = false; }
 	return completionGuardSupportedMemo;
 }
@@ -341,7 +343,33 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	onAnswered();
 	if (!result.ok) {
 		lastRegistrationRejections.push(`sd-${name}: ${result.error.message}`);
-		log(`ERROR super-dev: agent registration rejected for sd-${name}: ${result.error.message}`);
+		const msg = result.error.message;
+		log(`ERROR super-dev: agent registration rejected for sd-${name}: ${msg}`);
+		// v0.4.84 (run 2026-09-21T15-09-09-884Z — the off-by-one was mine:
+		// `minor <= 70` included 0.70.1 where the field was REMOVED): the
+		// CLASS fix — on an "unknown fields" rejection, STRIP the named fields
+		// and RETRY once. No version boundary can be wrong again; any future
+		// upstream field removal self-heals at registration time.
+		const unknownMatch = /unknown fields: ([^.]+)/.exec(msg);
+		if (unknownMatch?.[1]) {
+			const strip = new Set(unknownMatch[1].split(",").map((f) => f.trim()).filter(Boolean));
+			const pruned: Record<string, unknown> = { ...request.definition };
+			for (const f of strip) delete pruned[f];
+			log(`super-dev: retrying sd-${name} registration without [${[...strip].join(", ")}] (upstream removed the field)`);
+			const retryRequest = { ...request, definition: pruned };
+			try {
+				events.emit(RUNTIME_AGENT_REGISTER_EVENT, retryRequest);
+			} catch { return null; }
+			const retryResult = retryRequest.result;
+			if (retryResult?.ok) {
+				lastRegistrationRejections.pop(); // the retry superseded the rejection
+				onAnswered();
+				return retryResult.registration.dispose.bind(retryResult.registration);
+			}
+			if (retryResult && !retryResult.ok) {
+				log(`ERROR super-dev: agent registration retry also rejected for sd-${name}: ${retryResult.error.message}`);
+			}
+		}
 		return null;
 	}
 	return result.registration.dispose.bind(result.registration);
