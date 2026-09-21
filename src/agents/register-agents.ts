@@ -151,6 +151,10 @@ function descriptionFor(name: string): string {
 }
 
 let ownerPresentSeen: boolean | null = null;
+/** v0.4.83 diagnostics: every per-agent rejection text — the run log carries
+ * our ERROR lines only when the extension log sink is wired; the array is
+ * the queryable surface for the owner-side failure mode. */
+export const lastRegistrationRejections: string[] = [];
 
 /** v0.3.26: whether pi-subagents answered the registration handshake at
  *  activate() time. `null` = never probed (tests, CLI, or a different
@@ -336,6 +340,7 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 	if (!result) return null; // no owner listening — silent skip
 	onAnswered();
 	if (!result.ok) {
+		lastRegistrationRejections.push(`sd-${name}: ${result.error.message}`);
 		log(`ERROR super-dev: agent registration rejected for sd-${name}: ${result.error.message}`);
 		return null;
 	}

@@ -50,6 +50,7 @@ export { DELEGATION_AUTONOMY_CLAUSE } from "./workflow/agent-call-assembly.ts";
 export { sleepMs } from "./workflow/agent-retry.ts";
 export { deriveRunStatus, type RunStatusDerivation, type StatusDerivationResultRow } from "./workflow/run-status.ts";
 import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, isDelegationHostSdkResolutionFailure, delegationHostSdkResolutionError, delegationBackendDegraded, delegationBackendDegradeMessage, markDelegationBackendDegraded, DELEGATION_VERSION_SKEW_ERROR, delegationAgentName, resetThinkingClampState } from "./agents/delegation-backend.ts";
+import { lastRegistrationRejections } from "./agents/register-agents.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
 import { delegationOwnerPresent } from "./agents/register-agents.ts";
@@ -424,6 +425,14 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 			// reduced to genuine registration loss, and the error text names the
 			// remedy for the operator).
 			if (delegated.error && UNKNOWN_AGENT_ERROR_RE.test(delegated.error)) {
+			// v0.4.83 diagnostics: the Unknown-agent class now names the
+			// registration state (accepted count / owner-present / rejection
+			// heads) so the NEXT run's log distinguishes owner-dead from
+			// registration-rejected from name-resolution drift.
+			try {
+				const rejections = lastRegistrationRejections.slice(0, 3).join(" | ");
+				log(`WARN agent ${call.id ?? call.agent}: Unknown-agent diagnostics — ownerPresent=${String(delegationOwnerPresent())}, rejections=${rejections || "none"}`);
+			} catch { /* diagnostic only */ }
 				log(`ERROR agent ${call.id ?? call.agent}: delegation rejected (${delegated.error}) — the sd-* registration is missing for this role; restart pi so activation re-registers (registration summary appears at super-dev activation).`);
 			}
 			return delegated;
