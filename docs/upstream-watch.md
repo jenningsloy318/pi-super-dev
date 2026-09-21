@@ -18,11 +18,9 @@ pi or pi-subagents updates. It exists so a future session can answer
 
 ## Version pins (verified 2026-09-20)
 
-- pi-subagents: **0.70.0** installed (`~/.pi/agent/npm/node_modules/pi-subagents`, installed
-  2026-09-20 11:29 +08) = npm `latest`. Unreleased main (`4db20f0`) carries the host-SDK
-  resolution fix (#2352, see the 2026-09-20 drift entry) plus Pi 0.86 support (#2349).
-- pi: **0.86.0** (mise node 24.15.0 global install). 0.86 is the release that stopped
-  serving virtual module resolution to extension code — the trigger for the host-SDK gap.
+- pi-subagents: **0.70.1** installed (= npm `latest`; the #2352/#2371 host-SDK
+  resolution fix SHIPPED).
+- pi: **0.86.1** (mise node 24.15.0 global install).
 - Reference clone: `docs/references/pi-subagents` (gitignored, shallow). Refresh
   with `git fetch origin` before any comparison; compare against origin/main.
 
@@ -64,6 +62,26 @@ If a file reports DIFF, act per contract:
 - **C3 (exports map)** — re-run the resolution probe if the module path moves.
 
 ## Drift log
+
+- **2026-09-21** — pi-subagents **0.70.1** (installed 20:51; pi **0.86.1**): the
+  HOST-SDK RESOLUTION FIX SHIPPED. #2371 (`resolve host SDK exports correctly`)
+  lands upstream's own host-root loader — root precedence (running host →
+  explicit override → install tree), manifest+entry+import all validated, bare
+  specifier only when no root resolves. Our v0.4.58 `file:` dependency
+  (`@earendil-works/pi-coding-agent` in `~/.pi/agent/npm/package.json`) SURVIVED
+  the upgrade (symlink intact; probe from child-session's dir resolves) — it now
+  merely shadows the fix rather than being load-bearing; keep it until a clean
+  run on 0.70.1 proves the upstream path, then retire. #2369 (`apply model
+  settings to runtime-registered agents`): mergeRuntimeAgents now applies
+  subagent model-tier settings to registered agents when a settings context is
+  passed — our per-call model/thinking resolution (precedence A in workflow.ts)
+  is unaffected (explicit per-request models outrank discovery-tier settings).
+  C1–C6 shapes re-verified against the 0.70.1 tag: delegation event fields,
+  result envelope, registration payload, exports map unchanged. STRIKE the
+  2026-09-20 host-SDK item's "no npm release carries it yet" after one clean
+  live run on 0.70.1.
+
+
 
 - **2026-09-20 (later)** — pi-subagents **0.70.0 removed the model-exclusions
   mechanism ENTIRELY** (verified in installed source,
