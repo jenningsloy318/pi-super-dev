@@ -89,6 +89,17 @@ as logged noise.
 | Q4 | HIGH | Strict-vs-lenient row validation (research) | Confirms Q1's rule verbatim: "enforce strictness at the row seam, leniency at the array seam" (arxiv.org/abs/2602.12247); strictness is syntactic only — 15-25pt validate-vs-correct gap means the id-set diff stays the real gate (arxiv.org/abs/2604.25359). |
 | Q5 | HIGH | 27-row enumeration drop-off (research) | "Judging Is Not Enumerating" (arxiv.org/abs/2608.01000): authored sets omit-first (19-42% of oracle members; omissions resist audit; over-inclusion detected 6-7× more than omission) — **mechanical id-set diffing is the only reliable gate** (exactly WS1); **repair beats rejection 3.3-10.6× in yield** — the bounce's re-dispatch feedback upgrades to "add rows ONLY for the missing ids; change nothing else" (patch-mode scoping); Attention Overflow (arxiv.org/abs/2407.13481): 27 uniform 3-field rows sit far below the ~128-item repetition onset — single-call emission is within capability; chunking deferred. |
 
+## 2.9 Grill round 3 (2026-09-21) — the implemented state's internal consistency (code-analysis; no new research needed — all on already-researched ground)
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| R3-Q1 | HIGH | The v0.4.74 strip checked controlNorm but RETURNED the original control — renderAndWrite's STAGE_MODELS validation re-saw the malformed rows and could reject the whole control there (the pre-strip was bypassed) | All success/corrective return paths now carry controlNorm — the stripped array is what flows downstream (this commit) |
+| R3-Q2 | HIGH | "~P% caught pre-review" was a proxy, not first-pass acceptance | REAL metric per the SWE-bench convention: first-pass acceptance = walks approved at review round 1 / reviewed walks, derived from the ✓-approved-round lines; the summary names both counts |
+| R3-Q3 | HIGH | The spec walk lacked the WS1 gate (deferred twice) | Wired: round1InjectedIds capture (agent-failed filtered) + the bounded bounce leg at the trace-passed seam, scoped repair feedback (this commit) |
+| R3-Q4 | MED | Empty-array path coherence unpinned | Pinned semantics: writer emits [] → controlKeys' empty-array-ok passes → the gate sees zero mapped ids → bounce owns it |
+| R3-Q5 | MED | Schema-version stamp deferred a third time | CLOSED: CONTROL_SCHEMA_VERSION = "2" in schemas.ts — the single constant the resume contract-salt (066 r4 Q3) consumes |
+| R3-Q6 | LOW | Grill numbering collided across rounds | Round-3 rows prefixed R3- |
+
 ## 3. Test obligations
 
 - Schema lane: render a requirements control WITH findingResolutions → the

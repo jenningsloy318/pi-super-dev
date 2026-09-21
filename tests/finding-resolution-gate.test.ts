@@ -181,13 +181,13 @@ describe("WS6 patch-mode", () => {
 describe("stripMalformedResolutionRows (067 grill-2 Q1 — row-seam strict, array-seam lenient)", () => {
 	it("one malformed row is stripped, not the whole control; clean arrays pass through by reference", async () => {
 		const { stripMalformedResolutionRows } = await import("../src/convergence-economy/finding-resolution-gate.ts");
-		const ctrl = { title: "t", findingResolutions: [{ id: "F1", loci: ["a"], note: "n" }, { loci: ["bad row no id"] }, null, { id: "  " }] };
-		const out = stripMalformedResolutionRows(ctrl as never);
+		const ctrl: Record<string, unknown> = { title: "t", findingResolutions: [{ id: "F1", loci: ["a"], note: "n" }, { loci: ["bad row no id"] }, null, { id: "  " }] };
+		const out = stripMalformedResolutionRows(ctrl);
 		expect((out.findingResolutions as unknown[]).length).toBe(1);
 		expect(out.title).toBe("t");
-		const clean = { title: "t", findingResolutions: [{ id: "F1", loci: [], note: "" }] };
-		expect(stripMalformedResolutionRows(clean as never)).toBe(clean); // no-copy when clean
-		const noField = { title: "t" };
-		expect(stripMalformedResolutionRows(noField as never)).toBe(noField);
+		const clean: Record<string, unknown> = { title: "t", findingResolutions: [{ id: "F1", loci: [], note: "" }] };
+		expect(stripMalformedResolutionRows(clean)).toBe(clean); // no-copy when clean
+		const noField: Record<string, unknown> = { title: "t" };
+		expect(stripMalformedResolutionRows(noField)).toBe(noField);
 	});
 });

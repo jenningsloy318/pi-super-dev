@@ -33,6 +33,11 @@ export interface EconomyMetrics {
 	roles: RoleEconomyRow[];
 	/** Lines skipped as unparseable where parsing was attempted (honesty). */
 	unparseable: number;
+	/** Walks whose review APPROVED at round 1 (the SWE-bench-convention
+	 * first-pass acceptance: approved on the FIRST submission). */
+	firstPassApprovals: number;
+	/** Walks that reached a review approval at any round. */
+	reviewedWalks: number;
 }
 
 const DELEGATION_RE = /delegation ([a-zA-Z0-9-]+): (?:completed|terminal status=\S+).*?duration=([^ ]+)/;
@@ -123,7 +128,15 @@ export function economyMetricsFromLog(lines: readonly string[]): EconomyMetrics 
 					: key === "design" ? "architecture-designer" : null;
 		if (role) rowFor(map, role).bounces++;
 	}
-	return { roles: [...map.values()].sort((x, y) => y.writerMs + y.reviewMs - (x.writerMs + x.reviewMs)), unparseable };
+	let firstPassApprovals = 0;
+	let reviewedWalks = 0;
+	for (const raw of lines) {
+		const m = /convergence: ✓ review approved round (\d+)/.exec(String(raw ?? ""));
+		if (!m) continue;
+		reviewedWalks++;
+		if (Number.parseInt(m[1]!, 10) === 1) firstPassApprovals++;
+	}
+	return { roles: [...map.values()].sort((x, y) => y.writerMs + y.reviewMs - (x.writerMs + x.reviewMs)), unparseable, firstPassApprovals, reviewedWalks };
 }
 
 /** The operator-facing summary line (P10: numbers, named, no inflation). */
@@ -132,6 +145,6 @@ export function economyMetricsSummary(metrics: EconomyMetrics): string {
 	const reviews = metrics.roles.reduce((n, r) => n + r.reviewPasses, 0);
 	const bounces = metrics.roles.reduce((n, r) => n + r.bounces, 0);
 	const reviewMin = Math.round(metrics.roles.reduce((n, r) => n + r.reviewMs, 0) / 60000);
-	const firstPass = attempts + bounces > 0 ? Math.round((bounces / (attempts + bounces)) * 100) : 0;
-	return `economy: ${attempts} writer attempts, ${reviews} review passes (${reviewMin} min review wall-clock), ${bounces} pre-review bounce(s) prevented submission(s) (~${firstPass}% of would-be submissions caught pre-review)`;
+	const fp = metrics.reviewedWalks > 0 ? Math.round((metrics.firstPassApprovals / metrics.reviewedWalks) * 100) : 0;
+	return `economy: ${attempts} writer attempts, ${reviews} review passes (${reviewMin} min review wall-clock), ${bounces} pre-review bounce(s), first-pass acceptance ${metrics.firstPassApprovals}/${metrics.reviewedWalks} (~${fp}%)`;
 }

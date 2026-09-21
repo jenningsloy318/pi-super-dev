@@ -8,7 +8,7 @@ import { contractInventoryReconciliationSection, normalizeAmendmentFamily, readC
 // validator, its validation context, the reconciliation section builder, and
 // the Metadata Strike-1 classifier/repair template.
 import { designatedBounceFindings } from "./artifact-convergence/validators.ts";
-import { validatorBounceEnabled } from "../convergence-economy/finding-resolution-gate.ts";
+import { adjudicateFindingResolutionGate, findingResolutionGateEnabled, validatorBounceEnabled } from "../convergence-economy/finding-resolution-gate.ts";
 import { lessonsForWriter, lessonsPromptBlock } from "../convergence-economy/rejection-memory.ts";
 import {  selfSpecArtifactMatcher, contractValidationContext, familyInclusionMismatches, freshSpecWriteClaims, isWriterMetadataRejection, specAmendmentFamilyFindings, splitContractFindings, stageWriteClaimGate, writerMetadataRepairFeedback, writerMetadataStrikeKey } from "../review/contract-validators.ts";
 import { renderAndWrite } from "../render/render.ts";
@@ -250,6 +250,11 @@ export const specConvergenceNode: Node = {
 		}
 		let lastErrors: string[] = [];
 		let round = 0;
+		// v0.4.75 (067 R3-Q3): the spec walk's finding-resolution gate state —
+		// injected blocking CONTENT ids (agent-failed markers filtered, 067 D2)
+		// + the shared walk-scoped bounce budget (P8 bound 1 across legs).
+		let round1InjectedIds: string[] = [];
+		let specWriterResolutionBounceSpent = false;
 		// v0.4.64 WS2: walk-scoped writer-bounce budget (P8 bound 1, shared across the walk).
 		let specWriterBounceSpent = false;
 		const maxRounds = MAX_CONVERGENCE_ROUNDS;
@@ -397,6 +402,9 @@ export const specConvergenceNode: Node = {
 					round1Lines.push(...pendingReplan.map((r) => `[replan request ${r.id}] ${r.requestedRevision}`));
 					ctx.log(`spec convergence: ${pendingReplan.length} replan request(s) injected at round 1`);
 				}
+				// v0.4.75 (067 R3-Q3): capture the injected CONTENT id set (the
+				// agent-failed markers are context, never demanded — 067 D2).
+				round1InjectedIds = [...prior.findings.filter((f) => !/-agent-failed$/.test(f.id)).map((f) => f.id), ...pendingReplan.map((r) => `replan-${r.id}`)];
 				// v0.4.67 WS4 (066 §2): cross-stage rejection memory rides the same
 				// channel — the full ledger's findings as compact JSON lesson rows.
 				const specLessonBlock = lessonsPromptBlock(lessonsForWriter(getConvergenceLedger(state).findings));
@@ -515,6 +523,35 @@ export const specConvergenceNode: Node = {
 				continue;
 			}
 			ctx.log(`spec convergence: trace gate passed round ${round}`);
+			// v0.4.75 (067 R3-Q3): the spec walk's finding-resolution gate — the
+			// same leg the artifact family has run since v0.4.60. One bounded
+			// re-dispatch; agent budget, NOT a convergence round; the scoped
+			// repair feedback names ONLY the missing ids (repair-beats-rejection).
+			if (round1InjectedIds.length > 0 && !specWriterResolutionBounceSpent && findingResolutionGateEnabled()) {
+				try {
+					const specCtrl = (state.spec ?? (specResult as { control?: unknown } | null)?.control) as { findingResolutions?: unknown } | null | undefined;
+					const specGate = adjudicateFindingResolutionGate({ injectedIds: round1InjectedIds, resolutions: specCtrl?.findingResolutions });
+					if (specGate.bounce) {
+						specWriterResolutionBounceSpent = true;
+						ctx.log(`spec convergence: ${specGate.feedback} — one bounded writer re-dispatch follows (agent budget, not a convergence round)`);
+						setSpecFeedback(state, "coverage bounce", [specGate.feedback]);
+						const rb = await specTask.run(state, ctx);
+						if (rb.status === "cancelled") return rb;
+						if (rb.status === "failed") {
+							lastErrors = [`spec writer failed (post-coverage-bounce): ${rb.error ?? "unknown error"}`];
+							setSpecFeedback(state, "coverage bounce", lastErrors);
+							ctx.log(`spec convergence: coverage-bounced writer failed round ${round} — ${lastErrors.join("; ")}`);
+							prevOwnOpen = Number.POSITIVE_INFINITY;
+							lastOwnOpen = Number.POSITIVE_INFINITY;
+							continue;
+						}
+					} else if (specGate.missing.length > 0) {
+						ctx.log(`spec convergence: finding-resolution gate — ${specGate.missing.length} injected finding(s) unaddressed (gate disabled or bounce spent); proceeding with the gap recorded`);
+					}
+				} catch (error) {
+					ctx.log(`spec convergence: finding-resolution gate crashed (advisory — proceeding): ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
 			// v0.4.64 WS2 (066 §2) — the spec site's pre-review bounce leg:
 			// designated advisory violations bounce the writer ONCE (agent budget,
 			// NOT a convergence round); shared with the family-gate round path which

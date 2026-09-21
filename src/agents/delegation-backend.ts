@@ -720,7 +720,7 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 		// the previous attempt settled). The corrective task names BOTH the
 		// missing keys and the exact schema violations (validate→repair).
 		const second = await attempt(opts, correctiveTask(task0, missing, violations, useStructured), backstopMs, useStructured);
-		if (second.error) return { text, control, model: response.model, usage: mergeUsage(response.usage, second.response?.usage), error: `delegation retry after validation failure (missing: ${missing.join(", ") || "—"}; violations: ${violations.length}): ${second.error}` };
+		if (second.error) return { text, control: controlNorm ?? control, model: response.model, usage: mergeUsage(response.usage, second.response?.usage), error: `delegation retry after validation failure (missing: ${missing.join(", ") || "—"}; violations: ${violations.length}): ${second.error}` };
 		const response2 = second.response!;
 		if (response2.status !== "completed") {
 			return { text, control, model: response.model, usage: mergeUsage(response.usage, response2.usage), error: `delegation retry ended with status ${response2.status}${response2.error ? `: ${response2.error}` : ""}` };
@@ -741,7 +741,7 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 			if (violations2.length > 0) {
 				return { text: text2, control: null, model: response2.model ?? response.model, usage: mergeUsage(response.usage, response2.usage), error: `delegation retry still has schema violations (${violations2.join("; ")})` };
 			}
-			return { text: text2, control: control2, model: response2.model ?? response.model, usage: mergeUsage(response.usage, response2.usage) };
+			return { text: text2, control: control2Norm ?? control2, model: response2.model ?? response.model, usage: mergeUsage(response.usage, response2.usage) };
 		}
 		// v0.3.48 honest diagnosis: distinguish UNPARSEABLE control JSON (a
 		// `<control>` block exists but strict parse failed — the unescaped-quote
@@ -753,7 +753,7 @@ export async function runAgentViaDelegation(opts: DelegationAgentOptions): Promi
 			? `delegation retry produced an UNPARSEABLE control block (originally missing: ${missing.join(", ")}) — the <control> JSON failed to parse; report this payload for corpus capture`
 			: `delegation retry produced no control object at all (originally missing: ${missing.join(", ")})` };
 	}
-	return { text, control, model: response.model, usage: response.usage };
+	return { text, control: controlNorm ?? control, model: response.model, usage: response.usage };
 }
 
 /** Pretty, crash-safe JSON rendering for structured values (SpawnResult.text). */

@@ -18,6 +18,8 @@ const LINES = [
 	"[2026-09-21T07:54:00.117+08:00] requirements convergence: coverage bounce: 27 injected blocking finding(s) have no resolution row — one bounded writer re-dispatch follows (agent budget, not a convergence round)",
 	"[2026-09-20T22:16:00.000+08:00] spec convergence: validator bounce — 3 designated violation(s): one bounded writer re-dispatch follows (agent budget, not a convergence round)",
 	"[2026-09-20T16:38:44.316+08:00] BDD contract-validator (advisory): bdd: 36 further pin(s) on the touched surfaces exceed the injected slice cap",
+	"[2026-09-20T16:28:19.479+08:00] requirements convergence: ✓ review approved round 2",
+	"[2026-09-20T17:20:07.146+08:00] requirements convergence: ✓ review approved round 1",
 ];
 
 describe("economyMetricsFromLog", () => {
@@ -54,11 +56,15 @@ describe("economyMetricsFromLog", () => {
 });
 
 describe("economyMetricsSummary (operator line)", () => {
-	it("names the numbers without inflation", () => {
-		const s = economyMetricsSummary(economyMetricsFromLog(LINES));
+	it("names the numbers without inflation — real first-pass acceptance from approval rounds", () => {
+		const m = economyMetricsFromLog(LINES);
+		expect(m.firstPassApprovals).toBe(1);
+		expect(m.reviewedWalks).toBe(2);
+		const s = economyMetricsSummary(m);
 		expect(s).toContain("2 writer attempts");
 		expect(s).toContain("3 review passes");
 		expect(s).toContain("3 pre-review bounce(s)");
+		expect(s).toContain("first-pass acceptance 1/2 (~50%)");
 	});
 });
 

@@ -152,6 +152,11 @@ export const BddFeature = Type.Object({
 	scenarios: Type.Array(BddScenario, { minItems: 1 }),
 });
 
+/** 067 R3-Q5 (D3 closed): the control-schema version — stamped wherever a
+ * control's shape identity matters (the resume contract-salt 066 r4 Q3
+ * consumes this; bump when any STAGE_MODELS schema changes shape). */
+export const CONTROL_SCHEMA_VERSION = "2";
+
 /** 067 D1: the coverage-map row — shared across the doc-writer schemas. */
 export const FindingResolutionEntry = Type.Object({
 	id: Type.String({ description: "the injected finding/request id EXACTLY as injected" }),
