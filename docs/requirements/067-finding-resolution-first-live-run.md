@@ -69,6 +69,16 @@ as logged noise.
    the canary battery (when it exists) re-measures the EXISTING fields'
    accuracy — recorded as the standing obligation, not solved here.
 
+## 2.5 Grill round 1 (2026-09-21) — folded (2H+3M, research-backed)
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| Q1 | HIGH | Is the demand filter wrong — should downstream-owned findings (14 CF-spec ids demanded of the requirements writer) route out? | **NO — 067's original filter stands.** The convergent rule across DOORS suspect-links / DO-178C CCB / agile missed-requirement practice / 2024-26 AI triage is ADJUDICATED ORIGIN-BASED routing: the reviewer compares the downstream artifact against the upstream criterion — if the downstream CORRECTLY implements the current spec (the escape is spec-permitted), upstream revision is MANDATORY; if it violates an adequate criterion, the fix stays downstream. This run PROVED the adjudication works: the reviewer verified "the eight CF-implementation convergence findings are now answered by requirement (AC-09/10/11/12)". Strict owner-stage routing would have blocked exactly those answers; automatic upstream-preference would churn every implementation bug into requirements. Content findings stay in the demand set regardless of owner; only non-content markers filter (D2). |
+| Q2 | HIGH | Type.Optional() is ILLEGAL on OpenAI strict mode (400); Anthropic recommends required-with-default as the cheapest grammar | The repo's Optional pattern (affectsSharedSurfaces, openQuestions) is PROVEN on THIS bridge (zai/glm via pi-subagents — not OpenAI strict mode), so Optional stands; documented migration rule: if the bridge ever moves to a strict-mode provider, the field becomes required-with-[]-default (empty is a meaningful expected state — the research's preferred shape for defaultable fields). |
+| Q3 | MED | 27-row emission may tax sibling-field quality (schema complexity ↔ accuracy, ExtractBench/Anthropic state-space) | Keep 067's no-truncation position (measure first) — the two-sided rule warns required-non-nullable FABRICATES when data is absent; truncation is a measured follow-up, not a preemptive double-change. |
+| Q4 | MED | Resume-replay safety argument absent | Argued + pinned: resume replays stage RESULTS, not controls; old results lack the field → Optional passes; the field exists only on NEW emissions. |
+| Q5 | LOW | Schema-version stamp deferred twice | Named: folds into the WS5 wiring increment together with the resume contract-salt (066 round-4 Q3) — one schema-identity change, one commit. |
+
 ## 3. Test obligations
 
 - Schema lane: render a requirements control WITH findingResolutions → the

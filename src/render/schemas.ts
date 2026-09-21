@@ -152,6 +152,13 @@ export const BddFeature = Type.Object({
 	scenarios: Type.Array(BddScenario, { minItems: 1 }),
 });
 
+/** 067 D1: the coverage-map row — shared across the doc-writer schemas. */
+export const FindingResolutionEntry = Type.Object({
+	id: Type.String({ description: "the injected finding/request id EXACTLY as injected" }),
+	loci: Type.Array(Type.String(), { description: "artifact anchors addressing it (path:line / path#fragment, spec- or worktree-relative)" }),
+	note: Type.String({ description: "a short quote of the finding's remedy/recommendation language" }),
+}, { additionalProperties: false });
+
 export const BddData = Type.Object({
 	title: Type.String({ description: "feature/spec title, e.g. 'Core Types & Configuration'" }),
 	date: Type.String(),
@@ -165,6 +172,8 @@ export const BddData = Type.Object({
 			scenarios: Type.Array(Type.String()),
 		})),
 	),
+	// 067 D1: the WS1 coverage map (see RequirementsData.findingResolutions).
+	findingResolutions: Type.Optional(Type.Array(FindingResolutionEntry)),
 });
 export type BddData = Static<typeof BddData>;
 
@@ -200,6 +209,10 @@ export const RequirementsData = Type.Object({
 	// ADVISORY at 2B (059 §3 R3 requirements duty).
 	affectsSharedSurfaces: Type.Optional(Type.Array(Type.String(), { description: "intent-level shared-surface hints: concepts or shared-file paths the ACs touch — NOT pin reconciliation" })),
 	openQuestions: Type.Optional(Type.Array(Type.String())),
+	// 067 D1: the wire-legal shape for the WS1 coverage map (Optional — the
+	// repo-proven pattern on this bridge; strict-mode providers would migrate
+	// this to required-with-[]-default per the grill-1 Q2 migration rule).
+	findingResolutions: Type.Optional(Type.Array(FindingResolutionEntry, { description: "REQUIRED when injected feedback names finding/replan ids: one row per id (infra markers like agent-failed are context, never demanded)" })),
 });
 export type RequirementsData = Static<typeof RequirementsData>;
 
@@ -586,6 +599,8 @@ export const SpecificationData = Type.Object({
 			integration: Type.Optional(Type.Array(Type.String())),
 		}),
 	),
+	// 067 D1: the WS1 coverage map (see RequirementsData.findingResolutions).
+	findingResolutions: Type.Optional(Type.Array(FindingResolutionEntry)),
 });
 
 // Register the multi-doc specification stage

@@ -150,3 +150,26 @@ describe("finding-resolution bounce (WS1, 066 §2) — node integration", () => 
 		expect(renderRetryFeedbackBlock(wf[1] ?? [])).toContain("CF-prior-1");
 	});
 });
+
+describe("067 D1/D2 — schema-legal field + demand-set hygiene", () => {
+	it("the writer schema DECLARES findingResolutions (the wire can carry the map — 067 D1)", async () => {
+		const { RequirementsData } = await import("../src/render/schemas.ts");
+		const props = (RequirementsData as unknown as { properties: Record<string, unknown> }).properties;
+		expect(props.findingResolutions).toBeDefined();
+	});
+	it("agent-failed infra markers never enter the demand set (067 D2 — the capture-site filter)", async () => {
+		const { designatedBounceFindings } = await import("../src/stages/artifact-convergence/validators.ts");
+		// The filter is applied at capture; pin the marker shape it excludes.
+		expect(designatedBounceFindings(["x codeReview-agent-failed noise"])).toEqual([]);
+		const source = await import("node:fs").then((fs) => fs.readFileSync("src/stages/artifact-convergence/node.ts", "utf8"));
+		expect(source).toContain("!/-agent-failed$/");
+	});
+	it("resume-compat: an OLD control without the field still validates (Optional passes — 067 grill Q4)", async () => {
+		const { RequirementsData } = await import("../src/render/schemas.ts");
+		const { Value } = await import("typebox/value");
+		const oldControl = { title: "t", date: "2026-09-21", type: "feature", priority: "high", layerW: "1", executiveSummary: "s", acceptanceCriteria: [{ id: "AC-01", statement: "s" }, { id: "AC-02", statement: "s" }], nonFunctional: ["n"] };
+		expect(Value.Check(RequirementsData, oldControl)).toBe(true);
+		const newControl = { ...oldControl, findingResolutions: [{ id: "F1", loci: ["01-requirements.md:1"], note: "quote" }] };
+		expect(Value.Check(RequirementsData, newControl)).toBe(true);
+	});
+});

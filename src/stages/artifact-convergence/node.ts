@@ -266,7 +266,7 @@ export function artifactConvergenceNode(options: ArtifactConvergenceOptions): No
 					}
 					// v0.4.60 WS1: capture the injected id set for the gate (replan ids
 					// take the replan- prefix the ledger rows get).
-					round1InjectedIds = [...prior.findings.map((f) => f.id), ...pendingReplan.map((r) => `replan-${r.id}`)];
+					round1InjectedIds = [...(prior.findings.filter((f) => !/-agent-failed$/.test(f.id)).map((f) => f.id)), ...prior.findings.map((f) => f.id), ...pendingReplan.map((r) => `replan-${r.id}`)];
 					// Replan directives lead (they are explicit revision orders);
 					// prior-run residue follows within the slice budget.
 					// v0.4.67 WS4 (066 §2): cross-stage rejection memory — the FULL
