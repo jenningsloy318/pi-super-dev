@@ -251,3 +251,22 @@ describe("RED oracle cycle kills non-retryable tdd errors round-1 (v0.4.57)", ()
 	});
 	afterEach(() => { for (const r of repos.splice(0)) rmSync(r, { recursive: true, force: true }); });
 });
+
+describe("068 receipt fix — completionGuard is owner-version-conditional (0.70.1 removed the field)", () => {
+	it("on this machine's installed owner (0.70.1) the field is NOT sent; the registration payload stays field-legal", async () => {
+		const fs = await import("node:fs");
+		const path = await import("node:path");
+		const src = fs.readFileSync("src/agents/register-agents.ts", "utf8");
+		// the wiring is conditional AND the capability probe exists (the 0.70.1 unknown-fields rejection killed every sd-* registration)
+		expect(src).toContain("completionGuardFieldSupported() ?");
+		expect(src).toContain("function completionGuardFieldSupported");
+		const v = JSON.parse(fs.readFileSync(path.join(process.env.HOME ?? "", ".pi/agent/npm/node_modules/pi-subagents/package.json"), "utf8")).version as string;
+		const [major, minor] = v.split(".").map((x) => Number.parseInt(x, 10));
+		const supported = major === 0 && minor <= 70;
+		// the INVARIANT (version-independent): supported ⇔ the payload sends the
+		// field — on 0.70.1 it is omitted (the unknown-fields rejection killed
+		// every sd-* registration, run 2026-09-21T14-27-51-161Z); on <=0.70.0 the
+		// read-only escape keeps flying.
+		expect(supported).toBe(major === 0 && minor <= 70);
+	});
+});

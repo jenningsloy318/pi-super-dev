@@ -165,6 +165,23 @@ export function delegationOwnerPresent(): boolean | null {
 /** Emit one registration request; returns the dispose when accepted.
  *  `onAnswered` fires when the owner wrote any result (ok or rejection) —
  *  the v0.3.26 capability signal that pi-subagents is listening. */
+/** v0.4.82: does the installed pi-subagents owner still accept the
+ * completionGuard registration field? 0.70.1 (#2356) removed it — sending it
+ * there rejects the whole registration (unknown-fields validation). Resolved
+ * ONCE per process from the installed package.json; unreadable → false
+ * (fail-safe: omit the field — no owner rejects its absence). */
+let completionGuardSupportedMemo: boolean | undefined;
+function completionGuardFieldSupported(): boolean {
+	if (completionGuardSupportedMemo !== undefined) return completionGuardSupportedMemo;
+	try {
+		const pkgJson = require("fs").readFileSync(require("path").join(process.env.HOME ?? "", ".pi/agent/npm/node_modules/pi-subagents/package.json"), "utf8");
+		const v = (JSON.parse(pkgJson) as { version?: string }).version ?? "0";
+		const [major, minor] = v.split(".").map((x) => Number.parseInt(x, 10));
+		completionGuardSupportedMemo = Number.isFinite(major) && Number.isFinite(minor) && (major < 0 || (major === 0 && minor <= 70));
+	} catch { completionGuardSupportedMemo = false; }
+	return completionGuardSupportedMemo;
+}
+
 function registerOne(events: DelegationEventBus, name: string, log: (line: string) => void, onAnswered: () => void, toolIndex?: ReadonlyMap<string, readonly string[]>): (() => void) | null {
 	// v0.3.82: resolved ONCE per agent (registration-time) — list + wildcard.
 	let cachedTools: { list: string[]; wildcard: boolean } | undefined;
@@ -216,21 +233,16 @@ function registerOne(events: DelegationEventBus, name: string, log: (line: strin
 					...(READ_ONLY_AGENTS.has(name) ? READ_ONLY_TOOLS : WRITER_TOOLS),
 					...configToolsFor(name).list,
 				])] }),
-			// v0.3.93 — pi-subagents 0.67 completion-guard escape, DOCUMENTED for
-			// exactly this case (docs/agents.md: "Set false only for
-			// non-implementation agents that may mention implementation words").
-			// Read-only roles never mutate (no mutation tools since v0.3.92), so
-			// the implementation-tool contract + completion mutation guard are
-			// meaningless for them — and their stage prompts legitimately EMBED the
-			// user's task text ("implement docs/…"), which the upstream task-intent
-			// classifier scores as implementation intent (probe-verified against
-			// the real classifier + real buildRequirementsPrompt output). Without
-			// the flag, a host where that role lacks mutation capability rejects
-			// the child PRE-SPAWN (observed 2026-09-11: sd-reflection/
-			// sd-requirements-clarifier failures, pi-omisis spec-26 runs).
-			// Writers KEEP the guard (default): blocking a "done" claim with zero
-			// mutations on an implementation task is their anti-fabrication net.
-			...(READ_ONLY_AGENTS.has(name) ? { completionGuard: false } : {}),
+			// v0.3.93 → v0.4.82 (run 2026-09-21T14-27-51-161Z): pi-subagents 0.70.1
+			// (#2356) REMOVED the completion-guard machinery and its registration
+			// field entirely (acceptance is now acceptanceRole/attestation-based;
+			// "unknown fields: completionGuard" rejected EVERY sd-* registration on
+			// the first 0.70.1 run — 19 Unknown-agent failures). The flag now rides
+			// ONLY owners that still accept it (<= 0.70.0); 0.70.1+ needs no escape
+			// because the guard no longer exists. The read-only posture itself is
+			// unchanged (no mutation tools since v0.3.92; the P4 engine-side
+			// source boundary remains the binding enforcement).
+			...(READ_ONLY_AGENTS.has(name) && completionGuardFieldSupported() ? { completionGuard: false } : {}),
 			// v0.3.59 — skills are a capability on EVERY backend (v0.2.10 W4 parity).
 			// pi-subagents defaults inheritSkills to FALSE (agents.ts
 			// defaultInheritSkills), which launched every sd-* child with

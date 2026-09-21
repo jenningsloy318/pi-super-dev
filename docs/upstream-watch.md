@@ -63,6 +63,26 @@ If a file reports DIFF, act per contract:
 
 ## Drift log
 
+- **2026-09-21 (later) — 0.70.1 BROKE EVERY sd-* REGISTRATION (#2356)**: the
+  first 0.70.1 live run (`2026-09-21T14-27-51-161Z`, spec 27) failed 19/19
+  delegations with `Unknown agent: sd-*` in ~1s each — root cause: #2356
+  ("remove inferred no-edit completion failures") DELETED the completion-guard
+  machinery AND its registration field from `validateDefinition`'s supported
+  set (5 references → 0 between v0.70.0 and v0.70.1), so our v0.3.93
+  `completionGuard: false` on read-only roles made 0.70.1's unknown-fields
+  validation reject EVERY registration ("Runtime agent definition has unknown
+  fields: completionGuard"). Acceptance upstream is now acceptanceRole/
+  attestation-based (docs/agents.md: "task wording and agent names do not
+  escalate it") — the original 2026-09-11 escape rationale is moot on 0.70.1+.
+  **Fixed v0.4.82**: completionGuardFieldSupported() resolves the installed
+  owner's version ONCE per process (memoized; unreadable → false = omit,
+  fail-safe) and the field flies ONLY on ≤0.70.0 owners. C5 re-check rule
+  updated: the registration payload must be diffed against
+  `validateDefinition`'s supported set on EVERY pi-subagents upgrade — an
+  unknown-field rejection kills ALL registrations, not one.
+
+
+
 - **2026-09-21** — pi-subagents **0.70.1** (installed 20:51; pi **0.86.1**): the
   HOST-SDK RESOLUTION FIX SHIPPED. #2371 (`resolve host SDK exports correctly`)
   lands upstream's own host-root loader — root precedence (running host →
