@@ -1,6 +1,6 @@
 # The finding-resolution gate's first live run — two defects and the demand-set hygiene spec
 
-Status: implemented (v0.4.72–v0.4.79; six grill rounds folded + the sealed-audit layer designed in round 7 and implemented). Lineage below.
+Status: implemented (2bfeaec0 + v0.4.72–v0.4.79; six grill rounds folded + the sealed-audit layer designed in round 7 and implemented). Lineage below.
 Lineage: child of 066 (convergence economy, WS1). Evidence: live run
 `2026-09-20T23-42-17-331Z` (v0.4.71 — the first run carrying the full
 wave-1 machinery).
