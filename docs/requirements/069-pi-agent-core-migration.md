@@ -188,6 +188,31 @@ directive: the delegation path is deleted, not kept as fallback.
 | Q4 | MED | realAgent simplification | 86 lines → ~30 lines (60% reduction): 21 delegation-specific lines (degrade/host-sdk/version-skew/fleet) all deleted. Error taxonomy simplifies from 6 regex patterns on delegation strings to stopReason + overflow helper. |
 | Q5 | MED | Skills injection mechanism | skillsForCall → append skill text to initialState.systemPrompt (pure prompt assembly, no new mechanism). |
 
+## 4.19 Grill round 8 (2026-09-22) — PoC VALIDATION + config migration + peerDep strategy
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | PoC: all API claims work together? | **ALL PASSED** — Agent constructed (model+thinkingLevel+tools+beforeToolCall); tool factories (createReadTool/createBashTool(cwd)/createGrepTool); lifecycle (subscribe/steer/abort/waitForIdle) — all verified against the installed pi-agent-core in one process. state.messages seeded with system message (expected). |
+| Q2 | HIGH | Config surface migration? | agentModels/agentThinking: SURVIVE unchanged (same keys, same resolution). agentSkills: SURVIVES (prompt assembly). commonExtensions/agentExtensions: RE-MAP to DefaultResourceLoader.additionalExtensionPaths / extensionFactories (session path only). commonToolBudget/agentToolBudget: RE-IMPLEMENT as beforeToolCall counter (pi-subagents also implemented it itself as an inline extension — never an SDK feature). allTools/agentAllTools: SIMPLIFY (pass tool array directly). |
+| Q3 | MED | peerDependency strategy? | Already correct: peers are @earendil-works/* all "*" + pinned devDeps ^0.82.1. The only delta: add pi-agent-core: "*" to peers IFF the adapter imports it directly (today's code doesn't — pi-coding-agent re-exports SDK surface). Floor on pi-ai: ">=0.80" only if version-sensitive APIs used. |
+
+**PoC output (verbatim, run against installed pi-agent-core 0.87.0):**
+```
+✅ Agent imported: function
+✅ Tools created: read bash grep
+✅ Agent constructed: true
+✅ Agent state model: test
+✅ Agent state thinkingLevel: medium
+✅ Agent state tools: 2 tools
+✅ beforeToolCall guard attached
+✅ subscribe/unsubscribe lifecycle
+✅ steer() callable when idle
+✅ abort() callable when idle
+✅ waitForIdle() resolves when idle
+✅ state.messages: 1 messages (system message seed)
+=== ALL PoC CHECKS PASSED ===
+```
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
