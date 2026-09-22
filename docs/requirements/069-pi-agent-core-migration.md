@@ -145,6 +145,16 @@ directive: the delegation path is deleted, not kept as fallback.
 | Q5 | MED | The extension-loading path for child agents | Already exists: agent-runtime/extensions.ts + config-extensions.ts call createAgentSession + DefaultResourceLoader from the SDK — the deleted session backend's loader. Direct reuse. |
 | Q6 | MED | toolBudget enforcement | pi-subagents' server-side validation disappears. Re-implement: counter in afterToolCall (our existing toolBudget config surface stays; the enforcement point moves). |
 
+## 4.11 Grill round 4 (2026-09-22) — failure modes and edge cases (code-analysis; research quota-blocked)
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | Extension lifecycle: in-flight Agents at session end? | Agent has NO dispose/cleanup (only reset()). Adapter must abort+waitForIdle all active Agents on deactivate; without this, a hanging streamFn hangs the process (issue #2381 class). |
+| Q2 | HIGH | Model rotation between prompt() calls? | AgentState.model is mutable ("Active model used for future turns"). Reassigning takes effect on next streamFn call. Model changes are NOT announced to the model (unlike tool changes via declareToolChanges). Our one-shot pattern never needs mid-Agent rotation — retry = new Agent. |
+| Q3 | HIGH | Hanging streamFn: Agent has NO internal timeout guard | grep timeout/watchdog/hang in agent.d.ts + agent-loop.js = zero. The ONLY escape is external agent.abort(). Adapter MUST wrap every prompt() in setTimeout(abort, timeoutMs) + await waitForIdle() + clearTimeout — no exceptions. |
+| Q4 | HIGH | Context window overflow with 30-60k prompts? | Model.contextWindow + Model.maxTokens exist in pi-ai types, but agent-core has NO truncation/compaction (compaction lives in AgentHarness — we don't use it). For one-shot calls: 30-60k prompt + 128k+ context = safe. On overflow: provider returns error (stopReason: "error" + errorMessage). Adapter should pre-check contextWindow and fail early with a clear message. |
+| Q5 | MED | Adapter obligations (new, from Q1-Q4 synthesis) | The adapter contract gains three hard invariants: (1) EVERY prompt() is timeout-wrapped — no bare calls; (2) deactivate aborts + waits all active Agents; (3) contextWindow pre-check before prompt. These are mechanical, not advisory (P4). |
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
