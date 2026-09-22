@@ -134,6 +134,17 @@ directive: the delegation path is deleted, not kept as fallback.
 - Concurrency: Promise.all one-shot Agents is safe; cap shard width for provider rate limits
 - Version drift: peerDependencies "*" + devDeps pinned + contract tests on the exact API surface
 
+## 4.9 Grill round 3 (2026-09-22) — deletion-and-integration frontier
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | What do we lose when pi-subagents is deleted? | NET LOSS = Fleet UI rows only (cosmetic; display-only best-effort). Our own watchdog.ts uses only node:child_process (stays). Background machinery: never used. pi-subagents' server-side toolBudget: must re-implement (counter in afterToolCall). Child extension loading: we ALREADY have agent-runtime/{extensions,config-extensions}.ts using SDK's createAgentSession. Structured-output validation: we already have our own (structured-output.ts). |
+| Q2 | HIGH | ThinkingLevel values? | core: "off"\|"minimal"\|"low"\|"medium"\|"high"\|"xhigh"\|"max" — exact match with our THINKING_LEVELS (thinking.ts:23). Per-request via SimpleStreamOptions.reasoning. Clamp via pi-ai's clampThinkingLevel (getSupportedThinkingLevels also exported). 1:1 port. |
+| Q3 | HIGH | Usage/token tracking? | On every assistant message: `usage: Usage` {input, output, cacheRead, cacheWrite, reasoning?, totalTokens, cost:{input,output,cacheRead,cacheWrite,total}}. After waitForIdle: sum over role==="assistant" messages; turns = assistant count; toolCalls = toolCall content parts count; durationMs = our own timing. No aggregation helper exists — we write a simple reduce. Richer than pi-subagents' terminal events (per-turn deltas for free). |
+| Q4 | HIGH | Model string → Model<Api>? | `ctx.modelRegistry.find(provider, modelId)` after `await ctx.modelRegistry.refresh()`. Split "zai-coding-cn/glm-5.3-flash" on first "/" → provider + modelId; ":high" suffix stays OUR convention → strip before find, feed to thinkingLevel. Guard undefined return — fail loudly. |
+| Q5 | MED | The extension-loading path for child agents | Already exists: agent-runtime/extensions.ts + config-extensions.ts call createAgentSession + DefaultResourceLoader from the SDK — the deleted session backend's loader. Direct reuse. |
+| Q6 | MED | toolBudget enforcement | pi-subagents' server-side validation disappears. Re-implement: counter in afterToolCall (our existing toolBudget config surface stays; the enforcement point moves). |
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
