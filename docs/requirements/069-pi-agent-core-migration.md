@@ -167,6 +167,17 @@ directive: the delegation path is deleted, not kept as fallback.
 
 **Round 5 verdict: GRILL CLOSED.** Five rounds (R1 architecture → R2 implementation → R3 integration → R4 failure modes → R5 adapter surface), 30 findings, zero open questions. 069 is implementation-ready.
 
+## 4.15 Grill round 6 (2026-09-22) — ripple effects and performance model (with local benchmarks)
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | Hybrid Agent + createAgentSession resource contention? | NO contention — raw Agent is provider-agnostic (we inject streamFn from modelRegistry); createAgentSession builds a new ModelRuntime per call unless passed in. No shared connection pool (each stream constructs a fresh SDK client; undici pool is process-global and shared). Benchmark: shared runtime+loader = 4.6 ms/session; fresh everything = 116 ms/session. MUST hoist ONE ModelRuntime + ONE ResourceLoader to pipeline scope and pass into every createAgentSession child. |
+| Q2 | HIGH | Error shapes from direct Agent? | stopReason: "error" + flat errorMessage string on the trailing assistant message (provider HTTP errors, quota, model-not-found as 404). Tool errors → error tool results (isError:true), loop continues. Context overflow → isContextOverflow() helper (25+ provider patterns). CLASSIFICATION RULE: by stopReason + overflow helper + substring containment — NEVER on exact strings (errorMessage is lossy; upstream discussion #3363 on structured diagnostics). |
+| Q3 | HIGH | Per-call latency saving? | MEASURED: delegation event round-trip = microseconds (in-process function calls). Session machinery (fresh runtime + noExtensions loader + session) = ~120-150 ms/child. Ambient-extension loading = ~4,150-4,330 ms (dominated by extension discovery). Against multi-second LLM calls: 120 ms is 1-5% (real but secondary). The speed gain comes from REVIEW PARALLELIZATION (259→86 min) and GAP REDUCTION, NOT from delegation overhead elimination. |
+| Q4 | HIGH | createAgentSession per-session overhead? | 4.6 ms one-shot (shared runtime+loader+inMemory session) vs 116 ms+ (defaults) vs seconds (extensions ON). Lightweight IFF hoisted. Residual risk: shared loader means extension module state is process-wide — extension-needing specialists assuming per-child isolation will break. |
+| Q5 | MED | Resume cache compatibility? | SpawnResult shape unchanged — resume cache compatible; no new salt needed (backend switch is transparent to the cache). |
+| Q6 | MED | The 8→3h performance model (corrected) | ~173 min from review parallelization + ~65 min from gap reduction (145→80) = ~4h total saving. Delegation overhead elimination contributes <2 min (84 × ~1.5s). The migration's value = STABILITY (delete the seam-failure class: 4 dead runs) + PARALLELIZATION (Promise.all) + CONTROL (finishTurn), not single-call latency. |
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
