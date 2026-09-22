@@ -178,6 +178,16 @@ directive: the delegation path is deleted, not kept as fallback.
 | Q5 | MED | Resume cache compatibility? | SpawnResult shape unchanged — resume cache compatible; no new salt needed (backend switch is transparent to the cache). |
 | Q6 | MED | The 8→3h performance model (corrected) | ~173 min from review parallelization + ~65 min from gap reduction (145→80) = ~4h total saving. Delegation overhead elimination contributes <2 min (84 × ~1.5s). The migration's value = STABILITY (delete the seam-failure class: 4 dead runs) + PARALLELIZATION (Promise.all) + CONTROL (finishTurn), not single-call latency. |
 
+## 4.17 Grill round 7 (2026-09-22) — the last mile: existing machinery's survival
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | Mid-run steering: steer() or existing injection? | EXISTING INJECTION — our mid-run guidance is queue + inject-into-next-prompt, NOT real-time steering. agent.steer() queues until the entire tool batch finishes (drained only at loop start and after turn_end — no mid-batch poll in installed 0.82.1). Our pattern needs zero change. If future live-steering needed: hold Agent handle, call steer(), expect delivery at next turn boundary. "Stop this" = abort() + fresh dispatch with guidance folded in. |
+| Q2 | HIGH | Child guards (commit 63L + safety 181L) migration? | PORT 1:1 to beforeToolCall — both guards use exactly pi.on("tool_call")+{block:true,reason}, the same semantics as the Agent's beforeToolCall hook. isCommitClassGitCommand is already an exported pure function (zero imports — direct import into adapter). Safety-guard's ctx.cwd becomes an adapter closure. MUST wrap in try/catch → undefined (fail-open) — a guard crash now affects the PARENT process, not an isolated child. The v0.3.73 HEAD-drift detective net stays as compensating control. |
+| Q3 | MED | Post-mortem/eval direct imports? | ONLY post-mortem.ts imports runAgentViaDelegation directly (one line to change). eval-stage.ts uses a structural seam (EvalAgentDispatch) and receives ctx.agent from workflow — no direct import, just the workflow seam rewire. Both are full specialist dispatch (multi-turn tool use) — NOT lightweight complete() calls. |
+| Q4 | MED | realAgent simplification | 86 lines → ~30 lines (60% reduction): 21 delegation-specific lines (degrade/host-sdk/version-skew/fleet) all deleted. Error taxonomy simplifies from 6 regex patterns on delegation strings to stopReason + overflow helper. |
+| Q5 | MED | Skills injection mechanism | skillsForCall → append skill text to initialState.systemPrompt (pure prompt assembly, no new mechanism). |
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
