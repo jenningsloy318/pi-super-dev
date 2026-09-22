@@ -50,6 +50,8 @@ export { DELEGATION_AUTONOMY_CLAUSE } from "./workflow/agent-call-assembly.ts";
 export { sleepMs } from "./workflow/agent-retry.ts";
 export { deriveRunStatus, type RunStatusDerivation, type StatusDerivationResultRow } from "./workflow/run-status.ts";
 import { runAgentViaDelegation, isDelegationRuntimeExtensionFailure, isDelegationHostSdkResolutionFailure, delegationHostSdkResolutionError, delegationBackendDegraded, delegationBackendDegradeMessage, markDelegationBackendDegraded, DELEGATION_VERSION_SKEW_ERROR, delegationAgentName, resetThinkingClampState } from "./agents/delegation-backend.ts";
+import { runAgentViaPiAgentCore } from "./agents/pi-agent-core-backend.ts";
+import { superDevEnv } from "./render/super-dev-dir.ts";
 import { lastRegistrationRejections } from "./agents/register-agents.ts";
 import { fleetBegin, fleetFinish, fleetUpdate, resolveExternalRunsModule } from "./agents/fleet-visibility.ts";
 
@@ -164,6 +166,18 @@ const UNKNOWN_AGENT_ERROR_RE = /unknown agent/i;
 
 /** v0.3.64: actionable per-call error when no pi-subagents owner is in the
  * process (hard requirement — no fallback backend). */
+/** 069: the backend selector — SUPER_DEV_BACKEND=pi-agent-core activates the
+ * direct Agent backend; default (unset or "delegation") keeps pi-subagents. */
+/** Roles that never mutate: reviewers, classifiers, judges. */
+function readOnlyRole(agent: string): boolean {
+	return agent.includes("review") || agent.includes("classifier") || agent.includes("judge");
+}
+
+function piAgentCoreBackendEnabled(): boolean {
+	const v = superDevEnv("SUPER_DEV_BACKEND");
+	return v === "pi-agent-core" || v === "agent-core";
+}
+
 const DELEGATION_OWNER_ABSENT_ERROR = "pi-subagents is not active in this session (no delegation owner answered the registration handshake). Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi — super-dev v0.3.64+ requires it.";
 
 /** Resolve the model for a specific agent call under precedence A (cross-model
@@ -396,6 +410,22 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				const agent = delegationAgentName(call.agent);
 				appendToolUsageRows(state.setup?.specDirectory, [...toolCounts.values()].map((r) => ({ ts, runId, agent, tool: r.tool, argHead: r.argHead, count: r.count })));
 			};
+			// 069: the direct pi-agent-core backend (opt-in via SUPER_DEV_BACKEND)
+			if (piAgentCoreBackendEnabled()) {
+				const coreResult = await runAgentViaPiAgentCore({
+					agent: call.agent,
+					prompt: common.prompt,
+					cwd: common.cwd,
+					model: resolveAgentModel(call, agentModels, model),
+					thinking: common.thinking,
+					timeoutMs: common.timeoutMs,
+					signal: common.signal,
+					readOnly: readOnlyRole(call.agent),
+					systemPrompt: undefined, // the adapter loads the role prompt
+					controlKeys: call.controlKeys,
+				});
+				return coreResult;
+			}
 			let delegated: Awaited<ReturnType<typeof runAgentViaDelegation>>;
 			try {
 				delegated = await runAgentViaDelegation({ ...common, events: options.events, ownerRunId: state.setup?.specIdentifier ?? ledgerRunId(state), skill: callSkill, onToolUse });
