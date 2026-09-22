@@ -155,6 +155,18 @@ directive: the delegation path is deleted, not kept as fallback.
 | Q4 | HIGH | Context window overflow with 30-60k prompts? | Model.contextWindow + Model.maxTokens exist in pi-ai types, but agent-core has NO truncation/compaction (compaction lives in AgentHarness — we don't use it). For one-shot calls: 30-60k prompt + 128k+ context = safe. On overflow: provider returns error (stopReason: "error" + errorMessage). Adapter should pre-check contextWindow and fail early with a clear message. |
 | Q5 | MED | Adapter obligations (new, from Q1-Q4 synthesis) | The adapter contract gains three hard invariants: (1) EVERY prompt() is timeout-wrapped — no bare calls; (2) deactivate aborts + waits all active Agents; (3) contextWindow pre-check before prompt. These are mechanical, not advisory (P4). |
 
+## 4.13 Grill round 5 (2026-09-22) — the adapter integration surface (convergence sweep; GRILL CLOSED)
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | Shared tool instances across Agents? | YES — create once, share across N Agents. Factories are stateless-per-call (module constants only; bash spawns fresh shell per execute; no persistent state). The global file-mutation queue (withFileMutationQueue) serializes same-file writes across ALL Agents in the process — a cross-Agent safety IMPROVEMENT. Caveat: pin version + one concurrent contract test (the guarantee is structural, not documented). |
+| Q2 | HIGH | Extension loading (pi-web-access etc.)? | **The genuine architectural constraint of the migration.** Raw Agent has NO extension surface. Three paths: (1) createAgentSession for extension-needing children (the SDK path — officially documented, but reintroduces session-manager coupling), (2) hand-rolled ResourceLoader + merge tools into initialState (re-implements AgentSession — wiring risk), (3) call extension tool surfaces directly as custom tools. RECOMMENDATION: hybrid — raw Agent for plain coding specialists; createAgentSession children ONLY where pi-web-access/pi-mcp-adapter are required (research-agent, qa-agent). |
+| Q3 | MED | Structured output? | NO response-schema API in the base Agent. The pi-native pattern is a typed TOOL: one `structured_output` AgentTool whose parameters IS the schema; the child calls it to finish; validated args from the tool result. For strict enforcement: constrainedSampling {type:"json_schema", strict:"require"} on the tool (per-model support). Our <control> text-extraction pattern also works (zero change). |
+| Q4 | HIGH | Multi-turn tool use automatic? | YES — agent-loop.js:84-130: outer while(true), inner while(hasMoreToolCalls): stream → filter toolCalls → execute batch → push results → continue. 20-50 turns = one await. NO built-in max-turns knob (disclosed gap — our finishTurn hook bounds it). |
+| Q5 | MED | Adapter integration surface | The full parameter mapping: agent(role) → prompt+tools; prompt(text) → agent.prompt(input); model(string) → registry.find; cwd → tool factory param + Agent working dir; timeoutMs → setTimeout(abort); signal → agent.abort; returns SpawnResult (contract unchanged). |
+
+**Round 5 verdict: GRILL CLOSED.** Five rounds (R1 architecture → R2 implementation → R3 integration → R4 failure modes → R5 adapter surface), 30 findings, zero open questions. 069 is implementation-ready.
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
