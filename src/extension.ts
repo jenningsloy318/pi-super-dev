@@ -38,6 +38,15 @@ import { registerSuperDevAgentsDeferred } from "./agents/register-agents.ts";
 import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
 import { superDevRunMetadataLine } from "./version.ts";
 import type { ProgressSink, RuntimeInstruction } from "./types.ts";
+import { setHostContext, abortAllActiveAgents } from "./agents/pi-agent-core-backend.ts";
+
+/** 069: the structural slice of the host's ModelRegistry that our adapter
+ * consumes (069 R1-Q1: streamSimple carries auth.json credentials). */
+interface HostModelRegistry {
+	find(provider: string, modelId: string): unknown;
+	streamSimple(...args: unknown[]): unknown;
+	refresh(): Promise<void>;
+}
 
 export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
@@ -106,7 +115,7 @@ export {
 	createDashboardWidgetFactory,
 };
 
-export default function activate(pi: ExtensionAPI): void {
+export default async function activate(pi: ExtensionAPI): Promise<void> {
 	// v0.3.25 L3: register super-dev's specialists as first-class pi-subagents
 	// agents (sd-* names) through the runtime-agent event contract. Best-effort
 	// by contract: a missing pi-subagents install, a rejected registration, or a
@@ -115,6 +124,43 @@ export default function activate(pi: ExtensionAPI): void {
 	// the process lifetime, so registrations ride along.
 	let superDevAgentsDispose: (() => void) | undefined;
 	try {
+		// 069 wave 2: wire the host context for the pi-agent-core backend.
+		// The ExtensionAPI exposes modelRegistry (host's ModelRuntime facade
+		// with auth.json credentials) — this is what the adapter's streamFn
+		// binds to. Tool factories come from the SDK re-exports.
+		try {
+			// 069: the host pi's ExtensionAPI includes modelRegistry (verified on
+			// the installed 0.87.0 types.d.ts:222) but our devDep's re-export
+			// chain may not carry it — use a structural extension.
+			const hostPi = pi as ExtensionAPI & { modelRegistry: HostModelRegistry };
+			if (hostPi.modelRegistry) {
+				// Dynamic import of the SDK tool factories (the extension loader
+				// resolves @earendil-works/* to the host's copies)
+				const sdkModule = await import("@earendil-works/pi-coding-agent");
+				const sdk = {
+					createReadTool: sdkModule.createReadTool as (...args: unknown[]) => unknown,
+					createBashTool: sdkModule.createBashTool as (...args: unknown[]) => unknown,
+					createGrepTool: sdkModule.createGrepTool as (...args: unknown[]) => unknown,
+					createFindTool: sdkModule.createFindTool as (...args: unknown[]) => unknown,
+					createLsTool: sdkModule.createLsTool as (...args: unknown[]) => unknown,
+					createEditTool: sdkModule.createEditTool as (...args: unknown[]) => unknown,
+					createWriteTool: sdkModule.createWriteTool as (...args: unknown[]) => unknown,
+				};
+				setHostContext({
+					modelRegistry: hostPi.modelRegistry as HostModelRegistry,
+					createReadTool: sdk.createReadTool as never,
+					createBashTool: sdk.createBashTool as never,
+					createGrepTool: sdk.createGrepTool as never,
+					createFindTool: sdk.createFindTool as never,
+					createLsTool: sdk.createLsTool as never,
+					createEditTool: sdk.createEditTool as never,
+					createWriteTool: sdk.createWriteTool as never,
+				});
+				try { pi.appendEntry?.("super-dev-pi-agent-core", { line: "host context wired (modelRegistry + SDK tool factories)" }); } catch { /* best-effort */ }
+			}
+		} catch (error) {
+			try { pi.appendEntry?.("super-dev-pi-agent-core", { line: `host context wiring failed: ${error instanceof Error ? error.message : String(error)} — SUPER_DEV_BACKEND=pi-agent-core will not work; delegation backend remains` }); } catch { /* best-effort */ }
+		}
 		const delegationBus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
 		if (delegationBus) {
 			// v0.3.82 dual review BLOCKER fix: registration is DEFERRED to the
@@ -162,6 +208,8 @@ export default function activate(pi: ExtensionAPI): void {
 	// state it reads is module/global scope by design so it observes the OLD run.
 	let shutdownHandled = false;
 	pi.on("session_shutdown", (event) => {
+		abortAllActiveAgents(); // 069: invariant #2 — deactivate aborts all active Agents
+
 		if (shutdownHandled) return;
 		shutdownHandled = true;
 		reportSessionShutdown(pi, event, {
