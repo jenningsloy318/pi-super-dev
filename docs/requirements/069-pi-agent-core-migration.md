@@ -117,6 +117,23 @@ directive: the delegation path is deleted, not kept as fallback.
 4. Extension import works via the host's alias map; add `devDependency` for repo-level typecheck.
 5. Import discipline: `Agent`/`StreamFn` from agent-core; everything else from the documented `pi-coding-agent`/`pi-ai` entries (the tintinweb/pi-subagents lesson: reaching into agent-core's internals broke under strict resolvers).
 
+## 4.7 Grill round 2 (2026-09-22) — implementation-detail frontier
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | Concurrent Agents sharing streamFn safe? | YES — structurally safe. Every Agent field is instance-scoped; no module-level mutable state; each run creates its own AbortController; per-request auth (serialized credential writes via per-provider promise-chain mutex); no connection pool or token bucket. Genuine hazard: provider-side rate-limit amplification — N shards fire N simultaneous requests, each retries 429s independently. Mitigate: cap shard width or stagger. |
+| Q2 | HIGH | Result extraction API? | pi-subagents' own pattern: `state.messages.findLast(m => m.role === "assistant")` (review.js:317). Text = `content.filter(c => c.type === "text").map(c => c.text).join("")`. Caveat: on abort/error, a synthesized assistant message with `stopReason: "aborted"|"error"` and EMPTY content is pushed — always check stopReason before parsing. Cleaner: subscribe to `agent_end` event → `event.messages` (the run's messages, not global tail). |
+| Q3 | HIGH | Abort/timeout? | `agent.abort()` (no reason param). Pattern: `setTimeout(() => agent.abort(), ms); await agent.waitForIdle(); clearTimeout(timer)` then read trailing message's stopReason. Post-abort state is clean: transcript ends with aborted-marker message, waitForIdle resolves. Tool execute() receives AbortSignal — tools that honor it stop; tools that ignore it are awaited to completion (loop checks between tools). CRITICAL: never fire-and-forget abort — always await waitForIdle before reading state (pi#2716: raw abort during bash crashed Node via unhandled AbortError). |
+| Q4 | HIGH | devDependency version drift? | Already the repo's pattern: `peerDependencies: "*"` (runtime = host's copy via alias map), devDeps pinned for tsc/vitest. Add two guards: (a) host floor check at extension load, (b) contract tests asserting the exact Agent surface used (abort signature, agent_end.messages, stopReason values). Verified: 0.82→0.87 drift on Agent/state/agent_end surfaces is NIL. Avoid runtime instanceof against devDep classes (two copies make them lie). |
+| Q5 | MED | agent_end listener settlement | waitForIdle resolves after ALL awaited listeners settle — keep subscribe listeners lightweight or synchronous |
+| Q6 | MED | AbortSignal ownership | agent.signal getter exposes the ACTIVE run's controller; abort() fires it; our own setTimeout wrapper owns the timing |
+
+**Key new patterns for the adapter:**
+- Result extraction: prefer agent_end subscription collector (`event.messages`) over trailing-message scan; fallback scan MUST check stopReason
+- Timeout: setTimeout(abort) + await waitForIdle + clearTimeout — never abort-then-immediately-read
+- Concurrency: Promise.all one-shot Agents is safe; cap shard width for provider rate limits
+- Version drift: peerDependencies "*" + devDeps pinned + contract tests on the exact API surface
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
