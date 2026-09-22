@@ -77,20 +77,20 @@ finish-turn valves, budgets, gates — all our wave-1/3 machinery).
 | Skills | `inheritSkills` + per-call `skill` | `initialState.messages` injection (our own) |
 | Extensions (web tools etc.) | `extensions` on registration | Load in OUR process, pass tools directly |
 
-## 4. Migration plan (incremental, dual-backend)
+## 4. Migration plan (direct cutover — delegation deleted in the same wave)
 
-**Wave 1 (adapter)**: a `PiAgentCoreBackend` implementing our existing
-`AgentBackend` interface (the same shape `runAgentViaDelegation` satisfies).
-Uses `new Agent(...)` per call with per-role `initialState`. The existing
-delegation backend stays as fallback (`SUPER_DEV_BACKEND=delegation`); the
-new one activates with `SUPER_DEV_BACKEND=agent-core`.
+**Wave 1 (replace + delete)**: a `PiAgentCoreBackend` implementing the
+existing `SpawnResult` contract, using `new Agent(...)` per call with
+per-role `initialState` + shared `streamFn`/pi-ai instance. In the SAME
+commit: delete the delegation backend (`src/agents/delegation-backend.ts`),
+the registration machinery (`src/agents/register-agents.ts`), the
+event-bus dependency, the runtime-agent-registration events, and the C1–C6
+upstream-watch items. The extension's peerDependency moves from
+`pi-subagents` to `@earendil-works/pi-agent-core` (pinned exact) +
+`@earendil-works/pi-ai` (pinned exact). NO dual-backend — the user's
+directive: the delegation path is deleted, not kept as fallback.
 
-**Wave 2 (cleanup)**: delete the delegation backend, the registration
-machinery, the event-bus dependency, and the C1–C6 watch items. The
-extension's peerDependency moves from `pi-subagents` to
-`@earendil-works/pi-agent-core` (pinned exact version).
-
-**Wave 3 (optimization — the 8→3 hour path)**:
+**Wave 2 (optimization — the 8→3 hour path)**:
 - WS7's parallel review fan-out becomes trivial: `Promise.all([new Agent(...),
   new Agent(...), new Agent(...)])` — no delegation owner bottleneck.
 - The 145 min of harness gaps shrink: no registration handshake, no event
