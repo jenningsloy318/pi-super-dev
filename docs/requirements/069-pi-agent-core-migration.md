@@ -98,6 +98,25 @@ directive: the delegation path is deleted, not kept as fallback.
 - The spec stage's 18-round loop: the finish-turn hook gives us
   deterministic stop conditions the delegation layer can't express.
 
+## 4.5 Grill round 1 (2026-09-22) — research + code-analysis folded
+
+| # | Sev | Question | Answer |
+|---|---|---|---|
+| Q1 | HIGH | Where does `streamFn` come from? | `ctx.modelRegistry.streamSimple.bind(ctx.modelRegistry)` — the ExtensionContext exposes the host's ModelRuntime facade with request-time auth (host's auth.json credentials, not env vars). The pi-agent-core default (`getDefaultStreamFn()`) only reads env keys (`ZAI_API_KEY`) — must be OVERRIDDEN with the host's registry binding. The maintainers explicitly sanction extension-level Agent construction (sdk.js:19-22 comment). |
+| Q2 | HIGH | Tool format: built-in or custom? | SDK re-exports factories: `createReadTool, createBashTool, createEditTool, createWriteTool, createGrepTool, createFindTool, createLsTool` (dist/core/sdk.d.ts). Import from `@earendil-works/pi-coding-agent`, not agent-core. Custom tools: pi-ai `Tool` interface with TypeBox `parameters` + `execute()`. |
+| Q3 | HIGH | One-shot Agent per specialist call: overhead? | CONFIRMED correct pattern — pi-subagents 0.70.1 does exactly this (`src/watchdog/review.js:285-297`). Constructor allocates only state/queues/listeners (no provider client). Share `streamFn` + tool array across Agents; hoist once. AgentHarness is NOT for this (it's interactive/long-lived session machinery with lanes/compaction). |
+| Q4 | HIGH | Can an extension import pi-agent-core? | YES — the extension loader's `getAliases()` maps `@earendil-works/pi-agent-core` to the host's copy (loader.js), and `virtual-modules.js` embeds the same for bundled builds. jiti resolution base is the HOST loader. No own runtime dep needed. BUT: needs a `devDependency` in OUR package.json for tsc/vitest to resolve (runtime uses the host's copy — expect API drift between the pinned dev version and the host). |
+| Q5 | MED | `beforeToolCall` can only block, not modify args | Confirmed: `BeforeToolCallResult = {block?: boolean, reason?: string, terminate?: boolean}` — no modified-args field. Arg-level enforcement (path restriction, etc.) moves INTO the tool's `execute()` (our own tool wrappers). |
+| Q6 | MED | `finishTurn` semantics vs our P8 valves | `finishTurn` fires after each assistant turn; `{action:"end"}` stops. Cross-turn no-progress needs our own state in the adapter (signature history, attempt counters). |
+
+**Key architecture decisions confirmed by the research:**
+
+1. `streamFn` = `ctx.modelRegistry.streamSimple.bind(ctx.modelRegistry)` — carries the host's auth (auth.json), not env vars.
+2. Tools from `@earendil-works/pi-coding-agent` SDK re-exports (createReadTool etc.), NOT from agent-core directly.
+3. One-shot `new Agent(...)` per call — same pattern pi-subagents itself uses internally.
+4. Extension import works via the host's alias map; add `devDependency` for repo-level typecheck.
+5. Import discipline: `Agent`/`StreamFn` from agent-core; everything else from the documented `pi-coding-agent`/`pi-ai` entries (the tintinweb/pi-subagents lesson: reaching into agent-core's internals broke under strict resolvers).
+
 ## 5. Risks and mitigations
 
 | Risk | Mitigation |
