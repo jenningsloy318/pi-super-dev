@@ -38,7 +38,7 @@ import { registerSuperDevAgentsDeferred } from "./agents/register-agents.ts";
 import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
 import { superDevRunMetadataLine } from "./version.ts";
 import type { ProgressSink, RuntimeInstruction } from "./types.ts";
-import { setHostContext, abortAllActiveAgents } from "./agents/pi-agent-core-backend.ts";
+import { setPiReference, abortAllActiveAgents } from "./agents/pi-agent-core-backend.ts";
 
 /** 069: the structural slice of the host's ModelRegistry that our adapter
  * consumes (069 R1-Q1: streamSimple carries auth.json credentials). */
@@ -128,52 +128,11 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 		// The ExtensionAPI exposes modelRegistry (host's ModelRuntime facade
 		// with auth.json credentials) — this is what the adapter's streamFn
 		// binds to. Tool factories come from the SDK re-exports.
-		// 069 wave 2 FIX (run 2026-09-23T01-32-02): modelRegistry is NOT
-		// available during activation (pi._bindExtensionCore runs AFTER every
-		// extension factory — the same deferred issue as getAllTools()).
-		// Arm on session_start + a 15s unref'd timer fallback, then wire.
-		const wireHostContext = async (): Promise<void> => {
-			try {
-				const hostPi = pi as ExtensionAPI & { modelRegistry?: HostModelRegistry };
-				if (!hostPi.modelRegistry) {
-					try { pi.appendEntry?.("super-dev-pi-agent-core", { line: "modelRegistry not yet available — retrying on next session_start or 15s fallback" }); } catch { /* best-effort */ }
-					return;
-				}
-				// Dynamic import of the SDK tool factories (the extension loader
-				// resolves @earendil-works/* to the host's copies)
-				const sdkModule = await import("@earendil-works/pi-coding-agent");
-				const sdk = {
-					createReadTool: sdkModule.createReadTool as (...args: unknown[]) => unknown,
-					createBashTool: sdkModule.createBashTool as (...args: unknown[]) => unknown,
-					createGrepTool: sdkModule.createGrepTool as (...args: unknown[]) => unknown,
-					createFindTool: sdkModule.createFindTool as (...args: unknown[]) => unknown,
-					createLsTool: sdkModule.createLsTool as (...args: unknown[]) => unknown,
-					createEditTool: sdkModule.createEditTool as (...args: unknown[]) => unknown,
-					createWriteTool: sdkModule.createWriteTool as (...args: unknown[]) => unknown,
-				};
-				setHostContext({
-					modelRegistry: hostPi.modelRegistry as HostModelRegistry,
-					createReadTool: sdk.createReadTool as never,
-					createBashTool: sdk.createBashTool as never,
-					createGrepTool: sdk.createGrepTool as never,
-					createFindTool: sdk.createFindTool as never,
-					createLsTool: sdk.createLsTool as never,
-					createEditTool: sdk.createEditTool as never,
-					createWriteTool: sdk.createWriteTool as never,
-				});
-				try { pi.appendEntry?.("super-dev-pi-agent-core", { line: "host context wired (modelRegistry + SDK tool factories)" }); } catch { /* best-effort */ }
-			} catch (error) {
-				try { pi.appendEntry?.("super-dev-pi-agent-core", { line: `host context wiring failed: ${error instanceof Error ? error.message : String(error)}` }); } catch { /* best-effort */ }
-			}
-		};
-		// Arm: try immediately (may fail if mr not yet bound), then retry on
-		// session_start, then a 15s unref'd fallback.
-		void wireHostContext();
-		let wired = false;
-		const tryWire = async (): Promise<void> => { if (wired) return; const h = pi as ExtensionAPI & { modelRegistry?: HostModelRegistry }; if (h.modelRegistry) { wired = true; await wireHostContext(); } };
-		try { pi.on?.("session_start", () => { void tryWire(); }); } catch { /* best-effort */ }
-		const wireTimer = setTimeout(() => { void tryWire(); }, 15_000);
-		wireTimer.unref?.();
+		// 069 wave 2 FIX v2 (runs 2026-09-23T01-32 + 02-03): the eager/deferred
+		// setHostContext pattern failed because modelRegistry is unavailable at
+		// activation AND at session_start. The adapter now resolves LAZILY at
+		// each call — we just store the pi object reference here.
+		setPiReference(pi as Record<string, unknown> & ExtensionAPI);
 		const delegationBus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
 		if (delegationBus) {
 			// v0.3.82 dual review BLOCKER fix: registration is DEFERRED to the

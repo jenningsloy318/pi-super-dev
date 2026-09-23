@@ -51,14 +51,50 @@ export interface HostContext {
 	createWriteTool(cwd: string): AgentTool;
 }
 
-let host: HostContext | undefined;
+/** 069 run 2026-09-23T02-03 FIX: the pi object is stored eagerly at
+ * activation (always available), but modelRegistry + tool factories are
+ * resolved LAZILY at each call — _bindExtensionCore runs AFTER extension
+ * factories, so modelRegistry may not exist during activation but WILL
+ * exist by the time any agent call fires. */
+let piRef: Record<string, unknown> | undefined;
+let cachedHost: HostContext | undefined;
 
+export function setPiReference(pi: Record<string, unknown>): void {
+	piRef = pi;
+}
+
+/** Resolve the host context lazily — returns undefined if modelRegistry or
+ * the SDK tool factories are not yet available (caller falls back). */
+async function resolveHost(): Promise<HostContext | undefined> {
+	if (cachedHost) return cachedHost;
+	if (!piRef) return undefined;
+	const mr = piRef.modelRegistry as HostContext["modelRegistry"] | undefined;
+	if (!mr) return undefined;
+	try {
+		const sdkModule = await import("@earendil-works/pi-coding-agent") as Record<string, unknown>;
+		cachedHost = {
+			modelRegistry: mr,
+			createReadTool: sdkModule.createReadTool as HostContext["createReadTool"],
+			createBashTool: sdkModule.createBashTool as HostContext["createBashTool"],
+			createGrepTool: sdkModule.createGrepTool as HostContext["createGrepTool"],
+			createFindTool: sdkModule.createFindTool as HostContext["createFindTool"],
+			createLsTool: sdkModule.createLsTool as HostContext["createLsTool"],
+			createEditTool: sdkModule.createEditTool as HostContext["createEditTool"],
+			createWriteTool: sdkModule.createWriteTool as HostContext["createWriteTool"],
+		};
+		return cachedHost;
+	} catch {
+		return undefined;
+	}
+}
+
+// Backward compat (tests use this)
 export function setHostContext(ctx: HostContext): void {
-	host = ctx;
+	cachedHost = ctx;
 }
 
 export function hostContextAvailable(): boolean {
-	return host !== undefined;
+	return cachedHost !== undefined || piRef?.modelRegistry !== undefined;
 }
 
 // ── Active agent tracking (invariant #2: deactivate aborts) ──────────────
@@ -76,8 +112,7 @@ export function abortAllActiveAgents(): void {
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 const WRITER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 
-function toolsForRole(role: string, readOnly: boolean, cwd: string): AgentTool[] {
-	if (!host) return [];
+function toolsForRole(role: string, readOnly: boolean, cwd: string, host: HostContext): AgentTool[] {
 	const names = readOnly ? READ_ONLY_TOOLS : WRITER_TOOLS;
 	const tools: AgentTool[] = [];
 	for (const name of names) {
@@ -187,8 +222,9 @@ export interface PiAgentCoreCallOptions {
 }
 
 export async function runAgentViaPiAgentCore(opts: PiAgentCoreCallOptions): Promise<SpawnResult> {
+	const host = await resolveHost();
 	if (!host) {
-		return { text: "", control: null, error: "pi-agent-core backend: host context not set — extension activation must call setHostContext() first" };
+		return { text: "", control: null, error: "pi-agent-core backend: modelRegistry not yet available (pi._bindExtensionCore may not have completed — retry after session_start)" };
 	}
 
 	// Resolve model
@@ -211,7 +247,7 @@ export async function runAgentViaPiAgentCore(opts: PiAgentCoreCallOptions): Prom
 	}
 
 	// Build the Agent
-	const tools = toolsForRole(opts.agent, opts.readOnly ?? false, opts.cwd);
+	const tools = toolsForRole(opts.agent, opts.readOnly ?? false, opts.cwd, host);
 	const systemPrompt = opts.systemPrompt ?? `You are a ${opts.agent} specialist.`;
 	const startedAt = Date.now();
 
