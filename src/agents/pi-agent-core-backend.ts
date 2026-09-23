@@ -112,18 +112,28 @@ export function abortAllActiveAgents(): void {
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 const WRITER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 
-function toolsForRole(role: string, readOnly: boolean, cwd: string, host: HostContext): AgentTool[] {
+async function toolsForRole(role: string, readOnly: boolean, cwd: string): Promise<AgentTool[]> {
+	const paiModule = await import("@earendil-works/pi-coding-agent");
+	const pai = {
+		createReadTool: paiModule.createReadTool as (...args: unknown[]) => AgentTool,
+		createGrepTool: paiModule.createGrepTool as (...args: unknown[]) => AgentTool,
+		createFindTool: paiModule.createFindTool as (...args: unknown[]) => AgentTool,
+		createLsTool: paiModule.createLsTool as (...args: unknown[]) => AgentTool,
+		createBashTool: paiModule.createBashTool as (...args: unknown[]) => AgentTool,
+		createEditTool: paiModule.createEditTool as (...args: unknown[]) => AgentTool,
+		createWriteTool: paiModule.createWriteTool as (...args: unknown[]) => AgentTool,
+	};
 	const names = readOnly ? READ_ONLY_TOOLS : WRITER_TOOLS;
 	const tools: AgentTool[] = [];
 	for (const name of names) {
 		switch (name) {
-			case "read": tools.push(host.createReadTool()); break;
-			case "grep": tools.push(host.createGrepTool()); break;
-			case "find": tools.push(host.createFindTool()); break;
-			case "ls": tools.push(host.createLsTool()); break;
-			case "bash": tools.push(host.createBashTool(cwd)); break;
-			case "edit": tools.push(host.createEditTool(cwd)); break;
-			case "write": tools.push(host.createWriteTool(cwd)); break;
+			case "read": tools.push(pai.createReadTool()); break;
+			case "grep": tools.push(pai.createGrepTool()); break;
+			case "find": tools.push(pai.createFindTool()); break;
+			case "ls": tools.push(pai.createLsTool()); break;
+			case "bash": tools.push(pai.createBashTool(cwd)); break;
+			case "edit": tools.push(pai.createEditTool(cwd)); break;
+			case "write": tools.push(pai.createWriteTool(cwd)); break;
 		}
 	}
 	return tools;
@@ -247,7 +257,7 @@ export async function runAgentViaPiAgentCore(opts: PiAgentCoreCallOptions): Prom
 	}
 
 	// Build the Agent
-	const tools = toolsForRole(opts.agent, opts.readOnly ?? false, opts.cwd, host);
+	const tools = await toolsForRole(opts.agent, opts.readOnly ?? false, opts.cwd);
 	const systemPrompt = opts.systemPrompt ?? `You are a ${opts.agent} specialist.`;
 	const startedAt = Date.now();
 

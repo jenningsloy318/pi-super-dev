@@ -38,15 +38,11 @@ import { registerSuperDevAgentsDeferred } from "./agents/register-agents.ts";
 import { resolvePiSessionIdentity } from "./agents/fleet-visibility.ts";
 import { superDevRunMetadataLine } from "./version.ts";
 import type { ProgressSink, RuntimeInstruction } from "./types.ts";
-import { setPiReference, abortAllActiveAgents } from "./agents/pi-agent-core-backend.ts";
+import { abortAllActiveAgents } from "./agents/pi-agent-core-backend.ts";
 
 /** 069: the structural slice of the host's ModelRegistry that our adapter
  * consumes (069 R1-Q1: streamSimple carries auth.json credentials). */
-interface HostModelRegistry {
-	find(provider: string, modelId: string): unknown;
-	streamSimple(...args: unknown[]): unknown;
-	refresh(): Promise<void>;
-}
+
 
 export { runPipelineTask } from "./pipeline.ts";
 export { SUPER_DEV_WORKFLOW } from "./stages/index.ts";
@@ -132,7 +128,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 		// setHostContext pattern failed because modelRegistry is unavailable at
 		// activation AND at session_start. The adapter now resolves LAZILY at
 		// each call — we just store the pi object reference here.
-		setPiReference(pi as Record<string, unknown> & ExtensionAPI);
+		// 069: ModelRuntime.create() is called lazily by the adapter itself
 		const delegationBus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
 		if (delegationBus) {
 			// v0.3.82 dual review BLOCKER fix: registration is DEFERRED to the
