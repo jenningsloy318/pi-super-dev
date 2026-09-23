@@ -590,3 +590,102 @@ one audit pass. The open set stands at **3 P0s, 2 P1s, 8 P2s, 4 P3s**
 across §7-§10. Recommendation unchanged in shape but firmer: land the
 approved set, then grill the first live log — round 7's target is the
 run.log, not the source.
+
+---
+
+## 11. Grill round 7 — dispatch-order gates and the executor-shape question (OPEN)
+
+Round 7 reads the dispatch control flow end-to-end (workflow.ts
+exec() → shared tail) and the upstream SDK embedding guide (host
+docs/sdk.md, the primary source). Two defects and one strategic
+recommendation. Findings are **open** — no code changed.
+
+### 11.1 R7-F1 (P1, OPEN): three delegation preconditions gate the pi-agent-core backend
+
+Inside `exec()`, THREE delegation-specific early-returns precede the
+069 branch (workflow.ts:364-386 → branch at ~412):
+
+1. `if (!options.events)` → "pi-subagents delegation requires the
+   in-process event bus" — the core backend needs no event bus, but a
+   CLI-mode core run is refused with delegation's error text.
+2. `delegationOwnerPresent() === false` → DELEGATION_OWNER_ABSENT_ERROR
+   — **the core backend refuses to run when pi-subagents is not
+   installed**. The migration's stated purpose (069: remove the
+   pi-subagents dependency) is defeated at this gate: a pi session
+   without pi-subagents still cannot run the core backend.
+3. `delegationBackendDegraded()` (module-sticky,
+   delegation-backend.ts:240-252) → fail-fast with the delegation
+   remedy. Escape direction broken: when delegation degrades
+   mid-session (version-skew / host-SDK classes), switching
+   SUPER_DEV_BACKEND to pi-agent-core does NOT escape it — the flag
+   gates the core path too, with "restart pi" text for a backend that
+   never touched pi-subagents.
+
+**Proposed fix:** move all three guards inside the delegation arm
+(after the 069 branch). **Proposed regression test:** with the owner
+absent and degrade flagged, a core-backend call still dispatches.
+
+### 11.2 R7-F2 (P2, OPEN): the start log hardcodes `backend=pi-subagents`
+
+workflow.ts:495 logs
+`agent ${label}: start … backend=pi-subagents …` unconditionally — on
+the core path the run.log LIES about the executing backend (P10).
+This is also the exact line §6's live-verification checklist reads:
+a v0.4.9x core run would be indistinguishable from a delegation run
+in the log. **Proposed fix:** log the selected backend name.
+**Proposed regression test:** capture the log line under both
+selectors.
+
+### 11.3 R7-F3 (STRATEGIC, OPEN): flip the specialist executor to createAgentSession
+
+Four open findings trace to ONE root: the raw Agent lacks the session
+layer. The upstream SDK guide (docs/sdk.md) documents that
+`createAgentSession` takes every boundary explicitly and restores all
+of it:
+
+| Open finding | createAgentSession answer (evidence) |
+|---|---|
+| R4-F1 role prompts | `systemPrompt` via DefaultResourceLoader options — pi-subagents' own children inject theirs this way (child-session.js loader options) |
+| R5-F4 skills | `resourceLoader` supplies skills; DefaultResourceLoader has skillsOverride/noSkills discovery |
+| R6-F2 AGENTS.md / context files | DefaultResourceLoader discovers context files from `cwd` — "cwd selects the workspace used for … context files" |
+| R6-F1 retry layers 1+2 | "prompt() resolves when the run finishes, **including automatic retries**" — provider settings + session turn-retry (default 3) both live in the session |
+| R5-F1 tool posture | `tools`/`noTools`/`excludeTools`/`customTools` control the active set |
+| R5-F6 telemetry | session events (tool execution, usage) — richer than the delegation onToolUse wire |
+
+Shape: one-shot session per specialist call (SessionManager.inMemory,
+shared cached ModelRuntime, noExtensions unless a role needs them),
+dispose() in finally — the pi-subagents 0.71 child factory
+(createDefaultChildSessionFactory) is the production precedent for
+exactly this pattern, including the shared-runtime split.
+
+**Trade-off (honest):** heavier per call — settings/resource discovery
+cost that raw Agent skips; mitigated by caching services the way
+pi-subagents caches its child factory. Guards (commit/safety) move
+from beforeToolCall to inline extension factories (child-session's
+`extensionFactories: launch.hooks` precedent) or customTools wrappers.
+R2-F1/R2-F2 become moot (no raw streamFn/factory calls); R5-F2 model
+inheritance threads as the `model` option directly; R5-F3 timeout and
+R5-F5 budget stay ours.
+
+**Recommendation:** implement the approved fix set ON the
+createAgentSession shape rather than patching the raw-Agent adapter
+twice — same findings, one upstream-maintained substrate, and the
+069 spec's never-built "hybrid second arm" finally exists. Decision
+required: (a) flip now, (b) patch raw-Agent first and flip later,
+(c) stay raw-Agent.
+
+### 11.4 Verified correct this round (no change)
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does the shared tail cover the core path? | Yes — exec() returns INTO the tail: runWithTransientRetry(countedExec) (503), accumulateUsage + usage-call ledger rows + dispatches counting (507-529), fleet begin/finish wiring (478-489), drainControlDrift (533), enforceSourceBoundary (536) all run for core results | workflow.ts:463-545 control flow read |
+| Engine-side read-only boundary on the core path? | Yes — capture before dispatch (312), enforceSourceBoundary after the result, quarantine semantics intact | workflow.ts:312-352, 534-545 |
+
+### 11.5 Round-7 frontier
+
+The dispatch-order gates (R7-F1) close the last unexamined seam —
+control-flow order at the selector. Static campaign totals across
+§7-§11: **3 P0s, 3 P1s, 9 P2s, 4 P3s + 1 strategic decision (R7-F3)**.
+Every finding carries a proposed fix and regression test; R7-F3
+subsumes six of them if answered (a). Round 8's target remains the
+first live run.log — after the approved set lands.
