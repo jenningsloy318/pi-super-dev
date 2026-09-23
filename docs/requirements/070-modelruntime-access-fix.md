@@ -485,3 +485,108 @@ toolBudget→F5, onToolUse→F6, schema/allowEmptyArraysFor→F7). Remaining
 unknowns are live-run behaviors (provider stream error shapes, token
 accounting) — the next grill should be the first live log, AFTER the
 approved R2+R4+R5 set lands.
+
+---
+
+## 10. Grill round 6 — failure-path and context parity (OPEN findings)
+
+Round 6 audits the paths nobody had opened yet: what happens when the
+provider FAILS mid-call, and what context the delegation child silently
+inherited that a raw Agent never sees. Sources: pi-ai
+provider-retry/models/types, pi-coding-agent settings-manager +
+agent-session + sdk, pi-subagents subagent-prompt-runtime, our
+agent-retry.ts / agent-errors.ts / extension.ts. Findings are **open** —
+no code changed.
+
+### 10.1 R6-F1 (P1, OPEN): transient-error resilience collapsed to one regex
+
+Three retry layers existed on the delegation path; the raw-Agent path
+keeps none of the first two:
+
+1. **Provider layer** — `retryProviderRequest` wraps every SDK call
+   with `maxRetries: 0` hard-set on the client, retrying only
+   `options.maxRetries` times (pi-ai utils/provider-retry.js:
+   `maxRetries ?? 0`). createAgentSession threads
+   `providerRetrySettings.maxRetries` into request options
+   (sdk.js:187); the raw Agent's `createLoopConfig` threads
+   `maxRetryDelayMs` but NEVER `maxRetries` — the count is unreachable
+   from the Agent constructor. Default on our path: **zero provider
+   retries**.
+2. **Session layer** — `AgentSession._willRetryAfterAgentEnd`
+   (agent-session.js:630+) re-prompts when the last assistant message
+   is a retryable error, `retry.maxRetries ?? 3` by default
+   (settings-manager.js:620). Raw Agent has no session wrapper: **no
+   turn retry**.
+3. **Workflow layer** — our `runWithTransientRetry` (4 backoffs inside
+   one logical call) survives — but it classifies by REGEX over the
+   surfaced error string (agent-retry.ts:28 TRANSIENT_RE:
+   429/rate.?limit/overload/5xx codes/ECONNRESET/ETIMEDOUT/socket hang
+   up), calibrated on DELEGATION error envelopes. Raw SDK messages can
+   miss it — undici's `TypeError: fetch failed` wrapper carries its
+   cause out-of-band and matches nothing in the regex → classified
+   hard → a stage attempt burns on a transient network blip.
+
+Net: one transient 429 either never matches (hard failure, attempt
+burned) or matches and costs a FULL specialist re-run (re-reading,
+re-thinking) where the session layer would have re-issued the failed
+request only.
+
+**Proposed fix (two-part):** (a) wrap the streamFn to inject
+`{ ...opts, maxRetries: N, maxRetryDelayMs: M }` (settings parity or
+constants) so the provider layer retries in-request — upstream-shaped,
+restores layer 1; (b) on the first live log, validate TRANSIENT_RE
+against the actual raw error strings and extend the misses (candidate:
+`fetch failed`) — extend by EVIDENCE, not by guess. **Proposed
+regression test:** the injected streamFn options carry maxRetries.
+
+### 10.2 R6-F2 (P2, OPEN): project-context inheritance dropped (AGENTS.md et al.)
+
+pi-subagents children default
+`inheritProjectContext ?? true` (subagent-prompt-runtime.js:552): the
+parent session's project context files — the target repo's AGENTS.md
+conventions among them — were REWRITTEN into every child's system
+prompt. Our delegation requests never set it false. The raw-Agent
+adapter loads nothing: specialists lose the repo-convention context
+that framed every previous backend's output. (Same default family:
+`inheritGlobalContext ?? true`, `inheritSkills ?? true` — the skills
+half already logged as R5-F4.)
+
+**Proposed fix:** fold the worktree's AGENTS.md (bounded head excerpt)
+into the adapter's system-prompt assembly — the same assembly R4-F1
+introduces; one mechanism, two inputs (role body + project context).
+**Proposed regression test:** dispatch in a cwd with a fixture
+AGENTS.md; assert its heading appears in `initialState.systemPrompt`.
+
+### 10.3 Verified correct this round (no change)
+
+| Question | Answer | Evidence |
+|---|---|---|
+| `abortAllActiveAgents` wired? | Yes — session_shutdown (extension.ts:179); pi's extension lifecycle has NO separate deactivate event, so this satisfies invariant #2's intent (wording: the "+ waits" half is fire-and-forget — P3 polish below) | extension.ts:176-180; host extensions/types.d.ts event union |
+| Adapter usage field names | `input/output/cacheRead/cacheWrite/cost.total` all real on pi-ai `Usage`; every assistant message carries one, so the turn-sum is sound | pi-ai types.d.ts `Usage`, `AssistantMessage.usage` |
+| Shared cachedRuntime across parallel Agents | Safe by upstream design — one ModelRuntime per process is pi's own architecture (pi-subagents `sharedRuntime` for background children; AgentSession shares one runtime app-wide); per-request `prepareRequest` is read-only over the snapshot | pi-subagents child-session.js:204-210; model-runtime.js |
+| SpawnResult contract match | text/control/model?/error?/usage? — adapter returns exactly these; usage-merge + budget-fuse consumers read the same fields | src/types.ts `SpawnResult`; agent-retry.ts:57 |
+| Repo precedent for listener hygiene | `sleepMs` already removes its once-listener on normal resolution (A-05/NFR-6) — R4-F3's fix has an in-repo pattern to copy | agent-retry.ts:12-23 |
+
+### 10.4 P3 observations (documented, no action proposed)
+
+- **Abort-without-wait:** `abortAllActiveAgents` fires aborts and
+  returns; the invariant's "waits" half would need a bounded
+  `Promise.allSettled(agents.map(waitForIdle))` — worth folding into
+  the R4-F3 cleanup fix, not standalone.
+- **Dropped usage richness:** pi-ai also reports `reasoning` (thinking
+  tokens), `totalTokens`, `cacheWrite1h` — the economy's thinking-label
+  honesty and cost telemetry could carry them; additive only.
+- **TRANSIENT_RE gaps:** see 10.1(b) — extend only against live-log
+  evidence.
+
+### 10.5 Round-6 frontier
+
+Round 6 proved static passes still pay (two more parity gaps, §10.1-2)
+— the §9.9 "live log next" call was premature. With failure-path and
+context-inheritance now audited, the static surface is exhausted to the
+same depth as the four previous rounds: every seam (SDK API, dispatch
+fields, execution semantics, failure paths, context inheritance) has
+one audit pass. The open set stands at **3 P0s, 2 P1s, 8 P2s, 4 P3s**
+across §7-§10. Recommendation unchanged in shape but firmer: land the
+approved set, then grill the first live log — round 7's target is the
+run.log, not the source.
