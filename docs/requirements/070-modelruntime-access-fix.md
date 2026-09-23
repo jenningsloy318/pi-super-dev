@@ -689,3 +689,77 @@ control-flow order at the selector. Static campaign totals across
 Every finding carries a proposed fix and regression test; R7-F3
 subsumes six of them if answered (a). Round 8's target remains the
 first live run.log — after the approved set lands.
+
+---
+
+## 12. Grill round 8 — capability-tool parity and flip readiness (OPEN)
+
+Round 8 grills the one role family no prior round opened — the
+capability roles whose tools come from EXTENSIONS — and stress-tests
+the R7-F3 flip design. Sources: register-agents.ts (the extensions
+channel), pi-agent-core types (AgentTool), the wiki on session-service
+reuse and extension loading. Findings are **open** — no code changed.
+
+### 12.1 R8-F1 (P1, OPEN): capability roles lose their extension tools
+
+The delegation registration gave capability roles tools that are not
+file tools at all (register-agents.ts:287-297, verified live
+2026-09-04):
+
+- `research-agent` — pi-web-access web tools (web_search,
+  fetch_content) + pi-mcp-adapter MCP gateway, via the per-agent
+  `extensions` pin;
+- `qa-agent` / `ui-tester` / `prototype-runner` / `api-tester` —
+  `browser_execute` via pi-browser-cdp-extension;
+- every role — config-driven `commonExtensions` / `agentExtensions`
+  entries, riding the same additive channel.
+
+The core adapter's `toolsForRole` builds ONLY the seven file tools.
+On the pi-agent-core path, Stage 3 research specialists run WITHOUT
+web access and the browser-family roles run WITHOUT a browser — silent
+capability loss (the missing packages degrade gracefully on
+delegation, so there is no error to notice; the tools are simply
+absent).
+
+**Proposed fix (session shape):** DefaultResourceLoader accepts
+`additionalExtensionPaths` + `extensionFactories` (wiki-confirmed,
+with a registerTool example); thread `extensionsForAgent(role)` and
+the config entries exactly as the registration did. **Raw-Agent
+shape:** NO equivalent — extension tools would require reimplementing
+each extension as customTools. This finding is additional weight for
+R7-F3 option (a). **Proposed regression test:** a research-agent
+dispatch whose loader paths include the web-access extension; assert
+the session's active tool names contain web_search (integration-level,
+mocked path).
+
+### 12.2 R8-F2 (P3, OPEN — readiness inventory): tests that pin the old behavior
+
+Two live finders key on the label R7-F2 must change:
+`tests/thinking-log-fidelity.test.ts:84` and
+`tests/thinking-clamp.test.ts:593` both locate the start line by
+`includes("backend=pi-subagents")`. And
+`tests/setup/config-env-hermeticity.ts:71` pins
+`SUPER_DEV_BACKEND=delegation` for the whole suite ("tests exercise
+the delegation path until it is deleted"). The R7-F2 fix must relax
+the finders to any `backend=` value; the flip (or the deletion wave)
+flips the hermeticity default. No behavior question — purely the
+update map for whichever fix set is approved.
+
+### 12.3 Flip-design stress test (R7-F3 follow-up — all green)
+
+| Concern | Answer | Evidence |
+|---|---|---|
+| Per-call session cost | Mitigated by design: ModelRuntime, SettingsManager, and DefaultResourceLoader are all documented as reusable across createAgentSession calls; `createAgentSessionServices` exists precisely to create the cwd-bound services once and sessions cheaply (`createAgentSessionFromServices`) | wiki (session lifecycle / services); sdk.md boundaries |
+| SessionManager reuse | Do NOT reuse — per-call `SessionManager.inMemory()` is the correct short-lived shape | wiki note; sdk.md sessions example |
+| Guard + budget injection | `AgentTool.execute(toolCallId, params, signal?, onUpdate?)` is a clean wrap surface in BOTH shapes — customTools wrapping or beforeToolCall both work; toolExecution mode field available | pi-agent-core types.d.ts:387-406 |
+| Extension tools in-session | additionalExtensionPaths / extensionFactories load extension-registered tools; combined with customTools | wiki (DefaultResourceLoader example) |
+| Per-call system prompts with a SHARED loader | Open detail: child-session passes systemPrompt per DefaultResourceLoader — per-role prompts imply per-role loaders (cheap after first) or prompt-as-leading-system-message; decide at implementation, pin with a test | child-session.js loader options |
+
+### 12.4 Round-8 frontier
+
+The capability-tool seam was the last unexamined role family; the
+flip design now has every load-bearing assumption verified from
+source. Totals across §7-§12: **3 P0s, 4 P1s, 9 P2s, 4 P3s + the
+R7-F3 decision** (whose option (a) now absorbs R8-F1's fix as well).
+Static campaign closed for good: round 9+ material can only come from
+a live run.log or from the R7-F3 answer.
