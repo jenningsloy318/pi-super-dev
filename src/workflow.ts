@@ -168,11 +168,8 @@ const UNKNOWN_AGENT_ERROR_RE = /unknown agent/i;
  * process (hard requirement — no fallback backend). */
 /** 069: the backend selector — SUPER_DEV_BACKEND=pi-agent-core activates the
  * direct Agent backend; default (unset or "delegation") keeps pi-subagents. */
-/** Roles that never mutate: reviewers, classifiers, judges. */
-function readOnlyRole(agent: string): boolean {
-	return agent.includes("review") || agent.includes("classifier") || agent.includes("judge");
-}
-
+/** 069: the backend selector — SUPER_DEV_BACKEND=pi-agent-core activates the
+ * direct Agent backend; default (unset or "delegation") keeps pi-subagents. */
 function piAgentCoreBackendEnabled(): boolean {
 	const v = superDevEnv("SUPER_DEV_BACKEND");
 	return v !== "delegation"; // 069 wave 3: pi-agent-core is the DEFAULT
@@ -361,29 +358,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 		//      under a live session) — sticky: once seen, later calls fail FAST with
 		//      the same remedy instead of burning ~5s each on the dead child.
 		const exec = async (): Promise<SpawnResult> => {
-			if (!options.events) {
-				return { text: "", control: null, error: "pi-subagents delegation requires the in-process event bus (extension mode) — run super-dev through the super_dev tool in a pi session, not the standalone CLI." };
-			}
-			if (delegationOwnerPresent() === false && !ownerWarned) {
-				ownerWarned = true;
-				log("ERROR pi-subagents is not active in this session — every specialist call will fail. Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi. super-dev v0.3.64+ requires pi-subagents (README: Requirements).");
-			}
-			if (delegationOwnerPresent() === false) {
-				return { text: "", control: null, error: DELEGATION_OWNER_ABSENT_ERROR };
-			}
-			// v0.3.63 / v0.3.64: sticky fail-fast for the version-skew class
-			// (isDelegationRuntimeExtensionFailure in delegation-backend.ts for the
-			// full receipt): `pi update` swapping the package under a live session
-			// leaves an N-1 bridge in memory whose children die at startup against the
-			// on-disk package. It cannot self-heal in this process — fail every later
-			// call instantly with the remedy instead of burning ~5s on the dead child
-			// (2026-09-04 incident: every agent of two stages).
-			if (delegationBackendDegraded()) {
-				// v0.4.57: the RECORDED reason — version-skew keeps the restart
-				// remedy; the host-SDK resolution class (shape C) keeps its
-				// symlink/upgrade remedy. First mark wins, never flaps.
-				return { text: "", control: null, error: delegationBackendDegradeMessage() || DELEGATION_VERSION_SKEW_ERROR };
-			}
+			// 070 R7-F1: the three delegation preconditions (event bus, owner
+			// present, sticky degrade flag) moved INSIDE the delegation arm —
+			// they gate pi-subagents only, never the pi-agent-core backend.
 			// v0.3.76 skill curation (L0/L1): resolve the per-call skill field from
 			// the role tiers + config + the run's classifier-selected domains.
 			const callSkill = skillsForCall(call.agent, {
@@ -410,21 +387,63 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				const agent = delegationAgentName(call.agent);
 				appendToolUsageRows(state.setup?.specDirectory, [...toolCounts.values()].map((r) => ({ ts, runId, agent, tool: r.tool, argHead: r.argHead, count: r.count })));
 			};
-			// 069: the direct pi-agent-core backend (opt-in via SUPER_DEV_BACKEND)
+			// 069/070: the direct pi-agent-core backend (default since 069 wave 3;
+			// SUPER_DEV_BACKEND=delegation is the rollback). The call threads
+			// every parity field the grill rounds identified: the inherited model
+			// OBJECT (R5-F2), per-call accessMode (R5-F1), skill curation (R5-F4),
+			// the validation inputs (R5-F7), tool budget + telemetry (R5-F5/F6).
 			if (piAgentCoreBackendEnabled()) {
-				const coreResult = await runAgentViaPiAgentCore({
-					agent: call.agent,
-					prompt: common.prompt,
-					cwd: common.cwd,
-					model: resolveAgentModel(call, agentModels, model),
-					thinking: common.thinking,
-					timeoutMs: common.timeoutMs,
-					signal: common.signal,
-					readOnly: readOnlyRole(call.agent),
-					systemPrompt: undefined, // the adapter loads the role prompt
-					controlKeys: call.controlKeys,
-				});
-				return coreResult;
+				try {
+					return await runAgentViaPiAgentCore({
+						agent: call.agent,
+						prompt: common.prompt,
+						cwd: common.cwd,
+						model: resolveAgentModel(call, agentModels, model),
+						thinking: common.thinking,
+						timeoutMs: common.timeoutMs,
+						signal: common.signal,
+						// R5-F1: the per-call accessMode is the source of truth —
+						// NOT a role-name heuristic (32 of 52 read-only roles
+						// mismatched the 069 heuristic).
+						readOnly: accessMode === "source-read-only",
+						systemPrompt: undefined, // the adapter loads the role prompt (R4-F1)
+						controlKeys: call.controlKeys,
+						inheritedModel: common.inheritedModelObject,
+						inheritedThinking: common.inheritedThinking,
+						skill: callSkill,
+						allowEmptyArraysFor,
+						schema: common.schema,
+						onToolUse,
+						toolBudget: common.toolBudget,
+					});
+				} finally {
+					flushToolUsage();
+				}
+			}
+			// The delegation preconditions live HERE (070 R7-F1): event bus,
+			// owner present, sticky degrade — pi-subagents-only requirements.
+			if (!options.events) {
+				return { text: "", control: null, error: "pi-subagents delegation requires the in-process event bus (extension mode) — run super-dev through the super_dev tool in a pi session, not the standalone CLI." };
+			}
+			if (delegationOwnerPresent() === false && !ownerWarned) {
+				ownerWarned = true;
+				log("ERROR pi-subagents is not active in this session — every specialist call will fail. Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi. super-dev v0.3.64+ requires pi-subagents (README: Requirements).");
+			}
+			if (delegationOwnerPresent() === false) {
+				return { text: "", control: null, error: DELEGATION_OWNER_ABSENT_ERROR };
+			}
+			// v0.3.63 / v0.3.64: sticky fail-fast for the version-skew class
+			// (isDelegationRuntimeExtensionFailure in delegation-backend.ts for the
+			// full receipt): `pi update` swapping the package under a live session
+			// leaves an N-1 bridge in memory whose children die at startup against the
+			// on-disk package. It cannot self-heal in this process — fail every later
+			// call instantly with the remedy instead of burning ~5s on the dead child
+			// (2026-09-04 incident: every agent of two stages).
+			if (delegationBackendDegraded()) {
+				// v0.4.57: the RECORDED reason — version-skew keeps the restart
+				// remedy; the host-SDK resolution class (shape C) keeps its
+				// symlink/upgrade remedy. First mark wins, never flaps.
+				return { text: "", control: null, error: delegationBackendDegradeMessage() || DELEGATION_VERSION_SKEW_ERROR };
 			}
 			let delegated: Awaited<ReturnType<typeof runAgentViaDelegation>>;
 			try {
@@ -492,7 +511,9 @@ function makeContext(state: PipelineState, task: string, options: RunOptions, lo
 				preview: result?.error ?? result?.text?.slice(0, 160),
 			});
 		};
-		log(`agent ${label}: start agent=${call.agent} backend=pi-subagents access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${common.model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
+		// 070 R7-F2: the backend label reflects the SELECTED backend — the old
+		// hardcoded "pi-subagents" lied on pi-agent-core runs (P10).
+		log(`agent ${label}: start agent=${call.agent} backend=${piAgentCoreBackendEnabled() ? "pi-agent-core" : "pi-subagents"} access=${accessMode} timeout=${timeoutLabel} thinking=${thinkingLabel} cwd=${agentCwd} model=${common.model ?? inheritedModel ?? "default"} controlKeys=${controlKeys.join(",") || "(none)"} promptChars=${promptWithAccess.length}`);
 		// v0.3.75 review M3: count DISPATCHES (transient 429/overload retries) at
 		// the exec seam so the report can say "N calls (M dispatches)" — a logical
 		// call that retried burns the fixed prompt floor twice.

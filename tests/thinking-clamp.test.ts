@@ -590,7 +590,7 @@ describe("runWorkflow e2e — live delegation clamp (ADVISORY-3) + per-run notic
 		expect(req!.model).toBe("antigravity/gemini-3.8-flash");
 		// the honesty contract: the start-log label prints the PRE-CLAMP resolved
 		// level ("max") and the clamp notice names the dispatch adjustment
-		const start = lines.find((l) => l.includes(": start agent=requirements-reviewer") && l.includes("backend=pi-subagents"));
+		const start = lines.find((l) => l.includes(": start agent=requirements-reviewer") && /backend=(pi-subagents|pi-agent-core)/.test(l));
 		expect(start).toBeTruthy();
 		expect(start).toContain("thinking=max");
 		expect(lines.some((l) => l.includes(CLAMP_NOTICE))).toBe(true);

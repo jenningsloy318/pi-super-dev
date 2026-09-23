@@ -1,6 +1,6 @@
 # The ModelRuntime access fix — four failed approaches, one correct pattern
 
-Status: implemented (this commit, v0.4.92). Lineage: 069 (pi-agent-core migration).
+Status: implemented (this commit, v0.4.93 — §13). Lineage: 069 (pi-agent-core migration).
 Receipts: four dead runs (2026-09-23T01-32, 02-03, 14-33, 15-03), each
 4/4 agents failing in <40ms.
 
@@ -763,3 +763,62 @@ source. Totals across §7-§12: **3 P0s, 4 P1s, 9 P2s, 4 P3s + the
 R7-F3 decision** (whose option (a) now absorbs R8-F1's fix as well).
 Static campaign closed for good: round 9+ material can only come from
 a live run.log or from the R7-F3 answer.
+
+---
+
+## 13. Implementation record (v0.4.93)
+
+R7-F3 answered **(a)** — the specialist executor flipped to the
+createAgentSession shape, and the approved open set landed on it:
+
+- **Executor**: one-shot `createAgentSession` per specialist call —
+  shared cached ModelRuntime + SettingsManager, per-call
+  DefaultResourceLoader (systemPrompt = role body) and
+  SessionManager.inMemory. `src/agents/pi-agent-core-backend.ts`
+  rewritten; raw-Agent code (streamFn bind R2-F1, factory cwd R2-F2)
+  is moot and gone with it.
+- **R4-F1/R5-F4/R6-F2**: system prompt = `loadAgentBasePrompt` body +
+  curated skill-card section; AGENTS.md/context files ride the loader's
+  cwd discovery.
+- **R4-F2**: thinkingLevel passes through; the session clamps to model
+  capabilities (documented option behavior).
+- **R4-F3**: shared-signal abort listener removed in the finally
+  (A-05 precedent).
+- **R4-F4**: empty-text stops return a named error.
+- **R5-F1**: posture = per-call accessMode → excludeTools
+  [bash,edit,write] (extension tools preserved) — the name heuristic is
+  deleted.
+- **R5-F2**: model = string resolution, else the inherited session
+  model OBJECT passed straight through (never re-resolved);
+  inheritedThinking rides the same seam.
+- **R5-F3**: timeout = per-call, else `defaultAgentTimeoutMs` role
+  tier (env knobs live again).
+- **R5-F5/F6**: tool budget hard cap via abort with a named error;
+  telemetry rides `tool_execution_start` events → onToolUse → the
+  ledger flush (now wired on the core branch too). Soft nudge remains
+  future work.
+- **R5-F7**: control validation (missing keys + schema violations,
+  honoring allowEmptyArraysFor) with ONE corrective attempt on the
+  same session — the delegation corrective-check parity.
+- **R6-F1**: both lost retry layers ride the session (provider
+  settings + turn-retry); the workflow transient-retry stays outermost.
+- **R7-F1**: the three delegation preconditions (event bus, owner,
+  sticky degrade) moved inside the delegation arm — the core backend
+  no longer requires pi-subagents at all.
+- **R7-F2**: the start log reports the selected backend.
+- **R8-F1**: guard + config + role extension paths ride the loader's
+  additionalExtensionPaths (web/browser tools restored for capability
+  roles).
+- **R8-F2**: the two backend= test finders relaxed to accept either
+  backend.
+
+Pins: `tests/pi-agent-core-backend.test.ts` rewritten for the session
+shape — 19 tests, one per finding (role body, skill cards, posture,
+model inheritance + honest failure, listener hygiene, empty-text,
+corrective attempt success + failure, telemetry, budget cap,
+extension paths, cwd, contextWindow, dispose). Suite 4,575/4,575
+green, tsc 0, arch doc regenerated.
+
+Deferred (documented, not blocking): soft budget nudge, TRANSIENT_RE
+extension (awaiting live-log evidence — §10.1(b)), usage richness
+(reasoning/totalTokens), abort-without-wait polish.

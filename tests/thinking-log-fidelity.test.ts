@@ -81,7 +81,7 @@ async function runOneAgentCall(agent: string, runOptions: Record<string, unknown
 }
 
 function startLine(lines: string[]): string | undefined {
-	return lines.find((l) => l.includes(": start agent=") && l.includes("backend=pi-subagents"));
+	return lines.find((l) => l.includes(": start agent=") && /backend=(pi-subagents|pi-agent-core)/.test(l));
 }
 
 describe("workflow start-log thinking fidelity (v0.3.95 FIX B1)", () => {
