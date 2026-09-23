@@ -97,8 +97,10 @@ surface; ModelRuntime is a module-level factory that works independently.
 
 ## 6. Verification checklist (for the next live run)
 
-Applies AFTER R2-F1/R2-F2 land; running v0.4.92 as-committed will fail
-the first specialist call (see §7.2).
+Applies AFTER the approved open findings land (R2-F1/F2 §7, R4-F1..F4
+§8, R5-F1..F7 §9); running v0.4.92 as-committed fails the first
+specialist call (§7.2) and, past that, every call of a
+no-explicit-model run (§9.2).
 
 - [ ] Run log header shows the version carrying §7.2/§7.3
 - [ ] No "modelRegistry not yet available" or "host context not set" errors
@@ -317,3 +319,169 @@ accounting, tool-result flows through guards). Two more static passes
 would re-tread §7/§8 ground. Recommendation: land R2-F1/R2-F2/R4-F1
 (plus the P2s if approved) and spend the next pass on the first live
 log instead.
+
+*(Superseded by round 5: one more static pass — the call-site parity
+audit — found four more gaps, §9 below. The live-log recommendation
+stands AFTER the §9 set lands.)*
+
+---
+
+## 9. Grill round 5 — call-site parity audit (OPEN findings)
+
+Rounds 2/4 audited the adapter against the SDK. Round 5 audits the
+DISPATCH SITE (workflow.ts:414-428) against the delegation call that
+sits beside it: everything `common` carries that the pi-agent-core
+branch drops. Sources: our workflow.ts / agent-call-assembly.ts /
+register-agents.ts / extension.ts / delegation-backend.ts, host dist
+tool schemas, pi-subagents 0.71 source, and the earendil-works/pi wiki.
+Findings are **open** — no code changed.
+
+### 9.1 R5-F1 (P1, OPEN): accessMode ignored — 32 of 52 read-only roles get write tools
+
+The delegation call receives `common.accessMode` (per-call, from
+`call.accessMode ?? "write"` in agent-call-assembly.ts:118 — the value
+the engine's source-boundary machinery keys off at workflow.ts:312-321).
+The core branch instead re-derives read-onlyness from a NAME HEURISTIC
+invented for 069: `readOnlyRole(agent)` = name contains
+review/classifier/judge (workflow.ts:172-174).
+
+The authoritative set is `READ_ONLY_AGENTS` (register-agents.ts:71) —
+52 members. Only 20 match the heuristic. The other **32** — including
+`requirements-clarifier`, `code-assessor`, `debug-analyzer`,
+`post-mortem`, `reflection`, `replan-lead`, and the four design-stage
+specialists — would receive bash/edit/write on the pi-agent-core path.
+Read-only posture is engine-side (P4: the source boundary is the
+enforcement), but the delegation child ALSO had no mutation tools; the
+new path hands 32 read-only roles a live mutation surface they never
+had, and their prompts assume they cannot mutate.
+
+**Proposed fix:** pass `readOnly: common.accessMode === "source-read-only"`
+(the same per-call source of truth delegation uses); delete the
+heuristic. **Proposed regression test:** for each READ_ONLY_AGENTS
+member, dispatch and assert the tool list contains no bash/edit/write.
+
+### 9.2 R5-F2 (P0, OPEN): model inheritance dropped — no-explicit-model runs fail EVERY call
+
+`resolveAgentModel` (workflow.ts:194-203) returns `string | undefined`;
+it is undefined whenever the call has no model, no role config
+(`~/.super-dev` agentModels), and no `options.model`. `options.model`
+is `params.model` from the tool invocation (extension.ts:406) —
+OPTIONAL. The delegation backend's fallback chain is
+`opts.model ?? resolveModel(undefined) ?? inheritedModelObject`
+(delegation-backend.ts:444), where `inheritedModelObject` is the LIVE
+main-session model object (extension.ts:389-395).
+
+The core branch threads NONE of this: it passes
+`model: resolveAgentModel(...)` and drops both `common.inheritedModelObject`
+and `common.inheritedThinking`. With no explicit model configured — the
+common invocation — the adapter receives `undefined`, splits `""`, calls
+`getModel("", "")`, and returns `model not found: (provider=, id=)` for
+every specialist call of the run.
+
+**Proposed fix:** thread the inheritance into the core dispatch.
+**SCENARIO-001 trap (must respect):** the inherited fallback must use
+the FULL object — a bare `provider/id` re-resolution ambiguously
+matched a different provider's same-named model (the opencode
+mis-resolution bug; extension.ts:383-386 comment). The adapter should
+accept an optional inherited Model OBJECT and use it directly when
+string resolution comes up empty, not re-resolve a string.
+`inheritedThinking` (ctx.thinkingLevel) rides the same fix — the
+adapter's `?? "medium"` default silently ignores the session tier
+delegation threaded (P3 sub-note).
+
+### 9.3 R5-F3 (P2, OPEN): timeout tiers and env knobs dead on the new path
+
+Delegation applies the role-tier backstop:
+`opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent)`
+(delegation-backend.ts:627) — code-writing / review / heavy-writer /
+default tiers, each env-overridable (SUPER_DEV_CODE_TIMEOUT_MS,
+SUPER_DEV_REVIEW_TIMEOUT_MS, SUPER_DEV_WRITER_TIMEOUT_MS,
+SUPER_DEV_AGENT_DEFAULT_TIMEOUT_MS; runtime.ts:115-127). The adapter
+hardcodes `opts.timeoutMs ?? 1_800_000` (30 minutes flat): review-tier
+agents lose their shorter bound, code agents may lose a longer one,
+and all four env knobs silently stop working.
+
+**Proposed fix:** `opts.timeoutMs ?? defaultAgentTimeoutMs(opts.agent)`
+in the adapter (import already sits beside it in agent-runtime).
+
+### 9.4 R5-F4 (P2, OPEN): skill curation dropped — zero cards, always
+
+The workflow computes `callSkill = skillsForCall(call.agent, …)`
+(v0.3.76 L0/L1: config agentSkills, classifier-selected domains,
+kill-switches) and passes it ONLY to the delegation call. The core
+branch drops the field — and the adapter has no skills mechanism at
+all. Net behavior on the new path: neither curated NOR ambient — ZERO
+skill cards for every role; SUPER_DEV_SKILLS=ambient,
+SUPER_DEV_NO_SKILLS, and config agentSkills all become no-ops.
+
+Wiki-confirmed constraint: skills attach to AgentSession's
+DefaultResourceLoader, not to a raw Agent — the sanctioned raw-Agent
+delivery is system-prompt injection (the formatSkillsForPrompt
+approach — exactly what our own registration did: "system-prompt skill
+list + `read` of SKILL.md").
+
+**Proposed fix:** fold the curated card list into the adapter's system
+prompt (names + one-line descriptions + the read-the-card instruction),
+respecting false = none / undefined = ambient-list semantics.
+**Proposed regression test:** dispatch with a curated skill list and
+assert the system prompt names the cards; dispatch with `false` and
+assert none.
+
+### 9.5 R5-F5 (P2, OPEN): toolBudget dropped — the header claims a counter that does not exist
+
+The adapter's header comment says beforeToolCall carries "our tool
+budget counter"; `guardBeforeToolCall` contains no counting. The
+delegation path resolves per-role/per-call budgets
+(`common.toolBudget`, v0.3.87 S4) and pi-subagents enforces them
+child-side — soft nudge past the soft limit, hard block at the hard
+limit with a recognizable message (pi-subagents tool-budget.d.ts).
+Wiki-confirmed: `beforeToolCall` returning `{block: true, reason}` is
+the sanctioned enforcement hook for a raw Agent.
+
+**Proposed fix:** count tool calls in the adapter's beforeToolCall;
+resolve the budget via the existing registration-level defaults +
+`opts.toolBudget` override; emit the soft nudge as the block reason
+one call early and hard-block at the cap (terminate: true available to
+stop the batch).
+
+### 9.6 R5-F6 (P3, OPEN): tool-usage telemetry blind
+
+The delegation branch wires `onToolUse` → per-call toolCounts →
+`appendToolUsageRows` ledger flush (workflow.ts:398-410). The core
+branch returns before any of it — no tool-usage rows on the new path.
+P10 (logs are honest) + the ledger economy lose their per-tool
+visibility. Fix rides R5-F5's counter: an onToolUse-equivalent callback
+on the adapter, flushed by the same finally.
+
+### 9.7 R5-F7 (P2, OPEN): structured mode dropped
+
+Delegation carries `result: {kind: "structured", schema}` — the child
+gains a structured_output tool and engine-side validation runs
+(v0.3.70 W3, the anti-bounce machinery). The core branch passes only
+`controlKeys`; `call.schema` and `allowEmptyArraysFor` never reach the
+adapter. Output reliability regresses to prose+`<control>`-only —
+exactly the validator-bounce/attempt-multiplication class the
+convergence economy exists to suppress. **Proposed fix (two-step):**
+minimum — thread `allowEmptyArraysFor` into `extractControl` for parity;
+full — a structured-output tool in the adapter's tool list validated
+against `call.schema` before accepting the final message.
+
+### 9.8 Verified correct this round (no change)
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Guard input field names | bash reads `args.command`; write/edit read `args.path` — the guards' field names are right | host bash.js:27 (`command: Type.String`), write.d.ts:5 / edit.d.ts:6 (`path`) |
+| Access + language directives | They ride the task prompt (`promptWithAccess` → `promptWithLanguage` = `common.prompt`) — survive on the core path | agent-call-assembly.ts:130-140 |
+| beforeToolCall as budget hook | Sanctioned (block: true) — R5-F5's fix path is upstream-blessed | pi-agent-core types.d.ts:41-49; wiki |
+| Skills on raw Agent | Not built-in; prompt injection is the sanctioned path — R5-F4's fix shape | wiki (DefaultResourceLoader/skills) |
+
+### 9.9 Round-5 frontier
+
+The call-site parity inventory is now complete: every field `common`
+carries is either threaded (prompt, cwd, model-string, thinking,
+timeoutMs, signal, controlKeys) or accounted for as an open finding
+(accessMode→F1, inherited model/thinking→F2, tier timeouts→F3, skill→F4,
+toolBudget→F5, onToolUse→F6, schema/allowEmptyArraysFor→F7). Remaining
+unknowns are live-run behaviors (provider stream error shapes, token
+accounting) — the next grill should be the first live log, AFTER the
+approved R2+R4+R5 set lands.
