@@ -175,7 +175,7 @@ function readOnlyRole(agent: string): boolean {
 
 function piAgentCoreBackendEnabled(): boolean {
 	const v = superDevEnv("SUPER_DEV_BACKEND");
-	return v === "pi-agent-core" || v === "agent-core";
+	return v !== "delegation"; // 069 wave 3: pi-agent-core is the DEFAULT
 }
 
 const DELEGATION_OWNER_ABSENT_ERROR = "pi-subagents is not active in this session (no delegation owner answered the registration handshake). Install the pi-subagents pi package (pi install npm:pi-subagents) and restart pi — super-dev v0.3.64+ requires it.";

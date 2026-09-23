@@ -65,3 +65,7 @@ process.env.SUPER_DEV_STATE_DIR = join(tmpdir(), `sd-state-hermetic-${process.pi
 // v0.3.81 adv-F1: activation's fire-and-forget git fetch must never do real
 // network I/O (or mutate remote-tracking refs) from inside the unit suite.
 process.env.SUPER_DEV_NO_FRESHNESS_CHECK = "1";
+
+// 069 wave 3: tests exercise the delegation path until it is deleted.
+// pi-agent-core tests set their own backend explicitly.
+process.env.SUPER_DEV_BACKEND = "delegation";

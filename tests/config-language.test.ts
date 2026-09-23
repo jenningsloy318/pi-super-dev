@@ -50,16 +50,17 @@ import type { AgentCall, PipelineState, RunOptions } from "../src/types.ts";
 
 describe("configured output language", () => {
 	beforeEach(() => {
+		process.env.SUPER_DEV_BACKEND = "delegation"; // 069: exercise delegation path
 		captured.session = undefined;
 		captured.prompt = undefined;
 		// Machine-independence (review P2): realAgent's backend selection and the
 		// no-arg config path must not observe this developer's env/config.
 		delete process.env.SUPER_DEV_LANGUAGE;
-		delete process.env.SUPER_DEV_BACKEND;
+		// SUPER_DEV_BACKEND kept (069: delegation path for this test)
 	});
 	afterEach(() => {
 		delete process.env.SUPER_DEV_LANGUAGE;
-		delete process.env.SUPER_DEV_BACKEND;
+		// SUPER_DEV_BACKEND kept (069: delegation path for this test)
 	});
 
 	it("SCENARIO-L1: DEFAULT_CONFIG.language is english", () => {
