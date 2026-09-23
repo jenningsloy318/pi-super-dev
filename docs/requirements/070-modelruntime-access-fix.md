@@ -186,3 +186,134 @@ convention wrong" — a `.bind()` the README writes in every example — is
 still a dead run. Spec §3 HAD the bind; the implementation dropped it.
 Corollary: when a spec quotes a reference pattern, the implementation
 must be diffed against that quote, not just against its intent.
+
+---
+
+## 8. Grill round 4 — execution-semantics audit (OPEN findings)
+
+(Round numbering follows the session's grill passes; the §7 audit was the
+pass before this one.) Sources: the host 0.87.1 dist (agent.js,
+runWithLifecycle, pi-ai models.js), our own workflow.ts / extension.ts,
+the pi CHANGELOG, npm, and the earendil-works/pi wiki. Findings are
+**open** — no code changed.
+
+### 8.1 R4-F1 (P0, OPEN): the role-prompt machinery is missing entirely
+
+The adapter builds its system prompt as
+`opts.systemPrompt ?? "You are a ${opts.agent} specialist."` — and the
+workflow dispatch (workflow.ts:415-427) passes `systemPrompt: undefined`
+under the comment "the adapter loads the role prompt". **The adapter
+loads nothing**: it has no `loadAgentBasePrompt` import. Consequences on
+the pi-agent-core path:
+
+- Every specialist runs on a generic one-line system prompt instead of
+  its `agents/<name>.md` body — the declared single source of truth
+  (register-agents.ts header; the delegation path registered each
+  specialist with that body via the runtime-agent-register contract).
+- Lost with it: the role's output contract (the `<control>` JSON
+  discipline `extractControl` depends on), the READING DISCIPLINE
+  section, verification gates, and format contracts.
+- Per-call injections (lessons, skill cards) survive — they ride the
+  task prompt (`common.prompt` from `assembleAgentCall`) — but the base
+  body does not.
+- Expected live symptom: control extraction frequently returns null →
+  stage-level bounces and multi-attempt behavior — the exact regression
+  class this whole effort exists to eliminate.
+
+**Proposed fix:** in the adapter, `systemPrompt =
+opts.systemPrompt ?? loadAgentBasePrompt(opts.agent) ?? generic`, using
+the existing `loadAgentBasePrompt` export from `src/agents.ts` (one
+source of truth, same as every other backend). **Proposed regression
+test:** dispatch a known role (e.g. `spec-writer`) and assert the Agent's
+`initialState.systemPrompt` contains the spec-writer .md body's opening
+line, not the generic fallback.
+
+### 8.2 R4-F2 (P2, OPEN): thinkingLevel passed raw — silent tier divergence
+
+The delegation backend clamps before dispatch
+(`clampThinkingToModel(provider, modelId, level)`,
+delegation-backend.ts:388); the adapter imports the clamp but never calls
+it and hands `opts.thinking` straight to `initialState.thinkingLevel`,
+which the loop config passes as `reasoning` to the stream
+(agent.js createLoopConfig).
+
+Wiki + source reading: providers clamp internally in *some*
+streamSimple implementations (google-vertex, google-generative-ai,
+openai-codex-responses are the wiki-named ones) and ignore reasoning on
+`reasoning: false` models — so this does not crash everywhere. But the
+behavior for a custom OpenAI-compatible provider (the live run uses
+`zai-coding-cn/glm-5.3`) is unverified, and where clamping does happen
+it is silent: the ledger's thinking label reports the configured tier
+while the model ran another.
+
+**Proposed fix:** clamp explicitly with the SDK's own
+`clampThinkingLevel(resolvedModel, level)` — exported from
+`@earendil-works/pi-ai` root (models.d.ts:196, and `pi-ai` is already a
+declared peerDependency). Deterministic across ALL providers, restores
+parity with the delegation path, and works off the Model object the
+adapter already holds (no agentDir catalog read).
+
+### 8.3 R4-F3 (P2, OPEN): run-level AbortSignal listener accumulation
+
+`extension.ts:573` passes ONE run-level signal into `doRun`; the adapter
+does `opts.signal?.addEventListener("abort", …, { once: true })` per
+specialist call and never removes the listener on success (`{once:true}`
+only removes it when it FIRES — a successful run never fires it). A full
+pipeline makes on the order of a hundred-plus specialist calls:
+
+- Node warns past 10 listeners on one signal
+  (`MaxListenersExceededWarning`).
+- Each listener closure retains its (finished) Agent — and each Agent
+  retains the full transcript including the ~58k-char task prompts — for
+  the entire run. Memory bloat on exactly the long runs we care about.
+
+**Proposed fix:** capture the handler, `removeEventListener` it in the
+existing `finally` cleanup next to `activeAgents.delete(agent)`.
+**Proposed regression test:** dispatch N calls on one shared signal;
+assert `getEventListeners(signal).length === 0` after all settle.
+
+### 8.4 R4-F4 (P2, OPEN): empty-text responses report success
+
+`extractResult` returns `{ text: "", error: undefined }` when the last
+assistant message has `stopReason: "stop"` but zero text blocks. The
+caller sees a successful call with empty output; the failure surfaces
+only as a downstream validator bounce — one full retry cycle spent on a
+result we could have named at the source.
+
+**Proposed fix:** if the joined text is empty and stopReason is not
+error/aborted, return `error: "empty assistant response (stopReason=…)"`.
+**Proposed regression test:** mock a text-less final assistant message;
+assert the SpawnResult carries the error.
+
+### 8.5 Verified correct this round (no change)
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does `await prompt()` cover the whole run? | Yes — it awaits `runWithLifecycle(runAgentLoop …)`; `waitForIdle()` after it is redundant-but-harmless (returns an already-resolved promise) | agent.js `prompt`/`runPromptMessages`/`waitForIdle` |
+| Does the timeout actually rescue a hung call? | Yes — `abort()` aborts the internal controller; `runWithLifecycle` catches, `handleRunFailure`, `finishRun()` resolves; the loop synthesizes stopReason `"aborted"` which our guard maps to an error | agent.js `runWithLifecycle`/`abort` |
+| 0.87.0→0.87.1 delta | Model-catalog + provider fixes only; nothing on ModelRuntime/Agent/tool-factory/StreamFn surfaces | host CHANGELOG 0.87.1 |
+| Upstream newer than host? | No — npm latest is 0.87.1 for BOTH pi-coding-agent and pi-agent-core (host == latest) | `npm view` 2026-09-23 |
+| 0.87.0 breaking changes vs adapter | Not applicable — adapter uses no `shouldStopAfterTurn`, no AgentSession, no state assignment (read-only `state.messages`) | CHANGELOG 0.87.0; adapter source |
+
+### 8.6 P3 observations (documented, no action proposed)
+
+- **Credential staleness:** a cached ModelRuntime does NOT pick up
+  auth.json changes; `refresh()` is the intended mechanism (wiki).
+  Long-lived pi sessions with OAuth rotation could 401 with no recovery.
+  Remedy when needed: on an auth-failure error from a specialist call,
+  drop `cachedRuntime` and retry once with a fresh `create()`.
+- **Char-vs-token gate:** the invariant-#3 pre-check compares
+  `prompt.length` (chars) against `contextWindow` (tokens) — fires ~4x
+  early for ASCII text, roughly right for CJK, and ignores the system
+  prompt. Acceptable as a coarse gate; do not tighten without a
+  tokenizer.
+- devDep type-drift (^0.87.0 vs host 0.87.1) — unchanged from §7.4.
+
+### 8.7 Round-4 frontier after this pass
+
+The adapter's remaining unknowns are live-run behaviors no static read
+settles (stream error shapes from the zai provider, actual token
+accounting, tool-result flows through guards). Two more static passes
+would re-tread §7/§8 ground. Recommendation: land R2-F1/R2-F2/R4-F1
+(plus the P2s if approved) and spend the next pass on the first live
+log instead.
