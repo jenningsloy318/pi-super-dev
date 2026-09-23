@@ -32,69 +32,36 @@ import { splitModelThinking, clampThinkingToModel } from "./agent-runtime/index.
 import { isCommitClassGitCommand } from "../child-guards/commit-guard.ts";
 import { checkBashCommand, checkProtectedWrite } from "../child-guards/safety-guard.ts";
 
-// ── The host context (set once at extension activation) ──────────────────
+// ── The ModelRuntime (pi-subagents child-session.js:200-215 pattern) ─────
+// NOT the ExtensionAPI's modelRegistry (which lives on ExtensionContext,
+// not on the ExtensionAPI the factory receives). ModelRuntime.create() is a
+// STATIC method on the pi-coding-agent module that reads auth.json,
+// models.json, models-store.json — completely timing-independent.
 
-export interface HostContext {
-	/** The host's model registry — resolves models + carries auth. */
-	modelRegistry: {
-		find(provider: string, modelId: string): unknown;
-		streamSimple: (...args: unknown[]) => unknown;
-		refresh(): Promise<void>;
-	};
-	/** The host's tool factories. */
-	createReadTool(): AgentTool;
-	createBashTool(cwd: string): AgentTool;
-	createGrepTool(): AgentTool;
-	createFindTool(): AgentTool;
-	createLsTool(): AgentTool;
-	createEditTool(cwd: string): AgentTool;
-	createWriteTool(cwd: string): AgentTool;
+interface ResolvedRuntime {
+	streamSimple: (...args: unknown[]) => unknown;
+	getModel(provider: string, modelId: string): unknown;
 }
 
-/** 069 run 2026-09-23T02-03 FIX: the pi object is stored eagerly at
- * activation (always available), but modelRegistry + tool factories are
- * resolved LAZILY at each call — _bindExtensionCore runs AFTER extension
- * factories, so modelRegistry may not exist during activation but WILL
- * exist by the time any agent call fires. */
-let piRef: Record<string, unknown> | undefined;
-let cachedHost: HostContext | undefined;
+let cachedRuntime: ResolvedRuntime | undefined;
 
-export function setPiReference(pi: Record<string, unknown>): void {
-	piRef = pi;
-}
-
-/** Resolve the host context lazily — returns undefined if modelRegistry or
- * the SDK tool factories are not yet available (caller falls back). */
-async function resolveHost(): Promise<HostContext | undefined> {
-	if (cachedHost) return cachedHost;
-	if (!piRef) return undefined;
-	const mr = piRef.modelRegistry as HostContext["modelRegistry"] | undefined;
-	if (!mr) return undefined;
+async function getRuntime(): Promise<ResolvedRuntime | undefined> {
+	if (cachedRuntime) return cachedRuntime;
 	try {
-		const sdkModule = await import("@earendil-works/pi-coding-agent") as Record<string, unknown>;
-		cachedHost = {
-			modelRegistry: mr,
-			createReadTool: sdkModule.createReadTool as HostContext["createReadTool"],
-			createBashTool: sdkModule.createBashTool as HostContext["createBashTool"],
-			createGrepTool: sdkModule.createGrepTool as HostContext["createGrepTool"],
-			createFindTool: sdkModule.createFindTool as HostContext["createFindTool"],
-			createLsTool: sdkModule.createLsTool as HostContext["createLsTool"],
-			createEditTool: sdkModule.createEditTool as HostContext["createEditTool"],
-			createWriteTool: sdkModule.createWriteTool as HostContext["createWriteTool"],
+		const pai = await import("@earendil-works/pi-coding-agent") as {
+			ModelRuntime: { create(): Promise<unknown> };
 		};
-		return cachedHost;
+		const rt = await pai.ModelRuntime.create() as ResolvedRuntime;
+		cachedRuntime = rt;
+		return rt;
 	} catch {
 		return undefined;
 	}
 }
 
-// Backward compat (tests use this)
-export function setHostContext(ctx: HostContext): void {
-	cachedHost = ctx;
-}
-
-export function hostContextAvailable(): boolean {
-	return cachedHost !== undefined || piRef?.modelRegistry !== undefined;
+// Test hook: pre-populate the runtime
+export function setRuntimeForTests(rt: ResolvedRuntime): void {
+	cachedRuntime = rt;
 }
 
 // ── Active agent tracking (invariant #2: deactivate aborts) ──────────────
@@ -232,19 +199,17 @@ export interface PiAgentCoreCallOptions {
 }
 
 export async function runAgentViaPiAgentCore(opts: PiAgentCoreCallOptions): Promise<SpawnResult> {
-	const host = await resolveHost();
-	if (!host) {
-		return { text: "", control: null, error: "pi-agent-core backend: modelRegistry not yet available (pi._bindExtensionCore may not have completed — retry after session_start)" };
+	const runtime = await getRuntime();
+	if (!runtime) {
+		return { text: "", control: null, error: "pi-agent-core backend: ModelRuntime.create() failed — check ~/.pi/agent/auth.json and models.json" };
 	}
 
 	// Resolve model
 	const [provider, ...modelParts] = (opts.model ?? "").split("/");
 	const modelId = modelParts.join("/");
-	const thinkingSuffix = opts.thinking ? `:${opts.thinking}` : "";
 	let resolvedModel: unknown;
 	try {
-		await host.modelRegistry.refresh();
-		resolvedModel = host.modelRegistry.find(provider, modelId);
+		resolvedModel = runtime.getModel(provider, modelId);
 	} catch { /* fall through to error below */ }
 	if (!resolvedModel) {
 		return { text: "", control: null, error: `model not found: ${opts.model} (provider=${provider}, id=${modelId})` };
@@ -268,7 +233,7 @@ export async function runAgentViaPiAgentCore(opts: PiAgentCoreCallOptions): Prom
 			thinkingLevel: (opts.thinking ?? "medium") as never,
 			tools,
 		},
-		streamFn: host.modelRegistry.streamSimple as never,
+		streamFn: runtime.streamSimple as never,
 		beforeToolCall: guardBeforeToolCall(opts.readOnly ?? false, opts.cwd) as never,
 	});
 

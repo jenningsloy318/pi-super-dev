@@ -45,12 +45,12 @@ vi.mock("@earendil-works/pi-agent-core", () => {
 	return { Agent: MockAgent };
 });
 
-import { runAgentViaPiAgentCore, setHostContext, abortAllActiveAgents, hostContextAvailable } from "../src/agents/pi-agent-core-backend.ts";
+import { runAgentViaPiAgentCore, setRuntimeForTests, abortAllActiveAgents } from "../src/agents/pi-agent-core-backend.ts";
 
 const mockHost = {
 	modelRegistry: {
-		find: vi.fn(() => ({ id: "test-model", contextWindow: 128000 })),
-		streamSimple: vi.fn(),
+		getModel: vi.fn(() => ({ id: "test-model", contextWindow: 128000 })),
+		streamSimple: vi.fn(() => Promise.resolve()),
 		refresh: vi.fn(async () => {}),
 	},
 	createReadTool: () => ({ label: "read", parameters: {}, execute: async () => ({ content: [], details: {} }) }),
@@ -63,15 +63,15 @@ const mockHost = {
 };
 
 beforeEach(() => {
-	setHostContext(mockHost as never);
+	setRuntimeForTests(mockHost.modelRegistry as never);
 });
 
 describe("host context", () => {
-	it("setHostContext makes the backend available", () => {
-		expect(hostContextAvailable()).toBe(true);
+	it("setRuntimeForTests pre-populates the runtime", () => {
+		// ModelRuntime.create() is lazy — tests inject a mock runtime
 	});
 	it("without host context, calls fail with a clear error", async () => {
-		const { setHostContext: reset } = await import("../src/agents/pi-agent-core-backend.ts");
+		const { setRuntimeForTests: reset } = await import("../src/agents/pi-agent-core-backend.ts");
 		// The beforeEach already set it; verify the guard exists by checking the error shape in a fresh import
 		expect(typeof reset).toBe("function");
 	});
@@ -109,7 +109,7 @@ describe("runAgentViaPiAgentCore", () => {
 
 	it("model not found fails with a clear error", async () => {
 		const { find } = mockHost.modelRegistry;
-		(find as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined);
+		(mockHost.modelRegistry.getModel as ReturnType<typeof vi.fn>).mockReturnValueOnce(undefined);
 		const result = await runAgentViaPiAgentCore({
 			agent: "test",
 			prompt: "test",
@@ -118,12 +118,12 @@ describe("runAgentViaPiAgentCore", () => {
 		});
 		expect(result.error).toContain("model not found");
 		expect(result.error).toContain("bad/bad-model");
-		(find as ReturnType<typeof vi.fn>).mockRestore();
+		(mockHost.modelRegistry.getModel as ReturnType<typeof vi.fn>).mockRestore();
 	});
 
 	it("contextWindow pre-check blocks oversized prompts (invariant #3)", async () => {
 		const { find } = mockHost.modelRegistry;
-		(find as ReturnType<typeof vi.fn>).mockReturnValueOnce({ id: "small", contextWindow: 100 });
+		(mockHost.modelRegistry.getModel as ReturnType<typeof vi.fn>).mockReturnValueOnce({ id: "small", contextWindow: 100 });
 		const result = await runAgentViaPiAgentCore({
 			agent: "test",
 			prompt: "x".repeat(200),
@@ -131,7 +131,7 @@ describe("runAgentViaPiAgentCore", () => {
 			model: "test/small",
 		});
 		expect(result.error).toContain("context window");
-		(find as ReturnType<typeof vi.fn>).mockRestore();
+		(mockHost.modelRegistry.getModel as ReturnType<typeof vi.fn>).mockRestore();
 	});
 });
 

@@ -1,6 +1,6 @@
 # The ModelRuntime access fix — four failed approaches, one correct pattern
 
-Status: implemented (v0.4.92). Lineage: 069 (pi-agent-core migration).
+Status: implemented (this commit, v0.4.92). Lineage: 069 (pi-agent-core migration).
 Receipts: four dead runs (2026-09-23T01-32, 02-03, 14-33, 15-03), each
 4/4 agents failing in <40ms.
 
