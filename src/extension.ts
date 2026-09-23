@@ -128,12 +128,17 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 		// The ExtensionAPI exposes modelRegistry (host's ModelRuntime facade
 		// with auth.json credentials) — this is what the adapter's streamFn
 		// binds to. Tool factories come from the SDK re-exports.
-		try {
-			// 069: the host pi's ExtensionAPI includes modelRegistry (verified on
-			// the installed 0.87.0 types.d.ts:222) but our devDep's re-export
-			// chain may not carry it — use a structural extension.
-			const hostPi = pi as ExtensionAPI & { modelRegistry: HostModelRegistry };
-			if (hostPi.modelRegistry) {
+		// 069 wave 2 FIX (run 2026-09-23T01-32-02): modelRegistry is NOT
+		// available during activation (pi._bindExtensionCore runs AFTER every
+		// extension factory — the same deferred issue as getAllTools()).
+		// Arm on session_start + a 15s unref'd timer fallback, then wire.
+		const wireHostContext = async (): Promise<void> => {
+			try {
+				const hostPi = pi as ExtensionAPI & { modelRegistry?: HostModelRegistry };
+				if (!hostPi.modelRegistry) {
+					try { pi.appendEntry?.("super-dev-pi-agent-core", { line: "modelRegistry not yet available — retrying on next session_start or 15s fallback" }); } catch { /* best-effort */ }
+					return;
+				}
 				// Dynamic import of the SDK tool factories (the extension loader
 				// resolves @earendil-works/* to the host's copies)
 				const sdkModule = await import("@earendil-works/pi-coding-agent");
@@ -157,10 +162,18 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 					createWriteTool: sdk.createWriteTool as never,
 				});
 				try { pi.appendEntry?.("super-dev-pi-agent-core", { line: "host context wired (modelRegistry + SDK tool factories)" }); } catch { /* best-effort */ }
+			} catch (error) {
+				try { pi.appendEntry?.("super-dev-pi-agent-core", { line: `host context wiring failed: ${error instanceof Error ? error.message : String(error)}` }); } catch { /* best-effort */ }
 			}
-		} catch (error) {
-			try { pi.appendEntry?.("super-dev-pi-agent-core", { line: `host context wiring failed: ${error instanceof Error ? error.message : String(error)} — SUPER_DEV_BACKEND=pi-agent-core will not work; delegation backend remains` }); } catch { /* best-effort */ }
-		}
+		};
+		// Arm: try immediately (may fail if mr not yet bound), then retry on
+		// session_start, then a 15s unref'd fallback.
+		void wireHostContext();
+		let wired = false;
+		const tryWire = async (): Promise<void> => { if (wired) return; const h = pi as ExtensionAPI & { modelRegistry?: HostModelRegistry }; if (h.modelRegistry) { wired = true; await wireHostContext(); } };
+		try { pi.on?.("session_start", () => { void tryWire(); }); } catch { /* best-effort */ }
+		const wireTimer = setTimeout(() => { void tryWire(); }, 15_000);
+		wireTimer.unref?.();
 		const delegationBus = (pi as { events?: unknown }).events as import("./agents/delegation-backend.ts").DelegationEventBus | undefined;
 		if (delegationBus) {
 			// v0.3.82 dual review BLOCKER fix: registration is DEFERRED to the
