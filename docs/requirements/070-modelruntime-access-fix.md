@@ -97,7 +97,92 @@ surface; ModelRuntime is a module-level factory that works independently.
 
 ## 6. Verification checklist (for the next live run)
 
-- [ ] Run log header shows v0.4.92+
+Applies AFTER R2-F1/R2-F2 land; running v0.4.92 as-committed will fail
+the first specialist call (see §7.2).
+
+- [ ] Run log header shows the version carrying §7.2/§7.3
 - [ ] No "modelRegistry not yet available" or "host context not set" errors
-- [ ] First agent call completes with `delegation .*: completed` (pi-agent-core path)
+- [ ] First agent call completes (pi-agent-core path)
 - [ ] `ModelRuntime.create()` error (if any) names the auth.json/models.json issue
+
+---
+
+## 7. Grill round 2 — source-verified API audit (OPEN findings)
+
+Every API assumption audited against the installed host 0.87.1 copies
+(the exact code jiti loads), cross-checked with the official README and
+the earendil-works/pi wiki. Findings below are **open** — implementation
+awaits approval.
+
+### 7.1 Verified correct (no change needed)
+
+| Assumption | Evidence |
+|---|---|
+| `ModelRuntime.create()` static exists | host dist/core/model-runtime.d.ts:53 |
+| `getModel(providerId, modelId): Model \| undefined` | model-runtime.d.ts:65 — 2-arg, returns undefined (adapter guards it) |
+| Loader aliases BOTH `pi-coding-agent` AND `pi-agent-core` to host copies | host loader.js:53,63 — Agent and ModelRuntime are both host 0.87.1; no dual-instance hazard despite devDep 0.87.0 |
+| `AgentOptions { initialState?, streamFn, beforeToolCall? }` | pi-agent-core agent.d.ts `AgentOptions` |
+| `prompt(string)`, `waitForIdle()`, `abort()`, `state.messages` | agent.d.ts:80,104,110,114 |
+| `BeforeToolCallResult { block?, reason?, terminate? }` — our guard shape | types.d.ts:41-49 |
+| `stopReason` union includes `"error" \| "aborted"` | pi-ai types.d.ts:292 |
+| `ThinkingLevel` includes `"high"`, `"max"` | pi-agent-core types.d.ts:296 |
+| `Model.contextWindow: number` | pi-ai types.d.ts:823 |
+
+### 7.2 R2-F1 (P0, OPEN): streamFn is passed UNBOUND — kills the first call
+
+v0.4.92 line: `streamFn: runtime.streamSimple as never`. Three-level
+proof from the installed sources:
+
+1. `streamSimple`'s body calls `await this.prepareRequest(model, options)`
+   (host model-runtime.js:462-466).
+2. pi-agent-core's `runLoop` invokes the streamFn as a **bare function** —
+   `streamFunction(config.model, llmContext, {...})` — and ESM is strict
+   mode, so `this` is `undefined` inside the unbound method →
+   `TypeError: Cannot read properties of undefined (reading 'prepareRequest')`.
+3. The official README binds in **all four** examples
+   (`streamFn: models.streamSimple.bind(models)`, README lines 32/238/451/553);
+   the earendil-works/pi wiki confirms the bind is required.
+
+**Proposed fix:** `streamFn: runtime.streamSimple.bind(runtime) as never`.
+**Proposed regression test:** capture the options handed to `Agent`; pin
+the `bound ` name prefix AND the behavioral property (invoking the
+captured fn routes `this` to the runtime object).
+**Note:** spec §3 quoted the bind and the implementation dropped it — see
+the lesson in §7.5.
+
+### 7.3 R2-F2 (P0, OPEN): read-only tool factories called without cwd
+
+All seven factories have been `(cwd: string, options?)` since pi 0.68.0
+(the cwd-less prebuilt exports were removed — a documented breaking
+change; confirmed in the tools/*.d.ts signatures and the 0.68.0
+changelog via the repo wiki). v0.4.92 calls `createReadTool()`,
+`createGrepTool()`, `createFindTool()`, `createLsTool()` with **no cwd** —
+every read-only specialist would resolve paths against the pi process
+cwd instead of the target worktree (`.worktree/26-…`), and any
+`path.resolve(cwd, …)` inside the tool throws on `undefined`.
+
+**Proposed fix:** pass `opts.cwd` to all seven factories.
+**Proposed regression test:** mock the SDK module; assert each of the
+seven factories received the call's cwd verbatim.
+
+### 7.4 P3 observations (documented, no action proposed yet)
+
+- `stopReason: "length"` (output truncated by maxTokens) is currently
+  treated as success — the extractResult guard only flags `error`/`aborted`.
+  If live runs show silently-truncated artifacts, extend the guard.
+- `beforeToolCall` supports `terminate: true` (stop after this batch when
+  every result in the batch terminates) — the commit guard could set it to
+  stop a child that keeps hammering blocked git verbs. Not wired.
+- devDeps sit at ^0.87.0 while the host runs 0.87.1 — runtime uses the
+  host copies via the loader alias map, so this is type-drift only;
+  bump devDeps opportunistically.
+
+### 7.5 The class lesson (P7)
+
+The v0.4.92 fix was root-caused against pi-subagents'
+`ModelRuntime.create()` access path but the adapter body was written
+without reading the SDK's own usage examples. "Access path correct, call
+convention wrong" — a `.bind()` the README writes in every example — is
+still a dead run. Spec §3 HAD the bind; the implementation dropped it.
+Corollary: when a spec quotes a reference pattern, the implementation
+must be diffed against that quote, not just against its intent.
